@@ -1,46 +1,178 @@
 {
+  /* ==============================================================================================
+   * slatwall-ts — the TypeScript compiler contract for the extracted Slatwall Catalog slice.
+   *
+   * This file has no legacy counterpart. The Slatwall repository contains zero Node or TypeScript
+   * artifacts (AAP 0.3.1), so the extracted subtree carries its own compiler, test, lint and build
+   * configuration and inherits nothing from the CFML tree. Nothing outside slatwall-ts/ is ever
+   * part of a program defined here (AAP 0.8.2 guideline 5, transformation rule TR-6: the legacy
+   * tree is reference-only and stays byte-for-byte unchanged — including by not being compiled).
+   *
+   * This is the DEVELOPMENT / TYPE-CHECK program:
+   *   - `npm run typecheck` (tsc --noEmit) loads it, and that is the first half of the
+   *     deployability bar defined in AAP 0.8.3.10 (`npm run typecheck && npm run build`).
+   *   - eslint.config.mjs uses typescript-eslint with `projectService: true`, so the "include"
+   *     list below is also the file set the type-aware lint rules operate on.
+   *   - ts-jest resolves this same file, so the test tree is held to identical rules rather than
+   *     to a relaxed test-only configuration. See the isolatedModules note below for which of the
+   *     two commands actually performs the type check.
+   *   - The sibling tsconfig.build.json extends this file and narrows the program to shippable
+   *     src/** for the packaging step, so nothing test-only can reach a Lambda artifact. That is
+   *     the whole division of labour: this file type-checks src/** AND test/**; the build file
+   *     emits src/** only.
+   *
+   * The settings below reproduce the configuration that was compile-proved before the port was
+   * designed (AAP 0.1.2.3: a strict configuration with exactOptionalPropertyTypes and
+   * noUncheckedIndexedAccess, targeting ES2022 with NodeNext resolution, compiling an
+   * APIGatewayProxyHandler probe cleanly under `tsc --noEmit`). They are a contract, not a
+   * starting point: when a source file fails to compile, THE SOURCE FILE IS FIXED. This
+   * configuration is never weakened to let code through.
+   * ============================================================================================ */
   "compilerOptions": {
-    /* Language and emit target — AWS Lambda nodejs20.x (AAP 0.1.2.3 / 0.4.1.2).
-       "lib" is pinned explicitly so the DOM typings that TypeScript would otherwise
-       pull in for an ES2022 target never leak into this headless service. */
+    /* --- Language and runtime target ----------------------------------------------------------
+     * ES2022 is the language level of the Node 20 Lambda runtime this service targets, and the
+     * level build/esbuild.mjs emits for (--target=node20). Keeping the two in step means a
+     * construct that type-checks is a construct the runtime can execute.
+     *
+     * "lib" is pinned to ES2022 alone, so the browser (window / document / fetch-era) typings
+     * TypeScript would otherwise make ambiently available are deliberately absent. This is a
+     * headless service — Lambda handlers returning data, with no rendering layer (AAP 0.3.4). The
+     * one in-scope legacy file carrying a view extension,
+     * integrationServices/google/views/feed/product.cfm, emits RSS 2.0 XML for a merchant feed
+     * processor, so its port ProductFeedBuilder.ts is a serializer and not a component. With the
+     * browser typings withheld, an accidental reference to a browser-only global is a compile
+     * error here instead of a failure inside a Lambda invocation. */
     "target": "ES2022",
     "lib": ["ES2022"],
 
-    /* Module system — NodeNext for both module and moduleResolution (AAP 0.4.3.5).
-       package.json declares "type": "commonjs", so NodeNext resolves every .ts file as
-       CommonJS. That keeps tsc, ts-jest and esbuild --format=cjs in exact agreement and
-       removes any need for a runtime resolver shim. All intra-subtree imports are
-       relative paths; path aliases are deliberately NOT used. */
+    /* --- Module system -----------------------------------------------------------------------
+     * NodeNext for BOTH "module" and "moduleResolution" (AAP 0.4.3.5). Under NodeNext the nearest
+     * package.json "type" field decides each file's module format; slatwall-ts/package.json
+     * declares "type": "commonjs", so every .ts file here resolves and emits as CommonJS. That is
+     * deliberate and load-bearing: build/esbuild.mjs bundles with --format=cjs because that is
+     * what the Node 20 Lambda runtime loads, and ts-jest runs CommonJS by default. tsc, ts-jest
+     * and esbuild therefore agree on module semantics with no runtime resolver shim.
+     *
+     * NO MODULE PATH ALIASES ARE DECLARED — neither the `baseUrl` anchor nor the `paths` map.
+     * Every intra-subtree import is a relative path. This is a correctness requirement, not a
+     * style preference: esbuild does not honour tsconfig alias maps the way tsc does, so an alias
+     * that type-checks cleanly can fail to resolve at bundle time and the packaged handler would
+     * throw MODULE_NOT_FOUND on cold start. Keeping resolution identical across both tools also
+     * protects the hexagonal boundary (AAP 0.7.3 standard 4): a relative import makes a
+     * domain -> adapter or service -> handler direction violation visible in the import line
+     * itself. A consequence worth stating because it looks like an omission otherwise:
+     * jest.config.ts correspondingly needs no moduleNameMapper alias block. An awkward-looking
+     * relative path is accepted as correct; an alias is not. */
     "module": "NodeNext",
     "moduleResolution": "NodeNext",
 
-    /* Output layout (only used by tsconfig.build.json; typecheck runs with --noEmit). */
-    "rootDir": ".",
-    "outDir": "dist",
-    "sourceMap": true,
-    "declaration": false,
-
-    /* Strictness — mandated and NOT to be relaxed to make source compile (AAP 0.7.3).
-       Compilation failures under these flags are CODE issues to be fixed in source,
-       never by weakening this file. */
+    /* --- Strictness: MANDATED, AND NEVER TO BE WEAKENED ---------------------------------------
+     * AAP 0.7.3 standard 1 ("strict type safety") is declared by exactly these three flags, and
+     * this file is its enforcement point. No relaxing option may ever be added here — not
+     * `noImplicitAny: false`, not `strictNullChecks: false`, not a suppression flag — and a
+     * failing compile is always resolved in the offending source file.
+     *
+     * Two of them have consequences a reader should expect rather than be surprised by, because
+     * surfacing these cases is the point of choosing the flags:
+     *
+     *   noUncheckedIndexedAccess types every indexed read as `T | undefined`. That is directly
+     *   load-bearing for carried defect D13: model/service/SkuService.cfc:L223-L269 indexes
+     *   sortedArrayReturn[index] where index = arrayFind(...) can legitimately be 0 because
+     *   getSortedProductSkusID returns only option-bearing SKUs, and the CFML assignment then
+     *   throws. Under this flag the hazard is visible at compile time. Per AAP 0.7.3 standard 7
+     *   ("preserve and annotate, do not repair") the ported behaviour is still CARRIED and marked
+     *   with the plan's parity annotation at the call site — this flag documents the defect, it
+     *   does not license fixing it.
+     *
+     *   exactOptionalPropertyTypes distinguishes "property absent" from "property present and
+     *   undefined". That distinction is what lets the option-to-SKU semantics of AAP 0.6.1.3 be
+     *   expressed in types: T2 (productID is unconditionally supplied on the only real call path,
+     *   so it is typed REQUIRED rather than optional) and T5 (an empty selectedOptions list is a
+     *   legal, meaningful input that degenerates to "all option-bearing SKUs of this product" and
+     *   must not be guarded away). */
     "strict": true,
     "exactOptionalPropertyTypes": true,
     "noUncheckedIndexedAccess": true,
+
+    /* --- Additional strictness (compatible with, and never contradicting, the mandated three) --
+     * noImplicitOverride matters for this port specifically: the legacy tree reuses behaviour by
+     * template-method inheritance and `super.save()`, whereas the target composes an injected
+     * BaseService (AAP 0.4.3.3). Requiring an explicit `override` keyword keeps any remaining
+     * subclassing honest. noImplicitReturns and noFallthroughCasesInSwitch guard the branch-heavy
+     * translations — most notably the three-way baseProductType discriminator in
+     * SkuService.createSkus, whose fallthrough must throw rather than silently return.
+     * useUnknownInCatchVariables is implied by "strict" and is stated explicitly because the port
+     * catches and re-wraps errors through DomainError, which requires narrowing from unknown. */
     "noImplicitOverride": true,
     "noImplicitReturns": true,
     "noFallthroughCasesInSwitch": true,
     "useUnknownInCatchVariables": true,
 
-    /* Interop and hygiene. isolatedModules keeps tsc semantics aligned with the
-       per-file transpilation performed by esbuild and ts-jest. */
+    /* --- Interop and hygiene ------------------------------------------------------------------
+     * isolatedModules keeps tsc's semantics aligned with the per-file transpilation performed by
+     * esbuild and ts-jest, so a construct that needs whole-program information (and would be
+     * dropped by a single-file transform) is rejected here rather than misbehaving in the bundle.
+     * esModuleInterop lets the CommonJS runtime dependency (mysql2, the only bundled package) be
+     * imported with standard ESM syntax.
+     *
+     * One consequence of isolatedModules is worth stating because it is easy to misread as a gap:
+     * ts-jest reads this very flag and, when it is set, transforms each test file individually
+     * instead of building a whole program, so `jest` reports runtime failures but not type errors.
+     * Type checking of the test tree is therefore owned by `npm run typecheck`, and that is
+     * exactly why "test/**" appears in this file's "include" list rather than only in a test-only
+     * configuration. Production source and tests are held to one identical rule set; the two
+     * commands simply divide the work — tsc proves the types, jest proves the behaviour.
+     *
+     * skipLibCheck excludes dependency .d.ts files from checking, which keeps the signal on this
+     * subtree's own source. It is safe here precisely because the type packages are exact-pinned
+     * rather than floating, and one pin is deliberate and worth restating: @types/node is held on
+     * the 20.x line (20.19.43) to track the Node 20 Lambda runtime. A newer major definition set
+     * would describe APIs that runtime does not have, turning a passing compile into a false
+     * assurance (AAP 0.5.3.2).
+     *
+     * "types" is deliberately NOT declared. Automatic @types inclusion covers @types/node,
+     * @types/jest and @types/aws-lambda together; naming a subset would silently drop
+     * @types/aws-lambda from the handler layer, which is the one place AWS coupling is allowed to
+     * exist at all (AAP 0.7.3 standard 4). */
     "esModuleInterop": true,
-    "allowSyntheticDefaultImports": true,
     "forceConsistentCasingInFileNames": true,
     "isolatedModules": true,
-    "resolveJsonModule": true,
     "skipLibCheck": true,
-    "pretty": true
+
+    /* --- Emit --------------------------------------------------------------------------------
+     * This program never emits: it exists to type-check. tsconfig.build.json is the only
+     * configuration that flips "noEmit" to false, which is why declaring it true here is what
+     * makes that override meaningful and stops a bare `tsc -p tsconfig.json` from scattering
+     * JavaScript into dist/. ts-jest is unaffected because it forces noEmit false internally for
+     * its own in-memory transform.
+     *
+     * The rootDir / outDir / sourceMap / declaration quartet describes the emit layout that
+     * tsconfig.build.json inherits and narrows (rootDir "src"). Declaration files are not
+     * produced: nothing outside this subtree consumes it as a typed library — the deliverable is
+     * bundled Lambda artifacts. No "composite" or project-references setup is declared either,
+     * since that would change the emit topology for no benefit at this size.
+     *
+     * Two option families are absent on purpose and must stay absent. Decorator metadata options
+     * are not declared, because AAP 0.7.3 standard 3 requires explicit constructor injection with
+     * no service locator, no dynamic method synthesis and no string-keyed runtime resolution —
+     * decorator-driven containers are exactly the runtime metaprogramming this port exists to
+     * retire (org/Hibachi/HibachiService.cfc:L255-L281 fabricated the whole implicit CRUD surface
+     * via onMissingMethod; IR-1 requires those members to be declared instead). And JavaScript
+     * sources are not admitted to the program at all: the subtree's two .mjs files, the lint
+     * configuration and the packaging script, are deliberately outside every TypeScript program. */
+    "noEmit": true,
+    "rootDir": ".",
+    "outDir": "dist",
+    "sourceMap": true,
+    "declaration": false
   },
+
+  /* Program scope. src/** and test/** are both checked so the test suite is held to production
+   * strictness, and jest.config.ts is listed so the runner's own configuration is type-checked
+   * too. build/esbuild.mjs is intentionally absent: it is .mjs, not TypeScript, and belongs to no
+   * TypeScript program. Every entry is subtree-relative and none of them walks up out of this
+   * directory, so the program cannot reach the CFML tree at all — that is how the additive-only
+   * invariant of AAP 0.4.1.1 is enforced mechanically rather than by convention. */
   "include": ["src/**/*.ts", "test/**/*.ts", "jest.config.ts"],
   "exclude": ["node_modules", "dist", "coverage"]
 }
