@@ -1,22 +1,37 @@
-# Scoped to the slatwall-ts subtree only. The repository-root .gitignore is left
-# untouched so the legacy CFML tree stays byte-for-byte unchanged (AAP 0.4.1.1).
+# Ignore rules scoped to the slatwall-ts/ subtree. Git applies every pattern below
+# relative to THIS directory, so nothing here can reach — or is duplicated from — the
+# legacy CFML tree.
+#
+# That scoping is the reason the file exists. The repository-root .gitignore covers the
+# legacy application in 15 entries and not one of them covers node_modules, dist or
+# coverage; closing that gap here instead of there keeps the root file, and the whole
+# CFML tree, byte-for-byte unchanged, so this port stays a single additive diff
+# (AAP 0.4.1.1 / TR-6; 0.5.6.2 lists the root .gitignore as "explicitly not updated").
+#
+# The list is deliberately short: every entry names an artifact this subtree actually
+# produces, and speculative boilerplate is omitted rather than copied in (AAP 0.7.3
+# standard 9, guideline 0.8.2/1). The three directory names are shared with
+# tsconfig.json "exclude", tsconfig.build.json "outDir" and "exclude",
+# eslint.config.mjs "ignores", jest.config.ts "coverageDirectory" and
+# "testPathIgnorePatterns", and the output directory in build/esbuild.mjs. All six must
+# keep saying the same three words, or a build product ends up tracked.
 
-# Dependencies
+# Installed dependency tree, materialised by `npm ci` from package-lock.json. The
+# lockfile itself is deliberately NOT ignored: a committed lockfile is what makes the
+# exact-version resolution reproducible (AAP 0.7.3 standard 5).
 node_modules/
 
-# Build output and packaged Lambda artifacts
+# Compiled and bundled output. Both routes to an artifact emit here — `tsc -p
+# tsconfig.build.json` (outDir "dist") and `node build/esbuild.mjs` (bundle, source maps
+# and metafile.json) — and build products are never committed.
 dist/
-*.tsbuildinfo
 
-# Test output
+# Jest coverage reports (jest.config.ts, coverageDirectory: 'coverage').
 coverage/
 
-# Local environment — .env.example is committed, real .env files never are
+# A real .env is a local developer convenience that may hold live database credentials,
+# so it never enters git; configuration reaches the service through the environment and
+# no credential is hardcoded (AAP 0.8.3.9). The pattern is the exact filename and not a
+# wildcard, so the required, committed .env.example — variable names only, no values —
+# is never swallowed.
 .env
-.env.*
-!.env.example
-
-# Tool logs
-npm-debug.log*
-yarn-error.log*
-.eslintcache
