@@ -1,0 +1,26 @@
+{
+  /* Emit configuration for the packaging step.
+     Identical compiler semantics to tsconfig.json, but scoped to shippable source only:
+     the Jest configuration and the whole test suite are excluded so nothing test-only
+     can reach a Lambda artifact. esbuild reads this file's "include" as the definition
+     of shippable source; `tsc -p tsconfig.build.json` can also be used to emit plain
+     JavaScript to dist/ without bundling. */
+  "extends": "./tsconfig.json",
+  "compilerOptions": {
+    "noEmit": false,
+    "rootDir": "src",
+    "outDir": "dist",
+    "sourceMap": true,
+    "removeComments": false
+  },
+  "include": ["src/**/*.ts"],
+  "exclude": [
+    "node_modules",
+    "dist",
+    "coverage",
+    "test",
+    "jest.config.ts",
+    "**/*.test.ts",
+    "**/*.spec.ts"
+  ]
+}

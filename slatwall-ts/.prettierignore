@@ -1,0 +1,8 @@
+# Generated / vendored output — never reformatted.
+node_modules/
+dist/
+coverage/
+
+# npm owns the exact byte layout of the lockfile; reformatting it would churn the diff
+# and can break `npm ci` reproducibility.
+package-lock.json

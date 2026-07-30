@@ -1,0 +1,22 @@
+# Scoped to the slatwall-ts subtree only. The repository-root .gitignore is left
+# untouched so the legacy CFML tree stays byte-for-byte unchanged (AAP 0.4.1.1).
+
+# Dependencies
+node_modules/
+
+# Build output and packaged Lambda artifacts
+dist/
+*.tsbuildinfo
+
+# Test output
+coverage/
+
+# Local environment — .env.example is committed, real .env files never are
+.env
+.env.*
+!.env.example
+
+# Tool logs
+npm-debug.log*
+yarn-error.log*
+.eslintcache

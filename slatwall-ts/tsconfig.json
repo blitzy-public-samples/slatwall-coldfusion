@@ -1,0 +1,46 @@
+{
+  "compilerOptions": {
+    /* Language and emit target — AWS Lambda nodejs20.x (AAP 0.1.2.3 / 0.4.1.2).
+       "lib" is pinned explicitly so the DOM typings that TypeScript would otherwise
+       pull in for an ES2022 target never leak into this headless service. */
+    "target": "ES2022",
+    "lib": ["ES2022"],
+
+    /* Module system — NodeNext for both module and moduleResolution (AAP 0.4.3.5).
+       package.json declares "type": "commonjs", so NodeNext resolves every .ts file as
+       CommonJS. That keeps tsc, ts-jest and esbuild --format=cjs in exact agreement and
+       removes any need for a runtime resolver shim. All intra-subtree imports are
+       relative paths; path aliases are deliberately NOT used. */
+    "module": "NodeNext",
+    "moduleResolution": "NodeNext",
+
+    /* Output layout (only used by tsconfig.build.json; typecheck runs with --noEmit). */
+    "rootDir": ".",
+    "outDir": "dist",
+    "sourceMap": true,
+    "declaration": false,
+
+    /* Strictness — mandated and NOT to be relaxed to make source compile (AAP 0.7.3).
+       Compilation failures under these flags are CODE issues to be fixed in source,
+       never by weakening this file. */
+    "strict": true,
+    "exactOptionalPropertyTypes": true,
+    "noUncheckedIndexedAccess": true,
+    "noImplicitOverride": true,
+    "noImplicitReturns": true,
+    "noFallthroughCasesInSwitch": true,
+    "useUnknownInCatchVariables": true,
+
+    /* Interop and hygiene. isolatedModules keeps tsc semantics aligned with the
+       per-file transpilation performed by esbuild and ts-jest. */
+    "esModuleInterop": true,
+    "allowSyntheticDefaultImports": true,
+    "forceConsistentCasingInFileNames": true,
+    "isolatedModules": true,
+    "resolveJsonModule": true,
+    "skipLibCheck": true,
+    "pretty": true
+  },
+  "include": ["src/**/*.ts", "test/**/*.ts", "jest.config.ts"],
+  "exclude": ["node_modules", "dist", "coverage"]
+}
