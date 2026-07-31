@@ -1753,10 +1753,23 @@ export class Product {
    * already been applied upstream. Discarding it is not sloppiness: the value's only legacy use was
    * the filter, and dropping the dereference would silently make a raising call succeed.
    *
-   * ★ AND IT CAN RAISE A SECOND WAY: `ProductType.getSimpleRepresentation()` raises when the type
-   * has no name, so a candidate row with a nameless product type propagates that failure here.
+   * ★ AND IT CAN RAISE A SECOND WAY: a candidate row whose product type has no name cannot be
+   * projected, because `ProductTypeOption.name` is a string. `ProductType.getSimpleRepresentation()`
+   * types its return honestly as `string | undefined` - `productTypeName`
+   * [model/entity/ProductType.cfc:L57] is a nullable column that model/validation/ProductType.json
+   * requires in the SAVE context only - so the absent-name failure is raised HERE, at the projection
+   * that cannot represent it, rather than inside the representation itself. The method still raises on
+   * the same input; only the origin of the raise moved, and it moved to the line that actually has the
+   * problem.
+   *
+   * ★ ASYNCHRONOUS, BECAUSE THE RAISE IT REPRODUCES IS. The L127-L129 branch derives the base type
+   * through {@link Product.getBaseProductType}, which is async because
+   * `ProductType.getBaseProductType()` reaches the repository for the root product type
+   * [model/entity/ProductType.cfc:L112]. The derived value is still discarded - see above - but the
+   * dereference and the round trip it entails are not, because dropping them would silently turn a
+   * raising call into a succeeding one.
    */
-  getProductTypeOptions(baseProductType?: string): readonly ProductTypeOption[] {
+  async getProductTypeOptions(baseProductType?: string): Promise<readonly ProductTypeOption[]> {
     // [model/entity/Product.cfc:L126] the memo guard, testing PRESENCE and not truthiness.
     if (this.productTypeOptions !== undefined) {
       return this.productTypeOptions;
@@ -1773,8 +1786,10 @@ export class Product {
         );
       }
       // The derived value is deliberately unused - the prefix filter it fed has already been
-      // applied by the repository that supplied `productTypeOptionCandidates`.
-      this.productType.getBaseProductType();
+      // applied by the repository that supplied `productTypeOptionCandidates`. It is still AWAITED
+      // rather than left floating, because the dereference is reproduced for its RAISE and an
+      // unawaited rejection would surface as an unhandled promise instead of as this call failing.
+      await this.productType.getBaseProductType();
     }
 
     if (this.productTypeOptionCandidates === undefined) {
@@ -1792,8 +1807,22 @@ export class Product {
     // `alias="name"` / `alias="value"` key pair, built from the simple representation and the key.
     const options: ProductTypeOption[] = [];
     for (const candidate of this.productTypeOptionCandidates) {
+      // `getSimpleRepresentation()` is honestly typed `string | undefined` because
+      // `productTypeName` [model/entity/ProductType.cfc:L57] is nullable. A row that cannot name
+      // itself cannot be projected into a `{name, value}` select option, so it raises here - see the
+      // second raise note on this method's doc.
+      const name: string | undefined = candidate.getSimpleRepresentation();
+      if (name === undefined) {
+        throw new Error(
+          'Product.getProductTypeOptions cannot project product type ' +
+            `'${candidate.getProductTypeID()}' into a select option because it has no ` +
+            'productTypeName, so ProductType.getSimpleRepresentation() ' +
+            '[model/entity/ProductType.cfc:L273-L278] resolves to nothing. The legacy projection at ' +
+            'model/entity/Product.cfc:L137-L139 assigns that null straight into the option struct.',
+        );
+      }
       options.push({
-        name: candidate.getSimpleRepresentation(),
+        name,
         value: candidate.getProductTypeID(),
       });
     }
@@ -2963,8 +2992,17 @@ export class Product {
    * `ProductType.getBaseProductType()` itself returns `string | undefined`, so a product type with no
    * base type yields `undefined` here rather than raising - two different failure modes, kept
    * distinct.
+   *
+   * ★ ASYNCHRONOUS, BECAUSE THE DELEGATE IS. `ProductType.getBaseProductType()` short-circuits on its
+   * own `systemCode` when it has one and otherwise LOADS THE ROOT PRODUCT TYPE named by the first
+   * element of `productTypeIDPath` [model/entity/ProductType.cfc:L112] - a repository round trip. The
+   * async boundary rule makes a method async if and only if its legacy body genuinely reached the DAO
+   * or the ORM, and this one does, one hop down. The boundary propagates from here to
+   * {@link Sku.getBaseProductType}, which delegates to this method in turn. It does NOT propagate into
+   * {@link Product.getSkus}: see `applyFetchOptionsFilter`, which resolves the branch key from the
+   * already-materialised product-type ancestry precisely so that accessor can stay synchronous.
    */
-  getBaseProductType(): string | undefined {
+  async getBaseProductType(): Promise<string | undefined> {
     if (this.productType === undefined) {
       throw new Error(
         'Product.getBaseProductType dereferences getProductType() unguarded ' +
@@ -2973,7 +3011,7 @@ export class Product {
           '[model/dao/SkuDAO.cfc:L156].',
       );
     }
-    return this.productType.getBaseProductType();
+    return await this.productType.getBaseProductType();
   }
 
   /**
@@ -4155,6 +4193,55 @@ export class Product {
   // documented and individually testable through it.
 
   /**
+   * Resolve a product type's base system code from MATERIALISED STATE ONLY, with no repository call.
+   *
+   * Not a member of `model/entity/Product.cfc` and not a member of `model/entity/ProductType.cfc`
+   * either - it is the synchronous half of `ProductType.getBaseProductType()`
+   * [model/entity/ProductType.cfc:L110-L115], extracted here because {@link Product.getSkus} is fixed
+   * as a synchronous accessor by AAP 0.4.2 and `applyFetchOptionsFilter` therefore cannot await. It is
+   * private and un-exported so nothing outside this file can mistake it for the authoritative
+   * resolution, which remains `ProductType.getBaseProductType()`.
+   *
+   * TWO STEPS, in the legacy's own order:
+   *   1. The product type's OWN `systemCode`, when it has a non-empty one - the short-circuit at
+   *      [model/entity/ProductType.cfc:L111], reproduced with the same absent-then-empty pair of tests
+   *      rather than a single truthiness check.
+   *   2. Otherwise the system code of the ROOT of the `parentProductType` chain. The legacy instead
+   *      loads the row named by the first element of the STORED `productTypeIDPath` [L112]; the two
+   *      agree whenever the ancestry is hydrated to the root, and the one case where they diverge is
+   *      documented on `applyFetchOptionsFilter`.
+   *
+   * `undefined` is returned when the root carries no system code, which is a legitimate answer and the
+   * one that makes `applyFetchOptionsFilter` fall through to its no-filter branch - matching a legacy
+   * `eq` against null, which matches none of the three literals.
+   *
+   * NO CYCLE GUARD AND NO DEPTH LIMIT, deliberately, matching both the legacy walk and
+   * `buildIdPathList` in `src/domain/valueObjects/materializedIdPath.ts`. A looping ancestry is a data
+   * defect the legacy surfaces loudly, and adding a guard here would invent a non-functional
+   * requirement the source does not state.
+   */
+  private resolveBaseProductTypeSystemCodeFromAncestry(
+    productType: ProductType,
+  ): string | undefined {
+    // Step 1 - [model/entity/ProductType.cfc:L111] `isNull(getSystemCode()) || getSystemCode() == ""`.
+    const ownSystemCode: string | undefined = productType.getSystemCode();
+    if (ownSystemCode !== undefined && cfLen(ownSystemCode) > 0) {
+      return ownSystemCode;
+    }
+
+    // Step 2 - climb to the root of the materialised ancestry. Same do/while shape as the path
+    // builder, so the starting node is considered and the walk is never empty.
+    let cursor: ProductType = productType;
+    let parent: ProductType | undefined = cursor.getParentProductType();
+    while (parent !== undefined) {
+      cursor = parent;
+      parent = cursor.getParentProductType();
+    }
+
+    return cursor.getSystemCode();
+  }
+
+  /**
    * Reproduce the eager-fetch filtering of `SkuDAO.getProductSkus`. [model/dao/SkuDAO.cfc:L150-L168]
    *
    *   var hql = "SELECT sku FROM SlatwallSku sku ";
@@ -4194,6 +4281,29 @@ export class Product {
    * [model/dao/SkuDAO.cfc:L152] - so a product with no product type raises here too, and only when
    * `fetchOptions` is true. See {@link Product.getBaseProductType}.
    *
+   * ★ AND IT RESOLVES THE BRANCH KEY WITHOUT A REPOSITORY ROUND TRIP, WHICH IS WHY
+   * {@link Product.getSkus} CAN STAY SYNCHRONOUS. {@link Product.getBaseProductType} is asynchronous
+   * because `ProductType.getBaseProductType()` loads the ROOT product type named by the first element
+   * of `productTypeIDPath` when the immediate type carries no system code
+   * [model/entity/ProductType.cfc:L110-L115]. AAP 0.4.2 fixes `getSkus(sorted?, fetchOptions?)` as a
+   * SYNCHRONOUS accessor - "sorting applied in memory when the array was fetched unsorted" - so this
+   * helper cannot await, and widening `getSkus` to a promise would break that contract for every
+   * caller. It therefore resolves the same value from the ALREADY-MATERIALISED product-type ancestry:
+   * the immediate type's own `systemCode` first, exactly the short-circuit the legacy takes at
+   * [model/entity/ProductType.cfc:L111], and otherwise the system code of the root of the
+   * `parentProductType` chain - which is the row the stored path's first element names whenever that
+   * chain is hydrated to the root.
+   *
+   * The ONE boundary where the two disagree is worth stating plainly rather than burying: if the
+   * ancestry is hydrated only partially, the in-memory climb stops early and yields no system code,
+   * which falls through to the no-filter branch, whereas the legacy would have loaded the root row.
+   * That makes the ancestry a FETCH-SHAPE OBLIGATION on the repository - a repository that hydrates a
+   * product for `getSkus(sorted, fetchOptions=true)` must hydrate the product-type chain to its root -
+   * and fetch shape is exactly the kind of decision this architecture pushes to the repository and
+   * documents at the producing method. The chain is NOT substituted inside
+   * `ProductType.getBaseProductType()` itself, where the stored path remains the authority; the
+   * accommodation is bounded to this one site, which is the site that cannot await.
+   *
    * A FRESH ARRAY IS ALWAYS RETURNED, never the live one, because the caller may sort it in place.
    */
   private applyFetchOptionsFilter(fetchOptions: boolean): Sku[] {
@@ -4202,10 +4312,22 @@ export class Product {
       return [...this.skus];
     }
 
-    // [L152] the unguarded dereference, reproduced by delegating to the accessor that reproduces it.
-    // `?? ''` is CFML's normalisation of a null operand in a string comparison; `toLowerCase()` is its
-    // case-insensitive `eq`.
-    const baseProductType: string = (this.getBaseProductType() ?? '').toLowerCase();
+    // [L152] the unguarded dereference, reproduced here rather than delegated, because the accessor
+    // that reproduces it is asynchronous and this helper serves a synchronous caller. The raise, its
+    // message and its trigger condition are identical.
+    if (this.productType === undefined) {
+      throw new Error(
+        'Product.getSkus(sorted, fetchOptions=true) dereferences getProductType() unguarded ' +
+          '[model/dao/SkuDAO.cfc:L152 via model/entity/Product.cfc:L494] and this product has no ' +
+          'product type. The legacy fails on the same input.',
+      );
+    }
+
+    // The base type, resolved from materialised state - see the doc. `?? ''` is CFML's normalisation
+    // of a null operand in a string comparison; `toLowerCase()` is its case-insensitive `eq`.
+    const baseProductType: string = (
+      this.resolveBaseProductTypeSystemCodeFromAncestry(this.productType) ?? ''
+    ).toLowerCase();
 
     // [L153-L154] the contentAccess branch.
     if (baseProductType === 'contentaccess') {

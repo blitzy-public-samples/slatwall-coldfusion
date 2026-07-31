@@ -1980,8 +1980,17 @@ export class Sku {
    *
    * `undefined` when the product's own root product type has no system code - `ProductType`'s accessor
    * is `string | undefined` and this member forwards it unchanged.
+   *
+   * ★ ASYNCHRONOUS, BECAUSE THE DELEGATION CHAIN REACHES A REPOSITORY. This forwards to
+   * {@link Product.getBaseProductType}, which forwards to `ProductType.getBaseProductType()`, which
+   * LOADS THE ROOT PRODUCT TYPE named by the first element of `productTypeIDPath` whenever the
+   * immediate type carries no system code [model/entity/ProductType.cfc:L110-L115]. The async boundary
+   * rule makes a method async if and only if its legacy body genuinely reached the DAO or the ORM, and
+   * this chain does - two hops down. The boundary propagates on to {@link Sku.getSkuDefinition}, which
+   * branches on this value. It does NOT reach `Product.getSkus`, whose eager-fetch filter resolves the
+   * same key from materialised ancestry so that accessor can remain synchronous.
    */
-  getBaseProductType(): string | undefined {
+  async getBaseProductType(): Promise<string | undefined> {
     if (this.product === undefined) {
       throw new Error(
         'Sku.getBaseProductType dereferences getProduct() unguarded ' +
@@ -1989,7 +1998,7 @@ export class Sku {
           'input.',
       );
     }
-    return this.product.getBaseProductType();
+    return await this.product.getBaseProductType();
   }
 
   /**
@@ -2813,13 +2822,19 @@ export class Sku {
    * defensively below so the message names the real cause instead of surfacing a bare comparison error.
    *
    * Preserved deliberately; do not fix without a product decision.
+   *
+   * ★ ASYNCHRONOUS, BECAUSE THE BRANCH KEY IS. All three comparisons read
+   * {@link Sku.getBaseProductType} [L577, L579, L584], which resolves through `Product` to
+   * `ProductType.getBaseProductType()` and reaches the repository for the root product type
+   * [model/entity/ProductType.cfc:L112]. The memo is unaffected: it is still written once and every
+   * later call returns it without a round trip.
    */
-  getSkuDefinition(): string {
+  async getSkuDefinition(): Promise<string> {
     if (this.skuDefinition === undefined) {
       // [L576]
       let definition: string = '';
 
-      const baseProductType: string | undefined = this.getBaseProductType();
+      const baseProductType: string | undefined = await this.getBaseProductType();
       if (baseProductType === undefined) {
         throw new Error(
           'Sku.getSkuDefinition compares getBaseProductType() against three literals ' +
