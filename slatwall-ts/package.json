@@ -1,0 +1,43 @@
+{
+  "name": "slatwall-ts",
+  "version": "3.1.39",
+  "private": true,
+  "description": "TypeScript/AWS Lambda port of the Slatwall 3.1.39 catalog + promotions/pricing slice. Version tracks the ported Slatwall release baseline recorded in ../version.txt.",
+  "license": "GPL-3.0-or-later",
+  "type": "module",
+  "engines": {
+    "node": ">=20.20.2 <21.0.0",
+    "npm": ">=10.8.2"
+  },
+  "scripts": {
+    "typecheck": "tsc --noEmit -p tsconfig.json",
+    "compile": "tsc -p tsconfig.build.json",
+    "bundle": "node esbuild.config.mjs",
+    "build": "npm run typecheck && npm run bundle",
+    "package": "npm run typecheck && node esbuild.config.mjs --zip",
+    "test": "vitest run",
+    "test:coverage": "vitest run --coverage",
+    "lint": "eslint . --no-error-on-unmatched-pattern",
+    "format": "prettier --write .",
+    "format:check": "prettier --check .",
+    "clean": "node -e \"import('node:fs').then(fs=>['dist','build','coverage'].forEach(d=>fs.rmSync(d,{recursive:true,force:true})))\"",
+    "verify": "npm run lint && npm run format:check && npm run typecheck && npm run test"
+  },
+  "dependencies": {
+    "decimal.js": "10.6.0",
+    "mysql2": "3.23.1",
+    "zod": "4.4.3"
+  },
+  "devDependencies": {
+    "@types/aws-lambda": "8.10.162",
+    "@types/node": "20.19.43",
+    "@vitest/coverage-v8": "4.1.10",
+    "dotenv": "17.4.2",
+    "esbuild": "0.28.1",
+    "eslint": "10.8.0",
+    "prettier": "3.9.6",
+    "typescript": "5.9.3",
+    "typescript-eslint": "8.65.0",
+    "vitest": "4.1.10"
+  }
+}

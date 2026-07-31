@@ -1,0 +1,19 @@
+# Dependencies
+node_modules/
+
+# Build output
+dist/
+build/
+*.tsbuildinfo
+
+# Test / coverage output
+coverage/
+
+# Tooling caches
+.eslintcache
+.vitest/
+
+# Local environment (the committed contract is .env.example)
+.env
+.env.*
+!.env.example
