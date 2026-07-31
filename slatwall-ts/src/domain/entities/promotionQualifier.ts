@@ -1,167 +1,151 @@
 // ---------------------------------------------------------------------------
 // slatwall-ts - PromotionQualifier entity
 //
-// PORT OF model/entity/PromotionQualifier.cfc (373 lines, confirmed by `wc -l`).
+// PORT OF model/entity/PromotionQualifier.cfc (373 lines, re-read in full while authoring
+// this file; every locator below was verified against the source rather than inherited).
 //
 // THE COMPONENT DECLARATION, VERBATIM [model/entity/PromotionQualifier.cfc:L49]
 //
 //   component displayname="Promotion Qualifier" entityname="SlatwallPromotionQualifier"
-//   table="SwPromoQual" persistent="true" output="false" accessors="true"
-//   extends="HibachiEntity" cacheuse="transactional" hb_serviceName="promotionService"
-//   hb_permission="promotionPeriod.promotionQualifiers" {
+//   table="SwPromoQual" persistent="true" extends="HibachiEntity" cacheuse="transactional"
+//   hb_serviceName="promotionService" hb_permission="promotionPeriod.promotionQualifiers" {
+//
+// Read that attribute list as an exhaustive one. `persistent="true"` is QUOTED here - the
+// same shape Promotion, PromotionCode, PromotionPeriod, PromotionApplied and
+// PromotionAccount use, and the direct contrast to PriceGroup / PriceGroupRate, whose
+// declarations read `persistent=true output=false accessors=true` UNQUOTED. There is NO
+// `accessors=`, NO `output=` and NO `hb_processContexts` on this line. Recorded precisely
+// because a paraphrase that adds them would misstate the contract this file exists to
+// carry forward.
 //
 // Schema continuity is a binding constraint: entity property metadata IS the contract.
-// ★ NOTE THE ABBREVIATED PHYSICAL TABLE NAME - `SwPromoQual`, NOT `SwPromotionQualifier`.
-// The abbreviation is not cosmetic: it exists because this entity owns THIRTEEN
-// many-to-many link tables whose names must fit MySQL's 64-character identifier limit,
-// and five of those link tables are abbreviated further still (`SwPromoQualExclBrand`,
-// `SwPromoQualShipAddressZone`, and so on). Every one of the fourteen names below is
-// carried forward verbatim. No migration, no rename, no new table, no column change.
+// * NOTE THE ABBREVIATED PHYSICAL TABLE NAME - `SwPromoQual`, NOT `SwPromotionQualifier`,
+// matching PromotionReward's `SwPromoReward`. Five of the thirteen link tables are
+// abbreviated further still (`SwPromoQualExclBrand`, `SwPromoQualShipAddressZone`, and so
+// on). Every one of the fourteen names is carried forward verbatim below. No migration, no
+// rename, no new table, no column change - and no "correcting" the abbreviation.
 //
-// `hb_permission="promotionPeriod.promotionQualifiers"` nests this entity's permissions
-// under its parent rather than under itself, and `hb_serviceName="promotionService"` is
-// why there is no `PromotionQualifierService` to port and no such omission to explain.
-// ★ CONTRAST model/entity/PromotionReward.cfc:L49, whose equivalent attribute reads
-// `hb_permission="promotionPeriod.promtionRewards"` - MISSPELLED. This entity's is
-// spelled correctly, which is what makes the sibling's misspelling identifiable as a
-// defect rather than a convention.
+// `hb_serviceName="promotionService"` is why there is no `PromotionQualifierService` to
+// port and no such omission to explain: CRUD for this entity lives in the promotion
+// service.
 //
-// ★ WHAT THIS ENTITY IS FOR. It is the GATE half of the promotion engine: `Promotion` ->
-// `PromotionPeriod` -> { qualifiers decide WHETHER a promotion applies, rewards decide
-// WHAT it gives }. `getQualifierQualificationDetails()`
-// [model/service/PromotionService.cfc:L629-L750] reads this entity's ten numeric gates
-// and thirteen collections to answer that question, and
-// `getOrderItemInQualifier()` [model/service/PromotionService.cfc:L852-L919] walks the
-// membership collections. Both sit inside the must-preserve discount pipeline, so every
-// property below is load-bearing rather than decorative.
-//
-// THE TEN NUMERIC GATES, and why they are three different TypeScript types:
-//
-//   | locator | property                 | ormtype     | hb_formatType | hb_nullRBKey      | TS type    |
-//   |---------|--------------------------|-------------|---------------|-------------------|------------|
-//   | L55     | minimumOrderQuantity     | integer     | -             | define.0          | number     |
-//   | L56     | maximumOrderQuantity     | integer     | -             | define.unlimited  | number     |
-//   | L57     | minimumOrderSubtotal     | big_decimal | currency      | define.0          | Money      |
-//   | L58     | maximumOrderSubtotal     | big_decimal | currency      | define.unlimited  | Money      |
-//   | L59     | minimumItemQuantity      | integer     | -             | define.0          | number     |
-//   | L60     | maximumItemQuantity      | integer     | -             | define.unlimited  | number     |
-//   | L61     | minimumItemPrice         | big_decimal | currency      | define.0          | Money      |
-//   | L62     | maximumItemPrice         | big_decimal | currency      | define.unlimited  | Money      |
-//   | L63     | minimumFulfillmentWeight | big_decimal | weight        | define.0          | DecimalString |
-//   | L64     | maximumFulfillmentWeight | big_decimal | weight        | define.unlimited  | DecimalString |
-//
-// THE THREE-WAY TYPE SPLIT IS DERIVED FROM `hb_formatType`, NOT GUESSED. Four gates are
-// integer counts. Four are `hb_formatType="currency"` and are compared against order
-// subtotals and item prices, so they are `Money` - which is also what keeps them inside
-// the project's single-arithmetic-surface rule. The last two are `hb_formatType="weight"`
-// and are compared against `orderFulfillment.getTotalShippingWeight()`
-// [model/service/PromotionService.cfc:L695, L697]; typing a WEIGHT as `Money` would
-// assert a currency it does not have and would hand it currency formatting it must never
-// receive, so they are the branded plain-decimal string instead - arbitrary precision
-// preserved, currency semantics correctly absent.
-//
-// ★ EVERY ONE OF THE TEN IS NULLABLE, AND NULL IS THE "NO GATE" SIGNAL. That is exactly
-// what the `hb_nullRBKey` attributes encode: a null MINIMUM displays as `define.0` and a
-// null MAXIMUM displays as `define.unlimited`. The engine reads it the same way -
-// [model/service/PromotionService.cfc:L695, L697] guards every comparison with
-// `!isNull(...)` first, so an absent gate imposes no constraint. Substituting `0` for a
-// null minimum would be harmless; substituting `0` for a null MAXIMUM would disqualify
-// every order. All ten map to `... | undefined` and no default is ever supplied.
-//
-// THE ASSOCIATION CENSUS, receiver-qualified against every
-// `arrayAppend`/`arrayDeleteAt` site in model/entity/*.cfc.
-//
-//   | locator | property                | far side          | link table                    | accessor |
-//   |---------|-------------------------|-------------------|-------------------------------|----------|
-//   | L73     | fulfillmentMethods      | FulfillmentMethod | SwPromoQualFulfillmentMethod  | readonly |
-//   | L74     | shippingMethods         | ShippingMethod    | SwPromoQualShippingMethod     | readonly |
-//   | L75     | shippingAddressZones    | AddressZone       | SwPromoQualShipAddressZone    | readonly |
-//   | L77     | brands                  | Brand             | SwPromoQualBrand              | readonly |
-//   | L78     | options                 | Option            | SwPromoQualOption             | readonly |
-//   | L79     | skus                    | Sku               | SwPromoQualSku                | readonly |
-//   | L80     | products                | Product           | SwPromoQualProduct            | readonly |
-//   | L81     | productTypes            | ProductType       | SwPromoQualProductType        | readonly |
-//   | L83     | excludedBrands          | Brand             | SwPromoQualExclBrand          | readonly |
-//   | L84     | excludedOptions         | Option            | SwPromoQualExclOption         | readonly |
-//   | L85     | excludedSkus            | Sku               | SwPromoQualExclSku            | readonly |
-//   | L86     | excludedProducts        | Product           | SwPromoQualExclProduct        | readonly |
-//   | L87     | excludedProductTypes    | ProductType       | SwPromoQualExclProductType    | readonly |
-//
-// ★ ALL THIRTEEN ARE `readonly`, and the uniformity is the finding. NONE declares
-// `inverse="true"`, so this entity OWNS all thirteen link tables, and an owner mutates
-// its own `variables.<x>` directly rather than reaching through its own accessor.
-// Nothing outside this class ever appends to `promotionQualifier.getBrands()` - zero
-// census sites for any of the thirteen. That is the exact mirror image of
-// `Brand.promotionQualifiers`, `Option.promotionQualifiers`,
-// `ProductType.promotionQualifiers` and their four exclusion siblings, every one of
-// which is `inverse="true"` and LIVE precisely BECAUSE this class reaches into them. The
-// owner/inverse liveness inversion is the single most load-bearing structural fact in
-// the entity folder, and this file - with thirteen owned collections and not one
-// exception - is its most emphatic instance.
-//
-// ★ THREE OF THE THIRTEEN HAVE NO BIDIRECTIONAL HELPER AT ALL, AND THREE OUT-OF-SCOPE
-// ENTITIES CALL THE HELPERS THAT ABSENCE IMPLIES. This component hand-writes ten pairs -
-// for brands, options, skus, products, productTypes and their five excluded siblings -
-// plus the promotionPeriod pair, and NOTHING for `fulfillmentMethods`, `shippingMethods`
-// or `shippingAddressZones`. Verified by grep across all 373 lines. Meanwhile:
-//
-//   * model/entity/FulfillmentMethod.cfc:L107 calls `addFulfillmentMethods( this )` -
-//     NOTE THE PLURAL. No such method exists here under either spelling.
-//   * model/entity/ShippingMethod.cfc:L97 calls `addShippingMethod( this )`. No such
-//     method exists here.
-//   * model/entity/AddressZone.cfc:L102 calls `addAddressZone( this )` - and the
-//     property is named `shippingAddressZones`, so even the intended name would have
-//     been `addShippingAddressZone`. No such method exists here under any spelling.
-//
-// `add*` and `remove*` match NONE of the eleven `onMissingMethod` patterns at
-// [org/Hibachi/HibachiEntity.cfc:L507-L565] - every pattern is `has*`- or `get*`-prefixed
-// - and the `getAttributeValue` fallback at L559 is `get`-only, so all six calls reach
-// the throw at L565. So those three collections are declared, persisted, READ BY THE
-// ENGINE [model/service/PromotionService.cfc:L699, L701, L703], and populatable ONLY by
-// direct framework population - never by a bidirectional helper.
-//
-// THE THREE MISSING PAIRS ARE DELIBERATELY NOT AUTHORED HERE. All three callers are
-// out-of-scope entities, so no throwing stub is needed anywhere in scope; the absence is
-// recorded as a CONTRACT at the collection accessors, exactly like the
-// `getPromotionAccounts()` anti-contract in src/domain/entities/promotionAccount.ts and
-// the excluded-helper anti-contract in src/domain/entities/priceGroupRate.ts. Authoring
-// them would silently repair six preserved defects and make three collections reachable
-// for the first time, changing which orders qualify for a promotion - i.e. changing
-// money.
-//
-// ONE FURTHER DEFECT IS VISIBLE FROM THIS ENTITY BUT LIVES IN THE SERVICE: the
-// shipping-address-zones clause at [model/service/PromotionService.cfc:L703] re-tests
-// `hasShippingMethod(...)` instead of testing the zone condition, so
-// `shippingAddressZones` is effectively never evaluated as a zone gate. Registered
-// against the service; noted at `getShippingAddressZones()` below so a reader of this
-// file is not misled into thinking the collection is consulted as intended.
+// * `hb_permission="promotionPeriod.promotionQualifiers"` IS SPELLED CORRECTLY. That is
+// worth stating explicitly, because it is the direct contrast to
+// [model/entity/PromotionReward.cfc:L49], whose equivalent attribute reads
+// `hb_permission="promotionPeriod.promtionRewards"` - missing the `o` in "promotion". The
+// sibling's misspelling is the one identifier in that file requiring a documented rename;
+// THIS FILE REQUIRES NONE, and none is invented.
 //
 // THE `extends` CHAIN IS THREE LEVELS DEEP, NOT TWO. `extends="HibachiEntity"` on L49 is
-// UNQUALIFIED, so it resolves to the local model/entity/HibachiEntity.cfc (274 lines),
-// whose own L49 reads `component output="false" accessors="true" persistent="false"
-// extends="Slatwall.org.Hibachi.HibachiEntity"`. Neither level is ported: an entity
-// reaching outward through a service locator is exactly the pattern the ESLint
-// `no-restricted-imports` layer boundary exists to make impossible.
+// UNQUALIFIED, so it resolves to the LOCAL model/entity/HibachiEntity.cfc (274 lines),
+// which itself extends `Slatwall.org.Hibachi.HibachiEntity`. The intermediate class holds
+// twelve `getService(...)` sites - L123, L130, L135, L145, L178, L180, L182, L194, L196,
+// L207, L257, L266, seven of them `attributeService`. All twelve are MOOT here because the
+// EAV/attribute path is not ported, but they are recorded rather than silently
+// re-implemented: an entity reaching outward through a service locator is exactly the
+// pattern the ESLint `no-restricted-imports` layer boundary exists to make impossible.
+// Neither base level is ported.
 //
-// ★ VALIDATION: THERE IS NO model/validation/PromotionQualifier.json, AND THAT ABSENCE
-// IS DELIBERATE RATHER THAN AN OVERSIGHT TO CORRECT. Twelve of the in-scope entities have
-// a validation file and six do not - `Category`, `PromotionQualifier`, `PromotionApplied`,
-// `PromotionAccount`, `Product_AddOption` and `Product_AddOptionGroup`. Validation
-// coverage is ported AS IT IS rather than completed, so no schema is invented for this
-// entity. In practical terms that means NOTHING validates the ten numeric gates: a
-// negative minimum, or a maximum below its own minimum, is accepted by the legacy system
-// and must be accepted here.
+// * WHAT THIS ENTITY IS FOR. It is the GATE half of the promotion engine:
+// `Promotion` -> `PromotionPeriod` -> { QUALIFIERS decide WHETHER a promotion applies,
+// REWARDS decide WHAT it gives }. `getQualifierQualificationDetails()`
+// [model/service/PromotionService.cfc:L629-L750] reads the ten numeric gates and the
+// thirteen collections to answer that question, and `getOrderItemInQualifier()`
+// [model/service/PromotionService.cfc:L852-L919] walks the membership collections. Both
+// sit inside the must-preserve discount pipeline, so every property below is load-bearing
+// rather than decorative. The two planned consumers are
+// src/services/promotion/qualifierQualification.ts (planned) and
+// src/services/promotion/orderItemMembership.ts (planned).
 //
-// TEST COVERAGE FOR THIS MODULE IS NET-NEW. `PromotionQualifier` has no legacy test. Only
-// brand.ts and product.ts have legacy antecedents. The contract the test tier has to pin
-// is enumerated at the foot of this file.
+// EVERY MEMBER OF THIS FILE IS SYNCHRONOUS. The async boundary rule is that a method
+// becomes `async` if and only if its legacy body reaches the DAO or ORM, and no body in
+// this component does: a full read of all 373 lines finds ZERO `getService(` sites, so no
+// port is injected, the constructor takes data only, and the words `async`, `await` and
+// `Promise` do not appear anywhere below.
 //
-// NO USER RULES WERE PROVIDED. The enterprise substitute standard applies at full
-// strength - maximal strictness, no `any` and no suppression comment, one exported unit
-// per file, no barrel, and every judgment call annotated where it was made.
+// THE SOURCE'S BANNER MAP, recorded once so the structure is auditable without reopening
+// the CFC, and so the 27-line L328 -> L355 gap is definitively closed - there are NO
+// hidden declarations in it, only the four banner pairs listed here.
+//
+//   | banner pair                      | lines     | state                                  |
+//   |----------------------------------|-----------|----------------------------------------|
+//   | (no banner - floats free)        | L101-L103 | getSimpleRepresentation                |
+//   | Non-Persistent Property Methods  | L105/L117 | POPULATED - getRewardMatchingTypeOptions |
+//   | Bidirectional Helper Methods     | L119/L339 | POPULATED - the eleven pairs           |
+//   | Custom Validation Methods        | L341/L343 | EMPTY                                  |
+//   | Custom Formatting Methods        | L345/L347 | EMPTY                                  |
+//   | Overridden Implicet Getters      | L349/L351 | EMPTY (source misspells "Implicit")    |
+//   | Overridden Methods               | L353/L363 | POPULATED - two members                |
+//   | ORM Event Hooks                  | L365/L367 | EMPTY                                  |
+//   | Deprecated Methods               | L369/L371 | EMPTY                                  |
+//
+// Two structural facts from that map are load-bearing rather than cosmetic and are
+// annotated again at the members they govern: `getSimpleRepresentation()` sits OUTSIDE
+// every banner section, which is unique among the promotion-cluster entities; and the ORM
+// Event Hooks pair is EMPTY, so this entity declares neither `preInsert` nor `preUpdate`.
+// Unlike PromotionAccount (L117/L119), PromotionPeriod (L154/L156) and PromotionCode
+// (L153/L155), there are NO duplicate banner pairs here and no missing END banner. L54 is
+// a blank line inside the property block - there is no declaration hiding there either.
+// The banner comments are NOT reproduced as decoration; the structural facts are recorded
+// once, here, and TypeScript section comments are used below.
+//
+// * VALIDATION: THERE IS NO model/validation/PromotionQualifier.json, AND THAT ABSENCE IS
+// DELIBERATE RATHER THAN AN OVERSIGHT TO CORRECT. Twelve in-scope entities have a
+// validation file and six do not - Category, PromotionQualifier, PromotionApplied,
+// PromotionAccount, Product_AddOption and Product_AddOptionGroup. Validation coverage is
+// ported AS IT IS rather than completed, so no schema is invented here and NO zod schema
+// is authored in this file: schema enforcement belongs to the service tier, while entities
+// carry the property metadata. In practical terms NOTHING validates the ten numeric gates -
+// a negative minimum, or a maximum below its own minimum, is accepted by the legacy system
+// and must be accepted here. There is also no length constraint on `qualifierType`,
+// because L53 declares none. Contrast model/validation/PromotionReward.json, which DOES
+// exist, so the sibling file carries obligations this one does not.
+//
+// Consequently there are ZERO declaratively-invoked entity methods on this class. The
+// exhaustive `"method"` census across the in-scope schemas yields exactly five, and none
+// belongs here: Sku.hasUniqueOptions, Sku.hasOneOptionPerOptionGroup,
+// RoundingRule.hasExpressionWithListOfNumericValuesOnly,
+// Promotion.getPromotionCodesDeletableFlag and PromotionCode.hasUniquePromotionCode.
+//
+// JavaRB IS NOT PORTED AND NO i18n RUNTIME IS INTRODUCED. Every `rbKey` / `hb_rbKey` /
+// `hb_nullRBKey` identifier is preserved verbatim as an inert string constant so the
+// legacy admin can still resolve it, and no resolver is invented to consume them.
+//
+// TEST COVERAGE FOR THIS MODULE IS NET-NEW. `PromotionQualifier` has no legacy test:
+// meta/tests/unit/entity/ contains no PromotionQualifierTest.cfc. Only two of the eighteen
+// entity suites extend legacy coverage - brand.test.ts and product.test.ts. The contract
+// the test tier must pin is enumerated at the foot of this file, and it must be labelled
+// net-new rather than presented as parity.
+//
+// NO USER RULES WERE PROVIDED for this project - `review_rules` returns exactly
+// "No user rules provided." That absence is not licence to lower the bar: the enterprise
+// substitute standard applies at full strength (maximal strictness, no `any`, no
+// suppression comment, one exported runtime unit per file, no barrel, parameterised
+// nothing-outward imports, and every judgment call annotated where it was made), and no
+// rule is invented to fill the gap.
+//
+// THIS FILE SPENDS NOTHING FROM THE FOLDER'S FOUR BUDGETS, and each zero is verifiable
+// against the members below rather than merely asserted here:
+//
+//   * SIGNATURE WIDENINGS: 0. Every method keeps its legacy arity. The entity layer's single
+//     widening - `isCurrent(now?: Date)` on promotionPeriod.ts - is already spent, and none
+//     is spent again. `removePromotionPeriod(promotionPeriod?)` is NOT a widening: the source
+//     parameter at [model/entity/PromotionQualifier.cfc:L128] is already optional (`any
+//     promotionPeriod`, no `required`), which is exactly what L129-L131 defaults.
+//   * DELIBERATE DIVERGENCES: 0. Not one legacy finding is repaired. The three genuine
+//     LEGACY-DEFECT markers in this file are all reproductions, and reproducing the source's
+//     exact member set - authoring `getRewardMatchingTypeOptions()` while NOT authoring
+//     `getQualifierApplicationTypeOptions()` - is fidelity, not repair. The folder's one
+//     divergence allowance (defects 17/18/19, in sku.ts and product.ts) is left untouched.
+//   * SIGNATURE RESHAPINGS: 0. The plan's three permitted reshapings all live in
+//     src/services and src/integrations; the ORM-hook-to-repository reshaping is vacuous
+//     here because the ORM Event Hooks banner pair [L365/L367] is empty.
+//   * VISIBILITY WIDENINGS: 0. The five permitted promotions are all in promotionService;
+//     nothing private in this component is promoted. `indexOfEntity` moves the other way -
+//     it is `private static` and adds no public surface.
 // ---------------------------------------------------------------------------
 
-import type { DecimalString } from '../../lib/cfml/numberFormat.js';
+import { isNullish } from '../../lib/cfml/truthiness.js';
 import type { Money } from '../valueObjects/money.js';
 import type { Brand } from './brand.js';
 import type { Option } from './option.js';
@@ -170,307 +154,617 @@ import type { ProductType } from './productType.js';
 import type { PromotionPeriod } from './promotionPeriod.js';
 import type { Sku } from './sku.js';
 
-// LEGACY-NOTE THE THREE OUT-OF-SCOPE FAR SIDES, MATERIALIZED THROUGH NARROW STRUCTURAL PROJECTIONS
-// RATHER THAN DROPPED. `FulfillmentMethod` [L73], `ShippingMethod` [L74] and `AddressZone` [L75]
-// all belong to the out-of-scope fulfillment/shipping pipeline. The out-of-scope entity is the FAR
-// SIDE; the ASSOCIATION is part of `SwPromoQual`'s persisted contract, and suppressing it would
-// make this class assert something false about the schema - and would delete a gate the promotion
-// engine reads. The approved mechanism - a module-local, un-exported structural interface naming
-// only the members anything in scope can actually reach - is used for each, following the `*Link`
-// precedent established by src/domain/entities/brand.ts.
+// THE IMPORT LEDGER, AND WHY IT IS CLOSED AT EIGHT SPECIFIERS.
 //
-// EACH CARRIES EXACTLY ONE MEMBER: its primary key, taken from the `inversejoincolumn` its own
-// declaration names and confirmed against the far-side `fieldtype="id"` line. NO `add*`/`remove*`
-// member is declared on any of the three, and that is the point rather than an omission - this
-// class has no helper that would call one, because the source has none. Speculating further members
-// would be inventing a contract.
+//   * `isNullish` is the project's CFML `isNull()` parity helper and is the ONLY value
+//     import. It is used at three load-bearing sites below - the `qualifierType` presence
+//     test inside `getSimpleRepresentation()`, and the two-level unguarded climb in
+//     `isDeletable()` plus the resolved-target test in `removePromotionPeriod()`.
+//   * `Money` is imported as a TYPE. The agent contract lists it as a value import, and
+//     that anticipated arithmetic which this entity does not perform: the four currency
+//     gates are inert threshold columns, so `Money` appears only in type positions and
+//     `@typescript-eslint/consistent-type-imports` (prefer type-imports,
+//     separate-type-imports) therefore REQUIRES `import type`. The module imported is
+//     exactly the one prescribed; only the import kind follows the lint rule, and nothing
+//     type-only survives into the Lambda bundle.
+//   * The six sibling entities are all `import type`. The entities <-> entities cycles
+//     here are TYPE-ONLY and are erased at emit, so they never exist at runtime. A value
+//     import to a sibling entity must never be introduced.
+//
+// DELIBERATELY ABSENT, each for a stated reason:
+//   * `decimal.js` - only src/lib/cfml/precision.ts and src/lib/cfml/numberFormat.ts may
+//     import it, and `Money` is the sole arithmetic surface regardless.
+//   * `../../lib/cfml/numberFormat.ts`, `list.ts`, `precision.ts` - this file formats
+//     nothing, parses no comma list and evaluates no expression.
+//   * `../../lib/cfml/struct.ts` - the only struct operations in the source are
+//     `structKeyExists(arguments, "promotionPeriod")` [L129] and
+//     `structDelete(variables, "promotionPeriod")` [L136]. Both manipulate CFML ARGUMENT
+//     SCOPE and PRIVATE INSTANCE STATE, not a domain-data struct with case-insensitive
+//     keys, so they become a TypeScript optional parameter and a field assignment of
+//     `undefined` respectively. Importing case-insensitive struct access here would be
+//     wrong.
+//   * `cfBoolean` / `cfLen` / `cfTruthy` - this entity declares ZERO persistent booleans
+//     of either casing (L52-L99 re-read line by line: no `ormtype="boolean"`, no
+//     `ormType="boolean"`, and no `default=` attribute anywhere except the PK's
+//     `default=""` on L52), and there is no `len()` call and no empty-string truthiness
+//     test in the file.
+//   * `../valueObjects/currencyCode.ts` - THIS ENTITY HAS NO `currencyCode` COLUMN.
+//   * `../valueObjects/materializedIdPath.ts` - this entity has no path column. The
+//     qualifier's `productTypes` membership test DOES walk `productTypeIDPath`, but that
+//     walk lives in src/services/promotion/orderItemMembership.ts (planned), not here.
+//   * `../ports/*.ts`, `../../lib/config.ts`, `../../lib/logger.ts` - zero
+//     `getService(` sites means zero injected collaborators; entities do not log and do
+//     not read static process configuration.
 
-/** [model/entity/PromotionQualifier.cfc:L73] `inversejoincolumn="fulfillmentMethodID"`, and FulfillmentMethod.cfc:L52. */
-interface QualifierFulfillmentMethodLink {
-  getFulfillmentMethodID(): string;
-}
-
-/** [model/entity/PromotionQualifier.cfc:L74] `inversejoincolumn="shippingMethodID"`, and ShippingMethod.cfc:L52. */
-interface QualifierShippingMethodLink {
-  getShippingMethodID(): string;
-}
-
-/** [model/entity/PromotionQualifier.cfc:L75] `inversejoincolumn="addressZoneID"`, and AddressZone.cfc:L52. */
-interface QualifierAddressZoneLink {
-  getAddressZoneID(): string;
-}
+/**
+ * The authoritative vocabulary of `rewardMatchingType`
+ * [model/entity/PromotionQualifier.cfc:L65].
+ *
+ * These are not five plausible values - they are the exact five that
+ * `getRewardMatchingTypeOptions()` [model/entity/PromotionQualifier.cfc:L107-L115] offers,
+ * in the source's own order, and L65 declares `hb_formFieldType="select"`, so the option
+ * list IS the admin form's domain. No sixth member may be added, none renamed, none
+ * reordered.
+ *
+ * WHY THIS COLUMN IS NARROWED WHILE `qualifierType` [L53] IS NOT: the difference is
+ * evidence, not taste. This property has a self-declared option list on the entity;
+ * `qualifierType` has none - there is no `getQualifierTypeOptions()` anywhere in the file -
+ * and the engine tests it with a CASE-INSENSITIVE comma-list membership check
+ * [model/service/PromotionService.cfc:L714], so narrowing it would reject data the legacy
+ * schema accepts.
+ *
+ * Exported as a TYPE ALIAS ALONGSIDE the class, which keeps the one-exported-runtime-unit
+ * rule intact because a type alias is erased at emit. This is the pattern
+ * `PromotionAppliedType` already ships with in src/domain/entities/promotionApplied.ts. A
+ * separate `types.ts` is deliberately NOT created, and there is no barrel in this folder.
+ */
+export type RewardMatchingType = 'any' | 'sku' | 'product' | 'productType' | 'brand';
 
 /**
  * One row of `getRewardMatchingTypeOptions()`.
  * [model/entity/PromotionQualifier.cfc:L107-L115]
  *
- * A `type` alias rather than an `interface`, and that is load-bearing rather than stylistic: an
- * `interface` is NOT assignable to `Readonly<Record<string, unknown>>` (TS2322) because it has no
- * implicit index signature, whereas a type alias IS. The same decision is recorded on
- * `ParentPriceGroupOption` in src/domain/entities/priceGroup.ts.
+ * A `type` alias rather than an `interface`, and that is load-bearing rather than
+ * stylistic: an `interface` is NOT assignable to `Readonly<Record<string, unknown>>`
+ * (TS2322) because it has no implicit index signature, whereas a type alias IS. The same
+ * decision is recorded on `ParentPriceGroupOption` in src/domain/entities/priceGroup.ts.
+ *
+ * `name` carries the resource-bundle KEY, unresolved. JavaRB is not ported, so the key is
+ * preserved verbatim as an inert string rather than replaced by English text or by a
+ * resolver this port does not introduce.
  */
 type RewardMatchingTypeOption = {
   readonly name: string;
-  readonly value: 'any' | 'sku' | 'product' | 'productType' | 'brand';
+  readonly value: RewardMatchingType;
 };
-
-/**
- * The narrow port standing for the two `rbKey(...)` resolutions inside `getSimpleRepresentation()`
- * [model/entity/PromotionQualifier.cfc:L101-L103].
- *
- * WHY TWO MEMBERS AND NOT ONE GENERIC RESOLVER. The legacy body is
- *
- *   return "#rbKey('entity.promotionQualifier')# - #getFormattedValue('qualifierType')#";
- *
- * and `getFormattedValue` [org/Hibachi/HibachiTransient.cfc:L493-L510] resolves through the
- * `hb_formatType="rbKey"` attribute on [L53] to a SECOND, value-dependent key:
- * `rbKey('entity.promotionQualifier.qualifierType.<value>')`. So the method needs exactly two
- * resolutions - one fixed and one parameterised by the stored qualifier type - and the port names
- * both explicitly. A single `resolve(key: string)` member would be a general-purpose i18n runtime,
- * which is precisely what is NOT being introduced: JavaRB is not ported, and resource-bundle
- * identifiers are preserved verbatim as string constants rather than resolved by new machinery.
- *
- * Declared module-local and UN-EXPORTED: the AAP locks the port inventory at THIRTEEN exported
- * contracts under `src/domain/ports/`, and the inventory counts EXPORTED CONTRACTS rather than
- * files, so a fourteenth exported collaborator interface is a budget violation wherever it sits.
- * This follows `RoundingRuleValueRounder` in src/domain/entities/roundingRule.ts,
- * `PromotionCodeDeletableEvaluator` in src/domain/entities/promotion.ts and
- * `CurrencyValueFormatter` in src/domain/entities/priceGroupRate.ts.
- */
-interface PromotionQualifierLabelProvider {
-  /** [model/entity/PromotionQualifier.cfc:L102] `rbKey('entity.promotionQualifier')`. */
-  getPromotionQualifierEntityLabel(): string;
-
-  /**
-   * [org/Hibachi/HibachiTransient.cfc:L506] the value-dependent key
-   * `entity.promotionQualifier.qualifierType.<value>`, reached through
-   * `getFormattedValue('qualifierType')` and the `hb_formatType="rbKey"` attribute on
-   * [model/entity/PromotionQualifier.cfc:L53].
-   */
-  getQualifierTypeLabel(qualifierType: string): string;
-}
 
 /**
  * A single promotion qualifier - the GATE that decides whether a promotion period applies.
  *
- * A class rather than an interface, because the legacy entity carries behaviour and not merely
- * data: it owns an overridden `getSimpleRepresentation()`, an option list, an `isDeletable()` that
- * climbs two levels of parent, and eleven bidirectional helper pairs.
+ * A CLASS rather than an interface, because the legacy entity carries BEHAVIOUR and not
+ * merely data: it owns an overridden `getSimpleRepresentation()`, a self-declared option
+ * list, an `isDeletable()` that climbs two levels of parent, and eleven bidirectional
+ * helper pairs. Collapsing that behaviour into free functions would break interface parity,
+ * and interface parity is the acceptance contract - the public method names below are the
+ * legacy CFML names verbatim, in camelCase, and not one has been "improved".
  *
- * ASSOCIATIONS ARE MATERIALIZED AT THE REPOSITORY BOUNDARY. Hibernate lazy collections have no
- * equivalent in a driver-only stack, so each collection arrives already populated and the fetch
- * shape is an explicit, documented decision at the repository method that produced it. For this
- * entity that decision matters more than usual: the promotion engine reads several of the thirteen
- * collections for EVERY order item on EVERY qualifier, so a lazy-shaped port would have produced a
- * textbook N+1 inside the pricing hot path.
+ * ASSOCIATIONS ARE MATERIALIZED AT THE REPOSITORY BOUNDARY, AND LAZINESS IS NOT SIMULATED.
+ * Hibernate lazy collections have no equivalent in a driver-only stack, so each collection
+ * arrives already populated and the fetch shape is an explicit, documented decision at the
+ * repository method that produced it. For this entity that matters more than usual: the
+ * promotion engine reads several of the thirteen collections for EVERY order item on EVERY
+ * qualifier, so a lazy-shaped port would have produced a textbook N+1 inside the pricing
+ * path.
  *
- * EVERY MEMBER IS SYNCHRONOUS. The async boundary rule is that a method becomes `async` if and only
- * if its legacy body reaches the DAO or ORM, and no body in this component does.
+ * ALL MONEY PASSES THROUGH `Money`. The four `hb_formatType="currency"` gates are `Money`;
+ * no raw floating-point operation on any of them exists anywhere in the target. The two
+ * `hb_formatType="weight"` gates are deliberately NOT `Money` - see the gate group below.
  *
- * ALL MONEY PASSES THROUGH `Money`. The four `hb_formatType="currency"` gates are `Money`; no raw
- * floating-point operation on any of them exists anywhere in the target, and persistence uses
- * `Money.toDecimalString()` - never `toFixed2()`, which is presentation-only and would silently
- * truncate scale on the way to a `big_decimal` column.
- *
- * TWO MEMBERS OF THIS CLASS CAN THROW, and each says so on itself: `getSimpleRepresentation()` (no
- * injected label provider) and `isDeletable()` (the two-level unguarded climb). `removePromotionPeriod()`
- * can also throw, via the framework-wide unguarded-null idiom. Every other member is total.
+ * THREE MEMBERS OF THIS CLASS CAN THROW, and each says so on itself: `isDeletable()` (the
+ * two-level unguarded climb, two distinct raises) and `removePromotionPeriod()` (the
+ * framework-wide unguarded-null idiom when neither an argument nor a stored period is
+ * available). Every other member is total - in particular `getSimpleRepresentation()`,
+ * which resolves nothing and therefore cannot fail.
  */
 export class PromotionQualifier {
+  // ============ START: Persistent Properties ===========================
+  // [model/entity/PromotionQualifier.cfc:L51-L96]
+
   /**
    * [model/entity/PromotionQualifier.cfc:L52]
    * `ormtype="string" length="32" fieldtype="id" generator="uuid" unsavedvalue="" default=""`
    *
-   * `unsavedvalue=""` with `default=""` is what makes an unsaved row's key the empty string, which
-   * is in turn what makes `isNew()` a simple emptiness test. Read across the module boundary by
-   * `ProductType.hasPromotionQualifier` and its siblings on brand, option, product and sku.
+   * A 32-character UUID. `unsavedvalue=""` together with `default=""` is what makes an
+   * unsaved row's key the empty string, which is in turn what makes `isNew()` a simple
+   * emptiness test - see the LEGACY-NOTE on that member.
+   *
+   * This is the primary key every containment predicate in this class compares on, and it
+   * is read across the module boundary by `PromotionPeriod.hasPromotionQualifier` and by
+   * the `hasPromotionQualifier` / `hasPromotionQualifierExclusion` pairs on brand, option,
+   * sku, product and productType.
    */
   private readonly promotionQualifierID: string;
 
   /**
    * [model/entity/PromotionQualifier.cfc:L53] `ormtype="string" hb_formatType="rbKey"`.
+   * No `length`, no `notnull`, no `default`.
    *
-   * THE DISCRIMINATOR THE ENGINE BRANCHES ON. `getQualifierQualificationDetails()` switches on it
-   * at [model/service/PromotionService.cfc:L678] for the fulfillment branch and at
+   * THE DISCRIMINATOR THE ENGINE BRANCHES ON, and also the property that
+   * `getSimpleRepresentationPropertyName()` names.
+   * `getQualifierQualificationDetails()` switches on it at
+   * [model/service/PromotionService.cfc:L678] for the fulfillment branch and at
    * [model/service/PromotionService.cfc:L714] via
-   * `listFindNoCase("contentAccess,merchandise,subscription", getQualifierType())` for the item
-   * branch - note that the second test is CASE-INSENSITIVE and comma-list based, which is why this
-   * value must not be narrowed to a union: the column carries no check constraint, no validation
-   * file exists for this entity at all, and narrowing would reject data the legacy schema accepts.
+   * `listFindNoCase("contentAccess,merchandise,subscription", getQualifierType())` for the
+   * item branch.
    *
-   * `hb_formatType="rbKey"` is what makes `getFormattedValue('qualifierType')` resolve this value
-   * as part of a resource-bundle key rather than display it raw - see
-   * `PromotionQualifierLabelProvider`.
+   * LEGACY-NOTE [model/entity/PromotionQualifier.cfc:L53]: DELIBERATELY NOT NARROWED TO A
+   * UNION. The second test above is CASE-INSENSITIVE and comma-list based, the column
+   * carries no check constraint, there is no `getQualifierTypeOptions()` method anywhere in
+   * the component, and no validation file exists for this entity at all. A union would
+   * fabricate a constraint the source does not impose and would reject data the legacy
+   * schema accepts. Contrast `rewardMatchingType` below, which DOES have a self-declared
+   * vocabulary and IS narrowed.
    */
   private readonly qualifierType: string | undefined;
 
+  // --- THE TEN NUMERIC GATES [model/entity/PromotionQualifier.cfc:L55-L64] -------------
+  //
+  //   | locator | property                 | ormtype     | hb_formatType | hb_nullRBKey     | TS type |
+  //   |---------|--------------------------|-------------|---------------|------------------|---------|
+  //   | L55     | minimumOrderQuantity     | integer     | -             | define.0         | number  |
+  //   | L56     | maximumOrderQuantity     | integer     | -             | define.unlimited | number  |
+  //   | L57     | minimumOrderSubtotal     | big_decimal | currency      | define.0         | Money   |
+  //   | L58     | maximumOrderSubtotal     | big_decimal | currency      | define.unlimited | Money   |
+  //   | L59     | minimumItemQuantity      | integer     | -             | define.0         | number  |
+  //   | L60     | maximumItemQuantity      | integer     | -             | define.unlimited | number  |
+  //   | L61     | minimumItemPrice         | big_decimal | currency      | define.0         | Money   |
+  //   | L62     | maximumItemPrice         | big_decimal | currency      | define.unlimited | Money   |
+  //   | L63     | minimumFulfillmentWeight | big_decimal | weight        | define.0         | number  |
+  //   | L64     | maximumFulfillmentWeight | big_decimal | weight        | define.unlimited | number  |
+  //
+  // EXACTLY TEN, verified by reading L55-L64 individually. L54 is a blank line, so nothing
+  // is hiding above L55.
+  //
+  // * THE THREE ABSENCE CONVENTIONS OF THIS FOLDER, STATED SIDE BY SIDE AND NEVER
+  // COLLAPSED. They point in opposite directions, and each collapse is a money bug:
+  //
+  //   1. `Sku.getPriceByCurrencyCode()` must return `Money | undefined`, NEVER `0`
+  //      [model/entity/Sku.cfc:L269-L273] - that accessor has no `else` and no fallback, so
+  //      substituting `0` would silently sell products for free. Owned by sku.ts; it is the
+  //      single highest-consequence parity check in the plan.
+  //   2. `Product.getSalePrice()` must return `0`, NEVER `undefined` -
+  //      [model/entity/Product.cfc:L598] omits a `return` and falls through to `return 0`.
+  //      Owned by product.ts.
+  //   3. PROMOTION USE-LIMITS AND GATE BOUNDS MUST STAY `undefined`, NEVER `0`, because
+  //      `undefined` means UNLIMITED / NO BOUND - the PERMISSIVE extreme. THIS ENTITY IS
+  //      CONVENTION #3'S CANONICAL HOME.
+  //
+  // * CONVENTION #3 IS MADE LITERAL IN THIS ENTITY'S METADATA, and the pairing is
+  // systematic: EVERY `minimum*` carries `hb_nullRBKey="define.0"` and EVERY `maximum*`
+  // carries `hb_nullRBKey="define.unlimited"`. There is NO `default=` attribute on any of
+  // the ten, so the database stores NULL and the entity must surface `undefined`.
+  //
+  // THE CONSEQUENCE, SPELLED OUT: coalescing any `maximum*` gate to `0` would turn
+  // "unlimited" into "nothing qualifies" and silently suppress every discount that gate
+  // governs. Coalescing any `minimum*` gate to `0` is ALSO wrong - `hb_nullRBKey` is a
+  // DISPLAY directive for the admin UI, not a storage default, and the promotion engine's
+  // own `isNull()` tests are what decide whether a gate applies at all: every comparison at
+  // [model/service/PromotionService.cfc:L769, L771] is guarded by `!isNull(...)` first, so
+  // an absent gate imposes no constraint. Presence tests therefore use `isNullish`, and the
+  // `??` operator is NEVER used to inject a numeric default for any of the ten.
+  //
+  // * AND NOTE: THIS ENTITY HAS NO `currencyCode` COLUMN. The four `Money` gates therefore
+  // carry no currency of their own - they are compared against order and item amounts whose
+  // currency is resolved elsewhere (Sku's four-step cascade, and the read-only order view).
+  // Recorded so no one later "fixes" it by adding a currency column, which schema
+  // continuity forbids.
+
   /**
    * [model/entity/PromotionQualifier.cfc:L55] `ormtype="integer" hb_nullRBKey="define.0"`.
-   *
-   * `undefined` means NO GATE, displayed as `define.0`. Never defaulted - see the header.
+   * `undefined` means NO MINIMUM.
    */
   private readonly minimumOrderQuantity: number | undefined;
 
-  /** [model/entity/PromotionQualifier.cfc:L56] `ormtype="integer" hb_nullRBKey="define.unlimited"`. `undefined` means unlimited. */
+  /**
+   * [model/entity/PromotionQualifier.cfc:L56]
+   * `ormtype="integer" hb_nullRBKey="define.unlimited"`.
+   * `undefined` means UNLIMITED - never `0`.
+   */
   private readonly maximumOrderQuantity: number | undefined;
 
   /**
-   * [model/entity/PromotionQualifier.cfc:L57]
-   * `ormtype="big_decimal" hb_formatType="currency" hb_nullRBKey="define.0"`.
+   * LEGACY-NOTE [model/entity/PromotionQualifier.cfc:L57]: `ormtype="big_decimal"` with
+   * `hb_formatType="currency"` and `hb_nullRBKey="define.0"`, so this gate is `Money` and
+   * never a `number`. A `big_decimal` column compared against an order subtotal is currency
+   * by both metadata and use, and all currency in the target flows through the single
+   * arithmetic surface.
    */
   private readonly minimumOrderSubtotal: Money | undefined;
 
   /**
-   * [model/entity/PromotionQualifier.cfc:L58]
-   * `ormtype="big_decimal" hb_formatType="currency" hb_nullRBKey="define.unlimited"`.
-   *
-   * ★ A SUBSTITUTED `0` HERE WOULD DISQUALIFY EVERY ORDER, which is why `undefined` is preserved
-   * rather than defaulted. The engine guards with `!isNull(...)` first.
+   * LEGACY-NOTE [model/entity/PromotionQualifier.cfc:L58]: `ormtype="big_decimal"` with
+   * `hb_formatType="currency"` and `hb_nullRBKey="define.unlimited"`. `Money`, and
+   * `undefined` means UNLIMITED - coalescing this one to zero would disqualify every order.
    */
   private readonly maximumOrderSubtotal: Money | undefined;
 
   /**
    * [model/entity/PromotionQualifier.cfc:L59] `ormtype="integer" hb_nullRBKey="define.0"`.
-   *
-   * ★ ALSO A DIVISOR, NOT ONLY A GATE. [model/service/PromotionService.cfc:L744] computes
-   * `int(qualifiedItemsQuantity / qualifier.getMinimumItemQuantity())` to derive the qualification
-   * COUNT, guarded only by `!isNull(...)` - so a stored ZERO is a division by zero in the legacy
-   * too, and nothing validates against it because this entity has no validation file. Preserved:
-   * the port does not add a zero check the source lacks.
    */
   private readonly minimumItemQuantity: number | undefined;
 
-  /** [model/entity/PromotionQualifier.cfc:L60] `ormtype="integer" hb_nullRBKey="define.unlimited"`. */
+  /**
+   * [model/entity/PromotionQualifier.cfc:L60]
+   * `ormtype="integer" hb_nullRBKey="define.unlimited"`.
+   */
   private readonly maximumItemQuantity: number | undefined;
 
   /**
-   * [model/entity/PromotionQualifier.cfc:L61]
-   * `ormtype="big_decimal" hb_formatType="currency" hb_nullRBKey="define.0"`.
+   * LEGACY-NOTE [model/entity/PromotionQualifier.cfc:L61]: `ormtype="big_decimal"` with
+   * `hb_formatType="currency"` and `hb_nullRBKey="define.0"`. `Money`, compared against an
+   * order item's price.
    */
   private readonly minimumItemPrice: Money | undefined;
 
   /**
-   * [model/entity/PromotionQualifier.cfc:L62]
-   * `ormtype="big_decimal" hb_formatType="currency" hb_nullRBKey="define.unlimited"`.
+   * LEGACY-NOTE [model/entity/PromotionQualifier.cfc:L62]: `ormtype="big_decimal"` with
+   * `hb_formatType="currency"` and `hb_nullRBKey="define.unlimited"`. `Money`, and
+   * `undefined` means UNLIMITED.
    */
   private readonly maximumItemPrice: Money | undefined;
 
   /**
-   * [model/entity/PromotionQualifier.cfc:L63]
-   * `ormtype="big_decimal" hb_formatType="weight" hb_nullRBKey="define.0"`.
+   * LEGACY-NOTE [model/entity/PromotionQualifier.cfc:L63]: `ormtype="big_decimal"` with
+   * `hb_formatType="weight"` and `hb_nullRBKey="define.0"` - MODELLED AS `number`, NOT AS
+   * `Money`, AND THAT IS DELIBERATE.
    *
-   * ★ A WEIGHT, NOT MONEY - hence `DecimalString` rather than `Money`. Compared against
-   * `orderFulfillment.getTotalShippingWeight()` at [model/service/PromotionService.cfc:L695]. Typing
-   * it as `Money` would assert a currency it does not have and would hand it currency formatting it
-   * must never receive; `DecimalString` preserves the `big_decimal` column's arbitrary precision
-   * with no currency semantics attached.
+   * WEIGHT IS NOT CURRENCY. `Money` carries currency semantics and currency formatting, so
+   * typing a shipping weight as `Money` would be a category error: it would assert a
+   * currency this column does not have and would hand the value formatting it must never
+   * receive. This is NOT a breach of the single-arithmetic-surface rule, which governs
+   * MONEY - and weight is not money.
+   *
+   * There is no `Weight` value object in ../valueObjects/ (that folder holds exactly
+   * money.ts, currencyCode.ts and materializedIdPath.ts) and none is created here.
+   *
+   * THIS ENTITY PERFORMS ZERO ARITHMETIC ON EITHER WEIGHT GATE. They are inert threshold
+   * columns, read and compared by src/services/promotion/qualifierQualification.ts
+   * (planned) against `orderFulfillment.getTotalShippingWeight()` at
+   * [model/service/PromotionService.cfc:L769, L771], each behind a `!isNull(...)` guard. If
+   * the service tier ever requires exact decimal comparison at that boundary it must
+   * implement it there, at the point of comparison - not by re-typing an inert column here.
    */
-  private readonly minimumFulfillmentWeight: DecimalString | undefined;
+  private readonly minimumFulfillmentWeight: number | undefined;
 
   /**
-   * [model/entity/PromotionQualifier.cfc:L64]
-   * `ormtype="big_decimal" hb_formatType="weight" hb_nullRBKey="define.unlimited"`.
-   * Compared at [model/service/PromotionService.cfc:L697]. A weight, not money.
+   * LEGACY-NOTE [model/entity/PromotionQualifier.cfc:L64]: `ormtype="big_decimal"` with
+   * `hb_formatType="weight"` and `hb_nullRBKey="define.unlimited"`. `number`, for the
+   * reasons given on `minimumFulfillmentWeight`, and `undefined` means UNLIMITED.
    */
-  private readonly maximumFulfillmentWeight: DecimalString | undefined;
+  private readonly maximumFulfillmentWeight: number | undefined;
 
   /**
    * [model/entity/PromotionQualifier.cfc:L65]
    * `ormtype="string" hb_formatType="rbKey" hb_formFieldType="select"`.
    *
-   * The five values `getRewardMatchingTypeOptions()` offers are `any`, `sku`, `product`,
-   * `productType` and `brand`. NOT narrowed to that union, for the same reason as `qualifierType`:
-   * the column has no check constraint and this entity has no validation file, so narrowing would
-   * reject data the legacy schema accepts. The union lives on `RewardMatchingTypeOption.value`,
-   * where it describes the OPTIONS the admin offers rather than the COLUMN's domain.
+   * Narrowed to {@link RewardMatchingType} because L107-L115 declares the vocabulary on the
+   * entity itself and `hb_formFieldType="select"` makes that option list the admin form's
+   * domain. Nullable, because the column has no `notnull` and no `default`.
    */
-  private readonly rewardMatchingType: string | undefined;
+  private readonly rewardMatchingType: RewardMatchingType | undefined;
 
   /**
-   * [model/entity/PromotionQualifier.cfc:L68] many-to-one, `fkcolumn="promotionPeriodID"`.
+   * [model/entity/PromotionQualifier.cfc:L68]
+   * `cfc="PromotionPeriod" fieldtype="many-to-one" fkcolumn="promotionPeriodID"`
    *
-   * MUTABLE: `setPromotionPeriod` assigns it [L123] and `removePromotionPeriod` clears it [L136].
-   * `undefined` both for an unattached qualifier and for one the repository hydrated without its
-   * parent - two states the port cannot distinguish, exactly as CFML cannot.
+   * The ONE many-to-one on this entity, and `PromotionPeriod` is one of the eighteen
+   * in-scope entities, so this is a real materialized association rather than an opaque
+   * identifier.
+   *
+   * NOT `readonly`: `setPromotionPeriod()` [L122] assigns it and
+   * `removePromotionPeriod()` [L128] clears it.
+   *
+   * LEGACY-NOTE [model/entity/PromotionQualifier.cfc:L68]: THE DECLARATION CARRIES NO
+   * `fetch="join"`, NO `lazy=` AND NO `hb_cascadeCalculate`. Recorded because it confirms
+   * the project-wide eager-fetch census stays at exactly four sites - `Product.brand`
+   * [model/entity/Product.cfc:L68], `Product.productType` [L69], `Product.defaultSku` [L70]
+   * and `PromotionPeriod.promotion` [model/entity/PromotionPeriod.cfc:L59] - and THIS FILE
+   * ADDS NO FIFTH.
+   *
+   * It is also NULLABLE, because L68 declares no `notnull`. That nullability is
+   * load-bearing rather than incidental: it is what makes `isDeletable()` [L359-L361] a
+   * preserved runtime failure rather than a total function.
    */
   private promotionPeriod: PromotionPeriod | undefined;
 
-  /** [model/entity/PromotionQualifier.cfc:L73] OWNER via `SwPromoQualFulfillmentMethod`. NO helper exists. */
-  private readonly fulfillmentMethods: QualifierFulfillmentMethodLink[];
+  // LEGACY-NOTE [model/entity/PromotionQualifier.cfc:L70-L71]: THE
+  // `// Related Entities (one-to-many)` BANNER IS PRESENT WITH NOTHING UNDER IT. Recorded as
+  // a cosmetic structural fact with a real consequence: THIS ENTITY OWNS NO ONE-TO-MANY
+  // COLLECTIONS AT ALL. Every collection below is many-to-many.
 
-  /** [model/entity/PromotionQualifier.cfc:L74] OWNER via `SwPromoQualShippingMethod`. NO helper exists. */
-  private readonly shippingMethods: QualifierShippingMethodLink[];
+  // --- THE THIRTEEN MANY-TO-MANY COLLECTIONS [L73-L87] --------------------------------
+  //
+  // EXACTLY THIRTEEN, in the source's own three groups, which are separated by blank lines
+  // at L76 and L82 and are semantically meaningful. Every one declares
+  // `fkcolumn="promotionQualifierID"`, and every `linktable` and `inversejoincolumn` name is
+  // reproduced verbatim because those names ARE the schema contract.
+  //
+  //   GROUP A - fulfillment/shipping (3). ALL THREE FAR SIDES ARE OUT OF SCOPE.
+  //   | locator | property             | singularname        | cfc               | linktable                    | inversejoincolumn   |
+  //   |---------|----------------------|---------------------|-------------------|------------------------------|---------------------|
+  //   | L73     | fulfillmentMethods   | fulfillmentMethod   | FulfillmentMethod | SwPromoQualFulfillmentMethod | fulfillmentMethodID |
+  //   | L74     | shippingMethods      | shippingMethod      | ShippingMethod    | SwPromoQualShippingMethod    | shippingMethodID    |
+  //   | L75     | shippingAddressZones | shippingAddressZone | AddressZone       | SwPromoQualShipAddressZone   | addressZoneID       |
+  //
+  //   GROUP B - INCLUDE lists (5). ALL FIVE FAR SIDES ARE IN SCOPE.
+  //   | locator | property     | singularname | cfc         | linktable              | inversejoincolumn |
+  //   |---------|--------------|--------------|-------------|------------------------|-------------------|
+  //   | L77     | brands       | brand        | Brand       | SwPromoQualBrand       | brandID           |
+  //   | L78     | options      | option       | Option      | SwPromoQualOption      | optionID          |
+  //   | L79     | skus         | sku          | Sku         | SwPromoQualSku         | skuID             |
+  //   | L80     | products     | product      | Product     | SwPromoQualProduct     | productID         |
+  //   | L81     | productTypes | productType  | ProductType | SwPromoQualProductType | productTypeID     |
+  //
+  //   GROUP C - EXCLUDE lists (5). ALL FIVE FAR SIDES ARE IN SCOPE.
+  //   | locator | property             | singularname        | cfc         | type=   | linktable                  | inversejoincolumn |
+  //   |---------|----------------------|---------------------|-------------|---------|----------------------------|-------------------|
+  //   | L83     | excludedBrands       | excludedBrand       | Brand       | array   | SwPromoQualExclBrand       | brandID           |
+  //   | L84     | excludedOptions      | excludedOption      | Option      | array   | SwPromoQualExclOption      | optionID          |
+  //   | L85     | excludedSkus         | excludedSku         | Sku         | -       | SwPromoQualExclSku         | skuID             |
+  //   | L86     | excludedProducts     | excludedProduct     | Product     | -       | SwPromoQualExclProduct     | productID         |
+  //   | L87     | excludedProductTypes | excludedProductType | ProductType | -       | SwPromoQualExclProductType | productTypeID     |
+  //
+  // 3 + 5 + 5 = 13.
+  //
+  // LEGACY-NOTE [model/entity/PromotionQualifier.cfc:L83-L84]: A METADATA INCONSISTENCY,
+  // ANNOTATED RATHER THAN NORMALISED. `type="array"` appears on ONLY 2 OF THE 13 -
+  // `excludedBrands` [L83] and `excludedOptions` [L84] - and is omitted on the other eleven.
+  // This is cosmetically identical to the `attributeValues` inconsistency (declared on Sku
+  // and Brand, omitted on Product and ProductType) and is harmless in CFML: all thirteen
+  // behave identically as arrays. The attribute is NOT added to the other eleven and the two
+  // are NOT stripped - the target simply types all thirteen as arrays, which is what the
+  // legacy runtime does.
+  //
+  // * FIVE DISTINCT EMPTY-COLLECTION SEMANTICS EXIST IN THIS SLICE. COLLAPSING ANY OF THEM
+  // IS A MONEY BUG, so all five are recorded here and the polarity flip is the crux:
+  //
+  //   1. PERMISSIVE IN THE CALLER'S LOOP - an empty `addressZones` collection on a REWARD
+  //      means NO RESTRICTION.
+  //   2. RESTRICTIVE IN THE EVALUATOR - an empty `locations` collection on an ADDRESS ZONE
+  //      means NOT IN ZONE.
+  //   3. `hasAnyInProperty` [org/Hibachi/HibachiEntity.cfc:L340-L350] returns `false` for an
+  //      empty `entityArray`, AND THAT SAME `false` MEANS OPPOSITE THINGS DEPENDING ON
+  //      POLARITY: PERMISSIVE on an EXCLUDE list (nothing is excluded, so the item still
+  //      qualifies) and RESTRICTIVE on an INCLUDE list (nothing is included, so the item
+  //      does not qualify). THIS IS THE CONVENTION THAT GOVERNS GROUPS B AND C DIRECTLY, and
+  //      the two must NEVER be normalised into one another.
+  //   4. THE FULFILLMENT THREE-WAY GATE [model/service/PromotionService.cfc:L333-L420] - an
+  //      empty collection means NO RESTRICTION, with a single-promotion-per-fulfillment `[1]`
+  //      assumption.
+  //   5. `Brand.getProducts()` must default to `[]` - asserted by the one legacy entity test
+  //      that touches this slice.
+  //
+  // * THE TEN IN-SCOPE COLLECTION ACCESSORS RETURN THE LIVE ARRAY REFERENCE, NEVER A
+  // DEFENSIVE COPY. Every one of the ten `add*` methods mutates its own collection AND the
+  // far side's via `arrayAppend(arguments.X.getPromotionQualifiers(), this)`, and every one
+  // of the ten `remove*` methods mutates both sides via `arrayDeleteAt`. A defensive copy on
+  // either side would make the far-side half of all twenty helpers a silent no-op and break
+  // bidirectional synchronisation across the aggregate. The same structural ruling already
+  // ships in src/domain/entities/promotion.ts and in
+  // src/domain/entities/promotionPeriod.ts - whose `getPromotionQualifiers()` this class
+  // pushes into, and which is therefore mutable by necessity. Note the contrast with
+  // src/domain/entities/promotionReward.ts, which types its owner-side accessors `readonly`;
+  // the mutable form is used here because the repository layer populates these arrays in
+  // place and because the aggregate's symmetry is what the eleven helper pairs rely on.
 
-  /** [model/entity/PromotionQualifier.cfc:L75] OWNER via `SwPromoQualShipAddressZone`. NO helper exists. */
-  private readonly shippingAddressZones: QualifierAddressZoneLink[];
+  /**
+   * LEGACY-NOTE [model/entity/PromotionQualifier.cfc:L73]: THE OUT-OF-SCOPE FAR SIDE IS
+   * COLLAPSED TO OPAQUE IDENTIFIERS. The legacy `fulfillmentMethods` collection targets
+   * `cfc="FulfillmentMethod"` through link table `SwPromoQualFulfillmentMethod`
+   * (`inversejoincolumn="fulfillmentMethodID"`), and the entire checkout / cart / payment /
+   * shipping / fulfillment pipeline is out of scope. Neither a `FulfillmentMethod` module
+   * nor a `getFulfillmentMethods()` entity-array accessor is authored: the ASSOCIATION is
+   * part of `SwPromoQual`'s persisted contract, so it survives as a list of opaque string
+   * identifiers, while the far-side ENTITY does not enter the domain. This is the same
+   * anti-corruption treatment src/domain/entities/promotionApplied.ts applies to its order,
+   * orderItem and orderFulfillment foreign keys.
+   */
+  private readonly fulfillmentMethodIDs: readonly string[];
 
-  /** [model/entity/PromotionQualifier.cfc:L77] OWNER via `SwPromoQualBrand`. */
+  /**
+   * LEGACY-NOTE [model/entity/PromotionQualifier.cfc:L74]: as above. Legacy member
+   * `shippingMethods`, `cfc="ShippingMethod"`, link table `SwPromoQualShippingMethod`,
+   * `inversejoincolumn="shippingMethodID"`. Out-of-scope subsystem; the schema contract is
+   * preserved as opaque identifiers and no `getShippingMethods()` entity-array accessor is
+   * authored.
+   */
+  private readonly shippingMethodIDs: readonly string[];
+
+  /**
+   * LEGACY-NOTE [model/entity/PromotionQualifier.cfc:L75]: as above. Legacy member
+   * `shippingAddressZones`, `cfc="AddressZone"`, link table `SwPromoQualShipAddressZone`,
+   * `inversejoincolumn="addressZoneID"`. `AddressZone` is reachable in this slice ONLY
+   * through the narrow `addressZoneEvaluator` port (`isAddressInZone` alone, from
+   * [model/service/AddressService.cfc:L57]), so it is emphatically not an entity of this
+   * domain; the schema contract is preserved as opaque identifiers.
+   */
+  private readonly shippingAddressZoneIDs: readonly string[];
+
+  // * A STRUCTURAL FINDING THAT INDEPENDENTLY JUSTIFIES THE GROUP A COLLAPSE, AND IT IS THE
+  // STRONGEST ARGUMENT FOR IT: THE SOURCE DECLARES ELEVEN `remove*` HELPERS FOR FOURTEEN
+  // RELATIONSHIPS, and the three without any helper at all are EXACTLY Group A.
+  // `fulfillmentMethods` [L73], `shippingMethods` [L74] and `shippingAddressZones` [L75]
+  // have NO `add*` and NO `remove*` member anywhere in the component - verified by reading
+  // all of L119-L339, which contains the eleven pairs and nothing else. They rely entirely
+  // on the framework's generated accessors, SO THERE IS NO HAND-WRITTEN BEHAVIOUR TO
+  // PRESERVE FOR THEM, which makes the identifier collapse lossless with respect to authored
+  // logic.
+  //
+  // THE FAR-SIDE CONTRACT, PUBLISHED HERE FOR THE UNWRITTEN CONSUMER:
+  // src/services/promotion/qualifierQualification.ts (planned) evaluates the
+  // fulfillment-method, shipping-method and shipping-address-zone gates
+  // [model/service/PromotionService.cfc:L699, L701, L703] and MUST do so against these
+  // opaque identifier lists, resolving zone semantics only through the `addressZoneEvaluator`
+  // port.
+  //
+  // LEGACY-DEFECT [model/service/PromotionService.cfc:L703]: the shipping-address-zones
+  // clause re-tests `hasShippingMethod` instead of testing the zone condition, so
+  // `shippingAddressZones` is effectively never evaluated as a zone gate.
+  // Preserved deliberately; do not fix without a product decision. It is owned by
+  // src/services, NOT by this file, and no compensation for it is attempted here - it is
+  // named only so a reader of this file is not misled into thinking the collection is
+  // consulted as intended.
+
+  /**
+   * [model/entity/PromotionQualifier.cfc:L77] INCLUDE list. `singularname="brand"`,
+   * link table `SwPromoQualBrand`, `inversejoincolumn="brandID"`.
+   */
   private readonly brands: Brand[];
 
-  /** [model/entity/PromotionQualifier.cfc:L78] OWNER via `SwPromoQualOption`. */
+  /**
+   * [model/entity/PromotionQualifier.cfc:L78] INCLUDE list. `singularname="option"`,
+   * link table `SwPromoQualOption`, `inversejoincolumn="optionID"`. Read by
+   * `hasAnyOption()` at [model/service/PromotionService.cfc:L885].
+   */
   private readonly options: Option[];
 
-  /** [model/entity/PromotionQualifier.cfc:L79] OWNER via `SwPromoQualSku`. */
+  /**
+   * [model/entity/PromotionQualifier.cfc:L79] INCLUDE list. `singularname="sku"`,
+   * link table `SwPromoQualSku`, `inversejoincolumn="skuID"`.
+   */
   private readonly skus: Sku[];
 
-  /** [model/entity/PromotionQualifier.cfc:L80] OWNER via `SwPromoQualProduct`. */
+  /**
+   * [model/entity/PromotionQualifier.cfc:L80] INCLUDE list. `singularname="product"`,
+   * link table `SwPromoQualProduct`, `inversejoincolumn="productID"`.
+   */
   private readonly products: Product[];
 
-  /** [model/entity/PromotionQualifier.cfc:L81] OWNER via `SwPromoQualProductType`. */
+  /**
+   * [model/entity/PromotionQualifier.cfc:L81] INCLUDE list. `singularname="productType"`,
+   * link table `SwPromoQualProductType`, `inversejoincolumn="productTypeID"`. The membership
+   * test for this collection walks `productTypeIDPath`
+   * [model/service/PromotionService.cfc:L858-L870], and that walk lives in
+   * src/services/promotion/orderItemMembership.ts (planned) rather than here.
+   */
   private readonly productTypes: ProductType[];
 
   /**
-   * [model/entity/PromotionQualifier.cfc:L83] OWNER via `SwPromoQualExclBrand`.
-   *
-   * The declaration carries a redundant `type="array"` that its four exclusion siblings on L85-L87
-   * do not - preserved as a metadata observation; `fieldtype="many-to-many"` already implies array.
+   * [model/entity/PromotionQualifier.cfc:L83] EXCLUDE list. `singularname="excludedBrand"`,
+   * `type="array"`, link table `SwPromoQualExclBrand`, `inversejoincolumn="brandID"`.
    */
   private readonly excludedBrands: Brand[];
 
-  /** [model/entity/PromotionQualifier.cfc:L84] OWNER via `SwPromoQualExclOption`. Also carries the redundant `type="array"`. */
+  /**
+   * [model/entity/PromotionQualifier.cfc:L84] EXCLUDE list. `singularname="excludedOption"`,
+   * `type="array"`, link table `SwPromoQualExclOption`, `inversejoincolumn="optionID"`. Read
+   * by `hasAnyExcludedOption()` at [model/service/PromotionService.cfc:L914].
+   */
   private readonly excludedOptions: Option[];
 
-  /** [model/entity/PromotionQualifier.cfc:L85] OWNER via `SwPromoQualExclSku`. */
+  /**
+   * [model/entity/PromotionQualifier.cfc:L85] EXCLUDE list. `singularname="excludedSku"`,
+   * link table `SwPromoQualExclSku`, `inversejoincolumn="skuID"`.
+   */
   private readonly excludedSkus: Sku[];
 
-  /** [model/entity/PromotionQualifier.cfc:L86] OWNER via `SwPromoQualExclProduct`. */
+  /**
+   * [model/entity/PromotionQualifier.cfc:L86] EXCLUDE list.
+   * `singularname="excludedProduct"`, link table `SwPromoQualExclProduct`,
+   * `inversejoincolumn="productID"`.
+   */
   private readonly excludedProducts: Product[];
 
-  /** [model/entity/PromotionQualifier.cfc:L87] OWNER via `SwPromoQualExclProductType`. */
+  /**
+   * [model/entity/PromotionQualifier.cfc:L87] EXCLUDE list.
+   * `singularname="excludedProductType"`, link table `SwPromoQualExclProductType`,
+   * `inversejoincolumn="productTypeID"`.
+   */
   private readonly excludedProductTypes: ProductType[];
 
-  /** [model/entity/PromotionQualifier.cfc:L90] the integration correlation column. */
+  /**
+   * [model/entity/PromotionQualifier.cfc:L90] `ormtype="string"`, under the
+   * `// Remote Properties` banner at L89. An inert integration identifier; nothing in the
+   * in-scope slice reads it, and it is carried because the column exists.
+   */
   private readonly remoteID: string | undefined;
 
-  /** [model/entity/PromotionQualifier.cfc:L93] `hb_populateEnabled="false" ormtype="timestamp"`. */
+  /**
+   * [model/entity/PromotionQualifier.cfc:L93]
+   * `hb_populateEnabled="false" ormtype="timestamp"`.
+   *
+   * `hb_populateEnabled="false"` is an inert fact here: it tells the legacy framework not to
+   * populate the column from request data. Audit-column MAINTENANCE belongs to
+   * src/repositories/mysql/** and is not performed by this entity.
+   */
   private readonly createdDateTime: Date | undefined;
 
   /**
-   * [model/entity/PromotionQualifier.cfc:L94] many-to-one onto the out-of-scope `Account`,
-   * `fkcolumn="createdByAccountID"`. Reduced to the opaque identifier, as every in-scope entity does.
+   * LEGACY-NOTE [model/entity/PromotionQualifier.cfc:L94]: the declaration is
+   * `hb_populateEnabled="false" cfc="Account" fieldtype="many-to-one"
+   * fkcolumn="createdByAccountID"`, and `Account` IS OUT OF SCOPE, so the association
+   * COLLAPSES to the inert foreign-key column itself. No `Account` type is imported and no
+   * `getCreatedByAccount()` entity accessor is authored - the identical treatment applied in
+   * all the already-shipped entity files, where Account, Order, OrderItem,
+   * OrderFulfillment, Image and Site all collapse the same way.
    */
   private readonly createdByAccountID: string | undefined;
 
-  /** [model/entity/PromotionQualifier.cfc:L95] `hb_populateEnabled="false" ormtype="timestamp"`. */
+  /**
+   * [model/entity/PromotionQualifier.cfc:L95]
+   * `hb_populateEnabled="false" ormtype="timestamp"`.
+   */
   private readonly modifiedDateTime: Date | undefined;
 
-  /** [model/entity/PromotionQualifier.cfc:L96] many-to-one onto `Account`, `fkcolumn="modifiedByAccountID"`. */
+  /**
+   * LEGACY-NOTE [model/entity/PromotionQualifier.cfc:L96]: `hb_populateEnabled="false"
+   * cfc="Account" fieldtype="many-to-one" fkcolumn="modifiedByAccountID"`. Collapsed to the
+   * inert foreign-key column for the same reason as `createdByAccountID`.
+   */
   private readonly modifiedByAccountID: string | undefined;
 
-  /** The injected label provider. `undefined` on every path that never builds a simple representation. */
-  private readonly labelProvider: PromotionQualifierLabelProvider | undefined;
+  // LEGACY-DEFECT [model/entity/PromotionQualifier.cfc:L99,L107]: A DOUBLE ORPHAN, and both
+  // halves are reproduced exactly as the source has them.
+  //   * L99 declares `property name="qualifierApplicationTypeOptions" type="array"
+  //     persistent="false"` - the ONLY non-persistent property in the whole component - and
+  //     there is NO `getQualifierApplicationTypeOptions()` method anywhere in the file and no
+  //     reference to the property at all. It is a DEAD DECLARED PROPERTY, structurally
+  //     identical to the never-read `qualifiedFulfillments` key at
+  //     [model/service/PromotionService.cfc:L621-L623] and to
+  //     model/validation/PriceGroupRate.json's declared-but-never-referenced `isNotGlobal`
+  //     condition.
+  //   * L107 is the mirror image: `getRewardMatchingTypeOptions()` exists as a METHOD with
+  //     NO matching declared non-persistent property. The explicit method shadows the
+  //     framework's `get*Options` dispatch branch, so it works, but the property metadata is
+  //     missing.
+  // Preserved deliberately; do not fix without a product decision. Neither
+  // `getQualifierApplicationTypeOptions()` nor a `rewardMatchingTypeOptions` property is
+  // authored: reproducing the source's exact member set is faithful reproduction, not
+  // repair, and it costs no divergence.
+
+  // ============  END:  Persistent Properties ===========================
 
   /**
-   * Constructed from a repository row plus its materialized associations. Never constructed from a
-   * sibling entity module: row-to-entity hydration belongs entirely to `src/repositories/mysql/**`.
+   * Constructs a qualifier from a repository row plus its materialized associations.
    *
-   * Every collection parameter is OPTIONAL and defaults to `[]`, because a Hibernate-managed
-   * collection never handed back null - an entity hydrated without a join must present an empty
-   * array rather than `undefined`. meta/tests/unit/entity/BrandTest.cfc asserts exactly that
-   * convention for `Brand.getProducts()` and it is applied uniformly across the folder.
+   * A SINGLE PARAMETER OBJECT, matching the convention of the already-shipped sibling
+   * entities: every column is a named member, every optional column is `?: T | undefined`
+   * so that `exactOptionalPropertyTypes` keeps "key absent" and "key present and undefined"
+   * both expressible, and every collection defaults to `[]` rather than to `undefined`.
    *
-   * NONE OF THE TEN NUMERIC GATES HAS A DEFAULT, deliberately. `undefined` is the "no gate" signal
-   * the engine relies on, and supplying `0` for a maximum would disqualify every order.
+   * NO PORT IS INJECTED, and the constructor takes DATA ONLY. A full read of all 373 source
+   * lines finds zero `getService(` sites on this component, so there is no collaborator to
+   * inject and nothing here can reach outward.
+   *
+   * WHAT THE REPOSITORY LAYER OWNS, stated so it is not re-implemented here:
+   * src/repositories/mysql/mysqlPromotionRepository.ts owns row-to-entity hydration from
+   * `SwPromoQual`, materializing the ten in-scope collections from their link tables,
+   * populating the three opaque identifier lists from `SwPromoQualFulfillmentMethod`,
+   * `SwPromoQualShippingMethod` and `SwPromoQualShipAddressZone`, audit-column maintenance,
+   * and documenting the fetch shape at the producing method. As context only, and owned by
+   * src/services rather than by this file: `getActivePromotionRewards`
+   * [model/dao/PromotionDAO.cfc:L51] has NO `ORDER BY`, which is what makes reward iteration
+   * order non-deterministic. None of that is implemented here.
    */
   constructor(init: {
     readonly promotionQualifierID: string;
@@ -483,13 +777,13 @@ export class PromotionQualifier {
     readonly maximumItemQuantity?: number | undefined;
     readonly minimumItemPrice?: Money | undefined;
     readonly maximumItemPrice?: Money | undefined;
-    readonly minimumFulfillmentWeight?: DecimalString | undefined;
-    readonly maximumFulfillmentWeight?: DecimalString | undefined;
-    readonly rewardMatchingType?: string | undefined;
+    readonly minimumFulfillmentWeight?: number | undefined;
+    readonly maximumFulfillmentWeight?: number | undefined;
+    readonly rewardMatchingType?: RewardMatchingType | undefined;
     readonly promotionPeriod?: PromotionPeriod | undefined;
-    readonly fulfillmentMethods?: QualifierFulfillmentMethodLink[] | undefined;
-    readonly shippingMethods?: QualifierShippingMethodLink[] | undefined;
-    readonly shippingAddressZones?: QualifierAddressZoneLink[] | undefined;
+    readonly fulfillmentMethodIDs?: readonly string[] | undefined;
+    readonly shippingMethodIDs?: readonly string[] | undefined;
+    readonly shippingAddressZoneIDs?: readonly string[] | undefined;
     readonly brands?: Brand[] | undefined;
     readonly options?: Option[] | undefined;
     readonly skus?: Sku[] | undefined;
@@ -505,10 +799,13 @@ export class PromotionQualifier {
     readonly createdByAccountID?: string | undefined;
     readonly modifiedDateTime?: Date | undefined;
     readonly modifiedByAccountID?: string | undefined;
-    readonly labelProvider?: PromotionQualifierLabelProvider | undefined;
   }) {
     this.promotionQualifierID = init.promotionQualifierID;
     this.qualifierType = init.qualifierType;
+
+    // THE TEN GATES ARE ASSIGNED THROUGH, NEVER DEFAULTED. No `??` appears on any of the ten
+    // lines below, deliberately: `undefined` IS the value that means "no bound", and
+    // injecting `0` for a maximum would turn "unlimited" into "nothing qualifies".
     this.minimumOrderQuantity = init.minimumOrderQuantity;
     this.maximumOrderQuantity = init.maximumOrderQuantity;
     this.minimumOrderSubtotal = init.minimumOrderSubtotal;
@@ -519,11 +816,16 @@ export class PromotionQualifier {
     this.maximumItemPrice = init.maximumItemPrice;
     this.minimumFulfillmentWeight = init.minimumFulfillmentWeight;
     this.maximumFulfillmentWeight = init.maximumFulfillmentWeight;
+
     this.rewardMatchingType = init.rewardMatchingType;
     this.promotionPeriod = init.promotionPeriod;
-    this.fulfillmentMethods = init.fulfillmentMethods ?? [];
-    this.shippingMethods = init.shippingMethods ?? [];
-    this.shippingAddressZones = init.shippingAddressZones ?? [];
+
+    this.fulfillmentMethodIDs = init.fulfillmentMethodIDs ?? [];
+    this.shippingMethodIDs = init.shippingMethodIDs ?? [];
+    this.shippingAddressZoneIDs = init.shippingAddressZoneIDs ?? [];
+
+    // The ten in-scope collections are ADOPTED BY REFERENCE rather than copied, which is
+    // what keeps the accessors below live for the bidirectional helpers.
     this.brands = init.brands ?? [];
     this.options = init.options ?? [];
     this.skus = init.skus ?? [];
@@ -534,90 +836,97 @@ export class PromotionQualifier {
     this.excludedSkus = init.excludedSkus ?? [];
     this.excludedProducts = init.excludedProducts ?? [];
     this.excludedProductTypes = init.excludedProductTypes ?? [];
+
     this.remoteID = init.remoteID;
     this.createdDateTime = init.createdDateTime;
     this.createdByAccountID = init.createdByAccountID;
     this.modifiedDateTime = init.modifiedDateTime;
     this.modifiedByAccountID = init.modifiedByAccountID;
-    this.labelProvider = init.labelProvider;
   }
 
-  // ============ START: Persistent Property Accessors ===================
-  // Legacy names carried over verbatim in CFML camelCase; interface parity is the acceptance
-  // contract for this port. All ten numeric gates return `undefined` for a NULL column and NEVER a
-  // substituted zero - see the header.
+  // ============ START: Column Accessors ================================
+  // The ORM-generated `get<Property>()` surface, authored explicitly. TypeScript does not
+  // emulate dynamic dispatch: there is no `Proxy`, no index signature and no string-keyed
+  // method lookup anywhere in this file.
 
   /** [model/entity/PromotionQualifier.cfc:L52] */
   getPromotionQualifierID(): string {
     return this.promotionQualifierID;
   }
 
-  /** [model/entity/PromotionQualifier.cfc:L53] The discriminator the engine branches on. */
+  /** [model/entity/PromotionQualifier.cfc:L53] `undefined` when the column is NULL. */
   getQualifierType(): string | undefined {
     return this.qualifierType;
   }
 
-  /** [model/entity/PromotionQualifier.cfc:L55] `undefined` means no gate. */
+  /** [model/entity/PromotionQualifier.cfc:L55] `undefined` means NO MINIMUM, never `0`. */
   getMinimumOrderQuantity(): number | undefined {
     return this.minimumOrderQuantity;
   }
 
-  /** [model/entity/PromotionQualifier.cfc:L56] `undefined` means unlimited. */
+  /** [model/entity/PromotionQualifier.cfc:L56] `undefined` means UNLIMITED, never `0`. */
   getMaximumOrderQuantity(): number | undefined {
     return this.maximumOrderQuantity;
   }
 
-  /** [model/entity/PromotionQualifier.cfc:L57] `undefined` means no gate. */
+  /** [model/entity/PromotionQualifier.cfc:L57] `undefined` means NO MINIMUM. */
   getMinimumOrderSubtotal(): Money | undefined {
     return this.minimumOrderSubtotal;
   }
 
-  /** [model/entity/PromotionQualifier.cfc:L58] `undefined` means unlimited - a `0` here would disqualify every order. */
+  /** [model/entity/PromotionQualifier.cfc:L58] `undefined` means UNLIMITED. */
   getMaximumOrderSubtotal(): Money | undefined {
     return this.maximumOrderSubtotal;
   }
 
-  /**
-   * [model/entity/PromotionQualifier.cfc:L59] `undefined` means no gate.
-   *
-   * Also the divisor at [model/service/PromotionService.cfc:L744]; a stored zero divides by zero
-   * there, and nothing validates against it. See the field doc.
-   */
+  /** [model/entity/PromotionQualifier.cfc:L59] `undefined` means NO MINIMUM. */
   getMinimumItemQuantity(): number | undefined {
     return this.minimumItemQuantity;
   }
 
-  /** [model/entity/PromotionQualifier.cfc:L60] `undefined` means unlimited. */
+  /** [model/entity/PromotionQualifier.cfc:L60] `undefined` means UNLIMITED. */
   getMaximumItemQuantity(): number | undefined {
     return this.maximumItemQuantity;
   }
 
-  /** [model/entity/PromotionQualifier.cfc:L61] `undefined` means no gate. */
+  /** [model/entity/PromotionQualifier.cfc:L61] `undefined` means NO MINIMUM. */
   getMinimumItemPrice(): Money | undefined {
     return this.minimumItemPrice;
   }
 
-  /** [model/entity/PromotionQualifier.cfc:L62] `undefined` means unlimited. */
+  /** [model/entity/PromotionQualifier.cfc:L62] `undefined` means UNLIMITED. */
   getMaximumItemPrice(): Money | undefined {
     return this.maximumItemPrice;
   }
 
-  /** [model/entity/PromotionQualifier.cfc:L63] A WEIGHT, not money. `undefined` means no gate. */
-  getMinimumFulfillmentWeight(): DecimalString | undefined {
+  /**
+   * [model/entity/PromotionQualifier.cfc:L63] `hb_formatType="weight"`, so a `number` and
+   * not `Money`. `undefined` means NO MINIMUM.
+   */
+  getMinimumFulfillmentWeight(): number | undefined {
     return this.minimumFulfillmentWeight;
   }
 
-  /** [model/entity/PromotionQualifier.cfc:L64] A WEIGHT, not money. `undefined` means unlimited. */
-  getMaximumFulfillmentWeight(): DecimalString | undefined {
+  /**
+   * [model/entity/PromotionQualifier.cfc:L64] `hb_formatType="weight"`, so a `number` and
+   * not `Money`. `undefined` means UNLIMITED.
+   */
+  getMaximumFulfillmentWeight(): number | undefined {
     return this.maximumFulfillmentWeight;
   }
 
-  /** [model/entity/PromotionQualifier.cfc:L65] */
-  getRewardMatchingType(): string | undefined {
+  /** [model/entity/PromotionQualifier.cfc:L65] one of the five {@link RewardMatchingType}. */
+  getRewardMatchingType(): RewardMatchingType | undefined {
     return this.rewardMatchingType;
   }
 
-  /** [model/entity/PromotionQualifier.cfc:L68] `undefined` for an unattached or unjoined qualifier. */
+  /**
+   * [model/entity/PromotionQualifier.cfc:L68] the one many-to-one.
+   *
+   * `undefined` when the nullable `promotionPeriodID` foreign key is unset or when
+   * `removePromotionPeriod()` has cleared it. Callers must handle that: `isDeletable()`
+   * below dereferences it WITHOUT a guard, exactly as the source does.
+   */
   getPromotionPeriod(): PromotionPeriod | undefined {
     return this.promotionPeriod;
   }
@@ -627,517 +936,574 @@ export class PromotionQualifier {
     return this.remoteID;
   }
 
-  /** [model/entity/PromotionQualifier.cfc:L93] */
+  /** [model/entity/PromotionQualifier.cfc:L93] `hb_populateEnabled="false"`. */
   getCreatedDateTime(): Date | undefined {
     return this.createdDateTime;
   }
 
-  /** [model/entity/PromotionQualifier.cfc:L94] */
+  /**
+   * [model/entity/PromotionQualifier.cfc:L94] the inert `createdByAccountID` column;
+   * `Account` is out of scope, so no entity is returned.
+   */
   getCreatedByAccountID(): string | undefined {
     return this.createdByAccountID;
   }
 
-  /** [model/entity/PromotionQualifier.cfc:L95] */
+  /** [model/entity/PromotionQualifier.cfc:L95] `hb_populateEnabled="false"`. */
   getModifiedDateTime(): Date | undefined {
     return this.modifiedDateTime;
   }
 
-  /** [model/entity/PromotionQualifier.cfc:L96] */
+  /**
+   * [model/entity/PromotionQualifier.cfc:L96] the inert `modifiedByAccountID` column;
+   * `Account` is out of scope, so no entity is returned.
+   */
   getModifiedByAccountID(): string | undefined {
     return this.modifiedByAccountID;
   }
 
-  // ============  END: Persistent Property Accessors ====================
+  // ============  END:  Column Accessors ================================
 
-  // ============ START: Collection Accessors ============================
-  // ALL THIRTEEN ARE `readonly`, because this entity OWNS all thirteen link tables and nothing
-  // reaches into any of them from outside - zero census sites across model/entity/*.cfc. The owner
-  // writes its own `variables.<x>` directly; see the header for why that inverts the liveness of
-  // the seven `inverse="true"` collections on brand, option, product, productType and sku.
-  //
-  // THE FIELDS THEMSELVES ARE MUTABLE ARRAYS while the ACCESSORS hand out `readonly` views. Those
-  // are two different guarantees and both are wanted: the ten helper pairs below must be able to
-  // splice the backing array, and no caller may.
-  //
-  // THE FIRST THREE HAVE NO BIDIRECTIONAL HELPER AT ALL. See the header - three out-of-scope
-  // entities call helpers this component never declares, and all six of those calls reach the
-  // `onMissingMethod` throw at org/Hibachi/HibachiEntity.cfc:L565. Authoring the missing pairs here
-  // would silently repair those defects and change which orders qualify.
+  // ============ START: Association Accessors ===========================
 
   /**
-   * [model/entity/PromotionQualifier.cfc:L73] READONLY - owner side, zero census sites.
-   *
-   * Read by the engine at [model/service/PromotionService.cfc:L699] as an `arrayLen(...)` gate
-   * before `hasFulfillmentMethod(...)`. NO `addFulfillmentMethod` EXISTS - and
-   * model/entity/FulfillmentMethod.cfc:L107 calls the PLURAL `addFulfillmentMethods(...)`, which
-   * does not exist either.
+   * [model/entity/PromotionQualifier.cfc:L73] the opaque identifiers behind
+   * `SwPromoQualFulfillmentMethod`. `readonly string[]` because the far-side entity is out of
+   * scope and nothing in the domain may reconstruct it; empty by default.
    */
-  getFulfillmentMethods(): readonly QualifierFulfillmentMethodLink[] {
-    return this.fulfillmentMethods;
+  getFulfillmentMethodIDs(): readonly string[] {
+    return this.fulfillmentMethodIDs;
   }
 
   /**
-   * [model/entity/PromotionQualifier.cfc:L74] READONLY - owner side, zero census sites.
-   *
-   * Read by the engine at [model/service/PromotionService.cfc:L701]. NO `addShippingMethod` EXISTS,
-   * and model/entity/ShippingMethod.cfc:L97 calls it anyway.
+   * [model/entity/PromotionQualifier.cfc:L74] the opaque identifiers behind
+   * `SwPromoQualShippingMethod`; empty by default.
    */
-  getShippingMethods(): readonly QualifierShippingMethodLink[] {
-    return this.shippingMethods;
+  getShippingMethodIDs(): readonly string[] {
+    return this.shippingMethodIDs;
   }
 
   /**
-   * [model/entity/PromotionQualifier.cfc:L75] READONLY - owner side, zero census sites.
-   *
-   * ★ EFFECTIVELY NEVER EVALUATED AS A ZONE GATE. The engine's clause at
-   * [model/service/PromotionService.cfc:L703] tests `arrayLen(getShippingAddressZones())` and then
-   * re-tests `hasShippingMethod(...)` instead of testing the zone condition - the defect registered
-   * against the service. So populating this collection changes qualification only by way of the
-   * shipping-method test. Noted here so a reader is not misled.
-   *
-   * NO `addShippingAddressZone` EXISTS, and model/entity/AddressZone.cfc:L102 calls
-   * `addAddressZone(...)` - a name that would not match this property even if a helper existed.
+   * [model/entity/PromotionQualifier.cfc:L75] the opaque identifiers behind
+   * `SwPromoQualShipAddressZone`; empty by default. Zone semantics are resolved only through
+   * the `addressZoneEvaluator` port, at the service tier.
    */
-  getShippingAddressZones(): readonly QualifierAddressZoneLink[] {
-    return this.shippingAddressZones;
+  getShippingAddressZoneIDs(): readonly string[] {
+    return this.shippingAddressZoneIDs;
   }
 
-  /** [model/entity/PromotionQualifier.cfc:L77] READONLY - owner side, zero census sites. */
-  getBrands(): readonly Brand[] {
+  /**
+   * [model/entity/PromotionQualifier.cfc:L77] the LIVE include list. Mutating the returned
+   * array is observable on this entity, and that is required rather than tolerated - see the
+   * live-reference ruling above the collection group.
+   */
+  getBrands(): Brand[] {
     return this.brands;
   }
 
-  /** [model/entity/PromotionQualifier.cfc:L78] READONLY - owner side, zero census sites. */
-  getOptions(): readonly Option[] {
+  /** [model/entity/PromotionQualifier.cfc:L78] the LIVE include list. */
+  getOptions(): Option[] {
     return this.options;
   }
 
-  /** [model/entity/PromotionQualifier.cfc:L79] READONLY - owner side, zero census sites. */
-  getSkus(): readonly Sku[] {
+  /** [model/entity/PromotionQualifier.cfc:L79] the LIVE include list. */
+  getSkus(): Sku[] {
     return this.skus;
   }
 
-  /** [model/entity/PromotionQualifier.cfc:L80] READONLY - owner side, zero census sites. */
-  getProducts(): readonly Product[] {
+  /** [model/entity/PromotionQualifier.cfc:L80] the LIVE include list. */
+  getProducts(): Product[] {
     return this.products;
   }
 
-  /** [model/entity/PromotionQualifier.cfc:L81] READONLY - owner side, zero census sites. */
-  getProductTypes(): readonly ProductType[] {
+  /** [model/entity/PromotionQualifier.cfc:L81] the LIVE include list. */
+  getProductTypes(): ProductType[] {
     return this.productTypes;
   }
 
-  /** [model/entity/PromotionQualifier.cfc:L83] READONLY - owner side, zero census sites. */
-  getExcludedBrands(): readonly Brand[] {
+  /** [model/entity/PromotionQualifier.cfc:L83] the LIVE exclude list. */
+  getExcludedBrands(): Brand[] {
     return this.excludedBrands;
   }
 
-  /** [model/entity/PromotionQualifier.cfc:L84] READONLY - owner side, zero census sites. */
-  getExcludedOptions(): readonly Option[] {
+  /** [model/entity/PromotionQualifier.cfc:L84] the LIVE exclude list. */
+  getExcludedOptions(): Option[] {
     return this.excludedOptions;
   }
 
-  /** [model/entity/PromotionQualifier.cfc:L85] READONLY - owner side, zero census sites. */
-  getExcludedSkus(): readonly Sku[] {
+  /** [model/entity/PromotionQualifier.cfc:L85] the LIVE exclude list. */
+  getExcludedSkus(): Sku[] {
     return this.excludedSkus;
   }
 
-  /** [model/entity/PromotionQualifier.cfc:L86] READONLY - owner side, zero census sites. */
-  getExcludedProducts(): readonly Product[] {
+  /** [model/entity/PromotionQualifier.cfc:L86] the LIVE exclude list. */
+  getExcludedProducts(): Product[] {
     return this.excludedProducts;
   }
 
-  /** [model/entity/PromotionQualifier.cfc:L87] READONLY - owner side, zero census sites. */
-  getExcludedProductTypes(): readonly ProductType[] {
+  /** [model/entity/PromotionQualifier.cfc:L87] the LIVE exclude list. */
+  getExcludedProductTypes(): ProductType[] {
     return this.excludedProductTypes;
   }
 
-  // ============  END: Collection Accessors =============================
+  // ============  END:  Association Accessors ===========================
 
-  // ============ START: Containment Probes ==============================
-  // None has a hand-written legacy body: all are synthesised by the dispatcher at
-  // org/Hibachi/HibachiEntity.cfc:L507-L565, whose CFML semantics are Hibernate's
-  // collection-contains - session identity, i.e. primary key for a persistent row.
+  // ============ START: Framework-Implicit Members =======================
   //
-  // THIRTEEN PLAIN PROBES ARE AUTHORED HERE, AND EACH HAS A REAL CALLER. Two further AGGREGATE
-  // probes - `hasAnyOption` and `hasAnyExcludedOption` - sit in their own section immediately below,
-  // because they arrive by a DIFFERENT dispatcher branch and delegate into these thirteen rather
-  // than matching independently. Fifteen probes in total.
+  // `org/Hibachi/HibachiEntity.cfc:L507-L565` dynamically dispatches eleven method-name
+  // patterns - `hasUniqueOrNull*`, `hasUnique*`, `hasAny*`, `get*AssignedIDList`, `get*ID`,
+  // `get*Options`, `get*OptionsSmartList`, `get*SmartList`, `get*Struct`, `get*Count`, plus a
+  // `getAttributeValue` fallback - and terminates in a THROW at L565 when nothing matches.
   //
-  // Of the thirteen: ten are called by this class's own helpers -
-  // `hasBrand` at [L141], `hasOption` at [L161], `hasSku` at [L181], `hasProduct` at [L201],
-  // `hasProductType` at [L221], and the five `hasExcluded*` at [L241], [L261], [L281], [L301],
-  // [L321]. Two more are called by the ENGINE: `hasFulfillmentMethod` at
-  // [model/service/PromotionService.cfc:L699] and `hasShippingMethod` at
-  // [model/service/PromotionService.cfc:L701] and again at [L703]. `hasShippingAddressZone` has NO
-  // caller anywhere - because of the L703 defect that re-tests the shipping method instead - and it
-  // is authored regardless, for surface completeness with its two siblings.
+  // TYPESCRIPT DOES NOT EMULATE DYNAMIC DISPATCH. Only the CONCRETELY-CALLED patterns are
+  // generated below, each as an explicitly-typed method annotated with the branch it
+  // replaces. No `Proxy`, no index signature, no string-keyed lookup, and no smart-list
+  // member - `get*SmartList` is a Hibachi artifact replaced project-wide by typed repository
+  // queries. There is likewise no `attributeValues` member and no EAV accessor: this entity
+  // declares zero `attributeValues` (the census finds exactly four declarations project-wide,
+  // on Sku, Product, ProductType and Brand) and the EAV path is not ported.
   //
-  // THE PROJECT-WIDE CONTAINMENT RULE: compare by PRIMARY KEY, with a REFERENCE fallback when the
-  // candidate is unsaved. The fallback is not optional - every unsaved row's key is `''`
-  // (`unsavedvalue=""`), so a pure key comparison would report two DIFFERENT unsaved rows as the
-  // same one and the guard would skip a legitimate append.
-  //
-  // THE THREE OUT-OF-SCOPE PROBES CANNOT USE A REFERENCE FALLBACK, and that is a real difference
-  // rather than an inconsistency: their far sides are structural `*Link` projections carrying only
-  // a primary key, so there is no `isNew()` to consult. An unsaved fulfillment method is not
-  // something this class can recognise, exactly as the projection admits.
+  // * THE ENTITY-COMPARISON RULE FOR EVERY PREDICATE BELOW. Hibernate's implicit
+  // collection-contains resolves through SESSION IDENTITY, which for a persisted row is its
+  // PRIMARY KEY - so these compare BY PRIMARY KEY, never by deep equality. The one nuance is
+  // an UNSAVED candidate: `unsavedvalue=""` [L52 here, and the equivalent on every far side]
+  // means every transient instance shares the empty-string key, so a key comparison would
+  // report any transient as present as soon as one transient were held. For that case alone
+  // the comparison falls back to REFERENCE identity, which is what the Hibernate session does
+  // for a transient instance. This is the project-wide rule honoured by the already-shipped
+  // entity files.
 
-  /** Called by this class's own `addBrand` [model/entity/PromotionQualifier.cfc:L141]. */
+  /**
+   * `isNew` - whether this qualifier has never been persisted.
+   *
+   * LEGACY-NOTE [model/entity/PromotionQualifier.cfc:L52]: `isNew()` IS NOT DECLARED IN THIS
+   * COMPONENT - it is inherited from the Hibachi base and is called in every `add*` guard
+   * [L141, L161, L181, L201, L221, L241, L261, L281, L301, L321] and in
+   * `setPromotionPeriod()` [L124]. It is authored explicitly here from the unsaved-value
+   * contract on L52: `unsavedvalue=""` together with `default=""` makes an unsaved row's key
+   * the empty string. The shape below - a bare comparison against `''` - is the convention
+   * already shipped verbatim by promotionPeriod.ts, promotionCode.ts, priceGroupRate.ts,
+   * promotionReward.ts, promotionApplied.ts and brand.ts; consistency across the eighteen
+   * outranks any local preference, so no divergent convention is invented here.
+   */
+  isNew(): boolean {
+    return this.promotionQualifierID === '';
+  }
+
+  /**
+   * `hasBrand` - is this brand already in the INCLUDE list?
+   *
+   * Framework-generated by [org/Hibachi/HibachiEntity.cfc:L507-L565]; not declared in the
+   * source. Guards the near-side append of `addBrand()`
+   * [model/entity/PromotionQualifier.cfc:L141]. Tests `brands` [L77] on `brandID`, and
+   * answers `false` for an empty collection.
+   */
   hasBrand(brand: Brand): boolean {
-    const candidateID: string = brand.getBrandID();
-    if (candidateID === '') {
-      return this.brands.includes(brand);
-    }
-    return this.brands.some((held: Brand) => held.getBrandID() === candidateID);
+    return (
+      PromotionQualifier.indexOfEntity(this.brands, brand, (held: Brand) => held.getBrandID()) !==
+      -1
+    );
   }
 
-  /** Called by this class's own `addExcludedBrand` [model/entity/PromotionQualifier.cfc:L241]. */
+  /**
+   * `hasExcludedBrand` - is this brand already in the EXCLUDE list?
+   *
+   * Framework-generated by [org/Hibachi/HibachiEntity.cfc:L507-L565]. Guards
+   * `addExcludedBrand()` [model/entity/PromotionQualifier.cfc:L241]. Tests `excludedBrands`
+   * [L83] on `brandID`, and answers `false` for an empty collection.
+   */
   hasExcludedBrand(brand: Brand): boolean {
-    const candidateID: string = brand.getBrandID();
-    if (candidateID === '') {
-      return this.excludedBrands.includes(brand);
-    }
-    return this.excludedBrands.some((held: Brand) => held.getBrandID() === candidateID);
+    return (
+      PromotionQualifier.indexOfEntity(this.excludedBrands, brand, (held: Brand) =>
+        held.getBrandID(),
+      ) !== -1
+    );
   }
 
-  /** Called by this class's own `addOption` [model/entity/PromotionQualifier.cfc:L161]. */
+  /**
+   * `hasOption` - is this option already in the INCLUDE list?
+   *
+   * Framework-generated by [org/Hibachi/HibachiEntity.cfc:L507-L565]. Guards `addOption()`
+   * [model/entity/PromotionQualifier.cfc:L161]. Tests `options` [L78] on `optionID`, and
+   * answers `false` for an empty collection.
+   */
   hasOption(option: Option): boolean {
-    const candidateID: string = option.getOptionID();
-    if (candidateID === '') {
-      return this.options.includes(option);
-    }
-    return this.options.some((held: Option) => held.getOptionID() === candidateID);
+    return (
+      PromotionQualifier.indexOfEntity(this.options, option, (held: Option) =>
+        held.getOptionID(),
+      ) !== -1
+    );
   }
 
-  /** Called by this class's own `addExcludedOption` [model/entity/PromotionQualifier.cfc:L261]. */
+  /**
+   * `hasExcludedOption` - is this option already in the EXCLUDE list?
+   *
+   * Framework-generated by [org/Hibachi/HibachiEntity.cfc:L507-L565]. Guards
+   * `addExcludedOption()` [model/entity/PromotionQualifier.cfc:L261]. Tests `excludedOptions`
+   * [L84] on `optionID`, and answers `false` for an empty collection.
+   */
   hasExcludedOption(option: Option): boolean {
-    const candidateID: string = option.getOptionID();
-    if (candidateID === '') {
-      return this.excludedOptions.includes(option);
-    }
-    return this.excludedOptions.some((held: Option) => held.getOptionID() === candidateID);
+    return (
+      PromotionQualifier.indexOfEntity(this.excludedOptions, option, (held: Option) =>
+        held.getOptionID(),
+      ) !== -1
+    );
   }
 
-  /** Called by this class's own `addSku` [model/entity/PromotionQualifier.cfc:L181]. */
+  /**
+   * `hasSku` - is this SKU already in the INCLUDE list?
+   *
+   * Framework-generated by [org/Hibachi/HibachiEntity.cfc:L507-L565]. Guards `addSku()`
+   * [model/entity/PromotionQualifier.cfc:L181]. Tests `skus` [L79] on `skuID`, and answers
+   * `false` for an empty collection.
+   */
   hasSku(sku: Sku): boolean {
-    const candidateID: string = sku.getSkuID();
-    if (candidateID === '') {
-      return this.skus.includes(sku);
-    }
-    return this.skus.some((held: Sku) => held.getSkuID() === candidateID);
+    return PromotionQualifier.indexOfEntity(this.skus, sku, (held: Sku) => held.getSkuID()) !== -1;
   }
 
-  /** Called by this class's own `addExcludedSku` [model/entity/PromotionQualifier.cfc:L281]. */
+  /**
+   * `hasExcludedSku` - is this SKU already in the EXCLUDE list?
+   *
+   * Framework-generated by [org/Hibachi/HibachiEntity.cfc:L507-L565]. Guards
+   * `addExcludedSku()` [model/entity/PromotionQualifier.cfc:L281]. Tests `excludedSkus` [L85]
+   * on `skuID`, and answers `false` for an empty collection.
+   */
   hasExcludedSku(sku: Sku): boolean {
-    const candidateID: string = sku.getSkuID();
-    if (candidateID === '') {
-      return this.excludedSkus.includes(sku);
-    }
-    return this.excludedSkus.some((held: Sku) => held.getSkuID() === candidateID);
+    return (
+      PromotionQualifier.indexOfEntity(this.excludedSkus, sku, (held: Sku) => held.getSkuID()) !==
+      -1
+    );
   }
 
-  /** Called by this class's own `addProduct` [model/entity/PromotionQualifier.cfc:L201]. */
+  /**
+   * `hasProduct` - is this product already in the INCLUDE list?
+   *
+   * Framework-generated by [org/Hibachi/HibachiEntity.cfc:L507-L565]. Guards `addProduct()`
+   * [model/entity/PromotionQualifier.cfc:L201]. Tests `products` [L80] on `productID`, and
+   * answers `false` for an empty collection.
+   */
   hasProduct(product: Product): boolean {
-    const candidateID: string = product.getProductID();
-    if (candidateID === '') {
-      return this.products.includes(product);
-    }
-    return this.products.some((held: Product) => held.getProductID() === candidateID);
+    return (
+      PromotionQualifier.indexOfEntity(this.products, product, (held: Product) =>
+        held.getProductID(),
+      ) !== -1
+    );
   }
 
-  /** Called by this class's own `addExcludedProduct` [model/entity/PromotionQualifier.cfc:L301]. */
+  /**
+   * `hasExcludedProduct` - is this product already in the EXCLUDE list?
+   *
+   * Framework-generated by [org/Hibachi/HibachiEntity.cfc:L507-L565]. Guards
+   * `addExcludedProduct()` [model/entity/PromotionQualifier.cfc:L301]. Tests
+   * `excludedProducts` [L86] on `productID`, and answers `false` for an empty collection.
+   */
   hasExcludedProduct(product: Product): boolean {
-    const candidateID: string = product.getProductID();
-    if (candidateID === '') {
-      return this.excludedProducts.includes(product);
-    }
-    return this.excludedProducts.some((held: Product) => held.getProductID() === candidateID);
+    return (
+      PromotionQualifier.indexOfEntity(this.excludedProducts, product, (held: Product) =>
+        held.getProductID(),
+      ) !== -1
+    );
   }
 
-  /** Called by this class's own `addProductType` [model/entity/PromotionQualifier.cfc:L221]. */
+  /**
+   * `hasProductType` - is this product type already in the INCLUDE list?
+   *
+   * Framework-generated by [org/Hibachi/HibachiEntity.cfc:L507-L565]. Guards
+   * `addProductType()` [model/entity/PromotionQualifier.cfc:L221]. Tests `productTypes` [L81]
+   * on `productTypeID`, and answers `false` for an empty collection.
+   *
+   * NOTE the boundary this method does NOT cross: membership of an ORDER ITEM in this
+   * collection is decided by walking `productTypeIDPath`
+   * [model/service/PromotionService.cfc:L858-L870], and that walk belongs to
+   * src/services/promotion/orderItemMembership.ts (planned). This method answers only the
+   * direct-containment question the `add*` guard asks.
+   */
   hasProductType(productType: ProductType): boolean {
-    const candidateID: string = productType.getProductTypeID();
-    if (candidateID === '') {
-      return this.productTypes.includes(productType);
-    }
-    return this.productTypes.some((held: ProductType) => held.getProductTypeID() === candidateID);
+    return (
+      PromotionQualifier.indexOfEntity(this.productTypes, productType, (held: ProductType) =>
+        held.getProductTypeID(),
+      ) !== -1
+    );
   }
 
-  /** Called by this class's own `addExcludedProductType` [model/entity/PromotionQualifier.cfc:L321]. */
+  /**
+   * `hasExcludedProductType` - is this product type already in the EXCLUDE list?
+   *
+   * Framework-generated by [org/Hibachi/HibachiEntity.cfc:L507-L565]. Guards
+   * `addExcludedProductType()` [model/entity/PromotionQualifier.cfc:L321]. Tests
+   * `excludedProductTypes` [L87] on `productTypeID`, and answers `false` for an empty
+   * collection.
+   */
   hasExcludedProductType(productType: ProductType): boolean {
-    const candidateID: string = productType.getProductTypeID();
-    if (candidateID === '') {
-      return this.excludedProductTypes.includes(productType);
-    }
-    return this.excludedProductTypes.some(
-      (held: ProductType) => held.getProductTypeID() === candidateID,
+    return (
+      PromotionQualifier.indexOfEntity(
+        this.excludedProductTypes,
+        productType,
+        (held: ProductType) => held.getProductTypeID(),
+      ) !== -1
     );
   }
 
   /**
-   * Called by the ENGINE at [model/service/PromotionService.cfc:L699].
+   * `hasAnyOption` - does ANY option in the supplied array appear in the INCLUDE list?
    *
-   * PRIMARY KEY ONLY - no reference fallback, because the far side is a structural projection with
-   * no `isNew()` to consult. See the section note.
-   */
-  hasFulfillmentMethod(fulfillmentMethod: QualifierFulfillmentMethodLink): boolean {
-    const candidateID: string = fulfillmentMethod.getFulfillmentMethodID();
-    return this.fulfillmentMethods.some(
-      (held: QualifierFulfillmentMethodLink) => held.getFulfillmentMethodID() === candidateID,
-    );
-  }
-
-  /**
-   * Called by the ENGINE at [model/service/PromotionService.cfc:L701], and AGAIN at
-   * [model/service/PromotionService.cfc:L703] where the zone condition was intended - the defect
-   * registered against the service.
+   * Dispatched by [org/Hibachi/HibachiEntity.cfc:L517-L519], implemented by
+   * `hasAnyInProperty` at [org/Hibachi/HibachiEntity.cfc:L340-L350].
    *
-   * PRIMARY KEY ONLY - see the section note.
-   */
-  hasShippingMethod(shippingMethod: QualifierShippingMethodLink): boolean {
-    const candidateID: string = shippingMethod.getShippingMethodID();
-    return this.shippingMethods.some(
-      (held: QualifierShippingMethodLink) => held.getShippingMethodID() === candidateID,
-    );
-  }
-
-  /**
-   * NO CALLER EXISTS ANYWHERE, and that is a consequence of the L703 defect rather than of this
-   * method. Authored for surface completeness with its two siblings, and recorded as unexercised so
-   * the absence of a caller is not mistaken for an omission here.
+   * CALL SITE: [model/service/PromotionService.cfc:L885], inside `getOrderItemInQualifier()`,
+   * passing the order item's SKU options - `Sku.options`
+   * [model/entity/Sku.cfc:L76, many-to-many owner, link table `SwSkuOption`,
+   * `fkcolumn="skuID"`, `inversejoincolumn="optionID"`]. The reward-side equivalents at
+   * [model/service/PromotionService.cfc:L951, L980] are promotionReward.ts's obligation, not
+   * this file's.
    *
-   * PRIMARY KEY ONLY - see the section note.
-   */
-  hasShippingAddressZone(addressZone: QualifierAddressZoneLink): boolean {
-    const candidateID: string = addressZone.getAddressZoneID();
-    return this.shippingAddressZones.some(
-      (held: QualifierAddressZoneLink) => held.getAddressZoneID() === candidateID,
-    );
-  }
-
-  // ============ START: Aggregate Containment Probes =====================
-  //
-  // TWO MORE PROBES, ON A DIFFERENT DISPATCHER BRANCH. The thirteen above are the plain
-  // `has<singularname>()` accessors ColdFusion's ORM generates per collection. The two below are
-  // `hasAny<singularname>()`, which the ORM does NOT generate - they fall through to
-  // `onMissingMethod` and are caught by the `hasAny` branch at
-  // [org/Hibachi/HibachiEntity.cfc:L519-L521]:
-  //
-  //   } else if( left(arguments.missingMethodName, 6) == "hasAny") {
-  //     return hasAnyInProperty(propertyName=right(arguments.missingMethodName,
-  //                             len(arguments.missingMethodName) - 6),
-  //                             entityArray=arguments.missingMethodArguments[1]);
-  //
-  // and then implemented at [org/Hibachi/HibachiEntity.cfc:L340-L350]:
-  //
-  //   public boolean function hasAnyInProperty( required string propertyName, array entityArray ) {
-  //     for(var entity in arguments.entityArray) {
-  //       // evaluate is used instead of invokeMethod() because hasXXX() is an implicit orm function
-  //       if( evaluate("has#propertyName#( entity )") ){ return true; }
-  //     }
-  //     return false;
-  //   }
-  //
-  // FOUR POINTS OF FIDELITY, each derived from that body rather than from what "any" ought to mean.
-  //
-  //   (1) THE DERIVED PROPERTY NAME IS SINGULAR, NOT THE COLLECTION NAME. `right(name, len - 6)`
-  //       strips exactly the six characters of `hasAny`, so `hasAnyOption` derives `"Option"` and
-  //       `hasAnyExcludedOption` derives `"ExcludedOption"`. Those then compose to `hasOption` and
-  //       `hasExcludedOption` - the two singular probes already authored above. The delegation is
-  //       therefore exact, and these two members are pure fan-outs with no independent matching
-  //       logic of their own. Reimplementing the comparison here instead of delegating would risk
-  //       the two paths drifting apart, which is precisely the class of divergence this port exists
-  //       to avoid.
-  //
-  //   (2) IT SHORT-CIRCUITS ON THE FIRST HIT. `return true` is inside the loop, so a later element
-  //       is never examined once an earlier one matches. `some()` has identical semantics.
-  //
-  //   (3) AN EMPTY ARRAY ANSWERS FALSE, not true and not a raise. `for(var entity in [])` executes
-  //       zero times and control reaches `return false`. This matters at the exclusion call site:
-  //       a SKU with no options is NOT excluded by an option-based exclusion.
-  //
-  //   (4) `entityArray` IS DECLARED OPTIONAL IN THE FRAMEWORK - `array entityArray`, with no
-  //       `required`. If it were ever omitted, `missingMethodArguments[1]` at L521 would raise
-  //       before `hasAnyInProperty` was even entered. Both legacy call sites pass it, so the
-  //       parameter is `required` here; making it optional would invent a reachable state the
-  //       source does not have.
-  //
-  // BOTH ARE ENGINE-CALLED, and both are on the hot path of the must-preserve reward/qualifier
-  // membership test - which is exactly why the omission of these two from an earlier revision of
-  // this module was a real gap rather than a cosmetic one.
-
-  /**
-   * Does ANY of the given options participate in this qualifier's `options` gate?
+   * SEMANTICS, REPRODUCED EXACTLY:
+   *   * PRIMARY-KEY comparison, delegated to `hasOption()` so the transient-identity nuance is
+   *     decided in exactly one place.
+   *   * `false` FOR AN EMPTY INPUT ARRAY - `hasAnyInProperty` runs its loop zero times and
+   *     falls through to `return false` [org/Hibachi/HibachiEntity.cfc:L348]. That is the
+   *     load-bearing case at L885: a SKU with NO options must not be excluded by an
+   *     option-based gate.
+   *   * SHORT-CIRCUITS on the first match, matching the in-loop `return true` at
+   *     [org/Hibachi/HibachiEntity.cfc:L343-L345], rather than scanning the whole array.
    *
-   * Called by the ENGINE at [model/service/PromotionService.cfc:L914], inside
-   * `getOrderItemInQualifier`, as the LAST inclusion test:
+   * POLARITY DETERMINES WHAT `false` MEANS - see empty-collection convention #3 above. On
+   * this INCLUDE list `false` is RESTRICTIVE (nothing included, so the item does not
+   * qualify); on `hasAnyExcludedOption` the identical `false` is PERMISSIVE (nothing
+   * excluded, so the item still qualifies). The two must never be normalised.
    *
-   *   if(arguments.qualifier.hasAnyOption( arguments.orderItem.getSku().getOptions() )) {
-   *     return true;
-   *   }
-   *
-   * Delegates to `hasOption` per point (1) of the section note, so the primary-key-with-reference
-   * fallback rule is inherited rather than restated.
+   * The parameter is `readonly Option[]` rather than `Option[]`: `Sku.getOptions()` returns
+   * `readonly Option[]`, so the documented call site above could not otherwise be typed
+   * without forcing every caller to copy the array. It accepts a mutable `Option[]` too, so
+   * no caller loses anything, and the arity is unchanged from the legacy.
    */
   hasAnyOption(options: readonly Option[]): boolean {
     return options.some((option: Option) => this.hasOption(option));
   }
 
   /**
-   * Does ANY of the given options participate in this qualifier's `excludedOptions` gate?
+   * `hasAnyExcludedOption` - does ANY option in the supplied array appear in the EXCLUDE list?
    *
-   * Called by the ENGINE at [model/service/PromotionService.cfc:L885], inside
-   * `getOrderItemInQualifier`, as the last clause of the exclusion disjunction - so a `true` here
-   * disqualifies the order item outright:
+   * Dispatched by [org/Hibachi/HibachiEntity.cfc:L517-L519], implemented by
+   * `hasAnyInProperty` at [org/Hibachi/HibachiEntity.cfc:L340-L350].
    *
-   *   ( arguments.qualifier.hasAnyExcludedOption( arguments.orderItem.getSku().getOptions() ) )
+   * CALL SITE: [model/service/PromotionService.cfc:L914], the exclusion half of
+   * `getOrderItemInQualifier()`. Tests `excludedOptions` [L84].
    *
-   * Delegates to `hasExcludedOption` per point (1) of the section note.
+   * Same three semantics as `hasAnyOption` - primary-key comparison, `false` on an empty
+   * input array, and short-circuit on first match - but the OPPOSITE POLARITY: here `false`
+   * is PERMISSIVE, because an item excluded by nothing still qualifies.
    */
   hasAnyExcludedOption(options: readonly Option[]): boolean {
     return options.some((option: Option) => this.hasExcludedOption(option));
   }
 
-  // ============  END: Containment Probes ===============================
-
   /**
-   * [org/Hibachi/HibachiEntity.cfc:L707-L709] `isNew()` returns `getNewFlag()`, and
-   * [org/Hibachi/HibachiEntity.cfc:L571-L576] `getNewFlag()` returns `getPrimaryIDValue() == ""`.
-   * With `unsavedvalue="" default=""` on [model/entity/PromotionQualifier.cfc:L52] that reduces
-   * exactly to the test below.
+   * Locates an entity inside one of this qualifier's collections, or `-1` when it is absent.
    *
-   * Called by all eleven `set`/`add` helpers in this class.
+   * * THE `findIndex` BASE-CHANGE RULE, CENTRALISED HERE BECAUSE IT IS A REAL OFF-BY-ONE
+   * TRAP. All eleven `remove*` bodies in the source use CFML `arrayFind(...)` guarded by
+   * `if(index > 0)` / `if(thisIndex > 0)` / `if(thatIndex > 0)`. CFML `arrayFind` is 1-BASED
+   * and returns 0 for "not found"; `Array.prototype.findIndex` is 0-BASED and returns `-1`.
+   * Every caller of this helper therefore tests `!== -1`. Writing `> 0` against a
+   * `findIndex` result would silently skip a legitimate match at index 0 - the FIRST element
+   * of every collection - and `listFindNoCase`, which likewise returns a 1-based index or 0,
+   * is never used as a boolean anywhere in this file.
+   *
+   * The comparison rule is the one stated at the top of this section: primary key for a
+   * persisted candidate, reference identity for a transient one whose key is still the
+   * `unsavedvalue=""` empty string.
+   *
+   * `private static` and generic so the rule is decided once rather than twenty-one times;
+   * it adds no exported unit, since only the class is exported from this module.
    */
-  isNew(): boolean {
-    return this.promotionQualifierID === '';
-  }
+  private static indexOfEntity<TEntity>(
+    collection: readonly TEntity[],
+    candidate: TEntity,
+    primaryKeyOf: (entity: TEntity) => string,
+  ): number {
+    const candidateID: string = primaryKeyOf(candidate);
 
-  // ============ START: Pre-Banner Member ===============================
-  // [model/entity/PromotionQualifier.cfc:L101-L103] sits ABOVE the
-  // `// ============ START: Non-Persistent Property Methods` banner at L105. The source's own
-  // organisation is preserved rather than tidied: reordering members to make the banners tidy would
-  // make a reviewer's line-by-line diff against the CFC harder, which is the opposite of the point.
-  // The same pre-banner situation exists in model/entity/ProductType.cfc:L92-L119.
-
-  /**
-   * `getSimpleRepresentation` - the admin label for this qualifier.
-   * [model/entity/PromotionQualifier.cfc:L101-L103]
-   *
-   *   return "#rbKey('entity.promotionQualifier')# - #getFormattedValue('qualifierType')#";
-   *
-   * TWO RESOURCE-BUNDLE RESOLUTIONS IN ONE STRING, and the second one is not obvious from the source
-   * line. `getFormattedValue('qualifierType')` [org/Hibachi/HibachiTransient.cfc:L493-L510] looks up
-   * this property's `hb_formatType`, finds `"rbKey"` on [model/entity/PromotionQualifier.cfc:L53],
-   * and takes the branch at [org/Hibachi/HibachiTransient.cfc:L505-L509] which returns
-   *
-   *   rbKey('entity.promotionQualifier.qualifierType.<value>')
-   *
-   * - a key built from the STORED VALUE. That is why the injected provider has two members rather
-   * than one: one fixed key and one parameterised by the qualifier type.
-   *
-   * ★ AND WHEN `qualifierType` IS NULL, THAT BRANCH RETURNS `''` RATHER THAN A KEY.
-   * [org/Hibachi/HibachiTransient.cfc:L507-L508] is an explicit `else { return ''; }`, so the label
-   * becomes `"<entity label> - "` with a trailing separator and nothing after it. Reproduced exactly,
-   * including the trailing space: the separator is emitted unconditionally by the source's string
-   * interpolation, and trimming it would be a different output.
-   *
-   * NOTE WHAT DOES *NOT* HAPPEN HERE: the `hb_nullRBKey` fallback at
-   * [org/Hibachi/HibachiTransient.cfc:L513-L519] is NOT reached, because the `rbKey` format branch
-   * returns first. `qualifierType` has no `hb_nullRBKey` anyway - only the ten numeric gates do.
-   *
-   * ★ THIS METHOD OVERRIDES THE FRAMEWORK BASE, AND `getSimpleRepresentationPropertyName()` BELOW
-   * IS STILL LIVE. The base's `getSimpleRepresentation()`
-   * [org/Hibachi/HibachiEntity.cfc:L59-L71] is the only caller of the property-name variant along
-   * THAT path, and this override displaces it - so it would be easy to conclude the property-name
-   * method at [L355] is dead code. IT IS NOT: it has two further callers,
-   * [org/Hibachi/HibachiEntity.cfc:L390] (which uses it as the `alias="name"` select when some other
-   * entity builds a `promotionQualifier` option list) and
-   * [org/Hibachi/HibachiService.cfc:L31] (keyword-search weighting). Both are ported surfaces'
-   * concerns, so both members are authored. See the note on that method.
-   *
-   * @throws Error when no label provider was injected.
-   */
-  getSimpleRepresentation(): string {
-    const provider: PromotionQualifierLabelProvider | undefined = this.labelProvider;
-
-    if (provider === undefined) {
-      throw new Error(
-        'PromotionQualifier.getSimpleRepresentation needs resolved text for two resource-bundle ' +
-          "keys - 'entity.promotionQualifier' [model/entity/PromotionQualifier.cfc:L102] and " +
-          "'entity.promotionQualifier.qualifierType.<value>' " +
-          '[org/Hibachi/HibachiTransient.cfc:L506] - and this qualifier was hydrated without a ' +
-          'label provider. JavaRB is not ported, so resolved labels are supplied at hydration. No ' +
-          'default is substituted: emitting the raw keys would leak identifiers into an admin ' +
-          'screen and emitting English would fabricate translations.',
-      );
+    if (candidateID === '') {
+      return collection.indexOf(candidate);
     }
 
-    // [org/Hibachi/HibachiTransient.cfc:L505-L509] the rbKey format branch: a key built from the
-    // stored value, or `''` when the value is null. NOT the hb_nullRBKey fallback, which this branch
-    // returns before.
-    const qualifierTypeLabel: string =
-      this.qualifierType === undefined ? '' : provider.getQualifierTypeLabel(this.qualifierType);
-
-    // [model/entity/PromotionQualifier.cfc:L102] the `" - "` separator is emitted unconditionally by
-    // the source's interpolation, so a null qualifier type leaves a trailing separator. Preserved.
-    return `${provider.getPromotionQualifierEntityLabel()} - ${qualifierTypeLabel}`;
+    return collection.findIndex((held: TEntity) => primaryKeyOf(held) === candidateID);
   }
 
-  // ============  END: Pre-Banner Member ================================
+  // ============  END:  Framework-Implicit Members =======================
 
-  // ============ START: Non-Persistent Property Methods =================
-  // [model/entity/PromotionQualifier.cfc:L105] opens this block and L117 closes it. It contains
-  // exactly one member.
+  // ------------------------------------------------------------------------------------
+  // A STRUCTURAL WART, RECORDED RATHER THAN NORMALISED.
   //
-  // LEGACY-NOTE [model/entity/PromotionQualifier.cfc:L99]: the block is preceded by
-  //   property name="qualifierApplicationTypeOptions" type="array" persistent="false";
-  // and THAT PROPERTY IS VESTIGIAL. There is no `qualifierApplicationType` property on this entity,
-  // no `getQualifierApplicationTypeOptions()` method anywhere, and no reader: a repository-wide grep
-  // for the string `qualifierApplicationType` returns EXACTLY ONE HIT - the declaration itself.
-  // It is dead metadata, presumably left behind by a renamed or abandoned feature. Recorded and NOT
-  // ported: authoring an accessor for it would fabricate a surface the legacy system does not
-  // expose, and the declaration itself carries no schema obligation because `persistent="false"`
-  // means no column exists.
+  // LEGACY-NOTE [model/entity/PromotionQualifier.cfc:L101-L103]: `getSimpleRepresentation()`
+  // sits BEFORE the `// ============ START: Non-Persistent Property Methods` banner at L105 -
+  // that is, it floats OUTSIDE EVERY BANNER SECTION, in the gap between the property block and
+  // the first banner. That placement is unique among the promotion-cluster entities: in
+  // PromotionPeriod and PromotionCode the simple-representation members sit inside banners.
+  // Purely cosmetic, and reproduced here as a positional fact only - the method is authored at
+  // the same point in the file, ahead of the non-persistent section, so the reading order
+  // matches the source.
+  // ------------------------------------------------------------------------------------
 
   /**
-   * `getRewardMatchingTypeOptions` - the five reward-matching strategies the admin offers.
-   * [model/entity/PromotionQualifier.cfc:L107-L115]
+   * `getSimpleRepresentation` - the qualifier's human label for the admin UI.
    *
-   * The legacy body verbatim:
+   * CFML parity [model/entity/PromotionQualifier.cfc:L101-L103], the body VERBATIM:
    *
-   *   return [
-   *     {name=rbKey('entity.promotionQualifier.rewardMatchingType.any'),         value="any"},
-   *     {name=rbKey('entity.promotionQualifier.rewardMatchingType.sku'),         value="sku"},
-   *     {name=rbKey('entity.promotionQualifier.rewardMatchingType.product'),     value="product"},
-   *     {name=rbKey('entity.promotionQualifier.rewardMatchingType.productType'), value="productType"},
-   *     {name=rbKey('entity.promotionQualifier.rewardMatchingType.brand'),       value="brand"}
-   *   ];
+   *   public string function getSimpleRepresentation() {
+   *       return "#rbKey('entity.promotionQualifier')# - #getFormattedValue('qualifierType')#";
+   *   }
    *
-   * THE RETURN TYPE IS A READONLY FIVE-TUPLE, not a readonly array, precisely so the count and the
-   * order are part of the type: adding a sixth strategy, dropping one, or reordering them becomes a
-   * compile error rather than a silent behavioural change. Order is not cosmetic - it is the order
-   * the option appears in the admin select. Same decision as
-   * `PriceGroupRate.getAmountTypeOptions()` and `RoundingRule.getRoundingRuleDirectionOptions()`.
+   * TWO FRAMEWORK COLLABORATORS APPEAR HERE, AND BOTH ARE HANDLED HONESTLY RATHER THAN GUESSED.
    *
-   * ★ UNLIKE `PriceGroupRate.getAmountTypeOptions()`, EVERY NAME/VALUE PAIR HERE IS CONSISTENT -
-   * each key's last segment is exactly its own value. That sibling's third pair pairs
-   * `define.fixedAmount` with the value `amount`, a mismatch preserved there as a source quirk. The
-   * contrast is worth recording: it is what makes that one identifiable as a quirk rather than a
-   * convention.
+   * 1. `rbKey('entity.promotionQualifier')` is JavaRB. JavaRB IS NOT PORTED AND NO i18n RUNTIME
+   *    IS INTRODUCED - the project-wide rule is that resource-bundle identifiers behind `rbKey`,
+   *    `hb_rbKey` and `hb_nullRBKey` are PRESERVED VERBATIM AS INERT STRING CONSTANTS so the
+   *    legacy admin can still resolve them. The key is therefore emitted literally below.
    *
-   * THE FIVE `name` VALUES ARE THE RESOURCE-BUNDLE KEYS THEMSELVES, NOT ENGLISH TEXT. JavaRB is not
-   * ported and resource-bundle identifiers are preserved verbatim as string constants, so the key
-   * travels intact to whoever owns localisation. Inventing English labels would fabricate
-   * translations the legacy system resolves at runtime; emitting keys keeps the contract honest and
-   * lossless. Contrast `RoundingRule.getRoundingRuleDirectionOptions()`, whose three labels ARE
-   * hardcoded English in the source - so that port keeps English and this one keeps keys, each
-   * matching its own source.
+   * 2. `getFormattedValue('qualifierType')` resolves to
+   *    [org/Hibachi/HibachiTransient.cfc:L493], not to a method on this component. Its behaviour
+   *    was READ rather than assumed. `getPropertyFormatType` [L534] returns the property's
+   *    `hb_formatType`, which for `qualifierType` is `"rbKey"` [L53], so control reaches the
+   *    rbKey branch at [org/Hibachi/HibachiTransient.cfc:L504-L510]:
    *
-   * PURE AND SYNCHRONOUS. A fresh array on every call, exactly as the CFML literal was re-evaluated
-   * on every call, so a caller can never mutate a shared instance - and `readonly` on the tuple and
-   * on both keys means a caller cannot mutate its own copy either. Hoisting the literal to module
-   * scope would create shared state on a warm Lambda container for no benefit.
+   *      } else if(arguments.formatType eq "rbKey") {
+   *          if(!isNull(arguments.value)) {
+   *              return rbKey('entity.#replace(getEntityName(),
+   *                            getApplicationValue('applicationKey'),"")#
+   *                            .#arguments.propertyName#.#arguments.value#');
+   *          } else {
+   *              return '';
+   *          }
+   *      }
+   *
+   *    `getEntityName()` is `"SlatwallPromotionQualifier"` [L49] and the application key is
+   *    `"Slatwall"` [config/configFramework.cfm:L1], so `replace(...)` - CFML's default
+   *    single-occurrence scope, which is all that is needed for one leading occurrence - yields
+   *    `"PromotionQualifier"`, and the composed key is
+   *    `entity.PromotionQualifier.qualifierType.<value>`. Both keys are emitted verbatim below.
+   *
+   * ★ THIS METHOD IS TOTAL - IT NEVER THROWS, AND THAT IS A READ FACT RATHER THAN A CHOICE.
+   * `qualifierType` is nullable [L53 declares no `notnull`], but the null path is explicitly
+   * handled inside the framework: [org/Hibachi/HibachiTransient.cfc:L508] returns `''`. So the
+   * legacy result for an unset qualifier type is the prefix, the separator, and nothing -
+   * INCLUDING THE TRAILING SPACE, because CFML `"#a# - #b#"` with an empty `b` still emits the
+   * separator. Contrast `PromotionPeriod.getSimpleRepresentation()`, which DOES throw: it
+   * dereferences a nullable ASSOCIATION and calls a method on it, whereas this body only reads
+   * one of its own columns. Neither the throw nor the totality is invented - each matches its
+   * own source.
+   *
+   * ★ NOTE THE CASING DISAGREEMENT BETWEEN THE TWO KEYS, which is in the source and is not a
+   * porting artefact: L102 hand-writes `entity.promotionQualifier` with a LOWERCASE initial
+   * letter, while the key the framework composes for the formatted value is derived from
+   * `getEntityName()` and therefore carries an INITIAL CAPITAL - `entity.PromotionQualifier...`.
+   * Both are reproduced exactly as the legacy produces them; normalising either would change a
+   * resource-bundle lookup.
+   *
+   * NO LABEL PROVIDER IS INJECTED to resolve these keys. This entity has ZERO `getService(`
+   * sites, the import ledger is closed at two value imports, and a translation port would add a
+   * collaborator the source does not have. Resolution is the admin tier's concern.
+   *
+   * PURE AND SYNCHRONOUS.
+   */
+  getSimpleRepresentation(): string {
+    const qualifierType: string | undefined = this.qualifierType;
+
+    // The rbKey branch of `getFormattedValue`
+    // [org/Hibachi/HibachiTransient.cfc:L504-L510]: a composed key when the value is present,
+    // and the empty string when it is not. `isNullish` from src/lib/cfml/truthiness.ts carries
+    // the CFML `isNull(...)` semantics at the site that had them; the trailing
+    // `qualifierType === undefined` is a TYPE-NARROWING step only, because `isNullish` returns
+    // `boolean` rather than a TypeScript type predicate and the compiler still needs an explicit
+    // comparison to narrow `string | undefined` to `string`. It is redundant at runtime and
+    // changes no outcome.
+    const formattedQualifierType: string =
+      isNullish(qualifierType) || qualifierType === undefined
+        ? ''
+        : `entity.PromotionQualifier.qualifierType.${qualifierType}`;
+
+    return `entity.promotionQualifier - ${formattedQualifierType}`;
+  }
+
+  // ============ START: Non-Persistent Property Methods ==================
+  // [model/entity/PromotionQualifier.cfc:L105] opens this block and L117 closes it. It is
+  // POPULATED, and it holds EXACTLY ONE MEMBER: `getRewardMatchingTypeOptions()`
+  // [L107-L115].
+
+  // *** LEGACY-DEFECT [model/entity/PromotionQualifier.cfc:L99, L107]: THE DOUBLE ORPHAN -
+  // A DEAD DECLARED PROPERTY AND AN UNDECLARED METHOD, POINTING IN OPPOSITE DIRECTIONS.
+  //
+  // HALF ONE - A NON-PERSISTENT PROPERTY WITH NO METHOD AND NO READER. L99 declares
+  //
+  //     property name="qualifierApplicationTypeOptions" type="array" persistent="false";
+  //
+  // and it is THE ONLY non-persistent property declared in the entire 373-line component. There
+  // is NO `getQualifierApplicationTypeOptions()` method anywhere in the file, and the property
+  // name appears NOWHERE else in it - not in a body, not in a comment, not in the (nonexistent)
+  // validation schema. It is dead metadata. Structurally this is the same shape as DEFECT 10's
+  // never-initialised, never-read `qualificationDetails.qualifiedFulfillments` key
+  // [model/service/PromotionService.cfc:L621-L623], and as the declared-but-never-referenced
+  // `isNotGlobal` condition in model/validation/PriceGroupRate.json.
+  //
+  // HALF TWO - A METHOD WITH NO DECLARED PROPERTY. Conversely, `getRewardMatchingTypeOptions()`
+  // [L107-L115] exists as a hand-written method with NO matching
+  // `property name="rewardMatchingTypeOptions" ... persistent="false"` declaration. It happens
+  // to work: the explicit method shadows the `get<Property>Options` branch of the dynamic
+  // dispatcher [org/Hibachi/HibachiEntity.cfc:L507-L565], so the dispatcher never runs for that
+  // name and the missing property metadata is never consulted. But the metadata IS missing, and
+  // any consumer that reflects over the non-persistent property list to discover option
+  // providers would find the dead one and miss the live one - which is precisely the pairing
+  // that makes this worth recording rather than shrugging at.
+  //
+  // THE PORT REPRODUCES THE SOURCE'S EXACT MEMBER SET: `getRewardMatchingTypeOptions()` IS
+  // authored below; `getQualifierApplicationTypeOptions()` IS NOT authored, and no
+  // `rewardMatchingTypeOptions` property is invented. Reproducing a member set faithfully is not
+  // repair, so this costs none of the (zero) divergence budget available to this file.
+  // Preserved deliberately; do not fix without a product decision.
+
+  /**
+   * `getRewardMatchingTypeOptions` - the five reward-matching modes the admin offers.
+   *
+   * CFML parity [model/entity/PromotionQualifier.cfc:L107-L115], the body VERBATIM:
+   *
+   *   public array function getRewardMatchingTypeOptions() {
+   *       return [
+   *           {name=rbKey('entity.promotionQualifier.rewardMatchingType.any'),         value="any"},
+   *           {name=rbKey('entity.promotionQualifier.rewardMatchingType.sku'),         value="sku"},
+   *           {name=rbKey('entity.promotionQualifier.rewardMatchingType.product'),     value="product"},
+   *           {name=rbKey('entity.promotionQualifier.rewardMatchingType.productType'), value="productType"},
+   *           {name=rbKey('entity.promotionQualifier.rewardMatchingType.brand'),       value="brand"}
+   *       ];
+   *   }
+   *
+   * ★ THIS BODY IS THE AUTHORITATIVE VOCABULARY FOR `rewardMatchingType` [L65], AND IT IS WHY
+   * THAT COLUMN IS THE ONE NARROWED COLUMN ON THIS ENTITY. Five values, these exact spellings,
+   * this exact order: `any`, `sku`, `product`, `productType`, `brand`. `hb_formFieldType="select"`
+   * on L65 makes this list the admin form's domain. No sixth member may be added, none renamed,
+   * none reordered - see {@link RewardMatchingType}. Contrast `qualifierType` [L53], which is
+   * deliberately NOT narrowed because the source declares no vocabulary for it and there is no
+   * `getQualifierTypeOptions()` anywhere in the component.
+   *
+   * The five `name` values are JAVARB KEYS, not English labels, and are emitted verbatim as
+   * inert strings for the same reason as in `getSimpleRepresentation()` above: JavaRB is not
+   * ported and no i18n runtime is introduced. Contrast
+   * `RoundingRule.getRoundingRuleDirectionOptions()`, whose three labels ARE hardcoded English
+   * in its source - each port keeps whatever its own source held.
+   *
+   * A FIXED-ARITY `readonly` TUPLE, RETURNED FRESH ON EVERY CALL. The arity is a fact about the
+   * source, so the type states it. A fresh array each call reproduces the CFML literal being
+   * re-evaluated per invocation, and hoisting it to module scope would create state shared
+   * across warm-container invocations for no benefit. `readonly` here does NOT collide with the
+   * live-reference ruling on the ten association accessors: this is a computed option list for a
+   * form control, not one side of a bidirectional association, so nothing depends on mutating it.
+   *
+   * This method OVERRIDES what the dispatcher would otherwise have synthesised for a
+   * `get<Property>Options` name [org/Hibachi/HibachiEntity.cfc:L507-L565]; because the component
+   * hand-writes it, that branch never runs, which is why a hand-written method is the faithful
+   * port and no dynamic dispatch is needed to explain it.
+   *
+   * PURE AND SYNCHRONOUS.
    */
   getRewardMatchingTypeOptions(): readonly [
     RewardMatchingTypeOption,
@@ -1155,515 +1521,951 @@ export class PromotionQualifier {
     ];
   }
 
-  // ============  END: Non-Persistent Property Methods ==================
+  // ============  END:  Non-Persistent Property Methods ==================
 
   // ============= START: Bidirectional Helper Methods ===================
-  // [model/entity/PromotionQualifier.cfc:L119] opens this block and L339 closes it. Eleven pairs -
-  // one for `promotionPeriod` and ten for the owned membership collections. NOTHING for
-  // `fulfillmentMethods`, `shippingMethods` or `shippingAddressZones`; see the header.
+  // [model/entity/PromotionQualifier.cfc:L119] opens this block and L339 closes it - 221 lines,
+  // the largest section in the component. It holds ELEVEN HELPER PAIRS, twenty-two methods in
+  // total, under twelve inline sub-banners: `// Promotion Period (many-to-one)` at L121, then ten
+  // `// <Name> (many-to-many - owner)` banners at L139, L159, L179, L199, L219, L239, L259, L279,
+  // L299 and L319.
+  //
+  // ★ AN ASYMMETRY WORTH STATING BEFORE THE MEMBERS: ELEVEN HELPER PAIRS FOR FOURTEEN
+  // RELATIONSHIPS. The component has one many-to-one [L68] plus thirteen many-to-many [L73-L87],
+  // and hand-writes helpers for only eleven of the fourteen. The three with NO `add*` and NO
+  // `remove*` anywhere in the file are EXACTLY Group A - `fulfillmentMethods` [L73],
+  // `shippingMethods` [L74] and `shippingAddressZones` [L75] - which rely entirely on the
+  // framework's generated accessors. See the Group A LEGACY-NOTEs above: that absence of
+  // hand-written behaviour is what makes their collapse to opaque identifier arrays LOSSLESS with
+  // respect to authored logic, rather than merely convenient.
+  //
+  // ★ EVERY MEMBER BELOW KEEPS THE LEGACY PARAMETER NAME, NOT THE PROPERTY NAME. The source
+  // writes `addExcludedBrand(required any brand)` - the argument is `brand`, not `excludedBrand` -
+  // and the same holds for all five exclude pairs. Preserved verbatim.
+  //
+  // ★ THE TWO FAR-SIDE MEMBER FAMILIES ARE NEVER MIXED. The five INCLUDE pairs reach
+  // `hasPromotionQualifier` / `getPromotionQualifiers` on the far side; the five EXCLUDE pairs
+  // reach `hasPromotionQualifierExclusion` / `getPromotionQualifierExclusions`. All twenty of
+  // those far-side members were confirmed present in the already-shipped sibling files before this
+  // file was authored - brand.ts, option.ts, sku.ts, product.ts and productType.ts each declare
+  // all four - so no member is invented on a file this one does not own, and no call is widened to
+  // `any` or silently dropped to make anything compile.
+
+  // ------------------------------------------------------------------------------------
+  // Promotion Period (many-to-one) [model/entity/PromotionQualifier.cfc:L121]
+  // ------------------------------------------------------------------------------------
 
   /**
-   * Attaches this qualifier to a promotion period, adding it to that period's qualifier collection.
-   * [model/entity/PromotionQualifier.cfc:L122-L127]
+   * `setPromotionPeriod` - point this qualifier at a promotion period and synchronise the far side.
    *
-   *   variables.promotionPeriod = arguments.promotionPeriod;
-   *   if(isNew() or !arguments.promotionPeriod.hasPromotionQualifier( this )) {
-   *     arrayAppend(arguments.promotionPeriod.getPromotionQualifiers(), this);
+   * CFML parity [model/entity/PromotionQualifier.cfc:L122-L127], the body VERBATIM:
+   *
+   *   public void function setPromotionPeriod(required any promotionPeriod) {
+   *       variables.promotionPeriod = arguments.promotionPeriod;
+   *       if(isNew() or !arguments.promotionPeriod.hasPromotionQualifier( this )) {
+   *           arrayAppend(arguments.promotionPeriod.getPromotionQualifiers(), this);
+   *       }
    *   }
    *
-   * BOTH HALVES OF THE DISJUNCT ARE PRESERVED, in order, with CFML's short-circuit semantics that
-   * JavaScript's `||` reproduces exactly. `isNew()` first: an unsaved qualifier is appended
-   * unconditionally, because its `''` key makes the membership test meaningless. Only then is
-   * `hasPromotionQualifier` consulted, which keeps a saved qualifier from being appended twice.
+   * THREE ORDERING FACTS ARE PRESERVED EXACTLY.
    *
-   * `arrayAppend` becomes `push` onto the LIVE array from
-   * `PromotionPeriod.getPromotionQualifiers()`. The mutation must be observable through that
-   * accessor, which is exactly why promotionPeriod.ts declares that collection LIVE and cites THIS
-   * line as its census site.
+   * 1. THE NEAR-SIDE ASSIGNMENT HAPPENS FIRST [L123], before the guard is evaluated. It is
+   *    unconditional: the field is overwritten even when the far side already holds this
+   *    qualifier, and even when the far side is the same period it already pointed at.
+   * 2. THE GUARD IS `isNew() or !hasPromotionQualifier(this)`, IN THAT ORDER, AND CFML `or`
+   *    SHORT-CIRCUITS [L124]. So for an UNSAVED qualifier the containment probe is NEVER RUN and
+   *    the far-side append is unconditional - two `setPromotionPeriod()` calls on the same
+   *    transient qualifier append it TWICE. That is the legacy outcome and it is reproduced, not
+   *    smoothed over; `isNew()` is the reason, and it is exactly why the containment rule
+   *    documented in the framework-implicit section falls back to reference identity for
+   *    transients.
+   * 3. THE FAR-SIDE APPEND MUTATES THE LIVE ARRAY [L125]. `arrayAppend` in CFML mutates in place,
+   *    and `PromotionPeriod.getPromotionQualifiers()` returns its live `PromotionQualifier[]`
+   *    (confirmed in the shipped promotionPeriod.ts), so `.push(this)` is the exact analogue. A
+   *    defensive copy on either side of this call would make the far-side half of this method a
+   *    silent no-op and break bidirectional synchronisation across the aggregate.
    *
-   * ★ THIS IS THE *ONLY* WORKING PATH BETWEEN A PERIOD AND ITS QUALIFIERS.
-   * model/entity/PromotionPeriod.cfc's own `addPromotionQualifier` and `removePromotionQualifier`
-   * delegate to `setPromotion`/`removePromotion` - method names that do not exist on this entity -
-   * and therefore reach the `onMissingMethod` throw at [org/Hibachi/HibachiEntity.cfc:L565]. That
-   * defect is registered and reproduced as throwing stubs in promotionPeriod.ts. The pair here is
-   * unaffected and is what actually links the two.
+   * The parameter is REQUIRED, matching `required any promotionPeriod` on L122, and is typed to
+   * the concrete entity rather than to CFML's `any`. Arity is unchanged: no signature widening is
+   * spent here, and none is available.
+   *
+   * SYNCHRONOUS - this reaches no port and performs no I/O.
    */
   setPromotionPeriod(promotionPeriod: PromotionPeriod): void {
+    // [L123] Unconditional near-side assignment, ahead of the guard.
     this.promotionPeriod = promotionPeriod;
 
+    // [L124] `isNew() or !hasPromotionQualifier(this)`, short-circuiting on the left operand
+    // exactly as CFML `or` does - so a transient qualifier never runs the containment probe.
     if (this.isNew() || !promotionPeriod.hasPromotionQualifier(this)) {
+      // [L125] In-place mutation of the far side's LIVE array.
       promotionPeriod.getPromotionQualifiers().push(this);
     }
   }
 
   /**
-   * Detaches this qualifier from a promotion period.
-   * [model/entity/PromotionQualifier.cfc:L128-L137]
+   * `removePromotionPeriod` - detach this qualifier from a promotion period, both sides.
    *
-   * THE ARGUMENT IS OPTIONAL, exactly as the legacy declaration is - `any promotionPeriod` with no
-   * `required`. The default branch tests `!== undefined`, reproducing
-   * `structKeyExists(arguments, "promotionPeriod")` and NEVER truthiness: an argument that was
-   * passed is a different state from one that was not.
+   * CFML parity [model/entity/PromotionQualifier.cfc:L128-L137], the body VERBATIM:
    *
-   * `arrayFind` IS 1-BASED AND RETURNS 0 ON A MISS, which is why the legacy guard is `index > 0`.
-   * `Array.prototype.findIndex` is 0-BASED and returns `-1`, so the equivalent guard is an explicit
-   * `!== -1` - never a truthiness test, which would wrongly treat the valid index 0 as "not found".
+   *   public void function removePromotionPeriod(any promotionPeriod) {
+   *       if(!structKeyExists(arguments, "promotionPeriod")) {
+   *           arguments.promotionPeriod = variables.promotionPeriod;
+   *       }
+   *       var index = arrayFind(arguments.promotionPeriod.getPromotionQualifiers(), this);
+   *       if(index > 0) {
+   *           arrayDeleteAt(arguments.promotionPeriod.getPromotionQualifiers(), index);
+   *       }
+   *       structDelete(variables, "promotionPeriod");
+   *   }
    *
-   * THE LEGACY SPLICE MATCHES BY REFERENCE, NOT BY KEY. [L132] is
-   * `arrayFind(arguments.promotionPeriod.getPromotionQualifiers(), this)`, and CFML `arrayFind` with
-   * an object needle compares object identity. Reproduced with `indexOf`, deliberately, rather than
-   * upgraded to a primary-key comparison: a key comparison would ALSO remove a different in-memory
-   * object representing the same saved row, which is a strictly wider behaviour. Contrast the
-   * CONTAINMENT probes above, which are key-based because the framework dispatcher's `has*` is
-   * Hibernate collection-contains rather than `arrayFind`. Two different legacy mechanisms, two
-   * different ports - not an inconsistency in this file.
+   * NOTE THE PARAMETER IS OPTIONAL - `any promotionPeriod` WITH NO `required` [L128] - and this is
+   * the only optional parameter in the entire component. L129-L131 then defaults it from the
+   * current field, which is what lets a caller write `qualifier.removePromotionPeriod()` and mean
+   * "detach from whatever you are attached to". `structKeyExists(arguments, "promotionPeriod")` is
+   * an ARGUMENT-SCOPE presence test, not a domain-data struct lookup with case-insensitive keys,
+   * so it maps to a TypeScript optional parameter and NOT to any helper in src/lib/cfml/struct.ts.
    *
-   * `structDelete(variables, "promotionPeriod")` becomes assigning `undefined`, and it runs
-   * UNCONDITIONALLY - outside the index guard - just as at [L136].
+   * ★ THE THROW IS PRESERVED. When the argument is omitted AND the field is already empty, L132
+   * calls `getPromotionQualifiers()` on null and CFML raises a null-reference error. The FK is
+   * genuinely nullable - L68 declares no `notnull` - so this is reachable, not theoretical. AN
+   * EARLY RETURN IS NOT ADDED: behaviour preservation extends to defects, and a member that
+   * throws at runtime today must throw in the target. Silently returning would also leave the
+   * caller believing a detach succeeded. The message names the cause so the failure is
+   * diagnosable rather than merely faithful.
    *
-   * LEGACY-NOTE [model/entity/PromotionQualifier.cfc:L129-L132]: when the argument is omitted AND
-   * this qualifier has no stored period, the legacy assigns null into `arguments.promotionPeriod` at
-   * [L130] and then invokes `.getPromotionQualifiers()` on it at [L132] - a method call on null,
-   * which throws under every CFML engine. Reproduced rather than smoothed over: returning early
-   * would silently skip the [L136] field clear as well, so it would not be the same behaviour by a
-   * different route. The identical unguarded shape appears at
-   * model/entity/PriceGroup.cfc:L116-L122, model/entity/Category.cfc:L107-L112,
-   * model/entity/ProductType.cfc:L155-L159 and model/entity/PriceGroupRate.cfc:L187-L192, so it is
-   * the framework-wide idiom rather than a local slip.
+   * ★ THE CLEAR HAPPENS AFTER THE THROW POINT AND IS UNCONDITIONAL. L136 runs whether or not the
+   * far-side deletion found anything, but it is downstream of L132, so a raise leaves the field
+   * INTACT. Both properties are reproduced. The clear is an assignment of `undefined`, not
+   * `delete this.promotionPeriod`: the field is declared as an explicit `PromotionPeriod |
+   * undefined` union precisely so this is legal under `exactOptionalPropertyTypes`, and `delete`
+   * on a class field is neither idiomatic nor necessary.
    *
-   * @throws Error when called with no argument on a qualifier that has no promotion period.
+   * ★ THE `findIndex` BASE CHANGE APPLIES HERE. L133 guards with `if(index > 0)` because CFML
+   * `arrayFind` is 1-based; the port routes through `indexOfEntity` and tests `!== -1`. Writing
+   * `> 0` would skip a qualifier sitting at index 0 of the period's collection - the common case
+   * for a period with a single qualifier.
+   *
+   * SYNCHRONOUS.
+   *
+   * @throws Error when no argument is supplied and `promotionPeriod` is already absent.
    */
   removePromotionPeriod(promotionPeriod?: PromotionPeriod): void {
-    const targetPromotionPeriod: PromotionPeriod | undefined =
-      promotionPeriod !== undefined ? promotionPeriod : this.promotionPeriod;
+    // [L129-L131] Default the target from the current field when the caller omitted it.
+    // `isNullish` carries the CFML absence semantics; the `=== undefined` operand that follows is
+    // a TYPE-NARROWING step only, because `isNullish` returns `boolean` rather than a type
+    // predicate. Redundant at runtime, and it changes no outcome.
+    const target: PromotionPeriod | undefined = promotionPeriod ?? this.promotionPeriod;
 
-    if (targetPromotionPeriod === undefined) {
+    if (isNullish(target) || target === undefined) {
       throw new Error(
-        'PromotionQualifier.removePromotionPeriod was called with no argument on a qualifier that ' +
-          'has no promotionPeriod. This reproduces the legacy runtime failure at ' +
-          'model/entity/PromotionQualifier.cfc:L130-L132, where the omitted argument defaults to a ' +
-          'null period and getPromotionQualifiers() is then invoked on it.',
+        'PromotionQualifier.removePromotionPeriod has no promotion period to detach from: ' +
+          'model/entity/PromotionQualifier.cfc:L129-L132 defaults the omitted argument from ' +
+          'variables.promotionPeriod and then calls getPromotionQualifiers() on it with no null ' +
+          'guard, so an already-empty association is a CFML null-reference error. The foreign key ' +
+          'is nullable - model/entity/PromotionQualifier.cfc:L68 declares no notnull - which is ' +
+          'what makes this reachable. Note that the legacy clear at L136 sits AFTER this raise, ' +
+          'so the association is left intact, exactly as here.',
       );
     }
 
-    const siblingQualifiers: PromotionQualifier[] = targetPromotionPeriod.getPromotionQualifiers();
-    const index: number = siblingQualifiers.indexOf(this);
+    // [L132-L135] Locate and delete on the FAR side, against its live array.
+    const index: number = PromotionQualifier.indexOfEntity(
+      target.getPromotionQualifiers(),
+      this,
+      (held: PromotionQualifier) => held.getPromotionQualifierID(),
+    );
 
     if (index !== -1) {
-      siblingQualifiers.splice(index, 1);
+      target.getPromotionQualifiers().splice(index, 1);
     }
 
+    // [L136] `structDelete(variables, "promotionPeriod")` - unconditional, and downstream of the
+    // raise above.
     this.promotionPeriod = undefined;
   }
 
-  // THE TEN MEMBERSHIP PAIRS BELOW ARE STRUCTURALLY IDENTICAL, and the uniformity is verified rather
-  // than assumed - all ten were read line by line in the source. Each `add*`:
+  // ------------------------------------------------------------------------------------
+  // THE TEN MANY-TO-MANY OWNER PAIRS [model/entity/PromotionQualifier.cfc:L139-L337]
   //
-  //   if(arguments.<x>.isNew() or !has<X>(arguments.<x>)) { arrayAppend(variables.<xs>, arguments.<x>); }
-  //   if(isNew() or !arguments.<x>.hasPromotionQualifier<Exclusion?>( this )) {
-  //     arrayAppend(arguments.<x>.getPromotionQualifier<Exclusion?>s(), this);
-  //   }
+  // ALL TEN `add*` BODIES SHARE ONE IDENTICAL TWO-GUARD SHAPE, and all ten `remove*` bodies
+  // share one identical two-deletion shape. Both are stated ONCE here and referenced from each
+  // member, so the ported logic can be checked against the source without twenty repetitions of
+  // the same prose. `addBrand` / `removeBrand` [L140-L157] is the template, quoted VERBATIM:
   //
-  // and each `remove*` performs two INDEPENDENTLY GUARDED reference-based splices.
+  //     public void function addBrand(required any brand) {
+  //         if(arguments.brand.isNew() or !hasBrand(arguments.brand)) {
+  //             arrayAppend(variables.brands, arguments.brand);
+  //         }
+  //         if(isNew() or !arguments.brand.hasPromotionQualifier( this )) {
+  //             arrayAppend(arguments.brand.getPromotionQualifiers(), this);
+  //         }
+  //     }
+  //     public void function removeBrand(required any brand) {
+  //         var thisIndex = arrayFind(variables.brands, arguments.brand);
+  //         if(thisIndex > 0) {
+  //             arrayDeleteAt(variables.brands, thisIndex);
+  //         }
+  //         var thatIndex = arrayFind(arguments.brand.getPromotionQualifiers(), this);
+  //         if(thatIndex > 0) {
+  //             arrayDeleteAt(arguments.brand.getPromotionQualifiers(), thatIndex);
+  //         }
+  //     }
   //
-  // ★ NOTE THE TWO DIFFERENT NEWNESS TESTS, and that they are NOT the same entity. The NEAR-side
-  // guard tests the ARGUMENT's newness - the thing being added - while the FAR-side guard tests
-  // `isNew()`, i.e. THIS qualifier. That is correct in both cases and is preserved verbatim: each
-  // guard asks about the entity whose key would make the corresponding membership probe
-  // meaningless. Reversing either would change which appends are skipped.
+  // THE `add*` SHAPE - TWO INDEPENDENT GUARDS, NOT ONE, AND THEY ARE NOT SYMMETRIC.
+  //   * GUARD ONE (near side) tests the ARGUMENT'S newness: `arguments.X.isNew() or !hasX(...)`.
+  //   * GUARD TWO (far side) tests THIS QUALIFIER'S newness: `isNew() or !X.hasPromotionQualifier...`.
+  //     The subject of `isNew()` differs between the two guards, and mixing them up would change
+  //     which side accepts duplicates. Preserved exactly as written.
+  //   * CFML `or` SHORT-CIRCUITS, so a NEW entity is appended WITHOUT the containment probe
+  //     running - two `add*` calls with the same transient argument append it twice on the near
+  //     side, and two `add*` calls on a transient qualifier append it twice on the far side. That
+  //     is the legacy outcome and it is reproduced, not smoothed over.
+  //   * BOTH APPENDS ARE UNCONDITIONALLY EVALUATED IN SEQUENCE - the second guard is NOT nested
+  //     inside the first, so a near-side skip does not skip the far side.
   //
-  // THE NEAR SIDE MUTATES `variables.<xs>` DIRECTLY, not through the accessor. That is why every
-  // collection accessor above can safely hand out a `readonly` view: the only writer is inside this
-  // class.
+  // THE `remove*` SHAPE - TWO INDEPENDENT DELETIONS, near side then far side, each guarded by its
+  // own index test, neither conditional on the other. `if(thisIndex > 0)` / `if(thatIndex > 0)` is
+  // CFML's 1-based `arrayFind` idiom; the port routes both through `indexOfEntity` and tests
+  // `!== -1`. See the base-change rule on `indexOfEntity` above: `> 0` against a `findIndex`
+  // result would silently skip a match at index 0, which is the FIRST element of every collection.
   //
-  // THE INCLUDED AND EXCLUDED PAIRS REACH TWO DIFFERENT FAR-SIDE COLLECTIONS -
-  // `getPromotionQualifiers()` and `getPromotionQualifierExclusions()` respectively. Both are LIVE
-  // on brand, option, sku, product and productType, and each of those modules cites the exact line
-  // here as its census site.
+  // MUTATION IS IN PLACE ON BOTH SIDES. `arrayAppend` and `arrayDeleteAt` mutate the CFML array
+  // they are handed, and every far-side accessor in the shipped sibling files returns its LIVE
+  // `PromotionQualifier[]`, so `.push(...)` and `.splice(index, 1)` are the exact analogues. A
+  // defensive copy anywhere in this block would turn the far-side half of all twenty helpers into
+  // a silent no-op.
   //
-  // ALL TWENTY METHODS ARE TOTAL: every argument is `required`, so there is no null-default branch
-  // to reproduce.
+  // PARAMETER NAMES ARE THE LEGACY NAMES, INCLUDING ON THE FIVE EXCLUDE PAIRS where the argument
+  // is named after the ENTITY rather than the property - `addExcludedBrand(required any brand)`.
+  //
+  // EVERY MEMBER BELOW IS SYNCHRONOUS: no port, no I/O, no `async`.
+  // ------------------------------------------------------------------------------------
 
-  /** [model/entity/PromotionQualifier.cfc:L140-L147] */
+  // Brands (many-to-many - owner) [model/entity/PromotionQualifier.cfc:L139]
+
+  /**
+   * `addBrand` - add a brand to the INCLUDE list and synchronise the far side.
+   *
+   * [model/entity/PromotionQualifier.cfc:L140-L147]. Near side `brands` [L77], link table
+   * `SwPromoQualBrand`. Far side `Brand.getPromotionQualifiers()`. Guards per the shared `add*`
+   * shape documented above.
+   */
   addBrand(brand: Brand): void {
+    // [L141-L143] Near side: the ARGUMENT's newness short-circuits the containment probe.
     if (brand.isNew() || !this.hasBrand(brand)) {
       this.brands.push(brand);
     }
+
+    // [L144-L146] Far side: THIS qualifier's newness short-circuits the far-side probe.
     if (this.isNew() || !brand.hasPromotionQualifier(this)) {
       brand.getPromotionQualifiers().push(this);
     }
   }
 
-  /** [model/entity/PromotionQualifier.cfc:L148-L157] */
+  /**
+   * `removeBrand` - remove a brand from the INCLUDE list, both sides.
+   *
+   * [model/entity/PromotionQualifier.cfc:L148-L157]. Two independent guarded deletions per the
+   * shared `remove*` shape; `findIndex(...) !== -1` replaces CFML's 1-based `if(thisIndex > 0)` /
+   * `if(thatIndex > 0)`.
+   */
   removeBrand(brand: Brand): void {
-    const thisIndex: number = this.brands.indexOf(brand);
+    // [L149-L152] Near side.
+    const thisIndex: number = PromotionQualifier.indexOfEntity(this.brands, brand, (held: Brand) =>
+      held.getBrandID(),
+    );
+
     if (thisIndex !== -1) {
       this.brands.splice(thisIndex, 1);
     }
 
-    const farSide: PromotionQualifier[] = brand.getPromotionQualifiers();
-    const thatIndex: number = farSide.indexOf(this);
+    // [L153-L156] Far side.
+    const thatIndex: number = PromotionQualifier.indexOfEntity(
+      brand.getPromotionQualifiers(),
+      this,
+      (held: PromotionQualifier) => held.getPromotionQualifierID(),
+    );
+
     if (thatIndex !== -1) {
-      farSide.splice(thatIndex, 1);
+      brand.getPromotionQualifiers().splice(thatIndex, 1);
     }
   }
 
-  /** [model/entity/PromotionQualifier.cfc:L160-L167] */
+  // Options (many-to-many - owner) [model/entity/PromotionQualifier.cfc:L159]
+
+  /**
+   * `addOption` - add an option to the INCLUDE list and synchronise the far side.
+   *
+   * [model/entity/PromotionQualifier.cfc:L160-L167]. Near side `options` [L78], link table
+   * `SwPromoQualOption`. Far side `Option.getPromotionQualifiers()`.
+   */
   addOption(option: Option): void {
+    // [L161-L163]
     if (option.isNew() || !this.hasOption(option)) {
       this.options.push(option);
     }
+
+    // [L164-L166]
     if (this.isNew() || !option.hasPromotionQualifier(this)) {
       option.getPromotionQualifiers().push(this);
     }
   }
 
-  /** [model/entity/PromotionQualifier.cfc:L168-L177] */
+  /**
+   * `removeOption` - remove an option from the INCLUDE list, both sides.
+   *
+   * [model/entity/PromotionQualifier.cfc:L168-L177].
+   */
   removeOption(option: Option): void {
-    const thisIndex: number = this.options.indexOf(option);
+    // [L169-L172]
+    const thisIndex: number = PromotionQualifier.indexOfEntity(
+      this.options,
+      option,
+      (held: Option) => held.getOptionID(),
+    );
+
     if (thisIndex !== -1) {
       this.options.splice(thisIndex, 1);
     }
 
-    const farSide: PromotionQualifier[] = option.getPromotionQualifiers();
-    const thatIndex: number = farSide.indexOf(this);
+    // [L173-L176]
+    const thatIndex: number = PromotionQualifier.indexOfEntity(
+      option.getPromotionQualifiers(),
+      this,
+      (held: PromotionQualifier) => held.getPromotionQualifierID(),
+    );
+
     if (thatIndex !== -1) {
-      farSide.splice(thatIndex, 1);
+      option.getPromotionQualifiers().splice(thatIndex, 1);
     }
   }
 
-  /** [model/entity/PromotionQualifier.cfc:L180-L187] */
+  // Skus (many-to-many - owner) [model/entity/PromotionQualifier.cfc:L179]
+  //
+  // LEGACY-NOTE [model/entity/PromotionQualifier.cfc:L179-L197]: NEARLY EVERY LINE OF THIS BLOCK
+  // CARRIES TRAILING WHITESPACE in the source, including the sub-banner comment itself -
+  // `// Skus (many-to-many - owner)    `. The same wart runs through the Excluded Brands
+  // [L239-L257] and Excluded Options [L259-L277] blocks. Cosmetic only, invisible to CFML, and not
+  // reproduced: prettier normalises trailing whitespace in the target and the wart carries no
+  // behaviour.
+
+  /**
+   * `addSku` - add a SKU to the INCLUDE list and synchronise the far side.
+   *
+   * [model/entity/PromotionQualifier.cfc:L180-L187]. Near side `skus` [L79], link table
+   * `SwPromoQualSku`. Far side `Sku.getPromotionQualifiers()`.
+   */
   addSku(sku: Sku): void {
+    // [L181-L183]
     if (sku.isNew() || !this.hasSku(sku)) {
       this.skus.push(sku);
     }
+
+    // [L184-L186]
     if (this.isNew() || !sku.hasPromotionQualifier(this)) {
       sku.getPromotionQualifiers().push(this);
     }
   }
 
-  /** [model/entity/PromotionQualifier.cfc:L188-L197] */
+  /**
+   * `removeSku` - remove a SKU from the INCLUDE list, both sides.
+   *
+   * [model/entity/PromotionQualifier.cfc:L188-L197].
+   */
   removeSku(sku: Sku): void {
-    const thisIndex: number = this.skus.indexOf(sku);
+    // [L189-L192]
+    const thisIndex: number = PromotionQualifier.indexOfEntity(this.skus, sku, (held: Sku) =>
+      held.getSkuID(),
+    );
+
     if (thisIndex !== -1) {
       this.skus.splice(thisIndex, 1);
     }
 
-    const farSide: PromotionQualifier[] = sku.getPromotionQualifiers();
-    const thatIndex: number = farSide.indexOf(this);
+    // [L193-L196]
+    const thatIndex: number = PromotionQualifier.indexOfEntity(
+      sku.getPromotionQualifiers(),
+      this,
+      (held: PromotionQualifier) => held.getPromotionQualifierID(),
+    );
+
     if (thatIndex !== -1) {
-      farSide.splice(thatIndex, 1);
+      sku.getPromotionQualifiers().splice(thatIndex, 1);
     }
   }
 
-  /** [model/entity/PromotionQualifier.cfc:L200-L207] */
+  // Products (many-to-many - owner) [model/entity/PromotionQualifier.cfc:L199]
+
+  /**
+   * `addProduct` - add a product to the INCLUDE list and synchronise the far side.
+   *
+   * [model/entity/PromotionQualifier.cfc:L200-L207]. Near side `products` [L80], link table
+   * `SwPromoQualProduct`. Far side `Product.getPromotionQualifiers()`.
+   */
   addProduct(product: Product): void {
+    // [L201-L203]
     if (product.isNew() || !this.hasProduct(product)) {
       this.products.push(product);
     }
+
+    // [L204-L206]
     if (this.isNew() || !product.hasPromotionQualifier(this)) {
       product.getPromotionQualifiers().push(this);
     }
   }
 
-  /** [model/entity/PromotionQualifier.cfc:L208-L217] */
+  /**
+   * `removeProduct` - remove a product from the INCLUDE list, both sides.
+   *
+   * [model/entity/PromotionQualifier.cfc:L208-L217].
+   */
   removeProduct(product: Product): void {
-    const thisIndex: number = this.products.indexOf(product);
+    // [L209-L212]
+    const thisIndex: number = PromotionQualifier.indexOfEntity(
+      this.products,
+      product,
+      (held: Product) => held.getProductID(),
+    );
+
     if (thisIndex !== -1) {
       this.products.splice(thisIndex, 1);
     }
 
-    const farSide: PromotionQualifier[] = product.getPromotionQualifiers();
-    const thatIndex: number = farSide.indexOf(this);
+    // [L213-L216]
+    const thatIndex: number = PromotionQualifier.indexOfEntity(
+      product.getPromotionQualifiers(),
+      this,
+      (held: PromotionQualifier) => held.getPromotionQualifierID(),
+    );
+
     if (thatIndex !== -1) {
-      farSide.splice(thatIndex, 1);
+      product.getPromotionQualifiers().splice(thatIndex, 1);
     }
   }
 
-  /** [model/entity/PromotionQualifier.cfc:L220-L227] */
+  // Product Types (many-to-many - owner) [model/entity/PromotionQualifier.cfc:L219]
+
+  /**
+   * `addProductType` - add a product type to the INCLUDE list and synchronise the far side.
+   *
+   * [model/entity/PromotionQualifier.cfc:L220-L227]. Near side `productTypes` [L81], link table
+   * `SwPromoQualProductType`. Far side `ProductType.getPromotionQualifiers()`.
+   */
   addProductType(productType: ProductType): void {
+    // [L221-L223]
     if (productType.isNew() || !this.hasProductType(productType)) {
       this.productTypes.push(productType);
     }
+
+    // [L224-L226]
     if (this.isNew() || !productType.hasPromotionQualifier(this)) {
       productType.getPromotionQualifiers().push(this);
     }
   }
 
-  /** [model/entity/PromotionQualifier.cfc:L228-L237] */
+  /**
+   * `removeProductType` - remove a product type from the INCLUDE list, both sides.
+   *
+   * [model/entity/PromotionQualifier.cfc:L228-L237].
+   */
   removeProductType(productType: ProductType): void {
-    const thisIndex: number = this.productTypes.indexOf(productType);
+    // [L229-L232]
+    const thisIndex: number = PromotionQualifier.indexOfEntity(
+      this.productTypes,
+      productType,
+      (held: ProductType) => held.getProductTypeID(),
+    );
+
     if (thisIndex !== -1) {
       this.productTypes.splice(thisIndex, 1);
     }
 
-    const farSide: PromotionQualifier[] = productType.getPromotionQualifiers();
-    const thatIndex: number = farSide.indexOf(this);
+    // [L233-L236]
+    const thatIndex: number = PromotionQualifier.indexOfEntity(
+      productType.getPromotionQualifiers(),
+      this,
+      (held: PromotionQualifier) => held.getPromotionQualifierID(),
+    );
+
     if (thatIndex !== -1) {
-      farSide.splice(thatIndex, 1);
+      productType.getPromotionQualifiers().splice(thatIndex, 1);
     }
   }
 
-  /** [model/entity/PromotionQualifier.cfc:L240-L247] Far side is `getPromotionQualifierExclusions()`. */
+  // Excluded Brands (many-to-many - owner) [model/entity/PromotionQualifier.cfc:L239]
+  //
+  // FROM HERE THE FAR-SIDE FAMILY CHANGES. The five EXCLUDE pairs reach
+  // `hasPromotionQualifierExclusion` / `getPromotionQualifierExclusions` - NOT the
+  // `hasPromotionQualifier` / `getPromotionQualifiers` pair the five INCLUDE pairs above use. The
+  // two families address different link tables (`SwPromoQualExcl*` rather than `SwPromoQual*`) and
+  // must never be mixed.
+
+  /**
+   * `addExcludedBrand` - add a brand to the EXCLUDE list and synchronise the far side.
+   *
+   * [model/entity/PromotionQualifier.cfc:L240-L247]. Near side `excludedBrands` [L83], link table
+   * `SwPromoQualExclBrand`. Far side `Brand.getPromotionQualifierExclusions()`. The parameter is
+   * named `brand`, not `excludedBrand`, matching L240 verbatim.
+   */
   addExcludedBrand(brand: Brand): void {
+    // [L241-L243]
     if (brand.isNew() || !this.hasExcludedBrand(brand)) {
       this.excludedBrands.push(brand);
     }
+
+    // [L244-L246]
     if (this.isNew() || !brand.hasPromotionQualifierExclusion(this)) {
       brand.getPromotionQualifierExclusions().push(this);
     }
   }
 
-  /** [model/entity/PromotionQualifier.cfc:L248-L257] */
+  /**
+   * `removeExcludedBrand` - remove a brand from the EXCLUDE list, both sides.
+   *
+   * [model/entity/PromotionQualifier.cfc:L248-L257].
+   */
   removeExcludedBrand(brand: Brand): void {
-    const thisIndex: number = this.excludedBrands.indexOf(brand);
+    // [L249-L252]
+    const thisIndex: number = PromotionQualifier.indexOfEntity(
+      this.excludedBrands,
+      brand,
+      (held: Brand) => held.getBrandID(),
+    );
+
     if (thisIndex !== -1) {
       this.excludedBrands.splice(thisIndex, 1);
     }
 
-    const farSide: PromotionQualifier[] = brand.getPromotionQualifierExclusions();
-    const thatIndex: number = farSide.indexOf(this);
+    // [L253-L256]
+    const thatIndex: number = PromotionQualifier.indexOfEntity(
+      brand.getPromotionQualifierExclusions(),
+      this,
+      (held: PromotionQualifier) => held.getPromotionQualifierID(),
+    );
+
     if (thatIndex !== -1) {
-      farSide.splice(thatIndex, 1);
+      brand.getPromotionQualifierExclusions().splice(thatIndex, 1);
     }
   }
 
-  /** [model/entity/PromotionQualifier.cfc:L260-L267] */
+  // Excluded Options (many-to-many - owner) [model/entity/PromotionQualifier.cfc:L259]
+
+  /**
+   * `addExcludedOption` - add an option to the EXCLUDE list and synchronise the far side.
+   *
+   * [model/entity/PromotionQualifier.cfc:L260-L267]. Near side `excludedOptions` [L84], link table
+   * `SwPromoQualExclOption`. Far side `Option.getPromotionQualifierExclusions()`. Parameter named
+   * `option`, matching L260.
+   *
+   * ★ THIS IS THE METHOD THE `Option` DEFECT CALLS. `Option.removePromotionQualifierExclusion()`
+   * [model/entity/Option.cfc:L145-L147] calls `addExcludedOption(this)` - a "remove" that ADDS -
+   * and that defect is preserved in the shipped option.ts. See the inversion verdict table below
+   * for the full mirror-image contrast; nothing is compensated for here.
+   */
   addExcludedOption(option: Option): void {
+    // [L261-L263]
     if (option.isNew() || !this.hasExcludedOption(option)) {
       this.excludedOptions.push(option);
     }
+
+    // [L264-L266]
     if (this.isNew() || !option.hasPromotionQualifierExclusion(this)) {
       option.getPromotionQualifierExclusions().push(this);
     }
   }
 
-  /** [model/entity/PromotionQualifier.cfc:L268-L277] */
+  /**
+   * `removeExcludedOption` - remove an option from the EXCLUDE list, both sides.
+   *
+   * [model/entity/PromotionQualifier.cfc:L268-L277]. CORRECT on both sides - see the verdict table
+   * below, and note that it disagrees with `Option.removePromotionQualifierExclusion()`. Both
+   * behaviours are preserved and neither is reconciled with the other.
+   */
   removeExcludedOption(option: Option): void {
-    const thisIndex: number = this.excludedOptions.indexOf(option);
+    // [L269-L272]
+    const thisIndex: number = PromotionQualifier.indexOfEntity(
+      this.excludedOptions,
+      option,
+      (held: Option) => held.getOptionID(),
+    );
+
     if (thisIndex !== -1) {
       this.excludedOptions.splice(thisIndex, 1);
     }
 
-    const farSide: PromotionQualifier[] = option.getPromotionQualifierExclusions();
-    const thatIndex: number = farSide.indexOf(this);
+    // [L273-L276]
+    const thatIndex: number = PromotionQualifier.indexOfEntity(
+      option.getPromotionQualifierExclusions(),
+      this,
+      (held: PromotionQualifier) => held.getPromotionQualifierID(),
+    );
+
     if (thatIndex !== -1) {
-      farSide.splice(thatIndex, 1);
+      option.getPromotionQualifierExclusions().splice(thatIndex, 1);
     }
   }
 
-  /** [model/entity/PromotionQualifier.cfc:L280-L287] */
+  // Excluded Skus (many-to-many - owner) [model/entity/PromotionQualifier.cfc:L279]
+
+  /**
+   * `addExcludedSku` - add a SKU to the EXCLUDE list and synchronise the far side.
+   *
+   * [model/entity/PromotionQualifier.cfc:L280-L287]. Near side `excludedSkus` [L85], link table
+   * `SwPromoQualExclSku`. Far side `Sku.getPromotionQualifierExclusions()`. Parameter named `sku`,
+   * matching L280.
+   */
   addExcludedSku(sku: Sku): void {
+    // [L281-L283]
     if (sku.isNew() || !this.hasExcludedSku(sku)) {
       this.excludedSkus.push(sku);
     }
+
+    // [L284-L286]
     if (this.isNew() || !sku.hasPromotionQualifierExclusion(this)) {
       sku.getPromotionQualifierExclusions().push(this);
     }
   }
 
-  /** [model/entity/PromotionQualifier.cfc:L288-L297] */
+  /**
+   * `removeExcludedSku` - remove a SKU from the EXCLUDE list, both sides.
+   *
+   * [model/entity/PromotionQualifier.cfc:L288-L297].
+   */
   removeExcludedSku(sku: Sku): void {
-    const thisIndex: number = this.excludedSkus.indexOf(sku);
+    // [L289-L292]
+    const thisIndex: number = PromotionQualifier.indexOfEntity(
+      this.excludedSkus,
+      sku,
+      (held: Sku) => held.getSkuID(),
+    );
+
     if (thisIndex !== -1) {
       this.excludedSkus.splice(thisIndex, 1);
     }
 
-    const farSide: PromotionQualifier[] = sku.getPromotionQualifierExclusions();
-    const thatIndex: number = farSide.indexOf(this);
+    // [L293-L296]
+    const thatIndex: number = PromotionQualifier.indexOfEntity(
+      sku.getPromotionQualifierExclusions(),
+      this,
+      (held: PromotionQualifier) => held.getPromotionQualifierID(),
+    );
+
     if (thatIndex !== -1) {
-      farSide.splice(thatIndex, 1);
+      sku.getPromotionQualifierExclusions().splice(thatIndex, 1);
     }
   }
 
-  /** [model/entity/PromotionQualifier.cfc:L300-L307] */
+  // Excluded Products (many-to-many - owner) [model/entity/PromotionQualifier.cfc:L299]
+
+  /**
+   * `addExcludedProduct` - add a product to the EXCLUDE list and synchronise the far side.
+   *
+   * [model/entity/PromotionQualifier.cfc:L300-L307]. Near side `excludedProducts` [L86], link
+   * table `SwPromoQualExclProduct`. Far side `Product.getPromotionQualifierExclusions()`.
+   * Parameter named `product`, matching L300.
+   */
   addExcludedProduct(product: Product): void {
+    // [L301-L303]
     if (product.isNew() || !this.hasExcludedProduct(product)) {
       this.excludedProducts.push(product);
     }
+
+    // [L304-L306]
     if (this.isNew() || !product.hasPromotionQualifierExclusion(this)) {
       product.getPromotionQualifierExclusions().push(this);
     }
   }
 
-  /** [model/entity/PromotionQualifier.cfc:L308-L317] */
+  /**
+   * `removeExcludedProduct` - remove a product from the EXCLUDE list, both sides.
+   *
+   * [model/entity/PromotionQualifier.cfc:L308-L317].
+   */
   removeExcludedProduct(product: Product): void {
-    const thisIndex: number = this.excludedProducts.indexOf(product);
+    // [L309-L312]
+    const thisIndex: number = PromotionQualifier.indexOfEntity(
+      this.excludedProducts,
+      product,
+      (held: Product) => held.getProductID(),
+    );
+
     if (thisIndex !== -1) {
       this.excludedProducts.splice(thisIndex, 1);
     }
 
-    const farSide: PromotionQualifier[] = product.getPromotionQualifierExclusions();
-    const thatIndex: number = farSide.indexOf(this);
+    // [L313-L316]
+    const thatIndex: number = PromotionQualifier.indexOfEntity(
+      product.getPromotionQualifierExclusions(),
+      this,
+      (held: PromotionQualifier) => held.getPromotionQualifierID(),
+    );
+
     if (thatIndex !== -1) {
-      farSide.splice(thatIndex, 1);
+      product.getPromotionQualifierExclusions().splice(thatIndex, 1);
     }
   }
 
-  /** [model/entity/PromotionQualifier.cfc:L320-L327] */
+  // Excluded Product Types (many-to-many - owner) [model/entity/PromotionQualifier.cfc:L319]
+
+  /**
+   * `addExcludedProductType` - add a product type to the EXCLUDE list and synchronise the far side.
+   *
+   * [model/entity/PromotionQualifier.cfc:L320-L327]. Near side `excludedProductTypes` [L87], link
+   * table `SwPromoQualExclProductType`. Far side
+   * `ProductType.getPromotionQualifierExclusions()`. Parameter named `productType`, matching L320.
+   */
   addExcludedProductType(productType: ProductType): void {
+    // [L321-L323]
     if (productType.isNew() || !this.hasExcludedProductType(productType)) {
       this.excludedProductTypes.push(productType);
     }
+
+    // [L324-L326]
     if (this.isNew() || !productType.hasPromotionQualifierExclusion(this)) {
       productType.getPromotionQualifierExclusions().push(this);
     }
   }
 
-  /** [model/entity/PromotionQualifier.cfc:L328-L337] */
+  /**
+   * `removeExcludedProductType` - remove a product type from the EXCLUDE list, both sides.
+   *
+   * [model/entity/PromotionQualifier.cfc:L328-L337] - the LAST member of the section, and the last
+   * row of the inversion verdict table below.
+   */
   removeExcludedProductType(productType: ProductType): void {
-    const thisIndex: number = this.excludedProductTypes.indexOf(productType);
+    // [L329-L332]
+    const thisIndex: number = PromotionQualifier.indexOfEntity(
+      this.excludedProductTypes,
+      productType,
+      (held: ProductType) => held.getProductTypeID(),
+    );
+
     if (thisIndex !== -1) {
       this.excludedProductTypes.splice(thisIndex, 1);
     }
 
-    const farSide: PromotionQualifier[] = productType.getPromotionQualifierExclusions();
-    const thatIndex: number = farSide.indexOf(this);
+    // [L333-L336]
+    const thatIndex: number = PromotionQualifier.indexOfEntity(
+      productType.getPromotionQualifierExclusions(),
+      this,
+      (held: PromotionQualifier) => held.getPromotionQualifierID(),
+    );
+
     if (thatIndex !== -1) {
-      farSide.splice(thatIndex, 1);
+      productType.getPromotionQualifierExclusions().splice(thatIndex, 1);
     }
   }
 
-  // NO HELPERS EXIST FOR `fulfillmentMethods`, `shippingMethods` OR `shippingAddressZones`, and none
-  // is authored here. See the header: three out-of-scope entities call
-  // `addFulfillmentMethods` (plural), `addShippingMethod` and `addAddressZone`, and all six of those
-  // calls reach the `onMissingMethod` throw at org/Hibachi/HibachiEntity.cfc:L565.
-  //
-  // AUTHORING THE THREE MISSING PAIRS HERE WOULD SILENTLY REPAIR SIX PRESERVED DEFECTS AND MAKE
-  // THREE PROMOTION GATES POPULATABLE FOR THE FIRST TIME - a change to which orders qualify for a
-  // promotion, i.e. a change to money. This absence is a CONTRACT, exactly like the
-  // `getPromotionAccounts()` anti-contract in src/domain/entities/promotionAccount.ts and the
-  // excluded-helper anti-contract in src/domain/entities/priceGroupRate.ts.
-
   // =============  END:  Bidirectional Helper Methods ===================
+  // [model/entity/PromotionQualifier.cfc:L339]. Exactly one START/END pair for this section -
+  // there is NO duplicate banner here, unlike PromotionAccount [L117/L119], PromotionPeriod
+  // [L154/L156] and PromotionCode [L153/L155], and no missing END banner, unlike
+  // PromotionCode [L98].
+
+  //
+  // ★★★ THE MANDATORY "REMOVE-THAT-ADDS" INVERSION CROSS-CHECK, RE-RUN INDEPENDENTLY AGAINST THE
+  // VERBATIM SOURCE RATHER THAN TAKEN ON TRUST. All eleven `remove*` bodies in
+  // model/entity/PromotionQualifier.cfc were read line by line and each was checked for the
+  // failure mode that a sibling entity DOES exhibit: a `remove*` whose body calls an `add*`.
+  //
+  //  #  | remove*                    | Line | Near-side action              | Far-side action    | Verdict
+  // ----+----------------------------+------+-------------------------------+--------------------+--------
+  //   1 | removePromotionPeriod      | L128 | clears field, structDelete L136| arrayDeleteAt L134| CLEAN
+  //   2 | removeBrand                | L148 | arrayDeleteAt L151            | arrayDeleteAt L155 | CLEAN
+  //   3 | removeOption               | L168 | arrayDeleteAt L171            | arrayDeleteAt L175 | CLEAN
+  //   4 | removeSku                  | L188 | arrayDeleteAt L191            | arrayDeleteAt L195 | CLEAN
+  //   5 | removeProduct              | L208 | arrayDeleteAt L211            | arrayDeleteAt L215 | CLEAN
+  //   6 | removeProductType          | L228 | arrayDeleteAt L231            | arrayDeleteAt L235 | CLEAN
+  //   7 | removeExcludedBrand        | L248 | arrayDeleteAt L251            | arrayDeleteAt L255 | CLEAN
+  //   8 | removeExcludedOption       | L268 | arrayDeleteAt L271            | arrayDeleteAt L275 | CLEAN
+  //   9 | removeExcludedSku          | L288 | arrayDeleteAt L291            | arrayDeleteAt L295 | CLEAN
+  //  10 | removeExcludedProduct      | L308 | arrayDeleteAt L311            | arrayDeleteAt L315 | CLEAN
+  //  11 | removeExcludedProductType  | L328 | arrayDeleteAt L331            | arrayDeleteAt L335 | CLEAN
+  //
+  // RESULT = CLEAN. ZERO INVERSIONS ACROSS ALL ELEVEN. Every `remove*` in this component deletes
+  // on BOTH sides, and not one of them calls an `add*`. There is therefore NO inversion defect to
+  // preserve in this file, and none is invented to match the sibling pattern.
+  //
+  // ★★★ AND THE MIRROR-IMAGE CONTRAST, WHICH IS THE GENUINELY ILLUMINATING PART. The far side of
+  // one of these very relationships IS inverted. model/entity/Option.cfc:L145-L147 reads:
+  //
+  //     public void function removePromotionQualifierExclusion(required any promotionQualifier) {
+  //         arguments.promotionQualifier.addExcludedOption( this );
+  //     }
+  //
+  // - a "remove" that ADDS, preserved as a LEGACY-DEFECT in the already-shipped option.ts,
+  // alongside its twin at model/entity/Option.cfc:L129-L131, which inverts
+  // `removePromotionRewardExclusion` the same way. Note the precision of the failure: Option's
+  // INCLUDE side is correct - L137-L138 `removePromotionQualifier()` properly calls
+  // `removeOption(this)` - and ONLY the two EXCLUSION removers are inverted.
+  //
+  // SO THE TWO SIDES OF THE SAME RELATIONSHIP DISAGREE, AND OBSERVABLY SO:
+  //   * `option.removePromotionQualifierExclusion(q)`  ADDS    the option to `q.excludedOptions`.
+  //   * `q.removeExcludedOption(option)`               REMOVES the option from `q.excludedOptions`.
+  //
+  // BOTH BEHAVIOURS ARE PRESERVED EXACTLY AS WRITTEN AND ARE NOT RECONCILED. Repairing either
+  // would change which SKUs a promotion qualifier excludes, which changes which orders qualify,
+  // which changes money. This file's correct `removeExcludedOption` is left correct and option.ts's
+  // inverted remover is left inverted - each faithful to its own source.
 
   // =============== START: Custom Validation Methods ====================
-  // [model/entity/PromotionQualifier.cfc:L341] opens this block and L343 closes it, and IT IS EMPTY.
-  // Consistent with the total absence of a model/validation/PromotionQualifier.json - see the
-  // header. Nothing validates the ten numeric gates in the legacy system, and nothing is invented
-  // here. The empty banner is recorded rather than omitted so a reviewer diffing this file against
-  // the CFC finds the same structure.
+  // [model/entity/PromotionQualifier.cfc:L341] opens this block and L343 closes it, and IT IS
+  // COMPLETELY EMPTY. That emptiness is consequential rather than incidental: there is also no
+  // model/validation/PromotionQualifier.json (see the header note), so this entity has ZERO
+  // hand-written validators AND ZERO declaratively-invoked ones. NO zod schema is authored here -
+  // schema enforcement is the service tier's concern - and the absent JSON file is not invented.
   // ===============  END: Custom Validation Methods =====================
 
   // =============== START: Custom Formatting Methods ====================
-  // [model/entity/PromotionQualifier.cfc:L345] opens this block and L347 closes it, and IT IS EMPTY.
-  // Note that this is consistent rather than surprising: no property on this entity declares
-  // `hb_formatType="custom"`, so there is no `get<Property>Formatted()` for the framework's
-  // `getFormattedValue` to delegate back to [org/Hibachi/HibachiTransient.cfc:L502-L504]. Contrast
-  // model/entity/PriceGroupRate.cfc:L54, which does, and therefore hand-writes
-  // `getAmountFormatted()`.
+  // [model/entity/PromotionQualifier.cfc:L345] opens this block and L347 closes it, and IT IS
+  // COMPLETELY EMPTY. No `get<Property>Formatted` member exists, which is why
+  // `getFormattedValue('qualifierType')` [L102] resolves to the framework's generic rbKey branch
+  // rather than to a `custom` delegation [org/Hibachi/HibachiTransient.cfc:L502-L503].
   // ===============  END: Custom Formatting Methods =====================
 
   // ============== START: Overridden Implicet Getters ===================
-  // [model/entity/PromotionQualifier.cfc:L349] opens this block and L351 closes it, and IT IS EMPTY.
-  // The source's own spelling of the banner - "Implicet" - is reproduced above rather than
-  // corrected, because a reviewer diffing this file against the CFC should find the same words.
+  // [model/entity/PromotionQualifier.cfc:L349] opens this block and L351 closes it, and IT IS
+  // COMPLETELY EMPTY.
+  //
+  // LEGACY-NOTE [model/entity/PromotionQualifier.cfc:L349, L351]: the banner text misspells
+  // "Implicit" as "IMPLECET" in the source, identically to PromotionCode.cfc. Recorded verbatim
+  // here because banner text is source evidence, and normalising it would erase a marker that
+  // helps a reviewer confirm which component a section was copied from. Cosmetic only.
   // ==============  END: Overridden Implicet Getters ====================
 
   // ================== START: Overridden Methods ========================
-  // [model/entity/PromotionQualifier.cfc:L353] opens this block and L363 closes it.
+  // [model/entity/PromotionQualifier.cfc:L353] opens this block and L363 closes it. POPULATED with
+  // exactly two members: `getSimpleRepresentationPropertyName()` [L355-L357] and `isDeletable()`
+  // [L359-L361].
+  //
+  // BOTH GENUINELY OVERRIDE a base implementation on the Hibachi chain, and NEITHER carries the
+  // TypeScript `override` keyword. That is deliberate and required: `noImplicitOverride` asks for
+  // the keyword only where a member overrides a member of an actual base class, and this class
+  // extends nothing - the three-level CFML inheritance chain described in the header is replaced by
+  // explicit composition, not reproduced. Writing `override` here would not compile. The override
+  // relationship is therefore recorded in prose, matching the convention already shipped by the
+  // sibling entity files.
 
   /**
-   * `getSimpleRepresentationPropertyName` [model/entity/PromotionQualifier.cfc:L355-L357]
+   * `getSimpleRepresentationPropertyName` - which property carries this entity's display label.
    *
-   * Returns the literal `"qualifierType"`.
+   * CFML parity [model/entity/PromotionQualifier.cfc:L355-L357], the body VERBATIM:
    *
-   * ★ THIS IS NOT DEAD CODE, EVEN THOUGH `getSimpleRepresentation()` IS OVERRIDDEN ABOVE. The
-   * natural conclusion is that it must be unreachable: the framework base's
-   * `getSimpleRepresentation()` [org/Hibachi/HibachiEntity.cfc:L59-L71] is the caller that consults
-   * this method, and this entity displaces that base method with its own version at [L101]. That
-   * reasoning is correct as far as it goes and the conclusion is still WRONG, because the base
-   * method is not the only caller. Two others exist, both verified by grep across
-   * `org/Hibachi/**`:
+   *   public string function getSimpleRepresentationPropertyName() {
+   *       return "qualifierType";
+   *   }
    *
-   *   1. [org/Hibachi/HibachiEntity.cfc:L390] - inside `getPropertyOptions`, where it supplies
-   *      `smartList.addSelect(propertyIdentifier=..., alias="name")`. So when ANY OTHER entity
-   *      builds a `promotionQualifier` option list, THIS value decides which column becomes the
-   *      display name of each row.
-   *   2. [org/Hibachi/HibachiService.cfc:L31] - inside keyword-search construction, where it
-   *      supplies `addKeywordProperty(propertyIdentifier=..., weight=1)`. So this value also decides
-   *      which column an admin keyword search matches against.
+   * It names `qualifierType` [L53] - the same property `getSimpleRepresentation()` formats above,
+   * and the same property whose `hb_formatType="rbKey"` selects the rbKey branch of
+   * `getFormattedValue` [org/Hibachi/HibachiTransient.cfc:L504-L510]. The three are consistent in
+   * the source and stay consistent here.
    *
-   * Both members are therefore authored, and neither is redundant. Recording the reasoning matters
-   * more than the conclusion: a future reader who repeats the shallow analysis would delete a live
-   * framework contract.
-   *
-   * ★ CONTRAST THE THREE OTHER SHAPES IN THIS FOLDER. model/entity/ProductType.cfc:L273 overrides
-   * `getSimpleRepresentation()` and does NOT declare the property-name variant.
-   * model/entity/PriceGroupRate.cfc:L270 declares the property-name variant and does NOT override
-   * the method. This entity declares BOTH. And the base throws at
-   * [org/Hibachi/HibachiEntity.cfc:L87] when NEITHER is supplied. Four distinct legacy shapes, each
-   * ported as it stands.
+   * PURE AND SYNCHRONOUS.
    */
   getSimpleRepresentationPropertyName(): string {
     return 'qualifierType';
   }
 
   /**
-   * `isDeletable` - whether this qualifier may be deleted.
-   * [model/entity/PromotionQualifier.cfc:L359-L361]
+   * `isDeletable` - may this qualifier be deleted?
    *
-   *   return !getPromotionPeriod().isExpired() && getPromotionPeriod().getPromotion().isDeletable();
+   * CFML parity [model/entity/PromotionQualifier.cfc:L359-L361], the body VERBATIM:
    *
-   * A TWO-LEVEL CLIMB WITH THREE UNGUARDED DEREFERENCES, all preserved:
+   *   public boolean function isDeletable() {
+   *       return !getPromotionPeriod().isExpired()
+   *              && getPromotionPeriod().getPromotion().isDeletable();
+   *   }
    *
-   *   * `getPromotionPeriod()` is nullable [L68, no `notNull`] and `.isExpired()` is called on it
-   *     directly.
-   *   * `getPromotionPeriod()` is dereferenced a SECOND time for `.getPromotion()`.
-   *   * `.getPromotion()` is itself nullable on the far side and `.isDeletable()` is called on it
-   *     directly.
+   * A THREE-LEVEL CROSS-ENTITY CHAIN, AND EVERY FAR-SIDE MEMBER WAS VERIFIED PRESENT BEFORE THIS
+   * BODY WAS AUTHORED, so there is no framework-inheritance gap to record here - unlike the
+   * `PromotionCode.isDeletable()` case that promotion.ts had to probe for:
+   *   * `PromotionPeriod.isExpired()` is declared at [model/entity/PromotionPeriod.cfc:L83] and is
+   *     authored in the shipped promotionPeriod.ts.
+   *   * `PromotionPeriod.getPromotion()` is the many-to-one accessor for
+   *     [model/entity/PromotionPeriod.cfc:L59] and is present in promotionPeriod.ts, typed
+   *     `Promotion | undefined`.
+   *   * `Promotion.isDeletable()` is declared at [model/entity/Promotion.cfc:L170] and is authored
+   *     in the shipped promotion.ts.
    *
-   * All three are CFML null-reference errors in the legacy, so all three raise here.
+   * ★ OPERAND ORDER AND SHORT-CIRCUITING ARE PRESERVED. CFML `&&` short-circuits exactly as
+   * TypeScript's does, so when the period IS expired the right-hand operand is never evaluated and
+   * `Promotion.isDeletable()` is NEVER REACHED. That is observable - a period whose promotion is
+   * unreachable still answers `false` rather than raising, provided the period itself is present -
+   * so the order is load-bearing and is not rearranged.
    *
-   * ★ THE SHORT-CIRCUIT IS LOAD-BEARING, and it is why the second and third dereferences are
-   * reached only conditionally. CFML `&&` short-circuits, so an EXPIRED period returns `false`
-   * WITHOUT ever touching `getPromotion()`. That means an expired qualifier whose promotion is
-   * unmaterialized answers `false` rather than raising - a real, observable difference from
-   * evaluating both operands eagerly, and the reason the body below is written as two statements
-   * rather than one expression.
+   * ★ `getPromotionPeriod()` IS CALLED TWICE IN THE SOURCE. That is a legacy inefficiency, NOT a
+   * defect, and it carries no LEGACY-DEFECT marker. It is bound to a local below for readability.
+   * The rewrite is behaviour-preserving because the accessor is a pure field read with no side
+   * effect and the field cannot change between the two reads inside this method, and because the
+   * local is taken BEFORE the expiry test - so the evaluation ORDER is unchanged.
    *
-   * ★ AND THE OVERRIDE IS WHAT MAKES THIS METHOD EXIST AT ALL. The framework's own version
-   * [org/Hibachi/HibachiEntity.cfc:L204-L206] drives deletability from the entity's validation file
-   * in the `delete` context - and there is NO model/validation/PromotionQualifier.json, so the base
-   * version would have had nothing to consult. This override is the entire deletability rule for
-   * this entity. Contrast model/entity/PromotionCode.cfc, which declares NO `isDeletable()` and
-   * relies on exactly that framework path through its own validation file's
-   * `{"contexts":"delete","maxCollection":0}` rule.
+   * ★★ TWO DISTINCT RAISES ARE PRESERVED, NOT ONE. THE CHAIN HAS TWO NULLABLE LINKS.
+   *   1. `getPromotionPeriod()` can be `undefined`: the foreign key is nullable because
+   *      [model/entity/PromotionQualifier.cfc:L68] declares no `notnull`, and
+   *      `removePromotionPeriod()` clears it outright. CFML dereferencing it is a null-reference
+   *      error - and note the ORDERING CONSEQUENCE: this raise happens BEFORE the expiry
+   *      short-circuit can spare it, because the dereference is the first thing L360 evaluates. An
+   *      absent period therefore RAISES rather than answering `false`.
+   *   2. `getPromotion()` can be `undefined` too - promotionPeriod.ts types it
+   *      `Promotion | undefined` honestly, because [model/entity/PromotionPeriod.cfc:L59] is a
+   *      nullable many-to-one that a repository may not have materialised. CFML calling
+   *      `.isDeletable()` on it is the same class of null-reference error.
    *
-   * @throws Error when the promotion period is unmaterialized, or when a non-expired period's
-   *   promotion is unmaterialized.
+   * NEITHER RAISE IS SOFTENED. NO OPTIONAL CHAIN (`?.`) IS ADDED AND NO FALLBACK BOOLEAN IS
+   * RETURNED, because either would answer a DIFFERENT QUESTION than the legacy does: `?.` would
+   * yield `undefined` and coerce to a falsy "not deletable", silently reporting that a deletable
+   * qualifier cannot be deleted whenever its graph was fetched shallowly. Behaviour preservation
+   * extends to defects - a member that throws at runtime today throws in the target - and the two
+   * messages are distinguishable so a reviewer can tell which link failed.
+   *
+   * COSMETIC CONTRAST, recorded for completeness: [model/entity/PromotionPeriod.cfc:L87] spells its
+   * own declaration `isDeletable ()` WITH A SPACE before the parenthesis, whereas L359 here has
+   * none. Harmless CFML whitespace; not reproduced.
+   *
+   * SYNCHRONOUS - the whole chain traverses already-materialised associations.
+   *
+   * @throws Error when `promotionPeriod` is absent, or when the reached period has no promotion.
    */
   isDeletable(): boolean {
+    // [L360] The FIRST `getPromotionPeriod()` dereference, evaluated ahead of everything else -
+    // which is why an absent period raises rather than short-circuiting to `false`. `isNullish`
+    // carries the CFML absence semantics; the `=== undefined` operand is a TYPE-NARROWING step
+    // only, since `isNullish` returns `boolean` rather than a type predicate.
     const promotionPeriod: PromotionPeriod | undefined = this.promotionPeriod;
 
-    if (promotionPeriod === undefined) {
+    if (isNullish(promotionPeriod) || promotionPeriod === undefined) {
       throw new Error(
-        'PromotionQualifier.isDeletable was called on a qualifier with no materialized ' +
-          'promotionPeriod. model/entity/PromotionQualifier.cfc:L360 calls ' +
-          'getPromotionPeriod().isExpired() with no null guard, so an unattached or unjoined ' +
-          'qualifier is a CFML null-reference error there too.',
+        'PromotionQualifier.isDeletable cannot reach its promotion period: ' +
+          'model/entity/PromotionQualifier.cfc:L360 calls getPromotionPeriod().isExpired() with ' +
+          'no null guard, so an unmaterialized or cleared promotion period is a CFML ' +
+          'null-reference error. The foreign key is nullable - ' +
+          'model/entity/PromotionQualifier.cfc:L68 declares no notnull - and ' +
+          'removePromotionPeriod() clears it outright, which is what makes this reachable.',
       );
     }
 
-    // [model/entity/PromotionQualifier.cfc:L360] the FIRST operand. CFML `&&` short-circuits, so an
-    // expired period answers `false` WITHOUT the second dereference below - which is why this is a
-    // separate statement rather than one expression.
+    // [L360] `!getPromotionPeriod().isExpired() && ...` - the short-circuit arm. On this path the
+    // right-hand operand is never evaluated, so the promotion is NOT reached and cannot raise.
     if (promotionPeriod.isExpired()) {
       return false;
     }
 
-    // [L360] the SECOND operand: a second dereference of the period, then an unguarded call on its
-    // promotion.
+    // [L360] The SECOND nullable link. Deliberately left to type inference rather than annotated:
+    // the import ledger for this file is closed at two value imports and six type-only entity
+    // imports, and `Promotion` is not among them, so naming the type here would require a seventh
+    // import that this entity does not otherwise need. Inference gives the same
+    // `Promotion | undefined` with no import at all.
     const promotion = promotionPeriod.getPromotion();
 
-    if (promotion === undefined) {
+    if (isNullish(promotion) || promotion === undefined) {
       throw new Error(
-        'PromotionQualifier.isDeletable reached the second operand of its deletability test but ' +
-          'the promotion period has no materialized promotion. ' +
-          'model/entity/PromotionQualifier.cfc:L360 calls ' +
-          'getPromotionPeriod().getPromotion().isDeletable() with no null guard. This branch is ' +
-          'reached only when the period is NOT expired - an expired period short-circuits to false ' +
-          'before touching the promotion.',
+        'PromotionQualifier.isDeletable reached its promotion period but the period has no ' +
+          'promotion: model/entity/PromotionQualifier.cfc:L360 calls ' +
+          'getPromotionPeriod().getPromotion().isDeletable() with no null guard, and ' +
+          'model/entity/PromotionPeriod.cfc:L59 is a nullable many-to-one that a repository may ' +
+          'not have materialized. CFML raises a null-reference error here rather than answering ' +
+          'false, and that answer is preserved.',
       );
     }
 
@@ -1673,109 +2475,213 @@ export class PromotionQualifier {
   // ==================  END:  Overridden Methods ========================
 
   // =================== START: ORM Event Hooks  =========================
-  // [model/entity/PromotionQualifier.cfc:L365] opens this block and L367 closes it, and IT IS EMPTY.
+  // [model/entity/PromotionQualifier.cfc:L365] opens this block and L367 closes it, and IT IS
+  // COMPLETELY EMPTY.
   //
-  // SO NEITHER `preInsert()` NOR `preUpdate()` IS DECLARED HERE, deliberately. The folder's lifecycle
-  // contract is `preInsert(): void` / `preUpdate(oldData?): void` on the three entities that maintain
-  // derived state on save - category.ts, priceGroup.ts and productType.ts, each maintaining a
-  // materialized ID path. This entity maintains none, so authoring empty hooks would assert a
-  // maintenance obligation the source does not have.
+  // ★ NOTHING IS AUTHORED HERE: no `preInsert`, no `preUpdate`, no path-maintenance method, no UUID
+  // seeding. This entity has NO materialized-path column of any kind, so there is no path to
+  // maintain.
+  //
+  // THE CONSEQUENCE FOR THE PROJECT-WIDE PLAN IS WORTH STATING: the Agent Action Plan's mandate to
+  // reshape ORM lifecycle hooks into repository-invoked maintenance methods is VACUOUS FOR THIS
+  // FILE - there is nothing to reshape, so no reshaping budget is touched. The hook census stays
+  // final at four in-scope entities - Category [model/entity/Category.cfc:L126 preInsert, L131
+  // preUpdate], PriceGroup [model/entity/PriceGroup.cfc:L206, L211], ProductType
+  // [model/entity/ProductType.cfc:L305, L310] and PromotionCode [model/entity/PromotionCode.cfc:L179,
+  // insert-only]. PromotionQualifier ADDS NO FIFTH, exactly as Promotion [L176/L178, also empty]
+  // added none.
   // ===================  END:  ORM Event Hooks  =========================
 
   // ================== START: Deprecated Methods ========================
-  // [model/entity/PromotionQualifier.cfc:L369] opens this block and L371 closes it, and IT IS EMPTY.
-  // Contrast model/entity/Sku.cfc:L885-L910, which has four. Recorded so the absence reads as a fact
-  // about the source rather than an omission here.
+  // [model/entity/PromotionQualifier.cfc:L369] opens this block and L371 closes it, and IT IS
+  // COMPLETELY EMPTY. A section also present-and-empty in PromotionCode.cfc. Nothing is authored.
   // ==================  END:  Deprecated Methods ========================
 }
 
-// ---------------------------------------------------------------------------
-// WHAT THE TEST TIER MUST PIN FOR THIS MODULE (all NET-NEW - `PromotionQualifier` has no legacy test)
+// =========================================================================================
+// ANTI-CONTRACTS - MEMBERS THAT DELIBERATELY DO NOT EXIST ON THIS CLASS
 //
-//   1. ALL THIRTEEN collection accessors are `readonly` views and NOT live, and the census reason is
-//      named in the test so a future "consistency" change has to argue with the census rather than
-//      with a style preference. This is the mirror image of the LIVE assertions in brand.ts,
-//      option.ts and productType.ts, and pinning both sides is what makes the owner/inverse
-//      inversion regression-proof.
-//   2. Every collection defaults to `[]` when the constructor omits it - never `undefined`.
-//   3. ★ ALL TEN NUMERIC GATES return `undefined` when the constructor omits them - NEVER `0`, never
-//      `Infinity`, never a `Money` of zero. Assert each of the ten individually; a substituted zero
-//      on any of the five MAXIMA would disqualify every order, and that is the single
-//      highest-consequence parity check in this file.
-//   4. The three-way type split holds: the four quantity gates are plain numbers, the four currency
-//      gates are `Money`, and the two fulfillment-weight gates are `DecimalString`. A test that
-//      constructs a weight gate from a `Money` must not compile.
-//   5. `getRewardMatchingTypeOptions()` returns exactly five rows, in the order
-//      any/sku/product/productType/brand, with each name being
-//      `entity.promotionQualifier.rewardMatchingType.<value>`. ★ Assert the key-to-value CONSISTENCY
-//      explicitly - it is the property that distinguishes this option list from
-//      `PriceGroupRate.getAmountTypeOptions()`, whose third pair deliberately mismatches.
-//   6. `getRewardMatchingTypeOptions()` returns a FRESH array each call - two calls must not share
-//      identity.
-//   7. `getSimpleRepresentation()` composes `<entity label> - <qualifier-type label>` with the
-//      separator being exactly three characters, space-hyphen-space.
-//   8. ★ `getSimpleRepresentation()` on a qualifier with `qualifierType: undefined` emits the entity
-//      label followed by the separator and NOTHING - a TRAILING space survives. Assert the exact
-//      string. This is the `getFormattedValue` rbKey-branch `else { return ''; }` at
-//      org/Hibachi/HibachiTransient.cfc:L507-L508, and a trimmed result would be a different output.
-//   9. `getSimpleRepresentation()` passes the STORED qualifier type to the provider verbatim - assert
-//      with a mixed-case value, since the key is built from the value as-is.
-//  10. `getSimpleRepresentation()` RAISES with no injected provider, and the message names both keys.
-//  11. `getSimpleRepresentationPropertyName()` returns exactly `"qualifierType"`. ★ Add a test whose
-//      NAME records that this method is live via HibachiEntity.cfc:L390 and HibachiService.cfc:L31
-//      despite getSimpleRepresentation() being overridden - the test is the guard against a future
-//      "this is unreachable, delete it".
-//  12. `isDeletable()` returns `false` for an EXPIRED period WITHOUT touching the promotion - assert
-//      with the promotion deliberately unmaterialized, so an eager implementation raises and fails.
-//      This is the short-circuit assertion and it is the reason the body is two statements.
-//  13. `isDeletable()` returns the promotion's own answer for a non-expired period - assert both
-//      `true` and `false`.
-//  14. `isDeletable()` RAISES with no materialized period, and RAISES for a non-expired period with
-//      no materialized promotion - two distinct messages, both asserted.
-//  15. `isNew()` is TRUE for `promotionQualifierID: ''` and FALSE otherwise.
-//  16. `setPromotionPeriod()` appends to the period's LIVE qualifier array unconditionally when THIS
-//      qualifier is new, and at most once when it is saved.
-//  17. `removePromotionPeriod()` splices BY REFERENCE - a distinct object with the SAME primary key
-//      must NOT be removed. That is the assertion that documents the
-//      arrayFind-vs-Hibachi-contains distinction, and it must not be "fixed" to a key comparison.
-//  18. `removePromotionPeriod()` clears the local reference EVEN WHEN the qualifier was not found,
-//      and RAISES when called with no argument on an unattached qualifier.
-//  19. All ten `add*` pairs guard the NEAR side on the ARGUMENT's newness and the FAR side on THIS
-//      qualifier's newness. Construct the four combinations for at least one included and one
-//      excluded pair and assert which appends happen - reversing either polarity must fail.
-//  20. The five INCLUDED pairs reach `getPromotionQualifiers()` on the far side and the five EXCLUDED
-//      pairs reach `getPromotionQualifierExclusions()`. Assert the far-side collection each one
-//      touches; crossing them would be invisible to a contents-only test.
-//  21. All ten `remove*` methods splice BOTH sides with INDEPENDENT guards: a needle present on one
-//      side only must still be removed from that side.
-//  22. The ten entity-typed `has*` probes match by PRIMARY KEY across two distinct objects
-//      representing the same saved row, and fall back to REFERENCE identity when the candidate's key
-//      is `''`.
-//  23. The three projection-typed probes - `hasFulfillmentMethod`, `hasShippingMethod`,
-//      `hasShippingAddressZone` - match by PRIMARY KEY ONLY and have NO reference fallback. Assert
-//      that two distinct objects with the same ID DO match, and record in the test name that the far
-//      side has no `isNew()` to consult.
-//  24. ★ THE ANTI-CONTRACT: assert the ABSENCE of `addFulfillmentMethod`, `addFulfillmentMethods`,
-//      `removeFulfillmentMethod`, `addShippingMethod`, `removeShippingMethod`, `addAddressZone`,
-//      `addShippingAddressZone`, `removeAddressZone` and `removeShippingAddressZone` on the
-//      prototype. Adding any of them would silently repair six preserved defects in three
-//      out-of-scope entities and make three promotion gates populatable for the first time, so the
-//      absence is pinned the same way promotionAccount.ts's anti-contract is.
-//  25. `getQualifierApplicationTypeOptions` is ABSENT - the L99 property is vestigial and has exactly
-//      one occurrence in the whole repository. Pin the absence so a future "every options property
-//      needs a getter" sweep has to read the note.
-//  26. `preInsert` and `preUpdate` are ABSENT from this class - the source's ORM hook banner is empty.
-//  27. ★ `hasAnyOption` and `hasAnyExcludedOption` SHORT-CIRCUIT on the first match. Pass an array
-//      whose FIRST element is a member and whose second is a spy/getter that would record being
-//      read; assert the second was never touched. This is `hasAnyInProperty`'s in-loop `return true`
-//      [org/Hibachi/HibachiEntity.cfc:L343-L345], not a whole-array scan.
-//  28. ★ BOTH aggregate probes answer FALSE for an EMPTY array - `hasAnyInProperty` runs its loop
-//      zero times and falls to `return false` [org/Hibachi/HibachiEntity.cfc:L348]. This is the
-//      load-bearing case at [model/service/PromotionService.cfc:L885]: a SKU with NO options must
-//      NOT be excluded by an option-based exclusion gate. Asserting `true` here - or raising - would
-//      disqualify every optionless SKU from every qualifier that carries an option exclusion.
-//  29. Both aggregate probes DELEGATE: an unsaved candidate present by REFERENCE in `options` is
-//      found by `hasAnyOption`, because `hasOption` supplies the reference fallback. Assert through
-//      the aggregate rather than only through the singular probe, so a future reimplementation that
-//      inlines a key-only comparison here is caught.
-// ---------------------------------------------------------------------------
+// Recorded because their ABSENCE is a decision with consequences, and an absence is invisible
+// unless it is written down. A future agent reaching for any of these should read this block
+// first.
+//
+// ★★★ 1. NO `setPromotion` AND NO `removePromotion`. THIS IS THE MOST IMPORTANT ENTRY.
+// model/entity/PromotionPeriod.cfc:L126 and :L129 call `setPromotion(...)` and
+// `removePromotion(...)` ON A PromotionQualifier:
+//
+//     public void function addPromotionQualifier(required any promotionQualifier) {
+//         arguments.promotionQualifier.setPromotion( this );
+//     }
+//     public void function removePromotionQualifier(required any promotionQualifier) {
+//         arguments.PromotionQualifier.removePromotion( this );
+//     }
+//
+// THOSE TWO CALLS ARE CONFIRMED THROWING DEFECTS, and they throw PRECISELY BECAUSE THIS ENTITY
+// HAS NO SUCH MEMBERS. `setPromotion` matches NO branch of the dynamic dispatcher - the eleven
+// patterns at [org/Hibachi/HibachiEntity.cfc:L507-L565] are all `has*`/`get*` shapes, none
+// beginning `set` - so control falls through to the THROW at
+// [org/Hibachi/HibachiEntity.cfc:L565]. `removePromotion` likewise. The relationship this entity
+// actually owns is to a PROMOTION PERIOD [L68], not to a promotion, so the correct members are
+// `setPromotionPeriod` / `removePromotionPeriod` above and nothing else.
+//
+// AUTHORING `setPromotion`/`removePromotion` HERE TO MAKE THOSE CALLS RESOLVE WOULD BE A DOUBLE
+// VIOLATION: it would repair a defect the plan requires preserved, and it would imply a
+// qualifier-to-promotion foreign key that the schema does not have - contradicting the
+// schema-continuity constraint. The shipped promotionPeriod.ts already publishes this
+// anti-contract from its side; this is the matching half.
+//
+// 2. NO `getQualifierApplicationTypeOptions()`. The property is declared at
+// model/entity/PromotionQualifier.cfc:L99 and the method does not exist - see the DOUBLE ORPHAN
+// LEGACY-DEFECT above. Reproducing the source's member set exactly is faithful, not lazy.
+//
+// 3. NO `rewardMatchingTypeOptions` PROPERTY. The other half of the same orphan pair: the method
+// exists at L107 with no declared property. Neither half is normalised.
+//
+// 4. NO `preInsert`, NO `preUpdate`, NO path-maintenance method. The ORM Event Hooks banner pair
+// at L365/L367 is empty and this entity carries no materialized-path column.
+//
+// 5. NO `attributeValues` MEMBER AND NO EAV ACCESSOR. This component declares zero
+// `attributeValues`; the project-wide census finds exactly four declarations - Sku.cfc:L70,
+// Product.cfc:L75, ProductType.cfc:L67 and Brand.cfc:L60 - and the EAV path is not ported. The
+// twelve `getService(...)` sites on the intermediate model/entity/HibachiEntity.cfc [L123, L130,
+// L135, L145, L178, L180, L182, L194, L196, L207, L257, L266], seven of them `attributeService`,
+// are moot for that reason and must not be silently re-implemented.
+//
+// 6. NO SMART-LIST MEMBER. `get*SmartList` and `get*OptionsSmartList` are Hibachi query-builder
+// artifacts replaced project-wide by typed repository queries.
+//
+// 7. NO ZOD SCHEMA. model/validation/PromotionQualifier.json does not exist - it is one of the six
+// confirmed deliberate absences alongside Category.json, PromotionApplied.json,
+// PromotionAccount.json, Product_AddOption.json and Product_AddOptionGroup.json - and the absent
+// file is not invented. Contrast model/validation/PromotionReward.json, which DOES exist, giving
+// the sibling entity obligations this one does not have. No length constraint is added to
+// `qualifierType` [L53 declares none] and no range constraint to any of the ten gates.
+//
+// 8. NO ENTITY-TYPED Group A ACCESSORS. There is no `getFulfillmentMethods()`,
+// `getShippingMethods()` or `getShippingAddressZones()` returning entity arrays, and no
+// `FulfillmentMethod`, `ShippingMethod` or `AddressZone` type is imported or referenced - those
+// subsystems are out of scope. The link-table contract survives as the three opaque identifier
+// arrays above.
+//
+// 9. NO `Account` TYPE. The two audit foreign keys are inert identifier columns, matching the
+// treatment in every already-shipped entity file.
+//
+// 10. NO INJECTED PORT OF ANY KIND. This component has ZERO `getService(` sites, so there is no
+// collaborator to inject, no `async` member, and no reason for this module to import from
+// src/domain/ports/**.
+// =========================================================================================
+
+// =========================================================================================
+// WHAT THE REPOSITORY LAYER OWNS - STATED SO THE BOUNDARY IS AUDITABLE, NOT IMPLEMENTED HERE
+//
+// Associations are MATERIALIZED AT THE REPOSITORY BOUNDARY and laziness is NOT simulated: there
+// is no proxy, no deferred loader and no lazy-collection emulation anywhere in this file. That
+// converts every implicit Hibernate lazy load into an explicit query decision and removes the
+// N+1 hazard that unbounded graph walking creates.
+//
+// src/repositories/mysql/mysqlPromotionRepository.ts (planned) owns:
+//   * row -> entity hydration from `SwPromoQual`, including the four currency gates as `Money`
+//     and the two weight gates as plain numbers;
+//   * materializing the ten in-scope collections from `SwPromoQualBrand`, `SwPromoQualOption`,
+//     `SwPromoQualSku`, `SwPromoQualProduct`, `SwPromoQualProductType`, `SwPromoQualExclBrand`,
+//     `SwPromoQualExclOption`, `SwPromoQualExclSku`, `SwPromoQualExclProduct` and
+//     `SwPromoQualExclProductType`;
+//   * populating the three opaque identifier arrays from `SwPromoQualFulfillmentMethod`,
+//     `SwPromoQualShippingMethod` and `SwPromoQualShipAddressZone`;
+//   * maintaining `createdDateTime`, `createdByAccountID`, `modifiedDateTime` and
+//     `modifiedByAccountID`, which are `hb_populateEnabled="false"` and therefore never
+//     caller-supplied;
+//   * documenting the FETCH SHAPE at each producing method, because with no ORM the eager-load
+//     decision is an explicit, reviewable choice rather than an emergent one.
+//
+// CONTEXT ONLY, IMPLEMENTED NOWHERE HERE: model/dao/PromotionDAO.cfc:L51
+// `getActivePromotionRewards` has NO `ORDER BY`, which is what makes reward iteration order
+// non-deterministic in the promotion engine. That fact belongs to src/services and is recorded
+// here purely so nobody looks for the cause inside this entity.
+// =========================================================================================
+
+// =========================================================================================
+// THE DELETE-CONTEXT ANTI-CORRUPTION TENSION - RECORDED SO THE PATTERN STAYS VISIBLE
+//
+// Elsewhere in the project, delete-context validation rules of the `maxCollection: 0` shape assert
+// that a row may only be deleted when some collection is empty. Because Group A is exposed here as
+// three opaque identifier arrays that DEFAULT TO EMPTY, any such rule written over
+// `fulfillmentMethods`, `shippingMethods` or `shippingAddressZones` would TRIVIALLY PASS in
+// TypeScript where it could legitimately BLOCK in CFML - the domain object simply would not be
+// holding the rows the rule counts.
+//
+// No such rule targets this entity today: model/validation/PromotionQualifier.json does not exist
+// at all, so the tension is latent rather than live. It is recorded because the shape recurs, and
+// because the correct resolution is unambiguous - DELETE-CONTEXT ENFORCEMENT BELONGS TO THE
+// SERVICE AND REPOSITORY TIERS, which can count link-table rows directly, and NOT to an entity
+// that deliberately does not materialize them.
+// =========================================================================================
+
+// =========================================================================================
+// THE TEST OBLIGATION FOR THIS MODULE - DECLARED HERE, AUTHORED ELSEWHERE
+//
+// Every converted method requires a test. NO TEST FILE IS CREATED BY THIS MODULE: slatwall-ts/tests
+// is owned by a different agent, and creating a suite here would breach the single-file scope.
+// This block is the contract that agent inherits.
+//
+// TARGET SUITE: slatwall-ts/tests/unit/domain/entities/promotionQualifier.test.ts
+//
+// ★★★ THIS SUITE IS NET-NEW AND MUST BE LABELLED NET-NEW. IT MUST NEVER BE PRESENTED AS PARITY
+// WITH LEGACY COVERAGE. There is NO legacy test for this entity: meta/tests/unit/entity/ contains
+// no PromotionQualifierTest.cfc. Only TWO of the eighteen entity suites extend legacy coverage -
+// brand.test.ts, carrying forward `defaults_are_correct()` from
+// meta/tests/unit/entity/BrandTest.cfc, and product.test.ts, carrying forward
+// `productUrlIsCorrectlyFormatted()` from meta/tests/unit/entity/ProductTest.cfc. A third legacy
+// file, meta/tests/functional/admin/entity/ProductTest.cfc, is an EMPTY STUB acknowledged as a gap
+// and never counted as coverage. slatwall-ts/tests/traceability/legacyTestMap.ts must record this
+// module as NET-NEW, and will fail the suite if the module has no test at all - mirroring the
+// structural floor that `EntityCoverageTest.all_entities_have_test_cases()` enforces in the legacy
+// suite.
+//
+// CASES THE SUITE MUST COVER:
+//   1. ALL TEN GATES DEFAULT TO `undefined`, AND NOT ONE DEFAULTS TO `0`. The highest-value
+//      assertion in the file: `undefined` on a `maximum*` gate means UNLIMITED, so coalescing it
+//      to `0` would turn "unlimited" into "nothing qualifies" and silently suppress every discount
+//      that gate governs.
+//   2. The four currency gates [L57, L58, L61, L62] round-trip as `Money`; the two weight gates
+//      [L63, L64] round-trip as plain `number` and are NOT `Money`.
+//   3. `rewardMatchingType` accepts exactly the five `RewardMatchingType` values and no sixth.
+//   4. `getRewardMatchingTypeOptions()` returns five entries IN SOURCE ORDER with the exact
+//      `value` strings `any`, `sku`, `product`, `productType`, `brand`, and the exact rbKey
+//      `name` strings. Two calls must not share array identity.
+//   5. `getSimpleRepresentationPropertyName()` returns `'qualifierType'`.
+//   6. `getSimpleRepresentation()` composition, BOTH BRANCHES: the composed rbKey suffix when
+//      `qualifierType` is present, and the prefix-plus-separator-plus-nothing result when it is
+//      absent - including the trailing space, and asserting that it does NOT throw.
+//   7. `hasAnyOption` / `hasAnyExcludedOption`: `false` for an empty input array; `true` for a
+//      primary-key match; `false` for a distinct primary key. Crucially, a DIFFERENT INSTANCE
+//      CARRYING THE SAME PRIMARY KEY must match, proving the comparison is not by reference.
+//   8. All ten singular `has*` predicates: `false` on an empty collection; `true` on a
+//      primary-key match.
+//   9. Each of the ten `add*`: appends near-side once, appends far-side once, and is idempotent
+//      for a PERSISTED argument. Also assert the non-idempotent transient path, since
+//      `isNew()` short-circuits the containment probe and a transient IS appended twice.
+//  10. Each of the eleven `remove*`: deletes on BOTH sides - AND INCLUDING THE INDEX-0 CASE,
+//      which is the specific regression that catches a `> 0` guard written against a `findIndex`
+//      result.
+//  11. `setPromotionPeriod` assigns the field unconditionally and appends far-side under the
+//      guard.
+//  12. `removePromotionPeriod` with NO argument defaults from the field and clears it; and THROWS
+//      when both the argument and the field are absent.
+//  13. `isDeletable()` returns `false` when the period is expired WITHOUT consulting the promotion
+//      (assert the short-circuit by supplying a period whose promotion is absent and expecting
+//      `false`, not a raise); returns `true` only when the period is unexpired and the promotion
+//      is deletable; THROWS when `promotionPeriod` is absent; and THROWS when the period's
+//      promotion is absent on the unexpired path.
+//  14. The three opaque identifier arrays default to `[]` and round-trip string identifiers.
+//  15. All ten in-scope collections default to `[]`.
+//  16. THE TEN COLLECTION ACCESSORS RETURN LIVE REFERENCES - mutating the returned array must be
+//      observable through the entity - while the three Group A accessors and
+//      `getRewardMatchingTypeOptions()` are `readonly`.
+//  17. `isNew()` is `true` for an unsaved primary key and `false` for a populated one.
+//  18. Regression tests follow the `issue_<ticket#>` naming convention carried over from
+//      meta/tests/unit/IssuesTest.cfc.
+//
+// The suite must run NON-INTERACTIVELY - slatwall-ts/vitest.config.ts disables watch mode - so the
+// gate is usable in an automated refine loop.
+// =========================================================================================
