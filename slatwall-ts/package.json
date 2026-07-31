@@ -1,27 +1,28 @@
 {
   "name": "slatwall-ts",
-  "version": "3.1.39",
+  "version": "0.1.0",
   "private": true,
-  "description": "TypeScript/AWS Lambda port of the Slatwall 3.1.39 catalog + promotions/pricing slice. Version tracks the ported Slatwall release baseline recorded in ../version.txt.",
+  "description": "TypeScript port of the Slatwall catalog and promotions/pricing slice for the AWS Lambda nodejs20.x runtime; reads and writes the existing Sw* MySQL schema unchanged.",
   "license": "GPL-3.0-or-later",
   "type": "module",
   "engines": {
-    "node": ">=20.20.2 <21.0.0",
+    "node": ">=20.19.0 <21",
     "npm": ">=10.8.2"
   },
   "scripts": {
-    "typecheck": "tsc --noEmit -p tsconfig.json",
+    "typecheck": "tsc --noEmit",
     "compile": "tsc -p tsconfig.build.json",
     "bundle": "node esbuild.config.mjs",
     "build": "npm run typecheck && npm run bundle",
     "package": "npm run typecheck && node esbuild.config.mjs --zip",
     "test": "vitest run",
     "test:coverage": "vitest run --coverage",
-    "lint": "eslint . --no-error-on-unmatched-pattern",
+    "lint": "eslint .",
+    "lint:fix": "eslint . --fix",
     "format": "prettier --write .",
     "format:check": "prettier --check .",
     "clean": "node -e \"import('node:fs').then(fs=>['dist','build','coverage'].forEach(d=>fs.rmSync(d,{recursive:true,force:true})))\"",
-    "verify": "npm run lint && npm run format:check && npm run typecheck && npm run test"
+    "verify": "npm run typecheck && npm run lint && npm run format:check && npm run test"
   },
   "dependencies": {
     "decimal.js": "10.6.0",
