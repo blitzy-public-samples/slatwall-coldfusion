@@ -252,12 +252,9 @@ const config = {
   // Collection is switched on in the configuration rather than left to a `--coverage`
   // flag, because package.json's only test script is `jest --ci`: relying on the flag
   // would mean the signal was, in practice, never produced. Output goes to coverage/,
-  // which .gitignore excludes — and which Prettier therefore also skips, because its CLI
-  // defaults `--ignore-path` to `[.gitignore, .prettierignore]` and only the former now
-  // exists (the latter was deleted under review finding F20 as an undeclared file). So an
-  // always-on report creates no diff churn. Measured, not assumed: a deliberately
-  // malformed .js file planted in coverage/ is not reported by `prettier --check .`,
-  // while the identical file at the subtree root is.
+  // which .gitignore already excludes — and Prettier 3 honours .gitignore, so the same
+  // single entry covers the formatter too and no separate .prettierignore exists. An
+  // always-on report therefore creates no diff churn.
   //
   // `collectCoverageFrom` names src/ rather than the whole subtree so the denominator is
   // shippable source only — the suite is not credited for covering its own fixtures, and

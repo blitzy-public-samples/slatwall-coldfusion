@@ -61,8 +61,9 @@
  * cache lifetime to reason about, and the reasoning is recorded on
  * {@link SkuRepository.clearOptionGroupSortOrderCache}: under mismatch M7 the memo becomes EXPLICIT
  * REQUEST-SCOPED state and never module-scope state, because module-scope state survives between
- * warm invocations and would bleed across them. No new mismatch identifier is introduced HERE — but
- * the mismatch register is NOT closed at M1-M8, and see the register note below (F27).
+ * warm invocations and would bleed across them. No new mismatch identifier is introduced here —
+ * the register is closed at M1-M9 (AAP 0.6.6 catalogues M1-M8; M9 was found during the port and is
+ * recorded at `src/services/SkuService.ts`).
  *
  * =================================================================================================
  * THE COMPONENT USES TWO NAMING CONVENTIONS FOR THE SAME TABLES (defect D22)
@@ -76,7 +77,8 @@
  * statements do not receive. The conclusion for implementers is unchanged and must be carried:
  * never "fix" mapping-layer entity names to physical ones, and never assume a logical name works in
  * a native statement. Which convention each member's statement uses is stated on that member. No
- * new defect identifier is introduced BY THIS MEMBER'S ANNOTATION.
+ * further defect identifier is introduced — the register is closed at D1-D24 (AAP 0.6.7 catalogues
+ * D1-D21; D22 is this finding, and D23 and D24 are recorded at `src/services/SkuService.ts`).
  *
  * =================================================================================================
  * ⚠️ F27 — THE REGISTERS ARE NOT "CLOSED", AND SAYING SO WAS A FALSE STATEMENT OF FACT
@@ -665,8 +667,8 @@ export interface SkuRepository {
    * are recorded rather than passed over: the behavioural difference is that the target's flag test
    * is unambiguous. Two nearby reads at `model/dao/SkuDAO.cfc:L88` and `L90` declare a local INSIDE
    * a conditional branch, which is the same scoping category; they are noted here under D9 rather
-   * than given an identifier of their own, because this file mints no identifier beyond D22 — see the
-   * register note in this module's header (F27), which states the registers' true position.
+   * than given an identifier of their own: AAP §0.6.7 enumerates D1-D21, this port adds only D22
+   * above and D23-D24 in `src/services/SkuService.ts`, and no further number is minted.
    *
    * TODO(parity): defect D13 is the DOWNSTREAM CONSEQUENCE of this member's companion, and it is
    * recorded here because the cause lives in this contract rather than in the service that fails.

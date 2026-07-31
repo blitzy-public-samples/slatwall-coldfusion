@@ -92,19 +92,77 @@
  *     [model/entity/Physical.cfc:L59]. It is a genuine undeclared-property validation reference in the
  *     legacy source; no field is added here to make it resolve.
  *
- * THE TEST CONTRACT. `test/domain/ProductType.test.ts` is NET-NEW: AAP §0.6.5.2 establishes that no
- * `ProductTypeTest` exists anywhere in `meta/tests/`, so this entity had zero legacy coverage. The
- * target test still follows the four inherited assertions of
- * [meta/tests/unit/entity/SlatwallEntityTestBase.cfc:L51-L67], which land across three layers: the
- * validate-as-save assertion on the validation layer (F22 keeps `validate` and `hasErrors` out of this
- * file), the simple-representation assertion HERE on
- * {@link ProductType.getSimpleRepresentation}, the primary-identifier assertion on the exported
- * descriptor set, and the defaults assertion on {@link ProductType.isNew}. The obligation this file
- * carries for that suite (S6) is that `new ProductType()` succeeds with NO arguments — no framework
- * bootstrap, no container, no database, no I/O and no async work in the constructor — and that every
- * collaborator is substitutable by a plain object literal satisfying a structural interface. Because
- * {@link ProductType.getBaseProductType} takes its resolver as an explicit parameter, both of its
- * branches are reachable from a two-line stub.
+ *   THE `systemCode` `maxLength: 0` DELETE GUARD IS WHAT PROTECTS THE THREE SEEDED DISCRIMINATORS
+ *   FROM DELETION. A product type carrying ANY `systemCode` at all fails the delete context, and
+ *   the only rows that carry one are the three seeded at
+ *   `config/dbdata/SlatwallProductType.xml.cfm:L13-L15`. That rule is the clearest justification
+ *   for {@link ProductType.systemCode} existing as a field on this class even though this file
+ *   enforces nothing: the rule READS the field.
+ *
+ *   `urlTitle`'s `unique: true` is NOT implemented here either. Application-side uniqueness is
+ *   IR-5, enforced by an existence query in `src/adapters/mysql/UniquePropertyChecker.ts`, ported
+ *   from `org/Hibachi/HibachiDAO.cfc:L130-L146`, independently of the column's `unique="true"`
+ *   metadata.
+ *
+ *   `physicalCounts` — S9, DO NOT INVENT IT. The key is referenced by all three validation
+ *   documents in this product family (`model/validation/Product.json:L7`,
+ *   `model/validation/Brand.json:L7`, `model/validation/ProductType.json:L8`) and is declared by
+ *   NONE of the corresponding entities: they declare `physicals`. Repository-wide, the only
+ *   `physicalCounts` PROPERTY declaration is `model/entity/Physical.cfc:L59`. It is therefore a
+ *   genuine undeclared-property validation reference in the legacy source. No `physicalCounts`
+ *   field is added to this class to make it resolve; the finding is recorded and left alone.
+ *
+ * ---------------------------------------------------------------------------------------------
+ * THE TEST CONTRACT (Phase H) — `test/domain/ProductType.test.ts` IS NET-NEW
+ * ---------------------------------------------------------------------------------------------
+ * AAP §0.6.5.2 verified that NO `ProductTypeTest` exists anywhere in `meta/tests/`: this entity had
+ * ZERO legacy coverage, and the target test is net-new rather than an extension of an existing
+ * signal. It nonetheless follows the four inherited assertions of
+ * `meta/tests/unit/entity/SlatwallEntityTestBase.cfc:L51-L67`, which split across three layers:
+ *
+ *   1. `validate_as_save_for_a_new_instance_doesnt_pass` — `validate(context="save")` then
+ *      `hasErrors()`. Lands on the VALIDATION LAYER, not here: F22 forbids this file from declaring
+ *      `validate` or `hasErrors`.
+ *   2. `simple_representation_exists_and_is_simple` — `isSimpleValue(getSimpleRepresentation())`.
+ *      LANDS HERE, satisfied by {@link ProductType.getSimpleRepresentation}, which is this file's
+ *      single sanctioned F22 exception because the legacy genuinely overrides it with a real
+ *      recursive body at `model/entity/ProductType.cfc:L273-L278`.
+ *   3. `has_primary_id_property_name` — `len(getPrimaryIDPropertyName())`. LANDS ON
+ *      {@link ProductType.getPrimaryIDPropertyName}, one of the seven managed-entity members this
+ *      class declares under IR-1, backed by {@link PRODUCT_TYPE_PRIMARY_ID_PROPERTY_NAME}.
+ *      ⚠️ AN EARLIER REVISION SAID THIS ASSERTION LANDED ON THE POPULATION DESCRIPTOR SET, on the
+ *      strength of `'productTypeID'` being declared there. That reading is withdrawn: the descriptor
+ *      set is the statement of what population may WRITE, and F08 establishes that the legacy never
+ *      populates a `fieldtype="id"` property. The name is still declared — in
+ *      {@link ProductTypePropertyName} and {@link PRODUCT_TYPE_DECLARED_PROPERTIES} — so the assertion
+ *      is satisfied without the primary key being writable.
+ *   4. `defaults_are_correct` — `isNew()` and `!len(getPrimaryIDValue())`. Satisfied by
+ *      {@link ProductType.isNew} and {@link ProductType.getPrimaryIDValue} together with
+ *      `productTypeID` defaulting to the empty string, which is what [`:L52`]'s `unsavedvalue=""`
+ *      declares.
+ *
+ * The obligation this file carries for that suite (S6) is that `new ProductType()` succeeds with NO
+ * arguments — no framework bootstrap, no container, no database, no I/O and no async work in the
+ * constructor — and that every collaborator is substitutable by a plain object literal satisfying a
+ * structural interface. Because {@link ProductType.getBaseProductType} takes its resolver as an
+ * explicit parameter, both of its branches are reachable from a two-line stub.
+ *
+ * ---------------------------------------------------------------------------------------------
+ * STANDARDS IN FORCE, RECORDED RATHER THAN ASSUMED (UR4)
+ * ---------------------------------------------------------------------------------------------
+ * `review_rules` returns the single line "No user rules provided." for this project, with no
+ * paginated remainder — confirmed on the default window and again with an explicit full range — and
+ * the repository contains no `.blitzyignore`, `.cursorrules`, `AGENTS.md` or `CLAUDE.md`. Zero files
+ * enter scope by rule and no rule-derived constraint applies here. That is not permission to lower
+ * the bar; the nine enterprise standards of AAP §0.7.3 govern instead. The ones with teeth in this
+ * file are S1 (strict type safety — this file contains no `any`, no non-null assertion, no `as`
+ * cast and no suppression comment, and every narrowing is an explicit guard), S2 (negative: no SQL,
+ * no driver, no table name as code), S3 (no service locator — every collaborator is an explicit
+ * typed parameter), S4 (hexagonal separation — the only imports are the two `../base/` modules,
+ * `../BaseProductType` and a type-only `./Product`; nothing from `adapters/`, `services/`,
+ * `config/`, `validation/`, `handlers/`, `integrations/` or `ports/`, and no AWS type), S5
+ * (negative: no npm dependency and no `node:` built-in), S6, S7 (preserve and annotate — see the
+ * `TODO(parity)` markers, which are carried findings and never deferred work), S8/M7 and S9.
  */
 
 import type { BaseProductType } from '../BaseProductType';

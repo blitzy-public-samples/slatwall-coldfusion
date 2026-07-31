@@ -2649,6 +2649,12 @@ export class Product implements AuditableEntity, ManagedEntity {
    * (`model/validation/Product.json:L12`), so a system-wide `true` would block deletion of EVERY
    * product in any installation that has ever recorded a single transaction.
    *
+   * That outcome is PRESERVED. {@link ProductTransactionExistenceChecker} therefore declares NO
+   * parameters, which is a faithful record of the narrower service contract rather than an oversight,
+   * and this member does not thread its identifier through. Threading it would "fix" the scope of the
+   * check and change which deletes succeed — exactly the enhancement G4 forbids. No new defect
+   * identifier is minted for it either; §0.6.7 is closed at D1-D21.
+   *
    * VALIDATION-SUPPORT MEMBER, and that is WHY it is retained under §0.2.2.6's positive list rather
    * than dropped as a service reach-through: `model/validation/Product.json:L12` declares a delete-time
    * guard requiring this flag to be false. See the VALIDATION CONTRACT block.

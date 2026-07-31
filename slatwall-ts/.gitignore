@@ -34,3 +34,24 @@ dist/
 
 # Jest coverage reports (jest.config.ts, coverageDirectory: 'coverage').
 coverage/
+
+# THIS FILE IS ALSO PRETTIER'S IGNORE LIST, SO NO .prettierignore EXISTS (F20).
+# Prettier's CLI defaults `--ignore-path` to `[.gitignore, .prettierignore]` — its own
+# `prettier --help` on 3.9.6 says so verbatim — and it skips whichever of the two is
+# absent. So the three directories above are already excluded from
+# `npx prettier --check .` without a second list to keep in sync.
+#
+# A .prettierignore did exist and was DELETED: it appears in no AAP inventory (0.2.1.7
+# and 0.4.1.2 declare .prettierrc.json and this file, not it), and removing it was
+# verified not to change the result. `npx prettier --check .` passes with dist/ present,
+# and package-lock.json — the one tracked file the deleted list also named — is
+# byte-identical to Prettier's own JSON output, so checking it is a no-op rather than a
+# churn risk. Do not re-add the file to silence a hypothetical: measure first, exactly
+# as this note did.
+
+# A real .env is a local developer convenience that may hold live database credentials,
+# so it never enters git; configuration reaches the service through the environment and
+# no credential is hardcoded (AAP 0.8.3.9). The pattern is the exact filename and not a
+# wildcard, so the required, committed .env.example — variable names only, no values —
+# is never swallowed.
+.env

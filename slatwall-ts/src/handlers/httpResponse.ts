@@ -21,8 +21,8 @@
  *      validation error-key structure — this module is a conduit and nothing more. See PASS-THROUGH IS
  *      ABSOLUTE below.
  *
- * PASS-THROUGH IS ABSOLUTE — AND CLOSED
- * -------------------------------------
+ * WHAT PASSES THROUGH, AND WHAT IS WITHHELD
+ * -----------------------------------------
  * Two things that cross this boundary are observable behavior of the legacy system, and this
  * module forwards both without touching them. Nothing else crosses at all: the set of thrown texts
  * that may reach a response body is a CLOSED ALLOWLIST, so a message outside it is replaced with a
@@ -58,16 +58,44 @@
  *     sentence. See {@link errorResponse}, which explains at the mapping site exactly why
  *     flattening is forbidden.
  *
- * ARCHITECTURAL POSITION (AAP 0.7.3 S4)
- * -------------------------------------
- * src/handlers/ is the outermost layer, and this module is its foundation: it has zero intra-folder
- * dependencies, and the router and the five per-service handlers all shape their output through it. Its
- * imports are therefore exactly two things — the error types from ../errors/, and type-only declarations
- * from the AWS Lambda typings, which are erased at compile time and never appear in an artifact. Every
- * export is a pure function of its arguments that performs no side effect, resolves no collaborator and
- * holds no module-scope mutable state, which is both what AAP 0.6.6 M7 requires of anything outside the
- * connection pool and what makes the module assertable without a database, a network call or an AWS
- * runtime.
+ * EVERYTHING ELSE IS WITHHELD, AND `Error.message` IS NEVER READ HERE. The two items above reach a
+ * caller because the error that carries them DECLARES them disclosable, not because this module
+ * copies a message out of an exception. Every other message in the port is written for a maintainer
+ * — ported members name the legacy locator they reproduce, the defect identifier they carry
+ * unrepaired, the entity identifier in play, the database column that could not be read, or the
+ * environment variable that was not set — and none of it may reach a response. The mechanism is
+ * ../errors/DomainError's deny-by-default presentation, and the reasoning for putting the decision
+ * at the throw site rather than here is set out in full at {@link errorResponse}. The legacy
+ * application had no response-shaping layer at all, so withholding a port-composed message departs
+ * from no legacy contract; see DECLARED HARDENING there.
+ *
+ * ARCHITECTURAL POSITION (AAP 0.7.3 S4 — hexagonal separation)
+ * -----------------------------------------------------------
+ * src/handlers/ is the outermost layer, and this module is its foundation: it has zero
+ * intra-folder dependencies, and the router and the five per-service handlers all shape their
+ * output through it. Its imports are therefore exactly two things and nothing else — the error
+ * types from ../errors/, and type-only declarations from the AWS Lambda typings, which are
+ * erased at compile time and never appear in an artifact.
+ *
+ * What is consequently absent, all deliberate:
+ *   - No import from ../adapters/, ../config/, ../validation/, ../ports/, ../services/ or
+ *     ../domain/. This module is a pure function of its arguments; it resolves no collaborator,
+ *     by name or otherwise, and imports no composition root (AAP 0.7.3 S3).
+ *   - No database driver, no query text, no table or column identifier, and no bound-parameter
+ *     array. In this layer the parameterized-data-access standard inverts into a prohibition:
+ *     data access has no business being named here at all (AAP 0.7.3 S2).
+ *   - No read of the process environment. src/config/env.ts is the only module in the subtree
+ *     permitted to do that, and configuration flows one way from there (AAP 0.4.3.5, 0.8.3.9).
+ *   - No credential, host, endpoint, account identifier, region or resource-name literal
+ *     (AAP 0.8.3.9).
+ *   - No filesystem or path builtin, and no dependency of any kind. The deliverable's dependency
+ *     set stays frozen: the manifest gains nothing because of this file (AAP 0.7.3 S5).
+ *   - No module-scope mutable state whatsoever. Every declaration below is a frozen constant, a
+ *     string constant, a type or a function; nothing accumulates across invocations. AAP 0.6.6 M7
+ *     records that only src/config/database.ts may hold module-scope state, and that any
+ *     memoisation elsewhere must be request-scoped "to avoid cross-tenant bleed on a warm
+ *     container". This module memoises nothing at all, which is the strongest form of compliance
+ *     available (AAP 0.7.3 S8).
  *
  * WHY CONFINING THE AWS TYPES HERE MATTERS
  * ----------------------------------------
@@ -79,23 +107,30 @@
  *
  * TECHNOLOGY-SPECIFIC TRANSLATION DECISIONS (AAP 0.8.2 Guideline 6)
  * ----------------------------------------------------------------
- *   (a) The verbatim pass-through rule above, including the two legacy misspellings, which Guideline 4
- *       forbids repairing. Recorded in full at {@link errorResponse}.
- *   (b) The validation error-key structure survives as a structure. Recorded at {@link errorResponse},
- *       together with why a flattened body would defeat the comparability the whole port exists to
- *       demonstrate.
- *   (c) The content type chosen for the product feed. The legacy view emits an XML declaration as its
- *       literal first bytes and sets no explicit content type that source analysis could verify, so the
- *       value used here is a deliberate translation decision rather than a ported one. Recorded in full
- *       at {@link XML_CONTENT_TYPE} and {@link xmlResponse}.
- *   (d) Every status-code mapping. The legacy system expressed none of these outcomes as a status code,
- *       so each mapping is a judgment. Recorded at {@link HTTP_STATUS} and, per branch, at
- *       {@link errorResponse}.
- *   (e) Suppressing the FW/1 layout became returning a body string. The legacy feed controller set
- *       request.layout = false to stop the framework wrapping its output; the equivalent here is simply
- *       that {@link xmlResponse} returns the document unwrapped. That is idiom changing freely under the
- *       Minimal Change Clause (AAP 0.8.1), while the bytes of the document itself, which the feed builder
- *       produces, are behavior and are not touched here.
+ * Guideline 6 requires that every technology-specific translation decision be documented at the
+ * file where the judgment is made. The judgments made here are:
+ *
+ *   (a) The verbatim pass-through rule above, including the two legacy misspellings, which
+ *       Guideline 4 forbids repairing — and, as its necessary counterpart, the withholding of every
+ *       message this port composed for a maintainer. Recorded in full at {@link errorResponse},
+ *       including the declared-hardening statement for the four codes whose status changed.
+ *   (b) The validation error-key structure survives as a structure. Recorded at
+ *       {@link errorResponse}, together with why a flattened body would defeat the comparability
+ *       the whole port exists to demonstrate.
+ *   (c) The content type chosen for the product feed. The legacy view emits an XML declaration as
+ *       its literal first bytes and sets no explicit content type that source analysis could
+ *       verify, so the value used here is a deliberate translation decision rather than a ported
+ *       one. Recorded in full at {@link XML_CONTENT_TYPE} and {@link xmlResponse}.
+ *   (d) Every status-code mapping. The legacy system expressed none of these outcomes as a status
+ *       code, so each mapping is a judgment. The whole policy is collected in one exhaustive switch
+ *       at {@link statusForPublicErrorCode}, with the justification for each row; {@link HTTP_STATUS}
+ *       records why status codes are the one numeric exception this file allows itself.
+ *   (e) Suppressing the FW/1 layout became returning a body string. The legacy feed controller
+ *       set request.layout = false to stop the framework wrapping its output; the equivalent here
+ *       is simply that {@link xmlResponse} returns the document unwrapped. That is idiom changing
+ *       freely under the Minimal Change Clause (AAP 0.8.1) — "idiomatic, conventional TypeScript
+ *       is expected" — while the bytes of the document itself, which the feed builder produces,
+ *       are behavior and are not touched here.
  *   (f) Reading request input is hand-rolled. AAP 0.7.3 S5 freezes the dependency set, so no
  *       schema-validation package is introduced; the compiler's unchecked-index checking is
  *       satisfied by explicit narrowing and one hand-written structural guard. Recorded at
@@ -325,6 +360,7 @@ export const XML_CONTENT_TYPE = 'application/xml';
  * status code already carries the machine-readable half of the answer.
  */
 export interface ErrorResponseBody {
+  readonly code: PublicErrorCode;
   readonly message: string;
   readonly errors?: ValidationErrors;
 }
@@ -476,17 +512,17 @@ export function okResponse(body: unknown): APIGatewayProxyResult {
  * {@link PublicErrorPresentation}. The disclosure rules on {@link errorResponse} state what is
  * prohibited; every in-module caller passes one of the module-private constants above.
  *
- * ⛔ THE BODY CARRIES `message` AND NOTHING ELSE. No classification code, no member identifier, no
- * route and no context accompanies it. The response body is the one surface a caller can read, and
- * every member added to it becomes a contract this port would owe forever; the status code already
- * carries the machine-readable half of the answer, which is why it is the only other value here.
- *
  * @param statusCode the status to return; use a member of {@link HTTP_STATUS}
+ * @param code the public-safe classification; use a member of `PUBLIC_ERROR_CODE`
  * @param message the public-safe text to place in the body's message member, used verbatim
  * @returns a proxy result carrying a message-only failure body
  */
-export function messageResponse(statusCode: number, message: string): APIGatewayProxyResult {
-  const body: ErrorResponseBody = { message };
+export function messageResponse(
+  statusCode: number,
+  code: PublicErrorCode,
+  message: string,
+): APIGatewayProxyResult {
+  const body: ErrorResponseBody = { code, message };
 
   return jsonResponse(statusCode, body);
 }
@@ -506,7 +542,11 @@ export function messageResponse(statusCode: number, message: string): APIGateway
  * @returns a proxy result with a not-found status and a neutral body
  */
 export function notFoundResponse(): APIGatewayProxyResult {
-  return messageResponse(HTTP_STATUS.NOT_FOUND, NOT_FOUND_MESSAGE);
+  return messageResponse(
+    HTTP_STATUS.NOT_FOUND,
+    PUBLIC_ERROR_CODE.RESOURCE_NOT_FOUND,
+    NOT_FOUND_MESSAGE,
+  );
 }
 
 /**
@@ -533,7 +573,13 @@ export function notFoundResponse(): APIGatewayProxyResult {
  * @returns a proxy result with an unauthorized status and a neutral body
  */
 export function unauthorizedResponse(): APIGatewayProxyResult {
-  return messageResponse(HTTP_STATUS.UNAUTHORIZED, AUTHENTICATION_REQUIRED_MESSAGE);
+  // `PUBLIC_ERROR_CODE` carries no authentication-specific member and none is invented here, so an
+  // authorisation refusal reports the rejection family. The status, not the code, names the reason.
+  return messageResponse(
+    HTTP_STATUS.UNAUTHORIZED,
+    PUBLIC_ERROR_CODE.CATALOG_REQUEST_REJECTED,
+    AUTHENTICATION_REQUIRED_MESSAGE,
+  );
 }
 
 /**
@@ -555,7 +601,13 @@ export function unauthorizedResponse(): APIGatewayProxyResult {
  * @returns a proxy result with a forbidden status and a neutral body
  */
 export function forbiddenResponse(): APIGatewayProxyResult {
-  return messageResponse(HTTP_STATUS.FORBIDDEN, NOT_AUTHORIZED_MESSAGE);
+  // Same classification as the unauthenticated case, for the same reason: the code names the
+  // rejection family and the status names which refusal it is.
+  return messageResponse(
+    HTTP_STATUS.FORBIDDEN,
+    PUBLIC_ERROR_CODE.CATALOG_REQUEST_REJECTED,
+    NOT_AUTHORIZED_MESSAGE,
+  );
 }
 
 /**
@@ -822,6 +874,9 @@ function statusForPublicErrorCode(code: PublicErrorCode): number {
  * The status on every branch comes from {@link statusForPublicErrorCode}, which holds the entire
  * status policy and the justification for each row.
  *
+ * The status on every branch comes from {@link statusForPublicErrorCode}, which holds the entire
+ * status policy and the justification for each row.
+ *
  * ------------------------------------------------------------------------------------------------
  * BRANCH 1 — VALIDATION FAILURE, 400. THE ERROR KEYS ARE THE CONTRACT.
  * ------------------------------------------------------------------------------------------------
@@ -850,14 +905,11 @@ function statusForPublicErrorCode(code: PublicErrorCode): number {
  * flattened body cannot satisfy that assertion, so it would quietly forfeit the comparability this port
  * exists to demonstrate.
  *
- * The body's message member on this branch is the inherited aggregate text, which
- * ../errors/ValidationError deliberately does not export precisely because the legacy system has no such
- * string. It therefore carries NO parity obligation and must not be asserted against. The parity-bearing
- * member on this branch is `errors`, and only `errors`.
- *
- * The status is a judgment: a validation failure is a rejection of the request's content, which RFC 9110
- * describes with 400. The legacy system expressed the same outcome by leaving the entity unsaved and
- * populating the error bag, with no status involvement at all.
+ * The body's message member on this branch is the neutral aggregate text ../errors/ValidationError
+ * declares in its own presentation, and which it deliberately does not export precisely because the
+ * legacy system has no such string. It therefore carries NO parity obligation and must not be
+ * asserted against. The parity-bearing member on this branch is `errors`, and only `errors`; the
+ * assertable classification is `code`.
  *
  * ------------------------------------------------------------------------------------------------
  * BRANCH 2 — EVERY OTHER ERROR THIS PORT RAISED. THE ERROR DECIDES WHAT IS DISCLOSED.
@@ -968,10 +1020,7 @@ function statusForPublicErrorCode(code: PublicErrorCode): number {
  *   - THE COMPOSED MESSAGE OR THE MEMBER IDENTIFIER OF A BOUNDARY STUB. Neither is legacy behavior,
  *     and together they map the port's internal surface. Both go to the log.
  *   - A stack trace. The stack member is never read on any branch.
- *   - The reason a boundary stub gives for being un-portable. The not-implemented branch answers with
- *     a fixed text rather than forwarding the composed message, so the legacy file paths and line
- *     numbers, the carried defect identifiers and the missing-collaborator explanations those reasons
- *     contain stay on the error object for a log and never enter a body. BRANCH 2 documents the split.
+
  *   - The structured diagnostic payload a thrower may attach to a domain error. It is never read either,
  *     and that is a specific decision rather than an oversight: it exists to carry arbitrary facts known
  *     at throw time, so it could hold an identifier, an argument value or anything else a future thrower
@@ -1024,6 +1073,7 @@ export function errorResponse(error: unknown): APIGatewayProxyResult {
     // re-keying, no de-duplication and no sorting: the keys, their order and their exact strings
     // are the contract.
     const body: ErrorResponseBody = {
+      code: presentation.code,
       message: presentation.message,
       errors: error.getErrors(),
     };
@@ -1037,7 +1087,11 @@ export function errorResponse(error: unknown): APIGatewayProxyResult {
   if (error instanceof NotImplementedError) {
     logSuppressedFailure(BOUNDARY_STUB_LOG_PHRASE, error);
 
-    return messageResponse(HTTP_STATUS.NOT_IMPLEMENTED, NOT_IMPLEMENTED_MESSAGE);
+    return messageResponse(
+      HTTP_STATUS.NOT_IMPLEMENTED,
+      PUBLIC_ERROR_CODE.NOT_IMPLEMENTED,
+      NOT_IMPLEMENTED_MESSAGE,
+    );
   }
 
   // BRANCH 3 — the verbatim pass-through, and the ONLY branch that publishes a thrown message. The
@@ -1050,7 +1104,11 @@ export function errorResponse(error: unknown): APIGatewayProxyResult {
      * normalising step would destroy. The type is the throw site's declaration that this text is
      * legacy behaviour; see the section note above for why a type and not a text comparison, and for
      * the uniform status this branch deliberately applies to all four. */
-    return messageResponse(HTTP_STATUS.BAD_REQUEST, error.message);
+    return messageResponse(
+      HTTP_STATUS.BAD_REQUEST,
+      PUBLIC_ERROR_CODE.CATALOG_REQUEST_REJECTED,
+      error.message,
+    );
   }
 
   // BRANCH 4 — a domain failure this port authored. Recognised by type and answered at the family's
@@ -1058,7 +1116,11 @@ export function errorResponse(error: unknown): APIGatewayProxyResult {
   if (error instanceof DomainError) {
     logSuppressedFailure(UNDISCLOSED_DOMAIN_FAILURE_LOG_PHRASE, error);
 
-    return messageResponse(HTTP_STATUS.BAD_REQUEST, DOMAIN_FAILURE_MESSAGE);
+    return messageResponse(
+      HTTP_STATUS.BAD_REQUEST,
+      PUBLIC_ERROR_CODE.SERVICE_FAULT,
+      DOMAIN_FAILURE_MESSAGE,
+    );
   }
 
   /* BRANCH 5 — not raised by this port. The caught value is not inspected in any way, and it is not
@@ -1066,7 +1128,11 @@ export function errorResponse(error: unknown): APIGatewayProxyResult {
    * not discarded" guarantee for a value nothing here can classify. */
   logSuppressedFailure(UNRECOGNISED_FAILURE_LOG_PHRASE, error);
 
-  return messageResponse(HTTP_STATUS.INTERNAL_SERVER_ERROR, UNEXPECTED_FAILURE_MESSAGE);
+  return messageResponse(
+    HTTP_STATUS.INTERNAL_SERVER_ERROR,
+    PUBLIC_ERROR_CODE.SERVICE_FAULT,
+    UNEXPECTED_FAILURE_MESSAGE,
+  );
 }
 
 /* ==========================================================================================
@@ -1244,11 +1310,23 @@ export function readJsonObjectBody(event: Pick<APIGatewayProxyEvent, 'body'>): R
 export function invalidRequestBodyResponse(problem: RequestBodyProblem): APIGatewayProxyResult {
   switch (problem) {
     case 'absent':
-      return messageResponse(HTTP_STATUS.BAD_REQUEST, BODY_ABSENT_MESSAGE);
+      return messageResponse(
+        HTTP_STATUS.BAD_REQUEST,
+        PUBLIC_ERROR_CODE.REQUEST_INVALID,
+        BODY_ABSENT_MESSAGE,
+      );
     case 'malformed':
-      return messageResponse(HTTP_STATUS.BAD_REQUEST, BODY_MALFORMED_MESSAGE);
+      return messageResponse(
+        HTTP_STATUS.BAD_REQUEST,
+        PUBLIC_ERROR_CODE.REQUEST_INVALID,
+        BODY_MALFORMED_MESSAGE,
+      );
     case 'notAnObject':
-      return messageResponse(HTTP_STATUS.BAD_REQUEST, BODY_NOT_AN_OBJECT_MESSAGE);
+      return messageResponse(
+        HTTP_STATUS.BAD_REQUEST,
+        PUBLIC_ERROR_CODE.REQUEST_INVALID,
+        BODY_NOT_AN_OBJECT_MESSAGE,
+      );
   }
 }
 

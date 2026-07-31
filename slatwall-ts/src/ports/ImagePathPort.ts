@@ -146,9 +146,9 @@
  *     read-only apart from a temporary directory, so a product-image directory does not exist there
  *     at all.
  *
- * A second locator reinforces the same point: `model/service/SkuService.cfc:211` reads
- * `arguments.Sku.getImagePath()` and `model/service/SkuService.cfc:212` passes that identical
- * web-URL-shaped value to the image service as `filePath`. The save member therefore inherited the
+ * A second locator reinforces the same point: `model/service/SkuService.cfc:L211` reads
+ * `arguments.Sku.getImagePath()` and `model/service/SkuService.cfc:L212` passes that identical
+ * web-URL-shaped value to the image service as `filePath`. The save member therefore inherits the
  * very same ambiguity as the existence flag — a value that is a URL by construction and a file path
  * by use.
  *
@@ -922,6 +922,26 @@ export interface ImagePathPort {
    * The member stores; it does not transform. No scaling, cropping, format conversion or dimension
    * inspection is part of this contract — the port trades in paths and flags, and AAP 0.7.3 S9 forbids
    * inventing capability the source does not state.
+   *
+   * ⭐ FOUR OBLIGATIONS ON AN IMPLEMENTATION — DECISION I-1. The type system delivers the request to
+   * the adapter already holding a validated basename and holding NO destination; discharging the rest
+   * is the adapter's, because it is the only layer that holds the bytes and the trusted base:
+   *   1. RESOLVE, never accept, the destination: join {@link SaveImageFileRequest.imageFileName} under
+   *      the injected {@link ImageStorageBase} and treat that join as the only candidate;
+   *   2. CANONICALISE the joined path and RE-VERIFY containment within the base afterwards. The
+   *      basename check upstream cannot see symlinks, mount tricks or platform-specific normalisation,
+   *      and only canonicalising the join can;
+   *   3. VERIFY CONTENT, not just the name. {@link SaveImageFileRequest.allowedExtensions} constrains a
+   *      NAME; an extension is not evidence of type. Confirm the bytes are an image of a permitted type
+   *      before they are written, so a renamed executable is refused. This is the CWE-434 half of the
+   *      finding and it cannot be discharged by any type;
+   *   4. resolve `false` rather than raising when any of the above refuses, per the return contract
+   *      below.
+   *
+   * ⚠️ NO OVERWRITE, RETENTION, PERMISSION OR NAMING POLICY IS STATED HERE, deliberately. The legacy
+   * declares none — `model/service/SkuService.cfc:212` names a path and passes bytes — and AAP §0.7.3
+   * standard 9 forbids inventing one. An adapter that needs such a policy receives it the way
+   * {@link ImageStorageBase} is received: injected, as a product decision.
    *
    * ⭐ FOUR OBLIGATIONS ON AN IMPLEMENTATION — DECISION I-1. The type system delivers the request to
    * the adapter already holding a validated basename and holding NO destination; discharging the rest

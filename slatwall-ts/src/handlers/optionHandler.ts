@@ -269,6 +269,7 @@
  */
 
 import { Option } from '../domain/option/Option';
+import { PUBLIC_ERROR_CODE } from '../errors/DomainError';
 
 import {
   HTTP_STATUS,
@@ -1024,7 +1025,11 @@ export function createOptionHandler(
     const entries: unknown = body.value[OPTIONS_BODY_MEMBER];
 
     if (!isUnknownArray(entries)) {
-      return messageResponse(HTTP_STATUS.BAD_REQUEST, OPTIONS_MEMBER_MESSAGE);
+      return messageResponse(
+        HTTP_STATUS.BAD_REQUEST,
+        PUBLIC_ERROR_CODE.REQUEST_INVALID,
+        OPTIONS_MEMBER_MESSAGE,
+      );
     }
 
     const options: Option[] = [];
@@ -1033,7 +1038,11 @@ export function createOptionHandler(
       const option = readOptionEntry(entry);
 
       if (option === undefined) {
-        return messageResponse(HTTP_STATUS.BAD_REQUEST, OPTION_ENTRY_MESSAGE);
+        return messageResponse(
+          HTTP_STATUS.BAD_REQUEST,
+          PUBLIC_ERROR_CODE.REQUEST_INVALID,
+          OPTION_ENTRY_MESSAGE,
+        );
       }
 
       options.push(option);
@@ -1085,7 +1094,11 @@ export function createOptionHandler(
     const productID = readPathParameter(event, PRODUCT_ID_PATH_PARAMETER);
 
     if (productID === undefined) {
-      return messageResponse(HTTP_STATUS.BAD_REQUEST, PRODUCT_ID_MESSAGE);
+      return messageResponse(
+        HTTP_STATUS.BAD_REQUEST,
+        PUBLIC_ERROR_CODE.REQUEST_INVALID,
+        PRODUCT_ID_MESSAGE,
+      );
     }
 
     const existingOptionGroupIDList = readQueryStringParameter(
@@ -1094,7 +1107,11 @@ export function createOptionHandler(
     );
 
     if (existingOptionGroupIDList === undefined) {
-      return messageResponse(HTTP_STATUS.BAD_REQUEST, EXISTING_OPTION_GROUP_ID_LIST_MESSAGE);
+      return messageResponse(
+        HTTP_STATUS.BAD_REQUEST,
+        PUBLIC_ERROR_CODE.REQUEST_INVALID,
+        EXISTING_OPTION_GROUP_ID_LIST_MESSAGE,
+      );
     }
 
     try {
@@ -1142,7 +1159,11 @@ export function createOptionHandler(
     );
 
     if (existingOptionGroupIDList === undefined) {
-      return messageResponse(HTTP_STATUS.BAD_REQUEST, EXISTING_OPTION_GROUP_ID_LIST_MESSAGE);
+      return messageResponse(
+        HTTP_STATUS.BAD_REQUEST,
+        PUBLIC_ERROR_CODE.REQUEST_INVALID,
+        EXISTING_OPTION_GROUP_ID_LIST_MESSAGE,
+      );
     }
 
     try {

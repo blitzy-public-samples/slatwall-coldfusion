@@ -768,6 +768,7 @@ function toCfmlBoolean(value: unknown): boolean {
 }
 
 /**
+
  * An UNGUARDED read of a `data` key — the port of CFML's `arguments.data.someKey`.
  *
  * CFML raises when the key is absent, so this raises too. Five reads in `createSkus` are unguarded and
@@ -2589,11 +2590,12 @@ export class SkuService {
   /**
    * Reports whether any transaction references the given SKU or product.
    *
-   * ⚠️ ZERO ARGUMENTS, BECAUSE THE LEGACY DECLARATION HAS ZERO — AAP 0.4.2.2 DISCREPANCY 4 PRESERVED.
-   * [:L285] is `public boolean function getTransactionExistsFlag()` and [:L286] forwards
-   * `argumentCollection=arguments` to a DAO member that declares `productID` and `skuID`
-   * [model/dao/SkuDAO.cfc:L53-L56]. CFML lets a caller pass named arguments a signature never declared,
-   * and both real callers exploit that:
+   * TODO(parity) D23 — model/service/SkuService.cfc:L285-L287; callers model/entity/Sku.cfc:L594 and
+   * model/entity/Product.cfc:L626. THE LEGACY DECLARATION TAKES ZERO FORMAL PARAMETERS BUT THE MEMBER IS
+   * NOT ARGUMENT-FREE. [:L285] is `public boolean function getTransactionExistsFlag()` and [:L286]
+   * forwards `argumentCollection=arguments` to the DAO, which declares `string productID, string skuID`
+   * [model/dao/SkuDAO.cfc:L53-L56]. CFML passes named arguments a signature never declared, so the real
+   * callers each supply one:
    *
    *   `model/entity/Sku.cfc:L594`     → `getTransactionExistsFlag( skuID = this.getSkuID() )`
    *   `model/entity/Product.cfc:L626` → `getTransactionExistsFlag( productID = this.getProductID() )`

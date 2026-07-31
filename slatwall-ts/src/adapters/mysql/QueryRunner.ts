@@ -160,6 +160,18 @@ import type { Pool } from 'mysql2/promise';
  *   model/entity/Brand.cfc:L49          SlatwallBrand               SwBrand
  *   model/entity/Option.cfc:L49         SlatwallOption              SwOption
  *   model/entity/OptionGroup.cfc:L49    SlatwallOptionGroup         SwOptionGroup
+ *   model/entity/AlternateSkuCode.cfc:L48
+ *                                       SlatwallAlternateSkuCode    SwAlternateSkuCode
+ *
+ * The last row is NOT one of the six in-scope entity components of AAP 0.2.1.2, and it is here for a
+ * concrete reason rather than for completeness: `model/service/SkuService.cfc:L316` joins the
+ * `alternateSkuCodes` collection and `:L321` keyword-searches `alternateSkuCodes.alternateSkuCode`, so
+ * the SKU smart list — one of the AAP-declared signatures — cannot be composed without naming this
+ * table. `src/ports/SmartListQueryPort.ts` admits `SlatwallAlternateSkuCode` as a traversable entity
+ * for exactly that reason, so refusing it here would leave the port able to describe a query the
+ * adapter could not emit. The whitelist is extended rather than an escape hatch opened, which is the
+ * rule this file states and the resolution its own guidance prescribes. It is reachable as a JOIN
+ * TARGET only; nothing makes it the base of a query, and no domain type is invented for it.
  *
  * plus the many-to-many link table SwSkuOption, declared on the owning side at
  * `model/entity/Sku.cfc:L76` with `fkcolumn="skuID" inversejoincolumn="optionID"` and mirrored with
@@ -193,7 +205,7 @@ import type { Pool } from 'mysql2/promise';
  * WHAT MUST NOT BE REPRODUCED. The prefixing rule itself is a string operation with no knowledge of
  * the schema, so applied literally to a physical name it produces `SlatwallSwProduct` — a table that
  * does not exist. Resolution here is a whitelist lookup, never a prefix concatenation, and any name
- * outside the seven is refused rather than transformed.
+ * outside the eight is refused rather than transformed.
  *
  * TODO(parity) `model/dao/ProductDAO.cfc:L288` and `:L304` — CASE SENSITIVITY IS A DELIBERATE
  * TRANSLATION DECISION, NOT AN INCIDENTAL ONE (AAP 0.8.2 Guideline 6). CFML `eq` and `==` compare
@@ -216,11 +228,12 @@ import type { Pool } from 'mysql2/promise';
  * ============================================================================================== */
 
 /**
- * The seven physical table names the extracted Catalog slice may name in a statement.
+ * The eight physical table names the extracted Catalog slice may name in a statement.
  *
  * Declared as the single source of truth so the exported type and the run-time lookups cannot drift
  * apart, and so iterating the set needs no type assertion. Order is the order the entity components
- * appear in AAP 0.2.1.2, with the link table last.
+ * appear in AAP 0.2.1.2, then the link table, then the join-target-only alternate SKU code table
+ * whose presence is justified in the duality note above.
  */
 const PHYSICAL_TABLE_NAMES = [
   'SwProduct',
@@ -230,14 +243,16 @@ const PHYSICAL_TABLE_NAMES = [
   'SwOption',
   'SwOptionGroup',
   'SwSkuOption',
+  'SwAlternateSkuCode',
 ] as const;
 
 /**
  * A physical `Sw*` table name that has been validated against the extracted schema.
  *
- * Resolves to exactly the seven-member union
+ * Resolves to exactly the eight-member union
  * `'SwProduct' | 'SwSku' | 'SwProductType' | 'SwBrand' | 'SwOption' | 'SwOptionGroup' |
- * 'SwSkuOption'`, derived from {@link PHYSICAL_TABLE_NAMES} rather than written out a second time.
+ * 'SwSkuOption' | 'SwAlternateSkuCode'`, derived from {@link PHYSICAL_TABLE_NAMES} rather than
+ * written out a second time.
  *
  * Being a type rather than a plain `string` is what makes the whitelist useful at compile time: a
  * function that takes a `PhysicalTableName` cannot be handed an unvalidated identifier, and the only
@@ -258,7 +273,7 @@ const LOGICAL_NAME_PREFIX = 'slatwall';
 /**
  * The number of leading characters of a physical name that form its schema prefix.
  *
- * All seven physical names begin `Sw`, so the bare name the framework would have prefixed is the
+ * All eight physical names begin `Sw`, so the bare name the framework would have prefixed is the
  * remainder. Named rather than inlined so the derivation below reads as a rule instead of a magic
  * offset; it is not a tunable and not a capacity figure.
  */
@@ -413,6 +428,22 @@ const TABLE_COLUMNS: Readonly<Record<PhysicalTableName, ReadonlySet<string>>> = 
    * the sorted-SKU statement at model/dao/SkuDAO.cfc:L184 and :L186, and in the existence sub-queries
    * the option-to-SKU resolver composes. */
   SwSkuOption: new Set(['skuID', 'optionID']),
+
+  /* model/entity/AlternateSkuCode.cfc — identifier :L52, scalar :L53, the two many-to-one foreign
+   * keys :L56 and :L57, audit :L60-L63. Note the first foreign key is `skuTypeID` and NOT
+   * `alternateSkuCodeTypeID`: `:L56` declares the property `alternateSkuCodeType` with
+   * `fkcolumn="skuTypeID"`, so the column name does not follow the property name. Deriving it by
+   * convention would produce a column that does not exist. This table carries no `remoteID`. */
+  SwAlternateSkuCode: new Set([
+    'alternateSkuCodeID',
+    'alternateSkuCode',
+    'skuTypeID',
+    'skuID',
+    'createdDateTime',
+    'createdByAccountID',
+    'modifiedDateTime',
+    'modifiedByAccountID',
+  ]),
 });
 
 /**
@@ -423,7 +454,7 @@ const TABLE_COLUMNS: Readonly<Record<PhysicalTableName, ReadonlySet<string>>> = 
  * bare name those sites accept as input. All three map to the same physical name, so a caller may pass
  * whichever form its legacy counterpart passed and still get an identifier a statement can carry.
  *
- * The bare names are mutually distinct across the seven tables, so no key is ever registered twice and
+ * The bare names are mutually distinct across the eight tables, so no key is ever registered twice and
  * no resolution is ambiguous. It is a plain function rather than a lazily initialised accessor because
  * it must run exactly once, at module evaluation, and produce a value that never changes afterwards.
  *
@@ -450,7 +481,7 @@ function buildTableNameLookup(): ReadonlyMap<string, PhysicalTableName> {
  * identifier derived from file content — see {@link TABLE_COLUMNS} for how that happens — resolves to
  * the spelling the schema actually uses rather than to whatever casing the file supplied.
  *
- * Written as seven explicit members rather than a loop over the keys, so the return type's `Record`
+ * Written as eight explicit members rather than a loop over the keys, so the return type's `Record`
  * over the table union proves exhaustiveness at compile time and no type assertion is needed anywhere
  * in the derivation.
  *
@@ -476,6 +507,7 @@ function buildColumnLookup(
     SwOption: indexFor(declarations.SwOption),
     SwOptionGroup: indexFor(declarations.SwOptionGroup),
     SwSkuOption: indexFor(declarations.SwSkuOption),
+    SwAlternateSkuCode: indexFor(declarations.SwAlternateSkuCode),
   });
 }
 
@@ -508,7 +540,7 @@ const TABLE_COLUMN_LOOKUP: Readonly<Record<PhysicalTableName, ReadonlyMap<string
  *
  * @param candidate - a table name in any of the three accepted vocabularies.
  * @returns the canonical physical table name, safe to place into statement text.
- * @throws {DomainError} when the name is not one of the seven in-scope tables. The candidate travels
+ * @throws {DomainError} when the name is not one of the eight in-scope tables. The candidate travels
  *   on the error's `context` for a server-side log; the presentation this error type reports to a
  *   caller is deliberately neutral, so a caller cannot use the refusal to enumerate the schema.
  *
@@ -552,7 +584,7 @@ export function assertTableName(candidate: string): PhysicalTableName {
  *
  * The one thing this file does about it is refuse to make the collapse invisible. There is no seam a
  * later reader could mistake for engine-neutrality, and nothing in the whitelist above varies by
- * engine — the identifiers it emits are the same seven names on every engine that has the schema.
+ * engine — the identifiers it emits are the same eight names on every engine that has the schema.
  * ============================================================================================== */
 
 /**

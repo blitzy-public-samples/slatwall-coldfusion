@@ -11,18 +11,31 @@
  * field mapping and no SQL anywhere in this file, because every one of those belongs to a layer beneath
  * it.
  *
- * It is a THIN, INJECTABLE FUNCTION OF THE SERVICE AND OF ONE POLICY: {@link createBrandHandler}
- * takes the brand service and an authorisation resolver, and returns the three ROUTED operations.
- * Nothing is constructed here, nothing is resolved by name, and ../config/container is never
- * imported — src/handlers/router.ts calls the composition root and passes both in. That is also what
- * makes this file assertable with hand-written doubles, without a database, a network call or an AWS
- * runtime (AAP 0.7.3 S6).
+ * It is a THIN, INJECTABLE FUNCTION OF THE SERVICE: {@link createBrandHandler} takes the service and
+ * returns the four bound operations. Nothing is constructed here, nothing is resolved by name, and
+ * ../config/container is never imported — the planned src/handlers/router.ts is to call the composition
+ * root and pass the service in. That is also what makes this file assertable with a hand-written double, without a
+ * database, a network call or an AWS runtime (AAP 0.7.3 S6).
  *
- * THREE ROUTED MEMBERS OVER A FOUR-MEMBER SERVICE, AND BOTH COUNTS ARE THE POINT
- * -----------------------------------------------------------------------------
- * model/service/BrandService.cfc is 90 lines and declares EXACTLY ONE public function. AAP 0.6.3.3
- * records the consequence — it has no dead injections and is "the cleanest of the four services".
- * A one-member service produces a small handler, and that is correct rather than incomplete.
+ * FOUR MEMBERS, AND THE COUNT IS THE POINT
+ * ----------------------------------------
+ * model/service/BrandService.cfc declares EXACTLY ONE public function, and AAP 0.6.3.3 records the
+ * consequence — it has no dead injections and is the cleanest of the four services. A one-member
+ * service produces a small handler, and that is correct rather than incomplete.
+ *
+ * The injected SERVICE surface is four members, because `saveBrand`'s creation path genuinely needs
+ * the synthesized factory. The ROUTED surface is three, because `newBrand` has no legacy action
+ * behind it and is therefore not something a caller may invoke directly. {@link BrandHandler}
+ * records the evidence for that split, and {@link BRAND_ACCESS_MATRIX} classifies the three that
+ * remain using the legacy's own vocabulary.
+ *
+ * EVERY ROUTED MEMBER IS AUTHORISED BEFORE IT DOES ANYTHING
+ * --------------------------------------------------------
+ * The legacy authorised every request in one place, before any controller method ran —
+ * `setupRequest()` [org/Hibachi/Hibachi.cfc:L182-L203], refusing at [:L188]. That gate is framework
+ * code and does not cross the boundary (AAP 0.8.3.2), so its CONTRACT is declared as a port instead
+ * and consulted here. Restoring it is PARITY, not invented policy; judgment (k) records what
+ * changed, which is only the failure mode.
  *
  * The injected SERVICE surface is four members, because `saveBrand`'s creation path genuinely needs
  * the synthesized factory. The ROUTED surface is three, because `newBrand` has no legacy action
@@ -40,9 +53,8 @@
  *
  * TECHNOLOGY-SPECIFIC TRANSLATION DECISIONS (AAP 0.8.2 Guideline 6)
  * ----------------------------------------------------------------
- * Guideline 6 requires every technology-specific judgment to be documented where it is made. The
- * four mandated groups are (a) to (d); (e), (f), (i), (j) and (k) are the judgments this file makes
- * on its own account and are each restated at the member or declaration that makes them.
+ * The four mandated groups are (a) to (d); (e) to (j) are the judgments this file makes on its own
+ * account and are each restated at the member that makes them.
  *
  * (a) THREE OF THE FOUR SERVICE MEMBERS HAD NO CFML DECLARATION AT ALL. `newBrand`, `getBrand` and
  *     `deleteBrand` appear in no source file anywhere in the legacy repository. They existed only

@@ -69,6 +69,30 @@
  * Each inherited assertion below is re-expressed against the layer that now owns the behaviour, and
  * the re-expression is named at the case that performs it.
  *
+ * OF THE THREE LEGACY FRAMEWORK MEMBERS THE INHERITED ASSERTIONS CALLED, ONE IS GONE AND TWO ARE BACK:
+ *   `validate` / `hasErrors`      GONE from the entity. AAP §0.8.3.2 retires `org/Hibachi/**` for this
+ *                                 slice rather than porting it, so validation moved out to
+ *                                 `src/validation/Validator.ts` driving `brand.rules.ts`.
+ *   `getSimpleRepresentation`     ⭐ PRESENT. `model/entity/Brand.cfc:L157-L159` is empty, so Brand
+ *                                 overrode nothing and INHERITED the framework default — a naming
+ *                                 convention at `org/Hibachi/HibachiEntity.cfc:L59-L88`. IR-1 makes
+ *                                 an inherited member the slice depends on an explicit declaration,
+ *                                 so `src/domain/product/Brand.ts` now declares the default itself
+ *                                 and the case below CALLS IT. An earlier revision reproduced the
+ *                                 convention in two test-local helpers and asserted against those,
+ *                                 which is documentary rather than traceable; F22 named that gap and
+ *                                 the helpers are gone.
+ *   `getPrimaryIDPropertyName`    ⭐ PRESENT. It is one of the seven managed-entity members
+ *                                 `src/domain/product/Brand.ts` now declares explicitly under IR-1,
+ *                                 because `src/validation/Validator.ts` and
+ *                                 `src/ports/UniquePropertyPort.ts` require them BY NAME. An earlier
+ *                                 revision of this file recorded it as absent and asserted a
+ *                                 test-local literal in its place; the case below now calls the real
+ *                                 member, which is what F22 asks for.
+ *
+ * Each inherited assertion below is re-expressed against the layer that now owns the behaviour, and
+ * the re-expression is named at the case that performs it.
+ *
  * WHAT IS EXERCISED FOR REAL: the actual `Brand` class, the actual `Product` class, the actual
  * `Validator`, the actual transliterated `brand.rules.ts` rule set and the actual `ValidationError`
  * bag. Nothing about the code under test is re-implemented here.

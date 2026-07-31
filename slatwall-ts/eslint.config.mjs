@@ -52,19 +52,13 @@ export default tseslint.config(
   /* ------------------------------------------------------------------------------------------------
    * [1] Ignores.
    *
-   * These mirror the lintable paths of slatwall-ts/.gitignore (`node_modules/`, `dist/`, `coverage/`)
-   * — the file Prettier also reads by default — so the three tools agree on what is generated output.
-   * The remaining .gitignore entries — *.tsbuildinfo, .env files, npm/yarn logs, .eslintcache —
-   * contain no JavaScript or TypeScript and need no ignore entry here.
-   *
-   * THERE IS NO .prettierignore TO MIRROR AS WELL, AND THE THIRD TOOL STILL AGREES. Prettier reaches
-   * the same ignore set from .gitignore directly, because its CLI defaults `--ignore-path` to
-   * `[.gitignore, .prettierignore]` — `prettier --help` on 3.9.6 says so verbatim — and simply skips
-   * the absent second path. Measured rather than assumed: a deliberately malformed .js file planted in
-   * coverage/ is not reported by `prettier --check .`, while the identical file at the subtree root is.
-   * .prettierignore was DELETED as an undeclared file — AAP §0.3.1's inventory names .prettierrc.json
-   * and .gitignore and nothing else — and slatwall-ts/.gitignore records the full reasoning. It must
-   * not be reintroduced.
+   * These mirror the lintable paths of slatwall-ts/.gitignore (`node_modules/`, `dist/`, `coverage/`),
+   * so the three tools agree on what is generated output. Prettier needs no ignore file of its own:
+   * version 3 honours .gitignore directly, which is why that one file is the single declaration of
+   * generated output for all three tools and why no .prettierignore exists here — the plan's file
+   * inventory names .prettierrc.json and .gitignore and nothing else. The remaining .gitignore
+   * entries — *.tsbuildinfo, .env files, npm/yarn logs, .eslintcache — contain no JavaScript or
+   * TypeScript and need no ignore entry here.
    *
    * `node_modules/**` is redundant with ESLint's built-in default and is listed anyway, because an
    * explicit list is auditable against .gitignore line by line whereas an implicit default is not.

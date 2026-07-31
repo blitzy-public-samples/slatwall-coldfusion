@@ -412,7 +412,10 @@ describe('brandHandler — SEC-03, the gate `setupRequest()` ran', () => {
 
     for (const result of results) {
       expect(result.statusCode).toBe(401);
-      expect(JSON.parse(result.body)).toStrictEqual({ message: 'Authentication is required' });
+      expect(JSON.parse(result.body)).toStrictEqual({
+        code: 'CATALOG_REQUEST_REJECTED',
+        message: 'Authentication is required',
+      });
     }
 
     // Refused BEFORE the service, so nothing was read, saved or deleted.
@@ -444,7 +447,10 @@ describe('brandHandler — SEC-03, the gate `setupRequest()` ran', () => {
 
     for (const result of results) {
       expect(result.statusCode).toBe(403);
-      expect(JSON.parse(result.body)).toStrictEqual({ message: 'Not authorized' });
+      expect(JSON.parse(result.body)).toStrictEqual({
+        code: 'CATALOG_REQUEST_REJECTED',
+        message: 'Not authorized',
+      });
     }
 
     expect(probe.serviceCalls).toStrictEqual([]);
@@ -507,7 +513,10 @@ describe('brandHandler — SEC-03, the gate `setupRequest()` ran', () => {
     });
 
     expect(result.statusCode).toBe(403);
-    expect(JSON.parse(result.body)).toStrictEqual({ message: 'Not authorized' });
+    expect(JSON.parse(result.body)).toStrictEqual({
+      code: 'CATALOG_REQUEST_REJECTED',
+      message: 'Not authorized',
+    });
   });
 
   it('NET-NEW — no refusal carries a WWW-Authenticate header or names any scheme', async () => {

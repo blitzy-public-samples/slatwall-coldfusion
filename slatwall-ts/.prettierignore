@@ -1,0 +1,30 @@
+# PROVENANCE AND CURRENT STATUS (review finding P3-1) — read before deleting or extending this file.
+#
+# Added by the setup commit c747b7455 ("Set up slatwall-ts Node 20 / TypeScript 5.9 toolchain for
+# the Catalog extraction") together with eleven other toolchain files, and never touched by any
+# commit since — verified with `git log --diff-filter=A`. That commit is the first on the branch and
+# precedes every implementation commit, so no implementation checkpoint added this file.
+#
+# Unlike its sibling `build/esbuild.mjs`, this file is NOT one of the target artefacts listed in AAP
+# 0.2.1.7 or 0.4.1.2; it is a toolchain convenience. And it is currently REDUNDANT rather than
+# load-bearing. That was measured, not assumed: with this file moved aside, `npx prettier --check .`
+# still exits 0, and deliberately mis-formatted probe files placed in `dist/` and `coverage/` were
+# still not reported — while an identical probe placed in a directory absent from `.gitignore` WAS
+# reported, which proves the run was really scanning. Prettier 3 honours `.gitignore` by default, and
+# `.gitignore` already lists `node_modules/`, `dist/` and `coverage/`. The fourth entry is covered
+# too: `npx prettier package-lock.json` output is byte-identical to the file on disk, so the lockfile
+# would not be flagged even if it were in scope.
+#
+# It is kept rather than deleted for two reasons: removing a setup-baseline artifact is outside the
+# scope of the review findings being addressed, and the exclusions here are explicit and survive any
+# future change to `.gitignore` or to Prettier's default ignore-path set. Nothing depends on it
+# today, so nothing breaks either way.
+
+# Generated / vendored output — never reformatted.
+node_modules/
+dist/
+coverage/
+
+# npm owns the exact byte layout of the lockfile; reformatting it would churn the diff
+# and can break `npm ci` reproducibility.
+package-lock.json

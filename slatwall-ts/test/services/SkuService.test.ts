@@ -929,6 +929,7 @@ describe('errorResponse — SEC-05, the four mandated legacy messages still arri
 
     expect(result.statusCode).toBe(400);
     expect(JSON.parse(result.body)).toStrictEqual({
+      code: 'CATALOG_REQUEST_REJECTED',
       message: 'There was an unexpected error when creating this product',
     });
   });
@@ -937,6 +938,7 @@ describe('errorResponse — SEC-05, the four mandated legacy messages still arri
     const result = errorResponse(new LegacyParityError(moreThanOneSkuReturnedMessage('red,large')));
 
     expect(JSON.parse(result.body)).toStrictEqual({
+      code: 'CATALOG_REQUEST_REJECTED',
       message: 'More than one sku is returned when the selected options are: red,large',
     });
   });
@@ -947,6 +949,7 @@ describe('errorResponse — SEC-05, the four mandated legacy messages still arri
     );
 
     expect(JSON.parse(result.body)).toStrictEqual({
+      code: 'CATALOG_REQUEST_REJECTED',
       message: 'No Skus are found for these selected options: red,large',
     });
   });
@@ -959,6 +962,7 @@ describe('errorResponse — SEC-05, the four mandated legacy messages still arri
     // "seperated" and "indvidual" are the source's own spellings. Correcting either would be a
     // silent behavior change in an observable string.
     expect(JSON.parse(result.body)).toStrictEqual({
+      code: 'CATALOG_REQUEST_REJECTED',
       message:
         'You must submit a comma seperated list of selectOptions to find an indvidual sku in this product',
     });
@@ -993,6 +997,7 @@ describe('errorResponse — SEC-05, everything else is masked', () => {
 
     expect(result.statusCode).toBe(400);
     expect(JSON.parse(result.body)).toStrictEqual({
+      code: 'SERVICE_FAULT',
       message: 'The request could not be completed',
     });
 
@@ -1009,7 +1014,7 @@ describe('errorResponse — SEC-05, everything else is masked', () => {
       new DomainError('diagnostic', { context: { secretish: 'DB_PASSWORD', table: 'SwProduct' } }),
     );
 
-    expect(Object.keys(JSON.parse(result.body) as object)).toStrictEqual(['message']);
+    expect(Object.keys(JSON.parse(result.body) as object)).toStrictEqual(['code', 'message']);
     expect(result.body).not.toContain('DB_PASSWORD');
     expect(result.body).not.toContain('SwProduct');
   });
@@ -1024,6 +1029,7 @@ describe('errorResponse — SEC-05, everything else is masked', () => {
 
     expect(result.statusCode).toBe(501);
     expect(JSON.parse(result.body)).toStrictEqual({
+      code: 'NOT_IMPLEMENTED',
       message: 'This operation is not implemented',
     });
 
@@ -1031,7 +1037,7 @@ describe('errorResponse — SEC-05, everything else is masked', () => {
     expect(result.body).not.toContain('getSkuStocksDeletableFlag');
     expect(result.body).not.toContain('D4');
     expect(result.body).not.toContain('SkuService.cfc');
-    expect(Object.keys(JSON.parse(result.body) as object)).toStrictEqual(['message']);
+    expect(Object.keys(JSON.parse(result.body) as object)).toStrictEqual(['code', 'message']);
   });
 
   it('NET-NEW — the ordering is load-bearing: a ValidationError is NOT caught by the DomainError branch', () => {
@@ -1046,6 +1052,7 @@ describe('errorResponse — SEC-05, everything else is masked', () => {
     // base class first would have masked every validation failure as a generic refusal.
     expect(result.statusCode).toBe(400);
     expect(JSON.parse(result.body)).toStrictEqual({
+      code: 'VALIDATION_FAILED',
       message: 'Validation failed',
       errors: {
         skuCode: ['Sku Code is required'],
@@ -1061,6 +1068,7 @@ describe('errorResponse — SEC-05, everything else is masked', () => {
     expect(error.name).toBe('LegacyParityError');
     // Proven by the published message: if the base branch ran first, this would be masked.
     expect(JSON.parse(errorResponse(error).body)).toStrictEqual({
+      code: 'CATALOG_REQUEST_REJECTED',
       message: 'There was an unexpected error when creating this product',
     });
   });
@@ -1075,7 +1083,7 @@ describe('errorResponse — SEC-05, everything else is masked', () => {
       const result = errorResponse(thrown);
 
       expect(result.statusCode).toBe(500);
-      expect(Object.keys(JSON.parse(result.body) as object)).toStrictEqual(['message']);
+      expect(Object.keys(JSON.parse(result.body) as object)).toStrictEqual(['code', 'message']);
       expect(result.body).not.toContain('3306');
       expect(result.body).not.toContain('circular');
     }
@@ -1098,13 +1106,19 @@ describe('errorResponse — SEC-05, everything else is masked', () => {
     expect(unauthorizedResponse()).toStrictEqual({
       statusCode: 401,
       headers: { 'Content-Type': 'application/json' },
-      body: JSON.stringify({ message: 'Authentication is required' }),
+      body: JSON.stringify({
+        code: 'CATALOG_REQUEST_REJECTED',
+        message: 'Authentication is required',
+      }),
     });
 
     expect(forbiddenResponse()).toStrictEqual({
       statusCode: 403,
       headers: { 'Content-Type': 'application/json' },
-      body: JSON.stringify({ message: 'Not authorized' }),
+      body: JSON.stringify({
+        code: 'CATALOG_REQUEST_REJECTED',
+        message: 'Not authorized',
+      }),
     });
 
     // RFC 9110 associates a WWW-Authenticate header with 401, but naming a scheme would invent an

@@ -8,15 +8,18 @@
  * Google feed logic (AAP §0.6.4), and the shaping lives in none of the places a service-oriented
  * reading would predict:
  *
- *   - `integrationServices/google/Integration.cfc` — the interface-conformant component, carrying NO
- *     feed logic whatsoever. Its port, `GoogleIntegration.ts`, is nearly empty BY FAITHFULNESS.
- *   - `integrationServices/google/controllers/feed.cfc` — RECORD SELECTION only: which SKUs appear.
- *     Its port is a planned `ProductFeedQuery.ts`.
- *   - `integrationServices/google/views/feed/product.cfm` — ALL of the data shaping. Its port is THIS
- *     FILE.
- *   - `integrationServices/google/model/dao/FeedDAO.cfc` — orphaned dead code with syntactically
- *     broken SQL and zero callers. Deliberately NOT ported; that finding belongs to this folder's
- *     documentation rather than to a source comment.
+ *   - `integrationServices/google/Integration.cfc` (79 lines) — the interface-conformant component,
+ *     carrying NO feed logic whatsoever. Its port, `GoogleIntegration.ts`, is therefore nearly
+ *     empty BY FAITHFULNESS, not by neglect.
+ *   - `integrationServices/google/controllers/feed.cfc` (74 lines) — RECORD SELECTION only: which
+ *     SKUs appear. Its port is `ProductFeedQuery.ts` — ⚠️ NOT DELIVERED AT THIS CHECKPOINT (F19);
+ *     planned in AAP §0.4.1.10.
+ *   - `integrationServices/google/views/feed/product.cfm` (66 lines) — ALL of the data shaping.
+ *     Its port is THIS FILE.
+ *   - `integrationServices/google/model/dao/FeedDAO.cfc` (76 lines) — orphaned dead code with
+ *     syntactically broken SQL and zero callers repository-wide. Deliberately NOT ported; the
+ *     evidence is carried in `IntegrationContract.ts` and is not restated here, because that finding
+ *     is owned there. ⚠️ F19: this previously named an undelivered `README.md`.
  *
  * A SERIALIZER, NOT A USER-INTERFACE COMPONENT
  * The output is RSS 2.0 XML in the `g:` namespace, consumed by a merchant feed processor rather than
@@ -127,25 +130,15 @@
  * defect register of AAP §0.6.7 gains no entry. The grammars, their derivations and the reasoning are
  * in RAW-SINK VALIDATION below.
  *
- * ------------------------------------------------------------------------------------------------
- * COVERAGE PROVENANCE — NET-NEW, AND SAID SO PLAINLY (AAP §0.6.5, §0.8.3.7)
- * ------------------------------------------------------------------------------------------------
- * The suite that exercises this module, `test/integrations/ProductFeedBuilder.test.ts`, is NET-NEW.
- * It extends no legacy coverage, and no parity of coverage is claimed or implied:
- *   - the legacy repository contains no feed test of any kind — `meta/tests/` holds no test for
- *     `integrationServices/google/views/feed/product.cfm`, for its controller, or for its DAO;
- *   - the legacy suite contains no mocking library anywhere, and every legacy test boots the whole
- *     framework application and resolves collaborators dynamically, so its tests are integration
- *     tests where the target's are unit tests — a reviewer comparing the two should expect that
- *     difference by design rather than read it as a gap;
- *   - MXUnit and CFSelenium are not vendored in the repository, so the legacy suite cannot be
- *     executed at all in this environment. Nothing here was verified by running legacy tests and
- *     comparing output; every parity claim in this file rests on the cited source locators instead.
- * That asymmetry is the finding, not an embarrassment to smooth over. What this module owes the
- * suite in return is testability without a database, a network, a live paginated query, a process
- * environment, a request scope or a filesystem — which is why every collaborator is a narrow
- * interface satisfiable by a plain object and every ambient legacy global is an explicit input.
- * The test lives under `test/`, never beside this file: the integration folder stays flat.
+ * COVERAGE PROVENANCE — NET-NEW
+ * The planned suite for this module extends no legacy coverage, and no parity of coverage is claimed:
+ * `meta/tests/` holds no test for `integrationServices/google/views/feed/product.cfm`, for its
+ * controller or for its DAO. The legacy suite also ships no mocking library and boots the whole
+ * framework application per test, so legacy tests are integration tests where the target's are unit
+ * tests — a difference by design rather than a gap. What this module owes its suite in return is
+ * testability without a database, a network, a live paginated query, a process environment, a request
+ * scope or a filesystem, which is why every collaborator is a narrow interface satisfiable by a plain
+ * object and every ambient legacy global is an explicit input.
  *
  * ARCHITECTURAL POSITION (AAP §0.7.3 S2, S4, S5)
  * `src/integrations/` may import downward into `ports/`, `domain/`, `util/` and `errors/`, and
@@ -178,7 +171,8 @@ import type {
  * local structural type in the established idiom of this subtree — `util/urlTitle.ts`'s
  * `UniqueValueProbe`, `services/BaseService.ts`'s `EntityPersister` and `OptionService.ts`'s
  * `SelectOption` are the precedents. No barrel, no shared `types` module and no options bag is
- * introduced: this folder is flat and holds no such module.
+ * introduced: the folder is flat, holding four files at this checkpoint and six in AAP §0.4.1.10's
+ * plan (F19), and none of them is a shared type bucket.
  * ============================================================================================= */
 
 /* ------------------------------------------------------------------------------------------------
@@ -739,6 +733,15 @@ const SALE_PRICE_EFFECTIVE_DATE_TRAILING_TAB = '\t';
  * THE SIX LEGACY CALL SITES, unchanged: the SKU identifier (`product.cfm:L17`), the title (`:L18`),
  * the selected description (`:L19`), the product type (`:L21`), the brand name (`:L32`) and the item
  * group identifier (`:L39`).
+ *
+ * THE NINE HARDENED CALL SITES, added by DECISION G-3 above: the channel link and the channel
+ * description (`:L14`, `:L15`), the item link (`:L22`), the primary image link (`:L23`), each
+ * additional image link (`:L24`), the price (`:L27`), the sale price (`:L29`), the sale-price
+ * effective-date range (`:L30`) and the shipping weight (`:L58`).
+ *
+ * The two fixed values — `g:condition` and `g:availability` — are module constants rather than
+ * dynamic text, so they are emitted directly and are not routed through here; and
+ * `g:google_product_category` is emitted empty with no value at all.
  *
  * THE NINE HARDENED CALL SITES, added by DECISION G-3 above: the channel link and the channel
  * description (`:L14`, `:L15`), the item link (`:L22`), the primary image link (`:L23`), each

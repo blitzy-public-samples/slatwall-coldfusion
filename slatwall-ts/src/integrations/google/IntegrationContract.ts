@@ -66,6 +66,15 @@
  * the interface implementation carries no feed logic at all); what is corrected is the implication that
  * the split is already realised in full.
  *
+ * ⚠️ F19 — TWO FILES THIS SPLIT USED TO LIST ARE NOT DELIVERED AT THIS CHECKPOINT. `ProductFeedQuery.ts`
+ * (record selection, from integrationServices/google/controllers/feed.cfc) and `README.md` (the feed
+ * route `?slatAction=google:feed.product`) are both named in AAP §0.4.1.10 and both remain planned, but
+ * neither exists here — this folder currently holds FOUR files. They were previously described in the
+ * present tense, as though a reader could open them. The forward references are kept, explicitly marked
+ * as not yet delivered, because the SPLIT is the architectural finding worth recording (AAP §0.6.4:
+ * the interface implementation carries no feed logic at all); what is corrected is the implication that
+ * the split is already realised in full.
+ *
  * NO SUPERTYPE, AND NO SIXTH MEMBER
  * The legacy base component extends a Hibachi framework object
  * (`integrationServices/BaseIntegration.cfc:L49`); `org/Hibachi/**` is the boundary being extracted

@@ -207,6 +207,7 @@ import {
   type APIGatewayProxyEvent,
   type APIGatewayProxyResult,
 } from './httpResponse';
+import { PUBLIC_ERROR_CODE } from '../errors/DomainError';
 
 /* ================================================================================================
  * REQUEST PARAMETER NAMES
@@ -1619,7 +1620,11 @@ export function createSkuHandler(
     const productID: string | undefined = readProductIdentifier(event);
 
     if (productID === undefined) {
-      return messageResponse(HTTP_STATUS.BAD_REQUEST, PRODUCT_ID_REQUIRED_MESSAGE);
+      return messageResponse(
+        HTTP_STATUS.BAD_REQUEST,
+        PUBLIC_ERROR_CODE.REQUEST_INVALID,
+        PRODUCT_ID_REQUIRED_MESSAGE,
+      );
     }
 
     const body = readJsonObjectBody(event);
@@ -1701,7 +1706,11 @@ export function createSkuHandler(
     const skuCode: string | undefined = readSkuCode(event);
 
     if (skuCode === undefined) {
-      return messageResponse(HTTP_STATUS.BAD_REQUEST, SKU_CODE_REQUIRED_MESSAGE);
+      return messageResponse(
+        HTTP_STATUS.BAD_REQUEST,
+        PUBLIC_ERROR_CODE.REQUEST_INVALID,
+        SKU_CODE_REQUIRED_MESSAGE,
+      );
     }
 
     const body = readJsonObjectBody(event);
@@ -1775,7 +1784,11 @@ export function createSkuHandler(
     const productID: string | undefined = readProductIdentifier(event);
 
     if (productID === undefined) {
-      return messageResponse(HTTP_STATUS.BAD_REQUEST, PRODUCT_ID_REQUIRED_MESSAGE);
+      return messageResponse(
+        HTTP_STATUS.BAD_REQUEST,
+        PUBLIC_ERROR_CODE.REQUEST_INVALID,
+        PRODUCT_ID_REQUIRED_MESSAGE,
+      );
     }
 
     /* Discrepancy 2: `sorted` is REQUIRED, so absence is refused rather than defaulted. The reader's
@@ -1783,11 +1796,19 @@ export function createSkuHandler(
     const sorted: boolean | null | undefined = readCfmlBoolean(event, SORTED_QUERY_PARAMETER);
 
     if (sorted === undefined) {
-      return messageResponse(HTTP_STATUS.BAD_REQUEST, SORTED_REQUIRED_MESSAGE);
+      return messageResponse(
+        HTTP_STATUS.BAD_REQUEST,
+        PUBLIC_ERROR_CODE.REQUEST_INVALID,
+        SORTED_REQUIRED_MESSAGE,
+      );
     }
 
     if (sorted === null) {
-      return messageResponse(HTTP_STATUS.BAD_REQUEST, SORTED_NOT_BOOLEAN_MESSAGE);
+      return messageResponse(
+        HTTP_STATUS.BAD_REQUEST,
+        PUBLIC_ERROR_CODE.REQUEST_INVALID,
+        SORTED_NOT_BOOLEAN_MESSAGE,
+      );
     }
 
     const fetchOptions: boolean | null | undefined = readCfmlBoolean(
@@ -1798,7 +1819,11 @@ export function createSkuHandler(
     /* Present but unrecognised is refused; ABSENT is forwarded as absence, so the service's own
      * `fetchOptions = false` default at [:L220] remains the single place that default lives. */
     if (fetchOptions === null) {
-      return messageResponse(HTTP_STATUS.BAD_REQUEST, FETCH_OPTIONS_NOT_BOOLEAN_MESSAGE);
+      return messageResponse(
+        HTTP_STATUS.BAD_REQUEST,
+        PUBLIC_ERROR_CODE.REQUEST_INVALID,
+        FETCH_OPTIONS_NOT_BOOLEAN_MESSAGE,
+      );
     }
 
     try {
@@ -1858,7 +1883,11 @@ export function createSkuHandler(
     const productID: string | undefined = readProductIdentifier(event);
 
     if (productID === undefined) {
-      return messageResponse(HTTP_STATUS.BAD_REQUEST, PRODUCT_ID_REQUIRED_MESSAGE);
+      return messageResponse(
+        HTTP_STATUS.BAD_REQUEST,
+        PUBLIC_ERROR_CODE.REQUEST_INVALID,
+        PRODUCT_ID_REQUIRED_MESSAGE,
+      );
     }
 
     try {
@@ -1982,7 +2011,11 @@ export function createSkuHandler(
     const skuID: string | undefined = readSkuIdentifier(event);
 
     if (skuID === undefined) {
-      return messageResponse(HTTP_STATUS.BAD_REQUEST, SKU_ID_REQUIRED_MESSAGE);
+      return messageResponse(
+        HTTP_STATUS.BAD_REQUEST,
+        PUBLIC_ERROR_CODE.REQUEST_INVALID,
+        SKU_ID_REQUIRED_MESSAGE,
+      );
     }
 
     try {

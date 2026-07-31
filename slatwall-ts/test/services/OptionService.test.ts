@@ -326,7 +326,10 @@ describe('optionHandler — SEC-03, the gate and the two classifications', () =>
 
     for (const result of results) {
       expect(result.statusCode).toBe(401);
-      expect(JSON.parse(result.body)).toStrictEqual({ message: 'Authentication is required' });
+      expect(JSON.parse(result.body)).toStrictEqual({
+        code: 'CATALOG_REQUEST_REJECTED',
+        message: 'Authentication is required',
+      });
     }
 
     expect(probe.serviceCalls).toStrictEqual([]);
@@ -372,7 +375,10 @@ describe('optionHandler — SEC-03, the gate and the two classifications', () =>
     const result = probe.handler.getOptionsForSelect(optionsBodyEvent('{"options":[]}'));
 
     expect(result.statusCode).toBe(403);
-    expect(JSON.parse(result.body)).toStrictEqual({ message: 'Not authorized' });
+    expect(JSON.parse(result.body)).toStrictEqual({
+      code: 'CATALOG_REQUEST_REJECTED',
+      message: 'Not authorized',
+    });
     expect(probe.serviceCalls).toStrictEqual([]);
   });
 
@@ -403,7 +409,10 @@ describe('optionHandler — SEC-03, the gate and the two classifications', () =>
     for (const body of ['<<not json>>', '[]', '{}', '{"options":[7]}']) {
       const result = probe.handler.getOptionsForSelect(optionsBodyEvent(body));
       expect(result.statusCode).toBe(403);
-      expect(JSON.parse(result.body)).toStrictEqual({ message: 'Not authorized' });
+      expect(JSON.parse(result.body)).toStrictEqual({
+        code: 'CATALOG_REQUEST_REJECTED',
+        message: 'Not authorized',
+      });
     }
   });
 
