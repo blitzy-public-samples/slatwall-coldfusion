@@ -1,0 +1,2171 @@
+/**
+ * skuHandler — the AWS boundary for the extracted Catalog SKU surface.
+ *
+ * Authority: AAP 0.4.1.9 row 3 — "slatwall-ts/src/handlers/skuHandler.ts | CREATE |
+ * model/service/SkuService.cfc | Exposes the SKU surface." The member surface is fixed by
+ * AAP 0.4.2.2 (the nine declared members) and AAP 0.4.2.5 (the one synthesized member).
+ *
+ * WHAT THIS FILE IS
+ * -----------------
+ * Each member below narrows the proxy event, calls ONE service member, and shapes the outcome
+ * through ./httpResponse (AAP 0.3.2, quoting AWS's own reference layout: "the handler responsible
+ * only for translating AWS-specific input into domain calls"). There is no query, no combination
+ * enumeration, no validation rule, no field mapping and no SQL anywhere in this file, because every
+ * one of those belongs to a layer beneath it.
+ *
+ * It is a THIN, INJECTABLE FUNCTION OF THE SERVICE AND TWO COLLABORATORS: {@link createSkuHandler}
+ * takes the SKU service, a product resolver and an authorisation resolver, and returns the nine
+ * ROUTED operations. Nothing is constructed here, nothing is resolved by name, and ../config/container
+ * is never imported — src/handlers/router.ts calls the composition root and passes all three in. That
+ * is also what makes this file assertable with hand-written doubles, without a database, a network
+ * call or an AWS runtime (AAP 0.7.3 S6).
+ *
+ * ⚠️ THE SERVICE FILE IS THE CONTRACT, NOT THE PLAN'S PROSE, AND FOR THIS FILE THE TWO DIVERGE
+ * -------------------------------------------------------------------------------------------
+ * Every signature this handler calls was read from ../services/SkuService rather than from a table,
+ * and where AAP 0.4.2.2's target column and that file disagree, the file wins. Two of those
+ * divergences are carried defects and are recorded below as judgments (a) and (b); a third — the
+ * zero-arity of `getTransactionExistsFlag` — is the one place the plan's own two sections disagree
+ * with each other, and judgment (a) records how it was adjudicated. Nothing here "corrects" the
+ * service (AAP 0.8.2 Guideline 4).
+ *
+ * NINE ROUTED MEMBERS OVER A TEN-MEMBER SERVICE, AND BOTH COUNTS ARE THE POINT
+ * ---------------------------------------------------------------------------
+ * model/service/SkuService.cfc declares NINE public functions across 334 lines, and the port adds
+ * exactly one more that the legacy fabricated at run time (IR-1). The injected SERVICE seam
+ * {@link SkuSurface} is therefore ten members, because the parity check can only check what is
+ * declared. The ROUTED surface {@link SkuHandler} is nine, because `newSku` has no legacy action
+ * behind it and is consumed only from INSIDE `createSkus`' own combination engine. That is the same
+ * adjudication ./brandHandler made for `newBrand`, reached the same way and for the same reason:
+ * declared is not the same as routed, and publishing a factory for an unpersisted in-memory instance
+ * would be an invented route (AAP 0.7.3 S9).
+ *
+ * ⛔ AND THE RESTRAINT STOPS THERE (AAP 0.4.2.5: "synthesis is not reproduced wholesale, only where
+ * used"). There is deliberately no `countSku`, no `listSku`, no `exportSku`, no `processSku` and no
+ * compound `getSkuByXxx` form, even though org/Hibachi/HibachiService.cfc:L255-L281 would have
+ * fabricated every one of them on demand. The slice calls none of them, and adding one because the
+ * dispatcher COULD have produced it is precisely the enhancement AAP 0.8.2 Guideline 4 forbids.
+ *
+ * EVERY ROUTED MEMBER IS AUTHORISED BEFORE IT DOES ANYTHING
+ * --------------------------------------------------------
+ * The legacy authorised every request in one place, before any controller method ran —
+ * `setupRequest()` [org/Hibachi/Hibachi.cfc:L182-L203], refusing at [:L188]. That gate is framework
+ * code and does not cross the boundary (AAP 0.8.3.2), so its CONTRACT is declared as a port instead
+ * and consulted here. Restoring it is PARITY, not invented policy; the only thing that changes is
+ * the failure mode, from a browser redirect to a status code. {@link SKU_ACCESS_MATRIX} carries the
+ * per-row evidence.
+ *
+ * TECHNOLOGY-SPECIFIC TRANSLATION DECISIONS (AAP 0.8.2 Guideline 6)
+ * ----------------------------------------------------------------
+ * Guideline 6 requires every technology-specific judgment to be documented where it is made. The
+ * seven groups the file's own brief mandates are (a) to (g); (h) to (n) are the judgments this file
+ * makes on its own account. Each is restated at the declaration or member that makes it.
+ *
+ * (a) TODO(parity) D23 — `getTransactionExistsFlag` TAKES NO ARGUMENTS, AND THE LEGACY IS BOTH
+ *     ZERO-ARG AND EFFECTIVELY TWO-ARG AT ONCE. The declaration at
+ *     model/service/SkuService.cfc:L285 is literally `public boolean function
+ *     getTransactionExistsFlag()`, with no formal parameter of any kind, yet its body at [:L286]
+ *     forwards `argumentCollection=arguments` to a DAO member that
+ *     DOES declare two — `<cfargument name="productID" />` and `<cfargument name="skuID" />` at
+ *     [model/dao/SkuDAO.cfc:L54-L55]. CFML permits a caller to pass named arguments a signature never
+ *     declared, and BOTH real callers exploit exactly that:
+ *
+ *         model/entity/Sku.cfc:L594      -> getTransactionExistsFlag( skuID = this.getSkuID() )
+ *         model/entity/Product.cfc:L626  -> getTransactionExistsFlag( productID = this.getProductID() )
+ *
+ *     The plan's own two sections then part company: AAP 0.4.2.2 Discrepancy 4 rules that "The
+ *     narrower service contract is preserved", while AAP 0.4.2.6 puts the FILTERED capability on a
+ *     separately named member, `SkuRepository.transactionExists(productID?, skuID?)`.
+ *     ../services/SkuService adjudicates it by following both at once — the service member declares
+ *     ZERO arguments and the repository member keeps the pair — and this handler matches the service
+ *     rather than guessing from prose. The identifier reaches the query through the entity-level
+ *     checker interfaces the domain modules declare, never through this member. See
+ *     {@link SkuHandler.getTransactionExistsFlag} for what a caller therefore observes.
+ *
+ * (b) TODO(parity) D24 — `processImageUpload` RETURNS A BOOLEAN, NEVER A SKU. AAP 0.4.2.2's target
+ *     column says `Promise<Sku>`, and the body at model/service/SkuService.cfc:L210-L218 disagrees
+ *     with it in the plainest possible way: it returns `true` at [:L214] and `false` at [:L216] and
+ *     never returns the entity at all. ../services/SkuService ratified `Promise<boolean>`, so this
+ *     handler serialises the boolean. THE LEGACY PARAMETER IS ALSO SPELLED WITH A CAPITAL S —
+ *     `required any Sku` at [:L210], read back as `arguments.Sku` at [:L211] — which is CFML idiom
+ *     rather than behavior; the service renamed it `sku` and this file uses the same spelling, which
+ *     AAP 0.8.1 expressly permits ("It does not mean preserving CFML idioms in TypeScript").
+ *
+ * (c) TODO(parity) D4 — `getSkuStocksDeletableFlag` DELEGATES TO A DAO MEMBER THAT DOES NOT EXIST,
+ *     AND THIS BOUNDARY REPORTS THAT HONESTLY. model/service/SkuService.cfc:L281-L283 forwards to
+ *     `getSkuDAO().getSkuStocksDeletableFlag(...)`, and that member is declared NOWHERE IN THE
+ *     REPOSITORY — model/dao/SkuDAO.cfc declares six public members and none of them is it — so the
+ *     only path that reaches it, `Sku.getStocksDeletableFlag()` at model/entity/Sku.cfc:L567-L572,
+ *     has never been able to resolve. AAP 0.4.2.2 ports the member "as an explicit not-implemented
+ *     boundary that documents the defect", and AAP 0.8.2 Guideline 4 names it specifically as one of
+ *     the twenty-one items "a competent engineer would instinctively fix". It is not fixed. The route
+ *     stays present and mounted (TR-5: "The member is never quietly dropped from the interface"), and
+ *     no `true`, `false`, `null`, empty value or fabricated result is ever substituted on that path.
+ *
+ * (d) TODO(parity) D13 — THE INDEX-ZERO FAILURE IN THE TWO SORTING MEMBERS IS PRESERVED, NOT GUARDED.
+ *     model/service/SkuService.cfc:L234-L238 and again [:L262-L266] compute
+ *     `var index = arrayFind(sortedArray, skuID)` and then assign `sortedArrayReturn[index] = skus[i]`.
+ *     `arrayFind` returns 0 on a miss and CFML arrays are ONE-BASED, so position 0 does not exist and
+ *     the assignment throws. AAP 0.6.7.4 records why a miss is reachable rather than hypothetical:
+ *     `getSortedProductSkusID` [model/dao/SkuDAO.cfc:L172] returns ONLY option-bearing SKUs, so an
+ *     option-less SKU in the collection is not in the sorted list and its lookup misses. This handler
+ *     adds NO guard, NO skip, NO filter, NO fallback and NO retry: the failure travels out of the
+ *     service and is shaped by {@link errorResponse} like any other. Repairing it here would make the
+ *     port's output incomparable to the legacy's, which is the whole point of IR-9.
+ *
+ * (e) M6 — `createSkus` RECEIVES ITS `data` PAYLOAD UNRESHAPED, AND THIS IS THE HIGHEST-RISK LINE IN
+ *     THE FILE. AAP 0.6.2 calls the validation read-back loop "the single most dangerous thing in the
+ *     slice", and AAP 0.6.7.8 explains why the payload is part of it: the odometer at
+ *     model/service/SkuService.cfc:L89-L122 enumerates option combinations in an order derived from
+ *     `data.options`, and that order "determines both the generated SKU set and … the order in which
+ *     uniqueness validation observes its siblings". Re-keying, sorting, normalising, trimming,
+ *     defaulting or filtering the payload here would therefore change which SKUs get created WITH NO
+ *     ERROR AND NO COMPILE FAILURE. The parsed body object is handed to the service exactly as
+ *     ./httpResponse produced it. See {@link SkuHandler.createSkus}.
+ *
+ * (f) DISCREPANCY 6 — THE SINGULAR/PLURAL ASYMMETRY IS CARRIED, NOT HARMONISED.
+ *     `searchSkusByProductType` declares a SINGULAR `productTypeID` at
+ *     model/service/SkuService.cfc:L271 and again at [model/dao/SkuDAO.cfc:L130], while the product
+ *     side of the same feature declares a PLURAL `productTypeIDs` at
+ *     [model/dao/ProductDAO.cfc:L419]. The divergence is in the legacy source, AAP 0.4.2.6 records it
+ *     as Discrepancy 6, and this file preserves it: the query parameter, the local binding and the
+ *     argument passed to the service are all singular. Harmonising the two spellings would make the
+ *     two surfaces look like one feature when the legacy treats them as two.
+ *
+ * (g) TR-5 — THE TWO BOUNDARY GAPS THIS FILE ROUTES OVER, NAMED RATHER THAN HIDDEN.
+ *     `processImageUpload` is boundary-stubbed behind `ImagePathPort`: the image write at
+ *     model/service/SkuService.cfc:L212 goes through `getService("imageService")`, which AAP 0.6.3.2
+ *     calls the HIDDEN dependency — "resolved dynamically and NEVER declared as a property", so any
+ *     dependency analysis based on component metadata misses it entirely. And `getProductSkus`'
+ *     sorting path reaches an inventory-derived ordering through the repository. Neither port is
+ *     imported here; both are the service's constructor parameters. This file names the gaps so a
+ *     reader knows a 501 from either route is a declared boundary rather than a bug.
+ *
+ * (h) A REQUIRED LEGACY ARGUMENT IS REJECTED AT THE BOUNDARY; AN OPTIONAL ONE IS FORWARDED ABSENT.
+ *     The two treatments are not an inconsistency — they are the legacy's own distinction, applied
+ *     mechanically. CFML raises before a function body runs when a `required` argument is missing, so
+ *     an absent input for `required any product` [:L58, :L220, :L246], `required boolean sorted`
+ *     [:L220] or `required string skuID` [:L281] is answered here with a bad request and the service
+ *     is never called. An argument the legacy declares WITHOUT `required` — `string skuCode` [:L289],
+ *     `string term` and `string productTypeID` [:L271], `struct data` and `currentURL` [:L309] — is
+ *     forwarded as absent, so whatever the legacy would have done with the omission still happens
+ *     where the legacy does it. ../services/SkuService relies on exactly that for `getSkuBySkuCode`:
+ *     "the DAO's own requirement is reproduced as an explicit failure at the point the legacy fails".
+ *
+ * (i) THE WIRE CARRIES IDENTIFIERS AND THREE SERVICE MEMBERS TAKE ENTITIES, SO A RESOLVER IS
+ *     UNAVOIDABLE. Recorded at {@link ProductResolver}.
+ *
+ * (j) A SKU IS ADDRESSED BY ITS SKU CODE, BECAUSE THAT IS THE ONLY LOOKUP THE PORTED SURFACE HAS.
+ *     Recorded at {@link SkuHandler.processImageUpload}.
+ *
+ * (k) EVERY SKU LEAVING THIS FILE IS PROJECTED, NEVER SERIALISED WHOLE. Recorded at
+ *     {@link SkuResponse}.
+ *
+ * (l) THE SMART LIST FORWARDS ONLY THE KEYS THE LEGACY INTERPRETER RECOGNISES, AND INVENTS NO
+ *     PAGINATION. Recorded at {@link readSmartListInput}.
+ *
+ * (m) A BOOLEAN ARRIVES AS TEXT, SO THE LEGACY'S BOOLEAN LITERALS ARE THE ACCEPTED SET. Recorded at
+ *     {@link readCfmlBoolean}.
+ *
+ * (n) `createSkus` ALWAYS ANSWERS `true`, AND THAT IS REPORTED RATHER THAN REINTERPRETED. Recorded at
+ *     {@link SkuHandler.createSkus}.
+ *
+ * TEST PROVENANCE: NET-NEW, IN FULL — NO PARITY WITH ANY LEGACY TEST IS CLAIMED OR IMPLIED
+ * ---------------------------------------------------------------------------------------
+ * AAP 0.6.5.2 is decisive and is stated here rather than softened, because AAP 0.8.3.7 exists to
+ * answer precisely this question honestly: no `SkuServiceTest` exists anywhere under meta/tests/, no
+ * `SkuTest` entity test exists, no `SkuDAOTest` exists, and there is no legacy controller test of any
+ * kind. Everything about this file is therefore net-new coverage. AAP 0.4.1.12 defines no
+ * test/handlers/ directory, so S6 manifests here as testability-by-design instead: every member is a
+ * pure function of its arguments and its three injected collaborators, so a plain object literal is a
+ * sufficient double — which matters because the legacy repository vendors no mocking library at all
+ * and its suite boots the whole FW/1 application (AAP 0.4.3.6).
+ */
+
+import type { Sku } from '../domain/sku/Sku';
+import type {
+  EntityCrudType,
+  HandlerAccessClassification,
+  RequestAuthorizationContext,
+  RequestAuthorizationResolver,
+} from '../ports/AccountContextPort';
+import type { SmartListInput, SmartListResult } from '../ports/SmartListQueryPort';
+import type { ProductWithErrorState, SkuService } from '../services/SkuService';
+
+import {
+  errorResponse,
+  forbiddenResponse,
+  invalidRequestBodyResponse,
+  messageResponse,
+  notFoundResponse,
+  okResponse,
+  readJsonObjectBody,
+  readPathParameter,
+  readQueryStringParameter,
+  unauthorizedResponse,
+  HTTP_STATUS,
+  type APIGatewayProxyEvent,
+  type APIGatewayProxyResult,
+} from './httpResponse';
+
+/* ================================================================================================
+ * REQUEST PARAMETER NAMES
+ *
+ * Every name below is a LEGACY name — an ORM property declaration or a declared argument — and none
+ * is coined here. The ROUTE TEMPLATES that bind them belong to src/handlers/router.ts, which is why
+ * no path, verb or route string appears anywhere in this file (AAP 0.7.3 S9).
+ * ============================================================================================== */
+
+/**
+ * The path parameter carrying a product's primary identifier.
+ *
+ * `property name="productID" ormtype="string" length="32" fieldtype="id" generator="uuid"
+ * unsavedvalue="" default="";` — [model/entity/Product.cfc:L52]. It is also the spelling
+ * AAP 0.4.2.5 uses for the synthesized `productService.getProduct(productID: string)`.
+ */
+const PRODUCT_ID_PATH_PARAMETER = 'productID';
+
+/**
+ * The path parameter carrying a SKU's primary identifier.
+ *
+ * `property name="skuID" ormtype="string" length="32" fieldtype="id" generator="uuid"
+ * unsavedvalue="" default="";` — [model/entity/Sku.cfc:L52]. It is also the argument name declared at
+ * [model/service/SkuService.cfc:L281], which is the one member that consumes it.
+ */
+const SKU_ID_PATH_PARAMETER = 'skuID';
+
+/**
+ * The path parameter carrying a SKU's code.
+ *
+ * `property name="skuCode" ormtype="string" unique="true" length="50";` —
+ * [model/entity/Sku.cfc:L54]. The `unique="true"` attribute is load-bearing rather than decorative:
+ * it is why a SKU code addresses at most one row, which is what makes judgment (j) sound. It is also
+ * the argument name declared at [model/service/SkuService.cfc:L289].
+ */
+const SKU_CODE_PATH_PARAMETER = 'skuCode';
+
+/**
+ * The query parameter carrying the sorting flag.
+ *
+ * `required boolean sorted` — [model/service/SkuService.cfc:L220]. REQUIRED, per AAP 0.4.2.2
+ * Discrepancy 2, which is why {@link SkuHandler.getProductSkus} rejects its absence instead of
+ * defaulting it.
+ */
+const SORTED_QUERY_PARAMETER = 'sorted';
+
+/**
+ * The query parameter carrying the eager-fetch flag.
+ *
+ * `boolean fetchOptions=false` — [model/service/SkuService.cfc:L220]. The DEFAULT LIVES ON THE
+ * SERVICE, and this file never restates it: when the parameter is absent the argument is omitted
+ * entirely, so `false` continues to come from the one declaration that owns it.
+ */
+const FETCH_OPTIONS_QUERY_PARAMETER = 'fetchOptions';
+
+/**
+ * The query parameter carrying the search term.
+ *
+ * `string term` — [model/service/SkuService.cfc:L271], declared WITHOUT `required` (AAP 0.4.2.2
+ * Discrepancy 3), so its absence is forwarded rather than rejected. See judgment (h).
+ */
+const TERM_QUERY_PARAMETER = 'term';
+
+/**
+ * The query parameter carrying the product-type identifier — SINGULAR, and deliberately so.
+ *
+ * `string productTypeID` — [model/service/SkuService.cfc:L271] and [model/dao/SkuDAO.cfc:L130], both
+ * singular and both without `required`. The product-side twin is PLURAL
+ * (`productTypeIDs` at [model/dao/ProductDAO.cfc:L419]); judgment (f) records why the asymmetry is
+ * carried across rather than reconciled.
+ */
+const PRODUCT_TYPE_ID_QUERY_PARAMETER = 'productTypeID';
+
+/**
+ * The identifier value that means "this record has never been persisted".
+ *
+ * Not a placeholder chosen here: `unsavedvalue=""` together with `default=""` is declared verbatim on
+ * BOTH primary keys this file reads — [model/entity/Product.cfc:L52] and [model/entity/Sku.cfc:L52] —
+ * so one constant states the fact once rather than twice. A persisted row therefore never carries it,
+ * which is why an empty inbound identifier cannot address a stored record and is treated exactly as an
+ * absent one.
+ *
+ * ./httpResponse deliberately keeps "absent" and "empty" distinguishable ("Absent stays absent"),
+ * precisely so a member for which an empty string is meaningful can still see it. For a primary
+ * identifier the empty string IS meaningful and what it means is "unsaved", which is why the two cases
+ * converge here rather than in the reader. Compared by equality rather than by measuring a length,
+ * following the convention ./httpResponse sets: no numeric literal other than a status code appears in
+ * this layer.
+ */
+const UNSAVED_IDENTIFIER = '';
+
+/* ================================================================================================
+ * ENTITY NAMES FOR THE AUTHORISATION GATE
+ *
+ * ⭐ BOTH ARE MODULE CONSTANTS, NEVER REQUEST VALUES, AND THAT IS THE POINT.
+ * `EntityAuthorizationPort` declares `entityName` as an unconstrained `string` because the legacy
+ * declares it `required string` and enumerates nothing — the type is closed BY THE CALLER rather than
+ * by the port. This is that closure: every authorisation question this file asks names one of exactly
+ * two compile-time constants, so no value from a request can ever reach that member.
+ *
+ * ⚠️ TWO NAMES RATHER THAN ONE, WHICH IS A DIFFERENCE FROM ./brandHandler AND ./optionHandler AND IS
+ * EVIDENCE-LED. Those two files each expose members reached through items named for a single entity,
+ * so each declares one constant. Eight of this file's nine routed members are likewise reached through
+ * Sku items — but `createSkus` is not: its only legacy call sites are inside
+ * ProductService.saveProduct [model/service/ProductService.cfc:L279] and
+ * ProductService.processProduct_addOption [:L150], both of which are PRODUCT actions. The legacy
+ * derives the entity name from the ITEM name by substring arithmetic
+ * [org/Hibachi/HibachiAuthenticationService.cfc:L54, :L56, :L58, :L60, :L66, :L75], so a `saveProduct`
+ * item asks about `Product`, not about `Sku`. Asking the wrong entity's question would silently
+ * authorise SKU creation against SKU permissions the legacy never consulted.
+ * ============================================================================================== */
+
+/** The legacy CFML component name — `model/entity/Sku.cfc`. */
+const SKU_ENTITY_NAME = 'Sku';
+
+/** The legacy CFML component name — `model/entity/Product.cfc`. */
+const PRODUCT_ENTITY_NAME = 'Product';
+
+/* ================================================================================================
+ * CFML BOOLEAN LITERALS
+ *
+ * G6 TRANSLATION DECISION (m). A query string carries text, and two legacy arguments are declared
+ * `boolean` — `required boolean sorted` and `boolean fetchOptions=false`, both at
+ * [model/service/SkuService.cfc:L220]. CFML would have coerced the inbound value itself, so the
+ * coercion has to happen somewhere in the port, and the honest place is the boundary that receives the
+ * text.
+ *
+ * THE ACCEPTED SET IS CFML'S OWN BOOLEAN LITERALS AND NOTHING MORE: `true`/`false`, `yes`/`no` and
+ * `1`/`0`, matched without regard to case because CFML's comparisons are case-insensitive. CFML's
+ * WIDER numeric coercion — where any non-zero number reads as true — is deliberately NOT reproduced,
+ * for two reasons stated rather than assumed:
+ *   - It is unreachable on every legacy path. The only caller of `getProductSkus` is
+ *     `Product.getSkus(boolean sorted=false, boolean fetchOptions=false)`
+ *     [model/entity/Product.cfc:L155-L159], which passes two already-typed CFML booleans. No legacy
+ *     call site ever hands this member the string `"2"`.
+ *   - Reproducing it would require parsing a number and comparing it against zero, and this file owns
+ *     NO source-declared numeric constant — the only numbers permitted in it are HTTP status codes
+ *     (AAP 0.7.3 S9).
+ * A value outside the set is a bad request rather than a silent `false`, because silently reading an
+ * unrecognised value as `false` would flip `sorted` for a caller that asked for sorting.
+ *
+ * Both sets are frozen readonly tuples so nothing can extend the accepted vocabulary at run time
+ * (AAP 0.6.6 M7).
+ * ============================================================================================== */
+
+/** The values CFML reads as boolean true. */
+const CFML_TRUE_LITERALS: readonly string[] = Object.freeze(['true', 'yes', '1']);
+
+/** The values CFML reads as boolean false. */
+const CFML_FALSE_LITERALS: readonly string[] = Object.freeze(['false', 'no', '0']);
+
+/* ================================================================================================
+ * THE SMART LIST DATA VOCABULARY — org/Hibachi/HibachiSmartList.cfc:L85-L136
+ *
+ * G6 TRANSLATION DECISION (l), part one. `getSkuSmartList(struct data={}, currentURL="")`
+ * [model/service/SkuService.cfc:L309] was called with the FW/1 request context — the whole bag of
+ * query and form values — and `applyData` then walked that bag and acted on RECOGNISED keys only,
+ * ignoring every other member of the struct. The two lists below reproduce that recognition set
+ * exactly, key for key, so forwarding on their basis is faithful translation rather than an invented
+ * request contract.
+ *
+ * Each entry cites the branch that recognises it:
+ *   savedStateID  [:L93-L96]      keyword    [:L136-L138]   keywords  [:L145]
+ *   OrderBy       [:L118-L122]    P:Show     [:L123-L128]   P:Start   [:L129-L130]
+ *   P:Current     [:L131-L132]
+ *   F:  [:L100-L101]   FR: [:L102-L103]   FI: [:L104-L105]   FIR: [:L106-L107]
+ *   FK: [:L108-L113]   FKR:[:L114-L115]   R:  [:L116-L117]
+ *
+ * ⚠️ THE PREFIXES ARE MUTUALLY EXCLUSIVE, WHICH IS WHY A PREFIX TEST IS SOUND HERE. The legacy tests
+ * them with explicit lengths — `left(i,2) == "F:"`, `left(i,3) == "FR:"`, `left(i,4) == "FIR:"` — and
+ * each candidate carries the colon, so `FR:x` does not match `F:` and `FIR:x` does not match `FI:`.
+ * The same mutual exclusivity is what lets `SmartListInput`'s template index signatures type them.
+ *
+ * ⛔ NOTHING IS ADDED. There is no page size, no default limit, no maximum, no ordering default and no
+ * filter this file supplies of its own accord (AAP 0.7.3 S9, restated for this member by
+ * ../services/SkuService: "No pagination default, filter or ordering is invented").
+ * ============================================================================================== */
+
+/** The smart list data keys recognised by exact name. */
+const SMART_LIST_NAMED_KEYS: readonly string[] = Object.freeze([
+  'savedStateID',
+  'keyword',
+  'keywords',
+  'OrderBy',
+  'P:Show',
+  'P:Start',
+  'P:Current',
+]);
+
+/** The smart list data keys recognised by prefix. */
+const SMART_LIST_KEY_PREFIXES: readonly string[] = Object.freeze([
+  'F:',
+  'FR:',
+  'FI:',
+  'FIR:',
+  'FK:',
+  'FKR:',
+  'R:',
+]);
+
+/* ================================================================================================
+ * BAD-REQUEST TEXTS
+ *
+ * Each names the input it is about and nothing else — no route, no identifier, no collaborator, no
+ * internal detail — following the disclosure rules ./httpResponse sets for this layer. They are
+ * module-private because the legacy system has no counterpart for any of them, so none carries a
+ * parity obligation: assert on the status code, never on these strings.
+ *
+ * Each is composed from the parameter-name constant above rather than repeating the literal, so a text
+ * cannot drift away from the name it describes.
+ * ============================================================================================== */
+
+const PRODUCT_ID_REQUIRED_MESSAGE = `A "${PRODUCT_ID_PATH_PARAMETER}" path parameter is required`;
+
+const SKU_ID_REQUIRED_MESSAGE = `A "${SKU_ID_PATH_PARAMETER}" path parameter is required`;
+
+const SKU_CODE_REQUIRED_MESSAGE = `A "${SKU_CODE_PATH_PARAMETER}" path parameter is required`;
+
+const SORTED_REQUIRED_MESSAGE = `A "${SORTED_QUERY_PARAMETER}" query parameter is required`;
+
+const SORTED_NOT_BOOLEAN_MESSAGE = `The "${SORTED_QUERY_PARAMETER}" query parameter must be a boolean`;
+
+const FETCH_OPTIONS_NOT_BOOLEAN_MESSAGE = `The "${FETCH_OPTIONS_QUERY_PARAMETER}" query parameter must be a boolean`;
+
+/* ================================================================================================
+ * THE INJECTION SEAMS
+ * ============================================================================================== */
+
+/**
+ * The SKU-service surface this handler consumes — the injection seam, and the parity check itself.
+ *
+ * TEN MEMBERS: the NINE declared in model/service/SkuService.cfc plus the ONE the legacy fabricated.
+ * TR-1 governs every one of them — "Preserve the public method name, arity and argument order of every
+ * in-scope service member" — and AAP 0.8.3.1 states why that is written as something a compiler
+ * checks: "so interface parity is checkable method-by-method".
+ *
+ * ⭐ IT IS A `Pick` OF THE REAL CLASS, NOT A HAND-COPIED INTERFACE, AND THAT IS THE STRONGEST FORM OF
+ * THE PARITY CHECK AVAILABLE. A restated interface can drift from the service it describes and would
+ * need a separate assignability guard to catch it; a projection of the class CANNOT drift, because it
+ * has no independent declaration to drift from. Rename an argument, add one, reorder two or change a
+ * return type in ../services/SkuService and every call site in this file stops compiling immediately.
+ * The same technique ./optionHandler uses for `OptionSurface`, chosen here for the same reason and
+ * spelled the same way so the pattern is recognisable across the folder.
+ *
+ * ⭐ AND IT IS WHAT MAKES THE NET-NEW COVERAGE PRACTICAL (S6). `SkuService` holds TEN private readonly
+ * collaborators, so its type is nominal and no object literal can stand in for the class itself.
+ * `Pick` drops the private state and keeps the ten public members, so a test drives this handler from
+ * a ten-member literal — no repository, no query port, no validator, no database, no network call and
+ * no AWS runtime. No cast is used to achieve that, here or in any consumer: the narrowing IS the type,
+ * not a bypass of it. The legacy repository vendors no mocking library at all (AAP 0.4.3.6), which is
+ * exactly the gap the ports were introduced to close.
+ *
+ * THE TEN MEMBERS, WITH THE SOURCE LOCATOR AND THE CARRIED FINDING FOR EACH:
+ *   createSkus                [:L58]  the combination engine; `data` unreshaped — judgment (e), M6
+ *   processImageUpload        [:L210] returns a BOOLEAN — judgment (b), D24
+ *   getProductSkus            [:L220] `sorted` REQUIRED — Discrepancy 2; carries D13
+ *   getSortedProductSkus      [:L246] carries D13
+ *   searchSkusByProductType   [:L271] BOTH arguments optional — Discrepancy 3; SINGULAR — judgment (f)
+ *   getSkuStocksDeletableFlag [:L281] delegates to an absent DAO member — judgment (c), D4
+ *   getTransactionExistsFlag  [:L285] ZERO arguments — judgment (a), Discrepancy 4 / D23
+ *   getSkuBySkuCode           [:L289] optional argument, `null` on a miss
+ *   getSkuSmartList           [:L309] entity, three joins, five keyword properties
+ *   newSku                    no legacy declaration at all — IR-1; DECLARED HERE, NOT ROUTED
+ *
+ * `newSku` earns its place in this list even though {@link SkuHandler} does not publish it: IR-1
+ * requires every runtime-synthesized member the slice actually calls to become "an explicitly declared,
+ * typed method", the legacy calls it five times inside this very component
+ * [model/service/SkuService.cfc:L92, :L127, :L154, :L182, :L192], and including it here is what proves
+ * the ported service still declares it. Membership of this seam is a parity statement; membership of
+ * {@link SkuHandler} is a routing statement. The two are deliberately different.
+ */
+export type SkuSurface = Pick<
+  SkuService,
+  | 'createSkus'
+  | 'processImageUpload'
+  | 'getProductSkus'
+  | 'getSortedProductSkus'
+  | 'searchSkusByProductType'
+  | 'getSkuStocksDeletableFlag'
+  | 'getTransactionExistsFlag'
+  | 'getSkuBySkuCode'
+  | 'getSkuSmartList'
+  | 'newSku'
+>;
+
+/**
+ * Resolves an addressed product identifier into the product entity three service members require.
+ *
+ * G6 TRANSLATION DECISION (i) — THE WIRE CARRIES AN IDENTIFIER AND THE CONTRACT DEMANDS AN ENTITY, SO
+ * A BRIDGE IS UNAVOIDABLE. `createSkus(required any product, …)` [model/service/SkuService.cfc:L58],
+ * `getProductSkus(required any product, …)` [:L220] and `getSortedProductSkus(required any product)`
+ * [:L246] all take the PRODUCT ITSELF as their first argument, and TR-1 forbids replacing it with an
+ * identifier. An HTTP request, by contrast, can only carry the identifier. Something has to turn one
+ * into the other, and there are exactly three candidates:
+ *
+ *   1. Import `ProductService` and call its synthesized `getProduct(productID)` (AAP 0.4.2.5).
+ *      REJECTED: that module is not among this file's declared dependencies, and reaching for an
+ *      import outside the declared set is precisely the failure mode the dependency discipline exists
+ *      to prevent. It would also couple two handlers' service graphs together for no gain.
+ *   2. Deserialise a product out of the request body. REJECTED: population is owned by the base
+ *      collaborator's descriptor-driven step (../domain/base/populate) — a JSON object is a payload,
+ *      not an entity — and a handler that built domain objects would stop being a boundary.
+ *   3. Accept the resolution as an injected, typed function. CHOSEN.
+ *
+ * ⭐ IT IS A PARAMETER, NOT AN IMPORT, WHICH IS WHAT KEEPS S3 AND S4 INTACT. AAP 0.7.3 S3 requires
+ * "Constructor injection only. No service locator, no dynamic method synthesis, no string-keyed runtime
+ * resolution", and this is that: src/handlers/router.ts obtains the resolver from the composition root
+ * and hands it over, exactly as it hands over the service. Nothing is constructed here and no
+ * collaborator is named by string. It is also the same shape ./brandHandler's authorisation resolver
+ * takes, so the folder has one idiom for "a capability this boundary needs and does not own".
+ *
+ * ⭐ `null` MEANS "NO SUCH PRODUCT" AND IS NOT AN EXCEPTION, mirroring the synthesized reader it stands
+ * in for: the dispatcher's `get` branch [org/Hibachi/HibachiService.cfc:L258, handler at :L305-L328]
+ * returns nothing when no row matches, and AAP 0.4.2.5 types it `Promise<Product | null>`. A miss is
+ * therefore answered with a not-found response, never quietly upgraded into a creation and never
+ * reported as a server fault.
+ *
+ * THE RESOLVED TYPE IS `ProductWithErrorState`, WHICH IS THE WIDER OF THE TWO SHAPES THE THREE MEMBERS
+ * NEED. `createSkus` requires it, because its three branch preconditions land on the product's own
+ * error bag exactly as [:L143], [:L148] and [:L176] put them there; the two read members declare the
+ * plain `Product`, which `ProductWithErrorState` extends. One resolver therefore serves all three, and
+ * typing it at the narrower shape would have made `createSkus` unreachable.
+ */
+export type ProductResolver = (productID: string) => Promise<ProductWithErrorState | null>;
+
+/* ================================================================================================
+ * EVENT SLICES
+ *
+ * Each member declares only the part of the proxy event it actually reads, following the convention
+ * ./httpResponse establishes for its own readers. Two properties follow, and both are deliberate: a
+ * full proxy event satisfies every one of these types, so src/handlers/router.ts passes it straight
+ * through unchanged; and a test constructs a one-member or two-member literal instead of fabricating an
+ * entire AWS event, which is how S6 manifests in a folder for which AAP 0.4.1.12 defines no test
+ * directory.
+ *
+ * The slices also make each member's request contract legible in the type system rather than only in
+ * prose: two members read a body, five read a path parameter, three read the query string, and one
+ * reads neither a path parameter nor a body.
+ *
+ * ⚠️ EVERY SLICE ALSO CARRIES `headers`, AND NO MEMBER READS IT. It is present for one reason only —
+ * the injected authorisation resolver is given the event, and a function parameter is contravariant, so
+ * each member's own slice has to be assignable to what the resolver accepts. The reasoning, and the
+ * reason `headers` rather than another container was chosen, is recorded once at
+ * {@link SkuAuthorizationEvent} and is not repeated on the slices below.
+ * ============================================================================================== */
+
+/**
+ * The slice {@link SkuHandler.createSkus} reads: the product identifier from the path and the `data`
+ * payload from the body.
+ */
+export type CreateSkusEvent = Pick<APIGatewayProxyEvent, 'body' | 'pathParameters' | 'headers'>;
+
+/**
+ * The slice {@link SkuHandler.processImageUpload} reads: the SKU code from the path and the
+ * `imageUploadResult` payload from the body.
+ */
+export type ProcessImageUploadEvent = Pick<
+  APIGatewayProxyEvent,
+  'body' | 'pathParameters' | 'headers'
+>;
+
+/**
+ * The slice {@link SkuHandler.getProductSkus} reads: the product identifier from the path and the two
+ * boolean flags from the query string.
+ */
+export type ProductSkusEvent = Pick<
+  APIGatewayProxyEvent,
+  'pathParameters' | 'queryStringParameters' | 'headers'
+>;
+
+/**
+ * The slice {@link SkuHandler.getSortedProductSkus} reads: the product identifier from the path.
+ */
+export type SortedProductSkusEvent = Pick<APIGatewayProxyEvent, 'pathParameters' | 'headers'>;
+
+/**
+ * The slice {@link SkuHandler.searchSkusByProductType} reads: the two optional query parameters.
+ */
+export type SearchSkusEvent = Pick<APIGatewayProxyEvent, 'queryStringParameters' | 'headers'>;
+
+/**
+ * The slice {@link SkuHandler.getSkuStocksDeletableFlag} reads: the SKU identifier from the path.
+ */
+export type SkuIdentifierEvent = Pick<APIGatewayProxyEvent, 'pathParameters' | 'headers'>;
+
+/**
+ * The slice {@link SkuHandler.getSkuBySkuCode} reads: the SKU code from the path.
+ */
+export type SkuCodeEvent = Pick<APIGatewayProxyEvent, 'pathParameters' | 'headers'>;
+
+/**
+ * The slice {@link SkuHandler.getTransactionExistsFlag} reads: NOTHING beyond the headers the
+ * authorisation resolver is given.
+ *
+ * That emptiness is the observable consequence of judgment (a), expressed in the type system rather
+ * than only in a comment: the legacy declaration at [model/service/SkuService.cfc:L285] has no formal
+ * parameter, so there is no input for a route to bind and no container for this member to read.
+ */
+export type TransactionExistsEvent = Pick<APIGatewayProxyEvent, 'headers'>;
+
+/**
+ * The slice {@link SkuHandler.getSkuSmartList} reads: the whole query-string container, which stands in
+ * for the FW/1 request context the legacy member received.
+ */
+export type SkuSmartListEvent = Pick<APIGatewayProxyEvent, 'queryStringParameters' | 'headers'>;
+
+/**
+ * The slice of the proxy event the injected authorisation resolver is given.
+ *
+ * ⭐ WHY A PRINCIPAL HAS TO ARRIVE WITH THE REQUEST. The legacy read it off the framework scope —
+ * `getAccount()` [org/Hibachi/HibachiScope.cfc:L134-L135] returns the SESSION's account — and a
+ * stateless invocation has neither a session nor an application scope (AAP 0.6.6 M7, M8). The principal
+ * must therefore be resolved at the edge, per invocation, from something the request carries. This
+ * handler must be able to hand the resolver something, and because a function parameter is
+ * contravariant, every member's own event slice has to be assignable to whatever the resolver accepts —
+ * which is the only reason `headers` appears on the nine slices above.
+ *
+ * `headers` is the container chosen because it is the only one the platform typings declare ALWAYS
+ * PRESENT — both parameter containers are declared nullable — so no member is forced to narrow a null
+ * before it can even ask the authorisation question, and a hand-written double stays a one-member
+ * literal.
+ *
+ * ⛔ AND THIS FILE NEVER READS IT. It does not call `readHeader`, name a header, name a scheme, parse a
+ * token or implement authentication of any kind. Doing any of those would invent an authentication
+ * mechanism the source does not describe — the legacy mechanism was a form post and a session, not an
+ * HTTP scheme — which AAP 0.7.3 S9 forbids. The resolver decides how a principal is ESTABLISHED; this
+ * handler decides only what happens when there is none, or when there is one without permission.
+ *
+ * A deployment that carries its principal somewhere else — an authorizer context, for instance — widens
+ * THIS single declaration, and the nine members widen with it.
+ */
+export type SkuAuthorizationEvent = Pick<APIGatewayProxyEvent, 'headers'>;
+
+/* ================================================================================================
+ * RESPONSE SHAPES
+ * ============================================================================================== */
+
+/**
+ * The SKU representation a route returns: an explicit, minimal projection of the domain object.
+ *
+ * G6 TRANSLATION DECISION (k). Nothing in the legacy system published a SKU as JSON — the Taffy REST
+ * surface at frontend/api/taffy is explicitly out of scope (AAP 0.2.2.2) and is neither ported nor
+ * re-created — so every member of this shape is a judgment made by this port, and the judgment is to
+ * publish as little as possible.
+ *
+ * ⭐ WHY A PROJECTION AND NOT THE ENTITY, REASON ONE: WHOLE-OBJECT SERIALISATION WOULD PUBLISH
+ * OUT-OF-SCOPE STRUCTURE. Reading ../domain/sku/Sku's own declarations, an instance carries — beyond
+ * the persistent scalars a caller legitimately wants — `remoteID` [model/entity/Sku.cfc:L60], the audit
+ * quartet `createdDateTime`/`createdByAccount`/`modifiedDateTime`/`modifiedByAccount`, and TWELVE
+ * relationship collections whose collaborators are every one of them EXPLICITLY OUT OF SCOPE
+ * (AAP 0.2.2.1): `orderItems` (Order*, 18 files), `stocks` (Stock*, 11), `skuCurrencies` (Currency*, 2),
+ * `physicals` (Physical*, 6), `priceGroupRates` (PriceGroup*, 4), `attributeValues` (Attribute*, 6) and
+ * the four promotion collections (Promotion*, 9). This deliverable does not even model most of them.
+ *
+ * ⭐ WHY A PROJECTION, REASON TWO, AND IT IS A CORRECTNESS ONE RATHER THAN A DISCLOSURE ONE. `Sku.product`
+ * holds a live `Product`, and `Product.skus` holds the SKU back — the pair maintained by
+ * `Product.addSku` / `Sku.setProduct`. `Sku.options` holds live `Option` instances, and `Option.skus`
+ * holds the SKU back too. Serialising a SKU whole is therefore a CYCLE in two independent directions,
+ * and `JSON.stringify` throws on one — which this handler's own failure path would then answer with an
+ * opaque server error for a request that was perfectly valid. Projecting removes the cycle by
+ * construction rather than by defending against it.
+ *
+ * WHAT IS INCLUDED, AND WHY EACH MEMBER EARNS ITS PLACE — the SKU's own persistent scalar columns, and
+ * only those:
+ *   - `skuID` [model/entity/Sku.cfc:L52], because it is the addressed resource's OWN primary key and a
+ *     caller that has just created SKUs needs the identifiers it must use to address them afterwards.
+ *   - `skuCode` [:L54], the entity's simple representation and the value
+ *     {@link SkuHandler.getSkuBySkuCode} addresses a SKU by.
+ *   - `price` [:L56], `listPrice` [:L55] and `renewalPrice` [:L57], the three persistent price columns.
+ *     These are the STORED values, not the calculated ones: `salePrice`, `livePrice`,
+ *     `currentAccountPrice` and the whole sale-price family are excluded by AAP 0.2.2.6 and reach the
+ *     out-of-scope pricing and promotion services through `PricingPort`.
+ *   - `activeFlag` [:L53] and `userDefinedPriceFlag` [:L59], the SKU's own boolean state.
+ *   - `imageFile` [:L58], the stored file NAME. Deliberately NOT the composed image PATH: the path is
+ *     produced behind `ImagePathPort`, and ../services/SkuService records why that distinction is
+ *     load-bearing — the column carries no validation rule in model/validation/Sku.json, so it is the
+ *     caller-supplied half of a path and never a destination this port composes for a write.
+ *
+ * WHAT IS EXCLUDED, EXPLICITLY: `calculatedQATS` (a calculated inventory quantity — Inventory* and
+ * Stock* are out of scope, and AAP 0.2.2.6 names `qats` in the excluded list), `remoteID` (an
+ * integration key for a remote system, which is not this deliverable's to disclose), the four audit
+ * members (../domain/base/AuditableEntity records that response minimisation must prevent their
+ * unintended publication), `subscriptionTerm` and the three subscription/content collections (the
+ * Subscription* and Content* families are out of scope and reach the port through
+ * `SubscriptionTermPort` and `AccessContentPort`), `alternateSkuCodes`, and all twelve relationship
+ * collections named above.
+ *
+ * The two optional members are declared optional rather than as unions with `undefined` because
+ * `exactOptionalPropertyTypes` is enabled and because the underlying declarations really are optional
+ * with no default — [model/entity/Sku.cfc:L54] and [:L58] declare neither `default` nor `notnull`, so
+ * "absent" is a genuinely different state from an empty string and the projection must not invent one.
+ * The six non-optional members are non-optional because ../domain/sku/Sku gives each a field
+ * initialiser, so an instance always carries them.
+ *
+ * NOT AN INVENTED ENVELOPE. There is no wrapper object, no `data` member, no type discriminator, no
+ * link section and no embedded resource (AAP 0.7.3 S9). The body is the SKU's own fields and nothing
+ * else.
+ */
+export interface SkuResponse {
+  readonly skuID: string;
+  readonly skuCode?: string;
+  readonly price: number;
+  readonly listPrice: number;
+  readonly renewalPrice: number;
+  readonly activeFlag: boolean;
+  readonly userDefinedPriceFlag: boolean;
+  readonly imageFile?: string;
+}
+
+/**
+ * The paginated SKU representation {@link SkuHandler.getSkuSmartList} returns.
+ *
+ * The SEVEN members are `SmartListResult`'s seven, unchanged in name and meaning — `records`,
+ * `pageRecords`, `recordsCount`, `pageRecordsStart`, `pageRecordsEnd`, `currentPage` and `totalPages` —
+ * each of which ../ports/SmartListQueryPort traces to the line of org/Hibachi/HibachiSmartList.cfc that
+ * produces it. Nothing is added, renamed, reordered or omitted, so a reader comparing this shape against
+ * the legacy smart list finds a one-to-one correspondence.
+ *
+ * The ONLY difference from `SmartListResult<Sku>` is that the two record collections carry
+ * {@link SkuResponse} instead of `Sku`, for the two reasons judgment (k) gives: a whole `Sku` would
+ * publish out-of-scope structure, and it would be a reference cycle that `JSON.stringify` throws on.
+ * The five numeric members are copied across as the smart list computed them — never recomputed,
+ * clamped, re-based or defaulted — because this file owns no source-declared numeric constant
+ * (AAP 0.7.3 S9).
+ */
+export interface SkuSmartListResponse {
+  readonly records: readonly SkuResponse[];
+  readonly pageRecords: readonly SkuResponse[];
+  readonly recordsCount: number;
+  readonly pageRecordsStart: number;
+  readonly pageRecordsEnd: number;
+  readonly currentPage: number;
+  readonly totalPages: number;
+}
+
+/* ================================================================================================
+ * THE AUTHORISATION MATRIX
+ * ============================================================================================== */
+
+/**
+ * What one routed SKU operation requires of a principal, in the legacy's own vocabulary.
+ *
+ * ⭐ A DISCRIMINATED UNION, BECAUSE THE TWO CLASSIFICATIONS ASK DIFFERENT NUMBERS OF QUESTIONS. An
+ * `'anyLogin'` item is decided by the logged-in gate alone: the branch that authorises it
+ * [org/Hibachi/HibachiAuthenticationService.cfc:L63-L70] returns true without ever naming a CRUD type or
+ * an entity. A `'secure'` item is decided by a per-permission-group verdict, which needs both. Expressing
+ * that as a union rather than as optional members makes the mismatch inexpressible: `'anyLogin'` cannot
+ * carry a CRUD type, and `'secure'` cannot omit one — neither compiles.
+ *
+ * ⭐ THE TWO LITERALS ARE TIED TO THE PORT'S UNION RATHER THAN RE-TYPED. `Extract` resolves against
+ * `HandlerAccessClassification`, so if a classification is ever renamed there the extraction yields
+ * `never` and every literal below stops compiling. Restating `'anyLogin'` as a bare literal would let the
+ * two vocabularies drift silently in opposite directions.
+ *
+ * ⭐ `crudTypes` IS A NON-EMPTY TUPLE, NOT AN ARRAY, AND IS ASKED IN ORDER — see
+ * {@link SkuCrudQuestions}.
+ *
+ * ⭐ `entityName` IS PART OF THE ROW BECAUSE THIS FILE ASKS ABOUT TWO ENTITIES. See the note above
+ * {@link SKU_ENTITY_NAME} for the evidence; it is the one structural difference between this matrix and
+ * ./optionHandler's.
+ *
+ * ⛔ NO `'public'` ARM AND NO `'anyAdmin'` ARM EXIST, BECAUSE NO ROW NEEDS ONE. The union is exactly as
+ * wide as the evidence in {@link SKU_ACCESS_MATRIX}. A `'public'` arm in particular would put "reachable
+ * with no account at all" one keystroke away from a row that has no evidence for it — and the only public
+ * action anywhere in this slice is `this.publicMethods="product"` at
+ * [integrationServices/google/controllers/feed.cfc:L54], which belongs to ./googleFeedHandler.
+ */
+type SkuAccessRequirement =
+  | { readonly classification: Extract<HandlerAccessClassification, 'anyLogin'> }
+  | {
+      readonly classification: Extract<HandlerAccessClassification, 'secure'>;
+      readonly entityName: string;
+      readonly crudTypes: SkuCrudQuestions;
+    };
+
+/**
+ * The ordered, non-empty list of CRUD questions one `'secure'` row asks, first grant winning.
+ *
+ * ⭐ ORDERED, BECAUSE THE LEGACY ORDER IS BEHAVIOR. The `save`-prefix branch
+ * [org/Hibachi/HibachiAuthenticationService.cfc:L71-L77] asks for `create` FIRST, returns true if that is
+ * granted, and only then asks for `update` — so a row can legitimately carry two questions, and which one
+ * is asked first decides which permission grant is sufficient on its own.
+ *
+ * ⭐ NON-EMPTY, ENFORCED BY THE TYPE RATHER THAN BY A RUN-TIME CHECK. A row with an empty list would
+ * authorise nothing, which — because the gate refuses after exhausting the list — means it would refuse
+ * EVERYTHING, silently and only at run time. `readonly [EntityCrudType, ...EntityCrudType[]]` makes that
+ * row fail to compile instead, so the gate needs no defensive branch for a state that cannot exist.
+ *
+ * The element type is the port's own union, so a CRUD vocabulary change there is a compile error here.
+ */
+type SkuCrudQuestions = readonly [EntityCrudType, ...EntityCrudType[]];
+
+/**
+ * The one question every SKU READ asks: `read`.
+ *
+ * `'read'` is the legacy CRUD value, not a coined one — it is what both the `detail` prefix
+ * [org/Hibachi/HibachiAuthenticationService.cfc:L55-L56] and the `list` prefix [:L61-L62] resolve to.
+ * Frozen, so the tuple inside the frozen requirement object is immutable at run time too (AAP 0.6.6 M7);
+ * the explicit type argument is what keeps it a NON-EMPTY TUPLE rather than widening to an array.
+ */
+const READ_CRUD_QUESTIONS = Object.freeze<SkuCrudQuestions>(['read']);
+
+/**
+ * The ordered pair a SAVE asks: `create` first, then `update`.
+ *
+ * Both the pair and its order come from [org/Hibachi/HibachiAuthenticationService.cfc:L71-L77]. Reversing
+ * them would change which single grant suffices, so the order is carried rather than tidied.
+ */
+const SAVE_CRUD_QUESTIONS = Object.freeze<SkuCrudQuestions>(['create', 'update']);
+
+/**
+ * The requirement `'anyLogin'` states: a logged-in account, and nothing further.
+ *
+ * `'anyLogin'` is not a word chosen here: it names the `this.anyLoginMethods` declaration a legacy
+ * controller writes and the ladder reads at [org/Hibachi/HibachiAuthenticationService.cfc:L33-L35].
+ */
+const ANY_LOGIN_REQUIREMENT: SkuAccessRequirement = Object.freeze({
+  classification: 'anyLogin',
+});
+
+/**
+ * The requirement every SKU READ states: a logged-in account whose permission groups grant `read` on
+ * `Sku`.
+ *
+ * The question it asks, and the lines that establish it, are recorded at {@link READ_CRUD_QUESTIONS}.
+ * Shared by the seven read rows because all seven carry the identical requirement.
+ */
+const SECURE_SKU_READ_REQUIREMENT: SkuAccessRequirement = Object.freeze({
+  classification: 'secure',
+  entityName: SKU_ENTITY_NAME,
+  crudTypes: READ_CRUD_QUESTIONS,
+});
+
+/**
+ * The requirement SKU CREATION states: a logged-in account whose permission groups grant `create` on
+ * `Product`, or failing that `update` on `Product`.
+ *
+ * The pair and its order are recorded at {@link SAVE_CRUD_QUESTIONS}, and the ENTITY comes from the item
+ * name that reaches `createSkus`: its only legacy call sites are `ProductService.saveProduct`
+ * [model/service/ProductService.cfc:L279] and `ProductService.processProduct_addOption` [:L150], and the
+ * ladder derives the entity name from the item name at [:L75]. A `saveProduct` item therefore asks about
+ * `Product`.
+ *
+ * ⚠️ IT DOES NOT DEPEND ON WHETHER THE PRODUCT ALREADY EXISTS. The legacy action name carried no such
+ * information, so the legacy asked both questions regardless. Deriving the CRUD type from the state of
+ * the addressed product would be tidier and would be a DIFFERENT policy — an account permitted only to
+ * create could no longer act on a product it would previously have been allowed to act on.
+ */
+const SECURE_PRODUCT_SAVE_REQUIREMENT: SkuAccessRequirement = Object.freeze({
+  classification: 'secure',
+  entityName: PRODUCT_ENTITY_NAME,
+  crudTypes: SAVE_CRUD_QUESTIONS,
+});
+
+/**
+ * The access classification of every routed SKU operation, and the evidence for each row.
+ *
+ * ⭐ WHY THIS EXISTS AT ALL. The legacy application authorised EVERY request in one place, before any
+ * controller method ran: `setupRequest()` [org/Hibachi/Hibachi.cfc:L182-L203] opens with the comment
+ * "Verify Authentication before anything happens" and refuses at [:L188]. No legacy controller repeated
+ * that check because none needed to. That gate is framework code and does not cross the boundary
+ * (AAP 0.8.3.2), so its CONTRACT had to be declared instead — see ../ports/AccountContextPort. Restoring
+ * the gate here is PARITY, not invented policy; the only thing that changes is the failure mode, from a
+ * browser redirect to a status code.
+ *
+ * ⭐ THE MATRIX IS WIRED INTO THE GATE, NOT MERELY DOCUMENTED BESIDE IT. {@link createSkuHandler}'s
+ * `refuseUnauthorized` takes a MEMBER NAME and reads its requirement from here, so a member cannot be
+ * enforced as something other than what this table declares. Because the key type is
+ * `keyof SkuHandler`, a member added to the routed surface without a row here does not compile, and a
+ * member removed from that surface takes its rows and its call sites down with it.
+ *
+ * ⭐ WHY NO ROW IS `'public'`, ESTABLISHED BY EVIDENCE RATHER THAN BY CAUTION. Every legacy
+ * administrative SKU item lives on the admin entity controller, and [admin/controllers/entity.cfc:L66-L68]
+ * declares `this.publicMethods=''`, `this.anyAdminMethods=''` AND `this.secureMethods=''` — all three
+ * EMPTY. Not one SKU operation is public, and none is named in an explicit list either, so every SKU item
+ * falls through to the entity-CRUD branch at [org/Hibachi/HibachiAuthenticationService.cfc:L51-L79],
+ * which is the permission-checked path.
+ *
+ * THE ROWS, AND THE EVIDENCE FOR EACH
+ * -----------------------------------
+ *   `createSkus` — SECURE, `create` then `update` on `Product`. Reached only from a Product `save` item;
+ *     see {@link SECURE_PRODUCT_SAVE_REQUIREMENT}. It is the one row in this file that WRITES, and the one
+ *     row that asks about a second entity.
+ *
+ *   `processImageUpload` — ANY LOGIN. This is the row a reader is most likely to expect to be `'secure'`,
+ *     and the evidence says otherwise, so it is spelled out. The member's legacy name begins with
+ *     `process`, and the ladder's `process` branch [org/Hibachi/HibachiAuthenticationService.cfc:L69-L70]
+ *     is a bare `return true` — it asks NO permission question and names NO entity. That branch sits
+ *     INSIDE the logged-in gate at [:L30], so a principal is still required; what is not required is a
+ *     CRUD grant. Asking an entity question here would REFUSE callers the legacy admitted, which is a
+ *     behavior change dressed up as caution (AAP 0.8.2 Guideline 4). Note also that the member has ZERO
+ *     callers anywhere in the legacy repository and sits outside the dispatcher's
+ *     `process<Class>_<context>` convention, so no legacy item existed for it at all; the prefix branch is
+ *     the closest evidence there is, and it is used rather than invented around.
+ *
+ *   The seven READ rows — SECURE, `read` on `Sku`; see {@link SECURE_SKU_READ_REQUIREMENT}. Each is
+ *     reached through a `detail` or `list` item, both of which resolve to `read`
+ *     [org/Hibachi/HibachiAuthenticationService.cfc:L55-L56, :L61-L62], and the corresponding admin views
+ *     that exist on disk are exactly `admin/views/entity/detailsku.cfm` and
+ *     `admin/views/entity/listsku.cfm` — there is no `createsku.cfm` and no `editsku.cfm`, which is
+ *     independent confirmation that the SKU's own legacy surface is read-only.
+ *     `getSkuStocksDeletableFlag` and `getTransactionExistsFlag` are included among them deliberately:
+ *     both are FLAG READS consumed by the SKU detail view through
+ *     `Sku.getStocksDeletableFlag()` [model/entity/Sku.cfc:L567-L572] and
+ *     `Sku.getTransactionExistsFlag()` [:L592-L596], and neither deletes or modifies anything, so `read`
+ *     is the honest CRUD type even though one of them informs a later delete decision.
+ *
+ * ⛔ `newSku` HAS NO ROW BECAUSE IT HAS NO ROUTE. See {@link SkuHandler}.
+ *
+ * The object is frozen, so the matrix is provably immutable at run time as well as in the type system —
+ * the same requirement AAP 0.6.6 M7 places on everything outside the connection pool, because a warm
+ * Lambda container is shared across invocations and therefore potentially across tenants.
+ */
+export const SKU_ACCESS_MATRIX: Readonly<Record<keyof SkuHandler, SkuAccessRequirement>> =
+  Object.freeze({
+    createSkus: SECURE_PRODUCT_SAVE_REQUIREMENT,
+    processImageUpload: ANY_LOGIN_REQUIREMENT,
+    getProductSkus: SECURE_SKU_READ_REQUIREMENT,
+    getSortedProductSkus: SECURE_SKU_READ_REQUIREMENT,
+    searchSkusByProductType: SECURE_SKU_READ_REQUIREMENT,
+    getSkuStocksDeletableFlag: SECURE_SKU_READ_REQUIREMENT,
+    getTransactionExistsFlag: SECURE_SKU_READ_REQUIREMENT,
+    getSkuBySkuCode: SECURE_SKU_READ_REQUIREMENT,
+    getSkuSmartList: SECURE_SKU_READ_REQUIREMENT,
+  });
+
+/* ================================================================================================
+ * THE ROUTED SURFACE
+ * ============================================================================================== */
+
+/**
+ * The routed SKU operations, ready to be mounted by src/handlers/router.ts.
+ *
+ * EVERY MEMBER IS NAMED FOR THE SERVICE MEMBER IT EXPOSES — the naming is what makes the mapping from
+ * AAP 0.4.2.2 to this file checkable by inspection, which is the whole of AAP 0.8.3.1's requirement that
+ * interface parity be "checkable method-by-method". THIS INTERFACE IS ALSO THE DEFINITION OF "MOUNTED":
+ * {@link SKU_ACCESS_MATRIX} is keyed on `keyof SkuHandler`, so every routed member is REQUIRED to carry a
+ * classification and no member can be added here without one.
+ *
+ * EXACTLY NINE MEMBERS, AND THE COUNT IS DERIVED RATHER THAN CHOSEN. AAP 0.4.2.2 tabulates the public
+ * surface of model/service/SkuService.cfc and it has NINE rows; AAP 0.4.2.5 then names `skuService.newSku()`
+ * as a real call site the slice depends on, which IR-1 requires be "declared explicitly". The service
+ * therefore declares ten ({@link SkuSurface}); the boundary mounts the nine that a caller outside the
+ * application can address, and withholds the one that it cannot.
+ *
+ * ⛔ NINE MEMBERS, NOT TEN: `newSku` IS DELIBERATELY NOT ROUTED, AND ITS ABSENCE HERE IS THE MECHANISM
+ * RATHER THAN A NOTE. Because {@link createSkuHandler} returns a frozen object typed as this interface,
+ * router.ts cannot mount it — there is no member to mount, and an attempt to add one fails to compile in
+ * this file first. The evidence for leaving it unrouted is specific rather than stylistic:
+ *   - It has NO legacy declaration at all. It existed only because org/Hibachi/HibachiService.cfc:L255-L281
+ *     fabricated a service's implicit CRUD surface from a lower-cased name prefix — `new` at [:L264],
+ *     whose handler at [:L544-L549] strips the prefix and calls `new(entityName)` with no arguments — for
+ *     callers INSIDE the application.
+ *   - All five of its legacy call sites are inside the component itself
+ *     [model/service/SkuService.cfc:L92, :L127, :L154, :L182, :L192], plus one in ProductService
+ *     [model/service/ProductService.cfc:L176]. Not one is a controller.
+ *   - What it returns is an UNPERSISTED in-memory instance. Publishing a route that manufactures one and
+ *     discards it at the end of the invocation would be an invented operation with no legacy counterpart
+ *     (AAP 0.7.3 S9), and it would answer with an entity that does not exist in the database.
+ * ./brandHandler reached the identical conclusion about `newBrand` on the identical evidence, so the
+ * folder is consistent rather than each file inventing its own rule.
+ *
+ * ⛔ AND THERE IS NO `countSku`, `listSku`, `exportSku`, `processSku` or compound `getSkuByXxx` MEMBER,
+ * because AAP 0.4.2.5 ends with "synthesis is not reproduced wholesale, only where used" and the slice
+ * calls none of them.
+ *
+ * ALL NINE RESOLVE A PROMISE, so a router awaits every route uniformly. That is true even of
+ * `getSkuStocksDeletableFlag`, whose service member never resolves at all: ../services/SkuService returns
+ * `Promise.reject(...)` rather than throwing synchronously, precisely so that the declared contract and
+ * the observed behavior agree — see judgment (c).
+ */
+export interface SkuHandler {
+  /**
+   * Creates a product's SKUs from a submitted payload.
+   *
+   * The AWS-facing face of `createSkus` at [model/service/SkuService.cfc:L58] — the largest single
+   * business rule in the slice. Reads the product identifier from the path, resolves it to an entity,
+   * reads the JSON object body, and passes the two to the service positionally with the PRODUCT FIRST and
+   * the PAYLOAD SECOND.
+   *
+   * Responses: the service's boolean at an OK status — see judgment (n) for why that value carries no
+   * success semantics; unauthorised or forbidden per {@link SKU_ACCESS_MATRIX}, decided BEFORE anything
+   * about the request is examined; a bad request when no product identifier is addressed or the body is
+   * absent, malformed or not a JSON object; not found when the addressed product does not exist.
+   */
+  readonly createSkus: (event: CreateSkusEvent) => Promise<APIGatewayProxyResult>;
+
+  /**
+   * Records the result of an image upload against a SKU.
+   *
+   * The AWS-facing face of `processImageUpload` at [model/service/SkuService.cfc:L210]. Addresses the SKU
+   * by its code — judgment (j) — and forwards the upload-result payload unchanged.
+   *
+   * Responses: the service's BOOLEAN at an OK status, never a SKU — judgment (b), carried defect D24;
+   * unauthorised when no logged-in principal is established; a bad request when no SKU code is addressed
+   * or the body is absent, malformed or not a JSON object; not found when no SKU carries that code; a bad
+   * request again when the SKU's own stored `imageFile` is not a valid file name, which the service
+   * refuses rather than sanitising; and not implemented when the image boundary declines the write —
+   * judgment (g).
+   */
+  readonly processImageUpload: (event: ProcessImageUploadEvent) => Promise<APIGatewayProxyResult>;
+
+  /**
+   * Lists a product's SKUs, optionally in option-group order.
+   *
+   * The AWS-facing face of `getProductSkus` at [model/service/SkuService.cfc:L220]. Three arguments, in
+   * the legacy's order: the PRODUCT, then `sorted`, then `fetchOptions`.
+   *
+   * ⚠️ `sorted` IS REQUIRED AND IS NOT DEFAULTED HERE — AAP 0.4.2.2 Discrepancy 2. `fetchOptions` is the
+   * only optional argument, and when it is absent the argument is OMITTED so the service's own
+   * `fetchOptions=false` default applies.
+   *
+   * Responses: the projected SKUs at an OK status; unauthorised or forbidden per
+   * {@link SKU_ACCESS_MATRIX}; a bad request when the product identifier is absent, when `sorted` is
+   * absent, or when either flag is not a boolean; not found when the addressed product does not exist.
+   * ⚠️ A sorted request over a product with an option-less SKU raises inside the service and is answered
+   * as a failure, UNGUARDED — judgment (d), carried defect D13.
+   */
+  readonly getProductSkus: (event: ProductSkusEvent) => Promise<APIGatewayProxyResult>;
+
+  /**
+   * Lists a product's SKUs in option-group order.
+   *
+   * The AWS-facing face of `getSortedProductSkus` at [model/service/SkuService.cfc:L246]. One argument,
+   * the product. Unlike {@link SkuHandler.getProductSkus} it reads the product's OWN collection rather
+   * than querying [:L248], and it returns a short collection unreordered [:L250-L252].
+   *
+   * Responses: the projected SKUs at an OK status; unauthorised or forbidden per
+   * {@link SKU_ACCESS_MATRIX}; a bad request when no product identifier is addressed; not found when the
+   * addressed product does not exist. ⚠️ It carries the SAME unguarded D13 failure — judgment (d).
+   */
+  readonly getSortedProductSkus: (event: SortedProductSkusEvent) => Promise<APIGatewayProxyResult>;
+
+  /**
+   * Searches SKUs, optionally narrowed to one product type.
+   *
+   * The AWS-facing face of `searchSkusByProductType` at [model/service/SkuService.cfc:L271]. BOTH
+   * arguments are optional — AAP 0.4.2.2 Discrepancy 3 — and both are passed in the legacy's order,
+   * `term` then `productTypeID`. The parameter name is SINGULAR and stays singular — judgment (f).
+   *
+   * Responses: the search rows at an OK status, forwarded exactly as the service produced them;
+   * unauthorised or forbidden per {@link SKU_ACCESS_MATRIX}. There is no bad-request path, because there
+   * is no required input to be missing — judgment (h).
+   */
+  readonly searchSkusByProductType: (event: SearchSkusEvent) => Promise<APIGatewayProxyResult>;
+
+  /**
+   * Reports whether a SKU's stock records may be deleted — and never actually answers.
+   *
+   * The AWS-facing face of `getSkuStocksDeletableFlag` at [model/service/SkuService.cfc:L281], whose
+   * delegate DOES NOT EXIST ANYWHERE IN THE LEGACY REPOSITORY. Judgment (c) carries the whole account.
+   *
+   * Responses: unauthorised or forbidden per {@link SKU_ACCESS_MATRIX}; a bad request when no SKU
+   * identifier is addressed, because the legacy argument is `required`; and otherwise NOT IMPLEMENTED,
+   * always. ⚠️ No `true`, no `false`, no `null` and no fabricated value is ever returned from this route.
+   */
+  readonly getSkuStocksDeletableFlag: (event: SkuIdentifierEvent) => Promise<APIGatewayProxyResult>;
+
+  /**
+   * Reports whether any transaction references a SKU or product.
+   *
+   * The AWS-facing face of `getTransactionExistsFlag` at [model/service/SkuService.cfc:L285], which
+   * declares NO arguments — judgment (a), AAP 0.4.2.2 Discrepancy 4 and carried defect D23. This member
+   * therefore reads NOTHING from the request: no path parameter, no query parameter and no body.
+   *
+   * ⚠️ AND THAT MEANS IT RAISES, WHICH IS PARITY RATHER THAN A GAP. With no identifier bound, the DAO's
+   * else-branch dereferences `arguments.productID` at [model/dao/SkuDAO.cfc:L90] after the
+   * `structKeyExists` test at [:L58] has already failed, so a genuinely argument-free legacy invocation
+   * fails too. The port reproduces that at the same layer, and this boundary does NOT pre-empt it with a
+   * guard: pre-empting would move a legacy failure to a new place and invent a message the legacy never
+   * had. The identifier-scoped capability lives where AAP 0.4.2.6 puts it — on
+   * `SkuRepository.transactionExists(productID?, skuID?)`, reached by the entity-level checkers that
+   * `Sku.cfc:L594` and `Product.cfc:L626` stand for — and not on this member.
+   *
+   * Responses: unauthorised or forbidden per {@link SKU_ACCESS_MATRIX}; otherwise whatever the service
+   * produces, which on the current repository is a failure.
+   */
+  readonly getTransactionExistsFlag: (
+    event: TransactionExistsEvent,
+  ) => Promise<APIGatewayProxyResult>;
+
+  /**
+   * Finds one SKU by its code, falling back to alternate codes.
+   *
+   * The AWS-facing face of `getSkuBySkuCode` at [model/service/SkuService.cfc:L289]. The argument is
+   * OPTIONAL there — no `required` keyword — so an unaddressed code is forwarded as absent rather than
+   * rejected here, and the failure the service documents happens where the legacy's happens
+   * (judgment (h)).
+   *
+   * Responses: the projected SKU at an OK status; not found when no SKU carries the code, because the
+   * service returns `null` for a miss and MUST NOT be made to throw — the out-of-scope caller
+   * [model/service/PhysicalService.cfc:L199] counts misses as a data-quality tally; unauthorised or
+   * forbidden per {@link SKU_ACCESS_MATRIX}; and a bad request when no code was addressed, which is the
+   * service's own explicit failure surfacing through {@link errorResponse} rather than a check made here.
+   */
+  readonly getSkuBySkuCode: (event: SkuCodeEvent) => Promise<APIGatewayProxyResult>;
+
+  /**
+   * Returns a paginated, filterable SKU list.
+   *
+   * The AWS-facing face of `getSkuSmartList` at [model/service/SkuService.cfc:L309]. The query string
+   * stands in for the FW/1 request context the legacy member received, and only the keys the legacy
+   * interpreter recognises are forwarded — judgment (l), {@link readSmartListInput}.
+   *
+   * Responses: the projected page at an OK status; unauthorised or forbidden per
+   * {@link SKU_ACCESS_MATRIX}. There is no bad-request path: `struct data={}` is optional with a default
+   * at [:L309], and an unrecognised query key was silently ignored by
+   * [org/Hibachi/HibachiSmartList.cfc:L98-L135] rather than rejected.
+   */
+  readonly getSkuSmartList: (event: SkuSmartListEvent) => Promise<APIGatewayProxyResult>;
+}
+
+/* ================================================================================================
+ * INPUT NARROWING
+ *
+ * Every read below goes through ./httpResponse's readers, which do the null narrowing and the own-key
+ * restriction once and correctly, except for the one place a single-name reader cannot express what is
+ * needed — see {@link readSmartListInput}. There is no non-null assertion, no shape-forcing cast, no
+ * `any`, no compiler-directive comment and no lint suppression anywhere in this file: where the checker
+ * objected, the code changed (AAP 0.7.3 S1).
+ * ============================================================================================== */
+
+/**
+ * Reads the addressed product identifier, or reports that none was addressed.
+ *
+ * Two conditions converge on "none", and both are narrowed explicitly because the compiler's
+ * unchecked-index checking makes the read possibly-absent and ./httpResponse's reader keeps it that way:
+ * the parameter is absent because the route bound no such parameter, or it is present but equal to
+ * {@link UNSAVED_IDENTIFIER}, the legacy `unsavedvalue=""` from [model/entity/Product.cfc:L52], which can
+ * never identify a persisted row.
+ *
+ * The value is returned exactly as received — never trimmed, case-folded, padded or validated against a
+ * format — because ./httpResponse's pass-through rule holds for inputs as well as for messages, and
+ * because a 32-character-identifier check belongs to the persistence layer that owns the column.
+ *
+ * @param event the proxy event, or any object carrying its path-parameters member
+ * @returns the addressed product identifier, or nothing when no product was addressed
+ */
+function readProductIdentifier(
+  event: Pick<APIGatewayProxyEvent, 'pathParameters'>,
+): string | undefined {
+  const productID: string | undefined = readPathParameter(event, PRODUCT_ID_PATH_PARAMETER);
+
+  if (productID === undefined || productID === UNSAVED_IDENTIFIER) {
+    return undefined;
+  }
+
+  return productID;
+}
+
+/**
+ * Reads the addressed SKU identifier, or reports that none was addressed.
+ *
+ * Identical in shape and reasoning to {@link readProductIdentifier}; the sentinel is the same
+ * `unsavedvalue=""` declared on this entity's own primary key at [model/entity/Sku.cfc:L52].
+ *
+ * @param event the proxy event, or any object carrying its path-parameters member
+ * @returns the addressed SKU identifier, or nothing when no SKU was addressed
+ */
+function readSkuIdentifier(
+  event: Pick<APIGatewayProxyEvent, 'pathParameters'>,
+): string | undefined {
+  const skuID: string | undefined = readPathParameter(event, SKU_ID_PATH_PARAMETER);
+
+  if (skuID === undefined || skuID === UNSAVED_IDENTIFIER) {
+    return undefined;
+  }
+
+  return skuID;
+}
+
+/**
+ * Reads the addressed SKU code, or reports that none was addressed.
+ *
+ * ⚠️ THE EMPTY-STRING CASE IS TREATED DIFFERENTLY HERE THAN FOR THE TWO IDENTIFIERS, AND THAT IS
+ * DELIBERATE. `skuCode` is NOT a primary key: [model/entity/Sku.cfc:L54] declares
+ * `ormtype="string" unique="true" length="50"` with NO `unsavedvalue` and NO `default`, so the empty
+ * string is not a sentinel for anything and nothing in the legacy treats it as one. Only genuine ABSENCE
+ * is reported as "none"; an empty code is forwarded as the value it is, and the lookup simply finds no
+ * row. Collapsing the two would suppress a real, if unproductive, query the legacy would have run.
+ *
+ * @param event the proxy event, or any object carrying its path-parameters member
+ * @returns the addressed SKU code, or nothing when the route bound no such parameter
+ */
+function readSkuCode(event: Pick<APIGatewayProxyEvent, 'pathParameters'>): string | undefined {
+  return readPathParameter(event, SKU_CODE_PATH_PARAMETER);
+}
+
+/**
+ * Reads one query parameter as a boolean, distinguishing "absent" from "not a boolean".
+ *
+ * G6 TRANSLATION DECISION (m). The accepted vocabulary, and why CFML's wider numeric coercion is
+ * deliberately not reproduced, are recorded above {@link CFML_TRUE_LITERALS}.
+ *
+ * A THREE-STATE RESULT RATHER THAN A `boolean | undefined`, because three genuinely different things can
+ * happen and the caller must act differently on each: the parameter was not supplied, it was supplied and
+ * is a boolean, or it was supplied and is not one. Collapsing the last two would turn a malformed request
+ * into a silent `false` — and for `sorted` that would answer an explicit request for sorted output with
+ * unsorted output, which is exactly the kind of silent behaviour change AAP 0.6.2 warns about.
+ *
+ * The comparison folds case because CFML's own boolean and string comparisons are case-insensitive, so
+ * `TRUE` and `True` were both accepted by the legacy engine. Nothing else about the value is altered: it
+ * is not trimmed, and a value with surrounding whitespace is reported as not-a-boolean rather than
+ * silently repaired, following ./httpResponse's pass-through rule.
+ *
+ * @param event the proxy event, or any object carrying its query-string-parameters member
+ * @param name the parameter name
+ * @returns `undefined` when absent, the boolean when recognised, and `null` when present but unrecognised
+ */
+function readCfmlBoolean(
+  event: Pick<APIGatewayProxyEvent, 'queryStringParameters'>,
+  name: string,
+): boolean | null | undefined {
+  const raw: string | undefined = readQueryStringParameter(event, name);
+
+  if (raw === undefined) {
+    return undefined;
+  }
+
+  const folded = raw.toLowerCase();
+
+  if (CFML_TRUE_LITERALS.includes(folded)) {
+    return true;
+  }
+
+  if (CFML_FALSE_LITERALS.includes(folded)) {
+    return false;
+  }
+
+  return null;
+}
+
+/**
+ * One key `SmartListInput` accepts — either a recognised name or a recognised prefixed form.
+ *
+ * Derived from the port's own declaration with `keyof` rather than written out a second time, so the
+ * accepted key set and the type can never drift apart. `Extract<…, string>` drops the numeric and symbol
+ * halves `keyof` always includes, which is what makes the result usable as a narrowing target for a
+ * `string` parameter.
+ */
+type SmartListInputKey = Extract<keyof SmartListInput, string>;
+
+/**
+ * A writable view of `SmartListInput`, used only while one is being assembled.
+ *
+ * The port declares every member `readonly`, which is right for a value being consumed and impossible for
+ * a value being built. A homomorphic mapped type with `-readonly` removes exactly that modifier and
+ * PRESERVES the seven template index signatures, so the accumulated object is still checked against the
+ * real vocabulary rather than degenerating into a bare record. The assembled value is returned as the
+ * readonly `SmartListInput` again, so nothing downstream can write through it.
+ */
+type MutableSmartListInput = { -readonly [K in keyof SmartListInput]: SmartListInput[K] };
+
+/**
+ * Reports whether a query-parameter name is one the legacy smart list would have acted on.
+ *
+ * The two lists it consults, and the line of org/Hibachi/HibachiSmartList.cfc that recognises each entry,
+ * are documented above {@link SMART_LIST_NAMED_KEYS}. The prefix test is sound because the legacy's own
+ * tests are colon-terminated and therefore mutually exclusive.
+ *
+ * @param name the query-parameter name as the client supplied it
+ * @returns true when the name belongs to the smart list's data vocabulary
+ */
+function isSmartListInputKey(name: string): name is SmartListInputKey {
+  if (SMART_LIST_NAMED_KEYS.includes(name)) {
+    return true;
+  }
+
+  for (const prefix of SMART_LIST_KEY_PREFIXES) {
+    if (name.startsWith(prefix)) {
+      return true;
+    }
+  }
+
+  return false;
+}
+
+/**
+ * Assembles the smart list `data` struct from the query string.
+ *
+ * G6 TRANSLATION DECISION (l), part two. `getSkuSmartList(struct data={}, currentURL="")`
+ * [model/service/SkuService.cfc:L309] received the FW/1 request context — the whole bag of query and form
+ * values — and `applyData` [org/Hibachi/HibachiSmartList.cfc:L85-L136] then walked that bag and acted on
+ * recognised keys only, ignoring every other member. This function is that walk, over the container the
+ * request actually carries.
+ *
+ * ⚠️ THIS IS THE ONE PLACE THE FILE READS AN EVENT CONTAINER DIRECTLY RATHER THAN THROUGH A NAMED READER,
+ * AND THE REASON IS STRUCTURAL. ./httpResponse's readers answer "what is the value of THIS name"; the
+ * legacy behavior being reproduced is "enumerate every name supplied". No single-name reader can express
+ * that, and adding an enumerating reader to ./httpResponse is not this file's to do — that module is
+ * parent-owned (AAP 0.4.1.2) and is neither edited nor extended from here. The two obligations the readers
+ * exist to discharge are therefore discharged inline and explicitly: the container is declared nullable, so
+ * the null is narrowed before it is touched; and enumeration uses `Object.entries`, which yields OWN
+ * enumerable entries only, so an inherited member such as `toString` can never be mistaken for a supplied
+ * parameter. That is the same technique `readHeader` uses internally, for the same reason.
+ *
+ * ⛔ NOTHING IS ADDED, DEFAULTED OR NORMALISED. No page size, no limit, no maximum, no ordering, no filter
+ * and no keyword is supplied by this function (AAP 0.7.3 S9, and ../services/SkuService's own statement
+ * that "No pagination default, filter or ordering is invented"). Values are forwarded byte for byte —
+ * never trimmed, case-folded, coerced to numbers or de-duplicated — because the interpreter's own
+ * numeric-and-bounds tests at [:L123-L132] and its wildcard wrapping at [:L108-L113] are the port's
+ * business, one layer down, and doing any of it twice would change results. An empty result is a legal and
+ * meaningful input: it is exactly the `data={}` default at [:L309], and it is what all six in-repository
+ * callers effectively pass — `integrationServices/google/controllers/feed.cfc:L63` among them.
+ *
+ * @param event the proxy event, or any object carrying its query-string-parameters member
+ * @returns the recognised subset of the query string, as the smart list's own input type
+ */
+function readSmartListInput(
+  event: Pick<APIGatewayProxyEvent, 'queryStringParameters'>,
+): SmartListInput {
+  const input: MutableSmartListInput = {};
+  const parameters = event.queryStringParameters;
+
+  if (parameters === null) {
+    return input;
+  }
+
+  for (const [name, value] of Object.entries(parameters)) {
+    if (value === undefined || !isSmartListInputKey(name)) {
+      continue;
+    }
+
+    input[name] = value;
+  }
+
+  return input;
+}
+
+/* ================================================================================================
+ * RESPONSE PROJECTION
+ * ============================================================================================== */
+
+/**
+ * Projects a SKU onto the minimal representation a route returns.
+ *
+ * The whole of {@link SkuResponse}'s reasoning applies here; this function is its enforcement. It is
+ * written as an explicit member-by-member construction rather than as a spread-and-delete or a key filter,
+ * deliberately: a projection built by REMOVING members silently republishes anything a future field adds
+ * to the entity, whereas one built by NAMING members cannot. A new persistent property therefore stays out
+ * of every response until somebody decides otherwise here — which matters more for this entity than for
+ * most, because `Sku` carries twelve relationship collections into out-of-scope domains.
+ *
+ * Values are copied exactly as the entity holds them — never trimmed, re-cased, formatted, rounded,
+ * localised or defaulted — following the pass-through rule ./httpResponse sets for this layer. In
+ * particular the three price members are the STORED numbers and no currency formatting is applied: that is
+ * `../util/formatting`'s and the feed serializer's business, and the settings it would need reach an
+ * out-of-scope resolver.
+ *
+ * An absent optional member is OMITTED rather than emitted as a null, which `exactOptionalPropertyTypes`
+ * makes the compiler check: [model/entity/Sku.cfc:L54] and [:L58] declare no default, so "absent" and
+ * "empty string" are genuinely different states and collapsing them would invent behaviour
+ * (AAP 0.7.3 S9).
+ *
+ * @param sku the domain instance, which is not mutated
+ * @returns the minimal representation, with absent members omitted
+ */
+function toSkuResponse(sku: Sku): SkuResponse {
+  const response: SkuResponse = {
+    skuID: sku.skuID,
+    ...(sku.skuCode !== undefined ? { skuCode: sku.skuCode } : {}),
+    price: sku.price,
+    listPrice: sku.listPrice,
+    renewalPrice: sku.renewalPrice,
+    activeFlag: sku.activeFlag,
+    userDefinedPriceFlag: sku.userDefinedPriceFlag,
+    ...(sku.imageFile !== undefined ? { imageFile: sku.imageFile } : {}),
+  };
+
+  return response;
+}
+
+/**
+ * Projects a collection of SKUs, preserving order and cardinality exactly.
+ *
+ * ⚠️ NOTHING IS SORTED, FILTERED, DE-DUPLICATED OR COMPACTED HERE, AND THAT MATTERS MORE THAN IT LOOKS.
+ * The ORDER of the two sorting members' results IS their behavior — it is what
+ * [model/service/SkuService.cfc:L232-L240] and [:L260-L268] exist to produce — so a projection that
+ * reordered or dropped an element would silently undo the very computation the caller asked for. The
+ * mapping is positional and total.
+ *
+ * @param skus the domain instances, which are not mutated
+ * @returns the projections, in the same order and of the same length
+ */
+function toSkuResponses(skus: readonly Sku[]): readonly SkuResponse[] {
+  return skus.map(toSkuResponse);
+}
+
+/**
+ * Projects a smart list page, carrying its five paging numbers across untouched.
+ *
+ * The reasoning is recorded on {@link SkuSmartListResponse}: the seven members are the smart list's own
+ * seven, and the only change is that the two record collections carry projections instead of entities.
+ *
+ * @param result the smart list page the service produced
+ * @returns the same page, with both record collections projected
+ */
+function toSkuSmartListResponse(result: SmartListResult<Sku>): SkuSmartListResponse {
+  return {
+    records: toSkuResponses(result.records),
+    pageRecords: toSkuResponses(result.pageRecords),
+    recordsCount: result.recordsCount,
+    pageRecordsStart: result.pageRecordsStart,
+    pageRecordsEnd: result.pageRecordsEnd,
+    currentPage: result.currentPage,
+    totalPages: result.totalPages,
+  };
+}
+
+/* ================================================================================================
+ * THE FACTORY
+ * ============================================================================================== */
+
+/**
+ * Builds the routed SKU boundary over an already-constructed service.
+ *
+ * ⭐ IT CONSTRUCTS NOTHING AND RESOLVES NOTHING BY NAME, WHICH IS THE WHOLE OF AAP 0.7.3 S3 —
+ * "Constructor injection only. No service locator, no dynamic method synthesis, no string-keyed runtime
+ * resolution." All three collaborators arrive as parameters, from src/handlers/router.ts, which obtains
+ * them from the memoized composition root. There is no `new` in this file, no `getService("name")`, no
+ * `Proxy`, no `Reflect`, no decorator, no container import and no indexer dispatch over a name — because
+ * re-creating `onMissingMethod` [org/Hibachi/HibachiService.cfc:L255-L281] in a new idiom would defeat
+ * the exercise rather than complete it (TR-3).
+ *
+ * ⭐ EVERY COLLABORATOR IS REQUIRED, SO "MOUNTED WITHOUT A POLICY" IS NOT A REACHABLE STATE. None of the
+ * three parameters is optional and none has a default, so a caller cannot omit the authorisation
+ * resolver and silently get an open boundary. That is the structural default-deny discipline
+ * ../ports/AccountContextPort states for its own ports and that ./brandHandler and ./optionHandler apply
+ * to their factories: a missing policy is a compile error rather than a permissive default.
+ *
+ * ⛔ NO STATE AT EITHER SCOPE (AAP 0.6.6 M7). The returned object is created per call and frozen; the
+ * nine closures capture only the three injected values. Nothing is memoized, cached, counted, batched or
+ * carried between invocations, so a warm container cannot leak one invocation's principal or data into
+ * another's. Module scope holds only string constants, frozen literals, types and pure functions — the
+ * only module-scope mutable state permitted anywhere in the subtree is the connection pool in
+ * src/config/database.ts, which this file does not touch.
+ *
+ * ⭐ THE PRINCIPAL IS RESOLVED PER INVOCATION, NEVER CAPTURED HERE. `resolveAuthorization` is a
+ * FUNCTION rather than an already-resolved context for exactly that reason: the composition root is
+ * memoized (AAP 0.4.1.3), so anything captured when the handler is built survives across warm
+ * invocations, which is the cross-tenant bleed M7 forbids.
+ *
+ * ⭐ THE SERVICE IS IMPORTED TYPE-ONLY, SO THE CLASS IS UNREACHABLE FROM HERE AT RUN TIME. Nothing in
+ * this module calls its constructor, the import is erased at compile time, and the parameter is narrowed
+ * to {@link SkuSurface} — so the boundary can reach the ten declared members and nothing else. That also
+ * keeps the bundled artifact free of service code this entry point does not itself execute.
+ *
+ * STRANGLER-FIG INDEPENDENCE (AAP 0.8.3.8). Because all three parameters are types, this module builds,
+ * type-checks, bundles and can be exercised with no unconverted Slatwall code present at all: "new
+ * TypeScript services must be callable and deployable without requiring the rest of Slatwall to be
+ * converted." This folder is where "callable" is realised.
+ *
+ * TEST PROVENANCE: NET-NEW, in full. No legacy controller test of any kind exists (AAP 0.6.5.2).
+ *
+ * @param skuService - The SKU service to delegate to, narrowed to its ten declared members. A full
+ *        service instance satisfies it, and so does a ten-member object literal — which is what makes
+ *        every member below assertable without a repository, a database, a network call or an AWS
+ *        runtime, in a repository that vendors no mocking library (AAP 0.4.3.6).
+ * @param resolveProduct - Turns an addressed product identifier into the entity three service members
+ *        require. Required; see {@link ProductResolver} for why this is a parameter and not an import.
+ * @param resolveAuthorization - Resolves this invocation's principal and its entity-authorisation
+ *        verdict from the request. Required: there is no unauthorised construction of this handler.
+ * @returns The nine request-shaped members, frozen.
+ *
+ * @example
+ * ```ts
+ * // In router.ts, which owns every route:
+ * const skuHandler = createSkuHandler(container.skuService, resolveProduct, resolveAuthorization);
+ * const result = await skuHandler.getSkuSmartList(event);
+ * ```
+ */
+export function createSkuHandler(
+  skuService: SkuSurface,
+  resolveProduct: ProductResolver,
+  resolveAuthorization: RequestAuthorizationResolver<SkuAuthorizationEvent>,
+): SkuHandler {
+  /**
+   * Runs the gate `setupRequest()` [org/Hibachi/Hibachi.cfc:L188] ran, for one routed member.
+   *
+   * The ladder is reproduced in the legacy's own order, and each step cites the line it comes from:
+   *
+   *   1. NO PRINCIPAL AT ALL -> unauthorised. The legacy read the account off the framework scope
+   *      [org/Hibachi/HibachiScope.cfc:L134-L135] and, with no logged-in session, fell through every
+   *      classification test to the terminal `return false` at
+   *      [org/Hibachi/HibachiAuthenticationService.cfc:L83].
+   *   2. A PRINCIPAL THAT IS NOT LOGGED IN -> unauthorised. [:L30] gates every remaining test on
+   *      `getHibachiScope().getLoggedInFlag()`, whose body is `if(!getSession().getAccount().isNew())`
+   *      [org/Hibachi/HibachiScope.cfc:L40-L45]. ⚠️ THE LEGACY PREDICATE IS THE NEGATION OF "NEW", so
+   *      the test below is on `newFlag` being TRUE rather than false — `AccountReference.newFlag`
+   *      carries `isNew()` itself, not the logged-in flag derived from it. Inverting that would admit
+   *      exactly the callers the legacy refused.
+   *   3. AN `'anyLogin'` MEMBER IS ALREADY DECIDED HERE. The branch that authorises its legacy item
+   *      [:L63-L70] `return true`s outright, asking no permission question and naming no entity, so
+   *      this gate must stop for that row. Asking an entity question there would REFUSE callers the
+   *      legacy admitted — a behavior change dressed up as caution (AAP 0.8.2 Guideline 4).
+   *   4. A `'secure'` MEMBER CONTINUES TO THE ENTITY QUESTION at [:L43-L49], whose verdict comes from
+   *      the injected port. That port resolves the super-user bypass at [:L88-L90] and the
+   *      permission-group walk at [:L93-L98] behind the boundary and returns one boolean.
+   *
+   * ⭐ THE CRUD TYPES ARE ASKED IN ORDER AND THE FIRST GRANT WINS, WHICH IS THE `save` BRANCH'S OWN
+   * SHAPE. [:L71-L77] asks for `create` first, returns true if that is granted, and only then asks for
+   * `update`. The loop below is that behaviour generalised over a non-empty tuple, so the single-question
+   * rows and the two-question row take the same path. Because the tuple type forbids an empty list, a
+   * row cannot silently authorise nothing.
+   *
+   * ⭐ THE ENTITY NAME COMES FROM THE MATRIX ROW, NEVER FROM THE REQUEST. ../ports/AccountContextPort
+   * requires exactly that of every call site: "no request-supplied value ever reaches this member". The
+   * two names it can be are the module constants {@link SKU_ENTITY_NAME} and
+   * {@link PRODUCT_ENTITY_NAME}.
+   *
+   * Steps 1 and 2 answer 401 and step 4 answers 403, and the distinction is about the PRINCIPAL rather
+   * than the resource: see {@link unauthorizedResponse} and {@link forbiddenResponse}, where the
+   * translation from the legacy login redirect is recorded.
+   *
+   * ⭐ IT TAKES THE MEMBER NAME, NOT A REQUIREMENT, SO A CALL SITE CANNOT DISAGREE WITH THE MATRIX. The
+   * requirement is read from {@link SKU_ACCESS_MATRIX} here, which makes that table the single source of
+   * truth for what each member enforces rather than a comment beside the code that enforces it. Because
+   * the parameter is `keyof SkuHandler`, a name that is not a routed member does not compile, and a
+   * member removed from the surface takes its call sites down with it.
+   *
+   * ⭐ IT RETURNS THE REFUSAL, NOT A BOOLEAN, AND CALLERS RETURN IT IMMEDIATELY. A boolean would let a
+   * member forget to return and fall through into the operation it was supposed to guard; a response
+   * value cannot be ignored without the compiler noticing that a branch produces nothing.
+   *
+   * SYNCHRONOUS, because both port members are — ../ports/AccountContextPort records why — so no
+   * member's declared return type changes on its account.
+   *
+   * @param event the invocation's event, or any object carrying its headers member
+   * @param member the routed member being invoked, whose requirement is read from the matrix
+   * @returns the refusal to return to the caller, or nothing when the invocation is authorised
+   */
+  const refuseUnauthorized = (
+    event: SkuAuthorizationEvent,
+    member: keyof SkuHandler,
+  ): APIGatewayProxyResult | undefined => {
+    const requirement: SkuAccessRequirement = SKU_ACCESS_MATRIX[member];
+    const authorization: RequestAuthorizationContext = resolveAuthorization(event);
+    const account = authorization.accountContext.getCurrentAccount();
+
+    // Steps 1 and 2. `newFlag` is `isNew()`, so TRUE means "not logged in".
+    if (account === undefined || account.newFlag) {
+      return unauthorizedResponse();
+    }
+
+    // Step 3. Nothing below this line runs for the one 'anyLogin' row.
+    if (requirement.classification === 'anyLogin') {
+      return undefined;
+    }
+
+    // Step 4. Asked in the matrix row's own order; the first grant authorises the invocation.
+    for (const crudType of requirement.crudTypes) {
+      if (
+        authorization.entityAuthorization.authenticateEntity({
+          crudType,
+          entityName: requirement.entityName,
+        })
+      ) {
+        return undefined;
+      }
+    }
+
+    return forbiddenResponse();
+  };
+
+  /**
+   * Ports the boundary for [model/service/SkuService.cfc:L58]
+   * `public boolean function createSkus(required any product, required struct data )`.
+   *
+   * TWO ARGUMENTS, IN THE LEGACY'S ORDER: the PRODUCT first, the PAYLOAD second. Both are `required`
+   * there, so both absences are answered here rather than forwarded — judgment (h).
+   *
+   * ⚠️⚠️ THE PAYLOAD IS FORWARDED EXACTLY AS PARSED — G6 TRANSLATION DECISION (e), MISMATCH M6. The
+   * object the body reader produced is handed to the service unchanged: NOT re-keyed, NOT sorted, NOT
+   * lower-cased, NOT trimmed, NOT filtered, NOT defaulted, NOT deep-copied and NOT normalised in any
+   * other way. AAP 0.6.7.8 is the reason: the odometer at [:L89-L122] enumerates option combinations in
+   * an order derived from the payload, and that order "determines both the generated SKU set and … the
+   * order in which uniqueness validation observes its siblings" through the read-back loop AAP 0.6.2
+   * calls "the single most dangerous thing in the slice". A reshaping here would change the SKUs
+   * created WITH NO ERROR AND NO COMPILE FAILURE — which is precisely why the forwarding is one
+   * expression with nothing between the reader and the call.
+   *
+   * ⛔ AND NO BATCH SIZE, CHUNK SIZE OR LIMIT IS IMPOSED ON IT EITHER (AAP 0.7.3 S9). The service owns
+   * its own combination budget and states its own reasoning for it; this boundary invents no second one.
+   *
+   * G6 TRANSLATION DECISION (n) — THE `true` IS REPORTED, NOT REINTERPRETED. [:L207] is an
+   * unconditional `return true;`, reached even after the branch preconditions at [:L143], [:L148] and
+   * [:L176] have recorded errors on the product, so the value carries NO success semantics. It is
+   * serialised as the boolean it is: not translated into a status code, not inverted, not wrapped in an
+   * invented envelope, and not replaced by a synthesised outcome. A caller learns what happened the way
+   * the legacy caller did — from the product's error state, which the service records where [:L143],
+   * [:L148] and [:L176] put it. The one genuinely exceptional path, the fallthrough
+   * `throw("There was an unexpected error when creating this product")` at [:L204], travels out as a
+   * failure through {@link errorResponse} with its message preserved by the service.
+   *
+   * ⛔ THE GATE RUNS BEFORE THE IDENTIFIER IS READ AND BEFORE THE BODY IS PARSED. This is the file's
+   * one WRITING row and the only one that asks about `Product` ({@link SKU_ACCESS_MATRIX}); refusing
+   * first reproduces the legacy order and means an unauthorised caller cannot use the distinct
+   * bad-request texts below to discover the request shape, nor learn whether a product exists.
+   *
+   * @param event the proxy event, or any object carrying its body, path-parameters and headers members
+   * @returns the service's unconditional `true`, or the response describing why it was not attempted
+   */
+  const createSkus = async (event: CreateSkusEvent): Promise<APIGatewayProxyResult> => {
+    const refusal = refuseUnauthorized(event, 'createSkus');
+
+    if (refusal !== undefined) {
+      return refusal;
+    }
+
+    const productID: string | undefined = readProductIdentifier(event);
+
+    if (productID === undefined) {
+      return messageResponse(HTTP_STATUS.BAD_REQUEST, PRODUCT_ID_REQUIRED_MESSAGE);
+    }
+
+    const body = readJsonObjectBody(event);
+
+    if (!body.present) {
+      return invalidRequestBodyResponse(body.problem);
+    }
+
+    try {
+      const product = await resolveProduct(productID);
+
+      if (product === null) {
+        return notFoundResponse();
+      }
+
+      /* M6: `body.value` is passed straight through. Do not interpose a transformation here — see the
+       * warning above this member. Judgment (n): the boolean is serialised exactly as returned. */
+      return okResponse(await skuService.createSkus(product, body.value));
+    } catch (error) {
+      return errorResponse(error);
+    }
+  };
+
+  /**
+   * Ports the boundary for [model/service/SkuService.cfc:L210]
+   * `public any function processImageUpload(required any Sku, required struct imageUploadResult)`.
+   *
+   * TWO ARGUMENTS, IN THE LEGACY'S ORDER: the SKU first, the upload result second. The legacy parameter
+   * is spelled with a CAPITAL S and read back as `arguments.Sku` at [:L211]; the service renamed it
+   * `sku` and this file follows, which AAP 0.8.1 expressly permits because a parameter name is idiom
+   * rather than behavior — judgment (b).
+   *
+   * ⚠️ IT RETURNS A BOOLEAN, NEVER A SKU — TODO(parity) D24. The body contains exactly two returns,
+   * `return true;` at [:L214] and `return false;` at [:L216], and never returns the entity at all, even
+   * though [org/Hibachi/HibachiService.cfc:L117] states that "all process methods should return an
+   * entity" and AAP 0.4.2.2's target column says `Promise<Sku>`. ../services/SkuService ratified
+   * `Promise<boolean>` and records the full adjudication, including the two occasions the widening was
+   * attempted and reverted. This boundary serialises the boolean and does NOT substitute the SKU:
+   * AAP 0.8.2 Guideline 4 forbids repairing it, and doing so would change an observable return value.
+   *
+   * G6 TRANSLATION DECISION (g) — THE HIDDEN DYNAMIC DEPENDENCY AND THE BOUNDARY STUB, TR-5. [:L212]
+   * reaches the image service through `getService("imageService")`, which is NEVER DECLARED AS A
+   * PROPERTY on the component — AAP 0.6.3.2 calls it the "hidden genuine" dependency that "any
+   * dependency analysis based on component metadata misses entirely", and a port built from that
+   * analysis would compile and then fail at the first image operation. AAP 0.4.1.6 declares it as
+   * `ImagePathPort`, which is out of scope, so the write is boundary-stubbed BEHIND THE SERVICE. When
+   * that port declines, its not-implemented failure travels out through {@link errorResponse} as a
+   * not-implemented status. Nothing about that boundary is reachable from, or duplicated in, this file.
+   *
+   * G6 TRANSLATION DECISION (j) — THE SKU IS ADDRESSED BY CODE, NOT BY IDENTIFIER, AND THE SERVICE'S OWN
+   * READER RESOLVES IT. The contract takes the ENTITY, and this member's only route to one within its
+   * declared collaborators is `getSkuBySkuCode` [:L289] — the SKU's own service declares no
+   * `getSku(skuID)` reader in {@link SkuSurface}, because AAP 0.4.2.5 lists none for this service and
+   * "synthesis is not reproduced wholesale, only where used". Using the code is therefore the honest
+   * option rather than a preference: the column is `unique="true"` [model/entity/Sku.cfc:L54], so it
+   * addresses exactly one row, and no new dependency is introduced to reach it.
+   *
+   * ⚠️ THE SERVICE ALSO REFUSES A CORRUPT STORED FILE NAME RATHER THAN SANITISING IT, and that refusal
+   * arrives here as a bad request through the same single mapping. It is deliberately NOT pre-empted by
+   * a check in this file: the validation belongs to the layer that owns the write.
+   *
+   * ⛔ THE GATE RUNS FIRST, AND THIS IS THE ONE `'anyLogin'` ROW. The legacy `process` branch
+   * [org/Hibachi/HibachiAuthenticationService.cfc:L69-L70] is a bare `return true` inside the logged-in
+   * gate, so a principal is required and no CRUD grant is — see {@link SKU_ACCESS_MATRIX} for why
+   * asking an entity question here would refuse callers the legacy admitted.
+   *
+   * @param event the proxy event, or any object carrying its body, path-parameters and headers members
+   * @returns the image service's own boolean verdict, or the response describing why it was not reached
+   */
+  const processImageUpload = async (
+    event: ProcessImageUploadEvent,
+  ): Promise<APIGatewayProxyResult> => {
+    const refusal = refuseUnauthorized(event, 'processImageUpload');
+
+    if (refusal !== undefined) {
+      return refusal;
+    }
+
+    const skuCode: string | undefined = readSkuCode(event);
+
+    if (skuCode === undefined) {
+      return messageResponse(HTTP_STATUS.BAD_REQUEST, SKU_CODE_REQUIRED_MESSAGE);
+    }
+
+    const body = readJsonObjectBody(event);
+
+    if (!body.present) {
+      return invalidRequestBodyResponse(body.problem);
+    }
+
+    try {
+      // Judgment (j): the contract takes the entity, so the addressed code is resolved first.
+      const sku: Sku | null = await skuService.getSkuBySkuCode(skuCode);
+
+      if (sku === null) {
+        return notFoundResponse();
+      }
+
+      /* D24: the BOOLEAN is serialised exactly as returned. Do not replace it with `sku`. The upload
+       * result is forwarded opaquely, because the port consumes it and this layer does not read it. */
+      return okResponse(await skuService.processImageUpload(sku, body.value));
+    } catch (error) {
+      return errorResponse(error);
+    }
+  };
+
+  /**
+   * Ports the boundary for [model/service/SkuService.cfc:L220]
+   * `public array function getProductSkus(required any product, required boolean sorted, boolean
+   * fetchOptions=false)`.
+   *
+   * THREE ARGUMENTS, IN THE LEGACY'S ORDER: the PRODUCT, then `sorted`, then `fetchOptions`.
+   *
+   * ⚠️ `sorted` IS REQUIRED AND IS NOT DEFAULTED HERE — AAP 0.4.2.2 DISCREPANCY 2, which corrects the
+   * casual reading that would have made it optional and also records that the member is at [:L220]
+   * rather than where a declaration scan tends to place it. An absent `sorted` is a BAD REQUEST, not a
+   * silent `false`: defaulting it would answer an explicit request for sorted output with unsorted
+   * output, and TR-1 preserves arity as well as order. `fetchOptions` is the ONLY optional argument
+   * [:L220], and when it is absent the argument is OMITTED from the call so the service's own
+   * `fetchOptions = false` default applies — rather than passing an explicit `false`, which would make
+   * this boundary the place the default lives.
+   *
+   * ⚠️ TODO(parity) D13 — A SORTED REQUEST CAN FAIL, AND THE FAILURE IS PRESERVED UNGUARDED.
+   * [:L234-L238] computes `var index = arrayFind(sortedArray, skuID)` and assigns
+   * `sortedArrayReturn[index] = skus[i]`. `arrayFind` answers 0 on a miss and CFML arrays are ONE-BASED,
+   * so position 0 does not exist and the assignment throws. AAP 0.6.7.4 records why the miss is
+   * reachable rather than hypothetical: `getSortedProductSkusID` [model/dao/SkuDAO.cfc:L172] returns
+   * ONLY option-bearing SKUs, so an option-less SKU in the collection is absent from the sorted list.
+   * THIS MEMBER ADDS NO GUARD, NO SKIP, NO FILTER, NO FALLBACK, NO RETRY AND NO PRE-CHECK — judgment
+   * (d). The failure travels out of the service and is shaped by {@link errorResponse} like any other,
+   * because repairing it would make the port's output incomparable to the legacy's (IR-9), and
+   * AAP 0.8.2 Guideline 4 forbids the repair outright.
+   *
+   * ⛔ ORDER IS THE ANSWER HERE, SO THE PROJECTION PRESERVES IT EXACTLY. {@link toSkuResponses} maps
+   * positionally and totally: nothing is reordered, dropped, de-duplicated or compacted, because doing
+   * any of those would silently undo the very computation `sorted` asked for.
+   *
+   * ⛔ THE GATE RUNS BEFORE ANY PARAMETER IS READ. `read` on `Sku` ({@link SKU_ACCESS_MATRIX}), and
+   * refusing first means an unauthorised caller cannot use the three distinct bad-request texts below to
+   * probe the request shape, nor learn whether a product exists.
+   *
+   * @param event the proxy event, or any object carrying its path-parameters, query-string-parameters
+   *        and headers members
+   * @returns the projected SKUs, or the response describing why they could not be returned
+   */
+  const getProductSkus = async (event: ProductSkusEvent): Promise<APIGatewayProxyResult> => {
+    const refusal = refuseUnauthorized(event, 'getProductSkus');
+
+    if (refusal !== undefined) {
+      return refusal;
+    }
+
+    const productID: string | undefined = readProductIdentifier(event);
+
+    if (productID === undefined) {
+      return messageResponse(HTTP_STATUS.BAD_REQUEST, PRODUCT_ID_REQUIRED_MESSAGE);
+    }
+
+    /* Discrepancy 2: `sorted` is REQUIRED, so absence is refused rather than defaulted. The reader's
+     * three states are all distinguished — see {@link readCfmlBoolean}. */
+    const sorted: boolean | null | undefined = readCfmlBoolean(event, SORTED_QUERY_PARAMETER);
+
+    if (sorted === undefined) {
+      return messageResponse(HTTP_STATUS.BAD_REQUEST, SORTED_REQUIRED_MESSAGE);
+    }
+
+    if (sorted === null) {
+      return messageResponse(HTTP_STATUS.BAD_REQUEST, SORTED_NOT_BOOLEAN_MESSAGE);
+    }
+
+    const fetchOptions: boolean | null | undefined = readCfmlBoolean(
+      event,
+      FETCH_OPTIONS_QUERY_PARAMETER,
+    );
+
+    /* Present but unrecognised is refused; ABSENT is forwarded as absence, so the service's own
+     * `fetchOptions = false` default at [:L220] remains the single place that default lives. */
+    if (fetchOptions === null) {
+      return messageResponse(HTTP_STATUS.BAD_REQUEST, FETCH_OPTIONS_NOT_BOOLEAN_MESSAGE);
+    }
+
+    try {
+      const product = await resolveProduct(productID);
+
+      if (product === null) {
+        return notFoundResponse();
+      }
+
+      /* D13: nothing here guards the sorted path. Two call shapes rather than one, so that omitting
+       * `fetchOptions` really omits the argument instead of supplying a value on the legacy's behalf. */
+      const skus =
+        fetchOptions === undefined
+          ? await skuService.getProductSkus(product, sorted)
+          : await skuService.getProductSkus(product, sorted, fetchOptions);
+
+      return okResponse(toSkuResponses(skus));
+    } catch (error) {
+      return errorResponse(error);
+    }
+  };
+
+  /**
+   * Ports the boundary for [model/service/SkuService.cfc:L246]
+   * `public array function getSortedProductSkus(required any product)`.
+   *
+   * ONE ARGUMENT, the product, which is `required` — so an unaddressed product is refused here rather
+   * than forwarded (judgment (h)).
+   *
+   * IT IS NOT A SPECIAL CASE OF {@link SkuHandler.getProductSkus}, AND CONFLATING THEM WOULD CHANGE
+   * BEHAVIOR. This member reads the product's OWN collection at [:L248] rather than querying, and it
+   * returns a collection of fewer than two elements UNREORDERED at [:L250-L252]. Routing it through the
+   * three-argument member with `sorted = true` would take a different path, so both stay declared and
+   * both stay routed — TR-1 preserves the member, not merely the capability.
+   *
+   * ⚠️ TODO(parity) D13 — IT CARRIES THE SAME UNGUARDED INDEX-ZERO FAILURE at [:L262-L266], for the same
+   * reason and with the same treatment as the sibling member: no guard, no skip, no filter, no fallback,
+   * no pre-check. Judgment (d) records the full account once.
+   *
+   * ⛔ ORDER IS THE ANSWER, SO THE PROJECTION PRESERVES IT EXACTLY — {@link toSkuResponses}.
+   *
+   * ⛔ THE GATE RUNS FIRST. `read` on `Sku` ({@link SKU_ACCESS_MATRIX}).
+   *
+   * @param event the proxy event, or any object carrying its path-parameters and headers members
+   * @returns the projected SKUs in option-group order, or the response describing why they could not be
+   *          returned
+   */
+  const getSortedProductSkus = async (
+    event: SortedProductSkusEvent,
+  ): Promise<APIGatewayProxyResult> => {
+    const refusal = refuseUnauthorized(event, 'getSortedProductSkus');
+
+    if (refusal !== undefined) {
+      return refusal;
+    }
+
+    const productID: string | undefined = readProductIdentifier(event);
+
+    if (productID === undefined) {
+      return messageResponse(HTTP_STATUS.BAD_REQUEST, PRODUCT_ID_REQUIRED_MESSAGE);
+    }
+
+    try {
+      const product = await resolveProduct(productID);
+
+      if (product === null) {
+        return notFoundResponse();
+      }
+
+      // D13: unguarded, deliberately. Judgment (d).
+      return okResponse(toSkuResponses(await skuService.getSortedProductSkus(product)));
+    } catch (error) {
+      return errorResponse(error);
+    }
+  };
+
+  /**
+   * Ports the boundary for [model/service/SkuService.cfc:L271]
+   * `public any function searchSkusByProductType(string term,string productTypeID)`.
+   *
+   * ⚠️ BOTH ARGUMENTS ARE OPTIONAL — AAP 0.4.2.2 DISCREPANCY 3. Neither carries `required` at [:L271],
+   * so neither absence is an error and THERE IS NO BAD-REQUEST PATH ON THIS MEMBER AT ALL: an absent
+   * value is forwarded as absence and the search behaves as the legacy's did with nothing bound
+   * (judgment (h)). Inventing a requirement here would reject calls the legacy accepted.
+   *
+   * THE ORDER IS `term` THEN `productTypeID`, exactly as declared. Both are strings, so transposing them
+   * would compile cleanly and return wrong rows with no error anywhere — which is why the order is
+   * called out rather than assumed.
+   *
+   * G6 TRANSLATION DECISION (f) — THE SINGULAR NAME IS PRESERVED, AND THE ASYMMETRY WITH THE PRODUCT
+   * SIDE IS DELIBERATELY NOT HARMONISED. AAP 0.4.2.2 Discrepancy 6 records that this service's argument
+   * is SINGULAR `productTypeID` [:L271] while `ProductDAO.searchProductsByProductType`
+   * [model/dao/ProductDAO.cfc:L419] takes the PLURAL `productTypeIDs`. The divergence is in the legacy
+   * source; renaming either side would be a silent contract change, and TR-1 preserves the argument name
+   * as declared. So the query parameter, the constant that names it and the argument all stay singular.
+   *
+   * THE RESULT IS FORWARDED AS THE SERVICE PRODUCED IT, NOT PROJECTED. The rows are the flat
+   * `{ id, value }` select projection the repository port declares — no entity, no relationship, no
+   * reference cycle — so there is nothing to narrow and nothing to break by serialising it. Order and
+   * cardinality are preserved: nothing is sorted, filtered, de-duplicated or truncated, and no result
+   * limit is imposed (AAP 0.7.3 S9).
+   *
+   * ⛔ THE GATE RUNS FIRST. `read` on `Sku` ({@link SKU_ACCESS_MATRIX}). Because this member has no
+   * bad-request path, the gate is the ONLY thing standing between an anonymous caller and a catalog-wide
+   * search, which is why it is not conditional on the parameters being present.
+   *
+   * @param event the proxy event, or any object carrying its query-string-parameters and headers members
+   * @returns the search rows exactly as produced, or the refusal
+   */
+  const searchSkusByProductType = async (
+    event: SearchSkusEvent,
+  ): Promise<APIGatewayProxyResult> => {
+    const refusal = refuseUnauthorized(event, 'searchSkusByProductType');
+
+    if (refusal !== undefined) {
+      return refusal;
+    }
+
+    /* Both optional (Discrepancy 3): read, and forward whatever came — including nothing. Values are
+     * not trimmed, case-folded or wildcard-wrapped here; the repository owns the term's treatment. */
+    const term: string | undefined = readQueryStringParameter(event, TERM_QUERY_PARAMETER);
+    const productTypeID: string | undefined = readQueryStringParameter(
+      event,
+      PRODUCT_TYPE_ID_QUERY_PARAMETER,
+    );
+
+    try {
+      // Judgment (f): SINGULAR `productTypeID`, second, exactly as [:L271] declares it.
+      return okResponse(await skuService.searchSkusByProductType(term, productTypeID));
+    } catch (error) {
+      return errorResponse(error);
+    }
+  };
+
+  /**
+   * Ports the boundary for [model/service/SkuService.cfc:L281]
+   * `public boolean function getSkuStocksDeletableFlag( required string skuID )`.
+   *
+   * ⚠️⚠️ TODO(parity) D4 — THIS ROUTE CAN NEVER SUCCEED, AND IT SAYS SO INSTEAD OF PRETENDING.
+   * [:L282] forwards to `getSkuDAO().getSkuStocksDeletableFlag(...)`, and that DAO member IS DECLARED
+   * NOWHERE IN THE LEGACY REPOSITORY — model/dao/SkuDAO.cfc declares six public members and none of them
+   * is it — so the only legacy path that reaches it, `Sku.getStocksDeletableFlag()`
+   * [model/entity/Sku.cfc:L567-L572], has never been able to resolve. ../services/SkuService therefore
+   * returns a rejected promise carrying a not-implemented failure, which AAP 0.4.2.2 requires: the member
+   * is ported "as an explicit not-implemented boundary that documents the defect".
+   *
+   * ⛔ NO SUBSTITUTE VALUE IS EVER RETURNED FROM THIS PATH. Not `true`, not `false`, not `null`, not an
+   * empty body, not an empty collection and not a fabricated flag of any kind. The failure is shaped by
+   * {@link errorResponse} into a not-implemented status, so a caller learns the capability is absent
+   * rather than being handed an answer nobody computed. Substituting `true` would authorise a delete the
+   * legacy never authorised; substituting `false` would block one it never blocked. Both are inventions,
+   * and AAP 0.8.2 Guideline 4 names this defect specifically as one a competent engineer "would
+   * instinctively fix". It is not fixed.
+   *
+   * ⭐ AND THE ROUTE STAYS MOUNTED, WHICH IS TR-5: "The member is never quietly dropped from the
+   * interface." Deleting it would hide a real gap in the legacy system behind a missing route, which is
+   * the opposite of the honesty AAP 0.6.7 asks for.
+   *
+   * THE ARGUMENT IS `required` [:L281], so an unaddressed SKU is refused here — judgment (h) — and the
+   * refusal is a bad request rather than the not-implemented failure, because "you addressed no SKU" and
+   * "this capability does not exist" are different facts and collapsing them would obscure the second.
+   * The success expression is written out even though it is unreachable today: it is the honest
+   * expression of the declared contract, and it is what would carry the answer if the absent DAO member
+   * were ever supplied.
+   *
+   * ⛔ THE GATE RUNS FIRST. `read` on `Sku` ({@link SKU_ACCESS_MATRIX}) — see the matrix for why a flag
+   * that informs a later delete decision is still a `read`.
+   *
+   * @param event the proxy event, or any object carrying its path-parameters and headers members
+   * @returns the not-implemented failure, always — or the refusal, or the bad request
+   */
+  const getSkuStocksDeletableFlag = async (
+    event: SkuIdentifierEvent,
+  ): Promise<APIGatewayProxyResult> => {
+    const refusal = refuseUnauthorized(event, 'getSkuStocksDeletableFlag');
+
+    if (refusal !== undefined) {
+      return refusal;
+    }
+
+    const skuID: string | undefined = readSkuIdentifier(event);
+
+    if (skuID === undefined) {
+      return messageResponse(HTTP_STATUS.BAD_REQUEST, SKU_ID_REQUIRED_MESSAGE);
+    }
+
+    try {
+      /* D4: the service's promise always rejects, so control always leaves through the catch below and
+       * the not-implemented failure reaches the caller intact. Nothing is substituted for it. */
+      return okResponse(await skuService.getSkuStocksDeletableFlag(skuID));
+    } catch (error) {
+      return errorResponse(error);
+    }
+  };
+
+  /**
+   * Ports the boundary for [model/service/SkuService.cfc:L285]
+   * `public boolean function getTransactionExistsFlag()`.
+   *
+   * ⚠️⚠️ TODO(parity) D23 — ZERO ARGUMENTS, SO THIS MEMBER READS NOTHING FROM THE REQUEST: no path
+   * parameter, no query parameter, no header and no body. Judgment (a) carries the whole account, and
+   * the short version is that the legacy declaration at [:L285] has no formal parameter of any kind
+   * while its body at [:L286] forwards `argumentCollection=arguments` to a DAO member that declares two
+   * [model/dao/SkuDAO.cfc:L54-L55] — so the legacy is zero-arg and effectively two-arg at once, and the
+   * two callers [model/entity/Sku.cfc:L594] and [model/entity/Product.cfc:L626] exploit the second half.
+   * ../services/SkuService ratified the ZERO-ARGUMENT form, AAP 0.4.2.2 Discrepancy 4 rules that "The
+   * narrower service contract is preserved", and this handler matches the service rather than the prose.
+   *
+   * ⚠️ AND THAT MEANS THE ROUTE FAILS ON THE CURRENT REPOSITORY, WHICH IS PARITY RATHER THAN A GAP. With
+   * no identifier bound, the DAO's else-branch dereferences `arguments.productID`
+   * [model/dao/SkuDAO.cfc:L90] after the `structKeyExists` test at [:L58] has already failed, so a
+   * genuinely argument-free legacy invocation fails too. THIS BOUNDARY DOES NOT PRE-EMPT THAT WITH A
+   * GUARD, and does not invent a parameter to satisfy it: pre-empting would move a legacy failure to a
+   * new place and invent a message the legacy never had. The identifier-scoped capability lives where
+   * AAP 0.4.2.6 puts it — on `SkuRepository.transactionExists(productID?, skuID?)`, reached by the
+   * entity-level checkers, each of which declares its own zero-argument contract — and NOT on this
+   * member. Adding `productID` or `skuID` here would widen a preserved signature and put a second,
+   * competing spelling of the same capability on the wire.
+   *
+   * ⛔ THE GATE STILL RUNS, AND IT IS THE ONLY THING THIS MEMBER READS THE EVENT FOR. `read` on `Sku`
+   * ({@link SKU_ACCESS_MATRIX}).
+   *
+   * @param event the invocation's event, or any object carrying its headers member — consulted for
+   *        authorisation only
+   * @returns whatever the service produces, which on the current repository is a failure, or the refusal
+   */
+  const getTransactionExistsFlag = async (
+    event: TransactionExistsEvent,
+  ): Promise<APIGatewayProxyResult> => {
+    const refusal = refuseUnauthorized(event, 'getTransactionExistsFlag');
+
+    if (refusal !== undefined) {
+      return refusal;
+    }
+
+    try {
+      /* D23: called with NO arguments, matching [:L285] and ../services/SkuService. Do not add one. */
+      return okResponse(await skuService.getTransactionExistsFlag());
+    } catch (error) {
+      return errorResponse(error);
+    }
+  };
+
+  /**
+   * Ports the boundary for [model/service/SkuService.cfc:L289]
+   * `public any function getSkuBySkuCode( string skuCode )`.
+   *
+   * ONE ARGUMENT, AND IT IS OPTIONAL — there is no `required` keyword at [:L289] — while the lookup one
+   * layer down declares it `required` [model/dao/SkuDAO.cfc:L102]. ../services/SkuService preserves that
+   * looseness deliberately and raises at the point the legacy raises, so THIS BOUNDARY FORWARDS AN
+   * UNADDRESSED CODE AS ABSENCE rather than pre-checking it (judgment (h)). The resulting bad request is
+   * the service's own explicit failure surfacing through {@link errorResponse}, not a check made here —
+   * which keeps the failure at the layer that owns it and keeps the two arities honest.
+   *
+   * ⚠️ A MISS IS `null` AND MUST STAY `null` — IT IS NOT AN ERROR AND MUST NOT BECOME ONE. The
+   * out-of-scope caller [model/service/PhysicalService.cfc:L199] does
+   * `if(!isNull(sku)){ … } else { skuCodeError++; }` — it counts misses as a data-quality tally — so
+   * raising on a miss would convert a benign import warning into a failed import. This member answers a
+   * miss with a not-found status and nothing else: it does not create, it does not retry with a different
+   * predicate, and it does not fall back to an alternate lookup. The alternate-code fallback the legacy
+   * DAO performs at [model/dao/SkuDAO.cfc:L102-L104] is already inside the repository, one layer down,
+   * and is not repeated here.
+   *
+   * ⛔ THE GATE RUNS BEFORE THE CODE IS READ, WHICH IS THE ANTI-ENUMERATION PROPERTY. Because the
+   * refusal is decided without consulting the code or the repository, an unauthorised caller receives the
+   * SAME response for a code that exists and one that does not — gating after the lookup would have made
+   * this member an existence oracle over a unique business key. `read` on `Sku`
+   * ({@link SKU_ACCESS_MATRIX}).
+   *
+   * @param event the proxy event, or any object carrying its path-parameters and headers members
+   * @returns the projected SKU, or the response describing why it could not be returned
+   */
+  const getSkuBySkuCode = async (event: SkuCodeEvent): Promise<APIGatewayProxyResult> => {
+    const refusal = refuseUnauthorized(event, 'getSkuBySkuCode');
+
+    if (refusal !== undefined) {
+      return refusal;
+    }
+
+    /* Optional at [:L289], so absence is forwarded as absence — the service raises where the legacy
+     * raises. `readSkuCode` reports only genuine absence; an empty code is a value, not a sentinel. */
+    const skuCode: string | undefined = readSkuCode(event);
+
+    try {
+      const sku: Sku | null = await skuService.getSkuBySkuCode(skuCode);
+
+      // A miss stays a miss. PROJECTED, never serialised whole; see {@link SkuResponse}.
+      return sku === null ? notFoundResponse() : okResponse(toSkuResponse(sku));
+    } catch (error) {
+      return errorResponse(error);
+    }
+  };
+
+  /**
+   * Ports the boundary for [model/service/SkuService.cfc:L309]
+   * `public any function getSkuSmartList(struct data={}, currentURL="")`.
+   *
+   * TWO ARGUMENTS, BOTH OPTIONAL WITH DEFAULTS at [:L309], so there is NO BAD-REQUEST PATH on this
+   * member: an empty query string is the legal, meaningful `data={}` case, and it is what all six
+   * in-repository callers effectively pass — `integrationServices/google/controllers/feed.cfc:L63` among
+   * them. An unrecognised query key is IGNORED rather than rejected, exactly as
+   * [org/Hibachi/HibachiSmartList.cfc:L98-L135] ignored it.
+   *
+   * G6 TRANSLATION DECISION (l) — ONLY THE KEYS THE LEGACY INTERPRETER RECOGNISED ARE FORWARDED, AND NO
+   * PAGINATION IS INVENTED. {@link readSmartListInput} carries the reasoning and cites the line that
+   * recognises each key. Nothing is added: no page size, no default limit, no maximum, no ordering and no
+   * keyword (AAP 0.7.3 S9) — and the service states the same rule from its own side, that "No pagination
+   * default, filter or ordering is invented".
+   *
+   * `currentURL` IS DELIBERATELY NOT PASSED, AND ITS ABSENCE IS NOT A DROPPED ARGUMENT. The service
+   * declares it — preserving the legacy arity — and documents that it accepts and does not forward it,
+   * because [:L312] used it only to build saved-state and paging URLs for the CFML view layer
+   * [org/Hibachi/HibachiSmartList.cfc:L39], and a headless service has no view layer (AAP 0.3.4).
+   * Supplying a request path here would invent a value the port cannot consume; the argument is optional,
+   * so omitting it is the faithful call.
+   *
+   * ⛔ THE PAGE IS PROJECTED, NOT SERIALISED WHOLE — {@link toSkuSmartListResponse}. Both record
+   * collections carry {@link SkuResponse}, and the five paging numbers are copied across exactly as the
+   * smart list computed them: never recomputed, clamped, re-based or defaulted.
+   *
+   * ⛔ THE GATE RUNS BEFORE THE QUERY STRING IS EVEN ENUMERATED. `read` on `Sku`
+   * ({@link SKU_ACCESS_MATRIX}). This is the widest read in the file — with no filter supplied it
+   * describes every SKU in the catalog — so the gate is the one thing that must not be reachable without
+   * a principal, and it is not conditional on any parameter being present.
+   *
+   * @param event the proxy event, or any object carrying its query-string-parameters and headers members
+   * @returns the projected page, or the refusal
+   */
+  const getSkuSmartList = async (event: SkuSmartListEvent): Promise<APIGatewayProxyResult> => {
+    const refusal = refuseUnauthorized(event, 'getSkuSmartList');
+
+    if (refusal !== undefined) {
+      return refusal;
+    }
+
+    // Judgment (l): the recognised subset of the query string, and nothing invented.
+    const data: SmartListInput = readSmartListInput(event);
+
+    try {
+      // `currentURL` omitted deliberately; see the note above. The page is projected, never whole.
+      return okResponse(toSkuSmartListResponse(await skuService.getSkuSmartList(data)));
+    } catch (error) {
+      return errorResponse(error);
+    }
+  };
+
+  /*
+   * ⛔ FROZEN, AND EXACTLY NINE MEMBERS. `newSku` is declared on {@link SkuSurface} and deliberately not
+   * published here — {@link SkuHandler} records the three pieces of evidence for that, and because the
+   * returned object is typed as that interface, router.ts has no member to mount even by accident. There
+   * is no `countSku*`, `listSku*`, `exportSku*` or compound reader either: AAP 0.4.2.5 reproduces
+   * synthesis "only where used", and the slice uses none of them.
+   *
+   * Freezing is the run-time half of what the readonly members state in the type system, and it is the
+   * same requirement AAP 0.6.6 M7 places on everything outside the connection pool — a warm Lambda
+   * container is shared across invocations and therefore potentially across tenants, so a mounted
+   * boundary that could be reassigned in flight would be exactly the bleed M7 forbids.
+   */
+  return Object.freeze({
+    createSkus,
+    processImageUpload,
+    getProductSkus,
+    getSortedProductSkus,
+    searchSkusByProductType,
+    getSkuStocksDeletableFlag,
+    getTransactionExistsFlag,
+    getSkuBySkuCode,
+    getSkuSmartList,
+  });
+}
