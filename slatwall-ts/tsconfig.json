@@ -1,28 +1,138 @@
+// ---------------------------------------------------------------------------
+// slatwall-ts - base TypeScript configuration
+//
+// This is the BASE config for the strict-mode TypeScript port of the Slatwall
+// 3.1.39 catalog + promotions/pricing slice, targeting the AWS Lambda
+// `nodejs20.x` runtime. It is the definition of this project's typecheck gate.
+//
+// Consumers:
+//   * `npm run typecheck` -> `tsc --noEmit`, which resolves this file directly
+//   * `tsconfig.build.json` -> extends this file, flips `noEmit`, and emits
+//   * `vitest` -> reads this project config directly, with no transform layer
+//   * `typescript-eslint` -> parses with this config
+//
+// The strictness profile below was installed and compiled cleanly against the
+// real dependency set (decimal.js 10.6.0, mysql2 3.23.1, zod 4.4.3). It is
+// therefore known-achievable, not aspirational: if a file fails to compile,
+// fix the file - never weaken this config.
+//
+// Deliberately NOT set, each for a reason specific to this port:
+//   * `paths` / `baseUrl` - aliases would let a module sidestep the ESLint
+//     `no-restricted-imports` layer boundary that stops src/domain/** from
+//     importing src/repositories/**, src/handlers/** or src/integrations/**.
+//     Imports stay explicit relative specifiers with NodeNext extensions.
+//   * `allowJs` - there is no JavaScript source here. `eslint.config.mjs` and
+//     `esbuild.config.mjs` are tooling, not compiled input.
+//   * `experimentalDecorators` / `emitDecoratorMetadata` - this port has no DI
+//     container and no ORM; collaborators are hand-wired constructor
+//     arguments in the composition root.
+//   * `noUnusedParameters` - interface parity keeps the legacy CFML signatures
+//     verbatim, so unused parameters are intentional: see the throwing stub
+//     for [model/entity/Sku.cfc:L258] and the stub ports standing in for
+//     out-of-scope branches. Enabling it would reject required code.
+//   * `noImplicitReturns`, `noFallthroughCasesInSwitch`, and
+//     `allowUnreachableCode: false` - legacy defects are reproduced, not
+//     repaired (e.g. the missing `return` at [model/entity/Product.cfc:L598]).
+//   * `incremental` / `composite` - these would emit `*.tsbuildinfo` state.
+//   * `removeComments` - left at its default so preserved legacy TODOs, such
+//     as the issue #1766 no-op, survive into the emitted output.
+// ---------------------------------------------------------------------------
 {
   "compilerOptions": {
+    // --- Language and module target ---------------------------------------
+    // Node 20, and therefore the `nodejs20.x` runtime, supports ES2022.
     "target": "ES2022",
+
+    // No "DOM". This is a headless backend service: the presentation
+    // subsystems (admin/, frontend/, public/, assets/) are out of scope and
+    // the target renders no user interface.
     "lib": ["ES2022"],
+
+    // NodeNext keeps the SOURCE modern ESM, matching `"type": "module"` in
+    // package.json. The Lambda ARTIFACT is CommonJS, but that is an esbuild
+    // output concern: bundling this dependency set to ESM builds cleanly and
+    // then fails at runtime with `Dynamic require of "node:buffer"`, raised
+    // through mysql2 -> sql-escaper. Do NOT change `module` to "CommonJS" to
+    // "fix" that; it is already handled in esbuild.config.mjs via
+    // `format: 'cjs'`.
     "module": "NodeNext",
     "moduleResolution": "NodeNext",
 
+    // --- Ambient type surface ---------------------------------------------
+    // Only Node globals are ambient. `@types/aws-lambda` is consumed through
+    // an explicit `import type` in the handler modules, so it is deliberately
+    // not injected globally.
+    "types": ["node"],
+
+    // --- The verified strictness profile (load-bearing; do not soften) ----
+    // Null semantics are load-bearing. `Sku.getPriceByCurrencyCode()`
+    // [model/entity/Sku.cfc:L269-L273] has no `else` and no fallback, so an
+    // unknown currency yields null, and the list/renewal accessors add a
+    // second key-existence check that can return null even for a currency
+    // present in the map. All three map to `Money | undefined`. Substituting
+    // 0 for those nulls would silently sell products for free, so
+    // strictNullChecks is what makes that contract a compile error rather
+    // than a pricing incident.
     "strict": true,
+
+    // The legacy engine indexes structs and arrays freely, and 1-based (e.g.
+    // `orderItemQulifiedDiscounts[1]`, `promotionRewardUsageDetails[rewardID]`).
+    // Every such access must now be proven safe, which is exactly where the
+    // over-use stripping defect lives: it indexes by a leaked variable rather
+    // than the loop key [model/service/PromotionService.cfc:L468-L521].
     "noUncheckedIndexedAccess": true,
+
+    // A CFML `structKeyExists` miss and a present-but-null key are different
+    // states. This preserves that distinction instead of collapsing "absent"
+    // into "undefined".
     "exactOptionalPropertyTypes": true,
+
+    // Entities are classes carrying behavior - the four-step currency
+    // cascade, option-to-SKU resolution, materialized-path maintenance - and
+    // the legacy suite really does override: `BrandTest.cfc` overrides
+    // `defaults_are_correct()` from `SlatwallEntityTestBase.cfc`. Explicit
+    // `override` keeps that intent visible.
     "noImplicitOverride": true,
+
+    // Catches the legacy defect class where a value is computed and then
+    // discarded: [model/entity/Sku.cfc:L512-L522] populates one key but
+    // returns another, and [model/entity/Product.cfc:L598] computes a sale
+    // price with no `return`.
     "noUnusedLocals": true,
 
+    // --- Declaration and source-map inputs --------------------------------
+    // Inert here because of `noEmit` below; these are consumed by
+    // `tsconfig.build.json`, which flips `noEmit` and sets `outDir`.
     "declaration": true,
     "declarationMap": true,
     "sourceMap": true,
 
+    // --- Interop and module hygiene ---------------------------------------
     "esModuleInterop": true,
     "forceConsistentCasingInFileNames": true,
+
+    // Allows a module to import a JSON artifact where it needs one. An
+    // additive capability that relaxes no check.
     "resolveJsonModule": true,
+
+    // Third-party declaration files are checked too. This is verified clean
+    // against the pinned dependency set, so there is no reason to skip them -
+    // and skipping must never be used to mask a first-party error.
     "skipLibCheck": false,
 
-    "outDir": "build",
-    "rootDir": "."
+    // --- Emit policy -------------------------------------------------------
+    // This config typechecks; it never emits. `npm run typecheck` runs
+    // `tsc --noEmit`, and every emitted artifact comes from either
+    // `tsconfig.build.json` (declarations) or esbuild (the Lambda bundle).
+    "noEmit": true
   },
+
+  // The typecheck gate spans the whole subtree: application sources, the test
+  // tier, and the test-runner config. `tsconfig.build.json` narrows this to
+  // `src/**` so that tests and tooling never reach the emitted output.
   "include": ["src/**/*.ts", "tests/**/*.ts", "vitest.config.ts"],
+
+  // Dependencies, the esbuild bundle output (dist/), the tsc declaration
+  // output (build/), and coverage reports are never program inputs.
   "exclude": ["node_modules", "dist", "build", "coverage"]
 }
