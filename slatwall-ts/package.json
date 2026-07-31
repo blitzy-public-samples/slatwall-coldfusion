@@ -11,7 +11,7 @@
   "scripts": {
     "typecheck": "tsc --noEmit",
     "build": "node build/esbuild.mjs",
-    "test": "jest --ci",
+    "test": "jest --ci --config package.json",
     "lint": "eslint ."
   },
   "dependencies": {
@@ -26,8 +26,28 @@
     "jest": "30.4.2",
     "prettier": "3.9.6",
     "ts-jest": "29.4.12",
-    "ts-node": "10.9.2",
     "typescript": "5.9.3",
     "typescript-eslint": "8.65.0"
+  },
+  "//": [
+    "The overrides block below is a SECURITY REMEDIATION, not a preference: it closes",
+    "GHSA-mh99-v99m-4gvg / CVE-2026-14257 (unbounded brace expansion) by replacing the two",
+    "CONSUMERS of brace-expansion inside the Jest toolchain. NEVER add brace-expansion itself:",
+    "5.x is ESM with named exports while minimatch 1/2/3 require the default-export expand",
+    "function, so that override fails at runtime with \"expand is not a function\".",
+    "minimatch is pinned rather than glob because glob 13 is only reachable by replacing the",
+    "glob that jest's own reporters require, whereas pinning minimatch fixes the leaf consumer",
+    "both vulnerable paths share and leaves jest's resolved graph intact. Verified: npm ci",
+    "exit 0, npm audit 0 vulnerabilities, npm install --package-lock-only produces no lockfile",
+    "change, and the full suite green. This note IS the rationale - it is deliberately kept here,",
+    "beside the block it explains, rather than in jest.config.ts, because a reader auditing the",
+    "overrides reads this file and package.json admits no comment syntax other than a '//' member."
+  ],
+  "overrides": {
+    "minimatch": "10.2.6",
+    "test-exclude": "7.0.2"
+  },
+  "jest": {
+    "preset": "./jest.config.ts"
   }
 }

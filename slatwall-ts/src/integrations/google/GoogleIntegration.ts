@@ -1,30 +1,27 @@
-// No user-specified rules were provided for this project; the nine enterprise
-// standards of AAP §0.7.3 govern instead, and the bar is not lowered.
-
 /**
- * GoogleIntegration — the interface-conformant Google integration adapter, and the TypeScript
- * translation of integrationServices/google/Integration.cfc:L49-L79.
+ * GoogleIntegration — the interface-conformant Google integration adapter, translated from
+ * `integrationServices/google/Integration.cfc:L49-L79`.
  *
  * THIS FILE IS NEARLY EMPTY BY FAITHFULNESS, NOT BY NEGLECT
- * --------------------------------------------------------
- * Read that before reading the code, because the code looks like an unfinished stub and is not.
- * AAP §0.6.4 investigated four candidate homes for the Google product-feed logic and recorded, for
- * this file, "No feed logic whatsoever." The legacy component is 79 lines and breaks down to: a
- * license header, one component declaration, four contract members returning two fixed strings and
- * an empty structure, one populated settings structure, and one member whose body is blank. AAP
- * §0.6.4.3 states the conclusion verbatim — the stub is "nearly empty by faithfulness, not by
- * neglect".
+ * The legacy component is 79 lines and breaks down to a license header, one component declaration,
+ * four contract members returning two fixed strings and an empty structure, one populated settings
+ * structure, and one member whose body is blank. AAP §0.6.4 investigated four candidate homes for
+ * the Google product-feed logic and recorded, for this file, "No feed logic whatsoever."
  *
- * There is therefore nothing more to port. Feed generation, a merchant client, an outbound call or
- * a product-category lookup added here would be behavior the legacy system does not have, which
- * AAP §0.7.3 S9 forbids outright. AAP §0.4.1.10 specifies the target contents exactly and no more:
- * the type token, the display name, an empty settings structure, and the one product-type setting
- * field, with the display-name defect recorded.
+ * There is therefore nothing more to port. Feed generation, a merchant client, an outbound call or a
+ * product-category lookup added here would be behavior the legacy system does not have, which AAP
+ * §0.7.3 S9 forbids outright. AAP §0.4.1.10 specifies the target contents exactly and no more: the
+ * type token, the display name, an empty settings structure, and the one product-type setting field,
+ * with the display-name defect recorded.
  *
- * WHERE THE FEED LOGIC ACTUALLY LIVES (AAP §0.6.4 — orientation for reviewers)
- * ---------------------------------------------------------------------------
- * A reviewer who opens this adapter first will expect to find the feed here. It is split three
- * ways, and not one of the three is this file:
+ * WHERE THE FEED LOGIC ACTUALLY LIVES — orientation, because this is the wrong place to look
+ * The work is split three ways and not one of the three is this file. This file is the
+ * interface-conformant stub only. Record selection — the related-property joins, the activity and
+ * publication filters and the availability range filter that choose which records the feed contains
+ * — is ported from `integrationServices/google/controllers/feed.cfc:L49-L74` into a planned
+ * `ProductFeedQuery.ts`. All RSS field shaping is ported from
+ * `integrationServices/google/views/feed/product.cfm:L1-L65` into `ProductFeedBuilder.ts`, which is
+ * where the real work of the feed lands.
  *
  *   GoogleIntegration.ts   (this file) the interface-conformant stub only. The legacy
  *                          integrationServices/google/Integration.cfc carries no feed logic at all.
@@ -32,130 +29,86 @@
  *                          integrationServices/google/controllers/feed.cfc:L49-L74 — the related-
  *                          property joins, the activity and publication filters and the
  *                          availability range filter that choose which records the feed contains.
+ *                          ⚠️ NOT DELIVERED AT THIS CHECKPOINT (F19).
  *   ProductFeedBuilder.ts  owns all RSS field shaping, ported from
  *                          integrationServices/google/views/feed/product.cfm:L1-L65. This is where
  *                          the real work of the feed lands.
  *
  * A fourth candidate was rejected outright: integrationServices/google/model/dao/FeedDAO.cfc is
  * unreachable, syntactically broken code with zero callers across the repository, and it is
- * deliberately not ported. Its register entry and the evidence behind it live in this folder's
- * README.md, not here — see REGISTER DISCIPLINE below.
+ * deliberately not ported. Its register entry D12 and the evidence behind it are carried in
+ * `IntegrationContract.ts` — see REGISTER DISCIPLINE below.
  *
- * This folder is flat and closed at exactly six files: IntegrationContract.ts, BaseIntegration.ts,
- * GoogleIntegration.ts, ProductFeedQuery.ts, ProductFeedBuilder.ts and README.md. No barrel, no
- * registry, no discovery module, no shared type bucket, no subfolder, no handler and no second
- * adapter belongs in it — the discovery mechanism such a file would serve was retired, not
- * translated (AAP §0.8.3.2).
+ * ⚠️ F19 — THIS FOLDER IS NOT "CLOSED AT EXACTLY SIX FILES", AND SAYING SO WAS A FALSE STATEMENT OF
+ * FACT. It holds FOUR: IntegrationContract.ts, BaseIntegration.ts, GoogleIntegration.ts and
+ * ProductFeedBuilder.ts. AAP §0.4.1.10 plans six, adding ProductFeedQuery.ts and README.md, and both
+ * remain planned — but a reader was being told they could open them today. The PROHIBITION the sentence
+ * existed to carry is unaffected and still holds: no barrel, no registry, no discovery module, no
+ * shared type bucket, no subfolder, no handler and no second adapter belongs in this folder, because
+ * the discovery mechanism such a file would serve was retired rather than translated (AAP §0.8.3.2).
  *
- * WHY THIS CLASS BOTH EXTENDS AND IMPLEMENTS (a documented Guideline-6 judgment)
- * -----------------------------------------------------------------------------
- * integrationServices/google/Integration.cfc:L49 declares BOTH halves on one line:
- * extends="Slatwall.integrationServices.BaseIntegration" and
- * implements="Slatwall.integrationServices.IntegrationInterface". The port reproduces both — the
- * `extends BaseIntegration` clause and the `implements IntegrationContract` clause below.
+ * The subtree-wide pattern is composition over inheritance, so a reader will flag the `extends`. The
+ * reasoning is specific rather than general: the composition-over-inheritance decision of AAP §0.3.3
+ * targets template-method reuse through `extends="HibachiService"` and the `super.save()` call
+ * chain, where a service inherited a large framework surface it never used and the inherited
+ * behavior was invisible at the call site. It does not prohibit a small, in-scope adapter base whose
+ * entire purpose is to supply defaults. Keeping the inheritance earns something concrete:
+ * `getEventHandlers()` and `getAdminNavbarHTML()` are inherited unchanged, exactly as the legacy
+ * adapter inherits them from `integrationServices/BaseIntegration.cfc:L67` and `:L71`. Composing
+ * instead would force this class to redeclare both members purely to delegate — duplication the
+ * legacy tree does not have.
  *
- * The subtree-wide pattern is composition over inheritance, so a reviewer will flag the `extends`.
- * It is an intentional, documented judgment under prompt Guideline 6, and the reasoning is
- * specific rather than general: the composition-over-inheritance decision of AAP §0.3.3 targets
- * template-method reuse through `extends="HibachiService"` and the `super.save()` call chain,
- * where a service inherited a large framework surface it never used and the inherited behavior was
- * invisible at the call site. It does not prohibit a small, in-scope adapter base whose entire
- * purpose is to supply defaults.
- *
- * Keeping the inheritance earns something concrete and checkable: getEventHandlers() and
- * getAdminNavbarHTML() are inherited unchanged, exactly as the legacy adapter inherits them from
- * integrationServices/BaseIntegration.cfc:L67 and L71. Composing instead would force this class to
- * redeclare both members purely to delegate — duplication the legacy tree does not have. The
- * legacy adapter overrides four members and inherits two; this port reproduces that shape member
- * for member.
- *
- * The `implements` clause is not redundant decoration either. BaseIntegration already satisfies
+ * The `implements` clause is not redundant decoration either. `BaseIntegration` already satisfies
  * the contract, so conformance would otherwise be inherited silently; restating it makes this
- * class's conformance a compile-checked declaration at the one place a reader looks for it, which
- * is what AAP §0.7.3 S3 asks for in place of the retired framework discovery.
+ * class's conformance a compile-checked declaration at the one place a reader looks for it, which is
+ * what AAP §0.7.3 S3 asks for in place of the retired framework discovery.
  *
  * MEMBER ORDER FOLLOWS THE LEGACY ADAPTER, NOT THE INTERFACE
- * ---------------------------------------------------------
- * The six members below are declared in legacy adapter order — Integration.cfc L51, L55, L59, L63,
- * L67, L73 — which DIVERGES from the contract's order: the adapter declares getIntegrationTypes
- * (integrationServices/google/Integration.cfc:L55) before getDisplayName (L59), whereas the
- * interface declares getDisplayName (integrationServices/IntegrationInterface.cfc:L56) before
- * getIntegrationTypes (L63). Member order is not a runtime contract in either language, so the
- * legacy order is kept deliberately: it lets the two files be read side by side, member for
- * member, which is the point of the artifact trail.
+ * The six members below are declared in legacy adapter order (`:L51`, `:L55`, `:L59`, `:L63`,
+ * `:L67`, `:L73`), which DIVERGES from the contract: the adapter declares `getIntegrationTypes`
+ * (`:L55`) before `getDisplayName` (`:L59`), whereas the interface declares `getDisplayName`
+ * (`integrationServices/IntegrationInterface.cfc:L56`) before `getIntegrationTypes` (`:L63`). Member
+ * order is not a runtime contract in either language, so the legacy order is kept deliberately: it
+ * lets the two files be read side by side, member for member.
  *
  * TWO CFML COMPONENT ATTRIBUTES ARE DELIBERATELY NOT TRANSLATED
- * ------------------------------------------------------------
- * Integration.cfc:L49 also carries accessors="true" and output="false". Neither has a TypeScript
- * counterpart and neither is reproduced. accessors="true" would generate a getter and a setter for
- * each declared property, and this component declares ZERO properties, so it generates nothing —
- * there is no accessor surface to port, and adding one would invent a member. output="false"
- * governs CFML template output buffering, a concept with no counterpart in a class that returns
- * values. The third attribute on that line is the subject of the register annotation at
- * getDisplayName() below.
+ * `Integration.cfc:L49` also carries `accessors="true"` and `output="false"`. Neither has a
+ * TypeScript counterpart. `accessors="true"` would generate a getter and a setter per declared
+ * property, and this component declares zero properties, so it generates nothing — there is no
+ * accessor surface to port, and adding one would invent a member. `output="false"` governs CFML
+ * template output buffering, a concept with no counterpart in a class that returns values. The third
+ * attribute on that line is the subject of the register annotation at `getDisplayName()` below.
  *
  * NO CONSTRUCTOR, NO COLLABORATORS
- * --------------------------------
- * The legacy component declares no constructor, declares no properties and injects nothing, so
- * this class declares no constructor and takes no parameters. It holds no reference to
- * ProductFeedQuery, to ProductFeedBuilder, to a service, to a port or to a repository. AAP §0.7.3
- * S3 (explicit constructor injection) is satisfied here by having no dependency to inject rather
- * than by wiring one, and adding a collaborator would invent coupling the legacy adapter does not
- * have.
+ * The legacy component declares no constructor, declares no properties and injects nothing, so this
+ * class declares no constructor and takes no parameters. It holds no reference to a feed query, a
+ * feed builder, a service, a port or a repository: AAP §0.7.3 S3 is satisfied here by having no
+ * dependency to inject rather than by wiring one, and adding a collaborator would invent coupling
+ * the legacy adapter does not have.
  *
- * ARCHITECTURAL POSITION (AAP §0.7.3 S4 — hexagonal separation)
- * ------------------------------------------------------------
- * Exactly TWO imports, both local siblings: a type-only import of the contract and its setting
- * descriptor, and a value import of the base class. The type-only form is required rather than
- * stylistic — IntegrationContract.ts holds only interface declarations and emits no runtime code,
+ * Its two imports are both local siblings — a type-only import of the contract and its setting
+ * descriptor, and a value import of the base class. The type-only form is structural rather than
+ * stylistic: `IntegrationContract.ts` holds only interface declarations and emits no runtime code,
  * so a value import would name a module that does not exist after compilation. The base class is
  * imported as a value precisely because it is extended.
  *
- * Everything else is absent on purpose:
- *
- *   - No port, no repository, no service, no configuration module and no handler is referenced, so
- *     both directions of the hexagon stay intact.
- *   - No cloud-provider event, result or invocation-context type is named. All provider coupling
- *     is confined to src/handlers/.
- *   - The environment is never read here. Configuration flows one way through src/config/
- *     (AAP §0.4.3.5), and nothing below the config layer reads it.
- *   - No database driver, connection, statement text, table or column identifier appears.
- *   - No filesystem, path or address-parsing builtin, and no network-transport, markup, date or
- *     vendor package either. The in-scope adapter is a stub that makes no outbound call
- *     (AAP §0.8.3.3), so no client of that sort belongs in this folder at all.
- *   - No endpoint, host, credential, key, secret, token or authorization flow, and no rate limit,
- *     budget, page size, batch size or concurrency bound. IR-12 is explicit — the port invents no
- *     service levels — and none of these exists in the legacy component to carry across.
- *   - No package is added (AAP §0.7.3 S5 — the dependency set is frozen).
- *   - No error is thrown and no error type is imported. The legacy stub throws nothing, so
- *     reaching for the port's error hierarchy would be unjustified coupling.
- *   - No runtime dispatch mechanism whatsoever: no interception layer, no introspection, no
- *     string-keyed member resolution, no annotation syntax, no plugin registry and no service
- *     locator (AAP §0.7.3 S3). The legacy framework discovered integrations by scanning components
- *     on the ORM CFC path; AAP §0.8.3.2 retires that machinery, so its entire replacement is the
- *     hand-written `implements` clause below.
- *
- * A FRESH VALUE PER CALL — EXECUTION-MODEL MISMATCH M7
- * ---------------------------------------------------
- * Both structure-returning members construct their value inline, on every call. This module holds
- * no module-scope state at all — no hoisted constant, no cache, no memo, no counter, no
- * reassignable binding — and the class declares no instance field.
- *
- * Two independent reasons make that the only compliant shape. FIDELITY: the legacy bodies
- * construct a new structure per invocation (integrationServices/google/Integration.cfc:L64 and
- * L68-L70), so a shared instance would hand every caller the same object and one caller mutating
- * it would change what a later caller observes. MISMATCH M7: nothing survives between invocations
- * of a stateless handler except module-scope state, which persists on a warm container — a shared
- * mutable value here would outlive the invocation that touched it and could carry data across a
- * tenant boundary.
+ * A FRESH VALUE PER CALL — MISMATCH M7
+ * Both structure-returning members construct their value inline on every call. This module holds no
+ * module-scope state and the class declares no instance field. FIDELITY: the legacy bodies construct
+ * a new structure per invocation (`integrationServices/google/Integration.cfc:L64` and `:L68-L70`),
+ * so a shared instance would hand every caller the same object and one caller mutating it would
+ * change what a later caller observes. MISMATCH M7: module-scope state persists on a warm container,
+ * so a shared mutable value would outlive the invocation that touched it and could carry data across
+ * a tenant boundary.
  *
  * REGISTER DISCIPLINE
  * -------------------
  * This file owns exactly ONE entry of the plan's carried-defect register: the display-name
  * copy-paste artifact, annotated at getDisplayName() below with its exact locator. The folder's
- * other entry — the dead, syntactically broken feed DAO — is evidenced in this folder's README.md
- * and is deliberately not restated here, because a register entry must be findable in exactly one
- * place.
+ * other entry — D12, the dead, syntactically broken feed DAO — is carried in
+ * `IntegrationContract.ts` and is deliberately not restated here, because a register entry must be
+ * findable in exactly one place. ⚠️ F19: this pointer previously named an undelivered `README.md`, so
+ * that entry was findable in NO place; it now names the module that actually holds it.
  *
  * This file mints NO new defect number and NO new execution-mismatch number. The two mismatches
  * recorded at getSettingOptions() below are therefore deliberately UNNUMBERED: they record a stale
@@ -187,19 +140,16 @@ import { BaseIntegration } from './BaseIntegration';
  */
 export class GoogleIntegration extends BaseIntegration implements IntegrationContract {
   /**
-   * Legacy: integrationServices/google/Integration.cfc:L51-L53.
+   * Legacy: `integrationServices/google/Integration.cfc:L51-L53`.
    *
    * A REDUNDANT OVERRIDE, KEPT DELIBERATELY. This body is byte-identical to the inherited one at
-   * integrationServices/BaseIntegration.cfc:L51-L53 — both return the component itself and do
-   * nothing else — so removing it would change no observable behavior. It is kept because the
-   * legacy adapter re-declares it regardless, and a side-by-side reading of the two files should
-   * show the same members in the same order. Do not delete it as dead code: that is the first
-   * reading a reviewer will reach for, and this note exists to answer it.
+   * `integrationServices/BaseIntegration.cfc:L51-L53` — both return the component itself — so
+   * removing it would change no observable behavior. It is kept because the legacy adapter
+   * re-declares it regardless, and a side-by-side reading of the two files should show the same
+   * members in the same order. Do not delete it as dead code.
    *
-   * The polymorphic `this` return type is the contract's (IntegrationContract.init), so a caller
-   * that chains keeps the concrete type it started with. Typing it as this class, as the interface
-   * or as a value-less return would each discard that, and reproducing CFML's untyped catch-all
-   * return is forbidden outright by AAP §0.7.3 S1.
+   * The polymorphic `this` return type is the contract's, so a caller that chains keeps the concrete
+   * type it started with. Reproducing CFML's untyped catch-all return is forbidden by AAP §0.7.3 S1.
    */
   public override init(): this {
     return this;
@@ -226,26 +176,23 @@ export class GoogleIntegration extends BaseIntegration implements IntegrationCon
   }
 
   /**
-   * Legacy: integrationServices/google/Integration.cfc:L59-L61.
+   * Legacy: `integrationServices/google/Integration.cfc:L59-L61`.
    *
    * THIS IS THE EFFECTIVE DISPLAY NAME. What this method returns is what an administrative surface
    * shows, and it overrides the two-word fallback the base class supplies
-   * (integrationServices/BaseIntegration.cfc:L55-L57).
+   * (`integrationServices/BaseIntegration.cfc:L55-L57`).
    *
-   * TODO(parity) D11 — integrationServices/google/Integration.cfc:L49
+   * TODO(parity) D11 — `integrationServices/google/Integration.cfc:L49`. The component attributes on
+   * that line declare `displayname="USA epay"` while this method returns the vendor name below. The
+   * two disagree, and the method is the one that takes effect. It is a copy-paste artifact: the
+   * component was cloned from the USAePay payment adapter — which is also why an
+   * interface-conformant shell exists here with no feed implementation behind it, so the artifact is
+   * genuinely informative evidence rather than noise.
    *
-   * The component attributes on that line declare displayname="USA epay" while this method returns
-   * the vendor name below. The two disagree, and the method is the one that takes effect. It is a
-   * copy-paste artifact: the component was cloned from the USAePay payment adapter — which is also
-   * why an interface-conformant shell exists here with no feed implementation behind it, so the
-   * artifact is genuinely informative evidence rather than noise.
-   *
-   * CARRIED, NOT REPAIRED (AAP §0.7.3 S7). It is safe to leave because the effective display name
-   * comes from the method and the method returns the correct one. Concretely: the metadata artifact
-   * is never read by this port, is not reproduced as a field, a constant, a declaration or a
-   * generated accessor, and must not win. The legacy CFML file is likewise not edited — the CFML
-   * tree stays byte-for-byte unchanged (AAP §0.8.1 and §0.8.2 guideline 1). Recording the defect
-   * here is the whole treatment, so that a reviewer can see it was understood rather than missed.
+   * CARRIED, NOT REPAIRED (AAP §0.7.3 S7). The stale metadata is never read by this port, is not
+   * reproduced as a field, a constant or a generated accessor, and must not win. The legacy CFML file
+   * is likewise not edited: the CFML tree stays byte-for-byte unchanged (AAP §0.8.1 and §0.8.2
+   * guideline 1).
    */
   public override getDisplayName(): string {
     return 'Google';

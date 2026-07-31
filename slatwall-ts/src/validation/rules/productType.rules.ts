@@ -1,101 +1,51 @@
 /**
- * The `ProductType` validation rule set — the typed transliteration of
- * `model/validation/ProductType.json`.
+ * `productType.rules.ts` — the typed transliteration of `model/validation/ProductType.json`.
  *
- * =============================================================================================
- * PROVENANCE (guideline 6)
- * =============================================================================================
- * SOURCE DOCUMENT   `model/validation/ProductType.json`
- * LENGTH            9 lines
- * md5               2668f3141e471200d4fce1f0b805e8c4
- * RULE-BEARING      lines 3-8, one line per property, in the order declared below
+ * AAP §0.4.1.5 makes this file CREATE against that document: "Name and `urlTitle` requirements, four
+ * delete guards including the `systemCode` max-length guard". The seven validation documents are an
+ * entirely implicit scope addition (AAP §0.2.1.5) — the prompt names none of them — because they are
+ * behavior rather than configuration and "determine which saves and deletes succeed".
  *
- * The source document is REFERENCE-ONLY and was never modified. AAP TR-6 and AAP 0.4.1.1 require
- * the CFML tree to stay byte-for-byte untouched, and it does: every target file of this refactor is
- * a CREATE and every legacy file is a REFERENCE, with zero UPDATE rows anywhere in the plan.
+ * The generic evaluation semantics every constraint below depends on — the null verdict per constraint,
+ * the error key, context selection, the uniqueness polarity, the dry-run pass and the deliberate
+ * non-ports of the engine — are stated once in `../Validator` and are not repeated here.
  *
- * TRANSLITERATED, NOT VENDORED. The document is re-expressed here as a typed TypeScript value; it
- * is not imported, required, copied, symlinked or re-emitted into this subtree in any form. That is
- * AAP TR-3 — "every metadata-driven behavior becomes an explicit, compile-checked declaration" —
- * together with TR-6 and AAP 0.4.1.1, which require the CFML tree to stay byte-for-byte untouched
- * and therefore forbid relocating the document as much as editing it.
+ * WHY PRECISION MATTERS MORE IN THIS DOCUMENT THAN IN ANY OTHER IN THE FOLDER: four of its six rules are
+ * DELETE GUARDS, and one of them is the only thing standing between the three seeded product-type
+ * discriminators (AAP IR-7) and deletion. Getting this file subtly wrong produces neither a compile error
+ * nor a failing test — it produces a service that deletes rows the legacy system protects. See the
+ * `systemCode` guard below, which is the most consequential declaration here.
  *
- * BE CLEAR THAT THE COMPILER DOES NOT ENFORCE THIS FOR YOU. `resolveJsonModule` is not written in
- * `slatwall-ts/tsconfig.json`, but TypeScript 5.x IMPLIES it under `module: nodenext`, and
- * `tsc --showConfig` reports it as enabled; a probe that imported a `.json` file compiled cleanly.
- * So the prohibition above is a DESIGN COMMITMENT that a reviewer has to hold, not a mechanical
- * guarantee — which is precisely why it is stated here at the point of temptation.
- *
- * IMPLICIT SCOPE ADDITION. AAP 0.2.1.5 records that the seven catalog validation documents are an
- * entirely implicit scope addition — the refactor prompt names none of them — and that they are
- * "behavior, not configuration. They are interpreted at runtime by the validation service and
- * determine which saves and deletes succeed." IR-4 says the same and requires them ported as typed
- * rule sets. This file is one of the seven; the document it carries is 9 of their 75 lines.
- *
- * WHY THAT MATTERS MORE HERE THAN ANYWHERE ELSE IN THE FOLDER: four of this document's six rules
- * are DELETE GUARDS, and one of them is the only thing standing between the three seeded
- * product-type discriminators and deletion. Getting this file subtly wrong does not produce a
- * compile error or a failing test; it produces a service that deletes rows the legacy system
- * protects. See the `systemCode` guard rail below, which is the most consequential declaration in
- * the file.
- *
- * =============================================================================================
- * THE MEASURED CONTRACT — CHECK ANY EDIT AGAINST THESE NUMBERS
- * =============================================================================================
- * SIX properties. SIX rule objects. SEVEN constraints.
+ * THE CONTRACT — SIX PROPERTIES, SIX RULE OBJECTS, SEVEN CONSTRAINTS.
  *
  *     property             context   constraints                       document line
  *     ------------------   -------   -------------------------------   -------------
- *     productTypeName      save      required                          :3
- *     urlTitle             save      required, unique                  :4
- *     products             delete    maxCollection 0                   :5
- *     childProductTypes    delete    maxCollection 0                   :6
- *     systemCode           delete    maxLength 0                       :7
- *     physicalCounts       delete    maxCollection 0                   :8
+ *     productTypeName      save      required                          :L3
+ *     urlTitle             save      required, unique                  :L4
+ *     products             delete    maxCollection 0                   :L5
+ *     childProductTypes    delete    maxCollection 0                   :L6
+ *     systemCode           delete    maxLength 0                       :L7
+ *     physicalCounts       delete    maxCollection 0                   :L8
  *
- * Constraint keys used, with counts: `required` x2, `maxCollection` x3, `unique` x1,
- * `maxLength` x1 — which is 2 + 3 + 1 + 1 = 7. Contexts: `save` on two rule objects, `delete` on
- * four. FOUR DELETE GUARDS: `products`, `childProductTypes`, `systemCode`, `physicalCounts`.
+ * Constraint keys used: `required` twice, `maxCollection` three times, `unique` once, `maxLength` once.
+ * Contexts: `save` on two rule objects, `delete` on four. Every per-property value in this particular
+ * document holds exactly ONE rule object, but the shape stays an ARRAY regardless, because that is the
+ * model rather than a property of this document — `model/validation/Sku.json` gives `options` two rule
+ * objects and `model/validation/Product.json` gives `baseProductType` two.
  *
- * Every per-property value in this particular document is an array of exactly ONE rule object, but
- * the shape stays an ARRAY regardless, because that is the model rather than a property of this
- * document: `model/validation/Sku.json` gives `options` two rule objects and
- * `model/validation/Product.json` gives `baseProductType` two.
+ * THIS DOCUMENT IS THE FOLDER'S ONLY USER OF `maxLength`. Across all seven in-scope documents the key
+ * occurs exactly once, at `model/validation/ProductType.json:L7`, with the value 0. Recorded so the single
+ * occurrence is not mistaken for a transcription slip.
  *
- * THIS DOCUMENT IS THE FOLDER'S ONLY USER OF `maxLength`. Across all seven in-scope documents the
- * key occurs exactly ONCE, and it is `model/validation/ProductType.json:7`, with the value 0.
- * Recorded so nobody goes looking for a second one, and so the single occurrence is not mistaken
- * for a transcription slip.
+ * X6 — THE PROPERTY KEY IS `childProductTypes`, NOT `productTypes`. Prose upstream of this file names the
+ * third delete guard "child productTypes"; both sides of the actual contract say otherwise, since
+ * `model/validation/ProductType.json:L6` keys it `childProductTypes` and
+ * `model/entity/ProductType.cfc:L65` declares the property under that name. The upstream COUNT of four
+ * delete guards is right; only the NAME was wrong. Stated so the next reader neither hunts for a fifth
+ * guard nor "corrects" the key back — see the declaration itself for why the exact key is load-bearing.
  *
- * =============================================================================================
- * THE S9 ABSENCES — WHAT THIS DOCUMENT DELIBERATELY DOES NOT DECLARE (guideline 6)
- * =============================================================================================
- * Eight of the thirteen keys the seven documents use are ABSENT here, every one measured at zero
- * occurrences in `model/validation/ProductType.json`: `conditions`, `regex`, `dataType`, `inList`,
- * `method`, `minValue`, `minCollection` and `eq`. None is declared below, and adding one would be
- * fabrication under AAP 0.7.3 S9 (IR-12, "invent nothing").
- *
- * Two consequences worth stating because they close off plausible-looking edits:
- *   - NO `regex`. This file therefore does NOT import the shared code-format pattern from
- *     `./product.rules`, and must not: the pattern belongs to the three code properties
- *     (`model/validation/Product.json:10`, `model/validation/Option.json:3`,
- *     `model/validation/OptionGroup.json:4`) and to no property here.
- *   - NO `conditions`. Conditional rules exist in exactly one of the seven documents,
- *     `model/validation/Product_UpdateSkus.json`, so the rule set below omits the optional
- *     `conditions` block entirely rather than declaring it empty — see the rule set itself for why
- *     omission rather than an explicit undefined is required under `exactOptionalPropertyTypes`.
- *
- * The wider corpus offers further tempting vocabulary that appears in NONE of the seven and is
- * likewise forbidden: `minLength`, `eqProperty`, `gtProperty`, `null`, `maxValue`,
- * `populatedPropertyValidation`, `validate`, `uniqueOrNull`, and the `dataType` values for
- * electronic-mail addresses, dates and payment cards.
- *
- * =============================================================================================
- * THE SEVEN REPORTED KEYS, AND DECISION D-1 (guideline 6)
- * =============================================================================================
- * Every failure this document can report, composed by `../Validator` from the general template at
- * `org/Hibachi/HibachiValidationService.cfc:L230` — `validate.{context}.{className}.{propertyName}
- * .{constraintType}`:
+ * THE SEVEN REPORTED KEYS, composed by `../Validator` from the general template at
+ * `org/Hibachi/HibachiValidationService.cfc:L230`:
  *
  *     validate.save.ProductType.productTypeName.required
  *     validate.save.ProductType.urlTitle.required
@@ -105,146 +55,68 @@
  *     validate.delete.ProductType.systemCode.maxLength
  *     validate.delete.ProductType.physicalCounts.maxCollection
  *
- * All seven take the GENERAL template. The other two templates are unreachable from this document:
- * the method-rule shape at `:L222` needs a `method` constraint and the data-type shape at `:L226`
- * needs a `dataType` constraint, and this document declares neither.
+ * All seven take that general template; the method-rule shape at `:L222` and the data-type shape at
+ * `:L226` are unreachable from this document, which declares neither constraint. `ProductType` is a
+ * persistent entity (`model/entity/ProductType.cfc:L49`), so the class-name segment resolved through the
+ * `entity.` prefix branch at `:L212-L218` rather than the `processObject.` branch
+ * `model/validation/Product_UpdateSkus.json` takes. Per DECISION D-1 in `../Validator` the resource-bundle
+ * substitution pass is deliberately skipped, so these are KEYS, NOT SENTENCES: nothing here or downstream
+ * translates, sentence-cases, normalises, trims or beautifies one, and `../../util/formatting` is
+ * consequently not imported, because with the substitution skipped it would be dead code (AAP §0.8.2
+ * guideline 4).
  *
- * `ProductType` is a persistent entity — `model/entity/ProductType.cfc:49` declares
- * `persistent="true"` — so the class-name segment resolves through the `entity.` prefix branch at
- * `org/Hibachi/HibachiValidationService.cfc:L212-L218`, not the `processObject.` branch that
- * `model/validation/Product_UpdateSkus.json` takes.
+ * DETERMINISTIC EVALUATION ORDER — A DETERMINISM CHOICE, NOT A BEHAVIOR CHANGE. Properties are declared in
+ * the SOURCE DOCUMENT'S KEY ORDER, and within `urlTitle` the two constraints in the source key order
+ * `required` then `unique`. The legacy engine reached a document's properties by iterating a CFML struct
+ * (`org/Hibachi/HibachiValidationService.cfc:L63`), whose key order is UNSPECIFIED, so no legacy behaviour
+ * can have depended on an order the engine never guaranteed. Errors accumulate and evaluation never
+ * short-circuits in either system, so the SET of reported failures is order-independent; what determinism
+ * pins down is the ORDER of the accumulated messages, and pinning it is what lets a test assert on the
+ * collection at all.
  *
- * DECISION D-1, carried from `../Validator`, which is where the composition actually happens: the
- * key is CONSTRUCTED and the legacy resource-bundle substitution pass is DELIBERATELY SKIPPED, for
- * three reasons — (1) no resource bundle exists in the target; (2) the pass is a provable no-op
- * against these shapes, because the legacy template replacer matches `\${[^}]+}`
- * (`org/Hibachi/HibachiUtilityService.cfc:L71`) and none of the three templates ever emits such a
- * token; (3) CFML's `rbKey()` returns an UNRESOLVED key with the literal marker `_missing` appended,
- * and the traceable legacy regression `issue_1335` in `meta/tests/unit/IssuesTest.cfc` asserts that a
- * message does NOT end in `_missing` — which a raw emitted key never does, so the ported equivalent of
- * that assertion still passes against the keys this file produces.
+ * TWO DOCUMENTED NON-PORTS, recorded as observations rather than parity annotations:
  *
- * THESE ARE KEYS, NOT SENTENCES. Never translate, sentence-case, normalise, trim, lower-case,
- * pluralise or otherwise beautify them. This file consequently does NOT import `../../util/
- * formatting`: under D-1 it would be dead code, and AAP 0.8.2 guideline 4 forbids adding anything
- * the migration does not require.
+ *   1. THERE IS NO CASCADING VALIDATION, AND THIS FILE IS EXACTLY WHERE ONE WOULD BE ASSUMED. The legacy
+ *      sub-property cascade (`org/Hibachi/HibachiTransient.cfc:L412-L453`, reached through the context
+ *      helper at `org/Hibachi/HibachiValidationService.cfc:L133-L151`) is keyed on a document key that
+ *      none of the seven in-scope documents declares, which makes the mechanism unreachable from here.
+ *      Two of this document's own relationships are precisely the shape over which a reader would expect
+ *      recursion: `childProductTypes` is SELF-REFERENCING, and `products` reaches an entity that has a
+ *      validation document of its own. NEITHER RECURSES. Both guards below are collection-SIZE checks and
+ *      nothing more.
+ *   2. THE CUSTOM-OVERRIDE MERGE IS NOT PORTED. The legacy engine merges a per-installation override
+ *      document over the base one (`org/Hibachi/HibachiValidationService.cfc:L6-L53`). The override
+ *      directory for validation documents contains only a readme stub, so zero catalog overrides exist,
+ *      and `custom/**` is out of scope per AAP §0.2.2.2. Building a merge mechanism for an empty directory
+ *      would be invention under AAP §0.7.3 S9.
  *
- * =============================================================================================
- * DETERMINISTIC EVALUATION ORDER — A CHOICE WITH NO LEGACY COUNTERPART (guideline 6)
- * =============================================================================================
- * The properties below are declared in the SOURCE DOCUMENT'S KEY ORDER, and within `urlTitle` the
- * two constraints are declared in the source key order `required` then `unique`. `../Validator`
- * evaluates properties, rules and constraints in declaration order, so that ordering is now fixed
- * and reproducible.
+ * REQUIREMENT N1 — THE DRY-RUN PATH, AND WHY IT IS THIS FILE'S CONCERN IN PARTICULAR. `../Validator`
+ * supports a non-mutating pass that returns a throwaway error bag, reproducing the legacy third parameter
+ * at `org/Hibachi/HibachiValidationService.cfc:L153`; the legacy capability checks use it, with
+ * `isDeletable()`, `isEditable()` and `isProcessable()` at `org/Hibachi/HibachiEntity.cfc:L205`, `:L215`
+ * and `:L225` each validating with error-setting off and reading `hasErrors()` off the returned bean. The
+ * sharpening that matters here: `isDeletable()` ON A PRODUCT TYPE FLOWS THROUGH ALL FOUR OF THIS FILE'S
+ * DELETE GUARDS — a reachable, administrator-visible path, since it is how an interface decides whether to
+ * offer a delete at all. These declarations may therefore be evaluated repeatedly, speculatively, and
+ * against objects that are never written, so they are PURELY DECLARATIVE DATA: no side effects, no
+ * mutation, no shared state, and nothing that behaves differently on a second evaluation.
  *
- * This is a DELIBERATE DETERMINISM CHOICE WITH NO BEHAVIOURAL COUNTERPART IN THE LEGACY ENGINE.
- * The legacy engine iterated a CFML struct — `for(var property in validationStruct.properties)` at
- * `org/Hibachi/HibachiValidationService.cfc:L63` — whose key order is unspecified, so no legacy
- * behaviour can have depended on an order the engine never guaranteed. Errors accumulate and
- * evaluation never short-circuits in either system, so the ORDER of the accumulated messages is the
- * only thing this pins down, and pinning it is what lets a test assert on the collection at all.
+ * ARCHITECTURAL POSITION. This file issues ZERO SQL (AAP §0.7.3 S2, as a negative obligation): no
+ * statement, no fragment, no query-shaped string. The physical table names — `SwProductType` for the
+ * entity and `SwPhysicalProductType` for the link table behind the collection discussed under
+ * `physicalCounts` — appear in prose only, never in a key, a value or a string literal. THE IMPORT EDGE IS
+ * STRICTLY ONE-WAY: this file imports from `../Validator`, and `../Validator` never imports a rules file —
+ * it RECEIVES a rule set as an argument, which is what keeps the dependency acyclic and is parameter
+ * injection per S3. Never invert that edge to make something resolve. Paths are relative with no aliases,
+ * per AAP §0.4.3.5, so `tsc` and `esbuild` resolve identically. Uniqueness reaches the database
+ * exclusively through the port injected into `../Validator`; this file never calls it (S4). And no
+ * memoisation happens here, per M7: a warm Lambda container outlives an invocation, so module-scope
+ * caching would bleed state between invocations. Every value below is a frozen literal, every function is
+ * pure, and the module performs no work when it is loaded.
  *
- * =============================================================================================
- * ARCHITECTURAL POSITION, AND THE PROHIBITIONS THAT GO WITH IT (AAP 0.7.3 S2, S3, S4)
- * =============================================================================================
- * THREE IMPORTS, ALL TYPE-ONLY, ALL RELATIVE, ALL DRAWN FROM THIS FILE'S DECLARED DEPENDENCIES.
- * Because every import is elided at compile time, this module contributes NO runtime edge to the
- * Lambda bundle at all: it emits nothing but frozen data.
- *
- * THE IMPORT EDGE IS STRICTLY ONE-WAY. This file imports from `../Validator`; `../Validator` never
- * imports a rules file. It RECEIVES a rule set as an argument — `validate(subject, ruleSet,
- * context, options?)` — which is what keeps the dependency acyclic and is constructor/parameter
- * injection per AAP 0.7.3 S3. Never invert that edge, and never add a back-import to make
- * something resolve.
- *
- * Relative paths only, with no aliases: AAP 0.4.3.5 requires it so that `tsc` and `esbuild` resolve
- * identically, and `slatwall-ts/tsconfig.json` declares neither `paths` nor `baseUrl`. An alias
- * that type-checks can still fail to resolve at Lambda cold start. No barrel file and no
- * `index.ts` accompanies this module.
- *
- * S2 IS A NEGATIVE OBLIGATION HERE: this file issues ZERO SQL. There is no statement, no fragment,
- * no query-shaped string of any kind. The physical table names — `SwProductType` for the entity and
- * `SwPhysicalProductType` for the link table behind the collection discussed under
- * `physicalCounts` — appear in prose comments only, never in a key, a value or a string literal.
- *
- * S4 keeps the layering intact. Nothing is imported from `../../adapters/**`, `../../services/**`,
- * `../../config/**`, `../../handlers/**` or `../../integrations/**`; nothing from `mysql2`,
- * `@types/aws-lambda` or any AWS identifier; nothing from `node:fs` or `node:http`; no logging
- * framework; and no third-party validation library — `zod`, `joi`, `yup`, `ajv`, `class-validator`,
- * `io-ts`, `superstruct` and `valibot` are all absent, and AAP 0.7.3 S5 closes the dependency set
- * at the single runtime package the whole subtree declares, which this file does not use. The
- * environment is never read here either: `src/config/env.ts` is the sole permitted reader of the
- * process environment in this subtree. THIS FILE DECLARES; IT DOES NOT EXECUTE.
- *
- * M7 — NO MEMOISATION WHATSOEVER. AAP 0.6.6 M7 requires that any memoisation in the target be
- * request-scoped rather than module-scoped, because a warm Lambda container outlives an invocation
- * and module-scope state would bleed between tenants. This file takes the simplest compliant
- * option: it caches nothing, counts nothing and mutates nothing. Every value below is a frozen
- * literal, every function is pure, and the module performs no work when it is loaded.
- *
- * =============================================================================================
- * REQUIREMENT N1 — THE DRY-RUN PATH, AND WHY IT IS THIS FILE'S CONCERN IN PARTICULAR
- * =============================================================================================
- * `../Validator` supports a non-mutating pass that returns a throwaway error bag, reproducing the
- * legacy third parameter at `org/Hibachi/HibachiValidationService.cfc:L153`. The legacy capability
- * checks use it: `isDeletable()`, `isEditable()` and `isProcessable()` at
- * `org/Hibachi/HibachiEntity.cfc:L205`, `:L215` and `:L225` each validate with error-setting off and
- * read `hasErrors()` off the returned bean.
- *
- * The sharpening that matters here: `isDeletable()` ON A PRODUCT TYPE FLOWS THROUGH ALL FOUR OF
- * THIS FILE'S DELETE GUARDS. That is a real, reachable, administrator-visible path — it is how a
- * user interface decides whether to offer a delete at all — so these declarations may be evaluated
- * repeatedly, speculatively, and against objects that are never written. They are therefore PURELY
- * DECLARATIVE DATA: no side effects, no mutation, no shared state, and nothing that behaves
- * differently on a second evaluation.
- *
- * =============================================================================================
- * TWO DOCUMENTED NON-PORTS (guideline 6, recorded as observations rather than parity annotations)
- * =============================================================================================
- * 1. THERE IS NO CASCADING VALIDATION, AND THIS FILE IS EXACTLY WHERE ONE WOULD BE ASSUMED.
- *    The legacy sub-property cascade (`org/Hibachi/HibachiTransient.cfc:L412-L453`, with its
- *    context helper at `org/Hibachi/HibachiValidationService.cfc:L133-L151`) is not ported, because
- *    none of the seven in-scope documents declares the `populatedPropertyValidation` key that
- *    reaches it — it appears only in documents outside this slice — which makes the mechanism
- *    unreachable from here. Two of this document's own relationships are precisely the shape over
- *    which a reader would expect recursion: `childProductTypes` is SELF-REFERENCING, and `products`
- *    reaches an entity that has a validation document of its own. NEITHER RECURSES. Both guards
- *    below are collection-SIZE checks and nothing more.
- * 2. THE CUSTOM-OVERRIDE MERGE IS NOT PORTED. The legacy engine merges a per-installation override
- *    document over the base one (`org/Hibachi/HibachiValidationService.cfc:L6-L53`). The override
- *    directory for validation documents contains only a readme stub, so zero catalog overrides
- *    exist, and `custom/**` is out of scope per AAP 0.2.2.2. Building a merge mechanism for an
- *    empty directory would be invention under AAP 0.7.3 S9.
- *
- * =============================================================================================
- * THREE UPSTREAM CORRECTIONS THIS FILE OWNS (guideline 6)
- * =============================================================================================
- * Recorded here, in this file's own comments, because editing another agent's file to fix its prose
- * is not permitted. Each was verified first-hand against the legacy source during this task.
- *
- * X6 — THE PROPERTY KEY IS `childProductTypes`, NOT `productTypes`. Prose upstream of this file
- * names the third delete guard "child productTypes". Both sides of the actual contract say
- * otherwise: `model/validation/ProductType.json:6` keys it `childProductTypes` and
- * `model/entity/ProductType.cfc:65` declares the property `childProductTypes`. The upstream COUNT
- * of four delete guards is correct; only the NAME was wrong. Stated so the next reader neither
- * hunts for a fifth guard nor "corrects" the key back — see the declaration itself for why the
- * exact key is load-bearing.
- *
- * X8 — THERE ARE SEVEN `unique` CONSTRAINTS IN THE SLICE, NOT SIX AND NOT FIVE, AND THE SEVENTH IS
- * THE ONE DECLARED IN THIS FILE. Full locators and the reconciliation are recorded at the
- * `urlTitle` uniqueness constraint below, where they belong.
- *
- * THE UNKNOWN-CONSTRAINT RAISE IS AT `org/Hibachi/HibachiValidationService.cfc:L202`, NOT `:L212`.
- * Verified by reading the file: `:L201-L203` is the guard that raises when no evaluator exists for
- * a declared constraint type, `:L212-L218` is the persistence branch that chooses between the
- * `entity.` and `processObject.` class-name prefixes, and the separate data-type whitelist raise is
- * at `:L263`. The typed analogue of the `:L202` raise is the discriminated `Constraint` union in
- * `../Validator`: an unknown constraint here is a COMPILE error rather than a runtime one, which is
- * strictly stronger.
- *
- * @see model/validation/ProductType.json — the transliterated source document
- * @see model/entity/ProductType.cfc — the entity whose properties these rules name
- * @see org/Hibachi/HibachiValidationService.cfc — the legacy engine, ported as `../Validator`
+ * @see `../Validator` for the evaluation semantics every constraint below depends on
+ * @see `model/validation/ProductType.json` — the source document, REFERENCE-ONLY
+ * @see `model/entity/ProductType.cfc` — the entity whose properties these rules name
  */
 
 import type { ProductTypePropertyName } from '../../domain/product/ProductType';
@@ -258,10 +130,6 @@ import type {
   ValidationRuleSet,
   ValidationSubject,
 } from '../Validator';
-
-/* ==============================================================================================
- * SECTION 1 — THE SUBJECT CONTRACT
- * ============================================================================================ */
 
 /**
  * What this rule set requires of the object being validated, and nothing more.
@@ -320,26 +188,26 @@ import type {
  */
 export type ProductTypeValidationSubject = ValidationSubject &
   UniquePropertyEntity & {
-    /** `property name="productTypeName" ormtype="string";` [`model/entity/ProductType.cfc:57`] */
+    /** `property name="productTypeName" ormtype="string";` [`model/entity/ProductType.cfc:L57`] */
     readonly productTypeName?: string;
 
     /**
      * `property name="urlTitle" ormtype="string" unique="true" hint="…";`
-     * [`model/entity/ProductType.cfc:56`]
+     * [`model/entity/ProductType.cfc:L56`]
      */
     readonly urlTitle?: string;
 
-    /** `property name="systemCode" ormtype="string";` [`model/entity/ProductType.cfc:59`] */
+    /** `property name="systemCode" ormtype="string";` [`model/entity/ProductType.cfc:L59`] */
     readonly systemCode?: string;
 
     /**
-     * The one-to-many product collection [`model/entity/ProductType.cfc:66`]. Measured, never
+     * The one-to-many product collection [`model/entity/ProductType.cfc:L66`]. Measured, never
      * inspected — see the note on element typing above.
      */
     readonly products?: readonly unknown[];
 
     /**
-     * The self-referencing child collection [`model/entity/ProductType.cfc:65`]. The key is
+     * The self-referencing child collection [`model/entity/ProductType.cfc:L65`]. The key is
      * `childProductTypes`; see X6 in the module header.
      */
     readonly childProductTypes?: readonly unknown[];
@@ -397,10 +265,8 @@ export type ProductTypeValidationSubject = ValidationSubject &
  * therefore fires in every context.
  * ============================================================================================ */
 
-/** The save context — a defaulted parameter at `org/Hibachi/HibachiService.cfc:L133`. */
 const SAVE_CONTEXT = 'save';
 
-/** The delete context — hard-coded at `org/Hibachi/HibachiService.cfc:L55`. */
 const DELETE_CONTEXT = 'delete';
 
 /* ==============================================================================================
@@ -411,9 +277,9 @@ const DELETE_CONTEXT = 'delete';
  * machine-checked half of the inertness finding.
  *
  * IR-1, AND WHY THIS FILE NAMES PROPERTIES RATHER THAN ACCESSORS (guideline 6).
- * `model/entity/ProductType.cfc:49` declares neither `accessors="true"` nor `output="false"` —
+ * `model/entity/ProductType.cfc:L49` declares neither `accessors="true"` nor `output="false"` —
  * uniquely among the six in-scope entities — and yet `getSystemCode()` is called at
- * `model/entity/ProductType.cfc:111`. The accessor surface is therefore SYNTHESIZED BY THE
+ * `model/entity/ProductType.cfc:L111`. The accessor surface is therefore SYNTHESIZED BY THE
  * FRAMEWORK rather than declared in the source, which is exactly the IR-1 pattern: "every
  * dynamically synthesized method must be declared explicitly". The port's response is to declare
  * fields explicitly in `../../domain/product/ProductType`, and this file's response is to reference
@@ -433,21 +299,21 @@ const DELETE_CONTEXT = 'delete';
  */
 const PRODUCT_TYPE_NAME_PROPERTY = 'productTypeName' satisfies ProductTypePropertyName;
 
-/** [`model/validation/ProductType.json:4`], [`model/entity/ProductType.cfc:56`] */
+/** [`model/validation/ProductType.json:L4`], [`model/entity/ProductType.cfc:L56`] */
 const URL_TITLE_PROPERTY = 'urlTitle' satisfies ProductTypePropertyName;
 
-/** [`model/validation/ProductType.json:5`], [`model/entity/ProductType.cfc:66`] */
+/** [`model/validation/ProductType.json:L5`], [`model/entity/ProductType.cfc:L66`] */
 const PRODUCTS_PROPERTY = 'products' satisfies ProductTypePropertyName;
 
 /**
- * [`model/validation/ProductType.json:6`], [`model/entity/ProductType.cfc:65`] — and the correction
+ * [`model/validation/ProductType.json:L6`], [`model/entity/ProductType.cfc:L65`] — and the correction
  * X6 records: the key is `childProductTypes`, never `productTypes`. The `satisfies` check is what
  * makes that claim machine-verified rather than asserted, since `productTypes` is NOT a member of
  * the entity's property union and would not compile here.
  */
 const CHILD_PRODUCT_TYPES_PROPERTY = 'childProductTypes' satisfies ProductTypePropertyName;
 
-/** [`model/validation/ProductType.json:7`], [`model/entity/ProductType.cfc:59`] */
+/** [`model/validation/ProductType.json:L7`], [`model/entity/ProductType.cfc:L59`] */
 const SYSTEM_CODE_PROPERTY = 'systemCode' satisfies ProductTypePropertyName;
 
 /**
@@ -471,7 +337,7 @@ type NameNotDeclaredByProductType<TName extends string> = TName extends ProductT
   : TName;
 
 /**
- * [`model/validation/ProductType.json:8`] — transcribed verbatim from the document and DELIBERATELY
+ * [`model/validation/ProductType.json:L8`] — transcribed verbatim from the document and DELIBERATELY
  * NOT checked against the entity's property union, because it is not in it. See the guard's own
  * declaration for the full finding; the annotation here is what makes the absence enforced rather
  * than merely described.
@@ -501,11 +367,11 @@ const PHYSICAL_COUNTS_PROPERTY: NameNotDeclaredByProductType<'physicalCounts'> =
 /**
  * `productTypeName` is REQUIRED on save — and this declaration is the ONLY thing enforcing it.
  *
- * [`model/validation/ProductType.json:3`] `"productTypeName": [{"contexts":"save","required":true}]`
+ * [`model/validation/ProductType.json:L3`] `"productTypeName": [{"contexts":"save","required":true}]`
  *
  * THE APPLICATION RULE IS THE SOLE ENFORCEMENT (guideline 6). The entity mapping is bare:
  *
- *     property name="productTypeName" ormtype="string";   [`model/entity/ProductType.cfc:57`]
+ *     property name="productTypeName" ormtype="string";   [`model/entity/ProductType.cfc:L57`]
  *
  * No `required`, no `length`, no `unique`. The database will therefore accept a product-type row
  * with a null name quite happily, and the schema is unchanged by this refactor — AAP 0.1.1.1
@@ -514,9 +380,9 @@ const PHYSICAL_COUNTS_PROPERTY: NameNotDeclaredByProductType<'physicalCounts'> =
  * not redundant, it is the entire mechanism.
  *
  * The same pattern holds elsewhere in the folder and is worth naming so it reads as a pattern rather
- * than an oddity: `brandName` at `model/entity/Brand.cfc:56`, the required option-group reference at
- * `model/entity/Option.cfc:59` and the required product-type reference at
- * `model/entity/Product.cfc:69` are all enforced by their validation documents alone.
+ * than an oddity: `brandName` at `model/entity/Brand.cfc:L56`, the required option-group reference at
+ * `model/entity/Option.cfc:L59` and the required product-type reference at
+ * `model/entity/Product.cfc:L69` are all enforced by their validation documents alone.
  *
  * PRESENCE SEMANTICS, reproduced by `../Validator` from
  * `org/Hibachi/HibachiValidationService.cfc:L240-L246`. Do NOT layer an extra guard on top of them
@@ -534,7 +400,7 @@ const PHYSICAL_COUNTS_PROPERTY: NameNotDeclaredByProductType<'physicalCounts'> =
  * `org/Hibachi/HibachiValidationService.cfc:L240` and never reads it. The value is transcribed as
  * the document declares it so the transcription stays faithful.
  *
- * NOTHING ELSE IS DECLARED ON THIS PROPERTY. No `maxLength` — `model/entity/ProductType.cfc:57`
+ * NOTHING ELSE IS DECLARED ON THIS PROPERTY. No `maxLength` — `model/entity/ProductType.cfc:L57`
  * carries no `length` attribute to derive one from. No `minLength`, which is not among the thirteen
  * keys the seven documents use. No format pattern, and no uniqueness.
  *
@@ -548,7 +414,7 @@ export const productTypeNameRequiredConstraint = {
 /**
  * `urlTitle` is REQUIRED on save.
  *
- * [`model/validation/ProductType.json:4`]
+ * [`model/validation/ProductType.json:L4`]
  * `"urlTitle": [{"contexts":"save","required":true,"unique":true}]`
  *
  * TWO CONSTRAINTS FROM ONE RULE OBJECT — THE FLATTENING (guideline 6). The legacy engine explodes a
@@ -573,7 +439,7 @@ export const productTypeNameRequiredConstraint = {
  * runs — `model/service/ProductService.cfc:L294` derives one from the product-type name for table
  * `SwProductType` when none was supplied, using the generator ported as `src/util/urlTitle.ts`. That
  * is service behaviour; this file neither imports that utility nor generates anything. Note in
- * passing that `model/entity/ProductType.cfc:49` declares `hb_serviceName="productService"` — there
+ * passing that `model/entity/ProductType.cfc:L49` declares `hb_serviceName="productService"` — there
  * is NO `ProductTypeService` in the legacy tree at all, which is why the save member for this entity
  * lives on the product service.
  */
@@ -586,7 +452,7 @@ export const urlTitleRequiredConstraint = {
  * `urlTitle` must be UNIQUE on save — the seventh of the slice's seven uniqueness rules, and the one
  * every upstream count of them misses.
  *
- * [`model/validation/ProductType.json:4`], [`model/entity/ProductType.cfc:56`]
+ * [`model/validation/ProductType.json:L4`], [`model/entity/ProductType.cfc:L56`]
  *
  * =============================================================================================
  * DUAL ENFORCEMENT, AND WHY THE APPLICATION CHECK IS KEPT ANYWAY (guideline 6)
@@ -594,11 +460,11 @@ export const urlTitleRequiredConstraint = {
  * Uniqueness is declared TWICE for this property, in two independent mechanisms:
  *
  *     property name="urlTitle" ormtype="string" unique="true" hint="This is the name that is
- *     used in the URL string";                              [`model/entity/ProductType.cfc:56`]
+ *     used in the URL string";                              [`model/entity/ProductType.cfc:L56`]
  *
  * and the `unique: true` of the validation document. The same pairing holds for
- * `model/entity/Brand.cfc:55` and `model/entity/Sku.cfc:54`, and stands in deliberate contrast to
- * `model/entity/Option.cfc:53` and `model/entity/OptionGroup.cfc:54`, whose code columns carry NO
+ * `model/entity/Brand.cfc:L55` and `model/entity/Sku.cfc:L54`, and stands in deliberate contrast to
+ * `model/entity/Option.cfc:L53` and `model/entity/OptionGroup.cfc:L54`, whose code columns carry NO
  * `unique="true"` at all and are therefore enforced by their validation documents alone.
  *
  * IR-5 is why the application-side check is retained rather than delegated to the column: "
@@ -611,51 +477,26 @@ export const urlTitleRequiredConstraint = {
  * =============================================================================================
  * THE ABSENT CEILING, STATED POSITIVELY (guideline 6)
  * =============================================================================================
- * `model/entity/ProductType.cfc:56` carries NO `length` attribute — the mirror image of
- * `model/entity/Sku.cfc:54`, which carries `length="50"`. In BOTH cases the correct action is
+ * `model/entity/ProductType.cfc:L56` carries NO `length` attribute — the mirror image of
+ * `model/entity/Sku.cfc:L54`, which carries `length="50"`. In BOTH cases the correct action is
  * identical: DECLARE NO `maxLength`. The ceiling is a validation-document concern, and across all
- * seven documents `maxLength` appears exactly once, on `systemCode`, with the value 0. This absence
- * was MEASURED, not overlooked, and it is recorded so that a reader comparing the two files does not
- * conclude otherwise and "restore" a rule that never existed.
+ * seven documents `maxLength` appears exactly once, on `systemCode`, with the value 0. The absence is
+ * recorded so that a reader comparing the two files does not conclude otherwise and "restore" a rule
+ * that never existed.
  *
  * =============================================================================================
- * X8 — SEVEN, NOT SIX, NOT FIVE; AND THIS IS THE INVISIBLE ONE (guideline 6)
+ * X8 — THE SEVENTH `unique` RULE OF THE SLICE, AND THE ONE MOST EASILY MISSED
  * =============================================================================================
- * Two upstream documents undercount the slice's uniqueness rules, and the constraint declared right
- * here is the one BOTH of them are blind to. A direct scan of the seven in-scope documents returns
- * exactly SEVEN, re-verified:
+ * `model/validation/ProductType.json:L4` is the seventh of the slice's seven uniqueness rules;
+ * `../Validator` carries all seven locators under DECISION D-2 AND "THE SEVEN", and
+ * `model/validation/Product_UpdateSkus.json` contributes none. It is the invisible one because a
+ * summary that enumerates the code properties and the brand URL title reaches six and stops — this
+ * constraint lives on a URL title in the document a reader is least likely to open.
  *
- *     model/validation/Product.json:10       productCode
- *     model/validation/Product.json:16       urlTitle
- *     model/validation/Sku.json:11           skuCode
- *     model/validation/Brand.json:5          urlTitle
- *     model/validation/Option.json:3         optionCode
- *     model/validation/OptionGroup.json:4    optionGroupCode
- *     model/validation/ProductType.json:4    urlTitle          <-- THIS CONSTRAINT
- *
- * `model/validation/Product_UpdateSkus.json` contributes none.
- *
- *   - The plan's own prose names FIVE columns — the product code, the SKU code, the brand URL title,
- *     the option code and the option-group code — and `ProductType.urlTitle` is not among them.
- *   - `../../ports/UniquePropertyPort` claims SIX, and additionally asserts that
- *     `model/validation/Product.json` declares `urlTitle` as required but not unique. That assertion
- *     is false: `model/validation/Product.json:16` declares it, and that same specification's own
- *     table lists the product URL title among its six, so it contradicts itself. ROOT CAUSE: its
- *     mandated reads cover five validation documents and omit `model/validation/ProductType.json`
- *     entirely — so the constraint on this line is one it could not see.
- *
- * RECONCILIATION, so the numbers stop fighting. IR-5's phrase "five of the eight unique columns
- * declared in the whole system belong to this slice" counts ENTITY COLUMN METADATA, which IR-5
- * itself distinguishes from the validation documents in the very same sentence. The eight
- * system-wide `unique="true"` column declarations are at `model/entity/Currency.cfc:52`,
- * `model/entity/Product.cfc:54` and `:56`, `model/entity/ProductType.cfc:56`,
- * `model/entity/MeasurementUnit.cfc:58`, `model/entity/Integration.cfc:53`,
- * `model/entity/Brand.cfc:55` and `model/entity/Sku.cfc:54`. The VALIDATION-DOCUMENT count is seven.
- * BOTH NUMBERS ARE CORRECT; THEY MEASURE DIFFERENT MECHANISMS. Do not "fix" either into the other.
- *
- * `../Validator` independently carries this same correction, so the two agree and there is no
- * cross-file conflict to resolve. The correction is stated here rather than by editing
- * `../../ports/UniquePropertyPort`, because another agent's file is not this file's to change.
+ * AAP IR-5's "five of the eight unique columns declared in the whole system belong to this slice"
+ * counts ENTITY COLUMN METADATA, which IR-5 itself distinguishes from the validation documents in the
+ * very same sentence. The VALIDATION-DOCUMENT count is seven. BOTH NUMBERS ARE CORRECT; THEY MEASURE
+ * DIFFERENT MECHANISMS. Do not "fix" either into the other.
  *
  * =============================================================================================
  * DECISION D-2 AND THE POLARITY PIN (guideline 6)
@@ -664,8 +505,8 @@ export const urlTitleRequiredConstraint = {
  * constructor injection (IR-5, AAP 0.7.3 S3). This file names the constraint and resolves its
  * target; it never invokes the port, never issues a query and never reaches an adapter.
  *
- * POLARITY: `true` MEANS UNIQUE, WHICH MEANS SAFE TO SAVE. Proven first-hand at
- * `org/Hibachi/HibachiDAO.cfc:L142-L146` — the legacy body returns false when the existence query
+ * POLARITY: `true` MEANS UNIQUE, WHICH MEANS SAFE TO SAVE. At
+ * `org/Hibachi/HibachiDAO.cfc:L142-L146` the legacy body returns false when the existence query
  * finds matching rows and true when it does not. INVERTING THIS SILENTLY INVERTS EVERY UNIQUENESS
  * RULE IN THE SLICE: it compiles, it passes a naive test that only checks a boolean came back, and
  * it corrupts the catalog by rejecting every distinct value while admitting every duplicate.
@@ -702,7 +543,7 @@ export const urlTitleUniqueConstraint = {
 /**
  * DELETE GUARD 1 of 4 — a product type that still has PRODUCTS cannot be deleted.
  *
- * [`model/validation/ProductType.json:5`] `"products": [{"contexts":"delete","maxCollection":0}]`
+ * [`model/validation/ProductType.json:L5`] `"products": [{"contexts":"delete","maxCollection":0}]`
  *
  * COLLECTION-CEILING SEMANTICS, reproduced by `../Validator` from
  * `org/Hibachi/HibachiValidationService.cfc:L309-L315`. These apply to all three `maxCollection`
@@ -718,7 +559,7 @@ export const urlTitleUniqueConstraint = {
  * =============================================================================================
  *     property name="products" singularname="product" cfc="Product" fieldtype="one-to-many"
  *     inverse="true" fkcolumn="productTypeID" lazy="extra" cascade="all";
- *                                                        [`model/entity/ProductType.cfc:66`]
+ *                                                        [`model/entity/ProductType.cfc:L66`]
  *
  * The mapping declares `cascade="all"`, which would propagate a delete into the collection. The
  * document simultaneously guards it with a ceiling of zero, which BLOCKS the delete outright whenever
@@ -732,12 +573,12 @@ export const urlTitleUniqueConstraint = {
  *
  *     relationship                                          cascade              tension?
  *     ---------------------------------------------------   ------------------   --------
- *     Brand.products         [`model/entity/Brand.cfc:61`]  none                 No
- *     OptionGroup.options    [`model/entity/OptionGroup.cfc:70`]
+ *     Brand.products         [`model/entity/Brand.cfc:L61`]  none                 No
+ *     OptionGroup.options    [`model/entity/OptionGroup.cfc:L70`]
  *                                                           all-delete-orphan    Yes
- *     ProductType.childProductTypes [`model/entity/ProductType.cfc:65`]
+ *     ProductType.childProductTypes [`model/entity/ProductType.cfc:L65`]
  *                                                           all                  Yes
- *     ProductType.products   [`model/entity/ProductType.cfc:66`]
+ *     ProductType.products   [`model/entity/ProductType.cfc:L66`]
  *                                                           all + lazy="extra"   Yes
  *
  * This is recorded as a plain observation, NOT as a parity annotation and NOT as a new defect
@@ -771,7 +612,7 @@ export const productsMaxCollectionConstraint = {
 /**
  * DELETE GUARD 2 of 4 — a product type that still has CHILD PRODUCT TYPES cannot be deleted.
  *
- * [`model/validation/ProductType.json:6`]
+ * [`model/validation/ProductType.json:L6`]
  * `"childProductTypes": [{"contexts":"delete","maxCollection":0}]`
  *
  * =============================================================================================
@@ -781,11 +622,11 @@ export const productsMaxCollectionConstraint = {
  * disagree, and they agree with each other:
  *
  *     "childProductTypes":  [{"contexts":"delete","maxCollection":0}],
- *                                                  [`model/validation/ProductType.json:6`]
+ *                                                  [`model/validation/ProductType.json:L6`]
  *
  *     property name="childProductTypes" singularname="childProductType" cfc="ProductType"
  *     fieldtype="one-to-many" inverse="true" fkcolumn="parentProductTypeID" cascade="all";
- *                                                  [`model/entity/ProductType.cfc:65`]
+ *                                                  [`model/entity/ProductType.cfc:L65`]
  *
  * The document key and the entity property match EXACTLY, so the engine's existence gate at
  * `org/Hibachi/HibachiValidationService.cfc:L171` passes and THIS GUARD IS LIVE. That exactness is
@@ -798,7 +639,7 @@ export const productsMaxCollectionConstraint = {
  * reader neither goes hunting for a fifth guard nor reverts the key.
  *
  * THE SELF-REFERENCING SIDE OF THE HIERARCHY. This is the `inverse="true"` one-to-many whose owning
- * many-to-one is `parentProductType` at `model/entity/ProductType.cfc:62`. The guard therefore reads:
+ * many-to-one is `parentProductType` at `model/entity/ProductType.cfc:L62`. The guard therefore reads:
  * a product type with children cannot be deleted. Combined with the `cascade="all"` on the same line
  * — tension 2 of the 2 tabulated at the `products` guard above — the arrangement is deliberately
  * belt-and-braces: the cascade would delete the children, and the guard refuses to let it try.
@@ -821,8 +662,8 @@ export const childProductTypesMaxCollectionConstraint = {
  *
  * A product type that carries a SYSTEM CODE cannot be deleted.
  *
- * [`model/validation/ProductType.json:7`] `"systemCode": [{"contexts":"delete","maxLength":0}]`
- * [`model/entity/ProductType.cfc:59`]   `property name="systemCode" ormtype="string";`
+ * [`model/validation/ProductType.json:L7`] `"systemCode": [{"contexts":"delete","maxLength":0}]`
+ * [`model/entity/ProductType.cfc:L59`]   `property name="systemCode" ormtype="string";`
  *
  * A maximum length of zero on a string column looks at first glance like a curiosity, or like a
  * transcription slip for some other value. IT IS NEITHER. IT IS A GUARD RAIL, and it is the only
@@ -874,7 +715,7 @@ export const childProductTypesMaxCollectionConstraint = {
  * WHAT IT PROTECTS, PART TWO: THE BASE-TYPE RESOLUTION OF EVERY DESCENDANT
  * =============================================================================================
  * This is the half a casual reading misses, and it is why the guard matters far beyond the three rows
- * themselves. `model/entity/ProductType.cfc:110-115`:
+ * themselves. `model/entity/ProductType.cfc:L110-L115`:
  *
  *     public any function getBaseProductType() {
  *         if(isNull(getSystemCode()) || getSystemCode() == ""){
@@ -900,7 +741,7 @@ export const childProductTypesMaxCollectionConstraint = {
  * So this one ceiling protects TWO things at once: the three literal branch keys of the combination
  * engine, and the base-type resolution of the entire product-type tree beneath them. The same
  * resolution chain is what the sibling product rule set's membership rules depend on
- * (`model/validation/Product.json:4` and `:5`), and therefore what makes the option-group process
+ * (`model/validation/Product.json:L4` and `:L5`), and therefore what makes the option-group process
  * gate that the traceable legacy regression `issue_1331` asserts against meaningful at all.
  *
  * =============================================================================================
@@ -944,7 +785,7 @@ export const systemCodeMaxLengthConstraint = {
  * DELETE GUARD 4 of 4 — declared verbatim from the document, and INERT. It never fires in the legacy
  * system, and it must not fire here either.
  *
- * [`model/validation/ProductType.json:8`]
+ * [`model/validation/ProductType.json:L8`]
  * `"physicalCounts": [{"contexts":"delete","maxCollection":0}]`
  *
  * =============================================================================================
@@ -954,11 +795,11 @@ export const systemCodeMaxLengthConstraint = {
  *
  *     property name="physicals" singularname="physical" cfc="Physical" type="array"
  *     fieldtype="many-to-many" linktable="SwPhysicalProductType" fkcolumn="productTypeID"
- *     inversejoincolumn="physicalID" inverse="true";      [`model/entity/ProductType.cfc:77`]
+ *     inversejoincolumn="physicalID" inverse="true";      [`model/entity/ProductType.cfc:L77`]
  *
- * The property is `physicals`. A full read of the component's declarations
- * (`model/entity/ProductType.cfc:49-L120`) confirms that `physicalCounts` appears nowhere in the
- * entity, and the entity's own declared property-name union in `../../domain/product/ProductType`
+ * The property is `physicals`. Across the component's declarations
+ * (`model/entity/ProductType.cfc:L49-L120`) `physicalCounts` appears nowhere in the entity, and the
+ * entity's own declared property-name union in `../../domain/product/ProductType`
  * confirms it independently — which is what the compile-time assertion on the identifier constant
  * above enforces.
  *
@@ -992,10 +833,10 @@ export const systemCodeMaxLengthConstraint = {
  *
  *     document                          entity property that actually exists
  *     -------------------------------   -----------------------------------------------
- *     model/validation/Product.json:7   physicals — model/entity/Product.cfc:L90
- *     model/validation/Sku.json:13      physicals — model/entity/Sku.cfc:L87
- *     model/validation/Brand.json:7     physicals — model/entity/Brand.cfc:L71
- *     model/validation/ProductType.json:8   physicals — model/entity/ProductType.cfc:L77
+ *     model/validation/Product.json:L7   physicals — model/entity/Product.cfc:L90
+ *     model/validation/Sku.json:L13      physicals — model/entity/Sku.cfc:L87
+ *     model/validation/Brand.json:L7     physicals — model/entity/Brand.cfc:L71
+ *     model/validation/ProductType.json:L8   physicals — model/entity/ProductType.cfc:L77
  *
  * Seen once it looks like a typo; seen four times across four documents it is a consistent, deliberate
  * property of the legacy corpus, and the right response is to reproduce it four times rather than to
@@ -1005,7 +846,7 @@ export const systemCodeMaxLengthConstraint = {
  * omission: a parity annotation marks a carried DEFECT, and this is faithfully reproduced legacy
  * behaviour that the port reproduces exactly. The plan's register is closed and no entry may be invented
  * for it. For completeness, the one defect that genuinely touches this entity — the unfiltered
- * inherited attribute-set assignment at `model/entity/ProductType.cfc:92-99`, whose own Todo sits at
+ * inherited attribute-set assignment at `model/entity/ProductType.cfc:L92-L99`, whose own Todo sits at
  * `:L93` — is PROVEN UNREACHABLE FROM THIS FILE: this document constrains six properties and not one
  * of them is the attribute-set collection that method reads, nor does any other of the seven documents
  * touch it. It is annotated by `../../domain/product/ProductType`, which owns that member. THIS FILE
@@ -1127,15 +968,11 @@ export const physicalCountsValidation = {
   ],
 } as const satisfies PropertyValidation<ProductTypeValidationSubject>;
 
-/* ==============================================================================================
- * SECTION 6 — THE DOCUMENT
- * ============================================================================================ */
-
 /**
  * The transliterated `model/validation/ProductType.json`, ready to be handed to `../Validator`.
  *
  * SIX PROPERTIES, SIX RULE OBJECTS, SEVEN CONSTRAINTS — in the source document's key order, which is
- * also the deterministic evaluation order this port fixes. See the module header for the measured
+ * also the deterministic evaluation order this port fixes. See the module header for the constraint
  * table and for why that determinism has no behavioural counterpart in the legacy engine.
  *
  * THE OPTIONAL CONDITIONS BLOCK IS OMITTED, NOT SET TO AN ABSENT VALUE. `model/validation/

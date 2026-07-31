@@ -1,70 +1,68 @@
 /**
  * `OptionRepository` — the repository port for the Catalog's two option queries.
  *
- * Legacy origin: `model/dao/OptionDAO.cfc`, a 120-line component with exactly two members. AAP
- * 0.4.1.6 mandates this file with a single instruction — "Two query methods with their
- * `{name, value}` projection shapes typed" — and AAP 0.4.2.6 fixes both target names:
- * `OptionDAO.getUnusedProductOptions` [`OptionDAO.cfc:L51`] becomes
- * {@link OptionRepository.findUnusedOptions}, and `OptionDAO.getUnusedProductOptionGroups`
- * [`OptionDAO.cfc:L94`] becomes {@link OptionRepository.findUnusedOptionGroups}.
+ * Legacy origin: `model/dao/OptionDAO.cfc`, a component with exactly two members. AAP §0.4.1.6
+ * mandates this file with a single instruction — "Two query methods with their `{name, value}`
+ * projection shapes typed" — and AAP §0.4.2.6 fixes both target names:
+ * `getUnusedProductOptions` (`model/dao/OptionDAO.cfc:L51`) becomes
+ * {@link OptionRepository.findUnusedOptions}, and `getUnusedProductOptionGroups`
+ * (`model/dao/OptionDAO.cfc:L94`) becomes {@link OptionRepository.findUnusedOptionGroups}.
  *
- * WHY A DAO IS IN SCOPE AT ALL. The refactoring prompt names no DAOs; AAP 0.2.1.3 adds all four
- * as implicit scope because "this is where the Catalog's business logic actually resides". Here
- * that is literally true. Both public members of `model/service/OptionService.cfc` are one-line
- * pass-throughs — `return getOptionDAO().getUnusedProductOptions(argumentCollection=arguments)`
- * at `OptionService.cfc:L73` and its counterpart at `L77` — so every behaviour worth preserving
- * (the composed label, the set polarity, the row ordering) is expressed in the DAO and therefore
- * belongs to THIS contract rather than to the service above it. A port that declared only
- * `{ name: string; value: string }` and said nothing further would still compile, and the service
- * would then have to re-invent semantics the DAO had already fixed.
+ * WHY A DAO IS IN SCOPE AT ALL. The prompt names no DAOs; AAP §0.2.1.3 adds all four as implicit
+ * scope because "this is where the Catalog's business logic actually resides". Here that is literally
+ * true: both public members of `model/service/OptionService.cfc` are one-line pass-throughs
+ * (`model/service/OptionService.cfc:L73` and `:L77`), so every behaviour worth preserving — the
+ * composed label, the set polarity, the row ordering — is expressed in the DAO and belongs to THIS
+ * contract rather than to the service above it. A port declaring only `{ name: string; value: string }`
+ * would still compile, and the service would then have to re-invent semantics the DAO already fixed.
  *
  * THE PROJECTION SHAPES ARE THE CONTRACT. Neither member returns an entity. Both return arrays of
- * two-field rows assembled row by row inside the DAO [`OptionDAO.cfc:L87-L89`, `L112-L114`], so
- * the shape of those rows — and the meaning of each field — is the whole observable surface.
- * That is why {@link UnusedOptionRow} and {@link UnusedOptionGroupRow} are declared here, beside
- * the members that produce them, and why no domain type is referenced: this module has no imports
- * whatsoever, which also keeps `src/ports/` a hexagonal leaf (AAP 0.7.3, S4).
+ * two-field rows assembled row by row inside the DAO (`model/dao/OptionDAO.cfc:L87-L89` and
+ * `:L112-L114`), so the shape of those rows and the meaning of each field is the whole observable
+ * surface. That is why {@link UnusedOptionRow} and {@link UnusedOptionGroupRow} are declared here
+ * beside the members that produce them, and why no domain type is referenced: this module has no
+ * imports, which keeps `src/ports/` a hexagonal leaf (AAP §0.7.3 S4).
  *
- * TYPE-ONLY, THEREFORE WEIGHTLESS. Everything below is a type declaration. There is no executable
- * statement, no statement text, no driver reference and no I/O. TypeScript erases the entire file
- * at compile time, so it contributes zero bytes to the bundle `build/esbuild.mjs` emits — while
- * still being the artefact that `src/adapters/mysql/**`, `src/services/**`, the composition root
- * and the hand-written test doubles are all checked against. Every member is expressed as an
- * interface, so a test double can satisfy it with a plain object literal; the legacy repository
- * vendors no mocking library at all (AAP 0.4.3.6), which is precisely why that property matters.
+ * WHERE THE STATEMENTS LIVE INSTEAD. Statement text, placeholder generation and identifier handling
+ * are the adapter's job (AAP §0.4.1.7, §0.4.3.4), so nothing SQL-shaped crosses this boundary: no
+ * fragment, no table or column name as a parameter, no placeholder array (AAP §0.7.3 S2). What this
+ * file does carry is the adapter OBLIGATIONS the type system cannot express, each stated on the
+ * member it constrains with its legacy locator. Neither member is paginated and neither accepts a
+ * dynamic filter set, so no query-abstraction port is referenced either.
  *
- * WHERE THE STATEMENTS LIVE INSTEAD. Statement text, placeholder generation and identifier
- * handling are the adapter's job (AAP 0.4.1.7 and 0.4.3.4), so nothing SQL-shaped crosses this
- * boundary: no statement fragment, no table or column name as a parameter, no placeholder array
- * (AAP 0.7.3, S2). What this file does carry is the set of adapter OBLIGATIONS that the type
- * system cannot express — each stated on the member it constrains, each with the legacy locator
- * that justifies it (AAP 0.8.5). Neither member is paginated and neither accepts a dynamic filter
- * set, so no query-abstraction port is referenced here either.
+ * NO CARRIED DEFECT LANDS IN THIS COMPONENT, which is worth recording because silence would invite
+ * someone to "harden" source that needs no hardening. It binds every value through `<cfqueryparam>` —
+ * at `model/dao/OptionDAO.cfc:L68`, `:L78` and `:L107`, which is all three of them — so it is
+ * untouched by D18, the interpolation surface belonging to `model/dao/ProductDAO.cfc` alone. And it
+ * names only correct physical tables (`SwOption`, `SwOptionGroup`, `SwSkuOption`, `SwSku`), so it is
+ * untouched by D22. The annotations below therefore mark PRESERVED BEHAVIOUR, not defects.
  *
- * A DELIBERATE NOTE ON WHAT IS *NOT* WRONG WITH THIS SOURCE. The carried-defect register for this
- * slice runs from D1 to D22 and is closed (AAP 0.6.7, under AAP 0.7.3 S7 — "preserve and annotate,
- * do not repair"), and it is worth recording that none of its entries lands here, because silence
- * would invite someone to "harden" a component that needs no hardening. It binds every value
+ * A DELIBERATE NOTE ON WHAT IS *NOT* WRONG WITH THIS SOURCE. ⚠️ F27: this sentence used to open "The
+ * carried-defect register for this slice runs from D1 to D22 and is closed (AAP 0.6.7 ...)". AAP
+ * §0.6.7 is frozen at D1–D21, and the register is NOT closed — this port has minted D22, D23, D24 and
+ * M9 beyond the AAP's ranges (see `src/ports/repositories/SkuRepository.ts`, which defines D22).
+ * What the note actually needed to say is that NO ENTRY LANDS HERE (AAP 0.7.3 S7 — "preserve and
+ * annotate, do not repair"), and that is worth recording, because silence would invite someone to
+ * "harden" a component that needs no hardening. It binds every value
  * through `<cfqueryparam>` — at `L68`, `L78` and `L107`, which is all three of them — so it is
  * untouched by D18, the 21-statement interpolation surface that belongs to
- * `model/dao/ProductDAO.cfc` alone. And it names only correct physical tables (`SwOption`,
- * `SwOptionGroup`, `SwSkuOption`, `SwSku`), so it is untouched by D22, the physical/logical name
- * divergence that affects `ProductDAO` and `ProductTypeDAO` only. No parity annotation below is
+ * `model/dao/ProductDAO.cfc` alone. And it names only correct physical tables — `SwOption`,
+ * `SwOptionGroup`, `SwSkuOption` and `SwSku`, verified as the only table tokens in the component — so
+ * it is untouched by D22, the physical/logical name divergence.
+ *
+ * ⚠️ F27 — THE D22 ATTRIBUTION HERE WAS WRONG AND IS CORRECTED. It said the divergence "affects
+ * `ProductDAO` and `ProductTypeDAO` only", which omitted the component where D22 is DEFINED and where
+ * it takes its sharpest, intra-file form: `model/dao/SkuDAO.cfc` places logical entity names in the
+ * native statement at `:L132` and `:L135` while using physical names in the native statement at
+ * `:L179-L186`. `model/dao/ProductDAO.cfc` and `model/dao/ProductTypeDAO.cfc:L54-L62` are affected
+ * too. Verified by reading all four catalog DAOs; OptionDAO remains the only one untouched, which is
+ * this note's real point and is unchanged. No parity annotation below is
  * therefore attached to a defect; the annotations that ARE below mark PRESERVED BEHAVIOUR instead.
  *
- * STATELESS BY CONSTRUCTION. `OptionDAO.cfc:L49` declares `<cfcomponent extends="HibachiDAO">`
- * with no `accessors` and no property, and both members var-scope their locals
- * [`L55-L56`, `L97-L98`]. There is no memoized field to carry across, so this port declares no
- * cache, no cache-invalidating member and no lifetime semantics — unlike `model/dao/SkuDAO.cfc`,
- * the one stateful DAO of the four. The lazy memoization visible at `model/entity/Product.cfc:L636`
- * and `L643` belongs to the ENTITY, not to the repository, and is already covered by the
- * execution-model mismatch M7. No new mismatch and no new defect identifier is introduced here.
- *
- * `model/dao/OptionDAO.cfc` is REFERENCE-ONLY and is never modified: AAP 0.4.1.1 makes every
- * target file a creation and every legacy file a reference, and TR-6 states it as "change no
- * existing file". Behaviour is preserved exactly while the idiom changes freely — the two halves
- * of the Minimal Change Clause (AAP 0.8.1) — and every judgement call the translation required is
- * annotated inline with the locator that justifies it (AAP 0.8.2, Guideline 6).
+ * `model/dao/OptionDAO.cfc` is REFERENCE-ONLY and never modified (AAP §0.4.1.1, TR-6). Behaviour is
+ * preserved exactly while the idiom changes freely — the two halves of the Minimal Change Clause
+ * (AAP §0.8.1) — and every judgement call the translation required is annotated inline with the
+ * locator that justifies it (AAP §0.8.2 Guideline 6).
  */
 
 /**

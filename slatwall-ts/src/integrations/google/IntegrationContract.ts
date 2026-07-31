@@ -1,145 +1,101 @@
-// No user-specified rules were provided for this project; the nine enterprise
-// standards of AAP §0.7.3 govern instead, and the bar is not lowered.
-
 /**
- * IntegrationContract — the TypeScript translation of the Slatwall integration `<cfinterface>`,
- * and the foundational declaration of `src/integrations/google/`.
+ * IntegrationContract — the five-member contract every Slatwall integration adapter satisfies.
  *
- * LEGACY ORIGIN (read directly; every claim carries its locator)
- * -------------------------------------------------------------
- * integrationServices/IntegrationInterface.cfc:L50-L89 — the `<cfinterface>` block. A declaration
- * scan of that span returns EXACTLY FIVE members, in this order:
+ * Legacy origin: the `<cfinterface>` block at
+ * `integrationServices/IntegrationInterface.cfc:L50-L89`, which declares exactly five members, in
+ * this order:
  *
- *   L52  init                 access="public"          return declared as CFML's untyped catch-all
- *   L56  getDisplayName       access="public"          returntype="string"
- *   L63  getIntegrationTypes  access="public"          returntype="string"
- *   L75  getSettings          access="public"          returntype="struct"
- *   L82  getEventHandlers     (no `access` attribute)  returntype="array"
+ *   :L52  init                 return declared as CFML's untyped catch-all
+ *   :L56  getDisplayName       returntype="string"
+ *   :L63  getIntegrationTypes  returntype="string"
+ *   :L75  getSettings          returntype="struct"
+ *   :L82  getEventHandlers     no `access` attribute — public by CFML default
  *
- * L82 is the subtle one: it declares no `access` attribute at all. CFML defaults component
- * function access to public, so it is a full member of the public contract and not an internal
- * helper. Five members is a declaration-scan result, not an assumption — there is no sixth.
+ * `:L82` is the subtle one. It declares no `access` attribute at all, and CFML defaults component
+ * function access to public, so it is a full member of the public contract rather than an internal
+ * helper. There is no sixth member.
  *
- * integrationServices/BaseIntegration.cfc:L51-L69 — the default bodies, which are what fix the
- * honest target types rather than the loose CFML declarations: `return this` (L52),
- * `"Not Defined"` (L56), `""` (L60), `{}` (L64), `[]` (L68).
+ * The loose CFML return declarations are not what fixes the target types; the default bodies at
+ * `integrationServices/BaseIntegration.cfc:L51-L69` are — `return this` (`:L52`), `"Not Defined"`
+ * (`:L56`), `""` (`:L60`), `{}` (`:L64`) and `[]` (`:L68`). Each member below is typed from the
+ * value the legacy observably returns.
  *
- * integrationServices/google/Integration.cfc:L49-L71 — the one in-scope adapter. Its component
- * attributes declare `implements="Slatwall.integrationServices.IntegrationInterface"` while also
- * extending the base component, so it satisfies the contract partly through inheritance: it
- * overrides `init` (L51), `getIntegrationTypes` (L55, returning `"fw1"`), `getDisplayName` (L59,
- * returning `"Google"`) and `getSettings` (L63, returning `{}`), and inherits the fifth member
- * unchanged. The target reproduces exactly that shape — `BaseIntegration.ts` implements this
- * interface, and `GoogleIntegration.ts` implements it through that base.
+ * THE CONTRACT IS TRANSLATED; THE DISCOVERY IS NOT
+ * The legacy framework located integrations by scanning components on the ORM CFC path, and AAP
+ * §0.8.3.2 retires that machinery rather than carrying it forward. Its whole replacement is one
+ * hand-written `implements` clause in `GoogleIntegration.ts`. That is why this module holds no
+ * registry, no lookup table, no discovery helper and no factory: the mechanism they would serve no
+ * longer exists.
  *
- * AUTHORITY, AND WHICH HALF OF THE LEGACY MECHANISM SURVIVES
- * ---------------------------------------------------------
- * AAP §0.4.1.10 states the target for this file verbatim: "The five-method contract — init,
- * getDisplayName, getIntegrationTypes, getSettings, getEventHandlers — becomes a TypeScript
- * interface." AAP §0.3.3 assigns it the Adapter pattern role, replacing "`<cfinterface>`
- * implemented by a component discovered on the ORM CFC path" with "a TypeScript interface
- * implemented by an adapter class".
+ * The legacy adapter satisfies the contract partly through inheritance —
+ * `integrationServices/google/Integration.cfc:L49` both extends the base component and declares
+ * `implements` — overriding `init` (`:L51`), `getIntegrationTypes` (`:L55`), `getDisplayName`
+ * (`:L59`) and `getSettings` (`:L63`), and inheriting the fifth member unchanged. The port
+ * reproduces that shape: `BaseIntegration.ts` implements this interface, and `GoogleIntegration.ts`
+ * implements it through that base.
  *
- * The CONTRACT is translated; the DISCOVERY is deleted. The legacy framework located integrations
- * by scanning components on the ORM CFC path, and AAP §0.8.3.2 retires that machinery rather than
- * carrying it forward, so its replacement is one explicit `implements` clause written by hand in
- * `GoogleIntegration.ts`. That is why this module holds no registry, no lookup table, no discovery
- * helper and no factory: the mechanism those would serve no longer exists.
+ * WHERE THE GOOGLE FEED LOGIC LIVES — orientation, because the adapter is the wrong place to look
+ * `GoogleIntegration.ts` is nearly empty by faithfulness, not by neglect: the legacy
+ * `integrationServices/google/Integration.cfc` carries no feed logic at all, only two fixed strings
+ * and an empty structure. Record selection is ported from
+ * `integrationServices/google/controllers/feed.cfc` into a planned `ProductFeedQuery.ts`, and all
+ * RSS field shaping is ported from `integrationServices/google/views/feed/product.cfm` into
+ * `ProductFeedBuilder.ts`, which is where the real work of the feed lands.
  *
- * HOW THIS FOLDER SPLITS THE WORK (orientation for reviewers — AAP §0.6.4)
- * -----------------------------------------------------------------------
- * A reviewer who opens the adapter first will be misled about where the feed logic lives, so the
- * split is recorded here, at the contract every other file in the folder depends on:
+ * TYPES ONLY, AND NO IMPORTS
+ * Both exports are interfaces, so nothing here survives compilation and consumers reach this module
+ * with `import type`. It declares no import of its own: a contract that reached for a collaborator
+ * would invert the dependency direction of every file implementing it. It holds no module-scope
+ * binding of any kind either, which satisfies mismatch M7 — nothing may survive between invocations
+ * of a stateless handler — by construction rather than by discipline.
  *
  *   GoogleIntegration.ts   nearly empty BY FAITHFULNESS, not by neglect. The legacy
  *                          integrationServices/google/Integration.cfc carries no feed logic
  *                          whatsoever — its contract members return two fixed strings and an
  *                          empty structure.
- *   ProductFeedQuery.ts    owns record selection, ported from
- *                          integrationServices/google/controllers/feed.cfc.
  *   ProductFeedBuilder.ts  owns all RSS field shaping, ported from
  *                          integrationServices/google/views/feed/product.cfm. This is where the
  *                          real work of the feed lands.
- *   README.md              carries the feed route, and the evidence that
- *                          integrationServices/google/model/dao/FeedDAO.cfc is unreachable,
- *                          syntactically broken code with zero callers and is deliberately not
- *                          ported.
  *
- * ARCHITECTURAL POSITION (AAP §0.7.3 S4 — hexagonal separation)
- * ------------------------------------------------------------
- * This module declares ZERO imports, and it is the one file in the folder that must make that
- * claim unconditionally: a contract that reached for a collaborator would invert the dependency
- * direction of every file implementing it. Concretely, and all deliberate:
+ * ⚠️ F19 — TWO FILES THIS SPLIT USED TO LIST ARE NOT DELIVERED AT THIS CHECKPOINT. `ProductFeedQuery.ts`
+ * (record selection, from integrationServices/google/controllers/feed.cfc) and `README.md` (the feed
+ * route `?slatAction=google:feed.product`) are both named in AAP §0.4.1.10 and both remain planned, but
+ * neither exists here — this folder currently holds FOUR files. They were previously described in the
+ * present tense, as though a reader could open them. The forward references are kept, explicitly marked
+ * as not yet delivered, because the SPLIT is the architectural finding worth recording (AAP §0.6.4:
+ * the interface implementation carries no feed logic at all); what is corrected is the implication that
+ * the split is already realised in full.
  *
- *   - No sibling module, no port, no adapter, no service, no handler and no configuration module
- *     is referenced. The only dependency is the TypeScript language itself.
- *   - No cloud-provider event, result or invocation-context type is named. All provider coupling
- *     is confined to `src/handlers/`.
- *   - The environment is never read here. Configuration flows one way through `src/config/`
- *     (AAP §0.4.3.5), and nothing below the config layer reads it.
- *   - No database driver, connection, query text, table or column identifier appears.
- *   - No filesystem, path or address-parsing builtin is used, and no network-transport, markup,
- *     date or vendor SDK package either. The in-scope adapter is a stub that makes no outbound
- *     call (AAP §0.8.3.3), so no client of that sort belongs in this folder at all, let alone in
- *     its contract.
- *   - No package is added (AAP §0.7.3 S5 — the deliverable's dependency set is frozen).
- *
- * TYPES ONLY — THIS MODULE EMITS NO RUNTIME CODE
- * ----------------------------------------------
- * Both exports are interfaces. Nothing here survives compilation, which is what lets
- * `BaseIntegration.ts` and `GoogleIntegration.ts` consume this module with `import type` and keeps
- * the packaged artifact free of a module whose entire content is a compile-time contract. There is
- * no class, no abstract class, no enumeration, no constant and no function in this file.
- *
- * Two consequences worth stating because they are checkable:
- *
- *   - Execution-model mismatch M7 — nothing survives between invocations of a stateless handler,
- *     so per-request state must never be memoized at module scope — is satisfied trivially and
- *     verifiably: there is no module-scope binding here at all, mutable or otherwise. No cache,
- *     no memo, no counter, no `let`.
- *   - The contract is deliberately not generalised. There is no runtime dispatch mechanism
- *     whatsoever: no interception layer, no introspection, no string-keyed member resolution, no
- *     annotation syntax, no plugin registry and no service locator (AAP §0.7.3 S3). The legacy
- *     framework fabricated members at call time; this port declares every one of them instead.
- *
- * WHY THE CONTRACT IS COLOCATED HERE AND NOT HOISTED
- * --------------------------------------------------
- * In the CFML tree this contract sits in the PARENT directory, `integrationServices/`, because
- * seventeen adapters share it. In this subtree exactly one adapter is in scope — `google` — while
- * those seventeen siblings and the six sibling contract and base components for authentication,
- * payment and shipping are explicitly out of scope (AAP §0.2.2.3). The AAP therefore colocates the
- * contract inside `src/integrations/google/`: there is no second implementor to share it with, and
- * a parent-level copy would imply a generality this port does not have. For the same reason the
- * contract is not widened to accommodate payment or shipping adapters, and none of their members
- * appears below.
- *
- * WHAT IS DELIBERATELY NOT DECLARED (AAP §0.7.3 S9 — invent nothing)
- * -----------------------------------------------------------------
- *   - No supertype. The legacy base component extends a Hibachi framework object
- *     (integrationServices/BaseIntegration.cfc:L49), but org/Hibachi/** is the boundary being
- *     extracted FROM and is never carried forward (AAP §0.8.3.2), so this interface has no
- *     `extends` clause.
- *   - No sixth member. Three candidates were considered and rejected because each is observable on
- *     one component only and never on the `<cfinterface>`: one admin-markup member declared solely
- *     on the legacy base component (integrationServices/BaseIntegration.cfc:L71), and two
- *     settings-related members declared solely on the Google adapter
- *     (integrationServices/google/Integration.cfc:L67 and L73). Promoting either kind to the
- *     contract would invent a requirement the legacy interface never imposed, so each is declared
- *     where it actually lives — on `BaseIntegration.ts` and `GoogleIntegration.ts` respectively —
- *     and not here.
- *   - No token union, no element shape, no setting key, and no threshold, budget or limit
- *     whatsoever. Each omission is justified at the member it would have described.
+ * NO SUPERTYPE, AND NO SIXTH MEMBER
+ * The legacy base component extends a Hibachi framework object
+ * (`integrationServices/BaseIntegration.cfc:L49`); `org/Hibachi/**` is the boundary being extracted
+ * from and is never carried forward (AAP §0.8.3.2), so this interface has no `extends` clause.
+ * Three candidate sixth members are declared on a component but on no `<cfinterface>` member: the
+ * admin-markup member at `integrationServices/BaseIntegration.cfc:L71` and the two settings-related
+ * members at `integrationServices/google/Integration.cfc:L67` and `:L73`. Each is declared where it
+ * actually lives — on `BaseIntegration.ts` and `GoogleIntegration.ts` — because promoting either
+ * kind here would impose a requirement the legacy interface never imposed.
  *
  * REGISTER DISCIPLINE
  * -------------------
- * This folder owns exactly two entries of the plan's carried-defect register, and NEITHER belongs
- * to this file: the display-name copy-paste artifact is annotated in `GoogleIntegration.ts`, and
- * the dead, syntactically broken feed DAO is evidenced in this folder's `README.md`. Each carries
- * its register number at its own annotation site, which is why neither number is reproduced here —
- * a register entry must be findable in exactly one place, and this module is not that place for
- * either of them. It also mints no new defect number and no new execution-mismatch number, so the
- * two parity notes below are deliberately UNNUMBERED: they record stale legacy documentation, they
- * do not extend the register.
+ * This folder owns exactly two entries of the plan's carried-defect register (AAP §0.6.7): the
+ * display-name copy-paste artifact D11, annotated in `GoogleIntegration.ts`, and the dead feed DAO
+ * D12. The principle that a register entry must be findable in exactly ONE place is kept — but it was
+ * being VIOLATED rather than honoured for D12, whose evidence was said to live in an undelivered
+ * `README.md`.
+ *
+ * ⚠️ F19 — THE D12 EVIDENCE IS CARRIED HERE, BECAUSE THE FILE THAT CLAIMED TO HOLD IT DOES NOT EXIST.
+ * Every reference to `README.md` in this folder pointed at an undelivered file, so the evidence for the
+ * dead feed DAO was findable in NO place at all rather than in exactly one. It is stated here, verified
+ * against the source: `integrationServices/google/model/dao/FeedDAO.cfc:L52-L74` builds a query whose
+ * select list ends `SwProduct.calculatedTitle,` — a TRAILING COMMA immediately before `FROM` — joins
+ * `INNER JOIN SwProduct` with NO `ON` clause, and assigns an UNSCOPED `rs` variable. It therefore could
+ * never have executed successfully. A repository-wide search finds ZERO callers. It is deliberately not
+ * ported: repairing unreachable code would add behaviour the legacy has never had (AAP §0.6.4).
+ *
+ * This module still mints no new defect number and no new execution-mismatch number, so the two parity
+ * notes below are deliberately UNNUMBERED: they record stale legacy documentation, they do not extend
+ * the register.
  */
 
 /**
@@ -260,8 +216,8 @@ export interface IntegrationContract {
 /**
  * The shape of one entry in the structure an integration returns to describe its settings.
  *
- * Locator and justification: this shape is taken byte-exactly from the only populated setting
- * structure observable in the whole in-scope slice, at
+ * This shape is taken from the only populated setting structure observable in the in-scope slice,
+ * at
  * integrationServices/google/Integration.cfc:L67-L71, whose descriptor literal is
  * `{fieldType="select"}` on L69. One key, one field, one value.
  *
@@ -274,9 +230,10 @@ export interface IntegrationContract {
  * would be invention (AAP §0.7.3 S9).
  *
  * It is declared in this module, rather than in a shared type bucket, because this is the
- * producing module for the contract's types and because the folder is closed at six files with no
- * such bucket in it. It is exported because `GoogleIntegration.ts` needs it for the adapter-only
- * settings member that this contract deliberately does not declare.
+ * producing module for the contract's types and because the folder contains no such bucket (F19: four
+ * files at this checkpoint, six planned in AAP §0.4.1.10 — neither count includes a type bucket).
+ * It is exported because `GoogleIntegration.ts` needs it for the adapter-only settings member that
+ * this contract deliberately does not declare.
  */
 export interface IntegrationSettingDescriptor {
   readonly fieldType: string;

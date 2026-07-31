@@ -1,228 +1,117 @@
 /**
- * `product.rules.ts` — the typed transliteration of `model/validation/Product.json`, and the sole
- * owner of the code-format pattern the catalog's three code properties share.
+ * `product.rules.ts` — the typed transliteration of `model/validation/Product.json`, and the sole owner
+ * of the code-format pattern the catalog's three code properties share.
  *
- * Authority: AAP 0.4.1.5 Validation Layer table, row 2 —
- * `slatwall-ts/src/validation/rules/product.rules.ts` | CREATE | `model/validation/Product.json` |
- * "Required fields, the `productCode` regex and uniqueness, per-context `baseProductType` gates,
- * minimum-collection gates, delete guards". Corroborated by the AAP 0.3.1 target tree, which pairs
- * this path with that document, and by the AAP 0.4.4 wildcard row
- * `slatwall-ts/src/validation/rules/** | CREATE — the seven rule sets`.
+ * AAP 0.4.1.5 Validation Layer row 2 makes this file CREATE against that document: "Required fields, the
+ * `productCode` regex and uniqueness, per-context `baseProductType` gates, minimum-collection gates,
+ * delete guards".
  *
- * =============================================================================================
- * WHY THIS FILE EXISTS — IT IS BEHAVIOR, NOT CONFIGURATION
- * =============================================================================================
- * AAP IR-4: "Declarative validation is part of the observable behavior. Seven catalog validation
- * files define required fields, uniqueness, regular-expression formats, conditional rules and delete
- * guards. Two `Sku` rules are method-based and execute real queries. These are behavior, not
- * configuration, and are ported as typed rule sets." AAP 0.2.1.5 states it from the other side:
- * these documents "are interpreted at runtime by the validation service and determine which saves
- * and deletes succeed."
+ * The generic evaluation semantics every constraint below relies on — null verdicts per constraint,
+ * CFML loose equality, the error key, context selection, the deliberate non-ports and the absence of any
+ * memoisation — are stated once in `../Validator` and are not repeated here. What this header carries is
+ * what is specific to THIS document.
  *
- * Read this file as configuration and the result is a port that compiles cleanly, saves products the
- * legacy system would have rejected and rejects products the legacy system would have accepted, with
- * no compile error, no exception and no failing test to reveal it. Every note below exists to close
- * one of those silent gaps. Nothing here is decorative.
- *
- * =============================================================================================
- * WHAT THIS FILE IS NOT — TR-3, AND WHY THE DOCUMENT IS NOT SHIPPED
- * =============================================================================================
- * AAP TR-3: "Replace framework magic with declarations. Every runtime-synthesized method, every
- * string-keyed service lookup and every metadata-driven behavior becomes an explicit,
- * compile-checked declaration."
- *
- * So the document is TRANSLITERATED, NEVER VENDORED. No JSON is imported, required, parsed or read;
- * `resolveJsonModule` stays off; and `model/validation/Product.json` is not copied, moved, symlinked
- * or re-emitted anywhere under `slatwall-ts/`. TR-6 and AAP 0.4.1.1 hold the CFML tree byte-for-byte
- * unchanged — every target file is CREATE and every legacy file is REFERENCE, with zero UPDATE rows
- * in the whole plan. What lands here is an ordinary TypeScript value built from the discriminated
- * constraint union `../Validator` exports, so an unknown constraint is a COMPILE error rather than
- * the legacy engine's runtime raise.
- *
- * =============================================================================================
- * THE DOCUMENT, MEASURED — ELEVEN PROPERTIES, TWELVE RULE OBJECTS, SIXTEEN CONSTRAINTS
- * =============================================================================================
- * Counted from `model/validation/Product.json`, whose 17 lines were read byte-for-byte. The count of
- * constraints exceeds the count of rule objects because the legacy engine explodes one rule object
- * into one constraint record per key — see THE FLATTENING below.
+ * THE DOCUMENT — ELEVEN PROPERTIES, TWELVE RULE OBJECTS, SIXTEEN CONSTRAINTS. Constraints outnumber rule
+ * objects because the legacy engine explodes one rule object into one constraint record per key; see THE
+ * FLATTENING below.
  *
  *   line  property                         context(s)               constraints
- *   :4    baseProductType                  addOptionGroup,addOption  inList merchandise
- *   :5    baseProductType                  addSubscriptionTerm       inList subscription
- *   :7    physicalCounts                   delete                    maxCollection 0   ← INERT
- *   :8    price                            save                      required, dataType numeric
- *   :9    productName                      save                      required
- *   :10   productCode                      save                      required, unique, regex
- *   :11   productType                      save                      required          ← SOLE
- *   :12   transactionExistsFlag            delete                    eq false
- *   :13   unusedProductOptions             addOption                 minCollection 1
- *   :14   unusedProductOptionGroups        addOptionGroup            minCollection 1
- *   :15   unusedProductSubscriptionTerms   addSubscriptionTerm       minCollection 1
- *   :16   urlTitle                         save                      required, unique
+ *   :L4   baseProductType                  addOptionGroup,addOption  inList merchandise
+ *   :L5   baseProductType                  addSubscriptionTerm       inList subscription
+ *   :L7   physicalCounts                   delete                    maxCollection 0   <- INERT
+ *   :L8   price                            save                      required, dataType numeric
+ *   :L9   productName                      save                      required
+ *   :L10  productCode                      save                      required, unique, regex
+ *   :L11  productType                      save                      required          <- SOLE
+ *   :L12  transactionExistsFlag            delete                    eq false
+ *   :L13  unusedProductOptions             addOption                 minCollection 1
+ *   :L14  unusedProductOptionGroups        addOptionGroup            minCollection 1
+ *   :L15  unusedProductSubscriptionTerms   addSubscriptionTerm       minCollection 1
+ *   :L16  urlTitle                         save                      required, unique
  *
  * Five distinct context strings appear: `save`, `delete`, `addOption`, `addOptionGroup` and
- * `addSubscriptionTerm`. Every rule object declares a context, which has a consequence worth stating
- * so a silence is not mistaken for an omission: the first half of the legacy context gate at
- * `org/Hibachi/HibachiValidationService.cfc:L71` makes a rule with NO context key apply in EVERY
- * context, so under the engine's default empty context THIS FILE CONTRIBUTES NOTHING AT ALL. That
+ * `addSubscriptionTerm`. EVERY rule object declares a context, and that has a consequence worth stating
+ * so a silence is not mistaken for an omission: the context gate at
+ * `org/Hibachi/HibachiValidationService.cfc:L71` makes a rule with no `contexts` key apply in every
+ * context, so under the engine's default empty context THIS FILE CONTRIBUTES NOTHING AT ALL. The
  * property inverts for exactly one of the seven documents — `model/validation/Product_UpdateSkus.json`
  * declares no context on either rule and therefore fires under every context string.
  *
- * THE FLATTENING. `org/Hibachi/HibachiValidationService.cfc:L77-L88` explodes each rule object into
- * one constraint record per key, skipping `contexts` and `conditions` and copying them onto every
- * record produced. The rule at `model/validation/Product.json:10` therefore becomes THREE independent
- * constraints, each able to report its own failure against the same property. Here that explosion is
- * the data shape rather than something derived at evaluation time, which is why a property validation
- * below holds an array of constraints.
+ * THE FLATTENING. `org/Hibachi/HibachiValidationService.cfc:L77-L88` explodes each rule object into one
+ * constraint record per key, skipping `contexts` and `conditions` and copying them onto every record it
+ * produces, so the rule at `model/validation/Product.json:L10` becomes THREE independent constraints,
+ * each able to report its own failure against the same property. Here that explosion is the data shape
+ * rather than something derived at evaluation time, which is why a property validation below holds an
+ * array of constraints.
  *
- * =============================================================================================
- * DETERMINISTIC EVALUATION ORDER — A DELIBERATE IMPROVEMENT ON AN UNSPECIFIED ONE (guideline 6)
- * =============================================================================================
- * The legacy engine iterated a CFML struct to reach a property's constraints, and CFML struct-key
- * iteration order is unspecified. This port fixes an order and says so: properties are evaluated in
- * the source document's own key order, rules in declaration order within a property, and constraints
- * in declaration order within a rule — the order the table above lists, and the order the
- * declarations below appear in. `../Validator` honours it, and it does not short-circuit, so all
- * accumulated failures are reproducible.
+ * DETERMINISTIC EVALUATION ORDER — A DELIBERATE IMPROVEMENT ON AN UNSPECIFIED ONE (AAP 0.8.2 guideline
+ * 6). The legacy engine iterated a CFML struct to reach a property's constraints, and CFML struct-key
+ * iteration order is unspecified. This port fixes an order and says so: properties in the source
+ * document's own key order, rules in declaration order within a property, constraints in declaration
+ * order within a rule — the order the table above lists and the declarations below appear in. No legacy
+ * behavior could have depended on an order the engine never guaranteed, so this is not a behavior
+ * change; what it buys is the ability to assert on the accumulated message array at all.
  *
- * This is NOT a behavior change. No legacy behavior could have depended on an order the engine never
- * guaranteed. What it buys is the ability to assert on the accumulated message array at all.
+ * THE TWO ABSENT SIBLING DOCUMENTS — DO NOT "RESTORE" THEM. AAP 0.2.1.5: "Note a subtlety that must not
+ * be mistaken for an omission: there is no `Product_AddOption.json` and no
+ * `Product_AddOptionGroup.json`. Those two process contexts are validated by context-scoped rules
+ * declared inside `model/validation/Product.json`." The `addOption` and `addOptionGroup` gating lives at
+ * `model/validation/Product.json:L4`, `:L13` and `:L14` — in THIS document and nowhere else. Preserve
+ * the asymmetry: `model/validation/Product_UpdateSkus.json` does exist and does get its own rule file,
+ * `./productUpdateSkus.rules`. Harmonising the three process objects would invent rules for two
+ * contexts that never had their own document, which AAP 0.7.3 S9 forbids.
  *
- * =============================================================================================
- * ⭐ THE TWO ABSENT SIBLING DOCUMENTS — DO NOT "RESTORE" THEM (guideline 6)
- * =============================================================================================
- * AAP 0.2.1.5: "Note a subtlety that must not be mistaken for an omission: there is no
- * `Product_AddOption.json` and no `Product_AddOptionGroup.json`. Those two process contexts are
- * validated by context-scoped rules declared inside `model/validation/Product.json`."
+ * P-2 — THE TWO-PASS PROCESS FLOW, AND WHY IT PROVES THAT ABSENCE. A process runs validation TWICE,
+ * against two different subjects, with the SAME context string:
+ * `org/Hibachi/HibachiService.cfc:L96` validates THE ENTITY with `context = processContext`; `:L99`
+ * gates the next step on the entity having no errors and on the entity actually having a process object
+ * for that context; and `:L108` validates THE PROCESS OBJECT with the same context. Under
+ * `addOptionGroup` and `addOption` the entity pass fires this document's `inList` gate at
+ * `model/validation/Product.json:L4` plus the matching `minCollection` gate at `:L13` or `:L14`, while
+ * the process-object pass fires NOTHING, because the two documents that would drive it do not exist.
+ * Under `updateSkus` the position reverses: no rule here lists that context, so the entity pass fires
+ * nothing from this file and the process-object pass fires exactly the two conditional rules of
+ * `./productUpdateSkus.rules`.
  *
- * Filesystem-verified: `model/validation/` holds exactly 96 `.json` files, and an explicit listing of
- * `model/validation/Product_AddOption.json` and `model/validation/Product_AddOptionGroup.json`
- * reports both as non-existent. The `addOption` and `addOptionGroup` gating lives at
- * `model/validation/Product.json:4`, `:13` and `:14` — in THIS document and nowhere else.
+ * INVOCATION-SITE ASYMMETRY, which is why the delete guards cannot be bypassed and the save rules can.
+ * `delete` is HARD-CODED at the single delete call site, `arguments.entity.validate(context="delete")`
+ * at `org/Hibachi/HibachiService.cfc:L55` — no parameter to omit, no default to override. `save` is a
+ * DEFAULTED PARAMETER on the save signature at `org/Hibachi/HibachiService.cfc:L133`, so a caller may
+ * pass something else and the save rules then do not apply. Treat `save` as just another context string,
+ * never as privileged.
  *
- * PRESERVE THE ASYMMETRY. `model/validation/Product_UpdateSkus.json` DOES exist and DOES get its own
- * rule file, `./productUpdateSkus.rules`. The three process objects are not symmetric in their
- * validation documents, and harmonising them would invent rules for two contexts that never had their
- * own file. Creating `productAddOption.rules.ts` or `productAddOptionGroup.rules.ts` would be
- * fabrication under AAP 0.7.3 S9.
+ * TRACEABLE LEGACY COVERAGE — `issue_1331`, THE ONE TEST THIS FILE MUST KEEP PORTABLE.
+ * `meta/tests/unit/IssuesTest.cfc:L101-L108` is one of the five traceable catalog regressions AAP 0.6.5.1
+ * records, and it exercises this document directly: `:L103` creates a product through the service's
+ * synthesized `newProduct` member; `:L105` assigns the CONTENT-ACCESS product type, seeded with
+ * identifier `444df313ec53a08c32d8ae434af5819a` at `config/dbdata/SlatwallProductType.xml.cfm:L15`; and
+ * `:L107` asserts the product is NOT processable for `addOptionGroup`.
  *
- * =============================================================================================
- * ⭐ P-2 — THE TWO-PASS PROCESS FLOW, AND WHY IT PROVES THE ABSENCE ABOVE (guideline 6)
- * =============================================================================================
- * A process runs validation TWICE, against two different subjects, with the SAME context string:
- *   - `org/Hibachi/HibachiService.cfc:L96` validates THE ENTITY with `context = processContext`.
- *   - `org/Hibachi/HibachiService.cfc:L99` gates the next step on the entity having no errors, and on
- *     the entity actually having a process object for that context.
- *   - `org/Hibachi/HibachiService.cfc:L108` validates THE PROCESS OBJECT with the same context.
- *
- * Under `addOptionGroup` and `addOption` the ENTITY pass fires this document's `inList` gate at
- * `model/validation/Product.json:4` plus the matching `minCollection` gate at `:13` or `:14`, while
- * the PROCESS-OBJECT pass fires NOTHING, because the two documents that would drive it do not exist.
- * That is the mechanical proof of AAP 0.2.1.5 and the strongest defence against restoring them.
- *
- * Under `updateSkus` the position reverses: no rule in THIS document lists that context, so the
- * entity pass fires zero rules from here and the process-object pass fires exactly the two
- * conditional rules of `./productUpdateSkus.rules`.
- *
- * INVOCATION-SITE ASYMMETRY, which is why the delete guards cannot be bypassed and the save rules
- * can: `delete` is HARD-CODED at the single delete call site, `arguments.entity.validate(context=
- * "delete")` at `org/Hibachi/HibachiService.cfc:L55` — no parameter to omit, no default to override.
- * `save` is a DEFAULTED PARAMETER on the save signature at `org/Hibachi/HibachiService.cfc:L133`, so a
- * caller may pass something else and the save rules then do not apply. Treat `save` as just another
- * context string, never as privileged.
- *
- * =============================================================================================
- * ⭐ TRACEABLE LEGACY COVERAGE — `issue_1331`, THE ONE TEST THIS FILE MUST KEEP PORTABLE
- * =============================================================================================
- * `meta/tests/unit/IssuesTest.cfc:L101-108` is one of the five traceable catalog regressions AAP
- * 0.6.5.1 records, and it exercises this document directly:
- *   - `:L103` creates a product through the service's synthesized `newProduct` member.
- *   - `:L105` assigns the CONTENT-ACCESS product type, seeded with identifier
- *     `444df313ec53a08c32d8ae434af5819a` at `config/dbdata/SlatwallProductType.xml.cfm:15`.
- *   - `:L107` asserts the product is NOT processable for `addOptionGroup`.
- *
- * The mechanism, end to end: `isProcessable(context)` at `org/Hibachi/HibachiEntity.cfc:L224-226`
- * calls the engine with the non-mutating mode and reads `hasErrors()` off the RETURNED THROWAWAY bag,
- * so it is a pure query that leaves the entity's own errors untouched. The engine selects the
- * `addOptionGroup` context, which reaches `model/validation/Product.json:4` requiring
- * `baseProductType` to be in the list `merchandise`. The content-access discriminator is not in that
- * list, the `inList` evaluator fails on a present, non-matching value, the throwaway bag reports an
- * error, and the assertion passes.
+ * The mechanism end to end: `isProcessable(context)` at `org/Hibachi/HibachiEntity.cfc:L224-L226` calls
+ * the engine in the non-mutating mode and reads `hasErrors()` off the RETURNED THROWAWAY bag, so it is a
+ * pure query that leaves the entity's own errors untouched. The engine selects the `addOptionGroup`
+ * context, which reaches `model/validation/Product.json:L4` requiring `baseProductType` to be in the
+ * list `merchandise`; the content-access discriminator is not in that list, the `inList` evaluator fails
+ * on a present non-matching value, the throwaway bag reports an error, and the assertion passes.
  *
  * THIS IS WHY {@link baseProductTypeMerchandiseRule} AND {@link baseProductTypeInListMerchandise} ARE
- * EXPORTED INDIVIDUALLY: the net-new suite at `slatwall-ts/test/validation/rules.test.ts` must be able
- * to import and assert that one gate on its own to reproduce this regression. Fold it into an opaque
- * aggregate and a traceable legacy test becomes unportable.
+ * EXPORTED INDIVIDUALLY: a test must be able to import and assert that one gate on its own to reproduce
+ * this regression. Fold it into an opaque aggregate and a traceable legacy test becomes unportable. One
+ * plausible misreading, for completeness: calling `isProcessable()` with no argument uses its declared
+ * default context, which matches no rule in any of the seven documents, so it evaluates NOTHING and
+ * answers true.
  *
- * Note for completeness, because it is a plausible misreading: calling `isProcessable()` with no
- * argument uses its declared default context, which matches no rule in any of the seven documents, so
- * it evaluates NOTHING and answers true.
- *
- * =============================================================================================
- * ⭐ THE CUSTOM-OVERRIDE MERGE IS DELIBERATELY NOT PORTED (guideline 6)
- * =============================================================================================
- * `org/Hibachi/HibachiValidationService.cfc:L6-L53` loads the core document and then merges a
- * same-named document from the application's `custom/model/validation/` directory over it. Three facts
- * about that loader, each read first-hand:
- *   - The merge is APPEND-ONLY, so a custom document could only ADD rules — never remove, replace or
- *     relax one.
- *   - `:L10` composes the core path from the subject's class name, which PROVES the document filename
- *     stem is the class name. That is why the process-object rule set keeps its underscore in the
- *     reported keys: the class really is named with one.
- *   - `:L17` versus `:L29` is an asymmetry, not an oversight: a malformed CORE document raises, while
- *     a malformed CUSTOM one is only logged.
- *
- * `custom/model/validation/` was verified to contain nothing but a readme, so ZERO catalog overrides
- * exist. The seven rule sets are therefore COMPLETE as written, and this port builds no overlay hook,
- * no custom-rules parameter and no plugin seam — inventing an extension point for an extension that
- * does not exist would be fabrication under AAP 0.7.3 S9. This provenance note lives here rather than
- * being repeated in all seven files.
- *
- * =============================================================================================
- * A STALE LOCATOR, CORRECTED HERE RATHER THAN BY EDITING A SIBLING (guideline 6)
- * =============================================================================================
- * The `../Validator` header cites the unknown-constraint raise at line 212. A byte-exact read of all
- * 489 lines of `org/Hibachi/HibachiValidationService.cfc` places it at **L202**; **L212** is the
- * persistence branch that chooses between the entity and process-object class-name prefixes for the
- * reported message; and the separate `dataType` whitelist raise is at **L263**. The correction is
- * recorded here because another agent's file is not this file's to change.
- *
- * =============================================================================================
- * NO MEMOISATION, AND NO SIDE EFFECT AT MODULE LOAD — M7
- * =============================================================================================
- * The legacy engine memoises resolved rule sets under a class-and-context key
- * (`org/Hibachi/HibachiValidationService.cfc:L57` and `:L92`) for one reason only: to avoid re-reading
- * a JSON document from disk. That concern does not exist here, because there is no document to read.
- *
- * AAP M7 requires that any memoisation in the target be REQUEST-SCOPED, never module-scoped, so a warm
- * Lambda container cannot bleed one invocation's state into the next. The simplest compliant answer
- * for this file is none at all, and that is what it does. Everything below is frozen, immutable,
- * request-independent declarative data: no connection, no request context, no resolved property value,
- * no accumulated error, no counter, no clock read and no environment read. Evaluating a rule allocates
- * nothing that outlives the call, and the error bag belongs to `../Validator` and is created per
- * evaluation. Importing this module has no observable effect beyond the declarations themselves.
- *
- * =============================================================================================
- * S9 — WHAT THIS DOCUMENT DELIBERATELY DOES NOT DECLARE
- * =============================================================================================
- * Four of the thirteen keys the seven documents use are ABSENT from `model/validation/Product.json`,
- * every one measured at zero occurrences: `conditions`, `minValue`, `maxLength` and `method`. None is
- * declared below. In particular there is NO `minValue` on `price` even though the SKU document
- * declares one on its own price — see X1 at {@link priceRequiredConstraint} — and the optional
- * conditions block of the rule set is OMITTED rather than declared empty.
- *
- * The wider 96-document corpus offers further tempting vocabulary that appears in NONE of the seven
- * and is likewise forbidden: `minLength`, `eqProperty`, `gtProperty`, `null`, `maxValue`,
- * `populatedPropertyValidation`, `validate`, `uniqueOrNull`, and the `dataType` values for electronic
- * mail, dates and payment cards. No maximum length is invented for a product name, no format is
- * invented for any property that has none, no positive-value floor is invented, no cross-property
- * comparison is invented and no "sensible" default is invented. The only numeric literals in this file
- * are the two the document declares: the collection ceiling 0 at `:7` and the collection floor 1 at
- * `:13`, `:14` and `:15`.
+ * WHAT THIS DOCUMENT DELIBERATELY DOES NOT DECLARE (AAP 0.7.3 S9). Four of the thirteen keys the seven
+ * documents use are absent from `model/validation/Product.json` and are therefore absent below:
+ * `conditions`, `minValue`, `maxLength` and `method`. In particular there is NO `minValue` on `price`
+ * even though the SKU document declares one on its own price, and the optional conditions block of the
+ * rule set is OMITTED rather than declared empty. The only numeric literals in this file are the two the
+ * document declares: the collection ceiling 0 at `:L7` and the collection floor 1 at `:L13`, `:L14` and
+ * `:L15`.
  *
  * @see model/validation/Product.json — the transliterated source document
  * @see model/entity/Product.cfc — the entity whose properties these rules name
- * @see org/Hibachi/HibachiValidationService.cfc — the legacy engine, ported as `../Validator`
+ * @see `../Validator` — the evaluation semantics every constraint below relies on
  */
 
 import type { Product, ProductPropertyName } from '../../domain/product/Product';
@@ -245,13 +134,13 @@ import type {
 /* ==============================================================================================
  * SECTION 1 — THE SHARED CODE-FORMAT PATTERN
  *
- * ⭐ THIS FILE IS THE PATTERN'S SOLE OWNER, BY DOCUMENT ORDER.
+ * THIS FILE IS THE PATTERN'S SOLE OWNER, BY DOCUMENT ORDER.
  *
- * The literal occurs in exactly three of the seven in-scope documents, measured by direct search:
- *   model/validation/Product.json:10       productCode
- *   model/validation/Option.json:3         optionCode
- *   model/validation/OptionGroup.json:4    optionGroupCode
- * and in none of the other four. `model/validation/Product.json:10` is the first occurrence in
+ * The literal occurs in exactly three of the seven in-scope documents:
+ *   model/validation/Product.json:L10       productCode
+ *   model/validation/Option.json:L3         optionCode
+ *   model/validation/OptionGroup.json:L4    optionGroupCode
+ * and in none of the other four. `model/validation/Product.json:L10` is the first occurrence in
  * document order, so the constant is declared here and `./option.rules` and `./optionGroup.rules`
  * import it from `./product.rules`. The dependency runs one way only; nothing in this file imports a
  * sibling rules file.
@@ -262,57 +151,50 @@ import type {
 
 /**
  * The code-format pattern shared by the catalog's three code properties, transcribed character for
- * character from `model/validation/Product.json:10`.
+ * character from `model/validation/Product.json:L10`.
  *
- * ⚠️ IT IS A PATTERN STRING, NOT A COMPILED PATTERN, AND THAT IS REQUIRED RATHER THAN STYLISTIC.
+ * IT IS A PATTERN STRING, NOT A COMPILED PATTERN, AND THAT IS REQUIRED RATHER THAN STYLISTIC.
  * `../Validator` types a format constraint's value as a string and compiles it FRESH on every
  * evaluation, precisely so nothing survives between invocations on a warm container (M7). Handing it a
- * pre-compiled object would both fail to type-check and defeat that guarantee. Compiling one here and
- * keeping it at module scope would also introduce mutable engine state — a compiled pattern carries a
- * `lastIndex` — which is exactly what M7 forbids.
+ * pre-compiled object would both fail to type-check and defeat that guarantee; keeping a compiled
+ * pattern at module scope would also introduce mutable engine state, since a compiled pattern carries a
+ * `lastIndex`.
  *
- * ⚠️ DO NOT TIDY THE CHARACTER CLASS. Every character is load-bearing and the layout is deliberate:
+ * DO NOT TIDY THE CHARACTER CLASS. Every character is load-bearing and the layout is deliberate:
  *   - the `-` between `0-9` and `_` is a LITERAL HYPHEN, because it sits where a range cannot begin;
  *   - the trailing `^` inside the class is a LITERAL CARET, because a caret only negates in first
  *     position;
  *   - `.` and `|` are literal inside a character class and need no escape;
  *   - both ends are anchored by the pattern itself, so the whole value must match.
  * Reordering the class, escaping the hyphen differently or re-anchoring it changes which product codes
- * are accepted. Verified in Node 20: the pattern accepts `TESTPRODUCTXXX` — the very code the legacy
- * fixture at `meta/tests/unit/Helper.cfc:L52-L77` uses — accepts `abc-123` and `a_b.c|d:e~f^g`, and
- * rejects the space, comma, semicolon, solidus, plus, commercial at and every other punctuation mark
- * outside the class.
+ * are accepted — including `TESTPRODUCTXXX`, the code the legacy fixture at
+ * `meta/tests/unit/Helper.cfc:L52-L77` uses.
  *
- * ⚠️ COMPILE IT WITH NO FLAGS. Verified by execution in Node 20.20.2:
- *   - no flags — compiles, and is what `../Validator` does;
- *   - the unicode flag — compiles, and is pointless here since the class is pure ASCII;
- *   - THE UNICODE-SETS FLAG THROWS `SyntaxError: Invalid character class` — a hard raise at pattern
- *     construction, which under Lambda means a COLD-START CRASH rather than a failed validation. It
- *     must never be added, here or in `../Validator`.
+ * COMPILE IT WITH NO FLAGS. The unicode flag is pointless here, since the class is pure ASCII. The
+ * unicode-SETS flag is worse than pointless: this class is invalid under it, so constructing the pattern
+ * raises a synchronous `SyntaxError`. Because `../Validator` constructs the pattern at the moment it
+ * evaluates the constraint, that raise would surface as a validation-time failure on the invocation
+ * path, propagating out of the validate call rather than being reported as a rule failure. It must never
+ * be added, here or in `../Validator`.
  *
- * ⚠️ THE END-ANCHOR MICRO-DIVERGENCE, CARRIED NOT REPAIRED (guideline 6). JavaScript's `$` without the
- * multiline flag matches only at end of input, so a value ending in a line feed does NOT match.
- * Java-flavoured regular expressions, which the legacy CFML engine used, also let `$` match before a
- * single trailing line terminator, so `"ABC\n"` would have matched there and does not here. Both
- * behaviours were confirmed by execution. The divergence is documented and LEFT AS IS: adding the
- * multiline flag to close it would change which codes are accepted, and AAP 0.8.2 guideline 4 forbids
- * enhancing behavior beyond what the migration requires. In practice a product code containing a line
- * feed is rejected by the legacy pattern too, since a line feed is not in the class — the divergence is
- * confined to a value whose ONLY offence is a single trailing terminator.
+ * THE END-ANCHOR MICRO-DIVERGENCE, CARRIED NOT REPAIRED (AAP 0.8.2 guideline 6). JavaScript's `$`
+ * without the multiline flag matches only at end of input, so a value ending in a line feed does NOT
+ * match. Java-flavoured regular expressions, which the legacy CFML engine used, also let `$` match
+ * before a single trailing line terminator, so `"ABC\n"` would have matched there and does not here. The
+ * divergence is documented and LEFT AS IS: adding the multiline flag to close it would change which
+ * codes are accepted, and AAP 0.8.2 guideline 4 forbids enhancing behavior beyond what the migration
+ * requires. Its reach is narrow — a line feed is not in the class either way, so only a value whose ONLY
+ * offence is a single trailing terminator is affected.
  *
- * ⚠️ THE EMPTY STRING FAILS THIS PATTERN, while an absent value PASSES the format constraint entirely
- * (`org/Hibachi/HibachiValidationService.cfc:L481-L487` short-circuits on absence). Empty and absent
- * are NOT interchangeable, and no absence guard belongs here — `../Validator` owns that branch, and
- * layering another would change which saves succeed.
+ * THE EMPTY STRING FAILS THIS PATTERN, while an absent value PASSES the format constraint entirely
+ * (`org/Hibachi/HibachiValidationService.cfc:L481-L487` short-circuits on absence). Empty and absent are
+ * NOT interchangeable, and no absence guard belongs here — `../Validator` owns that branch, and layering
+ * another would change which saves succeed.
  *
- * Exported as a named constant so the net-new suite can assert a single source of truth across all
- * three consuming documents (AAP 0.7.3 S6).
+ * Exported as a named constant so a test can assert a single source of truth across all three consuming
+ * documents (AAP 0.7.3 S6).
  */
 export const CODE_FORMAT_REGEX = '^[a-zA-Z0-9-_.|:~^]+$';
-
-/* ==============================================================================================
- * SECTION 2 — THE SUBJECT CONTRACT
- * ============================================================================================ */
 
 /**
  * What this rule set requires of the object being validated, and nothing more.
@@ -341,7 +223,7 @@ export const CODE_FORMAT_REGEX = '^[a-zA-Z0-9-_.|:~^]+$';
  *
  *   3. The eleven property values these rules actually READ, and no others.
  *
- * ⚠️ EVERY MEMBER IS OPTIONAL AND READ-ONLY, AND EVERY VALUE IS ALREADY RESOLVED. Two independent
+ * EVERY MEMBER IS OPTIONAL AND READ-ONLY, AND EVERY VALUE IS ALREADY RESOLVED. Two independent
  * constraints force this shape, and both are worth stating because the alternative looks natural:
  *
  *   - `../Validator` requires a property reader to be a PLAIN SYNCHRONOUS accessor. Its own note is
@@ -364,7 +246,7 @@ export const CODE_FORMAT_REGEX = '^[a-zA-Z0-9-_.|:~^]+$';
  *     0.6.5.2), so the net-new suite substitutes hand-written subjects; if these members were required,
  *     half the specified branches could not be reached without a cast, and casts are forbidden here.
  *
- * ⚠️ WHY THE COLLECTIONS AND THE PRODUCT-TYPE REFERENCE ARE TYPED WITH THE UNKNOWN TOP TYPE. A
+ * WHY THE COLLECTIONS AND THE PRODUCT-TYPE REFERENCE ARE TYPED WITH THE UNKNOWN TOP TYPE. A
  * collection floor MEASURES SIZE and never inspects an element, and a presence check on an object only
  * asks whether one is there. Typing them precisely would force imports of
  * `../../domain/product/ProductType` and of the option and subscription shapes, and NONE of those is
@@ -372,7 +254,7 @@ export const CODE_FORMAT_REGEX = '^[a-zA-Z0-9-_.|:~^]+$';
  * is the one that says "a value whose interior is none of my business". `./productType.rules` records
  * the same reasoning for the same reason.
  *
- * ⚠️ NOTE WHAT IS ABSENT. `model/entity/Product.cfc` declares far more than these eleven — the
+ * NOTE WHAT IS ABSENT. `model/entity/Product.cfc` declares far more than these eleven — the
  * identifier, both flags, the description, the sort order, the four persisted calculated columns, the
  * brand and default-SKU references, ten collections, the audit block and twenty non-persistent members.
  * None of them appears here, because no rule in this document reads them. In particular there is NO
@@ -383,7 +265,7 @@ export type ProductValidationSubject = ValidationSubject &
   UniquePropertyEntity & {
     /**
      * The derived base product type — `property name="baseProductType" type="string"
-     * persistent="false"` [`model/entity/Product.cfc:103`].
+     * persistent="false"` [`model/entity/Product.cfc:L103`].
      *
      * Typed as an open string, DELIBERATELY NOT as a three-member union of the seeded discriminators.
      * See {@link baseProductTypeInListMerchandise} for why narrowing it would be wrong.
@@ -405,24 +287,24 @@ export type ProductValidationSubject = ValidationSubject &
 
     /**
      * The price delegated to the default SKU — `property name="price" hb_formatType="currency"
-     * persistent="false"` [`model/entity/Product.cfc:118`]. See X1 at
+     * persistent="false"` [`model/entity/Product.cfc:L118`]. See X1 at
      * {@link priceRequiredConstraint}, including the boundary note about how it is resolved.
      */
     readonly price?: number;
 
-    /** `property name="productName" ormtype="string" notnull="true";` [`model/entity/Product.cfc:55`] */
+    /** `property name="productName" ormtype="string" notnull="true";` [`model/entity/Product.cfc:L55`] */
     readonly productName?: string;
 
     /**
      * `property name="productCode" ormtype="string" unique="true";`
-     * [`model/entity/Product.cfc:56`] — carries all three of this document's densest constraints.
+     * [`model/entity/Product.cfc:L56`] — carries all three of this document's densest constraints.
      */
     readonly productCode?: string;
 
     /**
      * The required product-type reference —
      * `property name="productType" cfc="ProductType" fieldtype="many-to-one" fkcolumn="productTypeID"
-     * fetch="join";` [`model/entity/Product.cfc:69`].
+     * fetch="join";` [`model/entity/Product.cfc:L69`].
      *
      * Typed with the unknown top type: a presence check only asks whether a reference is there, and
      * `../../domain/product/ProductType` is not a declared dependency of this file. See
@@ -432,33 +314,33 @@ export type ProductValidationSubject = ValidationSubject &
 
     /**
      * `property name="transactionExistsFlag" type="boolean" persistent="false"`
-     * [`model/entity/Product.cfc:110`] — the delete guard's subject.
+     * [`model/entity/Product.cfc:L110`] — the delete guard's subject.
      */
     readonly transactionExistsFlag?: boolean;
 
     /**
      * `property name="unusedProductOptions" type="array" persistent="false"`
-     * [`model/entity/Product.cfc:111`], resolved by the lazily memoised getter at
-     * [`model/entity/Product.cfc:635-640`]. Measured, never inspected.
+     * [`model/entity/Product.cfc:L111`], resolved by the lazily memoised getter at
+     * [`model/entity/Product.cfc:L635-L640`]. Measured, never inspected.
      */
     readonly unusedProductOptions?: readonly unknown[];
 
     /**
      * `property name="unusedProductOptionGroups" type="array" persistent="false"`
-     * [`model/entity/Product.cfc:112`], resolved at [`model/entity/Product.cfc:642-647`]. Measured,
+     * [`model/entity/Product.cfc:L112`], resolved at [`model/entity/Product.cfc:L642-L647`]. Measured,
      * never inspected.
      */
     readonly unusedProductOptionGroups?: readonly unknown[];
 
     /**
      * `property name="unusedProductSubscriptionTerms" type="array" persistent="false"`
-     * [`model/entity/Product.cfc:113`], resolved at [`model/entity/Product.cfc:649-654`] through the
+     * [`model/entity/Product.cfc:L113`], resolved at [`model/entity/Product.cfc:L649-L654`] through the
      * out-of-scope subscription service. Measured, never inspected. See the boundary note at
      * {@link unusedProductSubscriptionTermsMinCollectionConstraint}.
      */
     readonly unusedProductSubscriptionTerms?: readonly unknown[];
 
-    /** `property name="urlTitle" ormtype="string" unique="true";` [`model/entity/Product.cfc:54`] */
+    /** `property name="urlTitle" ormtype="string" unique="true";` [`model/entity/Product.cfc:L54`] */
     readonly urlTitle?: string;
   };
 
@@ -473,7 +355,7 @@ export type ProductValidationSubject = ValidationSubject &
  * `listFindNoCase(rule.contexts, arguments.context)` at
  * `org/Hibachi/HibachiValidationService.cfc:L71`. `../Validator` reproduces both halves, and its list
  * splitter deliberately does NOT trim elements — CFML list functions do not, so a space after a comma
- * would become part of an element. The value at `model/validation/Product.json:4` is written with no
+ * would become part of an element. The value at `model/validation/Product.json:L4` is written with no
  * space for that reason and is transcribed exactly.
  *
  * The AAP calls the process contexts by name in AAP 0.4.2.1, where the service members that run them
@@ -483,24 +365,19 @@ export type ProductValidationSubject = ValidationSubject &
  * `meta/tests/unit/IssuesTest.cfc:L107` passes in.
  * ============================================================================================ */
 
-/** The save context — a defaulted parameter at `org/Hibachi/HibachiService.cfc:L133`. */
 const SAVE_CONTEXT = 'save';
 
-/** The delete context — hard-coded at `org/Hibachi/HibachiService.cfc:L55`. */
 const DELETE_CONTEXT = 'delete';
 
-/** The add-option process context [`model/validation/Product.json:4`, `:13`]. */
 const ADD_OPTION_CONTEXT = 'addOption';
 
-/** The add-option-group process context [`model/validation/Product.json:4`, `:14`]. */
 const ADD_OPTION_GROUP_CONTEXT = 'addOptionGroup';
 
-/** The add-subscription-term process context [`model/validation/Product.json:5`, `:15`]. */
 const ADD_SUBSCRIPTION_TERM_CONTEXT = 'addSubscriptionTerm';
 
 /**
  * The one two-element context list in the document — `"addOptionGroup,addOption"` at
- * `model/validation/Product.json:4`.
+ * `model/validation/Product.json:L4`.
  *
  * TWO ENTRIES, NOT ONE. The gate splits on the comma, so this rule applies under either context
  * independently. Composed from the two single-context constants above so the pair cannot drift from
@@ -516,13 +393,13 @@ const ADD_OPTION_GROUP_OR_ADD_OPTION_CONTEXTS = `${ADD_OPTION_GROUP_CONTEXT},${A
  * (`org/Hibachi/HibachiValidationService.cfc:L224`, `:L228`, `:L232`), never against the constraint
  * that produced it. The trailing-segment form derived at `:L208` shapes the message text only.
  *
- * ⚠️ THREE DIFFERENT COMPILE-TIME CHECKS ARE USED, AND THE DISTINCTION IS NOT COSMETIC.
+ * THREE DIFFERENT COMPILE-TIME CHECKS ARE USED, AND THE DISTINCTION IS NOT COSMETIC.
  * `../../domain/product/Product` exports a property-name union that documents itself as the census of
  * what `model/entity/Product.cfc` declares — but it enumerates the PERSISTENT block at
- * [`model/entity/Product.cfc:52-99`] plus the audit names, and deliberately not the non-persistent
- * block at [`:102-123`]. Six of this document's eleven keys are non-persistent, so that union covers
+ * [`model/entity/Product.cfc:L52-L99`] plus the audit names, and deliberately not the non-persistent
+ * block at [`:L102-L123`]. Six of this document's eleven keys are non-persistent, so that union covers
  * only five of them and a check built on it alone would be WRONG for the other six: it would "prove"
- * that `price` is undeclared, when `model/entity/Product.cfc:118` plainly declares it. Each key is
+ * that `price` is undeclared, when `model/entity/Product.cfc:L118` plainly declares it. Each key is
  * therefore checked with the strongest claim that is actually TRUE of it:
  *
  *   - four persistent keys are checked against the persistent census;
@@ -539,7 +416,7 @@ const ADD_OPTION_GROUP_OR_ADD_OPTION_CONTEXTS = `${ADD_OPTION_GROUP_CONTEXT},${A
  * ============================================================================================ */
 
 /**
- * `model/validation/Product.json:9`, `model/entity/Product.cfc:55`.
+ * `model/validation/Product.json:L9`, `model/entity/Product.cfc:L55`.
  *
  * The only property in the entire in-scope slice whose column carries `notnull="true"`, which changes
  * how a BLANK payload value is applied during population — the empty string is assigned rather than the
@@ -548,17 +425,17 @@ const ADD_OPTION_GROUP_OR_ADD_OPTION_CONTEXTS = `${ADD_OPTION_GROUP_CONTEXT},${A
  */
 const PRODUCT_NAME_PROPERTY = 'productName' satisfies ProductPropertyName;
 
-/** `model/validation/Product.json:10`, `model/entity/Product.cfc:56`. */
+/** `model/validation/Product.json:L10`, `model/entity/Product.cfc:L56`. */
 const PRODUCT_CODE_PROPERTY = 'productCode' satisfies ProductPropertyName;
 
-/** `model/validation/Product.json:11`, `model/entity/Product.cfc:69`. */
+/** `model/validation/Product.json:L11`, `model/entity/Product.cfc:L69`. */
 const PRODUCT_TYPE_PROPERTY = 'productType' satisfies ProductPropertyName;
 
-/** `model/validation/Product.json:16`, `model/entity/Product.cfc:54`. */
+/** `model/validation/Product.json:L16`, `model/entity/Product.cfc:L54`. */
 const URL_TITLE_PROPERTY = 'urlTitle' satisfies ProductPropertyName;
 
 /**
- * `model/validation/Product.json:8`, `model/entity/Product.cfc:118`.
+ * `model/validation/Product.json:L8`, `model/entity/Product.cfc:L118`.
  *
  * Checked against the ported class's member census rather than the persistent one, for the reason given
  * in this section's header: the property is real but non-persistent, so it is absent from a union that
@@ -566,13 +443,13 @@ const URL_TITLE_PROPERTY = 'urlTitle' satisfies ProductPropertyName;
  */
 const PRICE_PROPERTY = 'price' satisfies keyof Product;
 
-/** `model/validation/Product.json:12`, `model/entity/Product.cfc:110`. Non-persistent. */
+/** `model/validation/Product.json:L12`, `model/entity/Product.cfc:L110`. Non-persistent. */
 const TRANSACTION_EXISTS_FLAG_PROPERTY = 'transactionExistsFlag' satisfies keyof Product;
 
-/** `model/validation/Product.json:13`, `model/entity/Product.cfc:111`. Non-persistent. */
+/** `model/validation/Product.json:L13`, `model/entity/Product.cfc:L111`. Non-persistent. */
 const UNUSED_PRODUCT_OPTIONS_PROPERTY = 'unusedProductOptions' satisfies keyof Product;
 
-/** `model/validation/Product.json:14`, `model/entity/Product.cfc:112`. Non-persistent. */
+/** `model/validation/Product.json:L14`, `model/entity/Product.cfc:L112`. Non-persistent. */
 const UNUSED_PRODUCT_OPTION_GROUPS_PROPERTY = 'unusedProductOptionGroups' satisfies keyof Product;
 
 /**
@@ -595,8 +472,8 @@ type NameResolvedByProductAccessor<
 > = TAccessor extends keyof Product ? TName : never;
 
 /**
- * `model/validation/Product.json:4` and `:5`, `model/entity/Product.cfc:103`, resolved by the accessor
- * at [`model/entity/Product.cfc:493-495`].
+ * `model/validation/Product.json:L4` and `:L5`, `model/entity/Product.cfc:L103`, resolved by the accessor
+ * at [`model/entity/Product.cfc:L493-L495`].
  *
  * See {@link baseProductTypeInListMerchandise} for why the value it yields must not be narrowed to a
  * union of the seeded discriminators.
@@ -607,8 +484,8 @@ const BASE_PRODUCT_TYPE_PROPERTY: NameResolvedByProductAccessor<
 > = 'baseProductType';
 
 /**
- * `model/validation/Product.json:15`, `model/entity/Product.cfc:113`, resolved by the accessor at
- * [`model/entity/Product.cfc:649-654`] through the out-of-scope subscription service.
+ * `model/validation/Product.json:L15`, `model/entity/Product.cfc:L113`, resolved by the accessor at
+ * [`model/entity/Product.cfc:L649-L654`] through the out-of-scope subscription service.
  */
 const UNUSED_PRODUCT_SUBSCRIPTION_TERMS_PROPERTY: NameResolvedByProductAccessor<
   'unusedProductSubscriptionTerms',
@@ -624,7 +501,7 @@ const UNUSED_PRODUCT_SUBSCRIPTION_TERMS_PROPERTY: NameResolvedByProductAccessor<
  * `org/Hibachi/HibachiValidationService.cfc:L171` skips the rule because no such property exists — is a
  * FACT ABOUT ANOTHER FILE, and facts about other files are exactly what drift silently.
  *
- * ⚠️ IT IS DELIBERATELY WRITTEN AGAINST THE CLASS'S MEMBER CENSUS RATHER THAN THE PERSISTENT-PROPERTY
+ * IT IS DELIBERATELY WRITTEN AGAINST THE CLASS'S MEMBER CENSUS RATHER THAN THE PERSISTENT-PROPERTY
  * UNION, and the difference is the whole reason this alias is trustworthy. The persistent union omits
  * every non-persistent property, so a guard built on it would also report `price` as undeclared and
  * would prove nothing about `physicalCounts` in particular. The class's member census includes the
@@ -641,7 +518,7 @@ const UNUSED_PRODUCT_SUBSCRIPTION_TERMS_PROPERTY: NameResolvedByProductAccessor<
 type NameNotDeclaredByProduct<TName extends string> = TName extends keyof Product ? never : TName;
 
 /**
- * `model/validation/Product.json:7` — transcribed verbatim from the document and DELIBERATELY NOT
+ * `model/validation/Product.json:L7` — transcribed verbatim from the document and DELIBERATELY NOT
  * checked against any positive census, because it is in none of them. See
  * {@link physicalCountsMaxCollectionConstraint} for the full finding; the annotation here is what makes
  * the absence enforced rather than merely described.
@@ -677,9 +554,9 @@ const PHYSICAL_COUNTS_PROPERTY: NameNotDeclaredByProduct<'physicalCounts'> = 'ph
  * ============================================================================================ */
 
 /**
- * ⭐ GATE 1 of 2 on the derived base product type: the two OPTION contexts require MERCHANDISE.
+ * GATE 1 of 2 on the derived base product type: the two OPTION contexts require MERCHANDISE.
  *
- * [`model/validation/Product.json:4`]
+ * [`model/validation/Product.json:L4`]
  * `{"contexts":"addOptionGroup,addOption","inList":"merchandise"}`
  *
  * This is the single most consequential declaration in the file, because it is the one a traceable
@@ -691,7 +568,7 @@ const PHYSICAL_COUNTS_PROPERTY: NameNotDeclaredByProduct<'physicalCounts'> = 'ph
  * LIST MEMBERSHIP IS WHOLE-ELEMENT AND CASE-INSENSITIVE — NOT A SUBSTRING TEST (guideline 6)
  * =============================================================================================
  * The legacy evaluator is `listFindNoCase(constraintValue, propertyValue)` at
- * `org/Hibachi/HibachiValidationService.cfc:L459-L465`. ⚠️ A TypeScript port written with
+ * `org/Hibachi/HibachiValidationService.cfc:L459-L465`. A TypeScript port written with
  * `String.prototype.includes` or `indexOf` would be WRONG, and wrong in a way no test of the happy path
  * would catch: `"merchandise".includes("merchand")` is true, so a truncated or partial value would be
  * admitted where the legacy engine rejects it. The faithful form is split on the comma, then compare
@@ -704,19 +581,19 @@ const PHYSICAL_COUNTS_PROPERTY: NameNotDeclaredByProduct<'physicalCounts'> = 'ph
  * presence rule. No presence rule is declared on `baseProductType`, and none may be added.
  *
  * =============================================================================================
- * ⭐ THE VALUE IS DERIVED, AND MUST NOT BE NARROWED TO A UNION (guideline 6)
+ * THE VALUE IS DERIVED, AND MUST NOT BE NARROWED TO A UNION (guideline 6)
  * =============================================================================================
- * `baseProductType` is non-persistent [`model/entity/Product.cfc:103`]. Its accessor at
- * [`model/entity/Product.cfc:493-495`] is one delegation to the product type, and
- * `ProductType.getBaseProductType()` at [`model/entity/ProductType.cfc:110-115`] then does a ROOT
+ * `baseProductType` is non-persistent [`model/entity/Product.cfc:L103`]. Its accessor at
+ * [`model/entity/Product.cfc:L493-L495`] is one delegation to the product type, and
+ * `ProductType.getBaseProductType()` at [`model/entity/ProductType.cfc:L110-L115`] then does a ROOT
  * LOOKUP: when its own system code is null or empty it walks to the FIRST identifier in the product-type
  * identifier path and returns THAT row's system code.
  *
  * So the value is whatever a database row holds. It can be any string, and it can be absent. The three
- * discriminators seeded at `config/dbdata/SlatwallProductType.xml.cfm:13-15` are the only ones the
+ * discriminators seeded at `config/dbdata/SlatwallProductType.xml.cfm:L13-L15` are the only ones the
  * shipped data provides, but nothing in the schema constrains a deployment to them.
  *
- * ⚠️ THEREFORE: `src/domain/BaseProductType.ts` IS NOT IMPORTED HERE, and the two list values below stay
+ * THEREFORE: `src/domain/BaseProductType.ts` IS NOT IMPORTED HERE, and the two list values below stay
  * PLAIN STRING LITERALS transcribed from the document. Narrowing them to a three-member union would
  * misrepresent an open database value as a closed set, and would couple this file to a module that is not
  * among its declared dependencies (AAP 0.7.3 S4). The literals are written exactly as
@@ -734,10 +611,10 @@ export const baseProductTypeInListMerchandise = Object.freeze({
 /**
  * GATE 2 of 2 on the derived base product type: the term context requires SUBSCRIPTION.
  *
- * [`model/validation/Product.json:5`]
+ * [`model/validation/Product.json:L5`]
  * `{"contexts":"addSubscriptionTerm","inList":"subscription"}`
  *
- * ⚠️ THE BOUNDARY NUANCE — THIS RULE IS CARRIED, NOT DROPPED (guideline 6). The process object this gate
+ * THE BOUNDARY NUANCE — THIS RULE IS CARRIED, NOT DROPPED (guideline 6). The process object this gate
  * protects, `model/process/Product_AddSubscriptionTerm.cfc`, and its own validation document
  * `model/validation/Product_AddSubscriptionTerm.json`, are BOTH explicitly out of scope under AAP
  * 0.2.2.4. The gate itself is not: it lives inside the in-scope `model/validation/Product.json` and is
@@ -767,16 +644,16 @@ export const baseProductTypeInListSubscription = Object.freeze({
 } as const) satisfies InListConstraint;
 
 /**
- * ⭐⭐ DELETE GUARD 1 of 2 — AND IT IS INERT AT RUN TIME. DECLARE IT ANYWAY; DO NOT RETARGET IT.
+ * DELETE GUARD 1 of 2 — AND IT IS INERT AT RUN TIME. DECLARE IT ANYWAY; DO NOT RETARGET IT.
  *
- * [`model/validation/Product.json:7`] `"physicalCounts": [{"contexts":"delete","maxCollection":0}]`
+ * [`model/validation/Product.json:L7`] `"physicalCounts": [{"contexts":"delete","maxCollection":0}]`
  *
  * =============================================================================================
  * THE FINDING (guideline 6)
  * =============================================================================================
  * `model/entity/Product.cfc` DECLARES NO `physicalCounts` PROPERTY. A search of the whole file for that
  * name returns zero occurrences. What it declares instead is `physicals`, at
- * [`model/entity/Product.cfc:90`] — a many-to-many across the physical-product link table.
+ * [`model/entity/Product.cfc:L90`] — a many-to-many across the physical-product link table.
  *
  * The gate that makes the difference observable is `if(arguments.object.hasProperty(propertyIdentifier))`
  * at `org/Hibachi/HibachiValidationService.cfc:L171`, and its precise semantics matter:
@@ -790,7 +667,7 @@ export const baseProductTypeInListSubscription = Object.freeze({
  * live while this one is not.
  *
  * =============================================================================================
- * ⚠️⚠️ DO NOT RETARGET THIS GUARD TO `physicals`. IT IS THE SINGLE LARGEST HAZARD IN THIS FOLDER.
+ * DO NOT RETARGET THIS GUARD TO `physicals`. IT IS THE SINGLE LARGEST HAZARD IN THIS FOLDER.
  * =============================================================================================
  * Pointing it at the property the entity actually declares would ACTIVATE a guard that has never been
  * active and would begin REJECTING DELETES THE LEGACY SYSTEM PERMITS. That is a direct violation of AAP
@@ -833,9 +710,9 @@ export const physicalCountsMaxCollectionConstraint = Object.freeze({
 } as const) satisfies MaxCollectionConstraint;
 
 /**
- * ⚠️ X1 — `price` IS REQUIRED ON SAVE, AND IT IS EASY TO MISS.
+ * X1 — `price` IS REQUIRED ON SAVE, AND IT IS EASY TO MISS.
  *
- * [`model/validation/Product.json:8`]
+ * [`model/validation/Product.json:L8`]
  * `{"contexts":"save","required":true,"dataType":"numeric"}`
  *
  * The AAP's own summary prose for this file lists only the name, code, type and URL-title properties for
@@ -843,7 +720,7 @@ export const physicalCountsMaxCollectionConstraint = Object.freeze({
  * above. Omitting it would let a priceless product save where the legacy system rejects it.
  *
  * =============================================================================================
- * ⚠️ NO NUMERIC FLOOR IS DECLARED, AND NONE MAY BE ADDED (guideline 6)
+ * NO NUMERIC FLOOR IS DECLARED, AND NONE MAY BE ADDED (guideline 6)
  * =============================================================================================
  * `model/validation/Sku.json` declares a floor of zero on ITS price. `model/validation/Product.json`
  * DOES NOT, on this one or on any property — the key appears zero times in this document. The asymmetry
@@ -852,7 +729,7 @@ export const physicalCountsMaxCollectionConstraint = Object.freeze({
  * inventing a constraint the source does not state.
  *
  * The only numeric literals this file may contain are the two the document declares — the ceiling 0 at
- * `:7` and the floor 1 at `:13`, `:14` and `:15` — and each carries its locator.
+ * `:L7` and the floor 1 at `:L13`, `:L14` and `:L15` — and each carries its locator.
  *
  * =============================================================================================
  * PRESENCE SEMANTICS, reproduced by `../Validator` from
@@ -876,7 +753,7 @@ export const physicalCountsMaxCollectionConstraint = Object.freeze({
  * BOUNDARY NOTE — HOW THIS VALUE IS RESOLVED, AND WHAT THAT IMPLIES (AAP 0.7.3 S8)
  * =============================================================================================
  * `price` is NON-PERSISTENT: `property name="price" hb_formatType="currency" persistent="false"` at
- * [`model/entity/Product.cfc:118`], delegated to the default SKU. AAP 0.4.1.6 routes price reads for this
+ * [`model/entity/Product.cfc:L118`], delegated to the default SKU. AAP 0.4.1.6 routes price reads for this
  * slice through the pricing boundary port — declared at `slatwall-ts/src/ports/PricingPort.ts`, which this
  * file deliberately does NOT import, because a rule names a property and never resolves it — and AAP 0.4.2
  * marks several price-adjacent members as boundary-stubbed.
@@ -884,7 +761,7 @@ export const physicalCountsMaxCollectionConstraint = Object.freeze({
  * The consequence, stated and NOT resolved: if the value presented to this rule resolves to absent —
  * because a product has no default SKU yet, or because the boundary is stubbed — then presence FAILS and
  * the save is rejected. That is the faithful outcome of the legacy predicate applied to an absent value,
- * and it is flagged rather than smoothed over, exactly as AAP 0.8.3.6 requires. ⚠️ It must NOT be
+ * and it is flagged rather than smoothed over, exactly as AAP 0.8.3.6 requires. It must NOT be
  * "fixed" from here: no fallback value, no default, no relaxation of the rule and no absence guard. Any
  * of those would change which products save. Resolution, if any is ever wanted, belongs to whoever
  * assembles the validation subject.
@@ -899,9 +776,9 @@ export const priceRequiredConstraint = Object.freeze({
 /**
  * `price` must additionally be NUMERIC on save — the second constraint of the same rule object.
  *
- * [`model/validation/Product.json:8`]
+ * [`model/validation/Product.json:L8`]
  *
- * ⚠️ PASSES ON AN ABSENT VALUE (`org/Hibachi/HibachiValidationService.cfc:L256-L266` short-circuits on
+ * PASSES ON AN ABSENT VALUE (`org/Hibachi/HibachiValidationService.cfc:L256-L266` short-circuits on
  * absence), which is exactly why the document pairs it with the presence rule above. Neither constraint
  * alone expresses "a number must be there": the presence rule admits any non-empty simple value including
  * a word, and the type rule admits nothing at all. Both are needed, and both are declared.
@@ -926,16 +803,16 @@ export const priceDataTypeConstraint = Object.freeze({
 /**
  * `productName` is REQUIRED on save.
  *
- * [`model/validation/Product.json:9`] `"productName": [{"contexts":"save","required":true}]`
+ * [`model/validation/Product.json:L9`] `"productName": [{"contexts":"save","required":true}]`
  *
- * ⚠️ THE APPLICATION RULE CARRIES MORE THAN THE COLUMN DOES. The mapping is
- * `property name="productName" ormtype="string" notnull="true";` at [`model/entity/Product.cfc:55`]. The
+ * THE APPLICATION RULE CARRIES MORE THAN THE COLUMN DOES. The mapping is
+ * `property name="productName" ormtype="string" notnull="true";` at [`model/entity/Product.cfc:L55`]. The
  * column's not-null attribute and this rule are NOT the same guarantee: the column rejects a null, while
  * this rule additionally rejects the empty string and a whitespace-only string, and reports the failure as
  * a validation message keyed by the property rather than as a driver-level integrity error. Dropping the
  * rule on the grounds that the column already covers it would change observable behavior in both respects.
  *
- * NOTHING ELSE IS DECLARED ON THIS PROPERTY. No maximum length — [`model/entity/Product.cfc:55`] carries
+ * NOTHING ELSE IS DECLARED ON THIS PROPERTY. No maximum length — [`model/entity/Product.cfc:L55`] carries
  * no length attribute to derive one from, and `maxLength` appears zero times in this document. No minimum
  * length, which is not among the thirteen keys the seven documents use. No format pattern: the code
  * pattern belongs to `productCode`, and applying it to a human-readable name would reject every product
@@ -954,7 +831,7 @@ export const productNameRequiredConstraint = Object.freeze({
 /**
  * `productCode` is REQUIRED on save — the first of THREE constraints flattened from one rule object.
  *
- * [`model/validation/Product.json:10`]
+ * [`model/validation/Product.json:L10`]
  * `{"contexts":"save","required":true,"unique":true,"regex":"…"}`
  *
  * THE DENSEST RULE IN THE DOCUMENT, and the clearest illustration of the flattening described in the
@@ -981,53 +858,29 @@ export const productCodeRequiredConstraint = Object.freeze({
 } as const) satisfies RequiredConstraint;
 
 /**
- * ⭐⭐ `productCode` must be UNIQUE on save — and this declaration carries the X8 correction for the whole
+ * `productCode` must be UNIQUE on save — and this declaration carries the X8 correction for the whole
  * folder, because this is where the disputed constraint lives.
  *
- * [`model/validation/Product.json:10`], [`model/entity/Product.cfc:56`]
+ * [`model/validation/Product.json:L10`], [`model/entity/Product.cfc:L56`]
  *
  * =============================================================================================
- * ⚠️ X8 — THE FOLDER-WIDE COUNT IS SEVEN, AND TWO UPSTREAM DOCUMENTS UNDERCOUNT IT (guideline 6)
+ * X8 — THE FOLDER-WIDE COUNT IS SEVEN, AND THIS DOCUMENT DECLARES TWO OF THEM
  * =============================================================================================
- * A direct search for the uniqueness key across exactly the seven in-scope validation documents returns
- * SEVEN rules. All seven locators, measured rather than recalled:
+ * `../Validator` carries all seven locators under DECISION D-2 AND "THE SEVEN". Two are declared by this
+ * document: `model/validation/Product.json:L10` here, and `model/validation/Product.json:L16` on the URL
+ * title. The second is the one most easily missed, because a reader who expects a URL title to be merely
+ * required will not look for a uniqueness rule beside it — and the constraint table in the module header
+ * above transcribes that line as declaring both.
  *
- *   model/validation/Product.json:10      productCode       ← this declaration
- *   model/validation/Product.json:16      urlTitle          ← THE DISPUTED ONE
- *   model/validation/Sku.json:11          skuCode
- *   model/validation/Brand.json:5         urlTitle
- *   model/validation/Option.json:3        optionCode
- *   model/validation/OptionGroup.json:4   optionGroupCode
- *   model/validation/ProductType.json:4   urlTitle
- *
- * `model/validation/Product_UpdateSkus.json` contributes NONE.
- *
- * Two upstream documents disagree, and the disagreement is worth resolving in writing rather than leaving
- * for the next reader to trip over:
- *   - The sibling declaration `../../ports/UniquePropertyPort` states in its brief that
- *     `model/validation/Product.json` declares its URL title as required but NOT unique. ⚠️ THAT CLAIM IS
- *     FALSE — line 16 is transcribed byte-exact in the module header table above and declares both — and
- *     the same brief is internally inconsistent, since its own table lists that very property among the
- *     six it counts. The root cause is that its mandated reads cover five validation documents and omit
- *     `model/validation/ProductType.json` altogether, which is why the seventh rule is invisible to it.
- *   - A summary elsewhere names five columns rather than seven.
- *
- * RECONCILING THE NUMBERS SO THEY STOP APPEARING TO CONTRADICT. AAP IR-5's "five of the eight unique
- * columns" counts ENTITY COLUMN METADATA, a different and independent mechanism — IR-5 says so itself,
- * enforcing uniqueness "independently of the `unique=\"true\"` column metadata". A repository-wide search
- * of the entity directory for that attribute returns exactly EIGHT declarations, five of which are in this
- * slice. The VALIDATION-DOCUMENT count is SEVEN. Both statements are true; they measure different things,
- * and neither is a ceiling on the other.
- *
- * ⚠️ Do NOT treat the sibling's six as a scope ceiling, and do NOT edit the sibling's file to correct it —
- * another agent's file is not this file's to change. The correction is stated here instead. Note also that
- * `../Validator` independently carries this same correction with the same seven locators, so the two agree
- * and there is no unresolved cross-file conflict.
+ * AAP IR-5's "five of the eight unique columns" counts ENTITY COLUMN METADATA, which IR-5 itself
+ * identifies as the separate mechanism, enforcing uniqueness "independently of the `unique="true"`
+ * column metadata". The VALIDATION-DOCUMENT count is SEVEN. Both statements are true of different
+ * mechanisms, and neither is a ceiling on the other.
  *
  * =============================================================================================
- * ⭐⭐ POLARITY, PINNED: `true` MEANS UNIQUE, WHICH MEANS SAFE TO SAVE (guideline 6)
+ * POLARITY, PINNED: `true` MEANS UNIQUE, WHICH MEANS SAFE TO SAVE (guideline 6)
  * =============================================================================================
- * Proven first-hand, not inferred, at `org/Hibachi/HibachiDAO.cfc:L130-L146`: the legacy body runs an
+ * At `org/Hibachi/HibachiDAO.cfc:L130-L146` the legacy body runs an
  * existence query and then returns FALSE when it finds matching rows (`:L142-L144`) and TRUE when it finds
  * none (`:L146`). The validation evaluator at `org/Hibachi/HibachiValidationService.cfc:L467-L470` returns
  * that result UNMODIFIED as its own pass-or-fail verdict.
@@ -1040,10 +893,10 @@ export const productCodeRequiredConstraint = Object.freeze({
  * =============================================================================================
  * THREE FURTHER FACTS ABOUT THE LEGACY CHECK, each shaping what a correct implementation must do
  * =============================================================================================
- *   - ⭐ AN ABSENT VALUE ALWAYS PASSES, INDIRECTLY. The predicate compares the property against a bound
+ *   - AN ABSENT VALUE ALWAYS PASSES, INDIRECTLY. The predicate compares the property against a bound
  *     value; a null bind matches no row, so zero rows come back and the checker answers true. There is NO
  *     absence guard in the evaluator at `org/Hibachi/HibachiValidationService.cfc:L467-L470` — in
- *     deliberate contrast to its null-tolerant sibling at `:L472-L479`, which has one. ⚠️ THEREFORE the
+ *     deliberate contrast to its null-tolerant sibling at `:L472-L479`, which has one. THEREFORE the
  *     injected uniqueness port MUST treat an absent value as unique and return true: it must NOT raise, it
  *     must NOT translate the comparison into a null test, and it must NOT report the value as taken. Note
  *     that this constraint is paired with a presence rule on the same property, so an absent code is
@@ -1063,7 +916,7 @@ export const productCodeRequiredConstraint = Object.freeze({
  * DUAL ENFORCEMENT, AND WHY THE APPLICATION CHECK IS KEPT (IR-5)
  * =============================================================================================
  * Uniqueness is declared twice for this property, in two independent mechanisms: the column metadata at
- * [`model/entity/Product.cfc:56`] and the document's own rule. AAP IR-5 requires the application-side check
+ * [`model/entity/Product.cfc:L56`] and the document's own rule. AAP IR-5 requires the application-side check
  * be retained regardless, so the failure surfaces as a VALIDATION MESSAGE KEYED BY THE PROPERTY rather than
  * as a driver-level duplicate-key error escaping the data layer. A port that dropped this constraint and
  * leaned on the column would move the failure and change observable behavior.
@@ -1089,7 +942,7 @@ export const productCodeUniqueConstraint = Object.freeze({
 /**
  * `productCode` must MATCH THE SHARED CODE FORMAT on save — the third constraint of the same rule object.
  *
- * [`model/validation/Product.json:10`]
+ * [`model/validation/Product.json:L10`]
  *
  * The pattern is {@link CODE_FORMAT_REGEX}, owned by this file and shared with the option and option-group
  * code properties. See that declaration for the character-class analysis, the flag prohibitions, the
@@ -1111,10 +964,10 @@ export const productCodeRegexConstraint = Object.freeze({
 } as const) satisfies RegexConstraint;
 
 /**
- * ⭐⭐ `productType` is REQUIRED on save — AND THIS DECLARATION IS THE ONLY THING ENFORCING THE
+ * `productType` is REQUIRED on save — AND THIS DECLARATION IS THE ONLY THING ENFORCING THE
  * RELATIONSHIP ANYWHERE IN THE SYSTEM.
  *
- * [`model/validation/Product.json:11`] `"productType": [{"contexts":"save","required":true}]`
+ * [`model/validation/Product.json:L11`] `"productType": [{"contexts":"save","required":true}]`
  *
  * =============================================================================================
  * THE SOLE-ENFORCEMENT FINDING (guideline 6)
@@ -1122,26 +975,26 @@ export const productCodeRegexConstraint = Object.freeze({
  * The entity mapping is:
  *
  *     property name="productType" cfc="ProductType" fieldtype="many-to-one"
- *     fkcolumn="productTypeID" fetch="join";              [`model/entity/Product.cfc:69`]
+ *     fkcolumn="productTypeID" fetch="join";              [`model/entity/Product.cfc:L69`]
  *
  * There is NO `required="true"` attribute on it. The relationship is therefore not enforced by the mapping,
  * and the schema is unchanged by this refactor — AAP 0.1.1.1 classifies the exercise as logic extraction
  * with the physical tables retained as the shared contract between the legacy application and this service.
  * So the database will accept a product row with no product type quite happily.
  *
- * ⚠️ A reader who assumes mapping-level or schema-level enforcement will judge this rule redundant and drop
+ * A reader who assumes mapping-level or schema-level enforcement will judge this rule redundant and drop
  * it. It is not redundant: it is the ENTIRE mechanism. Dropping or weakening it silently permits type-less
  * products, and a type-less product cannot resolve a base product type at all — which would in turn make
- * the two option gates at [`model/validation/Product.json:4`] unreachable in a way the legacy system never
+ * the two option gates at [`model/validation/Product.json:L4`] unreachable in a way the legacy system never
  * allowed.
  *
  * THE SAME PATTERN HOLDS ELSEWHERE IN THE FOLDER, worth naming so it reads as a pattern rather than an
- * oddity: the brand name at [`model/entity/Brand.cfc:56`], the product-type name at
- * [`model/entity/ProductType.cfc:57`] and the required option-group reference at
- * [`model/entity/Option.cfc:59`] are all enforced by their validation documents alone.
+ * oddity: the brand name at [`model/entity/Brand.cfc:L56`], the product-type name at
+ * [`model/entity/ProductType.cfc:L57`] and the required option-group reference at
+ * [`model/entity/Option.cfc:L59`] are all enforced by their validation documents alone.
  *
- * ⚠️ AND THE DELIBERATE CONTRAST, so the absence of a matching rule elsewhere is not read as an oversight:
- * the SKU's own product reference at [`model/entity/Sku.cfc:65`] ALSO lacks a mapping-level requirement AND
+ * AND THE DELIBERATE CONTRAST, so the absence of a matching rule elsewhere is not read as an oversight:
+ * the SKU's own product reference at [`model/entity/Sku.cfc:L65`] ALSO lacks a mapping-level requirement AND
  * has no validation rule at all in `model/validation/Sku.json`. That gap is legacy behavior. NO rule may be
  * declared for it — not here, and not in `./sku.rules` (AAP 0.7.3 S9).
  *
@@ -1162,10 +1015,10 @@ export const productTypeRequiredConstraint = Object.freeze({
 /**
  * DELETE GUARD 2 of 2 — a product with transaction history cannot be deleted. THIS ONE IS LIVE.
  *
- * [`model/validation/Product.json:12`] `"transactionExistsFlag": [{"contexts":"delete","eq":false}]`
+ * [`model/validation/Product.json:L12`] `"transactionExistsFlag": [{"contexts":"delete","eq":false}]`
  *
  * The contrast with the other delete guard is the whole lesson of this document's delete surface:
- * `transactionExistsFlag` IS declared, as non-persistent, at [`model/entity/Product.cfc:110`], so the
+ * `transactionExistsFlag` IS declared, as non-persistent, at [`model/entity/Product.cfc:L110`], so the
  * existence gate at `org/Hibachi/HibachiValidationService.cfc:L171` admits it and the rule fires on every
  * delete. `physicalCounts` is declared nowhere and is skipped. Same document, same context, opposite fates,
  * and the only difference is declaration.
@@ -1187,18 +1040,18 @@ export const productTypeRequiredConstraint = Object.freeze({
  * against the resolved subject itself being absent, at `:L387-L390`.
  *
  * =============================================================================================
- * ⚠️ X7 — DO NOT FABRICATE A SKU DELETE GUARD (guideline 6)
+ * X7 — DO NOT FABRICATE A SKU DELETE GUARD (guideline 6)
  * =============================================================================================
  * A summary elsewhere pairs this property with the SKU collection when describing collection ceilings.
  * `model/validation/Product.json` HAS NO `skus` GUARD. Its ONLY two delete rules are the inert
- * `physicalCounts` ceiling at `:7` and this equality guard at `:12` — the module header table above is a
+ * `physicalCounts` ceiling at `:L7` and this equality guard at `:L12` — the module header table above is a
  * complete census of the document. Declaring a SKU guard would reject deletes the legacy system permits,
  * which is the same guideline-4 violation as retargeting the inert guard. NONE is declared, here or anywhere
  * in this file, and the subject contract carries no member for that collection so one cannot be added without
  * also widening the contract.
  *
  * RELATED BOUNDARY NOTE, stated and not resolved (AAP 0.7.3 S8): the SKU collection is mapped
- * `cascade="all-delete-orphan" inverse="true"` at [`model/entity/Product.cfc:73`], so the legacy object-
+ * `cascade="all-delete-orphan" inverse="true"` at [`model/entity/Product.cfc:L73`], so the legacy object-
  * relational layer would happily CASCADE-DELETE a product's SKUs, and NO validation rule blocks it. The
  * tension between a cascade that deletes children and a guard set that does not mention them is real legacy
  * behavior. It is recorded here; it is not resolved, and transaction and flush semantics are the concern of
@@ -1214,14 +1067,14 @@ export const transactionExistsFlagEqualityConstraint = Object.freeze({
 /**
  * The add-option context requires AT LEAST ONE UNUSED OPTION — gate 1 of the three collection floors.
  *
- * [`model/validation/Product.json:13`] `"unusedProductOptions": [{"contexts":"addOption","minCollection":1}]`
+ * [`model/validation/Product.json:L13`] `"unusedProductOptions": [{"contexts":"addOption","minCollection":1}]`
  *
  * A product with no options left to add is not processable for `addOption`. Together with the base-type gate
- * at `:4`, this is the whole of the `addOption` entity-pass validation — and, per P-2 in the module header,
+ * at `:L4`, this is the whole of the `addOption` entity-pass validation — and, per P-2 in the module header,
  * the whole of that context's validation altogether, since the process object has no document of its own.
  *
  * =============================================================================================
- * ⚠️ THE ASYMMETRY THAT CATCHES PEOPLE: AN ABSENT VALUE PASSES, AN EMPTY COLLECTION FAILS
+ * THE ASYMMETRY THAT CATCHES PEOPLE: AN ABSENT VALUE PASSES, AN EMPTY COLLECTION FAILS
  * =============================================================================================
  * From `org/Hibachi/HibachiValidationService.cfc:L301-L307`, reproduced by `../Validator`:
  *   - absent or null            PASSES — an explicit short-circuit, so the gate does NOT fire
@@ -1235,7 +1088,7 @@ export const transactionExistsFlagEqualityConstraint = Object.freeze({
  * SILENTLY DISABLES the gate, while presenting it as an empty array blocks the process. The two are not
  * interchangeable and the difference is not detectable from this file.
  *
- * VALUE RESOLUTION IS THE DOMAIN LAYER'S JOB. The legacy getter at [`model/entity/Product.cfc:635-640`]
+ * VALUE RESOLUTION IS THE DOMAIN LAYER'S JOB. The legacy getter at [`model/entity/Product.cfc:L635-L640`]
  * memoises into the entity's own scope and delegates to the option service. The ported entity keeps that
  * member for exactly this gate's benefit; this rule only names the property. No memoisation happens here
  * (M7) and nothing is invoked.
@@ -1250,13 +1103,13 @@ export const unusedProductOptionsMinCollectionConstraint = Object.freeze({
 /**
  * The add-option-group context requires AT LEAST ONE UNUSED OPTION GROUP — gate 2 of three.
  *
- * [`model/validation/Product.json:14`]
+ * [`model/validation/Product.json:L14`]
  * `"unusedProductOptionGroups": [{"contexts":"addOptionGroup","minCollection":1}]`
  *
  * Semantics are identical to {@link unusedProductOptionsMinCollectionConstraint}; see that declaration for
- * the absence-versus-empty asymmetry. The legacy getter is at [`model/entity/Product.cfc:642-647`].
+ * the absence-versus-empty asymmetry. The legacy getter is at [`model/entity/Product.cfc:L642-L647`].
  *
- * This gate and the base-type gate at `:4` are the two rules the `issue_1331` regression path traverses; the
+ * This gate and the base-type gate at `:L4` are the two rules the `issue_1331` regression path traverses; the
  * regression fails on the base-type gate specifically, because the product it builds has no options at all
  * and so never reaches a meaningful collection state. See TRACEABLE LEGACY COVERAGE in the module header.
  *
@@ -1270,11 +1123,11 @@ export const unusedProductOptionGroupsMinCollectionConstraint = Object.freeze({
 /**
  * The add-subscription-term context requires AT LEAST ONE UNUSED TERM — gate 3 of three.
  *
- * [`model/validation/Product.json:15`]
+ * [`model/validation/Product.json:L15`]
  * `"unusedProductSubscriptionTerms": [{"contexts":"addSubscriptionTerm","minCollection":1}]`
  *
- * ⚠️ BOUNDARY NOTE — THIS GATE'S OUTCOME AGAINST A STUBBED COLLABORATOR (AAP 0.7.3 S8, guideline 6)
- * The legacy getter at [`model/entity/Product.cfc:649-654`] delegates to the SUBSCRIPTION SERVICE, and the
+ * BOUNDARY NOTE — THIS GATE'S OUTCOME AGAINST A STUBBED COLLABORATOR (AAP 0.7.3 S8, guideline 6)
+ * The legacy getter at [`model/entity/Product.cfc:L649-L654`] delegates to the SUBSCRIPTION SERVICE, and the
  * whole subscription family is out of scope under AAP 0.2.2.1. Where the ported value therefore resolves to
  * an EMPTY collection rather than to an absent one, the asymmetry recorded at
  * {@link unusedProductOptionsMinCollectionConstraint} applies with full force: an empty array FAILS a floor
@@ -1282,7 +1135,7 @@ export const unusedProductOptionGroupsMinCollectionConstraint = Object.freeze({
  * be processable.
  *
  * That outcome is STATED, NOT RESOLVED, exactly as AAP 0.8.3.6 requires of an execution-model or boundary
- * mismatch. ⚠️ It must NOT be "fixed" from here: do not special-case the property, do not weaken the floor,
+ * mismatch. It must NOT be "fixed" from here: do not special-case the property, do not weaken the floor,
  * do not add an absence guard, and above all do NOT arrange for the value to be presented as absent in order
  * to make the gate pass — that would silently disable a live rule. The rule is transcribed exactly as the
  * document declares it, and the gap belongs to whoever assembles the subject.
@@ -1302,7 +1155,7 @@ export const unusedProductSubscriptionTermsMinCollectionConstraint = Object.free
 /**
  * `urlTitle` is REQUIRED on save — the first of two constraints flattened from one rule object.
  *
- * [`model/validation/Product.json:16`] `{"contexts":"save","required":true,"unique":true}`
+ * [`model/validation/Product.json:L16`] `{"contexts":"save","required":true,"unique":true}`
  *
  * Presence semantics are identical to {@link priceRequiredConstraint}; see that declaration.
  *
@@ -1314,8 +1167,8 @@ export const unusedProductSubscriptionTermsMinCollectionConstraint = Object.free
  *
  * NOTHING ELSE IS DECLARED ON THIS PROPERTY. No format pattern — the code pattern belongs to the three code
  * properties and `model/validation/Product.json` declares no format rule here. No maximum length:
- * [`model/entity/Product.cfc:54`] carries no length attribute, and `maxLength` appears zero times in this
- * document. Both absences were MEASURED, and both are recorded positively so that a reader comparing this
+ * [`model/entity/Product.cfc:L54`] carries no length attribute, and `maxLength` appears zero times in this
+ * document. Both absences are recorded positively so that a reader comparing this
  * property with the code property above does not conclude a rule was forgotten.
  *
  * Reported as `validate.save.Product.urlTitle.required`.
@@ -1329,9 +1182,9 @@ export const urlTitleRequiredConstraint = Object.freeze({
  * `urlTitle` must be UNIQUE on save — the second of the document's two uniqueness rules, and the one the
  * sibling port's brief wrongly denies exists.
  *
- * [`model/validation/Product.json:16`], [`model/entity/Product.cfc:54`]
+ * [`model/validation/Product.json:L16`], [`model/entity/Product.cfc:L54`]
  *
- * ⚠️ SEE {@link productCodeUniqueConstraint} FOR THE COMPLETE X8 CORRECTION with all seven locators, for the
+ * SEE {@link productCodeUniqueConstraint} FOR THE COMPLETE X8 CORRECTION with all seven locators, for the
  * polarity pin, for the absence behavior the injected port must implement, for the self-exclusion no-op on
  * insert, and for why the application-side check is retained alongside the column metadata. That block is
  * the single authority for this file and is not repeated here.
@@ -1351,7 +1204,7 @@ export const urlTitleUniqueConstraint = Object.freeze({
 /* ==============================================================================================
  * SECTION 6 — THE TWO BASE-PRODUCT-TYPE RULE OBJECTS
  *
- * ⭐ EXPORTED INDIVIDUALLY, AND THAT IS A REQUIREMENT RATHER THAN A CONVENIENCE.
+ * EXPORTED INDIVIDUALLY, AND THAT IS A REQUIREMENT RATHER THAN A CONVENIENCE.
  *
  * `baseProductType` is the ONLY property in this document carrying more than one rule object — the ten
  * others carry exactly one each — and its first rule is the one the traceable legacy regression
@@ -1360,17 +1213,17 @@ export const urlTitleUniqueConstraint = Object.freeze({
  * being inlined into the property validation below. Fold it into an opaque aggregate and a traceable legacy
  * test becomes unportable — see TRACEABLE LEGACY COVERAGE in the module header.
  *
- * ⚠️ A SINGLE-RULE-PER-PROPERTY MODEL WOULD BE UNREPRESENTABLE HERE. `model/validation/Product.json:3-6`
+ * A SINGLE-RULE-PER-PROPERTY MODEL WOULD BE UNREPRESENTABLE HERE. `model/validation/Product.json:L3-L6`
  * declares an ARRAY of two rule objects under one key, and the two differ in BOTH their context gate and
  * their list value. `../Validator` models a property's rules as an array for exactly this case.
  *
- * The two are declared in the document's own order — the option contexts first at `:4`, the term context
- * second at `:5` — which is the deterministic evaluation order described in the module header. Under any
+ * The two are declared in the document's own order — the option contexts first at `:L4`, the term context
+ * second at `:L5` — which is the deterministic evaluation order described in the module header. Under any
  * one context at most one of them can match, since no context appears in both lists.
  * ============================================================================================ */
 
 /**
- * ⭐ The `Product.json:4` gate: under either option context, the base product type must be merchandise.
+ * The `Product.json:L4` gate: under either option context, the base product type must be merchandise.
  *
  * THE RULE OBJECT THE `issue_1331` REGRESSION EXERCISES. Its context list is the one two-element list in the
  * document, so this single rule serves both `addOptionGroup` and `addOption`. See
@@ -1383,7 +1236,7 @@ export const baseProductTypeMerchandiseRule = Object.freeze({
 } as const) satisfies ValidationRule<ProductValidationSubject>;
 
 /**
- * The `Product.json:5` gate: under the term context, the base product type must be subscription.
+ * The `Product.json:L5` gate: under the term context, the base product type must be subscription.
  *
  * See {@link baseProductTypeInListSubscription} for the constraint's semantics and for the boundary note on
  * the out-of-scope process object this context leads to.
@@ -1405,7 +1258,7 @@ export const baseProductTypeSubscriptionRule = Object.freeze({
  * which is why the error bag holds an array per key. The trailing-segment form derived at `:L208` shapes the
  * message text only and never replaces the key.
  *
- * ⚠️ EVERY READER IS A PURE, SYNCHRONOUS FIELD READ. Nothing here awaits, queries, formats, memoises or
+ * EVERY READER IS A PURE, SYNCHRONOUS FIELD READ. Nothing here awaits, queries, formats, memoises or
  * mutates, and nothing reads the environment or a clock. `../Validator` requires a synchronous reader — a
  * promise would be measured instead of the value it wraps, silently failing every simple-value predicate — so
  * derived values arrive already resolved on the subject. See the subject contract for the full reasoning and
@@ -1597,18 +1450,14 @@ export const urlTitleValidation = Object.freeze({
   ] as const),
 } as const) satisfies PropertyValidation<ProductValidationSubject>;
 
-/* ==============================================================================================
- * SECTION 8 — THE DOCUMENT
- * ============================================================================================ */
-
 /**
  * The transliterated `model/validation/Product.json`, ready to be handed to `../Validator`.
  *
  * ELEVEN PROPERTIES, TWELVE RULE OBJECTS, SIXTEEN CONSTRAINTS — in the source document's key order, which is
- * also the deterministic evaluation order this port fixes. See the module header for the measured table and
+ * also the deterministic evaluation order this port fixes. See the module header for the constraint table and
  * for why that determinism has no behavioral counterpart in the legacy engine.
  *
- * ⚠️ THE OPTIONAL CONDITIONS BLOCK IS OMITTED, NOT SET TO AN ABSENT VALUE. `model/validation/Product.json`
+ * THE OPTIONAL CONDITIONS BLOCK IS OMITTED, NOT SET TO AN ABSENT VALUE. `model/validation/Product.json`
  * declares no conditions — the key occurs zero times in it, and only `model/validation/Product_UpdateSkus.json`
  * uses conditions at all — so the member is left out entirely. Under the compiler's
  * `exactOptionalPropertyTypes` setting an optional member may be omitted but may NOT be assigned an explicit

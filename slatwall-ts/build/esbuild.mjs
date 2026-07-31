@@ -21,6 +21,28 @@
  *                                                 supplied by a Lambda layer); that was
  *                                                 the form used for the environment probe
  *                                                 in AAP 0.1.2.3.
+ *
+ * SCOPE PROVENANCE (F20) — WHY THIS FILE STAYS
+ * -------------------------------------------
+ * Review finding F20 flagged this file as outside the checkpoint's 64-file inventory, on the
+ * grounds that it is target index 100. The AAP overrides that sequencing, explicitly and in
+ * three places, so the file stays and the reasoning is recorded here rather than argued once
+ * and forgotten:
+ *
+ *   - AAP 0.2.1.7 lists `slatwall-ts/build/esbuild.mjs` among the target artefacts IN SCOPE.
+ *   - AAP 0.4.1.2 carries it as a CREATE row with the exact flags implemented above.
+ *   - AAP 0.4.5 states the refactor "is executed by Blitzy in exactly one phase ... and every
+ *     file listed in 0.4.1 belongs to that single phase", so a per-file index is a review
+ *     ordering aid, not a scope boundary that can exclude a declared file.
+ *
+ * It is also load-bearing rather than merely declared: AAP 0.8.3.10 defines "deployable" as a
+ * successful build/package step, and `npm run build` resolves to this script. Removing it would
+ * delete the acceptance criterion itself and break a validation gate, which is the opposite of
+ * what a scope correction should achieve.
+ *
+ * The other file F20 named, `slatwall-ts/.prettierignore`, appears in NO AAP inventory, was not
+ * needed for `npx prettier --check .` to pass, and was therefore DELETED rather than defended.
+ * `slatwall-ts/.gitignore` records why Prettier needs no ignore file of its own.
  */
 import { build } from 'esbuild';
 import { readdir, rm, mkdir, writeFile } from 'node:fs/promises';

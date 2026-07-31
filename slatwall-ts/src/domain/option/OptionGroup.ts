@@ -2,170 +2,140 @@
  * OptionGroup — the `SwOptionGroup` catalog entity of Slatwall 3.1.39, re-expressed as strict-mode
  * TypeScript.
  *
- * ---------------------------------------------------------------------------------------------
- * AAP AUTHORITY
- * ---------------------------------------------------------------------------------------------
- * §0.4.1.4 "Domain Layer", verbatim row:
+ * Ported from [model/entity/OptionGroup.cfc]. AAP §0.4.1.4 names seven persistent properties and
+ * `getOptions()` with its sort-order ordering [:L73], and that row is the scope.
  *
- *   | slatwall-ts/src/domain/option/OptionGroup.ts | CREATE | model/entity/OptionGroup.cfc |
- *   | Seven persistent properties; getOptions() with its sort-order ordering [L73] |
- *
- * WHY THIS FILE EXISTS AT ALL — IT IS AN IMPLICIT SCOPE ADDITION (§0.2.1.2). The prompt's Catalog
- * slice never named `OptionGroup.cfc`. Four independent code paths made it unavoidable, and the AAP
+ * WHY THIS FILE EXISTS AT ALL — IT IS AN IMPLICIT SCOPE ADDITION (AAP §0.2.1.2). The prompt's Catalog
+ * slice never named `OptionGroup.cfc`; four independent code paths made it unavoidable, and the AAP
  * concludes in as many words that "Omitting it would leave the option model unusable":
+ * `Option.optionGroup` is a required many-to-one [model/entity/Option.cfc:L59];
+ * `ProductService.processProduct_addOptionGroup` resolves a group through the option service and
+ * immediately reads its collection [model/service/ProductService.cfc:L115];
+ * `Product.getOptionGroups()` queries the entity directly [model/entity/Product.cfc:L251-L261]; and
+ * the sorted-SKU ordering query reads `SwOptionGroup.sortOrder` [model/dao/SkuDAO.cfc:L172-L204].
  *
- *   1. `Option.optionGroup` is a required many-to-one [model/entity/Option.cfc:L59].
- *   2. `ProductService.processProduct_addOptionGroup` resolves a group through the option service
- *      and immediately reads its collection — `getOptionService().getOptionGroup(...).getOptions()`
- *      [model/service/ProductService.cfc:L115].
- *   3. `Product.getOptionGroups()` queries the entity directly [model/entity/Product.cfc:L251-L261].
- *   4. The sorted-SKU ordering query reads `SwOptionGroup.sortOrder`
- *      [model/dao/SkuDAO.cfc:L172-L204].
+ * LABELS USED THROUGHOUT THIS FILE. `S1`-`S9` are the AAP §0.7.3 enterprise standards. `R-A` and `R-B`
+ * are this module's two structural decisions — the type-only mutual reference with `./Option`, and the
+ * declared descriptor set that replaces `populate()`. `F<n>` are this port's file-scope rules, cited
+ * where they bite: F1 (a legacy overload is collapsed), F2 (a collection getter returns the LIVE
+ * array), F4 (an ORM-synthesized member is declared explicitly), F9 (SmartList members stay out of the
+ * domain layer), F12 (validation lives in `src/validation/**`), F20 (`sortOrder` is
+ * ORM-lifecycle-assigned and never assigned here), F21 (`isNew` is a pure derived predicate) and F22
+ * (no framework member is declared on this class).
  *
- * ---------------------------------------------------------------------------------------------
- * RULES VERDICT, RECORDED RATHER THAN ASSUMED (UR4)
- * ---------------------------------------------------------------------------------------------
- * No user-specified rules were provided for this project: `review_rules` returns the single line
- * "No user rules provided." verbatim. The nine AAP §0.7.3 enterprise standards govern in their
- * place, and the bar is NOT lowered.
+ * THE ENTITY-MODULE CONVENTION THIS FOLDER ESTABLISHES. `option/` is the first entity module in this
+ * port, and `sku/Sku.ts`, `product/Product.ts`, `product/ProductType.ts` and `product/Brand.ts` follow
+ * the three rules below. `Option.cfc` and `OptionGroup.cfc` declare ZERO non-persistent properties,
+ * which makes them the only two complete ports in the `domain/` subtree: there is no
+ * calculated-property boundary to negotiate and nothing to exclude for pricing, inventory or promotion
+ * reasons, in contrast to the sixteen `Product`/`Sku` members AAP §0.2.2.6 excludes outright.
  *
- * Corroborated independently: repeated `review_rules` calls return the byte-identical single line,
- * and a filesystem sweep finds no `.blitzyignore`, `.cursorrules`, `AGENTS.md`, `CLAUDE.md`,
- * `.editorconfig`, `.eslintrc*`, `.prettierrc*`, `CONTRIBUTING.md` or `CODEOWNERS` anywhere in the
- * repository. Zero files enter scope by rule. The standards with teeth here are S1 (strict type
- * safety — no `unknown`-laundering cast, no non-null assertion, no suppression comment), S2 (a
- * purely negative obligation: no query, no driver import, and the table names appear only as prose
- * provenance), S3, S4, S5 (nothing from `node_modules` is imported), S6 (`new OptionGroup()` is
- * constructible with no argument, no container and no I/O), S7, S8 and S9.
+ *   1. THE PERSISTENT DATA SURFACE IS PUBLIC FIELDS, named exactly as the legacy properties. CFML
+ *      generated `getX()`/`setX()` pairs from `accessors=true` [model/entity/OptionGroup.cfc:L49] and
+ *      those are deliberately not reproduced, for three reasons of which the third is decisive: the
+ *      folder specification sanctions it; AAP §0.8.1 asks for idiomatic TypeScript rather than
+ *      preserved CFML idioms; and `../base/populate` implements CFML's null semantics as
+ *      `delete target[name]`, its port of `_setProperty`'s `structDelete`, which an accessor-backed
+ *      value cannot satisfy — `populate` and `src/adapters/mysql/rowMappers.ts` are field-oriented by
+ *      construction, so fields are required for interop with the very modules that hydrate this entity.
+ *      Consequently every legacy scalar read becomes direct field access: `getOptionGroupID()`
+ *      [model/entity/Sku.cfc:L516-L517] becomes `optionGroup.optionGroupID`, `getOptionGroupCode()`
+ *      [model/entity/Sku.cfc:L504-L505] becomes `optionGroup.optionGroupCode`, `getOptionGroupName()`
+ *      [model/entity/Sku.cfc:L581] becomes `optionGroup.optionGroupName`, and `getImageGroupFlag()`
+ *      [model/entity/Sku.cfc:L134] becomes `optionGroup.imageGroupFlag`.
+ *   2. DECLARE A METHOD ONLY where the legacy declares a real body, or where an implicit ORM member is
+ *      called from in-scope code. For this entity that is exactly five members: `getOptions()`
+ *      [model/entity/OptionGroup.cfc:L73-L79], `hasOption()` (ORM-synthesized, forced by
+ *      [model/entity/Option.cfc:L94] — see F4), `addOption()` [model/entity/OptionGroup.cfc:L92-L94],
+ *      `removeOption()` [:L95-L97] and the derived `isNew()`. Nothing else; the negative half of this
+ *      rule is F22.
+ *   3. KEEP BOTH the `options` backing field AND the `getOptions()` method. This looks redundant and is
+ *      not: the legacy does the same thing, holding `variables.Options` behind `getOptions()`. The
+ *      field is required for `populate` and `rowMappers` interop; the method is required because the
+ *      AAP key-change row names it, because [model/service/ProductService.cfc:L115],
+ *      [model/entity/Option.cfc:L95], [:L102] and [:L104] all call it, and because the
+ *      live-array-by-reference contract (F2) is expressed through it.
  *
- * ---------------------------------------------------------------------------------------------
- * ⚠️ THE ENTITY-MODULE CONVENTION THIS FOLDER ESTABLISHES
- * ---------------------------------------------------------------------------------------------
- * `option/` is the first entity module authored in this port, and `sku/Sku.ts`,
- * `product/Product.ts`, `product/ProductType.ts` and `product/Brand.ts` inherit the three rules
- * below. `Option.cfc` and `OptionGroup.cfc` declare ZERO non-persistent properties, which makes
- * them the only two complete ports in the whole `domain/` subtree: there is no calculated-property
- * boundary to negotiate here and nothing to exclude for pricing, inventory or promotion reasons
- * (contrast §0.2.2.6, where sixteen `Product`/`Sku` members are excluded outright).
+ * THE COMPONENT DECLARATION [model/entity/OptionGroup.cfc:L49], attribute by attribute:
  *
- * CONVENTION 1 — THE PERSISTENT DATA SURFACE IS PUBLIC FIELDS, named exactly as the legacy
- * properties. CFML generated `getX()`/`setX()` pairs from `accessors=true`
- * [model/entity/OptionGroup.cfc:L49]; those are deliberately not reproduced. Three independent
- * justifications, the third decisive:
- *   (a) The folder specification sanctions it — "generated accessors become plain members".
- *   (b) §0.8.1 Minimal Change Clause: "It does not mean preserving CFML idioms in TypeScript;
- *       idiomatic, conventional TypeScript is expected."
- *   (c) DECISIVE — `../base/populate` implements CFML's null semantics as `delete target[name]`
- *       (its port of `_setProperty`'s `structDelete`), and an accessor-backed value cannot be
- *       deleted. `populate` and `src/adapters/mysql/rowMappers.ts` are field-oriented by
- *       construction, so fields are required for interop with the very modules that hydrate this
- *       entity.
- * Consequently every plain scalar read at a legacy call site becomes direct field access in the
- * TypeScript consumers: `getOptionGroupID()` [model/entity/Sku.cfc:L516-L517] becomes
- * `optionGroup.optionGroupID`, `getOptionGroupCode()` [model/entity/Sku.cfc:L504-L505] becomes
- * `optionGroup.optionGroupCode`, `getOptionGroupName()` [model/entity/Sku.cfc:L581] becomes
- * `optionGroup.optionGroupName`, and `getImageGroupFlag()` [model/entity/Sku.cfc:L134] becomes
- * `optionGroup.imageGroupFlag`.
- *
- * CONVENTION 2 — DECLARE A METHOD ONLY where the legacy declares a real body, or where an implicit
- * ORM member is called from in-scope code. For this entity that is exactly five members:
- * `getOptions()` [model/entity/OptionGroup.cfc:L73-L79], `hasOption()` (ORM-synthesized, forced by
- * [model/entity/Option.cfc:L94] — see F4), `addOption()`
- * [model/entity/OptionGroup.cfc:L92-L94], `removeOption()`
- * [model/entity/OptionGroup.cfc:L95-L97] and `isNew()` (derived — see F21). Nothing else. The
- * negative half of this rule is F22, below.
- *
- * CONVENTION 3 — KEEP BOTH the `options` backing field AND the `getOptions()` method. This looks
- * redundant and is not; the legacy does exactly the same thing, holding `variables.Options` behind
- * `getOptions()`. The field is required for `populate` and `rowMappers` interop (convention 1c);
- * the method is required because the AAP key-change row names it, because
- * [model/service/ProductService.cfc:L115], [model/entity/Option.cfc:L95], [:L102] and [:L104] all
- * call it, and because the live-array-by-reference contract (F2) is expressed through it.
- *
- * ---------------------------------------------------------------------------------------------
- * SOURCE MAPPING [model/entity/OptionGroup.cfc:L49]
- * ---------------------------------------------------------------------------------------------
  *   entityname="SlatwallOptionGroup"   ->  this class
- *   table="SwOptionGroup"              ->  owned by src/adapters/mysql/**, never named executably
+ *   table="SwOptionGroup"              ->  owned by `src/adapters/mysql/**`, never named executably
  *                                          here (S2)
- *   hb_serviceName="optionService"     ->  src/services/OptionService.ts
+ *   hb_serviceName="optionService"     ->  `src/services/OptionService.ts`
  *   hb_permission="this"               ->  no counterpart; authorisation is not part of this slice
  *   extends="HibachiEntity"            ->  the LOCAL Slatwall base [model/entity/HibachiEntity.cfc],
  *                                          not the framework one (IR-8). Its `populate()` [:L56]
- *                                          becomes the descriptor set at the foot of this file
- *                                          (R-B), and its `setting()` [:L129] has no consumer on
- *                                          this entity, so no SettingResolverPort is reached from
- *                                          here.
- *   cacheuse="transactional"           ->  ⚠️ FLAGGED, NOT EMULATED (S8 / mismatch M7). 111 of the
- *                                          113 legacy entities carry this attribute. A warm Lambda
+ *                                          becomes the descriptor set at the foot of this file (R-B),
+ *                                          and its `setting()` [:L129] has no consumer on this entity,
+ *                                          so no `SettingResolverPort` is reached from here.
+ *   cacheuse="transactional"           ->  FLAGGED, NOT EMULATED (S8 / mismatch M7). A warm Lambda
  *                                          container persists module scope across invocations and
  *                                          therefore across tenants, so a module-scope second-level
  *                                          cache would be a correctness hazard rather than an
- *                                          optimisation. This module holds no cache, no registry,
- *                                          no counter, no singleton and no mutable module-scope
- *                                          binding; the two module constants below are frozen and
- *                                          content-free. Loading this module has no side effect,
- *                                          performs no I/O and logs nothing.
+ *                                          optimisation. This module holds no cache and no mutable
+ *                                          module-scope binding; its two module constants are frozen
+ *                                          and content-free, and loading it has no side effect.
  *
- * ---------------------------------------------------------------------------------------------
- * ⚠️ M6 — THE VALIDATION READ-BACK LOOP: THIS FILE SUPPLIES READS AND RESOLVES NOTHING
- * ---------------------------------------------------------------------------------------------
+ * M6 — THE VALIDATION READ-BACK LOOP: THIS FILE SUPPLIES READS AND RESOLVES NOTHING.
  * `Sku.hasOneOptionPerOptionGroup()` [model/entity/Sku.cfc:L771-L784] reads
  * `getOptions()[i].getOptionGroup().getOptionGroupID()` at [:L776] and [:L779], and
- * `Sku.hasUniqueOptions()` [model/entity/Sku.cfc:L756-L769] drives a database read-back during
- * save — which §0.6.2 calls "the highest-risk item in the slice". This file's only obligation is
- * that `optionGroupID` be a plain, synchronously readable field, so those consumers need no async
- * hop and no port. The ordering hazard itself is owned by `src/adapters/mysql/UnitOfWork.ts` and is
- * deliberately not addressed here. (Informational, for whoever ports `Sku.ts`: the `listFind` at
- * [model/entity/Sku.cfc:L776] is CASE-SENSITIVE — `listFindNoCase` is the insensitive variant.)
+ * `Sku.hasUniqueOptions()` [model/entity/Sku.cfc:L756-L769] drives a database read-back during save,
+ * which AAP §0.6.2 calls "the highest-risk item in the slice". This file's only obligation is that
+ * `optionGroupID` be a plain, synchronously readable field, so those consumers need no async hop and no
+ * port. The ordering hazard itself belongs to `src/adapters/mysql/UnitOfWork.ts` and is deliberately
+ * not addressed here. One detail for whoever ports `Sku.ts`, not acted on here: the `listFind` at
+ * [model/entity/Sku.cfc:L776] is CASE-SENSITIVE, `listFindNoCase` being the insensitive variant.
  *
- * ---------------------------------------------------------------------------------------------
- * ⚠️ F22 — NEGATIVE MANDATE: NO FRAMEWORK MEMBER IS INVENTED HERE
- * ---------------------------------------------------------------------------------------------
- * None of the following is declared on this class: `getSimpleRepresentation`,
- * `getSimpleRepresentationPropertyName`, `getPrimaryIDPropertyName`, `getPrimaryIDValue`,
- * `getNewFlag`, `validate`, `hasErrors`, `getErrors`, `getPropertyMetaData`, `onMissingMethod`,
- * `populate`, `getPropertySmartList`, `setting`, `getService` or `getAttributeValue`. Three reasons,
- * each independently sufficient: they are `org/Hibachi/**` members and that tree of 938 files is
- * "a boundary to extract from, never modify" (§0.8.3.2); the AAP key-change row for this file names
- * none of them; and unrequested surface is forbidden outright.
- *
- * Recorded because it looks like a gap and is not: the framework's
- * `getSimpleRepresentationPropertyName()` [org/Hibachi/HibachiEntity.cfc:L74-L87] scanned properties
- * for one named `getClassName() & "name"` — a case-insensitive CFML `==` — and threw when none
- * matched. For this entity it resolved to `optionGroupName`, which is declared below, so the entity
- * satisfies the legacy assertion `simple_representation_exists_and_is_simple`
+ * F22 — NO FRAMEWORK MEMBER IS DECLARED HERE: not the primary-identifier or new-flag accessors, not
+ * `validate`/`hasErrors`/`getErrors`, and not `getPropertyMetaData`, `onMissingMethod`, `populate`,
+ * `getPropertySmartList`, `setting`, `getService`, `getAttributeValue`, `getSimpleRepresentation` or
+ * `getSimpleRepresentationPropertyName`. They are `org/Hibachi/**` members, and that tree is "a
+ * boundary to extract from, never modify" (AAP §0.8.3.2); the AAP key-change row for this file names
+ * none of them; and unrequested surface is forbidden outright. Recorded because it looks like a gap and
+ * is not: the framework's `getSimpleRepresentationPropertyName()`
+ * [org/Hibachi/HibachiEntity.cfc:L74-L87] scanned properties for one named `getClassName() & "name"` —
+ * a case-insensitive CFML `==` — and threw when none matched. For this entity it resolved to
+ * `optionGroupName`, which is declared below, so the entity satisfies the legacy assertion
+ * `simple_representation_exists_and_is_simple`
  * [meta/tests/unit/entity/SlatwallEntityTestBase.cfc:L56-L58] structurally, without the member.
  * `isNew()` is the ONE exception to this mandate, for the reason given on it.
  *
- * ---------------------------------------------------------------------------------------------
- * IMPORT DISCIPLINE (S4 hexagonal separation, §0.4.3.5)
- * ---------------------------------------------------------------------------------------------
- * Three imports, and the list is closed. Two reach the sibling `base/` modules that hydrate this
- * entity; the third is type-only and mutual (R-A, below). Nothing from `src/adapters/**`,
- * `src/services/**`, `src/config/**`, `src/validation/**`, `src/handlers/**`,
- * `src/integrations/**`, `src/util/**`, `src/errors/**` or `src/ports/**` is imported, no AWS type
- * appears, no `node:` builtin is used, the environment is never read, and nothing is imported from
- * `node_modules` — not the single runtime dependency the manifest declares, and none of `uuid`,
- * `zod`, `class-validator`, `lodash`, `date-fns` or `reflect-metadata` (S5: the manifest is closed
- * and this file adds nothing to it). Every specifier is relative and extensionless, because
- * `tsconfig.json` declares neither `paths` nor `baseUrl` so that `tsc` and `esbuild` resolve
- * identically, per AAP §0.4.3.5. Named exports
- * only and no default export, no top-level `await` and no `import.meta`, because the artifact is
- * bundled to CommonJS for the Node 20 Lambda runtime.
+ * IMPORT DISCIPLINE (S4 hexagonal separation). Three imports and the list is closed: two reach the
+ * sibling `base/` modules that hydrate this entity, and the third is the type-only mutual reference to
+ * `./Option` (R-A). Nothing from `src/adapters/**`, `src/services/**`, `src/config/**`,
+ * `src/validation/**`, `src/handlers/**`, `src/integrations/**`, `src/util/**`, `src/errors/**` or
+ * `src/ports/**` is imported, no AWS type appears, no `node:` builtin is used, the environment is never
+ * read, and nothing comes from `node_modules` (S5 — the manifest is closed and this file adds nothing
+ * to it). Every specifier is relative and extensionless because `tsconfig.json` declares neither
+ * `paths` nor `baseUrl`, so `tsc` and `esbuild` resolve identically; named exports only, no default
+ * export, no top-level `await` and no `import.meta`, because the artifact is bundled to CommonJS for
+ * the Node 20 Lambda runtime.
  */
 
-import { AUDIT_PROPERTY_NAMES } from '../base/AuditableEntity';
-import type { AuditPropertyName, AuditableEntity } from '../base/AuditableEntity';
+import {
+  AUDIT_PROPERTY_NAMES,
+  hasDeclaredProperty,
+  readValueByPropertyIdentifier,
+  requireDeclaredPropertyMetaData,
+} from '../base/AuditableEntity';
+import type {
+  AuditPropertyName,
+  AuditableEntity,
+  DeclaredPropertyNameSet,
+  EntityPropertyMetaData,
+  ManagedEntity,
+} from '../base/AuditableEntity';
 import type {
   ColumnPropertyDescriptor,
+  EntityMetadataDeclaration,
+  DisabledPropertyDescriptor,
   OneToManyPropertyDescriptor,
   PropertyDescriptorSet,
   RelatedEntityLoader,
   SubPropertyPopulator,
 } from '../base/populate';
 /*
- * ⚠️ R-A — THE MUTUAL TYPE REFERENCE WITH `./Option`, AND WHY IT IS SAFE.
+ * R-A — THE MUTUAL TYPE REFERENCE WITH `./Option`, AND WHY IT IS SAFE.
  *
  * `OptionGroup.options` is `Option[]`; `Option.optionGroup` is `OptionGroup`. That is a genuine
  * two-way reference and it is resolved deliberately rather than broken: NEITHER CLASS EVER
@@ -206,6 +176,130 @@ export type OptionGroupPropertyName =
   | AuditPropertyName
   | 'options';
 
+/* ================================================================================================
+ * THE MANAGED-ENTITY CONSTANTS — WHAT ONLY THIS ENTITY CAN STATE
+ * ================================================================================================
+ * `src/domain/base/AuditableEntity.ts` holds the shared managed-entity contract and every word of
+ * its rationale. Three facts cannot be shared because they differ per entity, and the legacy
+ * resolved all three at runtime — two by reflecting over live component metadata and one through the
+ * DI/1 service locator. TR-3 and AAP 0.7.3 S3 replace all three with declarations.
+ * ================================================================================================ */
+
+/**
+ * The bare class name — the value [org/Hibachi/HibachiObject.cfc:L135-L137] derives by taking the
+ * last dot-delimited segment of the component's fully qualified name.
+ *
+ * ⚠️ NOT the same as {@link OPTION_GROUP_ENTITY_NAME}: this one carries no `Slatwall` prefix. It is
+ * interpolated into every validation message
+ * [org/Hibachi/HibachiValidationService.cfc:L202, :L213, :L216] and into the property-metadata
+ * failure [org/Hibachi/HibachiTransient.cfc:L746], so a prefixed value here would change observable
+ * message text.
+ */
+export const OPTION_GROUP_CLASS_NAME = 'OptionGroup';
+
+/**
+ * The mapped ORM entity name, declared by the `entityname` attribute on
+ * [model/entity/OptionGroup.cfc:L49] and read at runtime by [org/Hibachi/HibachiEntity.cfc:L287-L289].
+ *
+ * ⚠️ THIS IS THE LOGICAL ENTITY NAME, NOT THE PHYSICAL `Sw*` TABLE NAME. The legacy uniqueness
+ * statement [org/Hibachi/HibachiDAO.cfc:L140] is expressed over the mapped object graph, so the
+ * prefixed form is correct there and is not a defect to correct; translating it to a table is the
+ * adapter's responsibility.
+ */
+export const OPTION_GROUP_ENTITY_NAME = 'SlatwallOptionGroup';
+
+/**
+ * The name of the primary identifier property — [model/entity/OptionGroup.cfc:L52], which declares
+ * `fieldtype="id" generator="uuid" ormtype="string" length="32" unsavedvalue=""` (AAP IR-6).
+ *
+ * The legacy resolved this name through `getService("hibachiService")`
+ * [org/Hibachi/HibachiEntity.cfc:L249-L251]. Declaring it removes the service locator AAP 0.7.3 S3
+ * forbids, and it is what makes the value safe to place in identifier position after the adapter
+ * validates it: the name comes from entity metadata, never from caller input.
+ */
+export const OPTION_GROUP_PRIMARY_ID_PROPERTY_NAME = 'optionGroupID';
+
+/**
+ * Every property this entity DECLARES, as a keyed set — the port of `getPropertiesStruct()`, the
+ * structure [org/Hibachi/HibachiTransient.cfc:L739] resolves and which both `hasProperty` [:L764]
+ * and `getPropertyMetaData` [:L741] key into. A CFML struct keyed by property name is what the
+ * legacy held; a keyed object is what this holds, and membership is an own-key test in both.
+ *
+ * ⚠️ THE `DeclaredPropertyNameSet<OptionGroupPropertyName>` ANNOTATION IS THE POINT, NOT DECORATION. It checks this
+ * set against the entity's property-name union in BOTH directions: a MISSING name fails to compile
+ * ("Property 'x' is missing in type"), and an INVENTED one fails to compile too (the object is not
+ * assignable). Both directions matter. A missing name would make `hasProperty` answer false, and
+ * [org/Hibachi/HibachiValidationService.cfc:L171] SILENTLY SKIPS a rule whose property is absent —
+ * so a validation rule would stop running with no error anywhere in the port. An invented name
+ * would START running a rule the legacy never ran.
+ *
+ * ⭐ THIS SET IS THE ENTITY'S COMPLETE DECLARED SURFACE, because [model/entity/OptionGroup.cfc]
+ * declares NO non-persistent property at all — the same fact AAP 0.2.2.6 records for `Brand.cfc` and
+ * `Option.cfc`. All three identifiers `model/validation/OptionGroup.json` names —
+ * `optionGroupName` [:L3], `optionGroupCode` [:L4] and `options` [:L5] — are present, so every rule
+ * in that document genuinely RUNS.
+ *
+ * ⚠️ THIS IS A STATEMENT ABOUT WHAT THE LEGACY ENTITY DECLARES, NOT ABOUT WHAT THIS PORT
+ * IMPLEMENTS, and the two differ deliberately. AAP 0.2.2.6 excludes the pricing, promotion,
+ * inventory and currency-derived calculated members from the port because they reach exclusively
+ * into out-of-scope services — yet the legacy still DECLARES them, so `hasProperty` must still
+ * answer true for them exactly as the legacy does. Trimming this set to the implemented surface
+ * would be the "missing name" failure above dressed up as tidiness.
+ */
+export const OPTION_GROUP_DECLARED_PROPERTIES: DeclaredPropertyNameSet<OptionGroupPropertyName> =
+  Object.freeze({
+    optionGroupID: true,
+    optionGroupName: true,
+    optionGroupCode: true,
+    optionGroupImage: true,
+    optionGroupDescription: true,
+    imageGroupFlag: true,
+    sortOrder: true,
+    remoteID: true,
+    options: true,
+    createdDateTime: true,
+    createdByAccount: true,
+    modifiedDateTime: true,
+    modifiedByAccount: true,
+  });
+
+/**
+ * OptionGroup's frozen metadata declaration — the runtime answer to the seven framework
+ * introspection members this class deliberately does not declare.
+ *
+ * See {@link EntityMetadataDeclaration} for what each member ports. This constant is the ONLY place
+ * in this module where the class name and the ORM entity name appear as VALUES rather than as prose,
+ * and {@link OPTION_GROUP_PROPERTY_DESCRIPTORS} reads its `className` from here so the literal is
+ * written once.
+ *
+ * THIRTEEN KEYS, WHICH IS EVERY PROPERTY [model/entity/OptionGroup.cfc] DECLARES: the nine at
+ * [`:L52-L57`], [`:L60`], [`:L63`] and [`:L66`] plus the four audit properties at [`:L69-L72`].
+ * `declaredNonFieldProperties` is deliberately ABSENT rather than empty — this entity declares no
+ * `persistent="false"` property and no relationship this port omits, so its declared set and its
+ * field set coincide exactly.
+ */
+export const OPTION_GROUP_ENTITY_METADATA: EntityMetadataDeclaration<OptionGroupPropertyName> =
+  Object.freeze({
+    className: 'OptionGroup',
+    entityName: 'SlatwallOptionGroup',
+    primaryIDPropertyName: 'optionGroupID',
+    properties: Object.freeze({
+      optionGroupID: true,
+      optionGroupName: true,
+      optionGroupCode: true,
+      optionGroupImage: true,
+      optionGroupDescription: true,
+      imageGroupFlag: true,
+      sortOrder: true,
+      remoteID: true,
+      options: true,
+      createdDateTime: true,
+      createdByAccount: true,
+      modifiedDateTime: true,
+      modifiedByAccount: true,
+    } satisfies Readonly<Record<OptionGroupPropertyName, true>>),
+  } satisfies EntityMetadataDeclaration<OptionGroupPropertyName>);
+
 /**
  * A group of mutually exclusive product options — the `SwOptionGroup` row and its option collection.
  *
@@ -240,7 +334,7 @@ export type OptionGroupPropertyName =
  * here rather than papered over with a `declare` modifier or a hand-written constructor that the
  * source does not have.
  */
-export class OptionGroup implements AuditableEntity {
+export class OptionGroup implements AuditableEntity, ManagedEntity {
   /* -------------------------------------------------------------------------------------------
    * Persistent Properties — [model/entity/OptionGroup.cfc:L52-L58]
    * ----------------------------------------------------------------------------------------- */
@@ -252,7 +346,7 @@ export class OptionGroup implements AuditableEntity {
    *   property name="optionGroupID" ormtype="string" length="32" fieldtype="id" generator="uuid"
    *            unsavedvalue="" default="";
    *
-   * ⚠️ F21 — TYPED `string` AND INITIALISED TO `''`, NEVER OPTIONAL AND NEVER NULL. This is the
+   * F21 — TYPED `string` AND INITIALISED TO `''`, NEVER OPTIONAL AND NEVER NULL. This is the
    * single most load-bearing typing decision in the file, because `isNew()` is derived from it
    * rather than stored. The chain: `unsavedvalue="" default=""` here;
    * `getNewFlag() { if(getPrimaryIDValue() == "") return true; return false; }`
@@ -353,7 +447,7 @@ export class OptionGroup implements AuditableEntity {
    * PORT OF [model/entity/OptionGroup.cfc:L58]:
    *   property name="sortOrder" ormtype="integer" required="true";
    *
-   * ⚠️ F20 / TODO(boundary) — THIS FIELD IS ORM-LIFECYCLE-ASSIGNED. NOTHING IN APPLICATION CODE
+   * F20 / TODO(boundary) — THIS FIELD IS ORM-LIFECYCLE-ASSIGNED. NOTHING IN APPLICATION CODE
    * EVER SETS IT, on this entity or on `Option`. `setSortOrder(` matches exactly ONE line in the
    * whole repository — [org/Hibachi/HibachiEntity.cfc:L646] — inside the `preInsert()` block at
    * [org/Hibachi/HibachiEntity.cfc:L637-L647], which reads the top sort order through
@@ -378,7 +472,7 @@ export class OptionGroup implements AuditableEntity {
    * ABSENT from [model/validation/OptionGroup.json] entirely — the requiredness is enforced by the
    * column and by the ORM lifecycle, never by the validation rule set.
    *
-   * ⚠️ S7 — LATENT ISSUE RECORDED, NOT REPAIRED. This column is `required="true"` precisely because
+   * S7 — LATENT ISSUE RECORDED, NOT REPAIRED. This column is `required="true"` precisely because
    * it is an EXPONENT: the sorted-SKU ordering computes
    * `SUM(SwOption.sortOrder * POWER(10, next - SwOptionGroup.sortOrder))`
    * [model/dao/SkuDAO.cfc:L195] for SQL Server and [:L197] otherwise, over the three inner joins at
@@ -483,7 +577,7 @@ export class OptionGroup implements AuditableEntity {
    *                                  this file as `singularName`.
    *   fkcolumn="optionGroupID"     — the child column; provenance only, mapped by
    *                                  `src/adapters/mysql/rowMappers.ts`.
-   *   inverse="true"               — ⚠️ `Option` OWNS THE FOREIGN KEY. This is exactly why
+   *   inverse="true"               — `Option` OWNS THE FOREIGN KEY. This is exactly why
    *                                  `addOption` and `removeOption` below delegate instead of
    *                                  mutating this array themselves.
    *   cascade="all-delete-orphan"  — see the F12 tension recorded on `getOptions()`.
@@ -522,7 +616,7 @@ export class OptionGroup implements AuditableEntity {
    *         }
    *     }
    *
-   * ⚠️ F2 — RETURNING THE LIVE ARRAY IS BEHAVIOUR, NOT STYLE. A DEFENSIVE COPY IS FORBIDDEN.
+   * F2 — RETURNING THE LIVE ARRAY IS BEHAVIOUR, NOT STYLE. A DEFENSIVE COPY IS FORBIDDEN.
    * `model/entity/Option.cfc` mutates the returned array directly, in three places:
    *   [model/entity/Option.cfc:L95]  `arrayAppend(arguments.optionGroup.getOptions(), this)`
    *   [model/entity/Option.cfc:L102] `arrayFind(arguments.optionGroup.getOptions(), this)`
@@ -533,10 +627,10 @@ export class OptionGroup implements AuditableEntity {
    * is therefore the mutable `Option[]` and the body is a bare field read. This is the judgment call
    * §0.8.2 Guideline 6 exists to have documented.
    *
-   * ⚠️ F1 / TODO(parity) — THE OVERLOAD IS COLLAPSED, DELIBERATELY AND WITH EVIDENCE.
+   * F1 / TODO(parity) — THE OVERLOAD IS COLLAPSED, DELIBERATELY AND WITH EVIDENCE.
    * The legacy signature was `getOptions(orderby, sortType="text", direction="asc")` and its second
-   * branch is UNREACHABLE DEAD CODE. Grep-proved repository-wide across `model/`,
-   * `integrationServices/`, `admin/` and `frontend/`: the only line matching `getOptions(` with a
+   * branch is UNREACHABLE DEAD CODE. Across `model/`,
+   * `integrationServices/`, `admin/` and `frontend/` the only line matching `getOptions(` with a
    * non-empty argument list is the declaration itself, [model/entity/OptionGroup.cfc:L73]. Every
    * real call site passes nothing — [model/service/ProductService.cfc:L115],
    * [model/entity/Option.cfc:L95], [:L102] and [:L104]. The branch's delegate,
@@ -552,7 +646,7 @@ export class OptionGroup implements AuditableEntity {
    * way. The one `getService(...)` call in the legacy source disappears with it, which is the
    * outcome S3 wants: it is replaced by nothing, not by a locator, a registry or a container import.
    *
-   * ⚠️ F9 / TODO(boundary) — `getOptionsSmartList()` IS DELIBERATELY ABSENT.
+   * F9 / TODO(boundary) — `getOptionsSmartList()` IS DELIBERATELY ABSENT.
    * The source declares it at [model/entity/OptionGroup.cfc:L81-L83] as
    * `return getPropertySmartList(propertyName="options");`. `getPropertySmartList` is
    * `org/Hibachi/**` machinery, and the paginated dynamic-query abstraction it belongs to is
@@ -565,7 +659,7 @@ export class OptionGroup implements AuditableEntity {
    * `addFilter("options.skus.product.productID", ...)` and `addOrder("sortOrder|ASC")` — never
    * through this entity.
    *
-   * ⚠️ F12 — THE DELETE GUARD AND `cascade="all-delete-orphan"` ARE IN GENUINE TENSION. BOTH ARE
+   * F12 — THE DELETE GUARD AND `cascade="all-delete-orphan"` ARE IN GENUINE TENSION. BOTH ARE
    * CARRIED; NEITHER IS RESOLVED HERE (S8). [model/validation/OptionGroup.json:L5] declares
    * `"options": [{"contexts":"delete","maxCollection":0}]`, which BLOCKS the delete outright while
    * this collection is non-empty, whereas [model/entity/OptionGroup.cfc:L70] declares
@@ -583,7 +677,7 @@ export class OptionGroup implements AuditableEntity {
   /**
    * Whether the given option already belongs to this group.
    *
-   * ⚠️ F4 / IR-1 — THIS MEMBER APPEARS NOWHERE IN THE LEGACY SOURCE AND MUST STILL BE DECLARED.
+   * F4 / IR-1 — THIS MEMBER APPEARS NOWHERE IN THE LEGACY SOURCE AND MUST STILL BE DECLARED.
    * `hasOption` was SYNTHESIZED at runtime: it is an implicit ORM member generated from the
    * `options` property's `singularname="option"` [model/entity/OptionGroup.cfc:L70], which the
    * framework itself acknowledges — [org/Hibachi/HibachiEntity.cfc:L343] carries the comment
@@ -598,7 +692,7 @@ export class OptionGroup implements AuditableEntity {
    * [model/entity/PromotionQualifier.cfc:L161] and [model/entity/PromotionReward.cfc:L219], both in
    * excluded promotion files.)
    *
-   * ⚠️ WHEN THIS GUARD IS ACTUALLY LIVE — OBSERVED BEHAVIOUR, CARRIED AND NOT REPAIRED (S7).
+   * WHEN THIS GUARD IS ACTUALLY LIVE — OBSERVED BEHAVIOUR, CARRIED AND NOT REPAIRED (S7).
    * The condition at [model/entity/Option.cfc:L94] is a short-circuiting OR whose FIRST arm is the
    * option's own `isNew()`. For a TRANSIENT option that arm is true, so `hasOption` is never
    * consulted and THE APPEND IS UNCONDITIONAL: attaching the same transient option twice appends it
@@ -677,39 +771,147 @@ export class OptionGroup implements AuditableEntity {
   /**
    * Whether this group has never been persisted.
    *
-   * ⚠️ F21 — A PURE DERIVED PREDICATE: THE PRIMARY IDENTIFIER EQUALS THE EMPTY STRING. `newFlag` is
-   * declared `persistent="false"` on the framework base, but no `setNewFlag` exists anywhere in the
-   * repository — nothing stores this. The full chain: `unsavedvalue="" default=""`
-   * [model/entity/OptionGroup.cfc:L52]; `getPrimaryIDValue()` returns the primary-ID property
-   * [org/Hibachi/HibachiEntity.cfc:L244]; `getNewFlag() { if(getPrimaryIDValue() == "") return
-   * true; return false; }` [org/Hibachi/HibachiEntity.cfc:L571-L576]; and
-   * `isNew() { return getNewFlag(); }` [org/Hibachi/HibachiEntity.cfc:L707-L709].
+   * F21 — A PURE DERIVED PREDICATE: THE PRIMARY IDENTIFIER EQUALS THE EMPTY STRING. `newFlag` is
+   * declared `persistent="false"` on the framework base but no `setNewFlag` exists anywhere, so nothing
+   * stores it. The chain is `unsavedvalue="" default=""`
+   * [model/entity/OptionGroup.cfc:L52] -> `getPrimaryIDValue()`
+   * [org/Hibachi/HibachiEntity.cfc:L244] -> `getNewFlag()` [:L571-L576] -> `isNew()` [:L707-L709].
+   * Requiring zero ports and zero database access is what makes the entity cheaply constructible (S6)
+   * and what lets the guard at [model/entity/Option.cfc:L94] work with no collaborator at all.
    *
-   * THIS MEMBER REQUIRES ZERO PORTS AND ZERO DATABASE ACCESS, which is what makes the entity
-   * cheaply constructible (S6) and what lets the guard at [model/entity/Option.cfc:L94] work with no
-   * collaborator at all. It also gives `defaults_are_correct`
-   * [meta/tests/unit/entity/SlatwallEntityTestBase.cfc:L66-L69] its two assertions for free.
-   *
-   * TWO THINGS RECORDED PRECISELY RATHER THAN APPROXIMATELY. First, `isNew()` sits inside the
-   * framework's "Deprecated Methods" section, opened at [org/Hibachi/HibachiEntity.cfc:L705], yet
-   * in-scope code still calls it — so it is ported anyway, and it is the ONE exception to the F22
-   * negative mandate in the module header. Second, and stated exactly because the distinction is
-   * easy to garble: the unqualified `isNew()` at [model/entity/Option.cfc:L94] resolves to the
-   * OPTION's own inherited predicate, not to this group's — a repository-wide grep finds no
-   * `optionGroup.isNew()` call site at all. The member is declared here because it is the identical
-   * predicate inherited from the same base class by every entity, because the legacy entity-test
-   * base reads it on every entity, and because it is part of the convention this module sets for
-   * `sku/` and `product/`.
+   * TWO THINGS RECORDED PRECISELY. `isNew()` sits inside the framework's "Deprecated Methods" section
+   * [org/Hibachi/HibachiEntity.cfc:L705] yet in-scope code still calls it, so it is ported anyway and is
+   * the ONE exception to the F22 negative mandate. And — stated exactly because the distinction is easy
+   * to garble — the unqualified `isNew()` at [model/entity/Option.cfc:L94] resolves to the OPTION's own
+   * inherited predicate, not to this group's; no `optionGroup.isNew()` call site exists. The member is
+   * declared here because it is the identical predicate every entity inherits from the same base, because
+   * the legacy entity-test base reads it on every entity, and because it is part of the convention this
+   * module sets for `sku/` and `product/`.
    *
    * @returns `true` when the group has not been persisted yet.
    */
   isNew(): boolean {
     return this.optionGroupID === '';
   }
+
+  /* ============================================================================================
+   * THE MANAGED-ENTITY CONTRACT — [org/Hibachi/**], INHERITED IN CFML, DECLARED HERE (IR-1 / TR-3)
+   * ============================================================================================
+   * Seven members every legacy entity received down the
+   * `HibachiObject` -> `HibachiTransient` -> `HibachiEntity` -> `model/entity/HibachiEntity.cfc`
+   * inheritance chain, and which `src/validation/Validator.ts` and
+   * `src/ports/UniquePropertyPort.ts` both require BY NAME. Neither contract can be satisfied by a
+   * plain data class, which is why they are declared rather than assumed:
+   * `ValidationSubject` reads `getClassName` and `hasProperty`, and `UniquePropertyEntity` reads
+   * `getEntityName`, `getPrimaryIDValue`, `getPrimaryIDPropertyName`, `getPropertyMetaData` and
+   * `getValueByPropertyIdentifier` in exactly the order [org/Hibachi/HibachiDAO.cfc:L134-L138]
+   * reads them.
+   *
+   * `src/domain/base/AuditableEntity.ts` owns the shared behaviour and every word of the rationale —
+   * including why there is no base class, why the member names are not modernised, and which
+   * inherited members are deliberately NOT ported. Each member below is the thin delegation plus the
+   * constant only this entity can state.
+   * ============================================================================================ */
+
+  /**
+   * `OptionGroup` — [org/Hibachi/HibachiObject.cfc:L135-L137], the last dot-delimited segment of the
+   * component's fully qualified name. Interpolated into every validation message
+   * [org/Hibachi/HibachiValidationService.cfc:L202, :L213, :L216].
+   *
+   * @returns The bare class name.
+   */
+  getClassName(): string {
+    return OPTION_GROUP_CLASS_NAME;
+  }
+
+  /**
+   * `SlatwallOptionGroup` — [org/Hibachi/HibachiEntity.cfc:L287-L289]. Live metadata reflection is replaced by the
+   * declared constant, per TR-3.
+   *
+   * @returns The mapped ORM entity name, NOT the physical table name.
+   */
+  getEntityName(): string {
+    return OPTION_GROUP_ENTITY_NAME;
+  }
+
+  /**
+   * `optionGroupID` — [org/Hibachi/HibachiEntity.cfc:L249-L251]. The legacy resolved this through
+   * `getService("hibachiService")`; the string-keyed service locator is replaced by the declared
+   * constant, per TR-3 and AAP 0.7.3 S3.
+   *
+   * @returns The name of the primary identifier property.
+   */
+  getPrimaryIDPropertyName(): string {
+    return OPTION_GROUP_PRIMARY_ID_PROPERTY_NAME;
+  }
+
+  /**
+   * The primary identifier's VALUE — [org/Hibachi/HibachiEntity.cfc:L244-L246], which forwards to
+   * the generated getter for whichever property `getPrimaryIDPropertyName` names.
+   *
+   * ⚠️ RETURNS `''` FOR AN UNSAVED INSTANCE, because [model/entity/OptionGroup.cfc:L52] declares
+   * `unsavedvalue=""` and this class initialises the field to `''`. That is what makes the
+   * self-exclusion term of the uniqueness query a NO-OP on insert — an observation AAP 0.4.1.7
+   * requires be reproduced rather than tidied away, and which `src/ports/UniquePropertyPort.ts`
+   * carries as a `TODO(parity)`. It is also the value
+   * [meta/tests/unit/entity/SlatwallEntityTestBase.cfc:L64-L67] asserts on a fresh instance.
+   *
+   * @returns The identifier, or `''` while unsaved.
+   */
+  getPrimaryIDValue(): string {
+    return this.optionGroupID;
+  }
+
+  /**
+   * Whether this entity DECLARES the named property —
+   * [org/Hibachi/HibachiTransient.cfc:L763-L765].
+   *
+   * ⚠️ A FALSE ANSWER SILENTLY SKIPS A VALIDATION RULE rather than failing it
+   * [org/Hibachi/HibachiValidationService.cfc:L171]. See OPTION_GROUP_DECLARED_PROPERTIES, whose
+   * exhaustiveness is compile-checked precisely because of that.
+   *
+   * @param propertyIdentifier - The name to test, in its declared casing.
+   * @returns `true` when the property is declared.
+   */
+  hasProperty(propertyIdentifier: string): boolean {
+    return hasDeclaredProperty(OPTION_GROUP_DECLARED_PROPERTIES, propertyIdentifier);
+  }
+
+  /**
+   * Resolves a declared property's metadata, RAISING for an undeclared name —
+   * [org/Hibachi/HibachiTransient.cfc:L738-L747], whose present-key branch is at [:L741-L743] and
+   * whose throw is at [:L746]. The non-optional return type is faithful to that declaration.
+   *
+   * @param propertyName - The name to resolve.
+   * @returns The metadata for that property.
+   * @throws DomainError - When no property of that name is declared. Withheld from every response
+   *   by the deny-by-default presentation, because it signals a fault in the port rather than
+   *   anything a caller can provoke.
+   */
+  getPropertyMetaData(propertyName: string): EntityPropertyMetaData {
+    return requireDeclaredPropertyMetaData(
+      OPTION_GROUP_DECLARED_PROPERTIES,
+      propertyName,
+      OPTION_GROUP_CLASS_NAME,
+    );
+  }
+
+  /**
+   * Reads a value by property identifier, walking a path delimited by EITHER `.` OR `_` —
+   * [org/Hibachi/HibachiTransient.cfc:L466-L481]. An unresolvable path yields `''`, never an absent
+   * value; `readValueByPropertyIdentifier` documents all four traversal rules and why each is
+   * behaviour rather than convenience.
+   *
+   * @param propertyIdentifier - A property name, or a delimited path.
+   * @returns The resolved value, or `''`.
+   */
+  getValueByPropertyIdentifier(propertyIdentifier: string): unknown {
+    return readValueByPropertyIdentifier(this, propertyIdentifier);
+  }
 }
 
 /* ===============================================================================================
- * ⚠️ R-B — THE POPULATION CONTRACT: A DECLARED DESCRIPTOR SET, AND NO `populate()` METHOD
+ * R-B — THE POPULATION CONTRACT: A DECLARED DESCRIPTOR SET, AND NO `populate()` METHOD
  * ===============================================================================================
  * `OptionGroup` HAS NO `populate()` MEMBER, deliberately. In the legacy tree the method arrived by
  * inheritance from the local base [model/entity/HibachiEntity.cfc:L56] and reflected over component
@@ -719,7 +921,16 @@ export class OptionGroup implements AuditableEntity {
  * which is exactly so that per-entity metadata is supplied BY the entity module rather than
  * discovered inside the engine (TR-3). Callers write:
  *
- *     populate(optionGroup, data, OPTION_GROUP_PROPERTY_DESCRIPTORS);
+ *     populate(optionGroup, data, OPTION_GROUP_PROPERTY_DESCRIPTORS, {
+ *         authorization: { entityName: optionGroup.getClassName(), authorizer },
+ *     });
+ *
+ * THE FOURTH ARGUMENT IS NOT OPTIONAL IN EFFECT FOR THIS ENTITY. `OptionGroup` is persistent, so ARM 1
+ * of the population master gate at [org/Hibachi/HibachiTransient.cfc:L186] does not short-circuit and
+ * the per-property authorisation arms [:L188-L190] are reached. `../base/populate` fails closed without
+ * the context, so a three-argument call would populate NO declared property.
+ * `../../services/BaseService` builds the object per save from its required authoriser collaborator;
+ * only a direct caller writes it.
  *
  * WHAT IS DECLARED, AND THE COUNT AUDIT. The entity declares thirteen properties. Twelve are
  * describable and one is not:
@@ -733,7 +944,7 @@ export class OptionGroup implements AuditableEntity {
  *   -- ------------------  ------------------------------------------------------------------
  *   12 describable         + 1 omitted (optionGroupID) = 13
  *
- * ⚠️ WHY `optionGroupID` IS OMITTED — A G6 TRANSLATION DECISION, NOT AN OVERSIGHT. The primary
+ * WHY `optionGroupID` IS OMITTED — A G6 TRANSLATION DECISION, NOT AN OVERSIGHT. The primary
  * identifier declares `fieldtype="id"` [model/entity/OptionGroup.cfc:L52], and the legacy column
  * branch is gated on `!structKeyExists(currentProperty, "fieldType") || fieldType == "column"`. For
  * an id property that gate is FALSE, and no relationship branch matches either, so THE LEGACY
@@ -749,7 +960,7 @@ export class OptionGroup implements AuditableEntity {
  *     DELETES the key here rather than assigning the empty string.
  *   - `hb_sessionDefault`, `hb_populateArray` and `hb_fileUpload` occur ZERO times across all six
  *     in-scope entities, so no descriptor below declares them.
- *   - `hb_populateEnabled="public"` occurs 68 times repository-wide and ZERO times in scope; only
+ *   - `hb_populateEnabled="public"` occurs 68 times in the legacy tree and ZERO times in scope; only
  *     `false` and absent occur here, so the tri-value is consumed but never exercised.
  *   - `hb_formatType` occurs once in scope, at [model/entity/Brand.cfc:L57], and the legacy live
  *     path ignores it entirely. Not applicable to this entity.
@@ -788,14 +999,27 @@ export class OptionGroup implements AuditableEntity {
  * time, holding no per-request content, in the same documented-safe category as
  * `AUDIT_PROPERTY_NAMES` itself (M7).
  */
-const AUDIT_PROPERTY_DESCRIPTORS: readonly ColumnPropertyDescriptor<AuditPropertyName>[] =
+const AUDIT_PROPERTY_DESCRIPTORS: readonly DisabledPropertyDescriptor<AuditPropertyName>[] =
   Object.freeze(
-    AUDIT_PROPERTY_NAMES.map<ColumnPropertyDescriptor<AuditPropertyName>>((auditPropertyName) => ({
-      name: auditPropertyName,
-      kind: 'column',
-      populateEnabled: false,
-    })),
+    AUDIT_PROPERTY_NAMES.map<DisabledPropertyDescriptor<AuditPropertyName>>(
+      (auditPropertyName) => ({
+        name: auditPropertyName,
+        populateEnabled: false,
+      }),
+    ),
   );
+
+/**
+ * The legacy `getClassName()` value for this entity [org/Hibachi/HibachiObject.cfc:L135-L137], which
+ * for [model/entity/OptionGroup.cfc:L49] is the bare component name.
+ *
+ * It is the ARM 3 operand of the population gate [org/Hibachi/HibachiTransient.cfc:L190] and the key
+ * the out-of-scope permission records are stored under
+ * [org/Hibachi/HibachiAuthenticationService.cfc:L131-L141]. Declared once because both descriptor sets
+ * below need it, and carried verbatim rather than read from `OptionGroup.name` at runtime — that would
+ * be the reflection TR-3 retires, and bundling may rename a class.
+ */
+const OPTION_GROUP_LEGACY_CLASS_NAME = 'OptionGroup';
 
 /**
  * The seven simple columns, in source declaration order.
@@ -810,13 +1034,13 @@ const AUDIT_PROPERTY_DESCRIPTORS: readonly ColumnPropertyDescriptor<AuditPropert
  */
 const OPTION_GROUP_COLUMN_DESCRIPTORS: readonly ColumnPropertyDescriptor<OptionGroupPropertyName>[] =
   Object.freeze([
-    { name: 'optionGroupName' },
-    { name: 'optionGroupCode' },
-    { name: 'optionGroupImage' },
-    { name: 'optionGroupDescription' },
-    { name: 'imageGroupFlag' },
-    { name: 'sortOrder' },
-    { name: 'remoteID' },
+    { name: 'optionGroupName', valueType: 'string' },
+    { name: 'optionGroupCode', valueType: 'string' },
+    { name: 'optionGroupImage', valueType: 'string' },
+    { name: 'optionGroupDescription', valueType: 'string' },
+    { name: 'imageGroupFlag', valueType: 'boolean' },
+    { name: 'sortOrder', valueType: 'integer' },
+    { name: 'remoteID', valueType: 'string' },
   ]);
 
 /**
@@ -826,10 +1050,13 @@ const OPTION_GROUP_COLUMN_DESCRIPTORS: readonly ColumnPropertyDescriptor<OptionG
  * the four populate-disabled audit properties of [:L64-L67]. `persistent: true` ports
  * `persistent=true` on the component declaration at [model/entity/OptionGroup.cfc:L49], and it is
  * consequential rather than decorative: the legacy authorisation gate short-circuits for
- * NON-persistent targets, so process objects populate freely while entities such as this one had
- * per-property authorisation consulted.
+ * NON-persistent targets, so process objects populate freely while entities such as this one have
+ * per-property authorisation consulted. `../base/populate` ports all three arms of that gate and
+ * DENIES when no authorisation collaborator is supplied, so a persistent target is never populated by
+ * default. `className` accompanies the flag because the third arm passes it as its `entityName`
+ * argument.
  *
- * ⚠️ WHY THE `options` RELATIONSHIP IS NOT IN THIS CONSTANT — A MISMATCH FLAGGED RATHER THAN
+ * WHY THE `options` RELATIONSHIP IS NOT IN THIS CONSTANT — A MISMATCH FLAGGED RATHER THAN
  * ASSUMED AWAY (S8). A one-to-many descriptor is required by its own contract to carry a
  * `RelatedEntityLoader` and a `populateRelated`. Neither can exist in a static constant declared
  * inside the domain layer: the loader performs DATA ACCESS, which S2 and S4 forbid here, and
@@ -846,6 +1073,7 @@ export const OPTION_GROUP_PROPERTY_DESCRIPTORS: PropertyDescriptorSet<
   OptionGroup,
   OptionGroupPropertyName
 > = Object.freeze({
+  entityName: OPTION_GROUP_LEGACY_CLASS_NAME,
   persistent: true,
   properties: Object.freeze([...OPTION_GROUP_COLUMN_DESCRIPTORS, ...AUDIT_PROPERTY_DESCRIPTORS]),
 });
@@ -902,6 +1130,7 @@ export function createOptionGroupPropertyDescriptors(
   };
 
   return Object.freeze({
+    entityName: OPTION_GROUP_LEGACY_CLASS_NAME,
     persistent: true,
     properties: Object.freeze([...OPTION_GROUP_PROPERTY_DESCRIPTORS.properties, optionsDescriptor]),
   });

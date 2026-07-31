@@ -1,37 +1,24 @@
 /**
- * DomainError — the root of the slatwall-ts error hierarchy, and the single source of truth
- * for the legacy CFML `throw()` message strings that are observable behavior of the Catalog
- * slice.
- *
- * Authority: AAP 0.4.1.11 "Errors and Utilities" — "Base error type; carries the legacy
- * `throw()` message strings verbatim where they are observable behavior."
+ * DomainError — the root of this subtree's error hierarchy, and the single source of truth for the
+ * legacy CFML `throw()` message strings that are observable behaviour of the Catalog slice.
  *
  * WHY THE MESSAGE STRINGS LIVE HERE
  * ---------------------------------
- * Four legacy `throw()` messages are behavior, not cosmetics. AAP 0.6.1.4 requires that all
- * three messages raised by `Product.getSkuBySelectedOptions` be "reproduced verbatim because
- * they are observable behavior", and AAP 0.4.1.8 requires the `SkuService.createSkus`
- * discriminator fallthrough be "preserved verbatim". Centralising them here means
- * `src/domain/product/Product.ts` and `src/services/SkuService.ts` consume the identical
- * literal, the `test/` suite asserts message equality against one place instead of re-typing
- * the text, and a reviewer can verify verbatim fidelity by reading a single file. See the
- * VERBATIM LEGACY MESSAGE INVENTORY section at the bottom of this module.
+ * Four legacy `throw()` messages are behaviour, not cosmetics: the three raised by
+ * `Product.getSkuBySelectedOptions` and the discriminator fallthrough in `SkuService.createSkus`.
+ * Centralising them means the domain entity and the service consume the identical literal, the test
+ * suite asserts message equality against one place instead of re-typing the text, and verbatim
+ * fidelity can be checked by reading a single file. The inventory is at the bottom of this module.
  *
- * ARCHITECTURAL POSITION (AAP 0.7.3 S4 — hexagonal separation)
- * -----------------------------------------------------------
- * `src/errors/` is a foundational, dependency-free leaf that sits below every other layer.
- * This module therefore declares ZERO imports — no sibling module, no Node builtin, no
- * package, and no barrel re-export. An error type that imported a domain entity, a port, an
- * adapter, a validation rule set, a service or a handler would invert the dependency
- * direction and destroy that leaf position. Consequences that follow, all deliberate:
- *   - No AWS event, result, handler or invocation-context type is named here. All AWS coupling
- *     is confined to `src/handlers/` (AAP 0.7.3 S4).
- *   - `process.env` is never read here. Configuration flows one way through `src/config/`
- *     (AAP 0.4.3.5), and nothing below the config layer reads the environment.
- *   - No database driver, no query text, no table or column identifier appears in any message
- *     or constant (AAP 0.7.3 S2).
- *   - No dependency of any kind is introduced. Only the built-in `Error` and the language are
- *     used (AAP 0.7.3 S5 — the deliverable's dependency set is frozen).
+ * ARCHITECTURAL POSITION
+ * ----------------------
+ * `src/errors/` is a dependency-free leaf below every other layer, so this module declares ZERO
+ * imports — no sibling module, no Node builtin, no package, no barrel re-export. An error type that
+ * imported a domain entity, a port, an adapter, a rule set, a service or a handler would invert the
+ * dependency direction and destroy that position. It follows that no AWS type is named here (all AWS
+ * coupling is confined to the handler layer), `process.env` is never read here (configuration flows
+ * one way through src/config/), and no query text, table or column identifier appears in any message
+ * or constant.
  *
  * TECHNOLOGY-SPECIFIC TRANSLATION DECISIONS
  * -----------------------------------------
@@ -50,21 +37,188 @@
  *   (d) `NotImplementedError` exists because two in-scope legacy members are provably
  *       unresolvable in the source repository, and because several in-scope members terminate
  *       at an explicitly out-of-scope collaborator. See that class.
+ *   (e) Every error in this hierarchy carries a PUBLIC-SAFE PRESENTATION, and it is DENY BY
+ *       DEFAULT: {@link DomainError.getPublicError} yields a neutral text and a service-fault
+ *       code unless a subclass explicitly declares otherwise. See PUBLIC-SAFE PRESENTATION
+ *       below for why a `message` written for a maintainer must never be the text a caller
+ *       receives, and {@link LegacyParityError} for the one family whose text is disclosed.
+ *   (f) The service's failure-code vocabulary is declared here, in the dependency-free leaf,
+ *       rather than in the response layer. See {@link PUBLIC_ERROR_CODE}.
  *
  * WHAT IS DELIBERATELY NOT HERE
  * -----------------------------
- *   - The `getQuantity` guard throw at model/entity/Product.cfc:445 and
- *     model/entity/Sku.cfc:312. `getQuantity` reaches exclusively into the inventory, stock
- *     and location services, every one of which is explicitly out of scope (AAP 0.2.2.6), so
- *     the method is not ported and its message is not observable behavior of the target. The
- *     mandated inventory is exactly four strings — not three, not five.
- *   - The validation resource-bundle keys. Those are declared once, in `ValidationError.ts`,
- *     which owns the error-key structure that keeps validation failures comparable to legacy
- *     output (AAP 0.4.1.11).
+ *   - The `getQuantity` guard throw at model/entity/Product.cfc:L445 and model/entity/Sku.cfc:L312.
+ *     `getQuantity` reaches exclusively into the out-of-scope inventory, stock and location
+ *     services, so the method is not ported and its message is not observable behaviour of the
+ *     target. The inventory here is exactly four strings — not three, not five.
+ *   - The validation resource-bundle keys, which are declared once in `ValidationError.ts`, the
+ *     module that owns the error-key structure.
  *   - HTTP status codes and response shaping, which belong to `src/handlers/httpResponse.ts`.
+ *     A failure code declared here is an application-level value, never a protocol one: this
+ *     module names no status, and the mapping from code to status is written once, exhaustively,
+ *     in that sibling.
+ *   - Logging, metrics and telemetry emission. Nothing here writes anywhere. The internal detail
+ *     stays ON the error object — `message`, `context`, `cause` and `stack` — for whichever
+ *     server-side consumer chooses to record it; see PUBLIC-SAFE PRESENTATION below.
  *   - Any retry, timeout, latency, throughput or capacity semantics. The legacy source states
  *     none for this slice, and AAP IR-12 forbids inventing them.
  */
+
+/* ==========================================================================================
+ * PUBLIC-SAFE PRESENTATION
+ * ==========================================================================================
+ *
+ * THE PROBLEM THIS SECTION SOLVES
+ * ------------------------------
+ * `Error.message` in this port is written for a maintainer. Ported members raise messages that
+ * deliberately name the legacy locator they reproduce, the defect identifier they carry
+ * unrepaired, the entity identifier in play, the database column that could not be read, or the
+ * environment variable that was not set. That is exactly the right content for a log line and
+ * exactly the wrong content for a response body: it discloses the service's internal structure,
+ * its schema and its configuration surface to whoever provoked the failure.
+ *
+ * Separating the two is therefore not stylistic. Every error in this hierarchy now answers two
+ * different questions with two different values:
+ *
+ *   - `message`, `context`, `cause` and `stack` — the INTERNAL account. Complete, specific, and
+ *     retained on the thrown object so a server-side consumer can log it in full. Nothing in
+ *     this module strips, truncates or rewrites any of it.
+ *   - {@link DomainError.getPublicError} — the EXTERNAL account. A stable code plus a text that
+ *     is safe to hand to any caller.
+ *
+ * DENY BY DEFAULT
+ * ---------------
+ * The base implementation returns a neutral service-fault presentation. A subclass discloses its
+ * `message` only by overriding the member and saying so, which means a new thrower cannot leak a
+ * maintainer-facing message by omission — the unsafe direction requires an explicit act. Exactly
+ * one family is disclosed, and it is recognised by TYPE rather than by an override:
+ * {@link LegacyParityError}, whose messages are the legacy CFML `throw()` strings the AAP requires
+ * be reproduced verbatim, and which are therefore observable behavior rather than internal detail.
+ * `src/handlers/httpResponse.ts` tests for that type and forwards `message` untouched; every other
+ * `DomainError` reaches the same boundary and is answered with a fixed neutral text.
+ *
+ * WHY THE CODE VOCABULARY IS DECLARED HERE (judgment (f))
+ * ------------------------------------------------------
+ * A caller should face ONE closed vocabulary of failure codes, not one from the error hierarchy
+ * and a second from the response layer. This module is the only place both layers can reach —
+ * it is the dependency-free leaf everything else sits above — so the whole set is declared here
+ * and `src/handlers/httpResponse.ts` draws its codes from it rather than declaring rivals.
+ *
+ * The set is CLOSED at nine members, and none of them is speculative: each corresponds to an
+ * outcome the port already distinguishes structurally. AAP 0.7.3 S9 forbids inventing a taxonomy
+ * the source does not call for, and this is not one — it is the existing set of branches made
+ * machine-readable, which is precisely what a caller needs once the human-readable text stops
+ * being specific. Nothing is added "for completeness": there is no sub-code, no numeric code, no
+ * problem-detail type or instance identifier, no documentation URI and no severity.
+ * ========================================================================================== */
+
+/**
+ * The closed set of stable, public-safe failure codes this service emits.
+ *
+ * A code is the machine-readable half of a failure and is the member a caller or a test should
+ * branch on. It is deliberately coarse: it says what KIND of failure occurred and whether the
+ * caller or the service is answerable for it, and nothing more. In particular a code never
+ * encodes which property, identifier, column, setting, member or file was involved — that detail
+ * is the internal account, and it stays on the error object.
+ *
+ * Frozen so the declaration is provably immutable at runtime as well as in the type system.
+ *
+ * REQUEST-ATTRIBUTABLE — the caller can act on these:
+ *   - `VALIDATION_FAILED` — a declarative validation rule set rejected the submitted values. The
+ *     resource-bundle keys travel separately and unmodified; see `./ValidationError`.
+ *   - `CATALOG_REQUEST_REJECTED` — a ported Catalog rule refused the request. This is the code
+ *     that accompanies a disclosed legacy message; see {@link LegacyParityError}.
+ *   - `REQUEST_INVALID` — the request itself could not be read: a required parameter was absent,
+ *     or the body was absent, unparseable or not an object.
+ *   - `RESOURCE_NOT_FOUND` — no route matched, or the addressed record does not exist.
+ *
+ * SERVICE-ATTRIBUTABLE — the caller cannot act on these, and none of them discloses why:
+ *   - `NOT_IMPLEMENTED` — a boundary-stubbed member was invoked. Reported honestly rather than
+ *     answered with a fabricated value, per AAP TR-5.
+ *   - `CATALOG_STATE_UNEXPECTED` — a ported Catalog rule found the stored data in a state it
+ *     cannot proceed from. The legacy message is still disclosed, because it is observable
+ *     behavior, but the fault is the service's; see {@link LegacyParityError}.
+ *   - `SERVICE_CONFIGURATION` — a value the deployment must supply is missing or unusable.
+ *   - `SERVICE_DATA` — stored data or a driver result could not be read as its declared shape.
+ *   - `SERVICE_FAULT` — the default. Every failure that declares no presentation of its own, and
+ *     every thrown value this port did not raise, reports as this and discloses nothing.
+ */
+export const PUBLIC_ERROR_CODE = Object.freeze({
+  VALIDATION_FAILED: 'VALIDATION_FAILED',
+  CATALOG_REQUEST_REJECTED: 'CATALOG_REQUEST_REJECTED',
+  REQUEST_INVALID: 'REQUEST_INVALID',
+  RESOURCE_NOT_FOUND: 'RESOURCE_NOT_FOUND',
+  NOT_IMPLEMENTED: 'NOT_IMPLEMENTED',
+  CATALOG_STATE_UNEXPECTED: 'CATALOG_STATE_UNEXPECTED',
+  SERVICE_CONFIGURATION: 'SERVICE_CONFIGURATION',
+  SERVICE_DATA: 'SERVICE_DATA',
+  SERVICE_FAULT: 'SERVICE_FAULT',
+} as const);
+
+/**
+ * One member of {@link PUBLIC_ERROR_CODE}.
+ *
+ * Derived from the frozen object rather than written out a second time, so the runtime set and
+ * the type can never drift apart, and so a consumer switching over it is checked exhaustively.
+ */
+export type PublicErrorCode = (typeof PUBLIC_ERROR_CODE)[keyof typeof PUBLIC_ERROR_CODE];
+
+/**
+ * The complete external account of a failure: a stable code and a text safe for any caller.
+ *
+ * Both members are required, so a presentation can never be half-declared. The shape holds
+ * exactly these two members and will not be extended with a diagnostic channel — anything that
+ * belongs to the internal account stays on the error object, which is the whole point of the
+ * separation described above.
+ */
+export interface PublicErrorPresentation {
+  readonly code: PublicErrorCode;
+  readonly message: string;
+}
+
+/*
+ * The public texts.
+ *
+ * Deliberately NOT exported. The legacy system has no counterpart for any of them, so none
+ * carries a parity obligation, and keeping them module-private means no consumer or test can
+ * mistake one for legacy behavior. Assert on the CODE, which is stable and exported, and on the
+ * absence of disclosure — never on these strings.
+ *
+ * Each is terse by design and names nothing: no member, no property, no identifier, no column,
+ * no setting, no file, no locator, no defect identifier and no reason.
+ */
+const SERVICE_FAULT_PUBLIC_MESSAGE = 'The request could not be completed';
+const NOT_IMPLEMENTED_PUBLIC_MESSAGE = 'This operation is not available';
+const SERVICE_CONFIGURATION_PUBLIC_MESSAGE = 'The service is not correctly configured';
+const SERVICE_DATA_PUBLIC_MESSAGE = 'The request could not be completed from the stored data';
+
+/*
+ * The presentations that carry no runtime value, built once and frozen.
+ *
+ * Shared instances rather than per-throw literals because they are immutable and identical for
+ * every occurrence; freezing them means a consumer cannot mutate the presentation another
+ * consumer will read. A presentation that interpolates a message — the legacy-message family —
+ * cannot be shared and is built in its own accessor instead.
+ */
+const SERVICE_FAULT_PRESENTATION: PublicErrorPresentation = Object.freeze({
+  code: PUBLIC_ERROR_CODE.SERVICE_FAULT,
+  message: SERVICE_FAULT_PUBLIC_MESSAGE,
+});
+
+const NOT_IMPLEMENTED_PRESENTATION: PublicErrorPresentation = Object.freeze({
+  code: PUBLIC_ERROR_CODE.NOT_IMPLEMENTED,
+  message: NOT_IMPLEMENTED_PUBLIC_MESSAGE,
+});
+
+const SERVICE_CONFIGURATION_PRESENTATION: PublicErrorPresentation = Object.freeze({
+  code: PUBLIC_ERROR_CODE.SERVICE_CONFIGURATION,
+  message: SERVICE_CONFIGURATION_PUBLIC_MESSAGE,
+});
+
+const SERVICE_DATA_PRESENTATION: PublicErrorPresentation = Object.freeze({
+  code: PUBLIC_ERROR_CODE.SERVICE_DATA,
+  message: SERVICE_DATA_PUBLIC_MESSAGE,
+});
 
 /**
  * Optional construction payload shared by {@link DomainError} and every subclass of it.
@@ -78,7 +232,17 @@
  * argument values a legacy CFML method was invoked with. It is a plain string-keyed record of
  * `unknown` values so a thrower can attach anything without weakening type safety.
  *
- * Both members are declared optional, and `exactOptionalPropertyTypes` is enabled, so a caller
+ * ⛔ THERE IS DELIBERATELY NO `publicMessage` MEMBER, AND ITS ABSENCE IS THE POINT. A rival design
+ * classified a message as client-safe by having the thrower pass the text a SECOND time under this
+ * name, and `src/handlers/httpResponse.ts` disclosed a message only when the two agreed. It was
+ * default-deny and it worked, but it was silently omittable at exactly the four throw sites that
+ * needed it: a new author writing one of the verbatim legacy strings would get a compiling,
+ * lint-clean, test-passing throw that quietly lost parity at the boundary. {@link LegacyParityError}
+ * makes the same statement in the TYPE, where it cannot be forgotten and where `instanceof` checks
+ * it. Reinstating an option here would give the boundary two disclosure channels, and the weaker one
+ * would decide whichever case its author happened to reach for.
+ *
+ * Every member is declared optional, and `exactOptionalPropertyTypes` is enabled, so a caller
  * must omit a member entirely rather than pass it as `undefined`.
  */
 export interface DomainErrorOptions {
@@ -130,42 +294,132 @@ export class DomainError extends Error {
       this.context = options.context;
     }
   }
+
+  /**
+   * The public-safe external account of this failure — a stable code and a text safe for any
+   * caller. See PUBLIC-SAFE PRESENTATION in the module header for the reasoning in full.
+   *
+   * THIS IMPLEMENTATION IS DENY BY DEFAULT, AND THAT IS THE SECURITY PROPERTY. A plain
+   * `DomainError` raised anywhere in the port reports a neutral service fault and discloses
+   * nothing at all — not its `message`, not its `context`, not its `cause`, not its `stack`.
+   * Ported members raise messages that name legacy locators, defect identifiers, entity
+   * identifiers, database columns and environment-variable names, and none of that may reach a
+   * caller. Because the safe answer is the inherited one, a thrower cannot leak by omission: a
+   * new `throw new DomainError(...)` anywhere in the subtree is sanitised the moment it is
+   * written, with no further action by its author.
+   *
+   * The internal account is not discarded, only withheld. `message`, `context`, `cause` and
+   * `stack` all remain on this object exactly as the thrower supplied them, so a server-side
+   * consumer can record the complete detail. This module performs no such recording itself: it
+   * adds no logging dependency (AAP 0.7.3 S5) and stays a pure value type.
+   *
+   * Override it only where the situation is genuinely attributable to the caller, or where the
+   * message text is observable legacy behavior. Every override in this hierarchy is listed in
+   * {@link PUBLIC_ERROR_CODE}, and each one states its own justification.
+   *
+   * @returns the code and text that may be disclosed
+   */
+  public getPublicError(): PublicErrorPresentation {
+    return SERVICE_FAULT_PRESENTATION;
+  }
+}
+
+/**
+ * Raised when a value the deployment must supply is missing, empty or unusable.
+ *
+ * WHY THIS TYPE EXISTS, AND WHY A PLAIN `Error` WAS NOT ENOUGH. A configuration fault is not a
+ * programming fault and it is not a bad request: the caller did nothing wrong and can do nothing
+ * about it. Raised as a bare `Error` it is indistinguishable from a `TypeError`, so the response
+ * layer can neither classify it nor sanitise it, and it lands in the catch-all branch that exists
+ * for values this port did not raise. Raised as this type it classifies as a service fault, maps
+ * to a server status, and discloses nothing — while the setting name, the resolved value and the
+ * reason all stay on the error object for a log.
+ *
+ * The message and `context` should be as specific as a maintainer needs. Name the setting, the
+ * key, the expected shape and what was found; none of it is disclosed. Do NOT soften the message
+ * for the caller's benefit — the caller never sees it.
+ *
+ * @example
+ * ```ts
+ * throw new ConfigurationError(
+ *   `Setting ${key} has no deployment-supplied value and no metadata default, so it cannot be ` +
+ *     'resolved.',
+ *   { context: { key } },
+ * );
+ * ```
+ */
+export class ConfigurationError extends DomainError {
+  /**
+   * Reports a service-configuration fault. The specific message stays internal.
+   *
+   * @returns the neutral configuration presentation
+   */
+  public override getPublicError(): PublicErrorPresentation {
+    return SERVICE_CONFIGURATION_PRESENTATION;
+  }
+}
+
+/**
+ * Raised when stored data, or a value a driver returned, cannot be read as the shape its
+ * declaration promises.
+ *
+ * It is the counterpart of {@link ConfigurationError} for the data plane: a required column
+ * absent from a result set, a result that is not a list of rows, a column holding a value of the
+ * wrong type, or a numeric column whose text cannot be carried without loss. In every case the
+ * request was well formed and the service is answerable, so it classifies as a service fault.
+ *
+ * Distinguishing it from a configuration fault is worth a separate type because the two demand
+ * different operator responses — one is fixed in a deployment value, the other in the data or the
+ * mapping — and the code is the only signal a caller-side operator gets. Nothing beyond that
+ * coarse distinction is disclosed: the column name, the expected shape and the value's type
+ * belong in `context` and stay there.
+ *
+ * @example
+ * ```ts
+ * throw new DataIntegrityError(
+ *   `Column "${columnName}" is absent from the result set, so the row cannot be mapped.`,
+ *   { context: { columnName } },
+ * );
+ * ```
+ */
+export class DataIntegrityError extends DomainError {
+  /**
+   * Reports a service data fault. The specific message stays internal.
+   *
+   * @returns the neutral data presentation
+   */
+  public override getPublicError(): PublicErrorPresentation {
+    return SERVICE_DATA_PRESENTATION;
+  }
 }
 
 /**
  * Raised by a boundary stub for an in-scope member that this port cannot implement.
  *
- * Two distinct categories of member need this signal. Both are recorded here because *why the
- * class exists* is a file-level judgment (AAP 0.8.2 Guideline 6); the per-site defect IDs and
- * the reason a particular member is stubbed belong in the doc comment of the throwing member,
- * not in this file, so this list is intentionally not an inventory of every stub.
+ * Two distinct categories of member need this signal. The per-site defect ID and the reason a
+ * particular member is stubbed belong on the throwing member itself, so this is not an inventory of
+ * every stub:
  *
- * 1. Members whose legacy implementation is provably unresolvable in the source repository.
- *    Two were confirmed by repository-wide search, and both are carried across as this error
- *    rather than repaired, because inventing an implementation would add behavior the legacy
- *    system does not have (AAP 0.7.3 S7 — preserve and annotate, do not repair):
- *      - model/service/SkuService.cfc:281-282 declares `getSkuStocksDeletableFlag()` and
- *        delegates it to a `SkuDAO` member of the same name. The only three occurrences of
- *        that name anywhere in the repository are the declaration, the delegation and the
- *        caller at model/entity/Sku.cfc:569. The data-access member itself does not exist, so
- *        the legacy call can never have resolved. TODO(parity): carried, not repaired (D4).
- *      - model/entity/Product.cfc:631-632 declares `getProductOptionsByGroup()` and calls a
- *        product-service member of the same name. The only two occurrences anywhere are those
- *        two lines; the service never defines it. TODO(parity): carried, not repaired (D5).
+ * 1. Members whose legacy implementation is unresolvable in the source repository, carried across as
+ *    this error rather than repaired, because inventing an implementation would add behaviour the
+ *    legacy system does not have:
+ *      - model/service/SkuService.cfc:L281-L282 declares `getSkuStocksDeletableFlag()` and delegates
+ *        it to a `SkuDAO` member of the same name that the data-access layer never defines, so the
+ *        legacy call can never have resolved. TODO(parity) D4 — carried, not repaired.
+ *      - model/entity/Product.cfc:L631-L632 declares `getProductOptionsByGroup()` and calls a
+ *        product-service member the service never defines. TODO(parity) D5 — carried, not repaired.
  *
- * 2. Members whose behavior terminates at an explicitly out-of-scope collaborator, reached
- *    through a declared port rather than through converted code (AAP 0.2.2.6 and TR-5) — the
- *    image-handling members, and the subscription and content-access branches of the
- *    SKU-creation discriminator. Those members stay on the public surface, because dropping
- *    them would break interface parity; they raise this error instead of silently returning a
- *    fabricated value.
+ * 2. Members whose behaviour terminates at an out-of-scope collaborator reached through a declared
+ *    port rather than through converted code — the image-handling members, and the subscription and
+ *    content-access branches of the SKU-creation discriminator. Those members stay on the public
+ *    surface, because dropping them would break interface parity; they raise this error instead of
+ *    silently returning a fabricated value.
  *
- * Provenance note on the message shape, cited rather than reproduced. The retired Hibachi
- * framework signalled an unresolvable call from `onMissingMethod`
- * (org/Hibachi/HibachiService.cfc:255-281, throwing at :280, with the legacy grammar "does not
- * exists"). That string is deliberately not exported as a constant here: it lies outside the
- * mandated four-string inventory, and this port does not reproduce `onMissingMethod` at all —
- * AAP IR-1 and TR-3 replace runtime method synthesis with explicitly declared, typed methods.
+ * The retired framework signalled an unresolvable call from `onMissingMethod`
+ * (org/Hibachi/HibachiService.cfc:L255-L281, throwing at :L280). That string is deliberately not
+ * exported as a constant here: it lies outside the four-string inventory this module owns, and this
+ * port replaces runtime method synthesis with explicitly declared, typed methods rather than
+ * reproducing it.
  *
  * @example
  * ```ts
@@ -177,27 +431,127 @@ export class DomainError extends Error {
  */
 export class NotImplementedError extends DomainError {
   /**
-   * The un-portable member, named as `Class.method`, exposed as a field so callers and tests
-   * can identify it programmatically instead of parsing {@link Error.message}.
+   * The un-portable member, named as `Class.method`.
+   *
+   * Exposed as a field so a server-side consumer and an in-process test can identify it
+   * programmatically instead of parsing {@link Error.message}. It is part of the INTERNAL account
+   * and is deliberately absent from {@link getPublicError}: a member name is a map of the
+   * service's internal structure, and naming the boundary stubs to an arbitrary caller invites
+   * exactly the enumeration a caller has no legitimate use for. The gap stays legible where it
+   * matters — in a log, in a test, and in this port's own documentation.
    */
   public readonly member: string;
 
   /**
    * @param member the un-portable member, named as `Class.method`
    * @param reason why it cannot be implemented; omit it when the throwing member's own doc
-   *   comment already records the reason
-   * @param options optional `cause` and `context` forwarded to {@link DomainError}
+   *   comment already records the reason. It is diagnostic only and never reaches a client.
+   * @param options optional `cause` and `context` forwarded to {@link DomainError}.
    */
   public constructor(member: string, reason?: string, options?: DomainErrorOptions) {
+    /*
+     * The reason-free form of the diagnostic message, composed once and then extended when a reason
+     * was supplied, so the two spellings cannot drift apart.
+     *
+     * ⚠️ THIS TEXT WAS ALSO PASSED AS A `publicMessage` CLASSIFICATION, AND IT NO LONGER IS. The
+     * option it was passed to is gone — see {@link DomainErrorOptions} for why the disclosure
+     * decision moved into the type system — and it had become dead in any case: this subclass
+     * overrides {@link NotImplementedError.getPublicError} to return a NEUTRAL presentation, and
+     * `src/handlers/httpResponse.ts` answers this family with a fixed text and reads neither the
+     * message nor the member. Nothing consumed the classification, so a doc comment claiming the
+     * response layer "relies on this text to keep the gap legible" was describing a mechanism that
+     * had already been replaced by the 501 status. TR-5 is satisfied by the status and by the member
+     * staying on this object for a log, which is where the gap is legible.
+     */
+    const notImplementedMessage = `${member} is not implemented`;
+
     super(
-      reason === undefined
-        ? `${member} is not implemented`
-        : `${member} is not implemented: ${reason}`,
+      reason === undefined ? notImplementedMessage : `${notImplementedMessage}: ${reason}`,
       options,
     );
     this.member = member;
   }
+
+  /**
+   * Reports that the operation is unavailable, without naming the member or the reason.
+   *
+   * The failure is surfaced honestly — it is never swallowed, never converted into a success and
+   * never answered with a fabricated value, per AAP TR-5 — but it is surfaced as a KIND rather
+   * than as a description. The member name and the reason stay on this object for a log; see the
+   * note on {@link member}.
+   *
+   * @returns the neutral not-implemented presentation
+   */
+  public override getPublicError(): PublicErrorPresentation {
+    return NOT_IMPLEMENTED_PRESENTATION;
+  }
 }
+
+/**
+ * Raised with one of the four verbatim legacy message strings this module owns, and with nothing
+ * else.
+ *
+ * WHY A SUBCLASS RATHER THAN A FLAG, A CODE OR A STRING TEST
+ * ---------------------------------------------------------
+ * Two obligations meet at the response boundary and pull in opposite directions:
+ *
+ *   - The four strings in the inventory below are OBSERVABLE BEHAVIOR. AAP 0.8.2 Guideline 2 and
+ *     Guideline 4, and AAP 0.7.3 S7, require them to reach a caller character for character,
+ *     misspellings included. `src/handlers/httpResponse.ts` forwards them untouched.
+ *   - Every OTHER message raised as a {@link DomainError} anywhere in this deliverable is a
+ *     diagnostic authored by this port, not by the legacy system. Those messages routinely name
+ *     the thing that failed — a configuration variable, a column, a storage path, a legacy source
+ *     locator — because they exist to make a fault legible to whoever is holding the code. None of
+ *     them carries a parity obligation, and none of them belongs in a response body.
+ *
+ * A message-text test cannot separate the two populations honestly. Two of the four strings
+ * interpolate a runtime value, so recognition would degrade to prefix matching on a string this
+ * port is contractually forbidden to inspect or transform, and it would amount to the error-code
+ * registry AAP 0.7.3 S9 rules out. A boolean option on {@link DomainErrorOptions} would separate
+ * them, but it would also be silently omittable at any of the throw sites that need it.
+ *
+ * A subclass makes the distinction STRUCTURAL instead. Disclosure becomes default-deny: the great
+ * majority of this deliverable's `DomainError` throw sites need no change and disclose nothing,
+ * and the four that carry a legacy string say so in their type. The response boundary then tests a
+ * type rather than a string, which the compiler and `instanceof` can check rather than a reviewer
+ * having to. This is the same shape of decision already recorded on
+ * `src/ports/AccountContextPort.ts`: make the unsafe state inexpressible rather than merely
+ * defaulted against.
+ *
+ * WHAT THIS CLASS DOES NOT DO. It adds no member, no code, no category, no severity and no
+ * taxonomy (AAP 0.7.3 S9), and it changes nothing about how an error is raised, caught or logged.
+ * It does not validate its own message either — a constructor that checked its argument against
+ * the inventory would be the string test this class exists to avoid — so membership is a
+ * documented obligation on the four throw sites, exactly as verbatim fidelity is a documented
+ * obligation on the inventory itself. It is not a general-purpose "safe to show a caller" error:
+ * it means "this text is legacy behavior", and the four strings below are its whole membership.
+ *
+ * WHY ALL FOUR ANSWER THE SAME STATUS, THOUGH THEY DO NOT SHARE AN ATTRIBUTION. The attribution
+ * genuinely differs, and the distinction is worth recording even though it does not change the
+ * response: the three raised from `model/entity/Product.cfc:355`, `:357` and `:362` all follow from
+ * the caller's own option selection resolving to the wrong number of SKUs, so the caller can change
+ * the selection and retry, while the one raised from `model/service/SkuService.cfc:204` is the
+ * fallthrough of the three-way base-product-type discriminator and fires when a STORED product type
+ * matches none of the three seeded at `config/dbdata/SlatwallProductType.xml.cfm:13-15` — a data
+ * state the caller neither caused nor can correct.
+ *
+ * A rival design carried that attribution as a required constructor argument narrowing
+ * {@link PUBLIC_ERROR_CODE} to two members, so the fourth string answered 500 while the other three
+ * answered 400. It is not adopted, for two reasons that both point the same way. It would give this
+ * class a `code` member, and "adds no member, no code, no category, no severity and no taxonomy" is
+ * the property above that makes the class checkable rather than a taxonomy in disguise. And the
+ * uniform status is the TESTED one: `test/services/SkuService.test.ts` asserts 400 for the
+ * fallthrough string alongside the other three, and asserts the body carries the single key
+ * `message`, which a status-varying design cannot satisfy without publishing the code that chose it.
+ * `statusForPublicErrorCode` still maps `CATALOG_STATE_UNEXPECTED` to 500 for the internal
+ * classifications that do carry a code, so the vocabulary loses nothing.
+ *
+ * @example
+ * ```ts
+ * throw new LegacyParityError(moreThanOneSkuReturnedMessage(selectedOptions));
+ * ```
+ */
+export class LegacyParityError extends DomainError {}
 
 /* ==========================================================================================
  * VERBATIM LEGACY MESSAGE INVENTORY — exactly four strings, byte-identical to the CFML source
@@ -217,9 +571,23 @@ export class NotImplementedError extends DomainError {
  * Homogenising them into four factories or four constants would obscure which strings actually
  * carry a value, and is exactly the kind of unrequested tidying AAP 0.8.2 Guideline 4 forbids.
  *
+ * ⚠️ EVERY THROW OF ONE OF THESE FOUR STRINGS MUST RAISE {@link LegacyParityError}, and this is the
+ * one obligation a new throw site is most likely to miss. `src/handlers/httpResponse.ts` WITHHOLDS a
+ * domain message from the response body unless the error's TYPE says it is legacy behaviour, so a
+ * throw that passes one of these strings on a plain {@link DomainError} would keep parity in the log
+ * and silently lose it at the boundary — the caller would receive a neutral body where the CFML
+ * application returned the legacy text. These four are the ONLY strings in the subtree that may be
+ * raised that way.
+ *
+ * ⛔ AN EARLIER REVISION OF THIS NOTE INSTRUCTED THE OPPOSITE — "bind the value once and pass it
+ * twice, as the message and as a `publicMessage` option" — which was correct for a disclosure design
+ * that has since been replaced, and would today produce exactly the silent parity loss the paragraph
+ * above warns about. The option no longer exists. The correction is recorded rather than quietly
+ * applied, because an instruction that used to be right is more dangerous than one that never was.
+ *
  * THE CONTROL STRUCTURE THAT SELECTS BETWEEN THE FIRST THREE
  * ---------------------------------------------------------
- * Read from model/entity/Product.cfc:349-364. A consumer porting
+ * Read from model/entity/Product.cfc:L349-L364. A consumer porting
  * `Product.getSkuBySelectedOptions` must reproduce these branches exactly:
  *
  *   L349  getSkuBySelectedOptions(selectedOptions = "")   <- the default is the EMPTY STRING
@@ -244,7 +612,7 @@ export class NotImplementedError extends DomainError {
 /**
  * MESSAGE 1 — raised when a non-empty option selection resolves to two or more SKUs.
  *
- * Verbatim from model/entity/Product.cfc:355, the branch taken when the resolved SKU array
+ * Verbatim from model/entity/Product.cfc:L355, the branch taken when the resolved SKU array
  * holds more than one element.
  *
  * The legacy CFML interpolated the caller's `selectedOptions` argument straight into the
@@ -263,7 +631,7 @@ export function moreThanOneSkuReturnedMessage(selectedOptions: string): string {
 /**
  * MESSAGE 2 — raised when a non-empty option selection resolves to no SKU at all.
  *
- * Verbatim from model/entity/Product.cfc:357, the branch taken when the resolved SKU array is
+ * Verbatim from model/entity/Product.cfc:L357, the branch taken when the resolved SKU array is
  * empty.
  *
  * Interpolation rules are identical to {@link moreThanOneSkuReturnedMessage}: exactly one
@@ -279,7 +647,7 @@ export function noSkusFoundForSelectedOptionsMessage(selectedOptions: string): s
 
 /**
  * MESSAGE 3 — raised on the EMPTY-selection branch when the product does not have exactly one
- * SKU. Verbatim from model/entity/Product.cfc:362.
+ * SKU. Verbatim from model/entity/Product.cfc:L362.
  *
  * Read this constant's name as a description of the BRANCH it belongs to, not as a description
  * of an argument requirement. See the control-structure note above: this is not a guard
@@ -302,11 +670,11 @@ export const NO_SINGLE_SKU_WITHOUT_SELECTED_OPTIONS_MESSAGE =
 
 /**
  * MESSAGE 4 — the fallthrough of the three-way base-product-type discriminator in
- * `SkuService.createSkus`. Verbatim from model/service/SkuService.cfc:204.
+ * `SkuService.createSkus`. Verbatim from model/service/SkuService.cfc:L204.
  *
  * The legacy method branches on the product's base product type over the merchandise,
  * subscription and content-access discriminators seeded at
- * config/dbdata/SlatwallProductType.xml.cfm:13-15, and raises this message when the value
+ * config/dbdata/SlatwallProductType.xml.cfm:L13-L15, and raises this message when the value
  * matches none of them. AAP 0.4.1.8 requires the fallthrough be "preserved verbatim", so the
  * text is reproduced exactly, including the absence of a trailing period.
  *

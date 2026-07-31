@@ -1,200 +1,192 @@
 /**
  * `Validator` — the typed rule-set evaluation engine of the extracted Catalog slice.
  *
- * Authority: AAP 0.4.1.5 row 1 — `slatwall-ts/src/validation/Validator.ts` | CREATE | REFERENCE
- * `org/Hibachi/HibachiValidationService.cfc` | "Runtime JSON interpretation becomes typed rule-set
- * evaluation with context selection". Corroborated by the AAP 0.3.1 target tree and by the AAP
- * 0.3.3 pattern row, which pairs "Specification / rule set" against
- * "`HibachiValidationService` interpreting JSON documents at runtime" and places the outcome in
- * "`src/validation/rules/*.rules.ts` evaluated by `Validator.ts`".
+ * Ported from `org/Hibachi/HibachiValidationService.cfc`. AAP 0.4.1.5 row 1 makes this file CREATE and
+ * that component REFERENCE: "Runtime JSON interpretation becomes typed rule-set evaluation with context
+ * selection", over the seven transliterated documents in `./rules/`. Because those rule sets point here
+ * for evaluation semantics, the generic semantics live in this header and theirs carry only
+ * property-specific asymmetries.
  *
- * =============================================================================================
- * WHY THIS FILE EXISTS, AND WHY IT IS THE MOST DANGEROUS FILE IN THE FOLDER
- * =============================================================================================
- * AAP IR-4: "Declarative validation is part of the observable behavior. Seven catalog validation
- * files define required fields, uniqueness, regular-expression formats, conditional rules and
- * delete guards. Two `Sku` rules are method-based and execute real queries. These are behavior,
- * not configuration, and are ported as typed rule sets." AAP 0.2.1.5 says the same from the other
- * direction: those documents "are interpreted at runtime by the validation service and determine
- * which saves and deletes succeed."
+ * SECTION MARKERS `N1`-`N6` label this engine's six behavioural requirements — the dry-run switch (N1),
+ * the open context string (N2), the two-object process flow (N3), the absence of any global error flag
+ * (N4), the two documented non-ports (N5) and the two-argument error call (N6) — and are cited from the
+ * declarations that discharge them.
  *
- * Treat them as configuration and the result is a port that compiles cleanly, saves records the
- * legacy system would have rejected, and rejects records the legacy system would have accepted —
- * with no compile error, no exception and no failing test to reveal it. Every null-semantics row
- * in the table below, and every comparison rule beside it, exists to close one of those silent
- * gaps. Nothing here is stylistic.
+ * WHY THIS FILE IS THE MOST DANGEROUS ONE IN THE FOLDER. AAP IR-4 records that these documents "are
+ * behavior, not configuration", because they "determine which saves and deletes succeed" (AAP 0.2.1.5).
+ * Treat them as configuration and the port compiles cleanly, saves records the legacy system would have
+ * rejected and rejects records it would have accepted — with no compile error, no exception and no
+ * failing test to reveal it. Every null-semantics row and comparison rule below closes one such gap.
  *
- * =============================================================================================
- * WHAT THIS FILE IS NOT — TR-3, AND WHY THE JSON IS NOT SHIPPED
- * =============================================================================================
- * AAP transformation rule TR-3: "Replace framework magic with declarations. Every
- * runtime-synthesized method, every string-keyed service lookup and every metadata-driven
- * behavior becomes an explicit, compile-checked declaration."
+ * WHAT THIS FILE IS NOT — TR-3, AND WHY THE JSON IS NOT SHIPPED. This engine does not read, bundle, parse
+ * or interpret a JSON document: it has no file access and no deserialisation, and the legacy document
+ * loader (`org/Hibachi/HibachiValidationService.cfc:L6-L53`) has no counterpart. Rules arrive already
+ * typed from `./rules/*.rules.ts` and this file only EVALUATES them; interpreting documents at runtime
+ * would reproduce the metadata-driven dispatch TR-3 retires. Nor is any `model/validation/*.json` copied,
+ * symlinked or re-emitted, because TR-6 and AAP 0.4.1.1 hold the CFML tree byte-for-byte unchanged.
  *
- * So this engine does NOT read, bundle, parse or interpret a JSON document, and it contains no
- * file access and no deserialisation of any kind. The legacy engine's document loader
- * (`org/Hibachi/HibachiValidationService.cfc:L6-L53`) has no counterpart here. Rules arrive
- * already typed, as ordinary TypeScript values built by `./rules/*.rules.ts`, and this file only
- * EVALUATES them. Bundling the documents and interpreting them at runtime would reproduce exactly
- * the metadata-driven dispatch TR-3 retires.
+ * THE THIRTEEN KEYS, CLOSED AT THIRTEEN over the seven enumerated in-scope documents — never wildcarded,
+ * since AAP 0.4.4 warns that `model/validation/Product*.json` "would silently pull in out-of-scope
+ * material". Two keys SELECT and are modelled on {@link ValidationRule}; eleven CONSTRAIN and are the
+ * members of {@link Constraint}; `properties` is the structural container. The legacy vocabulary is far
+ * wider — further `dataType` values, constraint keys and comparison evaluators — and that remainder is
+ * not implemented, because none of it appears in the seven and AAP 0.7.3 S9 forbids inventing capability.
  *
- * Nor is any `model/validation/*.json` copied, moved, symlinked or re-emitted into `slatwall-ts/`.
- * Those documents are transliterated, not vendored: TR-6 and AAP 0.4.1.1 hold the CFML tree
- * byte-for-byte unchanged, so every target file is CREATE and every legacy file is REFERENCE.
+ * TWO SELECTION MECHANISMS, ORTHOGONAL AND NEVER COLLAPSED INTO ONE. `contexts`
+ * (`org/Hibachi/HibachiValidationService.cfc:L55-L95`) and `conditions` (`:L97-L131`) are independent
+ * gates, modelled as independent fields; only one document uses `conditions`, and that asymmetry is real
+ * legacy structure rather than something to tidy away.
+ *   - CONTEXTS. The decisive line is `:L71`: a rule passes when it declares NO `contexts` key at all, or
+ *     when the requested context appears in its comma-delimited list case-insensitively. A rule with no
+ *     `contexts` key therefore applies in EVERY context, which is what makes both rules of
+ *     `model/validation/Product_UpdateSkus.json` fire under any context string; and the list is
+ *     comma-delimited, so "addOptionGroup,addOption" at `model/validation/Product.json:L4` is two
+ *     entries, not one.
+ *   - THE FLATTENING, which is why one property can accumulate several messages. `:L77-L88` explodes each
+ *     rule object into ONE constraint record per key, excluding `contexts` and `conditions` (`:L78`) and
+ *     copying `conditions` onto every record it produces (`:L83-L85`), so the single rule at
+ *     `model/validation/Product.json:L10` becomes THREE independent constraints, each able to report its
+ *     own error against the same property. Here the explosion lives in the data shape: a
+ *     {@link ValidationRule} holds an ARRAY of constraints, so the flattening is visible in the rule set
+ *     rather than performed at evaluation time.
+ *   - CONDITIONS resolve a rule's comma-delimited list of condition NAMES against the document's own
+ *     top-level block, OR ACROSS conditions (`:L124-L126`) and AND WITHIN one (`:L110-L121`). Three
+ *     further details are behavior and are reproduced exactly: `:L108` guards the name lookup, so a name
+ *     absent from the block is SKIPPED and the gate fails if it was the only one; `:L117` short-circuits
+ *     on an unknown constraint type and leaves the all-met flag untouched, so an unknown constraint
+ *     inside a conditions block is SILENTLY IGNORED — in deliberate contrast to `:L201-L203`, where an
+ *     unknown constraint on the main path THROWS, and the two are NOT harmonised here; and `:L118`
+ *     records a failure and keeps looping rather than breaking.
  *
- * =============================================================================================
- * THE THIRTEEN KEYS — MEASURED, AND CLOSED AT THIRTEEN
- * =============================================================================================
- * Counted across exactly the seven in-scope documents, which are enumerated and never wildcarded
- * (AAP 0.4.4 warns that `model/validation/Product*.json` "would silently pull in out-of-scope
- * material"). Two keys select; eleven constrain; `properties` is the structural container.
+ * NULL SEMANTICS PER CONSTRAINT — THE LIKELIEST SOURCE OF SILENT DRIFT. Each row is the verdict the
+ * corresponding `validate_*` body returns for an ABSENT value; get one wrong and the set of saves that
+ * succeed changes with nothing to signal it. Every constraint declaration below repeats its own row
+ * together with the rest of that constraint's semantics, so this table is the index, not the detail.
  *
- *   SELECTION   contexts       39 uses   save, delete, addOptionGroup, addOption,
- *                                        addSubscriptionTerm, "addOptionGroup,addOption"
- *               conditions      3 uses   model/validation/Product_UpdateSkus.json ONLY
- *   CONSTRAINT  required       18 uses   always true
- *               maxCollection   9 uses   always 0
- *               unique          7 uses   always true — see THE SEVEN below
- *               dataType        7 uses   numeric (6) and url (1), and NOTHING else
- *               eq              5 uses   false and 1, and nothing else
- *               regex           3 uses   one literal, ^[a-zA-Z0-9-_.|:~^]+$
- *               minValue        3 uses   always 0
- *               minCollection   3 uses   always 1
- *               method          2 uses   hasUniqueOptions, hasOneOptionPerOptionGroup
- *               inList          2 uses   merchandise, subscription
- *               maxLength       1 use    0
+ *   required       null FAILS   `:L240-L246`      maxCollection  null PASSES  `:L309-L315`
+ *   dataType       null PASSES  `:L256-L267`      regex          null PASSES  `:L481-L487`
+ *   minValue       null PASSES  `:L269-L275`      eq             null FAILS   `:L385-L395`
+ *   maxLength      null PASSES  `:L293-L299`      inList         null FAILS   `:L459-L465`
+ *   minCollection  null PASSES  `:L301-L307`      method         n/a          `:L333-L335`
+ *   unique         n/a          `:L467-L470`
  *
- * VOCABULARY DELIBERATELY NOT IMPLEMENTED (AAP 0.7.3 S9 — invent nothing). Each of the following
- * appears elsewhere in the wider validation corpus and NEVER in the seven, so implementing any of
- * it would be fabrication: the `dataType` values email, date and creditCard; the constraint keys
- * minLength, eqProperty, gtProperty, null, maxValue, populatedPropertyValidation, validate and
- * uniqueOrNull; and the evaluators the legacy engine declares but the seven never reach —
- * minList, maxList, lt, lte, gt, gte, gtNow, ltNow, neq, lteProperty, ltProperty, gteProperty and
- * neqProperty. No maximum length is invented for a product name, no address format is invented,
- * no positive-integer quantity check is invented and no "sensible" default is invented. The only
- * numeric literals this engine treats as meaningful are the source-declared constraint values
- * above, each of which arrives from a rule set rather than being written here.
+ * `minCollection` is the row that catches people: a floor of 1 PASSES on null and FAILS on an empty
+ * array. Two further engine behaviours are also reproduced: `:L171` — a rule whose property does not
+ * exist on the subject is SILENTLY SKIPPED, neither an error nor a failure; and `:L162` — a context that
+ * is boolean-castable and casts to false skips validation ENTIRELY. Errors ACCUMULATE: evaluation never
+ * short-circuits on a first failure, at any level.
  *
- * =============================================================================================
- * TWO SELECTION MECHANISMS — ORTHOGONAL, AND NEVER COLLAPSED INTO ONE
- * =============================================================================================
- * `contexts` (`org/Hibachi/HibachiValidationService.cfc:L55-L95`) and `conditions`
- * (`org/Hibachi/HibachiValidationService.cfc:L97-L131`) are independent gates and are modelled
- * as independent fields. Only one document uses `conditions`, and that asymmetry is real legacy
- * structure rather than an accident worth tidying away.
+ * LOOSE EQUALITY IS LOAD-BEARING, NOT AN OVERSIGHT. `:L391` compares with CFML `==`, which coerces, so
+ * `eq false` also matches the string "false", the number 0, the string "0" and the string "no", and
+ * `eq 1` also matches the string "1" and the boolean true. It cannot be tightened, because none of the
+ * four data properties at `model/process/Product_UpdateSkus.cfc:L52-L58` declares a `type=` attribute, so
+ * a flag really may arrive as 1, "1", true or "yes". {@link isCfLooseEqual} reproduces CFML's coercion
+ * ladder — numeric, then boolean, then a case-insensitive string comparison — rather than narrowing the
+ * comparison and silently changing which delete guards fire.
  *
- * CONTEXTS. The decisive line is `org/Hibachi/HibachiValidationService.cfc:L71`, which passes a
- * rule when the rule declares NO `contexts` key at all, or when the requested context is found in
- * the rule's comma-delimited list case-insensitively. Both halves matter:
- *   - A rule with no `contexts` key applies in EVERY context. That is what makes
- *     `model/validation/Product_UpdateSkus.json`'s two rules fire under any context string,
- *     including the four runtime-only ones listed under CONTEXT below.
- *   - The list is comma-delimited and matched case-insensitively, so "addOptionGroup,addOption"
- *     at `model/validation/Product.json:L4` is two entries, not one.
+ * SUBJECT CONTRACT — HOW VALUES ARE READ WITHOUT STRING-KEYED DISPATCH. The legacy engine builds an
+ * accessor name at runtime and invokes it dynamically (`:L241` is one of many such bodies), which is the
+ * framework magic TR-3 retires and AAP 0.7.3 S3 forbids, so it is not reproduced in any form. Instead
+ * each {@link PropertyValidation} carries an explicit typed {@link PropertyValueReader}; each `method`
+ * constraint carries the ACTUAL bound domain method, as AAP 0.4.1.5 requires, plus that method's name,
+ * needed only because the key shape at `:L222` embeds it; and each `unique` constraint carries an
+ * explicit {@link UniqueTargetResolver}, the typed analogue of the last-object lookup at `:L468`. There
+ * is no name-to-function map, no lookup table keyed by string and no reflection in this file.
+ * {@link ValidationSubject} therefore declares exactly TWO members — the class name (`:L202`, `:L213`,
+ * `:L216`) and the property-existence test (`:L171`) — precisely the two reads the legacy engine makes
+ * that are not value access.
  *
- * THE FLATTENING, which is why one property can accumulate several messages.
- * `org/Hibachi/HibachiValidationService.cfc:L77-L88` explodes each rule object into ONE constraint
- * record per key, excluding `contexts` and `conditions` (`:L78`) and copying `conditions` onto
- * every record it produces (`:L83-L85`). So the single rule at `model/validation/Product.json:L10`
- * — required, unique and a format rule on `productCode` — becomes THREE independent constraints,
- * each able to report its own error against the same property. Here that explosion is expressed
- * in the data shape itself: a {@link ValidationRule} holds an ARRAY of constraints, so the
- * flattening is visible in the rule set rather than performed at evaluation time.
+ * A PERSISTENCE FLAG IS DELIBERATELY ABSENT. `:L212` branches on whether the subject is persistent, and
+ * that branch selected only the substitution struct's class-name prefix, which DECISION D-1 removes
+ * entirely, and which class-name resolution to use — a last-entity walk along a dotted identifier
+ * (`:L213`) versus the subject's own class name (`:L216`). Every property identifier in all seven
+ * documents is a single segment containing neither a dot nor an underscore, so both branches resolve
+ * alike and the distinction is unobservable in this slice; declaring a flag that could not change an
+ * outcome would be capability beyond what the migration requires (AAP 0.8.2 guideline 4).
  *
- * CONDITIONS. `org/Hibachi/HibachiValidationService.cfc:L97-L131` treats a rule's `conditions`
- * value as a comma-delimited list of condition NAMES declared in the document's own top-level
- * `conditions` block, and evaluates OR ACROSS conditions (`:L124-L126`) with AND WITHIN a
- * condition (`:L110-L121`). Three further details are behavior and are reproduced exactly:
- *   - `:L108` guards the name lookup, so a name absent from the block is SKIPPED. If it was the
- *     only name, the gate evaluates false and the constraint never runs.
- *   - `:L117` short-circuits on an unknown constraint type, which leaves the all-met flag
- *     untouched, so an unknown constraint inside a conditions block is SILENTLY IGNORED. This is
- *     in deliberate contrast to `:L201-L203`, where an unknown constraint in the main path THROWS.
- *     The two behaviours are NOT harmonised here.
- *   - `:L118` records a failure and keeps looping. It does not break, so every constraint of a
- *     condition is evaluated even once the condition is known to have failed.
+ * THE ERROR BAG — WHAT IS REPORTED, AND UNDER WHICH KEY. Failures accumulate in {@link ValidationError}
+ * from `../errors/ValidationError`, whose surface mirrors the accessors the in-scope entities expose at
+ * `org/Hibachi/HibachiTransient.cfc:L29-L68` — notably a miss returning an empty array (`:L43`) rather
+ * than raising.
  *
- * =============================================================================================
- * NULL SEMANTICS PER CONSTRAINT — THE LIKELIEST SOURCE OF SILENT DRIFT
- * =============================================================================================
- * Every row was read from the corresponding `validate_*` body. Get one wrong and the set of saves
- * that succeed changes, with nothing to signal it.
+ * THE KEY IS THE FULL PROPERTY IDENTIFIER, and it is the highest-risk detail in this file. All three
+ * reporting branches (`org/Hibachi/HibachiValidationService.cfc:L224`, `:L228`, `:L232`) report against
+ * the property identifier, never the constraint type and never a method name: BOTH method-rule failures
+ * declared at `model/validation/Sku.json:L5-L8` report under the key `options`, which is also why a key's
+ * value is an array. The shortened name derived at `:L208` composes the message only; it is never the key.
  *
- *   required       null FAILS   :L240-L246  Also: an EMPTY ARRAY FAILS, and a whitespace-only
- *                                           string FAILS. A number (including 0) and a boolean
- *                                           (including false) both PASS, because CFML measures a
- *                                           simple value's trimmed string length and "0" and
- *                                           "false" are both non-empty.
- *   dataType       null PASSES  :L256-L267
- *   minValue       null PASSES  :L269-L275  A non-null NON-NUMERIC value FAILS.
- *   maxLength      null PASSES  :L293-L299  maxLength 0 therefore passes for null, for the empty
- *                                           string and for a whitespace-only string. A non-simple
- *                                           value FAILS.
- *   minCollection  null PASSES  :L301-L307  So minCollection 1 PASSES on null but FAILS on an
- *                                           empty array. This asymmetry is the single most
- *                                           counter-intuitive row in the table.
- *   maxCollection  null PASSES  :L309-L315  A non-null SIMPLE value FAILS.
- *   regex          null PASSES  :L481-L487
- *   eq             null FAILS   :L385-L395  CFML LOOSE equality — see LOOSE EQUALITY below.
- *   inList         null FAILS   :L459-L465  Comma-delimited and CASE-INSENSITIVE.
- *   method         n/a          :L333-L335  Invoked with NO arguments; the result is coerced.
- *   unique         n/a          :L467-L470  Delegated whole to the port — see THE SEVEN below.
+ * TWO ARGUMENTS TO addError, ALWAYS (N6). The engine's only call site passes the identifier and the
+ * message and nothing else (`:L234`). A three-argument override does exist, at
+ * `org/Hibachi/HibachiEntity.cfc:L151`, whose third parameter marks an error as not affecting
+ * persistence — but that is an ENTITY concern belonging to `src/domain/`, never a validation-engine one,
+ * and the dependency's own two-parameter signature makes the compiler enforce it here.
  *
- * TWO FURTHER ENGINE BEHAVIOURS, both reproduced:
- *   - `org/Hibachi/HibachiValidationService.cfc:L171` — a rule whose property does not exist on
- *     the subject is SILENTLY SKIPPED. Not an error, not a failure: skipped.
- *   - `org/Hibachi/HibachiValidationService.cfc:L162` — a context that is boolean-castable and
- *     casts to false skips validation ENTIRELY. See {@link Validator.validate}.
- * And errors ACCUMULATE. Evaluation never short-circuits on the first failure, at any level.
+ * NO GLOBAL FLAG IS SET (N4). `org/Hibachi/HibachiTransient.cfc:L455-L457` raises a process-wide "the
+ * object graph has errors" flag when a persistent object fails validation. That is mismatch M5, and AAP
+ * 0.4.1.7 places it in `src/adapters/mysql/UnitOfWork.ts`; reproducing it here would breach hexagonal
+ * separation (AAP 0.7.3 S4) and would leak state across invocations on a warm container (M7). This
+ * engine holds NO module-scope state of any kind.
  *
- * =============================================================================================
- * LOOSE EQUALITY IS LOAD-BEARING, NOT AN OVERSIGHT
- * =============================================================================================
- * `org/Hibachi/HibachiValidationService.cfc:L391` compares with CFML `==`, which coerces. So
- * `eq false` also matches the string "false", the number 0, the string "0" and the string "no";
- * `eq 1` also matches the string "1" and the boolean true.
+ * DECISION D-1 — BUILD THE MESSAGE KEY, DELIBERATELY SKIP THE SUBSTITUTION PASS. The legacy path composes
+ * one of three key shapes and then runs a template-substitution pass over it (`:L223`, `:L227`, `:L231`).
+ * This port composes the key — see {@link buildValidationMessage} — and does NOT run the substitution,
+ * for three independent reasons: there is no resource bundle to resolve against, bundle resolution having
+ * been a facility of the request scope of the framework AAP 0.8.3.2 retires; the pass is a provable
+ * no-op, because `org/Hibachi/HibachiUtilityService.cfc:L71` collects substitution targets by matching a
+ * dollar-brace placeholder pattern that none of the three key shapes can emit; and raw keys stay
+ * comparable to legacy output, because an unresolved CFML bundle key comes back with a "_missing" suffix
+ * while the traceable regression `issue_1335` in `meta/tests/unit/IssuesTest.cfc` asserts a reported
+ * message does NOT carry that suffix. Two consequences: `../util/formatting` is deliberately NOT imported,
+ * because with the substitution skipped it would be dead code (AAP 0.8.2 guideline 4); and the
+ * substitution struct's `entity.`/`processObject.` class-name prefix (`:L214`, `:L217`) is never emitted,
+ * because it existed only as a substitution VALUE. Stored messages are KEYS, not sentences — nothing here
+ * translates, sentence-cases, trims, normalises or beautifies one.
  *
- * That looseness cannot be tightened to a strict comparison, because the values it tests genuinely
- * arrive in several shapes: NONE of the four data properties at
- * `model/process/Product_UpdateSkus.cfc:L52-L58` declares a `type=` attribute, so a flag really
- * may reach the engine as 1, "1", true or "yes". The port therefore reproduces CFML's coercion
- * ladder in {@link isCfLooseEqual} — numeric first, then boolean, then a case-insensitive string
- * comparison — rather than narrowing the comparison and silently changing which delete guards
- * fire. The same reasoning applies to the two delete guards at `model/validation/Product.json:L12`
- * and `model/validation/Sku.json:L3` and `:L12`.
+ * DECISION D-2 AND "THE SEVEN" — UNIQUENESS GOES THROUGH THE PORT, AND ONLY THROUGH THE PORT, because AAP
+ * IR-5 requires application-side uniqueness checking in addition to the database constraints.
  *
- * =============================================================================================
- * DECISION D-1 — BUILD THE MESSAGE KEY, DELIBERATELY SKIP THE SUBSTITUTION PASS
- * =============================================================================================
- * `validateConstraint` composes one of three key shapes and then runs a template-substitution pass
- * over it (`org/Hibachi/HibachiValidationService.cfc:L223`, `:L227`, `:L231`). This port composes
- * the key — see {@link buildValidationMessage} — and does NOT run the substitution. Three
- * independent reasons, any one of which would be sufficient:
+ * POLARITY, PINNED: `true` MEANS UNIQUE, AND THEREFORE SAFE TO SAVE; `false` means the value is already
+ * taken and the save must be rejected. `org/Hibachi/HibachiDAO.cfc:L142-L144` returns false when the
+ * existence query finds rows and `:L146` returns true when it finds none, and `validate_unique` at
+ * `org/Hibachi/HibachiValidationService.cfc:L467-L470` returns that result UNMODIFIED. Inverting it is
+ * silent — every uniqueness rule in the slice would pass when it should fail, with no compile error and
+ * no lint finding — so any accompanying test must exercise the COLLIDING case, since a test covering only
+ * the non-colliding path passes under either polarity. SELF-EXCLUSION IS A NO-OP ON INSERT: the legacy
+ * existence query excludes the row being validated by comparing primary identifiers
+ * (`org/Hibachi/HibachiDAO.cfc:L140`), and on an insert there is no assigned identifier yet, so that term
+ * excludes nothing — recorded because it looks like protection against self-collision and is not, on the
+ * path that matters most.
  *
- *   1. There is no resource bundle in the target. Bundle resolution was a facility of the retired
- *      framework's request scope, and AAP 0.8.3.2 records that framework as "being retired for
- *      this slice, not carried forward". There is nothing to resolve against.
- *   2. The pass is a PROVABLE no-op. `org/Hibachi/HibachiUtilityService.cfc:L71` collects
- *      substitution targets by matching a dollar-brace placeholder pattern. None of the three key
- *      shapes below can ever emit such a placeholder, so the substitution loop would find zero
- *      matches by construction and return its input unchanged.
- *   3. Raw keys stay comparable to legacy output. In CFML an unresolved bundle key comes back with
- *      a "_missing" suffix appended, and the traceable legacy regression `issue_1335` in
- *      `meta/tests/unit/IssuesTest.cfc` asserts that a reported message does NOT carry that
- *      suffix — that is, that the key resolved. A raw key such as
- *      `validate.save.Sku.price.required` never carries it, so the equivalent assertion still
- *      passes and AAP 0.4.1.11's requirement that "validation failures remain comparable to legacy
- *      output" is satisfied.
+ * THE SEVEN `unique` rules an evaluator can be handed all route through the port, and they live at
+ * `model/validation/Product.json:L10` and `:L16`, `model/validation/Sku.json:L11`,
+ * `model/validation/Brand.json:L5`, `model/validation/Option.json:L3`,
+ * `model/validation/OptionGroup.json:L4` and `model/validation/ProductType.json:L4`;
+ * `model/validation/Product_UpdateSkus.json` contributes none. AAP IR-5's "five of the eight unique
+ * columns" counts entity `unique="true"` COLUMN METADATA, an independent mechanism, and
+ * `../ports/UniquePropertyPort` scopes its primary list to five documents while recording the seventh
+ * separately; both are correct about different things, and seven governs here.
  *
- * Two consequences. First, `../util/formatting` is deliberately NOT imported: with the
- * substitution skipped it would be dead code, which AAP 0.8.2 guideline 4 forbids. Second, the
- * substitution struct's own `entity.`/`processObject.` class-name prefix
- * (`org/Hibachi/HibachiValidationService.cfc:L214` and `:L217`) is never emitted, because it
- * existed only as a substitution VALUE. See SUBJECT CONTRACT for why that also removes the need
- * for a persistence flag on the subject.
+ * M6 — THE VALIDATION READ-BACK LOOP, THE HIGHEST-RISK ITEM IN THE WHOLE SLICE. AAP 0.6.2 states it
+ * plainly: `Sku.hasUniqueOptions()` "is not an ordinary helper. It is a declarative validation rule
+ * registered in `model/validation/Sku.json` for the save context, and it executes a database query to do
+ * its work." The cycle is entered here — `SkuService.createSkus()` saves a Sku, validation selects the
+ * `save` context, the method rule at `model/validation/Sku.json:L6` invokes `Sku.hasUniqueOptions()`
+ * (`model/entity/Sku.cfc:L756-L769`, whose `:L763` calls the product's option-resolution member), a query
+ * runs over the SKU and SKU-option tables, and the result feeds back into the save still in flight. Under
+ * CFML and Hibernate the rule observes only siblings already visible to the ORM session; the target has
+ * no ORM session and no automatic flush, so — again AAP 0.6.2 — "a naive port that inserts every
+ * combination and then validates, or that validates before any insert, produces different results from
+ * the legacy code — silently."
  *
- * The stored messages are KEYS, not sentences. Nothing here translates, sentence-cases, trims,
- * normalises, lowercases or otherwise beautifies one.
+ * M6 is jointly owned, and the same-transaction visibility half belongs to
+ * `src/adapters/mysql/UnitOfWork.ts`. What this file owes, and discharges: (a) the method rule is invoked
+ * ONCE PER SUBJECT, in the order the caller presents subjects — for a combination batch, the order the
+ * combination engine produced them — and this engine never batches subjects and never reorders them;
+ * (b) it stays asynchronous WITHOUT being hoisted out of sequence, since every constraint is awaited one
+ * at a time inside an ordinary sequential loop and constraint promises are never settled together,
+ * because settling them together would reorder the very reads whose ordering is the behavior under
+ * preservation; and (c) it never defeats that visibility by caching, so no result is memoised across
+ * subjects, no snapshot is pre-fetched, and the rule is re-invoked for every subject.
  *
  * =============================================================================================
  * DECISION D-2 AND "THE SEVEN" — UNIQUENESS GOES THROUGH THE PORT, AND ONLY THROUGH THE PORT
@@ -336,7 +328,7 @@
  *       snapshot is pre-fetched, and the rule is re-invoked for every subject.
  *
  * =============================================================================================
- * CONTEXT IS AN OPEN STRING (requirement N2)
+ * CONTEXT IS A CLOSED NINE-MEMBER UNION (requirement N2, as amended by DECISION V-1)
  * =============================================================================================
  * Nine context strings are observed. FIVE are declared in a `contexts` key — `save`, `delete`,
  * `addOptionGroup`, `addOption` and `addSubscriptionTerm`. FOUR are runtime-only and appear in no
@@ -351,66 +343,48 @@
  * same round-trip holds for the two declared process contexts at
  * `model/service/ProductService.cfc:L113` and `:L128`.
  *
- * A closed five-member union would make the editability and processability checks at
- * `org/Hibachi/HibachiEntity.cfc:L215` and `:L225` UNREPRESENTABLE, so the parameter is a plain
- * `string`. Under any runtime-only context the L71 rule still governs: only rules WITHOUT a
- * `contexts` key fire, which across these seven documents means only the two rules of
+ * ALL NINE are members of {@link ValidationContext}, and the parameter is that union rather than a
+ * plain `string`. The count matters: a closed FIVE-member union of the declared contexts alone would
+ * make the editability and processability checks at `org/Hibachi/HibachiEntity.cfc:L215` and `:L225`
+ * UNREPRESENTABLE, which is why the four runtime-only contexts are first-class members here. What
+ * the union excludes is not any observed context but the three values that switch validation OFF —
+ * see DECISION V-1 on {@link ValidationContext} for the gate at `:L162`, the enumeration proving no
+ * legacy call site selects it, and {@link legacyContextDisablesValidation} for the preserved
+ * predicate itself.
+ *
+ * Under any runtime-only context the L71 rule still governs: only rules WITHOUT a `contexts` key
+ * fire, which across these seven documents means only the two rules of
  * `model/validation/Product_UpdateSkus.json`.
  *
- * =============================================================================================
- * TWO DOCUMENTED NON-PORTS (requirement N5)
- * =============================================================================================
- * Neither is a carried defect, so neither is annotated as one — AAP 0.7.3 S7 governs defects, and
- * inventing a register entry for a deliberate omission would misuse it.
+ * TWO DOCUMENTED NON-PORTS (N5). Neither is a carried defect, so neither is annotated as one — AAP 0.7.3
+ * S7 governs defects, and inventing a register entry for a deliberate omission would misuse it. The
+ * POPULATED-SUB-PROPERTY CASCADE at `org/Hibachi/HibachiTransient.cfc:L412-L453` re-validates populated
+ * sub-properties under a context chosen by `org/Hibachi/HibachiValidationService.cfc:L133-L151`, and that
+ * chooser reads a `populatedPropertyValidation` key none of the seven documents declares, so the cascade
+ * is unreachable from these rule sets and no cascade API exists here. The CUSTOM-OVERRIDE MERGE at
+ * `org/Hibachi/HibachiValidationService.cfc:L6-L53` merges a per-class override document from the
+ * customisation tree, whose validation directory holds nothing but a readme, so building a merge
+ * mechanism for an empty input would violate AAP 0.7.3 S9. Also absent is the per-class-and-context
+ * memoisation at `:L57` and `:L92`: rule sets are already resolved values here, and per M7 any
+ * memoisation would have to be request-scoped rather than module-scoped, which makes no caching at all
+ * the simplest compliant choice.
  *
- *   1. THE POPULATED-SUB-PROPERTY CASCADE. `org/Hibachi/HibachiTransient.cfc:L412-L453` walks
- *      populated sub-properties and re-validates them under a context chosen by
- *      `org/Hibachi/HibachiValidationService.cfc:L133-L151`. That chooser reads the
- *      `populatedPropertyValidation` key — a key NONE of the seven documents declares. The cascade
- *      is therefore unreachable from these rule sets, and no cascade API exists in this file.
- *   2. THE CUSTOM-OVERRIDE MERGE. `org/Hibachi/HibachiValidationService.cfc:L6-L53` merges a
- *      per-class override document from the customisation tree into the core document. That tree's
- *      validation directory holds nothing but a readme, so ZERO catalog overrides exist. Building
- *      a merge mechanism for an empty input would violate AAP 0.7.3 S9.
+ * ARCHITECTURAL POSITION (AAP 0.7.3 S4). Two imports and no others: the error bag from `../errors/`, and
+ * the uniqueness boundary from `../ports/` as a TYPE-ONLY import so no runtime edge is created. Both are
+ * relative, per AAP 0.4.3.5 — "deliberately no path aliases — so `tsc` and `esbuild` resolve identically
+ * and no runtime resolver shim is needed" — and there is no barrel re-export. This file issues no queries
+ * and names no physical table or column, reaching the database only through the injected port (AAP 0.7.3
+ * S2); it reads no process environment, configuration flowing one way through `src/config/`; and it
+ * imports nothing from `adapters/`, `services/`, `config/`, `handlers/` or `integrations/`, and no cloud
+ * handler type, that coupling belonging to `src/handlers/` alone. Collaborators arrive through the
+ * constructor and nowhere else (AAP 0.7.3 S3): no service locator, no container import, no module-scope
+ * singleton, no dynamic resolution.
  *
- * Also absent, for the same reason it is absent from every other file in this subtree: the
- * per-class-and-context memoisation at `org/Hibachi/HibachiValidationService.cfc:L57` and `:L92`.
- * Rule sets are already resolved values here, so there is nothing to memoise — and per M7 any
- * memoisation would have to be request-scoped rather than module-scoped, because nothing may bleed
- * between invocations on a warm container. The simplest compliant choice is the one taken: no
- * caching at all, anywhere in this file.
- *
- * =============================================================================================
- * ARCHITECTURAL POSITION (AAP 0.7.3 S4) AND WHAT THAT FORBIDS
- * =============================================================================================
- * Two imports, both relative, and no others: the error bag from `../errors/`, and the uniqueness
- * boundary from `../ports/` as a TYPE-ONLY import so no runtime edge is created. Per AAP 0.4.3.5
- * all intra-subtree imports are relative paths — "deliberately no path aliases — so `tsc` and
- * `esbuild` resolve identically and no runtime resolver shim is needed" — and there is no barrel
- * re-export. An alias that type-checks can still fail to resolve at cold start.
- *
- * Consequently NOT present here, each deliberately: any import from `adapters/`, `services/`,
- * `config/`, `handlers/` or `integrations/`; any cloud event, result, context or handler type,
- * which coupling belongs to `src/handlers/` alone; any database driver, any statement text and any
- * physical table or column identifier in executable position (AAP 0.7.3 S2 — this file issues no
- * queries at all, and reaches the database only through the injected port); any read of the process
- * environment, which flows one way through `src/config/` (AAP 0.4.3.5); any file-system or network
- * access; any logging framework; and any new dependency (AAP 0.7.3 S5 — no schema-validation
- * package is added, and the deliverable's single runtime dependency set stays frozen).
- *
- * Collaborators arrive through the constructor and nowhere else (AAP 0.7.3 S3): there is no
- * service locator, no container import, no module-scope singleton and no dynamic resolution.
- *
- * =============================================================================================
- * A NOTE ON LEGACY MESSAGE TEXT
- * =============================================================================================
- * Where the legacy engine raises for an authoring fault — an unrecognised constraint type at
- * `org/Hibachi/HibachiValidationService.cfc:L202`, an unrecognised `dataType` value at `:L263` —
- * this port also raises, because raising is the behavior. It does NOT reproduce the legacy wording.
- * Those strings are framework text outside the closed inventory that `src/errors/` owns, and the
- * locators alone are cited so a reader can go and read them at the source. The same applies to the
- * strings raised at `org/Hibachi/HibachiService.cfc:L117`, `org/Hibachi/HibachiService.cfc:L136`
- * and `org/Hibachi/HibachiErrors.cfc:L50`, none of which is reproduced anywhere in this file.
+ * A NOTE ON LEGACY MESSAGE TEXT. Where the legacy engine raises for an authoring fault — an unrecognised
+ * constraint type at `org/Hibachi/HibachiValidationService.cfc:L202`, an unrecognised `dataType` value at
+ * `:L263` — this port also raises, because raising is the behavior, but it does NOT reproduce the legacy
+ * wording: those strings are framework text outside the closed inventory `src/errors/` owns, so the
+ * locators alone are cited.
  */
 
 import { ValidationError } from '../errors/ValidationError';
@@ -565,6 +539,43 @@ function toCfBoolean(value: unknown): boolean | undefined {
 }
 
 /**
+ * The legacy context gate — `org/Hibachi/HibachiValidationService.cfc:L162`, preserved verbatim in
+ * behaviour and provably unreachable in effect.
+ *
+ * TODO(parity): `org/Hibachi/HibachiValidationService.cfc:L162` reads
+ * `if(!isBoolean(arguments.context) || arguments.context)`, whose own comment is "If the context was
+ * 'false' then we don't do any validation". A boolean-castable-false context therefore skips EVERY
+ * rule and returns an empty bag. That behaviour is carried across rather than repaired, per AAP
+ * 0.6.7 "preserve and annotate, do not repair", and this is the annotation.
+ *
+ * WHY IT IS STILL HERE AT ALL, given that it can no longer fire. Because deleting it would be a
+ * silent behavioural claim that the legacy gate does not exist, and because the gate is genuinely
+ * part of the engine's contract: `:L196` returns the bag either way, which is why this predicate
+ * only decides whether to SKIP, never what to return. The same treatment — keep a proven-unreachable
+ * branch, present and documented, rather than drop it or pretend it is exercised — is applied to the
+ * populate-array branch in `../domain/base/populate.ts`, and for the same reason.
+ *
+ * WHY IT CANNOT FIRE, member by member. {@link toCfBoolean} returns `false` only for the strings
+ * `false` and `no` in any case, and for any numeric string or number equal to zero. Across the nine
+ * members of {@link ValidationContext}: `''` does not cast at all and so returns `undefined` — which
+ * is exactly what makes an empty context VALIDATE NORMALLY rather than skip, the subtlety `:L162`
+ * turns on; and `save`, `delete`, `edit`, `process`, `addOptionGroup`, `addOption`,
+ * `addSubscriptionTerm` and `updateSkus` are none of them boolean words and none of them numeric, so
+ * each also returns `undefined`. `undefined === false` is false, so every member proceeds to
+ * validate. The predicate is retained as a total function over the union rather than hard-coded to
+ * `false`, so that it stays a transcription of `:L162` and would keep behaving correctly if a member
+ * were ever added.
+ *
+ * NO SEPARATE REQUEST-FACING ENTRY POINT EXISTS for the bypass, and none is provided: the closed
+ * union at the one public entry point is the compatibility boundary, so there is nothing for a
+ * handler, router or service to forward that could switch validation off. Requirement V-1 records
+ * the enumeration proving no legacy call site selects it either.
+ */
+function legacyContextDisablesValidation(context: ValidationContext): boolean {
+  return toCfBoolean(context) === false;
+}
+
+/**
  * CFML's loose equality, reproduced as the ladder that satisfies every observed case.
  *
  * The ladder is ordered, and the order is what makes it correct:
@@ -708,11 +719,22 @@ function cfStructCount(value: object): number {
  * — AAP 0.8.4.1 records that the cited local Docker setup does not exist in this repository, so no
  * behavioural comparison against the original was possible for any part of this port. This
  * predicate is therefore a documented APPROXIMATION of one engine function, and it is the only
- * approximation in this file. It governs exactly one rule, the website format check at
- * `model/validation/Brand.json:L4`. Every other predicate here is a transcription of CFML source
- * or of documented CFML operator semantics.
+ * approximation in this file. Every other predicate here is a transcription of CFML source or of
+ * documented CFML operator semantics.
+ *
+ * ⚠️ RETAINED BUT NOT SELECTED. This predicate no longer governs any rule. It is the
+ * `'cfmlAnyProtocol'` policy of {@link UrlDataTypePolicy}, and NO in-scope rule set selects it: the
+ * one `url` rule in the slice — the website format check at `model/validation/Brand.json:L4` — now
+ * selects `'webAddress'` and is evaluated by {@link isWebAddress} instead. DECISION V-2 on
+ * {@link UrlDataTypePolicy} records that departure, its justification and the bar applied to it.
+ *
+ * It is kept, rather than deleted, for the same reason the context gate at
+ * {@link legacyContextDisablesValidation} is kept: the legacy behaviour remains expressible and
+ * annotated, so a reviewer can see exactly what was replaced instead of inferring it from an
+ * absence. Removing it would also make the departure invisible in this file, which is the opposite
+ * of what AAP 0.8.2 guideline 6 requires of a translation decision.
  */
-function isCfUrl(value: unknown): boolean {
+function isCfUrlAnyProtocol(value: unknown): boolean {
   if (typeof value !== 'string') {
     return false;
   }
@@ -721,6 +743,66 @@ function isCfUrl(value: unknown): boolean {
     return false;
   }
   return /^(?:(?:https?|ftp|file):\/\/|(?:mailto|news):)[^\s]+$/i.test(candidate);
+}
+
+/**
+ * A normalised HTTP(S) web address — the `'webAddress'` policy of {@link UrlDataTypePolicy}.
+ *
+ * This is the predicate the one in-scope `url` rule evaluates against, and DECISION V-2 on
+ * {@link UrlDataTypePolicy} records why it replaces {@link isCfUrlAnyProtocol} there, what it
+ * newly rejects and why none of that is behaviour the slice depended on.
+ *
+ * WHAT IT REQUIRES, each clause for a stated reason:
+ *   1. A string. Anything else is not an address.
+ *   2. No ASCII control character anywhere, checked on the RAW value BEFORE trimming. Trimming first
+ *      would strip a leading or trailing `\n` or `\t` and let the value through, and an embedded
+ *      control character in a link position is how a stored value smuggles a second line into
+ *      whatever later consumes it. The C0 range, DEL and the C1 range are all rejected.
+ *   3. No internal whitespace, which {@link URL} would otherwise tolerate in some positions.
+ *   4. A scheme of exactly `http` or `https`, case-insensitively — this is where the four non-web
+ *      legacy protocols are excluded.
+ *   5. No embedded credentials. `URL` exposes them as `username` and `password`, and a
+ *      `https://user:pass@host/` value in a brand-website field has no legitimate reading.
+ *   6. A non-empty host. `http://` alone parses in some engines and is not an address.
+ *
+ * Parsing is delegated to the WHATWG {@link URL} constructor rather than done with a hand-written
+ * pattern, because the scheme, authority, credential and host boundaries are exactly what a URL
+ * parser exists to get right, and a regular expression that appears to agree with it on the happy
+ * path tends to disagree on the inputs that matter. `URL` is a Node built-in and a global under the
+ * configured ES2022 lib, so this adds no dependency (AAP 0.7.3 S5) and no import.
+ *
+ * It is a PREDICATE ONLY: it reports validity and never returns a rewritten value. The stored value
+ * stays exactly what the caller supplied, so this constraint cannot silently change data — which
+ * matters because `dataType` is a format check in the legacy engine too, never a normaliser.
+ */
+function isWebAddress(value: unknown): boolean {
+  if (typeof value !== 'string') {
+    return false;
+  }
+  // Clause 2 — checked on the RAW value, before any trimming.
+  if (/[\u0000-\u001F\u007F-\u009F]/.test(value)) {
+    return false;
+  }
+  const candidate = value.trim();
+  if (candidate.length === 0 || /\s/.test(candidate)) {
+    return false;
+  }
+  let parsed: URL;
+  try {
+    parsed = new URL(candidate);
+  } catch {
+    // `URL` reports an unparseable address by throwing. A malformed value is simply invalid here;
+    // nothing is logged and nothing is rethrown, because this is a predicate and the caller's
+    // failure path is the validation message, not an exception.
+    return false;
+  }
+  if (parsed.protocol !== 'http:' && parsed.protocol !== 'https:') {
+    return false;
+  }
+  if (parsed.username.length > 0 || parsed.password.length > 0) {
+    return false;
+  }
+  return parsed.hostname.length > 0;
 }
 
 /* ==============================================================================================
@@ -921,10 +1003,95 @@ export interface UniqueConstraint<TSubject extends ValidationSubject> {
  * money properties pair it with a presence rule when the value is mandatory — as
  * `model/validation/Sku.json:L9` does and `:L4` deliberately does not.
  */
-export interface DataTypeConstraint {
+/**
+ * Which URL policy a `dataType: 'url'` constraint evaluates against — requirement V-2.
+ *
+ * There are two, and the difference between them is the whole of SEC-15:
+ *
+ *   - `'webAddress'` — a normalised HTTP(S) web address, and nothing else. Rejects every non-web
+ *     scheme, embedded credentials, control characters and whitespace. This is what every in-scope
+ *     rule set selects.
+ *   - `'cfmlAnyProtocol'` — the legacy six-protocol approximation, retained so the original
+ *     behaviour stays expressible and annotated rather than silently deleted. NO in-scope rule set
+ *     selects it, and none should.
+ *
+ * =============================================================================================
+ * ⭐ DECISION V-2 — A DECLARED DEPARTURE FROM BYTE-FOR-BYTE PRESERVATION
+ * =============================================================================================
+ * Declared on the D18 precedent (AAP 0.6.7.7), which is the plan's one worked example of a
+ * deliberate, documented hardening that does NOT preserve legacy behaviour exactly. As there, the
+ * divergence is stated here rather than left for a reviewer to discover by diffing outputs.
+ *
+ * WHAT THE LEGACY DID. `org/Hibachi/HibachiValidationService.cfc:L259` delegates to the CFML
+ * engine's own URL validity check, whose documented protocols are HTTP, HTTPS, FTP, FILE, MAILTO and
+ * NEWS. `file:///etc/passwd` therefore satisfies the website rule at `model/validation/Brand.json:L4`
+ * — verified at runtime against this port before the change.
+ *
+ * WHY THAT IS NOT ACCEPTABLE TO CARRY FORWARD UNCHANGED. The one rule this predicate governs is a
+ * WEBSITE field, `Brand.brandWebsite`, and its stored value flows onward: it is a link a later
+ * renderer or client may follow, and the Google feed in this same slice already emits stored catalog
+ * values into a document consumed by an external processor. A stored `file://` or `mailto:` value in
+ * a field whose only meaning is "this brand's website" is not a URL the domain has any use for, so
+ * accepting it buys no behaviour anyone depends on while leaving an unsafe scheme in a link
+ * position.
+ *
+ * THE BAR APPLIED, the same one used for the typed-coercion departure in
+ * `../domain/base/populate.ts`: does the change reject anything the legacy ACCEPTED AND MEANT? For
+ * the four non-web schemes the answer is no — no in-scope rule, entity member, service method or
+ * feed field reads `brandWebsite` expecting a file path, a mail address or a newsgroup. For HTTP and
+ * HTTPS, which is what the field is for, this predicate is STRICTER ONLY on inputs the legacy
+ * approximation would also have had no use for: credentials embedded in the authority, and control
+ * characters. Nothing that is genuinely a web address is newly rejected.
+ *
+ * WHY THE POLICY IS A REQUIRED MEMBER rather than a default. An optional member defaulting to the
+ * safe policy would leave the safe behaviour implicit, and a rule set could then acquire the loose
+ * policy by omission. Requiring it means every `url` declaration in the subtree states its policy at
+ * the declaration site, where a reviewer reads it, and adding a new one forces the choice to be made
+ * rather than inherited. There is exactly one such declaration today —
+ * `src/validation/rules/brand.rules.ts` — so the cost of requiring it is one word.
+ *
+ * WHAT DOES NOT CHANGE, and this is load-bearing. The message key is composed from
+ * {@link DataTypeConstraint.constraintValue}, not from this member, so the key stays
+ * `validate.save.Brand.brandWebsite.dataType.url` exactly as
+ * `org/Hibachi/HibachiValidationService.cfc:L226` composes it. The error bag's key structure is
+ * therefore untouched and remains comparable to legacy output, which is a requirement in its own
+ * right. Introducing a new `constraintValue` such as `'webUrl'` would have changed that key, and was
+ * rejected for precisely that reason.
+ */
+export type UrlDataTypePolicy = 'webAddress' | 'cfmlAnyProtocol';
+
+/**
+ * The `numeric` arm of `dataType`. Six of the seven in-scope `dataType` rules are this one.
+ */
+export interface NumericDataTypeConstraint {
   readonly constraintType: 'dataType';
-  readonly constraintValue: DataTypeConstraintValue;
+  readonly constraintValue: 'numeric';
 }
+
+/**
+ * The `url` arm of `dataType`, carrying its required {@link UrlDataTypePolicy}.
+ *
+ * Exactly one in-scope rule is this one, at `model/validation/Brand.json:L4`.
+ */
+export interface UrlDataTypeConstraint {
+  readonly constraintType: 'dataType';
+  readonly constraintValue: 'url';
+
+  /**
+   * Which URL policy to evaluate against. Required — see DECISION V-2 on
+   * {@link UrlDataTypePolicy} for why this is not an optional member with a safe default.
+   */
+  readonly urlPolicy: UrlDataTypePolicy;
+}
+
+/**
+ * A `dataType` constraint, discriminated on {@link DataTypeConstraintValue}.
+ *
+ * The union is what lets the `url` arm require a policy member that would be meaningless on the
+ * `numeric` arm, while keeping `constraintType: 'dataType'` — and therefore the dispatch in
+ * `evaluateConstraint` and the message-key composition — exactly as they were.
+ */
+export type DataTypeConstraint = NumericDataTypeConstraint | UrlDataTypeConstraint;
 
 /**
  * A numeric floor. All three in-scope rules declare zero, on the SKU money properties.
@@ -1129,7 +1296,6 @@ export interface ValidationRule<TSubject extends ValidationSubject> {
    */
   readonly conditions?: string;
 
-  /** The constraints this rule imposes, evaluated in declaration order. */
   readonly constraints: readonly Constraint<TSubject>[];
 }
 
@@ -1145,13 +1311,10 @@ export interface ValidationRule<TSubject extends ValidationSubject> {
  * constraint kind. In the seven documents every condition holds exactly one equality check.
  */
 export interface ConditionConstraint<TSubject extends ValidationSubject> {
-  /** The property identifier this condition inspects, for example the update-price flag. */
   readonly propertyIdentifier: string;
 
-  /** How to read that property off the subject. See {@link PropertyValueReader}. */
   readonly read: PropertyValueReader<TSubject>;
 
-  /** What the condition requires of the value. */
   readonly constraint: Constraint<TSubject>;
 }
 
@@ -1167,10 +1330,8 @@ export interface ConditionConstraint<TSubject extends ValidationSubject> {
  * update-list-price flag.
  */
 export interface ValidationCondition<TSubject extends ValidationSubject> {
-  /** The condition's name, as referenced by a rule's condition list. Matched case-insensitively. */
   readonly name: string;
 
-  /** The constraints that must all hold. Evaluated in declaration order, without short-circuiting. */
   readonly constraints: readonly ConditionConstraint<TSubject>[];
 }
 
@@ -1189,10 +1350,8 @@ export interface PropertyValidation<TSubject extends ValidationSubject> {
    */
   readonly propertyIdentifier: string;
 
-  /** How to read the property's current value. See {@link PropertyValueReader}. */
   readonly read: PropertyValueReader<TSubject>;
 
-  /** The rules for this property, evaluated in declaration order. */
   readonly rules: readonly ValidationRule<TSubject>[];
 }
 
@@ -1208,7 +1367,6 @@ export interface PropertyValidation<TSubject extends ValidationSubject> {
  * document that has it, a `conditions` block.
  */
 export interface ValidationRuleSet<TSubject extends ValidationSubject> {
-  /** The document's property rules, evaluated in declaration order. */
   readonly properties: readonly PropertyValidation<TSubject>[];
 
   /**
@@ -1246,6 +1404,90 @@ export interface ValidationRuleSet<TSubject extends ValidationSubject> {
  * `:L156` — a no-op once the bag is a reference-typed object, which is why no write-back step
  * appears here.
  */
+/**
+ * The nine validation contexts this slice can select — a CLOSED union, per requirement N2 as
+ * amended by DECISION V-1 below.
+ *
+ * Every member is an OBSERVED context with a locator, and there are no others. Five are declared in
+ * a `contexts` key of an in-scope document; four are runtime-only and appear in no document:
+ *
+ *   | member                | where it comes from                                                |
+ *   |-----------------------|--------------------------------------------------------------------|
+ *   | `''`                  | the engine's own default, `org/Hibachi/HibachiValidationService.cfc:L153`, and again at `org/Hibachi/HibachiTransient.cfc:L408` |
+ *   | `'save'`              | declared — all seven documents except `Product_UpdateSkus.json`     |
+ *   | `'delete'`            | declared, and hard-coded at `org/Hibachi/HibachiEntity.cfc:L205`    |
+ *   | `'edit'`              | hard-coded at `org/Hibachi/HibachiEntity.cfc:L215`                  |
+ *   | `'process'`           | the default of `isProcessable`, `org/Hibachi/HibachiEntity.cfc:L224` |
+ *   | `'addOptionGroup'`    | declared — `model/validation/Product.json`                          |
+ *   | `'addOption'`         | declared — `model/validation/Product.json`                          |
+ *   | `'addSubscriptionTerm'` | declared — `model/validation/Product.json`                         |
+ *   | `'updateSkus'`        | the round-trip at `org/Hibachi/HibachiService.cfc:L114` landing on `model/service/ProductService.cfc:L216` |
+ *
+ * The five declared members were re-measured rather than recalled: every `contexts` value across
+ * `model/validation/{Product,Sku,Brand,Option,OptionGroup,ProductType,Product_UpdateSkus}.json`
+ * reduces to exactly `save`, `delete`, `addOptionGroup`, `addOption` and `addSubscriptionTerm` —
+ * `Product.json` alone carries the last three, and `Product_UpdateSkus.json` declares no `contexts`
+ * key at all, which is why its two rules fire under every member above.
+ *
+ * =============================================================================================
+ * ⭐ DECISION V-1 — WHY THIS IS CLOSED, WHERE IT WAS PREVIOUSLY OPEN
+ * =============================================================================================
+ * This type replaced a plain `string` parameter. The original reasoning is preserved here because
+ * it was sound as far as it went, and because the amendment turns on a fact it did not account for.
+ *
+ * THE ORIGINAL REASONING was that a closed FIVE-member union of the declared contexts would make
+ * the editability and processability checks at `org/Hibachi/HibachiEntity.cfc:L215` and `:L225`
+ * unrepresentable, since `edit` and `process` are declared in no document. That is correct, and it
+ * is why this union has NINE members rather than five: the four runtime-only contexts are first
+ * class here, so both capability checks remain expressible and the traceable `issue_1331`
+ * regression — `Product.isProcessable('addOptionGroup')` — still translates literally.
+ *
+ * WHAT THE ORIGINAL REASONING MISSED is that an open `string` also admits the three values that
+ * SWITCH VALIDATION OFF. `org/Hibachi/HibachiValidationService.cfc:L162` reads
+ * `if(!isBoolean(arguments.context) || arguments.context)`, so a context of `'false'`, `'no'` or
+ * `'0'` — in any case, and the number `0` too — skips every rule and returns an EMPTY bag: no
+ * required check, no uniqueness check, no format check, no method rule and no delete guard. On an
+ * open string that value is indistinguishable from a legitimate context, so any layer that ever
+ * forwards a caller-supplied context reaches a total validation bypass. Closing the union makes all
+ * three TYPE-ILLEGAL at this boundary, which is the whole of the fix.
+ *
+ * THE LEGACY GATE ITSELF IS NOT REMOVED — see {@link legacyContextDisablesValidation}, which still
+ * reproduces `:L162` and is still consulted on every call. What changed is only which values can
+ * reach it, and AAP 0.6.7 governs that distinction: the behaviour is preserved and annotated, not
+ * repaired.
+ *
+ * THE BYPASS IS UNREACHABLE IN THE LEGACY TOO, which is the fact that makes closing the union a
+ * faithful port rather than a behavioural change. Every `context=` argument passed to `validate()`
+ * anywhere in the legacy tree was enumerated: `"save"` (6), `"delete"` (5), `""` (4),
+ * `arguments.context` (3), `arguments.processContext` (2), `'save'` (2), `"edit"` (2),
+ * `attributes.processContext` (1), `arguments.task.getTaskMethod()` (1) and `'placeOrder'` (1).
+ * NOT ONE call site passes a boolean-castable-false literal, and a repository-wide search for one
+ * returns nothing. The gate at `:L162` is therefore dead code in the legacy application, and this
+ * union makes it dead code here too — by construction rather than by coincidence.
+ *
+ * The last two of those legacy values are out of scope and deliberately absent from this union:
+ * `'placeOrder'` is an order context and `model/**\/Order*.cfc` is excluded by AAP 0.2.2.1, and
+ * `arguments.task.getTaskMethod()` is a scheduled-task context from the same excluded surface.
+ * Adding either would be inventing a context this slice cannot reach (AAP 0.7.3 S9).
+ *
+ * NOT NARROWED, deliberately: {@link ValidationRule.contexts}. That member is a CFML LIST — a
+ * comma-delimited string such as `"addOptionGroup,addOption"` at `model/validation/Product.json` —
+ * so no single-member union can type it. It is also not caller data: every rule set in this subtree
+ * is a frozen compile-time literal under `src/validation/rules/`, so its value is fixed at build
+ * time and no request can influence it. The security property this union establishes therefore does
+ * not depend on narrowing it.
+ */
+export type ValidationContext =
+  | ''
+  | 'save'
+  | 'delete'
+  | 'edit'
+  | 'process'
+  | 'addOptionGroup'
+  | 'addOption'
+  | 'addSubscriptionTerm'
+  | 'updateSkus';
+
 export interface ValidateOptions {
   /**
    * The bag to accumulate into. Omit for a dry run.
@@ -1261,13 +1503,11 @@ export interface ValidateOptions {
  * The process object half of a two-object process validation. See {@link ProcessValidationRequest}.
  */
 export interface ProcessObjectValidationTarget<TProcessObject extends ValidationSubject> {
-  /** The process object to validate — a transient input object, not a persistent entity. */
   readonly subject: TProcessObject;
 
   /** Its transliterated rule set, for example the one for `model/validation/Product_UpdateSkus.json`. */
   readonly ruleSet: ValidationRuleSet<TProcessObject>;
 
-  /** The bag its failures accumulate into. Omit for a dry run over the process object. */
   readonly errors?: ValidationError;
 }
 
@@ -1290,10 +1530,8 @@ export interface ProcessValidationRequest<
   TEntity extends ValidationSubject,
   TProcessObject extends ValidationSubject,
 > {
-  /** The entity, validated first. */
   readonly entity: TEntity;
 
-  /** The entity's transliterated rule set. */
   readonly entityRuleSet: ValidationRuleSet<TEntity>;
 
   /**
@@ -1305,12 +1543,10 @@ export interface ProcessValidationRequest<
    * composition at `org/Hibachi/HibachiService.cfc:L114` — see CONTEXT IS AN OPEN STRING in the
    * module header.
    */
-  readonly processContext: string;
+  readonly processContext: ValidationContext;
 
-  /** The bag the entity's failures accumulate into. Omit for a dry run over the entity. */
   readonly entityErrors?: ValidationError;
 
-  /** The process object and its rule set, when one exists for this context. */
   readonly processObject?: ProcessObjectValidationTarget<TProcessObject>;
 }
 
@@ -1321,7 +1557,6 @@ export interface ProcessValidationRequest<
  * is what distinguishes "validated and clean" from "never validated".
  */
 export interface ProcessValidationResult {
-  /** The entity's bag — the one supplied, or the throwaway created for a dry run. */
   readonly entityErrors: ValidationError;
 
   /**
@@ -1397,7 +1632,7 @@ export interface ProcessValidationResult {
  * @returns the composed resource-bundle key
  */
 export function buildValidationMessage<TSubject extends ValidationSubject>(
-  context: string,
+  context: ValidationContext,
   className: string,
   propertyIdentifier: string,
   constraint: Constraint<TSubject>,
@@ -1555,7 +1790,6 @@ function uncoercibleMethodResult(className: string, methodName: string): TypeErr
  *
  * @example
  * ```ts
- * // A save, accumulating into the caller's own bag — the mutating mode.
  * const validator = new Validator(uniquePropertyChecker);
  * const errors = new ValidationError();
  * await validator.validate(sku, skuRules, 'save', { errors });
@@ -1630,7 +1864,9 @@ export class Validator {
    *
    * @param subject the object to validate
    * @param ruleSet its transliterated rule set, from `src/validation/rules/`
-   * @param context the context to select rules for; an open string, per requirement N2
+   * @param context the context to select rules for — one of the nine members of
+   *   {@link ValidationContext}, per requirement N2 as amended by DECISION V-1. Closing this
+   *   parameter is what makes the `:L162` validation bypass unreachable from any caller.
    * @param options supply `errors` to accumulate into a caller-held bag; omit for a dry run
    * @returns the bag the failures were accumulated into
    * @throws TypeError when a rule set declares a constraint kind this engine does not evaluate
@@ -1640,15 +1876,17 @@ export class Validator {
   public async validate<TSubject extends ValidationSubject>(
     subject: TSubject,
     ruleSet: ValidationRuleSet<TSubject>,
-    context: string,
+    context: ValidationContext,
     options?: ValidateOptions,
   ): Promise<ValidationError> {
     const errors = options?.errors ?? new ValidationError();
 
-    // `org/Hibachi/HibachiValidationService.cfc:L162` — a context that reads as boolean false
-    // disables validation wholesale. The bag is still returned, empty or as supplied, because the
-    // legacy engine also fell through to its return in that case (`:L196`).
-    if (toCfBoolean(context) === false) {
+    /*
+     * `org/Hibachi/HibachiValidationService.cfc:L162` — the legacy context gate, preserved. See
+     * {@link legacyContextDisablesValidation} for the locator, the TODO(parity) annotation and the
+     * per-member proof that no value of {@link ValidationContext} can select it.
+     */
+    if (legacyContextDisablesValidation(context)) {
       return errors;
     }
 
@@ -1855,7 +2093,7 @@ export class Validator {
         return verdictOf(isPresent(read(subject)));
 
       case 'dataType':
-        return verdictOf(satisfiesDataType(read(subject), constraint.constraintValue, className));
+        return verdictOf(satisfiesDataType(read(subject), constraint, className));
 
       case 'minValue':
         return verdictOf(satisfiesMinValue(read(subject), constraint.constraintValue));
@@ -1928,7 +2166,7 @@ export class Validator {
  */
 function ruleAppliesToContext<TSubject extends ValidationSubject>(
   rule: ValidationRule<TSubject>,
-  context: string,
+  context: ValidationContext,
 ): boolean {
   if (rule.contexts === undefined) {
     return true;
@@ -1986,18 +2224,37 @@ function isPresent(value: unknown): boolean {
  */
 function satisfiesDataType(
   value: unknown,
-  dataType: DataTypeConstraintValue,
+  constraint: DataTypeConstraint,
   className: string,
 ): boolean {
+  /*
+   * Read the discriminant ONCE, before any narrowing, so the unreachable branch below can still
+   * name it. Narrowing `constraint` down to `never` also narrows any later read THROUGH it, which is
+   * why this is a separate binding rather than a widening assignment or an `as` cast at the throw.
+   */
+  const dataType: DataTypeConstraintValue = constraint.constraintValue;
+
   if (isAbsent(value)) {
     return true;
   }
-  if (dataType === 'numeric') {
+  if (constraint.constraintValue === 'numeric') {
     return isCfNumeric(value);
   }
-  if (dataType === 'url') {
-    return isCfUrl(value);
+  if (constraint.constraintValue === 'url') {
+    /*
+     * The policy split of SEC-15. `'webAddress'` is what every in-scope rule selects;
+     * `'cfmlAnyProtocol'` preserves the legacy six-protocol approximation and is selected by
+     * nothing. DECISION V-2 on `UrlDataTypePolicy` carries the reasoning.
+     */
+    return constraint.urlPolicy === 'webAddress' ? isWebAddress(value) : isCfUrlAnyProtocol(value);
   }
+  /*
+   * EXHAUSTIVENESS. Both arms of `DataTypeConstraint` are handled above, so this branch is
+   * unreachable THROUGH THE TYPE SYSTEM — the guarantee the legacy engine lacked, since it dispatched
+   * on a string read out of a JSON document. It is retained as the runtime counterpart of the
+   * whitelist raise at `org/Hibachi/HibachiValidationService.cfc:L263`, reachable only by a rule set
+   * assembled outside the type system.
+   */
   throw unevaluableDataType(className, dataType);
 }
 

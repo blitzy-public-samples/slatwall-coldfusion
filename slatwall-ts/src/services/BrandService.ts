@@ -1,129 +1,135 @@
 /**
- * `BrandService` — the port of `model/service/BrandService.cfc` (90 lines): the smallest and
- * cleanest of the four in-scope Catalog services.
+ * `BrandService` — the port of `model/service/BrandService.cfc`: the smallest and cleanest of the four
+ * in-scope Catalog services.
  *
- * Authority: AAP 0.4.1.8 row 4 — `slatwall-ts/src/services/BrandService.ts` | CREATE |
- * `model/service/BrandService.cfc` | "The single public member; `super.save()` [L76] becomes
- * delegation to the injected `BaseService`; unique URL title via the ported utility". The method
- * contract is fixed by AAP 0.4.2.3, the three synthesized members by AAP 0.4.2.5, and the
- * dependency classification by AAP 0.6.3.3.
+ * Authority: AAP 0.4.1.8. The method contract is fixed by AAP 0.4.2.3, the three synthesized members by
+ * AAP 0.4.2.5, and the dependency classification by AAP 0.6.3.3.
  *
  * =============================================================================================
  * WHAT THE LEGACY COMPONENT ACTUALLY CONTAINS — ONE MEMBER, ONE DEPENDENCY, ZERO DAO
  * =============================================================================================
- * `model/service/BrandService.cfc:L49` declares
- * `component extends="HibachiService" persistent="false" accessors="true" output="false"`. Between
- * that line and the closing brace at `:L89` there is exactly ONE function — `saveBrand` at
- * `:L67-L77` — and exactly ONE injected property, `dataService` at `:L51`. Everything else in the
- * file is section banners.
+ * Between `model/service/BrandService.cfc:L49` and the closing brace at `:L89` there is exactly ONE
+ * function — `saveBrand` at `:L67-L77` — and exactly ONE injected property, `dataService` at `:L51`.
+ * Everything else in the file is section banners.
  *
- * AAP 0.6.3.3 measures the consequence: `dataService` is reached twice, at
- * `model/service/BrandService.cfc:L70` and `:L72`, and BOTH call sites use the single member
- * `createUniqueURLTitle`; `super.save()` at `:L76` is the only other outbound edge. There are ZERO
- * dead injections — the only one of the four in-scope services with none — so nothing here exists
- * to accommodate an unused dependency, and nothing is dropped.
+ * `dataService` is reached twice, at `model/service/BrandService.cfc:L70` and `:L72`, and BOTH call
+ * sites use the single member `createUniqueURLTitle`; `super.save()` at `:L76` is the only other
+ * outbound edge. There are ZERO dead injections — the only one of the four in-scope services with none
+ * — so nothing here exists to accommodate an unused dependency, and nothing is dropped (AAP 0.6.3.3).
  *
- * DELIBERATELY ABSENT: A `DataService` CLASS. AAP 0.4.1.8 narrows that dependency to "the ported
- * `urlTitle` utility, not a whole service", and AAP 0.4.1.11 gives `createUniqueURLTitle` its own
- * home at `src/util/urlTitle.ts`. `model/service/DataService.cfc` runs to 203 lines and AAP 0.2.1.8
- * lists it reference-only with exactly that one member carried across, so this service imports the
- * utility and no `DataService.ts` is created (AAP 0.7.3 S5 — add no file).
+ * DELIBERATELY ABSENT: A `DataService` CLASS. AAP 0.4.1.8 narrows that dependency to the ported
+ * `urlTitle` utility rather than a whole service, and AAP 0.4.1.11 gives `createUniqueURLTitle` its own
+ * home at `src/util/urlTitle.ts`. AAP 0.2.1.8 lists `model/service/DataService.cfc` reference-only with
+ * exactly that one member carried across, so this service imports the utility and no `DataService.ts`
+ * is created (AAP 0.7.3 S5 — add no file).
  *
- * DELIBERATELY ABSENT: A `BrandDAO`. No such component exists anywhere in the legacy repository —
+ * DELIBERATELY ABSENT: A `BrandDAO`. No such component exists anywhere in the legacy repository, and
  * `BrandService` never declares one, because the CRUD it needs was fabricated at call time. See the
  * IR-1 section below.
  *
  * =============================================================================================
  * IR-8 / R3 — `super.save()` RESOLVES TO SLATWALL CODE, AND BECOMES COMPOSITION, NOT INHERITANCE
  * =============================================================================================
- * IR-8 names this exact line as its worked example: "`BrandService`'s `super.save()`
- * [model/service/BrandService.cfc:L76] resolves to the local override at
- * [model/service/HibachiService.cfc:L86], not to the framework base." Both levels were read
- * first-hand. `model/service/BrandService.cfc:L49` says `extends="HibachiService"` with NO package
- * prefix, so it binds to the sibling `model/service/HibachiService.cfc`, whose own `:L49` then
- * declares the fully-qualified `extends="Slatwall.org.Hibachi.HibachiService"`. The LOCAL override
- * at `model/service/HibachiService.cfc:L86-L104` adds behaviour the framework base does not have —
- * the `activeFlag` and settings post-processing block at `:L91-L101` — which is why the distinction
- * is load-bearing rather than trivia.
+ * IR-8 names this exact line as its worked example: `super.save()` at
+ * `model/service/BrandService.cfc:L76` resolves to the LOCAL override at
+ * `model/service/HibachiService.cfc:L86`, not to the framework base. `model/service/BrandService.cfc:L49`
+ * says `extends="HibachiService"` with NO package prefix, so it binds to the sibling
+ * `model/service/HibachiService.cfc`, whose own `:L49` then declares the fully-qualified
+ * `extends="Slatwall.org.Hibachi.HibachiService"`. The local override at
+ * `model/service/HibachiService.cfc:L86-L104` adds behaviour the framework base does not have — the
+ * `activeFlag` and settings post-processing block at `:L91-L101` — which is why the distinction is
+ * load-bearing rather than trivia.
  *
- * R3 (AAP 0.4.3.3) replaces that template-method inheritance with composition: "The target injects
- * a `BaseService` collaborator and delegates explicitly, which also means the framework members the
- * slice never uses are never inherited into the port." So this class `extends` NOTHING. It takes the
- * base collaborator as a typed constructor parameter and calls it, and the framework surface the
- * slice never touched — `new`, `count`, `list`, `export`, `process` and the whole
- * `onMissingMethod` dispatcher — is never inherited into the port.
+ * R3 (AAP 0.4.3.3) replaces that template-method inheritance with composition, so this class `extends`
+ * NOTHING: it takes the base collaborator as a typed constructor parameter and calls it, and the
+ * framework surface the slice never touched is never inherited into the port.
  *
  * =============================================================================================
  * IR-1 / TR-3 — THREE MEMBERS THAT EXIST IN NO SOURCE FILE MUST BE DECLARED HERE
  * =============================================================================================
- * `org/Hibachi/HibachiService.cfc:L255-L281` is a single dispatcher that manufactures a service's
- * entire implicit persistence surface at call time by matching a lower-cased method-name prefix:
- * `get` at `:L258`, `new` at `:L264`, `list` at `:L266`, `save` at `:L268`, `delete` at `:L270`,
- * `count` at `:L272`, `export` at `:L274` and `process` at `:L276`. That mechanism is why
- * `brandService.newBrand()`, `brandService.getBrand(id)` and `brandService.deleteBrand(entity)`
- * resolve at runtime while appearing in no source file as a declaration — AAP 0.4.2.5 lists all
- * three, with `newBrand()` additionally exercised by the legacy fixture at
- * `meta/tests/unit/entity/BrandTest.cfc:L55`.
+ * `org/Hibachi/HibachiService.cfc:L255-L281` manufactures a service's entire implicit persistence
+ * surface at call time by matching a lower-cased method-name prefix: `get` at `:L258`, `new` at `:L264`,
+ * `list` at `:L266`, `save` at `:L268`, `delete` at `:L270`, `count` at `:L272`, `export` at `:L274` and
+ * `process` at `:L276`. That mechanism is why `brandService.newBrand()`, `brandService.getBrand(id)` and
+ * `brandService.deleteBrand(entity)` resolve at runtime while appearing in no source file as a
+ * declaration — AAP 0.4.2.5 lists all three, with `newBrand()` additionally exercised by the legacy
+ * fixture at `meta/tests/unit/entity/BrandTest.cfc:L55`.
  *
- * IR-1: TypeScript under `strict` "has no equivalent facility", so each such call site becomes an
- * explicitly declared, typed method. TR-3 states the same rule generally — "Replace framework magic
- * with declarations." Three are declared below, and the restraint is as binding as the declaration:
- * AAP 0.4.2.5 ends with "synthesis is not reproduced wholesale, only where used", so there is no
- * `countBrand*`, no `listBrand*`, no `exportBrand*`, no `processBrand*`, no `getBrandSmartList` and
- * no compound `getBrandByXxx` form. The slice calls none of them.
- *
- * The dispatcher is emulated by nothing: no `Proxy`, no `Reflect`, no index signature, no
- * string-keyed dispatch map, no decorator and no service locator (AAP 0.7.3 S3). Every member below
- * is a plain method the compiler checks.
+ * Under IR-1 and TR-3 each such call site becomes an explicitly declared, typed method. The restraint
+ * is as binding as the declaration: AAP 0.4.2.5 ends with "synthesis is not reproduced wholesale, only
+ * where used", so no counting, listing, exporting, processing, smart-list or compound `getBrandByXxx`
+ * member is declared, because the slice calls none of them. The dispatcher itself is emulated by
+ * nothing, and every member below is a plain method the compiler checks (AAP 0.7.3 S3).
  *
  * POSITIONAL ARGUMENTS ONLY. `org/Hibachi/HibachiService.cfc:L253` and `:L303` both state "Ordered
- * arguments only--named arguments not supported", and the dispatcher proves it structurally: the
- * delete branch at `:L286-L288` reads its argument by NUMERIC index and the read branch at `:L306`
- * probes for the string key `'2'`. No member below takes a named-argument struct or an options bag
- * (TR-1).
+ * arguments only--named arguments not supported", and the dispatcher proves it structurally: the delete
+ * branch at `:L286-L288` reads its argument by NUMERIC index and the read branch at `:L306` probes for
+ * the string key `'2'`. No member below takes a named-argument struct or an options bag (TR-1).
  *
  * =============================================================================================
  * R1 / R2 — DI/1 PROPERTY INJECTION AND STRING LOOKUP BECOME CONSTRUCTOR PARAMETERS
  * =============================================================================================
- * `model/service/BrandService.cfc:L51` declares `property name="dataService" type="any";`, which
- * DI/1 0.4.2 populated by NAME during a runtime bean scan, reached thereafter through the generated
- * `getDataService()` accessor. R1 (AAP 0.4.3.1) replaces both halves with one explicit typed
- * constructor parameter, and R2 (AAP 0.4.3.2) replaces dynamic `getService("name")` resolution with
- * typed references. Neither survives here: no container is consulted, no name is resolved at
- * runtime, and every collaborator arrives through the constructor.
+ * `model/service/BrandService.cfc:L51` declares `property name="dataService" type="any";`, which DI/1
+ * populated by NAME during a runtime bean scan and exposed through a generated `getDataService()`
+ * accessor. R1 (AAP 0.4.3.1) replaces both halves with one explicit typed constructor parameter, and R2
+ * (AAP 0.4.3.2) replaces dynamic `getService("name")` resolution with typed references. No container is
+ * consulted and no name is resolved at runtime.
  *
  * =============================================================================================
- * THE ONE STRUCTURAL JUDGMENT CALL — WHY THE BASE COLLABORATOR IS INJECTED AS A NARROW VIEW
+ * THE ONE STRUCTURAL JUDGMENT CALL — WHY EVERY BRAND HERE IS A MANAGED ENTITY
  * =============================================================================================
- * AAP 0.8.2 Guideline 6 requires technology-specific judgments to be documented where they are
- * made. This is the only one in this file, and it is forced rather than chosen.
+ * This is the only technology-specific judgment in the file (AAP 0.8.2 Guideline 6), and it is forced
+ * rather than chosen.
  *
- * `BaseService` is generic: `BaseService<TEntity extends BaseServiceEntity<TPropertyName>,
- * TPropertyName extends string>`, where `BaseServiceEntity` demands `getClassName()`,
- * `hasProperty()` and `getPrimaryIDValue()` in addition to the audit and population contracts.
- * `../domain/product/Brand` deliberately declares NONE of those three: its module header records a
- * negative mandate listing `getPrimaryIDValue`, `getPropertyMetaData`, `validate`, `populate` and
- * the rest as absent by decision, because they "lived on the retired framework base classes" that
- * AAP 0.8.3.2 retires for this slice. `BaseService<Brand, BrandPropertyName>` is therefore a
- * constraint violation, and no type argument can rescue it: if `Brand` were assignable to some `T`
- * with `T extends BaseServiceEntity`, `Brand` would have to carry those members after all.
+ * `BaseService` is generic over `TEntity extends BaseServiceEntity<TPropertyName>`, and
+ * `BaseServiceEntity` demands `getClassName()`, `hasProperty()` and `getPrimaryIDValue()` in addition to
+ * the audit and population contracts. `../domain/product/Brand` deliberately declares none of those
+ * three, because they lived on the framework base classes AAP 0.8.3.2 retires for this slice. So
+ * `BaseService<Brand, BrandPropertyName>` is a constraint violation, and no type argument can rescue it:
+ * if `Brand` were assignable to some `T extends BaseServiceEntity`, `Brand` would have to carry those
+ * members after all.
  *
- * Meanwhile AAP 0.4.2.3 fixes this service's contract as `saveBrand(brand: Brand, data)`, taking
- * the DOMAIN entity. Both constraints are non-negotiable, so the collaborator is injected as
- * {@link BrandBaseService} — a two-member view of `BaseService` expressed over `Brand`, using METHOD
- * syntax. That choice is the whole mechanism: TypeScript checks method parameters bivariantly, so a
- * real `BaseService<`{@link ManagedBrand}`, BrandPropertyName>` is assignable to it with ZERO casts,
- * while a `Brand` remains a legal argument at every call site here. {@link ManagedBrand} is exported
- * so the composition root knows precisely what to instantiate, and the two type-level guards below
- * fail the build if either relationship ever drifts.
+ * THE RESOLUTION IS TO SUPPLY THE MISSING SURFACE, NOT TO HIDE THE GAP. Those members were inherited
+ * in the legacy — observably so: `model/entity/Sku.cfc:L843-L855` overrides `getPropertyMetaData` and
+ * falls through to `super.getPropertyMetaData( argumentCollection=arguments )` at `:L854`, a call that
+ * can only resolve because the base class supplies the member. `../domain/base/populate` ports that
+ * inheritance as composition: `EntityMetadataSurface` declares the seven introspection members,
+ * `EntityErrorSurface` the six error members, and `manageEntity` attaches both to an entity with
+ * `Object.assign`, which mutates and returns the SAME object so identity survives. Everything in this
+ * subtree that mints a brand routes through it — `../adapters/mysql/rowMappers`'s `mapBrandRow` and,
+ * beneath this service, `../ports/repositories/BrandRepository`'s `newBrand` and `getBrand`. So
+ * {@link ManagedBrand} is now defined AS that runtime shape, `ManagedEntity<Brand>`, and this
+ * service's four public signatures are expressed in it.
  *
- * Three alternatives were considered and rejected. Widening this service's public signatures to
- * {@link ManagedBrand} would break `newBrand()` and `getBrand()`, whose repository contract yields
- * `Brand`, and would contradict AAP 0.4.2.3. Narrowing a `Brand` to {@link ManagedBrand} at the call
- * site needs a cast, and this file has none. Injecting bound functions instead of the object would
- * make the parameters contravariant under `strictFunctionTypes` and push a cast into the composition
- * root instead. Nothing is re-implemented in any case: `save` and `delete` are delegated to, never
+ * WHAT THAT REPLACED, STATED PLAINLY BECAUSE IT WAS A REAL DEFECT AND NOT A STYLE PREFERENCE. This
+ * file previously injected {@link BrandBaseService} as a two-member view written over the bare
+ * `Brand` in METHOD syntax, precisely because TypeScript compares method parameters BIVARIANTLY: that
+ * made a real `BaseService<ManagedBrand, BrandPropertyName>` assignable to the view while leaving a
+ * plain `Brand` a legal argument at every call site. The type-checker was therefore accepting a value
+ * that `../validation/Validator` would have called `getClassName()` on at run time, and no code
+ * anywhere produced a value satisfying {@link ManagedBrand} at all. The view survives — narrowing the
+ * injected surface to the two members actually used is still what keeps a hand-written double small —
+ * but it is now written as ARROW-TYPED PROPERTIES over {@link ManagedBrand}, so its parameters are
+ * checked contravariantly under `strictFunctionTypes` and the substitution that hid the gap is
+ * rejected. Nothing is re-implemented either way: `save` and `delete` are delegated to, never
  * reproduced, so there is exactly one owner of the populate/validate/persist sequence.
+ *
+ * THE TIGHTENING IS RECORDED, NOT SILENT (TR-1). AAP 0.4.2.3 fixes this service's contract as
+ * `saveBrand(brand: Brand, data)` and AAP 0.4.2.5 declares `newBrand`, `getBrand` and `deleteBrand`
+ * over `Brand` likewise. `ManagedBrand` is an intersection WITH `Brand`, so no name, arity or argument
+ * order changes and every legacy call shape still type-checks; what narrows is the set of values
+ * admitted, from "any brand" to "a brand carrying the surface a Hibachi entity always carried". AAP
+ * 0.4.2 sanctions exactly this — the legacy declaration is `required any brand` at
+ * `model/service/BrandService.cfc:L67`, and a loose legacy signature is tightened to the observed
+ * contract and recorded rather than tightened silently. The observed contract is not in doubt here:
+ * the local override this service delegates to reads `hasErrors()`, `hasProperty('activeFlag')`,
+ * `getPrimaryIDValue()` and `getClassName()` off its argument at
+ * `model/service/HibachiService.cfc:L91-L98`, so the legacy brand demonstrably carried all four.
+ *
+ * {@link ManagedBrand} stays exported so the composition root knows precisely what to instantiate,
+ * and it now names something constructible rather than something merely describable. The requirement
+ * it must meet keeps its own name, {@link BrandBaseServiceRequirement}, and the three type-level
+ * guards below fail the build if any of those relationships ever drifts.
  *
  * =============================================================================================
  * BR-2 — A SOURCE-LAYOUT ARTEFACT THAT IS DELIBERATELY NOT REPRODUCED
@@ -132,31 +138,29 @@
  * `// ===================== START: DAO Passthrough ===========================` — with no matching
  * END banner, in a file whose other five sections are correctly paired. It is a copy-paste artefact
  * of the component template, it delimits nothing (the section is empty), and it has no behaviour.
- * It is recorded here and NOT reproduced. No register identifier is minted for it: AAP 0.6.7 closes
- * its defect register at D1-D21, and none of those numbers belongs to this file.
+ * It is recorded here and NOT reproduced. No register identifier is minted for it: AAP 0.6.7
+ * catalogues D1-D21, the port's register is closed at D1-D24, and none of those numbers belongs to
+ * this file.
  *
  * =============================================================================================
  * M7 — STATELESS BY CONSTRUCTION
  * =============================================================================================
- * AAP 0.6.6 M7 records that nothing survives between Lambda invocations except module-scope state,
- * while the DI/1 lifecycle made services SINGLETONS. A singleton on a warm container is shared
- * across invocations and therefore potentially across tenants, so this file holds NO mutable state
- * of any kind: no cache, no memo, no counter, no "current" entity and no request payload. The only
- * instance fields are the two `readonly` collaborators, the three module constants are immutable
- * string primitives, and every value a method needs is derived from its arguments on each call. The
- * uniqueness probe is likewise re-created per derivation and never memoised, which the brand
- * repository's own contract requires — a cached probe would make the collision loop in
- * `../util/urlTitle` non-terminating.
+ * Nothing survives between Lambda invocations except module-scope state (AAP 0.6.6 M7), while the DI/1
+ * lifecycle made services SINGLETONS. A singleton on a warm container is shared across invocations and
+ * therefore potentially across tenants, so this file holds NO mutable state: the only instance fields
+ * are the two `readonly` collaborators, the module constants are immutable string primitives, and every
+ * value a method needs is derived from its arguments on each call. The uniqueness probe is likewise
+ * re-created per derivation and never memoised, which the brand repository's own contract requires — a
+ * cached probe would make the collision loop in `../util/urlTitle` non-terminating.
  *
  * =============================================================================================
  * TEST PROVENANCE (AAP 0.6.5, S6) — ALL FOUR MEMBERS ARE NET-NEW COVERAGE
  * =============================================================================================
- * AAP 0.6.5.2 is explicit: no `BrandServiceTest` exists anywhere under `meta/tests/`, so all four
- * members below are NET-NEW service coverage and no parity with a legacy service test is implied.
- * The one TRACEABLE thread is an ENTITY assertion, not a service one:
- * `meta/tests/unit/entity/BrandTest.cfc:L58-L60` builds its subject with
- * `getService("brandService").newBrand()` at `:L55` and then asserts `getProducts()` equals `[]`.
- * {@link BrandService.newBrand} keeps that reachable, and the empty-array default itself lives in
+ * No `BrandServiceTest` exists anywhere under `meta/tests/` (AAP 0.6.5.2), so all four members below are
+ * NET-NEW service coverage and no parity with a legacy service test is implied. The one TRACEABLE thread
+ * is an ENTITY assertion, not a service one: `meta/tests/unit/entity/BrandTest.cfc:L58-L60` builds its
+ * subject with `getService("brandService").newBrand()` at `:L55` and then asserts `getProducts()` equals
+ * `[]`. {@link BrandService.newBrand} keeps that reachable, and the empty-array default itself lives in
  * `../domain/product/Brand` as a field initialiser.
  *
  * This class is directly constructible with hand-written doubles — the legacy repository vendors no
@@ -166,19 +170,23 @@
  * =============================================================================================
  * LAYERING (S2, S4)
  * =============================================================================================
- * No SQL is composed, received or inspected here; no statement fragment, no placeholder array, no
- * driver import and no `Sw*` query text. The single `SwBrand` literal below is the source-declared
- * TABLE DISCRIMINATOR that `model/service/BrandService.cfc:L70` and `:L72` pass to
- * `createUniqueURLTitle`, and it travels no further than that utility's `tableName` parameter.
- * Imports reach only `../domain/**`, `../ports/**`, `../util/**`, `../validation/**` and the sibling
- * `./BaseService`; nothing from `../adapters/**`, `../config/**`, `../handlers/**` or
- * `../integrations/**`, no AWS type, and no `process.env` read.
+ * No SQL is composed, received or inspected here. The single `SwBrand` literal below is the
+ * source-declared TABLE DISCRIMINATOR that `model/service/BrandService.cfc:L70` and `:L72` pass to
+ * `createUniqueURLTitle`, and it travels no further than that utility's `tableName` parameter. Imports
+ * reach only `../domain/**`, `../ports/**`, `../util/**`, `../validation/**` and the sibling
+ * `./BaseService`.
  */
 
+import type { ManagedEntity } from '../domain/base/populate';
 import type { Brand, BrandPropertyName } from '../domain/product/Brand';
 import type { UniquePropertyEntity } from '../ports/UniquePropertyPort';
-import type { BrandRepository } from '../ports/repositories/BrandRepository';
+import type {
+  BrandRepository,
+  ManagedBrand as PortManagedBrand,
+} from '../ports/repositories/BrandRepository';
 import { createUniqueURLTitle } from '../util/urlTitle';
+import type { UrlTitleAttemptBudget } from '../util/urlTitle';
+import type { ValidationContext } from '../validation/Validator';
 import type { BrandValidationSubject } from '../validation/rules/brand.rules';
 import type { BaseService, BaseServiceEntity } from './BaseService';
 
@@ -213,36 +221,74 @@ const BRAND_NAME_DATA_KEY = 'brandName';
  *
  * Exported because it is the composition root's instruction sheet, not decoration. Wiring this
  * service means constructing `new BaseService<ManagedBrand, BrandPropertyName>({ validator,
- * ruleSet: brandValidationRules, propertyDescriptors: BRAND_PROPERTY_DESCRIPTORS, persist:
- * brandRepository.saveBrand, remove: brandRepository.deleteBrand })` — every one of those five
- * collaborators is an existing export of `../validation/rules/brand.rules`,
- * `../domain/product/Brand` and `../ports/repositories/BrandRepository`, and each was checked to fit
- * at this exact type argument. Naming the requirement here is what makes that assembly verifiable
- * instead of guessed.
+ * ruleSet: brandValidationRules, propertyDescriptors: BRAND_PROPERTY_DESCRIPTORS,
+ * populationAuthorization, persist: brandRepository.saveBrand, remove:
+ * brandRepository.deleteBrand })` — five of those six collaborators are existing exports of
+ * `../validation/rules/brand.rules`, `../domain/product/Brand` and
+ * `../ports/repositories/BrandRepository`, and each was checked to fit at this exact type argument.
+ * Naming the requirement here is what makes that assembly verifiable instead of guessed.
+ *
+ * ⚠️ THE SIXTH IS `populationAuthorization`, AND IT HAS NO IN-SCOPE PROVIDER, DELIBERATELY. It is a
+ * `PopulationAuthorizationPort` from `../ports/AccountContextPort`, carrying ARMS 2 and 3 of the
+ * legacy population gate [org/Hibachi/HibachiTransient.cfc:L186-L190]. The composition root supplies
+ * it from the same edge that resolves the caller identity, because the decision procedure behind it —
+ * permission groups, allow flags, the super-user bypass — lives in the excluded `Account*` family
+ * (AAP §0.2.2.1) and the retired `org/Hibachi/**` tree (AAP §0.8.3.2). It is REQUIRED rather than
+ * optional so that a wiring site which has no policy to supply fails to compile instead of silently
+ * populating a persistent entity unchecked; `../services/BaseService` records that reasoning on the
+ * collaborator itself, and the port records the default-deny obligation on its implementer.
+ *
+ * ⚠️ THIS SERVICE'S OWN THIRD CONSTRUCTOR ARGUMENT IS `urlTitleAttemptBudget`, AND IT HAS NO IN-SCOPE
+ * PROVIDER EITHER — for a different reason, worth distinguishing. `populationAuthorization` replaces a
+ * legacy facility that exists and is out of scope; this one replaces a legacy safeguard that DOES NOT
+ * EXIST AT ALL. `model/service/DataService.cfc:L64` probes for a free `urlTitle` in an unbounded
+ * `while(!unique)` loop, so there is no legacy number to carry across, and AAP 0.7.3 S9 forbids
+ * inventing one. The composition root must therefore state the maximum, and a wiring site that states
+ * none does not compile. `../util/urlTitle` records the parity decision behind the bound and why an
+ * atomic-uniqueness rewrite was rejected in favour of bounding the existing algorithm.
  *
  * `Brand` supplies the persistent property surface, the audit block it declares through
  * `AuditableEntity`, and the population target every `BrandPropertyName` key needs.
  * `BaseServiceEntity` adds the validation subject (`getClassName`, `hasProperty`) and
- * `getPrimaryIDValue`. `UniquePropertyEntity` adds the remaining application-side uniqueness reads
- * of IR-5 — `getPropertyMetaData`, `getEntityName`, `getPrimaryIDPropertyName` and
+ * `getPrimaryIDValue`. `UniquePropertyEntity` adds the remaining application-side uniqueness reads of
+ * IR-5 — `getPropertyMetaData`, `getEntityName`, `getPrimaryIDPropertyName` and
  * `getValueByPropertyIdentifier` — which the `urlTitle` unique constraint declared in
  * `model/validation/Brand.json:L5` and ported in `../validation/rules/brand.rules` resolves through.
  *
- * Supplying those members is the ADAPTER's job, exactly as hydrating the row is: `Brand` is the
- * shape the domain guarantees, and this intersection is the shape the persistence-facing base
- * collaborator additionally requires. Nothing in this file constructs, asserts or narrows to it.
+ * Module-private deliberately. Nothing outside this file needs to name the requirement, because
+ * {@link ManagedBrand} is what everything outside this file actually handles, and Guard 3 below is
+ * what keeps the one satisfying the other.
  */
-export type ManagedBrand = Brand & BaseServiceEntity<BrandPropertyName> & UniquePropertyEntity;
+type BrandBaseServiceRequirement = Brand &
+  BaseServiceEntity<BrandPropertyName> &
+  UniquePropertyEntity;
 
 /**
- * The two members of `BaseService` this service delegates to, viewed over the domain `Brand`.
+ * What every caller of this service actually handles: a `Brand` plus the error-surface members
+ * `manageEntity` supplies.
  *
- * Method syntax is deliberate and load-bearing — see "THE ONE STRUCTURAL JUDGMENT CALL" in the
- * module header. TypeScript checks method parameters bivariantly, so a real
- * `BaseService<`{@link ManagedBrand}`, BrandPropertyName>` satisfies this interface with no cast
- * anywhere, while a plain `Brand` stays a legal argument at the two call sites below. Written as
- * arrow-typed properties the same declaration would be contravariant and would reject that
- * assignment.
+ * ⛔ DECLARED HERE AND NOT IMPORTED FROM THE PORT, AND THAT IS THE POINT OF GUARD 4. The port
+ * declares an identically-shaped alias for the values it hands back; this one is the SERVICE's
+ * statement about what it handles. Two independent statements plus the bidirectional assertion in
+ * Guard 4 make the agreement CHECKABLE, so the day either side widens or narrows, the build fails in
+ * this file rather than at a composition root or inside the validator at run time. Collapsing the two
+ * into a single import would make the agreement true by definition and silently untestable — which is
+ * why the duplication here is deliberate and is the one place in this subtree where a second
+ * declaration of the same shape is correct.
+ */
+export type ManagedBrand = ManagedEntity<Brand>;
+
+/**
+ * The two members of `BaseService` this service delegates to, viewed over {@link ManagedBrand}.
+ *
+ * ARROW-TYPED PROPERTIES ARE DELIBERATE AND LOAD-BEARING — see "THE ONE STRUCTURAL JUDGMENT CALL" in
+ * the module header. TypeScript compares METHOD parameters bivariantly, so had these two been written
+ * as methods a collaborator declaring `save(brand: Brand, …)` would satisfy this interface and a brand
+ * with none of the introspection surface would remain a legal argument at the call sites below — which
+ * is exactly how this file previously admitted a value `../validation/Validator` would have failed on.
+ * As properties the parameters are checked contravariantly under `strictFunctionTypes`, so that
+ * substitution is rejected, and a real `BaseService<`{@link ManagedBrand}`, BrandPropertyName>` still
+ * satisfies the view with no cast anywhere — Guard 1 below is that assignment, checked.
  *
  * Both signatures mirror the LOCAL override they stand for, `model/service/HibachiService.cfc:L86`
  * (`save(required any entity, struct data={}, string context="save")`) and `:L68`
@@ -252,14 +298,29 @@ export type ManagedBrand = Brand & BaseServiceEntity<BrandPropertyName> & Unique
  * defaults them; this file always passes `data` and never passes `context`, exactly as `:L76` does.
  *
  * Declaring the view rather than importing `BaseService` directly duplicates no sibling-owned TYPE:
- * `BaseServiceEntity` is imported and reused above, the populate/validate/persist sequence stays in
- * `./BaseService` and is only delegated to, and the guards below tie the two together at compile
- * time. Narrowing the injected surface to the two members actually used is also what keeps a
+ * `BaseServiceEntity` is imported and reused by {@link BrandBaseServiceRequirement} above,
+ * `ManagedEntity` is imported from `../domain/base/populate` rather than re-spelled, the
+ * populate/validate/persist sequence stays in `./BaseService` and is only delegated to, and the three
+ * guards below tie them all together at compile time. Narrowing the injected surface to the two members actually used is also what keeps a
  * hand-written test double small (AAP 0.7.3 S6).
+ *
+ * ⚠️ `context` IS THE CLOSED `ValidationContext` UNION, NOT A `string`, AND THAT MATTERS EVEN THOUGH
+ * THIS FILE NEVER PASSES IT. A narrow structural view is a RE-DECLARATION of the contract, and method
+ * syntax makes its parameters bivariant, so a real `BaseService` would satisfy this interface either
+ * way — which is exactly the trap. Declaring `string` here would re-open the validation bypass at
+ * [org/Hibachi/HibachiValidationService.cfc:L162] for anything invoking `save` THROUGH this view, no
+ * matter how tightly `./BaseService` closes its own signature. `./SkuService`'s `SkuSaveValidator`
+ * carries the identical note for the identical reason; DECISION V-1 in `../validation/Validator` holds
+ * the argument. The parameter stays OPTIONAL, because the local override defaults it at
+ * `model/service/HibachiService.cfc:L86` and `model/service/BrandService.cfc:L76` omits it.
  */
 export interface BrandBaseService {
-  save(brand: Brand, data?: Record<string, unknown>, context?: string): Promise<Brand>;
-  delete(brand: Brand): Promise<boolean>;
+  readonly save: (
+    brand: ManagedBrand,
+    data?: Record<string, unknown>,
+    context?: ValidationContext,
+  ) => Promise<ManagedBrand>;
+  readonly delete: (brand: ManagedBrand) => Promise<boolean>;
 }
 
 /**
@@ -291,6 +352,43 @@ type _ManagedBrandIsBrandValidationSubject = AssertAssignable<
   ManagedBrand,
   BrandValidationSubject & UniquePropertyEntity
 >;
+
+/**
+ * Guard 3 — the managed runtime shape really does satisfy everything the base collaborator demands.
+ *
+ * This is the guard that makes the other two mean something. {@link ManagedBrand} is now defined as
+ * the shape `manageEntity` actually produces rather than as a wish-list intersection, so it is no
+ * longer true BY CONSTRUCTION that it carries `getClassName`, `hasProperty`, `getPrimaryIDValue` and
+ * the four IR-5 uniqueness reads: it carries them only because
+ * `../domain/base/populate`'s `EntityMetadataSurface` declares those seven members and `Brand` itself
+ * declares the audit and population surface. Should either side drift — a member renamed in
+ * `EntityMetadataSurface`, an audit field dropped from `Brand`, a new demand added to
+ * `BaseServiceEntity` — this line fails the build here, in the file that depends on the
+ * correspondence, rather than at a wiring site that does not yet exist.
+ */
+type _ManagedBrandSatisfiesBaseServiceRequirement = AssertAssignable<
+  ManagedBrand,
+  BrandBaseServiceRequirement
+>;
+
+/**
+ * Guard 4 — the PORT's managed alias and this service's own are the same shape, in both directions.
+ *
+ * ⭐ WHY A FOURTH GUARD, AND WHY IT IS BIDIRECTIONAL. `../ports/repositories/BrandRepository` declares
+ * its own `ManagedBrand` for the values it hands back, and this file declares {@link ManagedBrand} for
+ * what it handles. Two aliases for one shape is exactly the arrangement that drifts silently: the port
+ * could widen its return type, or this file could narrow its view, and every call site would keep
+ * compiling because a wider value is still assignable where a narrower one is expected in ONE
+ * direction. Asserting BOTH directions makes the two aliases provably interchangeable, so the day
+ * either side changes the build fails HERE — in the file that assumes they agree — rather than at a
+ * composition root or inside the validator at run time.
+ *
+ * The two names are deliberately NOT collapsed into one import. The port's alias is the port's
+ * statement about its own contract and this one is the service's; keeping them separate is what makes
+ * the agreement checkable instead of true by definition.
+ */
+type _PortManagedBrandMatchesServiceManagedBrand = AssertAssignable<PortManagedBrand, ManagedBrand>;
+type _ServiceManagedBrandMatchesPortManagedBrand = AssertAssignable<ManagedBrand, PortManagedBrand>;
 
 /**
  * CFML `structKeyExists(struct, key)` for an inbound payload.
@@ -442,6 +540,7 @@ export class BrandService {
   public constructor(
     private readonly brandRepository: BrandRepository,
     private readonly baseService: BrandBaseService,
+    private readonly urlTitleAttemptBudget: UrlTitleAttemptBudget,
   ) {}
 
   /**
@@ -469,7 +568,7 @@ export class BrandService {
    *           `model/validation/Brand.json:L5` means the base collaborator's validation is what
    *           reports the failure — exactly as the legacy did.
    *
-   * ⚠ THE MUTATION AT `:L70` AND `:L72` IS LOAD-BEARING AND IS PRESERVED EXACTLY. Both lines write
+   * THE MUTATION AT `:L70` AND `:L72` IS LOAD-BEARING AND IS PRESERVED EXACTLY. Both lines write
    * `data.urlTitle = ...` — unscoped, so CFML resolves it to `arguments.data`, and CFML structs are
    * passed BY REFERENCE. The derived title therefore reaches the entity through the base
    * collaborator's POPULATION step, not through any setter, which is why this method mutates the
@@ -506,7 +605,10 @@ export class BrandService {
    * URL title is derived, reproducing the by-reference write at `:L70` and `:L72`.
    * @returns The saved brand, as returned by the base collaborator.
    */
-  public async saveBrand(brand: Brand, data: Record<string, unknown>): Promise<Brand> {
+  public async saveBrand(
+    brand: ManagedBrand,
+    data: Record<string, unknown>,
+  ): Promise<ManagedBrand> {
     // `:L68` — the two-part guard, both halves evaluated exactly as declared.
     if (!hasEntityText(brand.urlTitle) && dataValueLength(data, URL_TITLE_DATA_KEY) === 0) {
       // `:L69` — `structKeyExists(arguments.data, "brandName") && len(arguments.data.brandName)`.
@@ -562,7 +664,7 @@ export class BrandService {
    *
    * @returns A newly instantiated, unpersisted brand. Never null or undefined.
    */
-  public newBrand(): Brand {
+  public newBrand(): ManagedBrand {
     return this.brandRepository.newBrand();
   }
 
@@ -593,7 +695,7 @@ export class BrandService {
    * `org/Hibachi/HibachiService.cfc:L253`.
    * @returns The matching brand, or `null` when no row matches. Never undefined.
    */
-  public getBrand(brandID: string): Promise<Brand | null> {
+  public getBrand(brandID: string): Promise<ManagedBrand | null> {
     return this.brandRepository.getBrand(brandID);
   }
 
@@ -629,7 +731,7 @@ export class BrandService {
    * `org/Hibachi/HibachiService.cfc:L287`.
    * @returns `true` when the brand was removed, `false` when a delete guard blocked it.
    */
-  public deleteBrand(brand: Brand): Promise<boolean> {
+  public deleteBrand(brand: ManagedBrand): Promise<boolean> {
     return this.baseService.delete(brand);
   }
 
@@ -649,7 +751,7 @@ export class BrandService {
    * interpolates the table and column directly while binding only the value, so routing a
    * caller-supplied identifier through it is precisely what AAP 0.7.3 S2 forbids.
    *
-   * ⚠ THE PROBE'S POLARITY IS INVERTED FROM THE OBVIOUS READING AND MUST STAY THAT WAY. `true` means
+   * THE PROBE'S POLARITY IS INVERTED FROM THE OBVIOUS READING AND MUST STAY THAT WAY. `true` means
    * the candidate is still AVAILABLE, matching `model/dao/DataDAO.cfc:L126-L130`, which returns
    * `false` when a row IS found. Inverting it produces no compile error: the collision loop in
    * `../util/urlTitle` would either never run, admitting duplicate titles, or never terminate.
@@ -657,10 +759,20 @@ export class BrandService {
    * @param titleString - The human-readable source title, passed through untouched. Every
    * transformation belongs to `createUniqueURLTitle`.
    * @returns A URL title free on `SwBrand`, suffixed `-2`, `-3`, … on successive collisions.
+   * @throws {DomainError} when the injected attempt budget is exhausted before a free title is found
+   *   (SEC-13). Nothing is fabricated in that case: a generated fallback would hand back a title the
+   *   uniqueness probe never approved, and `urlTitle` is unique-constrained.
    */
   private createUniqueBrandUrlTitle(titleString: string): Promise<string> {
-    return createUniqueURLTitle(titleString, BRAND_TABLE_NAME, (_tableName, candidateUrlTitle) =>
-      this.brandRepository.isUrlTitleAvailable(candidateUrlTitle),
+    return createUniqueURLTitle(
+      titleString,
+      BRAND_TABLE_NAME,
+      (_tableName, candidateUrlTitle) =>
+        this.brandRepository.isUrlTitleAvailable(candidateUrlTitle),
+      /* SEC-13 — the collision-probe bound, passed through rather than decided here. This service
+       * states no number of its own: AAP 0.7.3 S9 forbids inventing one, so the value travels from the
+       * composition root through the constructor to the utility unchanged. */
+      this.urlTitleAttemptBudget,
     );
   }
 }

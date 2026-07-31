@@ -1,91 +1,45 @@
 /**
- * `optionGroup.rules.ts` — the typed `OptionGroup` validation rule set of the extracted Catalog
- * slice.
+ * `optionGroup.rules.ts` — the typed transliteration of `model/validation/OptionGroup.json`.
  *
- * Authority: AAP 0.4.1.5 Validation Layer, verbatim row —
- *   | `slatwall-ts/src/validation/rules/optionGroup.rules.ts` | CREATE |
- *   | `model/validation/OptionGroup.json` | Name and code requirements, option delete guard |
- * Corroborated by the AAP 0.3.1 target tree line `optionGroup.rules.ts <-
- * model/validation/OptionGroup.json`, by the AAP 0.2.1.5 row "`optionGroupName` required,
- * `optionGroupCode` required/unique/regex; delete guard on options", and by the single AAP 0.4.4
- * trailing-wildcard row `slatwall-ts/src/validation/rules/** | CREATE — the seven rule sets`.
+ * AAP §0.4.1.5 makes this file CREATE against that document: "Name and code requirements, option delete
+ * guard". AAP §0.2.1.5 adds the detail — "`optionGroupName` required, `optionGroupCode`
+ * required/unique/regex; delete guard on options".
  *
- * PROVENANCE, EXACTLY. This file is the transliteration of ONE legacy document:
- * `model/validation/OptionGroup.json`, six lines by `wc -l` (its closing brace carries no trailing
- * newline), md5 `1f68697cfd6ce924640917457b71af47`. Three properties, five constraints, two
- * contexts. It is the SMALLEST of the seven in-scope validation documents, and the whole of it is
- * reproduced structurally below — nothing is summarised away and nothing is added.
+ * The generic evaluation semantics every constraint below depends on — the null verdict per constraint,
+ * the error key, context selection, the uniqueness polarity and the deliberate non-ports — are stated once
+ * in `../Validator` and are not repeated here.
  *
- * =============================================================================================
- * WHY THIS FILE EXISTS AT ALL — AN IMPLICIT SCOPE ADDITION, ON EVIDENCE RATHER THAN INSTRUCTION
- * =============================================================================================
- * A reviewer reading the brief will find five catalog entities named — Product, Sku, ProductType,
- * Brand and Option — and `OptionGroup` is NOT one of them. AAP 0.2.1.2 adds it as an IMPLICIT
- * SCOPE ADDITION because omitting it "would leave the option model unusable", on four pieces of
- * evidence:
- *   1. `Option.optionGroup` is the required many-to-one side of the relationship
- *      [`model/entity/Option.cfc:L59`], and its requiredness is declared by
- *      [`model/validation/Option.json`] rather than by the mapping.
- *   2. `ProductService.processProduct_addOptionGroup` resolves an option group through the option
- *      service [`model/service/ProductService.cfc:L115`].
- *   3. `Product.getOptionGroups()` queries the entity directly
- *      [`model/entity/Product.cfc:L251-L261`].
- *   4. The sorted-SKU ordering query reads the option group's sort order
- *      [`model/dao/SkuDAO.cfc:L172-L204`].
- * Its validation document is likewise an implicit addition (AAP 0.2.1.5). So this file is here on
- * evidence, and saying so plainly is cheaper than letting a reviewer wonder.
+ * THIS FILE IS AN IMPLICIT SCOPE ADDITION, ON EVIDENCE RATHER THAN INSTRUCTION. `OptionGroup` is not one
+ * of the five catalog entities the brief names. AAP §0.2.1.2 adds it because omitting it "would leave the
+ * option model unusable", on four pieces of evidence: `Option.optionGroup` is the required many-to-one
+ * side of the relationship (`model/entity/Option.cfc:L59`); `ProductService.processProduct_addOptionGroup`
+ * resolves an option group through the option service (`model/service/ProductService.cfc:L115`);
+ * `Product.getOptionGroups()` queries the entity directly (`model/entity/Product.cfc:L251-L261`); and the
+ * sorted-SKU ordering query reads the group's sort order (`model/dao/SkuDAO.cfc:L172-L204`). Its
+ * validation document is an implicit addition for the same reason (AAP §0.2.1.5).
  *
- * =============================================================================================
- * THIS DOCUMENT IS BEHAVIOR, NOT CONFIGURATION — AND THAT IS THE WHOLE POINT
- * =============================================================================================
- * AAP IR-4: "Declarative validation is part of the observable behavior. Seven catalog validation
- * files define required fields, uniqueness, regular-expression formats, conditional rules and
- * delete guards. Two `Sku` rules are method-based and execute real queries. These are behavior,
- * not configuration, and are ported as typed rule sets." AAP 0.2.1.5 says the same from the other
- * side: these documents "are interpreted at runtime by the validation service and determine which
- * saves and deletes succeed."
+ * THE CENSUS — THREE PROPERTIES, FIVE CONSTRAINTS, TWO CONTEXTS. This is the SMALLEST of the seven
+ * in-scope documents, and the whole of it is reproduced structurally below.
  *
- * Treat this document as "just config" and the result is a port that COMPILES CLEANLY, saves
- * option groups the legacy system would have rejected, and rejects option groups the legacy system
- * would have accepted — with no compile error, no exception and no failing test to reveal it. That
- * is the worst available outcome in this subtree. Every locator below is quoted byte-exactly for
- * that reason rather than paraphrased.
+ *   `model/validation/OptionGroup.json:L3`   optionGroupName   save     required                    (1)
+ *   `model/validation/OptionGroup.json:L4`   optionGroupCode   save     required + unique + regex   (3)
+ *   `model/validation/OptionGroup.json:L5`   options           delete   maxCollection 0             (1)
  *
- * =============================================================================================
- * WHY THE JSON IS NOT SHIPPED — TR-3, AND THE ABSOLUTE PROHIBITION
- * =============================================================================================
- * AAP transformation rule TR-3: "Replace framework magic with declarations. Every
- * runtime-synthesized method, every string-keyed service lookup and every metadata-driven behavior
- * becomes an explicit, compile-checked declaration."
+ * Of the thirteen constraint keys the seven documents use between them this document reaches exactly
+ * four — presence, uniqueness, pattern and collection ceiling — plus the `contexts` selection key. It
+ * declares none of the rest, so none appears below; declaring one would be fabrication under AAP §0.7.3
+ * S9. Its ONLY numeric literal is the collection ceiling `0` at `model/validation/OptionGroup.json:L5`.
  *
- * So this file exports TYPED TypeScript VALUES built from the discriminated-union constraint types
- * of `../Validator`. It does not import a JSON document, does not require one, does not parse one
- * and does not rely on `resolveJsonModule` (which `slatwall-ts/tsconfig.json` deliberately does not
- * enable). Nor is `model/validation/OptionGroup.json` — or any other `model/validation/*.json` —
- * copied, moved, symlinked or re-emitted anywhere inside `slatwall-ts/`. TR-6 and AAP 0.4.1.1 hold
- * the CFML tree BYTE-FOR-BYTE UNCHANGED: every target file is CREATE and every legacy file is
- * REFERENCE. The document is TRANSLITERATED, NOT VENDORED.
+ * THIS FILE COVERS `OptionGroup` ONLY. `Option` has its own document, `model/validation/Option.json`, and
+ * its own target file `./option.rules`. The two entities carry separate rule sets and separate class names
+ * in their emitted keys, so the near-identical `optionGroupCode` and `optionCode` constraint triples are a
+ * genuine parallel in the legacy source rather than a duplication to be factored away — with one
+ * exception, the format pattern itself, which is byte-identical across the documents that declare it and
+ * is therefore owned by `./product.rules` and imported. Nothing here imports `./option.rules`.
  *
- * ENUMERATE, NEVER WILDCARD. AAP 0.4.4 makes the enumerated REFERENCE rows a discipline precisely
- * because `model/validation/` holds out-of-scope siblings: a pattern such as
- * `model/validation/Option*.json` would sweep in this document and vice versa, and
- * `model/validation/Product*.json` "would silently pull in out-of-scope material". Exactly one
- * legacy validation document is referenced by this file, by its exact path.
- *
- * THIS FILE COVERS `OptionGroup` ONLY. `Option` has its own document
- * [`model/validation/Option.json`, 7 lines] and its own target file, `./option.rules`. The two
- * entities carry separate rule sets and separate class names in their emitted keys. The
- * near-identical `optionGroupCode` and `optionCode` constraint triples are a genuine parallel in
- * the legacy source, NOT a duplication to be factored into one shared declaration — beyond the
- * single shared pattern constant described below. Nothing here imports `./option.rules`.
- *
- * =============================================================================================
- * THE FIVE EMITTED MESSAGE KEYS, AND DECISION D-1
- * =============================================================================================
- * `validateConstraint` composes the key from context, class name, trailing property-name segment
- * and constraint type at [`org/Hibachi/HibachiValidationService.cfc:L230`] — the branch taken by
- * every constraint that is neither `method` nor `dataType`, which is all five of this document's.
- * The five keys are therefore, exhaustively:
+ * THE FIVE EMITTED MESSAGE KEYS. `validateConstraint` composes the key at
+ * `org/Hibachi/HibachiValidationService.cfc:L230` for every constraint that is neither `method` nor
+ * `dataType`, which is all five here:
  *
  *   validate.save.OptionGroup.optionGroupName.required
  *   validate.save.OptionGroup.optionGroupCode.required
@@ -93,95 +47,41 @@
  *   validate.save.OptionGroup.optionGroupCode.regex
  *   validate.delete.OptionGroup.options.maxCollection
  *
- * Per RATIFIED DECISION D-1, `../Validator` composes these keys and DELIBERATELY SKIPS the
- * resource-bundle substitution pass. That pass is a PROVABLE no-op here:
- * `replaceStringTemplate` collects its targets by matching a dollar-brace placeholder pattern
- * [`org/Hibachi/HibachiUtilityService.cfc:L71`], and none of the three key templates can ever emit
- * such a placeholder, so the loop would find zero matches by construction.
+ * Per DECISION D-1 in `../Validator` the resource-bundle substitution pass is deliberately skipped, so
+ * these are KEYS, NOT SENTENCES: nothing here or downstream translates, sentence-cases, normalises, trims
+ * or beautifies one, and `../util/formatting` is consequently not imported, because with the substitution
+ * skipped it would be dead code (AAP §0.8.2 guideline 4). Note also that the key is always the PROPERTY
+ * IDENTIFIER and never the constraint type, so all three `optionGroupCode` constraints report under
+ * `optionGroupCode`; two or three failures landing under one key is exactly why the error bag's value is
+ * an array.
  *
- * THESE MESSAGES ARE KEYS, NOT SENTENCES. Nothing here or downstream translates, sentence-cases,
- * normalises, trims, lowercases, pluralises or beautifies one. `OptionGroup` is persistent
- * [`model/entity/OptionGroup.cfc:L49`, `persistent=true`], so the legacy substitution struct would
- * have resolved its class name under the `entity.` prefix rather than the `processObject.` prefix
- * [`org/Hibachi/HibachiValidationService.cfc:L212` selects between them] — recorded because it is a
- * real branch, and unobservable here because D-1 never emits the substitution value it fed.
- * `../util/formatting` is consequently NOT imported: with the substitution skipped it would be dead
- * code, which AAP 0.8.2 guideline 4 forbids.
+ * NO CASCADE REACHES THE CHILDREN, and this is the file where a reader is most likely to expect one.
+ * `OptionGroup` -> `options` -> `Option` is precisely the parent/child graph over which a cascading
+ * validation pass would run — but the engine's cascade
+ * (`org/Hibachi/HibachiValidationService.cfc:L133-L151` feeding
+ * `org/Hibachi/HibachiTransient.cfc:L412-L453`) is keyed on document keys that none of the seven in-scope
+ * documents declares, so it is unreachable for this slice. Saving or deleting a group never re-validates
+ * its options through this rule set.
  *
- * THE KEY IS THE PROPERTY IDENTIFIER, NEVER THE CONSTRAINT TYPE. All three reporting branches
- * [`org/Hibachi/HibachiValidationService.cfc:L224`, `:L228`, `:L232`] report against the property
- * identifier with exactly TWO arguments. The three-argument override at
- * [`org/Hibachi/HibachiEntity.cfc:L151`] is an ENTITY concern, never a validation-engine concern.
- * So all three `optionGroupCode` constraints report under the key `optionGroupCode` — never under
- * `required`, `unique` or `regex`. Two or three failures landing under one key is exactly why the
- * error bag's value is an ARRAY.
+ * DETERMINISTIC EVALUATION ORDER — A DETERMINISM CHOICE, NOT A BEHAVIOR CHANGE. The legacy engine reaches
+ * a document's properties by iterating a CFML struct (`org/Hibachi/HibachiValidationService.cfc:L63`),
+ * whose key order is UNSPECIFIED. The declaration order below fixes both levels in the DATA SHAPE:
+ * properties in the source document's key order — `optionGroupName`, `optionGroupCode`, `options` — and
+ * within `optionGroupCode` the source key order `required`, `unique`, `regex`. It is safe precisely
+ * BECAUSE evaluation never short-circuits and every failure accumulates, so the SET of reported failures
+ * is order-independent and no legacy outcome could have depended on an order the engine never guaranteed.
+ * What determinism buys is a reproducible message array, which is what lets a test assert on one at all.
  *
- * =============================================================================================
- * TWO DOCUMENTED NON-PORTS
- * =============================================================================================
- * Neither is a carried defect, so neither is annotated as one.
+ * ARCHITECTURAL POSITION. This file issues ZERO SQL (AAP §0.7.3 S2, as a negative obligation): no
+ * statement text, no fragment, no driver, no connection. The physical tables behind this document,
+ * `SwOptionGroup` and its child `SwOption`, are named in this sentence and nowhere else; every string
+ * literal below is either a validation CONTEXT name or one of the document's own PROPERTY KEYS. Uniqueness
+ * reaches the database exclusively through the port constructor-injected into `../Validator` (S3, S4);
+ * this file names the constraint and resolves its target, and never calls the port.
  *
- *   1. THE POPULATED-SUB-PROPERTY CASCADE. `getPopulatedPropertyValidationContext`
- *      [`org/Hibachi/HibachiValidationService.cfc:L133-L151`] reads the keys
- *      `populatedPropertyValidation` and `validate`; NEITHER appears in any of the seven in-scope
- *      documents, so the cascade at [`org/Hibachi/HibachiTransient.cfc:L412-L453`] is UNREACHABLE
- *      for this slice and no cascade API belongs anywhere in this folder. Worth stating HERE
- *      specifically, because `OptionGroup` -> `options` -> `Option` is exactly the parent/child
- *      graph over which a reader might expect a cascading validation pass. There is none: deleting
- *      or saving a group never re-validates its options through this rule set.
- *   2. THE CUSTOM-OVERRIDE MERGE. The engine merges per-class overrides from the customisation
- *      tree at [`org/Hibachi/HibachiValidationService.cfc:L6-L53`]. That tree's validation
- *      directory holds nothing but a readme, so ZERO catalog overrides exist. Building a merge
- *      mechanism for an empty input would violate AAP 0.7.3 S9.
- *
- * =============================================================================================
- * A CORRECTION TO A SIBLING SPECIFICATION'S LOCATOR, STATED HERE AND NOT PATCHED THERE
- * =============================================================================================
- * The specification for `../Validator` twice cites the unknown-constraint raise at L212. Read
- * first-hand, it is at [`org/Hibachi/HibachiValidationService.cfc:L202`]; L212 is the
- * `isPersistent()` branch that selects the class-name prefix; and the SEPARATE `dataType`
- * whitelist raise is at [`org/Hibachi/HibachiValidationService.cfc:L263`]. The correction is
- * recorded here rather than by editing the sibling, which stays as its own author left it. This
- * document declares no `dataType` constraint, so only the L202 raise is reachable from it — and
- * only if a constraint type outside the closed union were somehow introduced, which the compiler
- * now prevents outright.
- *
- * =============================================================================================
- * ARCHITECTURAL POSITION (AAP 0.7.3 S2, S3, S4, S5)
- * =============================================================================================
- * S2 IS A NEGATIVE OBLIGATION HERE: THIS FILE ISSUES ZERO SQL. No statement text, no HQL fragment,
- * no driver, no connection. The physical tables behind this document — `SwOptionGroup` and its
- * child `SwOption` — are named in this prose sentence and NOWHERE ELSE; every string literal below
- * is either a validation CONTEXT name or one of the document's own PROPERTY KEYS, which are the
- * error keys the contract requires, not physical column identifiers.
- *
- * S3: no service locator, no dynamic method synthesis, no string-keyed runtime resolution, no
- * container import and no module-scope singleton. The uniqueness port is CONSTRUCTOR-INJECTED into
- * `../Validator`; this file names the constraint and resolves its target, and never calls the port.
- *
- * S4: four imports, all relative, three of them type-only. Deliberately absent: any import from
- * `adapters/`, `services/`, `config/`, `handlers/` or `integrations/`; any database driver; any
- * cloud event, result, context or handler type; any file-system, network or clock access; any
- * logging framework; any read of the process environment (`src/config/env.ts` is the subtree's sole
- * permitted reader); any barrel or index re-export; and any `.json` import. Per AAP 0.4.3.5 all
- * intra-subtree imports are relative paths — "deliberately no path aliases — so `tsc` and `esbuild`
- * resolve identically and no runtime resolver shim is needed" — because an alias that type-checks
- * can still raise a module-resolution failure at cold start.
- *
- * S5: no dependency is added. No schema-validation package appears here or anywhere in the
- * subtree, and `slatwall-ts/package.json` is not edited.
- *
- * =============================================================================================
- * EVALUATION ORDER IS FIXED HERE, DELIBERATELY, AND IT IS AN IMPROVEMENT NOT A CHANGE
- * =============================================================================================
- * The legacy engine iterated a CFML struct [`org/Hibachi/HibachiValidationService.cfc:L63`], whose
- * key order is UNSPECIFIED. The declaration order below is therefore a deterministic choice with no
- * behavioural counterpart in the legacy engine: properties in the source document's key order —
- * `optionGroupName`, then `optionGroupCode`, then `options` — and within `optionGroupCode` the
- * source key order `required`, then `unique`, then `regex`. It is safe precisely BECAUSE errors
- * ACCUMULATE and evaluation NEVER SHORT-CIRCUITS at any level, so no legacy outcome could ever have
- * depended on the order the engine never guaranteed. What determinism buys is a reproducible
- * message array, which is what lets the net-new suite assert on one at all (AAP 0.7.3 S6).
+ * @see `../Validator` for the evaluation semantics every constraint below depends on
+ * @see `model/validation/OptionGroup.json` — the source document, REFERENCE-ONLY
+ * @see `model/entity/OptionGroup.cfc` — the property metadata that decides what may be declared here
  */
 
 import type { OptionGroupPropertyName } from '../../domain/option/OptionGroup';
@@ -196,10 +96,6 @@ import type {
   ValidationRuleSet,
   ValidationSubject,
 } from '../Validator';
-
-/* ==============================================================================================
- * SECTION 1 — THE SUBJECT CONTRACT
- * ============================================================================================ */
 
 /**
  * What this rule set requires of the object being validated, and nothing more.
@@ -257,7 +153,7 @@ export type OptionGroupValidationSubject = ValidationSubject &
     /**
      * `property name="optionGroupName" ormtype="string";`
      * [`model/entity/OptionGroup.cfc:L53`] — read by the presence rule at
-     * [`model/validation/OptionGroup.json:3`].
+     * [`model/validation/OptionGroup.json:L3`].
      *
      * Note the mapping declares NO `required` and NO `length`, which is why that one rule is the
      * only enforcement of this property anywhere in the system. See
@@ -268,7 +164,7 @@ export type OptionGroupValidationSubject = ValidationSubject &
     /**
      * `property name="optionGroupCode" ormtype="string";`
      * [`model/entity/OptionGroup.cfc:L54`] — read by ALL THREE constraints of
-     * [`model/validation/OptionGroup.json:4`].
+     * [`model/validation/OptionGroup.json:L4`].
      *
      * The mapping declares NO `unique="true"` and NO `length`. See
      * {@link optionGroupCodeUniqueConstraint} for the consequence, which is the most significant
@@ -278,7 +174,7 @@ export type OptionGroupValidationSubject = ValidationSubject &
 
     /**
      * The one-to-many option collection [`model/entity/OptionGroup.cfc:L70`] — read by the delete
-     * guard at [`model/validation/OptionGroup.json:5`].
+     * guard at [`model/validation/OptionGroup.json:L5`].
      *
      * TYPED WITH THE UNKNOWN ELEMENT TYPE ON PURPOSE. A collection ceiling MEASURES SIZE and never
      * inspects an element [`org/Hibachi/HibachiValidationService.cfc:L311`]. Typing the element
@@ -333,7 +229,7 @@ export type OptionGroupValidationSubject = ValidationSubject &
  * ============================================================================================ */
 
 /**
- * The save context, as [`model/validation/OptionGroup.json:3`] and [`:4`] spell it.
+ * The save context, as [`model/validation/OptionGroup.json:L3`] and [`:L4`] spell it.
  *
  * A plain string, never a closed literal union: `../Validator` types the context as an open `string`
  * (requirement N2) because the editability and processability checks at
@@ -342,7 +238,6 @@ export type OptionGroupValidationSubject = ValidationSubject &
  */
 const SAVE_CONTEXT = 'save';
 
-/** The delete context, as [`model/validation/OptionGroup.json:5`] spells it. See P-2 above. */
 const DELETE_CONTEXT = 'delete';
 
 /* ==============================================================================================
@@ -377,21 +272,21 @@ const DELETE_CONTEXT = 'delete';
  * ============================================================================================ */
 
 /**
- * The error key for the name rule. [`model/validation/OptionGroup.json:3`]
+ * The error key for the name rule. [`model/validation/OptionGroup.json:L3`]
  *
  * Compile-checked as a real declared property of the entity [`model/entity/OptionGroup.cfc:L53`].
  */
 const OPTION_GROUP_NAME_PROPERTY = 'optionGroupName' satisfies OptionGroupPropertyName;
 
 /**
- * The error key shared by all three code constraints. [`model/validation/OptionGroup.json:4`]
+ * The error key shared by all three code constraints. [`model/validation/OptionGroup.json:L4`]
  *
  * Compile-checked as a real declared property of the entity [`model/entity/OptionGroup.cfc:L54`].
  */
 const OPTION_GROUP_CODE_PROPERTY = 'optionGroupCode' satisfies OptionGroupPropertyName;
 
 /**
- * The error key for the delete guard. [`model/validation/OptionGroup.json:5`]
+ * The error key for the delete guard. [`model/validation/OptionGroup.json:L5`]
  *
  * Compile-checked as a real declared property of the entity [`model/entity/OptionGroup.cfc:L70`] —
  * the one-to-many option collection, which is what makes this guard live where the four sibling
@@ -479,7 +374,7 @@ const OPTIONS_PROPERTY = 'options' satisfies OptionGroupPropertyName;
  *
  * No maximum length, no address format, no positive-integer check, no "sensible" default and no
  * cross-property comparison is invented anywhere in this file. THE ONLY NUMERIC LITERAL IN IT is
- * the collection ceiling of 0 at [`model/validation/OptionGroup.json:5`], transcribed below.
+ * the collection ceiling of 0 at [`model/validation/OptionGroup.json:L5`], transcribed below.
  * -------------------------------------------------------------------------------------------- */
 
 /* ==============================================================================================
@@ -507,7 +402,7 @@ const OPTIONS_PROPERTY = 'options' satisfies OptionGroupPropertyName;
 /**
  * `optionGroupName` must be PRESENT on save.
  *
- * [`model/validation/OptionGroup.json:3`] `"optionGroupName": [{"contexts":"save","required":true}]`
+ * [`model/validation/OptionGroup.json:L3`] `"optionGroupName": [{"contexts":"save","required":true}]`
  *
  * =============================================================================================
  * THIS RULE IS THE ONLY ENFORCEMENT OF THE NAME ANYWHERE IN THE SYSTEM
@@ -557,7 +452,7 @@ export const optionGroupNameRequiredConstraint = Object.freeze({
 /**
  * `optionGroupCode` must be PRESENT on save — the FIRST of three constraints on one rule object.
  *
- * [`model/validation/OptionGroup.json:4`]
+ * [`model/validation/OptionGroup.json:L4`]
  *
  * Presence semantics are identical to {@link optionGroupNameRequiredConstraint}; see there for the
  * full edge-case table, including the number 0 passing.
@@ -583,119 +478,43 @@ export const optionGroupCodeRequiredConstraint = Object.freeze({
 } as const) satisfies RequiredConstraint;
 
 /**
- * `optionGroupCode` must be UNIQUE on save — the SECOND of three constraints on the same rule
- * object, and the most consequential declaration in this file.
+ * `optionGroupCode` must be UNIQUE on save — the second of three constraints on the same rule object.
  *
- * [`model/validation/OptionGroup.json:4`]
+ * Transcribed from `model/validation/OptionGroup.json:L4`.
  *
- * =============================================================================================
- * THIS UNIQUENESS IS APPLICATION-ONLY. THERE IS NO DATABASE CONSTRAINT BEHIND IT.
- * =============================================================================================
- * The mapping, byte-exact [`model/entity/OptionGroup.cfc:L54`]:
+ * FOR THIS PROPERTY THE RULE IS THE ONLY UNIQUENESS ENFORCEMENT IN THE ENTIRE SYSTEM.
+ * `model/entity/OptionGroup.cfc:L54` declares the property with an ORM type and nothing else — no
+ * `unique="true"`, no `length`. So there is NO database-level constraint behind this rule and no second
+ * mechanism to fall back on; drop it as redundant, which is the reflex of a reader who assumes the schema
+ * enforces uniqueness, and duplicate option-group codes simply save. `Option.optionCode`
+ * (`model/entity/Option.cfc:L53`) is in the same position, so the option model as a whole depends entirely
+ * on application-side checking for code uniqueness. That makes AAP IR-5 binding here in its strongest
+ * form: "Application-side uniqueness checking is required in addition to database constraints."
  *
- *     property name="optionGroupCode" ormtype="string";
+ * See DECISION D-2 AND "THE SEVEN" in `../Validator` for the pinned polarity, for why the self-exclusion
+ * term is a no-op on insert, and for all seven uniqueness locators. One entity-specific detail belongs
+ * here: the mapping declares `unsavedvalue=""` and `default=""` (`model/entity/OptionGroup.cfc:L52`), so a
+ * new group carries no identifier and the self-exclusion term excludes nothing. On UPDATE that same term
+ * is live and does real work — it is what stops a row colliding with ITSELF and reporting its own
+ * unchanged code as already taken.
  *
- * NO `unique="true"`. NO `length`. A repository-wide search for `unique="true"` across
- * `model/entity/` returns exactly EIGHT hits — `Currency.cfc:52`, `Product.cfc:54` (`urlTitle`),
- * `Product.cfc:56` (`productCode`), `ProductType.cfc:56`, `MeasurementUnit.cfc:58`,
- * `Integration.cfc:53`, `Brand.cfc:55` and `Sku.cfc:54` — and `OptionGroup.optionGroupCode` IS NOT
- * AMONG THEM. Verified first-hand, not inferred.
+ * AN ABSENT VALUE PASSES UNIQUENESS, INDIRECTLY. `validate_unique`
+ * (`org/Hibachi/HibachiValidationService.cfc:L467-L470`) has NO absence guard — unlike its sibling
+ * `validate_uniqueOrNull` at `:L472-L479`, which does, and which none of the seven documents uses. The two
+ * evaluators differ precisely there, which is what proves the omission is real rather than an artefact of
+ * reading. With an absent value the existence query matches nothing, so the port must answer `true`: it
+ * must not raise, must not rewrite the comparison into a null test and must not report the value as taken.
+ * The presence constraint declared alongside on the same rule object is what actually rejects an absent
+ * code, and it does that job independently. The constraint's own declared value is never read (`:L467`),
+ * so the check always runs.
  *
- * So for this property THIS RULE IS THE ONLY UNIQUENESS ENFORCEMENT IN THE ENTIRE SYSTEM. Drop it,
- * or lean on a column constraint that does not exist, and duplicate option-group codes simply save.
- * The same is true of `Option.optionCode` [`model/entity/Option.cfc:L53`], so the option model as a
- * whole depends entirely on application-side checking for code uniqueness. That makes AAP IR-5
- * binding here in its strongest form: "Application-side uniqueness checking is required in addition
- * to database constraints. `HibachiDAO.isUniqueProperty()` [org/Hibachi/HibachiDAO.cfc:L130-L146]
- * enforces uniqueness with an HQL existence query during validation, independently of the
- * `unique=\"true\"` column metadata."
+ * THE TARGET RESOLVER IS THE IDENTITY FUNCTION, deliberately. The legacy engine resolves the entity to
+ * check by walking the property identifier to its last object (`:L468`); `optionGroupCode` is a SINGLE
+ * SEGMENT containing neither a dot nor an underscore, so that walk terminates immediately at the subject.
+ * The indirection is retained because the legacy has it and because a dotted identifier would resolve
+ * elsewhere, but no lookup is invented.
  *
- * =============================================================================================
- * X8 — THERE ARE SEVEN `unique` CONSTRAINTS ACROSS THE SEVEN DOCUMENTS. NOT SIX, AND NOT FIVE.
- * =============================================================================================
- * A direct search for the `unique` key over exactly the seven in-scope documents returns seven
- * hits, and these locators were re-verified first-hand for this file:
- *
- *   model/validation/Product.json:10       productCode      (also carries the pattern rule)
- *   model/validation/Product.json:16       urlTitle
- *   model/validation/Sku.json:11           skuCode
- *   model/validation/Brand.json:5          urlTitle
- *   model/validation/Option.json:3         optionCode       (also carries the pattern rule)
- *   model/validation/OptionGroup.json:4    optionGroupCode  <-- THIS CONSTRAINT
- *   model/validation/ProductType.json:4    urlTitle
- *
- * `model/validation/Product_UpdateSkus.json` contributes ZERO.
- *
- * TWO UPSTREAM DOCUMENTS UNDERCOUNT THIS, and the correction is stated here rather than by editing
- * either of them:
- *   - Prose upstream of this folder names FIVE columns.
- *   - The specification for `../../ports/UniquePropertyPort` claims SIX and asserts that
- *     `model/validation/Product.json` declares `urlTitle` as required but NOT unique. THAT CLAIM IS
- *     FALSE — see `model/validation/Product.json:16` above — and that specification is internally
- *     self-contradictory, since its own table lists `Product.urlTitle` among its six. The root cause
- *     is that its mandated reads span only five validation documents and omit
- *     `model/validation/ProductType.json` entirely, which is why the seventh is invisible to it.
- *     `../Validator` independently carries the same seven-locator correction, so no cross-folder
- *     disagreement remains — only the one stale port document, which is left exactly as its author
- *     wrote it.
- *
- * RECONCILING THE COUNTS, so they stop appearing to fight. IR-5's "five of the eight unique columns
- * declared in the whole system belong to this slice" counts entity `unique="true"` COLUMN METADATA —
- * a DIFFERENT, INDEPENDENT mechanism, as IR-5 itself says. Eight exist system-wide and five of them
- * (`Product.cfc:54`, `Product.cfc:56`, `ProductType.cfc:56`, `Brand.cfc:55`, `Sku.cfc:54`) are
- * in-slice, which matches exactly. The VALIDATION-DOCUMENT count is SEVEN. Both statements are true;
- * they measure different things. Stated so the next reader does not "fix" one number into the other.
- *
- * =============================================================================================
- * THE EVALUATION CONTRACT — RATIFIED DECISION D-2
- * =============================================================================================
- * PIN THE POLARITY: `true` MEANS UNIQUE, AND THEREFORE SAFE TO SAVE. `false` means the value is
- * already taken and the save must be rejected. Read first-hand rather than inferred: the existence
- * query returns FALSE when it finds matching rows [`org/Hibachi/HibachiDAO.cfc:L142-L144`] and TRUE
- * when it finds none [`:L146`]; `validate_unique`
- * [`org/Hibachi/HibachiValidationService.cfc:L467-L470`] then returns that result UNMODIFIED as its
- * own pass-or-fail verdict. INVERTING THIS IS SILENT — every uniqueness rule in the slice would pass
- * when it should fail, with no compile error and no lint finding — so the accompanying test must
- * exercise the COLLIDING case, because a test covering only the non-colliding path passes under
- * either polarity.
- *
- * EVALUATION GOES EXCLUSIVELY THROUGH THE INJECTED PORT. This file NAMES the constraint and RESOLVES
- * its target. It never invokes the port, never issues a query, never reaches an adapter and contains
- * no statement text of any kind. The port is constructor-injected into `../Validator` (AAP 0.7.3
- * S3), and here that is not a stylistic nicety — it is what stops this declaration from needing a
- * database at all, which is what makes it unit-testable against a hand-written double.
- *
- * THE TARGET RESOLVER IS THE IDENTITY FUNCTION, deliberately. The legacy engine resolves the entity
- * to check by walking the property identifier to its last object
- * [`org/Hibachi/HibachiValidationService.cfc:L468`]; `optionGroupCode` is a SINGLE SEGMENT
- * containing neither a dot nor an underscore, so that walk terminates immediately at the subject
- * itself. The indirection is retained because the legacy has it and because a dotted identifier
- * would resolve elsewhere, but no lookup is invented. `../Validator` reaches the same conclusion for
- * all seven uniqueness rules of the slice.
- *
- * SELF-EXCLUSION IS A NO-OP ON INSERT. The legacy existence query excludes the row being validated
- * by comparing primary identifiers [`org/Hibachi/HibachiDAO.cfc:L136-L140`]. A NEW option group has
- * not been assigned an identifier yet — the mapping declares `unsavedvalue=""` and `default=""`
- * [`model/entity/OptionGroup.cfc:L52`] — so on insert that term excludes nothing and the check
- * degenerates to a plain existence test. On UPDATE the same term is live and does real work: it is
- * what stops a row colliding with ITSELF and reporting its own unchanged code as already taken.
- * Recorded because it LOOKS like protection against self-collision and is not, on the path that
- * matters most.
- *
- * AN ABSENT VALUE ALWAYS PASSES UNIQUENESS, INDIRECTLY. `validate_unique`
- * [`org/Hibachi/HibachiValidationService.cfc:L467-L470`] has NO null guard — unlike its sibling
- * `validate_uniqueOrNull` [`:L472-L479`], which does, and which none of the seven documents uses. So
- * with an absent value the existence query matches nothing and the port must answer `true`. The port
- * must NOT raise, must NOT rewrite the comparison into a null test, and must NOT answer `false`. The
- * presence constraint declared alongside on the same rule object is what actually rejects an absent
- * code, and it does that job independently.
- *
- * The legacy evaluator resolves the property name it hands the port as the trailing segment of the
- * identifier [`org/Hibachi/HibachiValidationService.cfc:L208`] — used ONLY to compose the message,
- * NEVER as the error key. As with presence, its declared constraint value is never read
- * [`:L467`], so the check always runs; all seven in-scope uniqueness rules declare true.
- *
- * Reported as `validate.save.OptionGroup.optionGroupCode.unique`.
+ * Emits `validate.save.OptionGroup.optionGroupCode.unique`.
  */
 export const optionGroupCodeUniqueConstraint = Object.freeze({
   constraintType: 'unique',
@@ -707,7 +526,7 @@ export const optionGroupCodeUniqueConstraint = Object.freeze({
  * `optionGroupCode` must MATCH THE SHARED CODE FORMAT on save — the THIRD constraint of the same
  * rule object.
  *
- * [`model/validation/OptionGroup.json:4`], whose fourth key is the pattern. The pattern TEXT is
+ * [`model/validation/OptionGroup.json:L4`], whose fourth key is the pattern. The pattern TEXT is
  * deliberately NOT reproduced in this comment either: it is transcribed character for character,
  * once, at {@link CODE_FORMAT_REGEX} in `./product.rules`, together with the character-class
  * analysis and the empirical accept and reject sets. A second copy in prose would be a second thing
@@ -717,10 +536,10 @@ export const optionGroupCodeUniqueConstraint = Object.freeze({
  * THE PATTERN IS IMPORTED, NOT REDECLARED — AND THAT IS A SINGLE-SOURCE-OF-TRUTH DECISION
  * =============================================================================================
  * The literal occurs in exactly THREE of the seven in-scope documents and nowhere else in them:
- * `Product.productCode` [`model/validation/Product.json:10`], `Option.optionCode`
- * [`model/validation/Option.json:3`] and `OptionGroup.optionGroupCode`
- * [`model/validation/OptionGroup.json:4`]. Its authoritative home is `./product.rules`, which owns
- * it by document order — `model/validation/Product.json:10` is the first occurrence — and which
+ * `Product.productCode` [`model/validation/Product.json:L10`], `Option.optionCode`
+ * [`model/validation/Option.json:L3`] and `OptionGroup.optionGroupCode`
+ * [`model/validation/OptionGroup.json:L4`]. Its authoritative home is `./product.rules`, which owns
+ * it by document order — `model/validation/Product.json:L10` is the first occurrence — and which
  * names this file as one of its two intended importers. `./option.rules` imports it from the same
  * place.
  *
@@ -738,12 +557,13 @@ export const optionGroupCodeUniqueConstraint = Object.freeze({
  * a pre-compiled object would fail to type-check AND defeat that guarantee, since a compiled pattern
  * carries mutable match state. Nothing is compiled here.
  *
- * NO FLAGS, EVER. `./product.rules` records the empirical result: no flags compiles and is what
- * `../Validator` does; the unicode flag compiles but is pointless on a pure-ASCII class; and THE
- * UNICODE-SETS FLAG RAISES A SYNTAX ERROR AT PATTERN CONSTRUCTION on this character class, which
- * under Lambda is a COLD-START CRASH rather than a failed validation. Case-insensitive, global,
- * multiline and dot-all are equally unwelcome: the class already spells both letter cases out, and
- * the pattern anchors both ends itself.
+ * NO FLAGS, EVER. `./product.rules` records the reasoning in full: `../Validator` compiles the pattern
+ * with no flags; the unicode flag compiles but is pointless on a pure-ASCII class; and THE UNICODE-SETS
+ * FLAG RAISES A SYNCHRONOUS `SyntaxError` WHEN THE PATTERN IS CONSTRUCTED on this character class — which,
+ * because construction happens at the moment the constraint is evaluated, surfaces as a validation-time
+ * failure on the invocation path rather than as a reported rule failure. Case-insensitive, global,
+ * multiline and dot-all are equally unwelcome: the class already spells both letter cases out, and the
+ * pattern anchors both ends itself.
  *
  * PATTERN SEMANTICS, so no guard is layered on top. `validate_regex`
  * [`org/Hibachi/HibachiValidationService.cfc:L481-L487`] PASSES ON AN ABSENT VALUE and otherwise
@@ -761,7 +581,7 @@ export const optionGroupCodeRegexConstraint = Object.freeze({
 /**
  * THE DELETE GUARD — an option group that still has OPTIONS cannot be deleted.
  *
- * [`model/validation/OptionGroup.json:5`] `"options": [{"contexts":"delete","maxCollection":0}]`
+ * [`model/validation/OptionGroup.json:L5`] `"options": [{"contexts":"delete","maxCollection":0}]`
  *
  * This is the document's only `delete`-context rule, one of nine collection-ceiling guards across
  * the seven documents, and — per Section 2's P-2 note — UNCONDITIONAL, because the delete context is
@@ -776,7 +596,7 @@ export const optionGroupCodeRegexConstraint = Object.freeze({
  *     fkcolumn="optionGroupID" inverse="true" cascade="all-delete-orphan" orderby="sortOrder";
  *
  * `cascade="all-delete-orphan"` instructs the ORM to delete the child options ALONG WITH their
- * group. The rule at [`model/validation/OptionGroup.json:5`] BLOCKS THE DELETE ENTIRELY whenever any
+ * group. The rule at [`model/validation/OptionGroup.json:L5`] BLOCKS THE DELETE ENTIRELY whenever any
  * child exists. So the cascade can NEVER FIRE for a non-empty group, because validation refuses the
  * delete first — and it has nothing to do for an empty one. This is a genuine, unresolved
  * inconsistency in the legacy source, and it is carried across as-is.
@@ -831,7 +651,7 @@ export const optionsMaxCollectionConstraint = Object.freeze({
 /**
  * `optionGroupName` — presence on save. See {@link optionGroupNameRequiredConstraint}.
  *
- * [`model/validation/OptionGroup.json:3`]
+ * [`model/validation/OptionGroup.json:L3`]
  */
 export const optionGroupNameValidation = Object.freeze({
   propertyIdentifier: OPTION_GROUP_NAME_PROPERTY,
@@ -848,7 +668,7 @@ export const optionGroupNameValidation = Object.freeze({
  * `optionGroupCode` — the densest property in the document: ONE RULE OBJECT, THREE INDEPENDENT
  * CONSTRAINTS, ONE ERROR KEY.
  *
- * [`model/validation/OptionGroup.json:4`]
+ * [`model/validation/OptionGroup.json:L4`]
  *
  * =============================================================================================
  * THE THREE-WAY FLATTENING — WHY THIS IS NOT ONE CONSTRAINT WITH THREE FACETS
@@ -856,7 +676,7 @@ export const optionGroupNameValidation = Object.freeze({
  * `getValidationsByContext` [`org/Hibachi/HibachiValidationService.cfc:L77-L88`] explodes each rule
  * object into ONE CONSTRAINT RECORD PER KEY, excluding `contexts` and `conditions` [`:L78`] and
  * copying `conditions` onto every record it produces [`:L83-L85`]. So the single rule object at
- * `model/validation/OptionGroup.json:4` is not one composite check — it is THREE INDEPENDENT
+ * `model/validation/OptionGroup.json:L4` is not one composite check — it is THREE INDEPENDENT
  * CONSTRAINTS, each evaluated separately, each able to add its OWN message, all under the SAME
  * property identifier `optionGroupCode`.
  *
@@ -894,7 +714,7 @@ export const optionGroupCodeValidation = Object.freeze({
 /**
  * `options` — the delete guard. See {@link optionsMaxCollectionConstraint}.
  *
- * [`model/validation/OptionGroup.json:5`]
+ * [`model/validation/OptionGroup.json:L5`]
  *
  * =============================================================================================
  * THIS READ IS SYNCHRONOUS, AND THAT IS A PROPERTY OF THE LEGACY SOURCE RATHER THAN A SHORTCUT
@@ -931,10 +751,6 @@ export const optionsValidation = Object.freeze({
     } as const),
   ] as const),
 } as const) satisfies PropertyValidation<OptionGroupValidationSubject>;
-
-/* ==============================================================================================
- * SECTION 6 — THE DOCUMENT
- * ============================================================================================ */
 
 /**
  * The whole of `model/validation/OptionGroup.json`, as one typed value.

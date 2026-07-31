@@ -1,130 +1,102 @@
 /**
  * Merchandise-product test fixture — the data contract of the legacy MXUnit fixture helper.
  *
- * PROVENANCE: **TRACEABLE** — source `meta/tests/unit/Helper.cfc:L51-L75`, comprising the two
- * fixture members `getTestMerchandiseProduct()` (`L51`-`L67`) and
- * `destroyTestMerchandiseProduct()` (`L69`-`L75`). Every literal in this file is transcribed
- * from that span; none is generated, derived or invented.
+ * PROVENANCE: TRACEABLE — meta/tests/unit/Helper.cfc:L51-L75, comprising the two fixture members
+ * `getTestMerchandiseProduct()` (:L51-L67) and `destroyTestMerchandiseProduct()` (:L69-L75). Every
+ * literal in this file is transcribed from that span; none is generated, derived or invented.
  *
- * ★ THE LABEL IS DELIBERATELY SCOPED — READ THE QUALIFICATION BEFORE RELYING ON IT.
- * This is **contract-traceability, NOT exercised-coverage.** The legacy helper component is
- * instantiated at `meta/tests/unit/SlatwallUnitTestBase.cfc:L55`
- * (`variables.helper = createObject("component", "Helper");`) but is **invoked by no legacy
- * test whatsoever.** Verified by repository-wide search: `getTestMerchandiseProduct` and
- * `destroyTestMerchandiseProduct` each resolve to exactly one hit — their own declarations —
- * and `variables.helper` resolves to exactly one hit, the assignment above, never a read.
- * The legacy entity tests build their subjects through the product and brand services
- * instead, and `meta/tests/unit/IssuesTest.cfc:L55` inlines its own struct.
+ * THE LABEL IS DELIBERATELY SCOPED. This is contract-traceability, NOT exercised-coverage. The legacy
+ * helper component is instantiated at meta/tests/unit/SlatwallUnitTestBase.cfc:L55 but no legacy test
+ * ever invokes either member: the legacy entity tests build their subjects through the product and
+ * brand services instead, and meta/tests/unit/IssuesTest.cfc:L55 inlines its own struct. What crosses
+ * over is therefore the fixture's declared contract, not a body of coverage this file inherits, and a
+ * reader must not conclude that the legacy suite ever exercised this data.
  *
- * What therefore crosses over is the fixture's *declared contract*, not a body of coverage
- * this file inherits. The distinction is stated plainly because the project standard is to
- * flag absent legacy coverage rather than imply parity: a reader must not conclude that the
- * legacy suite ever exercised this data. It did not.
+ * Traceability here is DOCUMENTARY, not empirical: MXUnit and CFSelenium are not vendored in this
+ * repository and meta/tests/readme.txt:L4-L5 requires external CFIDE mappings to run the legacy
+ * suite, so no runtime comparison against the original CFML behaviour was performed. Traceability was
+ * established by reading the legacy source and transcribing it.
  *
- * TRACEABILITY HERE IS DOCUMENTARY, NOT EMPIRICAL. MXUnit and CFSelenium are not vendored in
- * this repository, and `meta/tests/readme.txt:L4-L5` requires external CFIDE mappings to run
- * the legacy suite; `meta/docker/slatwall-local-dev/`, cited in the project brief, does not
- * exist — `meta/` contains only `eclipse` and `tests`. The legacy suite cannot be executed in
- * this environment at all, so no runtime comparison against the original CFML behaviour was
- * performed. Traceability was established by *reading* the legacy source and transcribing it.
+ * The enclosing test/fixtures/ folder is net-new organisation — meta/tests/readme.txt documents no
+ * fixtures folder — so it is this file's CONTENTS that are traceable, not the folder holding them.
  *
- * Scope of the claim, stated precisely: the enclosing `test/fixtures/` folder is net-new
- * organisation — `meta/tests/readme.txt` documents `/Coverage`, `/core`, `/entity`,
- * `/service`, `/dao`, `/Unit` and `/Functional`, and no fixtures folder. It is this FILE'S
- * CONTENTS that are traceable, not the folder that holds them.
- *
- * Purpose: give every suite under `test/` one authoritative, immutable source of
- * merchandise-product fixture data, importable without booting anything.
+ * Purpose: give every suite one authoritative, immutable source of merchandise-product fixture data,
+ * importable without booting anything.
  */
 
 /*
- * ---------------------------------------------------------------------------------------
  * LEGACY TESTS WERE INTEGRATION TESTS; TARGET TESTS ARE UNIT TESTS — BY DESIGN
- * ---------------------------------------------------------------------------------------
- * `meta/tests/unit/SlatwallUnitTestBase.cfc` extends `mxunit.framework.TestCase` at `L49`,
- * creates the whole FW/1 application at `L52`, boots it before EVERY test at `L60`
- * (`bootstrap()`), and elevates the acting account to superuser at `L62`. Collaborators are
- * then resolved through the DI/1 container at runtime. Every legacy "unit" test consequently
- * stands up the entire application.
+ * ---------------------------------------------------------------------------
+ * meta/tests/unit/SlatwallUnitTestBase.cfc extends the MXUnit test case at :L49, creates the whole
+ * FW/1 application at :L52, boots it before EVERY test at :L60 and elevates the acting account to
+ * superuser at :L62, then resolves collaborators through the DI/1 container at run time. Every legacy
+ * "unit" test consequently stands up the entire application.
  *
- * The target suite does the opposite: it imports the unit under test directly and constructs
- * it against test doubles. This fixture is the matching shift for fixture data — the CFML
- * `component` with its shared `variables` scope becomes plain exported functions, with no
- * base class, no inheritance, no bootstrap, no superuser concept and no framework of any
- * kind. A reviewer comparing the two suites should read that as an intended structural
- * difference, not as a coverage gap.
+ * The target suite does the opposite: it imports the unit under test directly and constructs it
+ * against test doubles. This fixture is the matching shift for fixture data — the CFML component with
+ * its shared `variables` scope becomes plain exported functions, with no base class, no inheritance,
+ * no bootstrap and no framework. A reader comparing the two suites should read that as an intended
+ * structural difference rather than as a coverage gap.
  *
- * ---------------------------------------------------------------------------------------
  * WHAT IS DELIBERATELY NOT CARRIED ACROSS — AND WHY
- * ---------------------------------------------------------------------------------------
- * The legacy `getTestMerchandiseProduct()` does three things. Only the FIRST crosses into
- * this file:
+ * ------------------------------------------------
+ * The legacy `getTestMerchandiseProduct()` does three things, and only the first crosses into this
+ * file:
  *
- *   1. `L53`-`L60` assembles the `productData` struct.
- *      → PORTED, byte-exact, below.
+ *   1. :L53-L60 assembles the `productData` struct.
+ *      -> PORTED, byte-exact, below.
  *
- *   2. `L62` persists it, by resolving the product service BY NAME from the request-scoped
- *      Hibachi scope through the DI/1 container and invoking `saveProduct` on the result.
- *      → NOT PORTED. That is a string-keyed runtime service lookup — exactly the dynamic
- *      service-locator idiom this migration replaces with explicit constructor injection — so
- *      it must not be reproduced in any form, and the call is described here by locator rather
- *      than transcribed so that not even a copy of it survives in this subtree. Persistence is
- *      the caller's concern, wired through the in-memory repository doubles in
- *      `test/support/inMemoryRepositories.ts`.
+ *   2. :L62 persists it, by resolving the product service BY NAME from the request-scoped framework
+ *      scope through the DI/1 container and invoking `saveProduct` on the result.
+ *      -> NOT PORTED. That is a string-keyed runtime service lookup, exactly the dynamic
+ *      service-locator idiom this migration replaces with explicit constructor injection, so it must
+ *      not be reproduced in any form; the call is described by locator rather than transcribed so
+ *      that not even a copy of it survives here. Persistence is the caller's concern, supplied
+ *      through the teardown callbacks below.
  *
- *   3. `L64` flushes the ORM session and `L66` returns the persisted entity.
- *      → NOT PORTED. See the mismatch note immediately below.
+ *   3. :L64 flushes the ORM session and :L66 returns the persisted entity.
+ *      -> NOT PORTED. See the mismatch note immediately below.
  *
- * ★ EXECUTION-MODEL MISMATCH M5 — FLAGGED, NOT SILENTLY DROPPED. The `ormFlush()` calls at
- * `L64`, and again in the teardown member at `L74`, depend on the legacy request lifecycle:
- * the application commits implicitly at request end, gated on the ORM reporting no errors.
- * A stateless handler has no request-end hook, so there is no equivalent call to make here.
- * The commit boundary now belongs to `src/adapters/mysql/UnitOfWork.ts`, which makes it
- * explicit per invocation. The omission is recorded rather than passed over, because a reader
- * diffing this file against `Helper.cfc` would otherwise find two missing calls and no
+ * EXECUTION-MODEL MISMATCH M5 — FLAGGED, NOT SILENTLY DROPPED. The `ormFlush()` calls at :L64, and
+ * again in the teardown member at :L74, depend on the legacy request lifecycle: the application
+ * commits implicitly at request end, gated on the ORM reporting no errors. A stateless handler has no
+ * request-end hook, so there is no equivalent call to make here. The commit boundary belongs to
+ * src/adapters/mysql/UnitOfWork.ts, which makes it explicit per invocation. The omission is recorded
+ * because a reader diffing this file against Helper.cfc would otherwise find two missing calls and no
  * explanation.
  *
- * Consequence: this module is PURE. It builds and returns data. It touches no database, no
- * connection pool, no repository, no service, no filesystem, no network, no clock and no
- * environment variable, and importing it produces no observable effect. That purity is what
- * makes it trivially importable from every suite under `test/`.
+ * Consequence: this module is PURE. It builds and returns data, touching no database, connection
+ * pool, repository, service, filesystem, network, clock or environment variable, so importing it
+ * produces no observable effect. That purity is what makes it trivially importable from every suite.
  *
- * ---------------------------------------------------------------------------------------
- * TODO(parity) — DEFECT D17: THE UNSCOPED `productData` ASSIGNMENT CANNOT BE REPRODUCED
- * ---------------------------------------------------------------------------------------
- * Legacy locator, verified against the file itself: `meta/tests/unit/Helper.cfc:L53`, which
- * reads `productData = {` — an assignment carrying no `var` and no scope prefix. In CFML that
- * leaks the variable into the component's shared `variables` scope, so concurrent callers of
- * `getTestMerchandiseProduct()` would contend over one struct. It is the same defect class as
- * the unscoped loop variables at `model/service/ProductService.cfc:L73` and `:L75` and the
- * instance at `model/service/OptionService.cfc:L58`. The neighbouring legacy fixture at
- * `meta/tests/unit/IssuesTest.cfc:L55` repeats it.
+ * TODO(parity) D17 — THE UNSCOPED `productData` ASSIGNMENT CANNOT BE REPRODUCED
+ * ----------------------------------------------------------------------------
+ * meta/tests/unit/Helper.cfc:L53 reads `productData = {` — an assignment carrying no `var` and no
+ * scope prefix. In CFML that leaks the variable into the component's shared `variables` scope, so
+ * concurrent callers of `getTestMerchandiseProduct()` would contend over one struct. It is the same
+ * defect class as the unscoped loop variables at model/service/ProductService.cfc:L73 and :L75 and the
+ * instance at model/service/OptionService.cfc:L58, and meta/tests/unit/IssuesTest.cfc:L55 repeats it.
  *
- * ★ LOCATOR CORRECTION. The project defect register records D17 at `Helper.cfc:L52`, and that
- * is off by one. `L52` is `var product = entityNew("SlatwallProduct");`, which IS correctly
- * `var`-scoped; the unscoped assignment is the NEXT line, `L53`. Both locators are named here
- * deliberately: a reviewer following the register alone would open `L52`, find properly
- * scoped code, and lose the evidence chain.
+ * LOCATOR CORRECTION. The defect register records D17 at Helper.cfc:L52, which is off by one: :L52 is
+ * `var product = entityNew("SlatwallProduct");`, correctly `var`-scoped, and the unscoped assignment
+ * is the next line. Both locators are named deliberately, because a reader following the register
+ * alone would open :L52, find properly scoped code, and lose the evidence chain.
  *
- * DELIBERATE TRANSLATION DECISION. The governing standard is preserve-and-annotate rather
- * than repair — but this defect has no TypeScript expression. The language has no unscoped
- * assignment, and `const`/`let` are block-scoped, so the hazard is removed BY CONSTRUCTION
- * the instant the code is translated; there is no faithful way to carry the behaviour across.
- * This annotation is what preserves the record in its place, which is the same treatment
- * given to D10 and to the option-service instance. Nothing here is silently improved.
+ * The standard is preserve-and-annotate rather than repair, but this defect has no TypeScript
+ * expression: the language has no unscoped assignment and `const`/`let` are block-scoped, so the
+ * hazard is removed by construction the instant the code is translated. This annotation is what
+ * preserves the record in its place, the same treatment given to D10.
  *
- * ---------------------------------------------------------------------------------------
  * THE TWO DETAILS MOST EASILY GOT WRONG
- * ---------------------------------------------------------------------------------------
- *   - `price` is a NUMBER, never a string. `Helper.cfc:L55` reads `price = 100`, unquoted.
+ * ------------------------------------
+ *   - `price` is a NUMBER, never a string. Helper.cfc:L55 reads `price = 100`, unquoted.
  *   - `productType` is a NESTED object whose only key is `productTypeID`, never a flat
- *     `productTypeID` field hoisted onto the product. `Helper.cfc:L57-L59`.
+ *     `productTypeID` field hoisted onto the product (Helper.cfc:L57-L59).
  *
- * Both are corroborated by the declarative validation contract in
- * `model/validation/Product.json`, which the ported rule set carries: `price` is declared
- * `{"contexts":"save","required":true,"dataType":"numeric"}` and `productType` is declared
- * `{"contexts":"save","required":true}`. Quoting the price or flattening the product type
- * would misrepresent what the validation layer receives, with no compile error to catch it.
+ * Both are corroborated by model/validation/Product.json, which the ported rule set carries: `price`
+ * is declared `{"contexts":"save","required":true,"dataType":"numeric"}` and `productType` is declared
+ * `{"contexts":"save","required":true}`. Quoting the price or flattening the product type would
+ * misrepresent what the validation layer receives, with no compile error to catch it.
  */
 
 /*
@@ -333,28 +305,25 @@ export interface TestMerchandiseProductTeardownOperations {
 
 /**
  * Run the fixture teardown in the mandated order — the ported half of
- * `destroyTestMerchandiseProduct()` (`meta/tests/unit/Helper.cfc:L69-L75`).
+ * `destroyTestMerchandiseProduct()` (meta/tests/unit/Helper.cfc:L69-L75).
  *
- * ★ THE ORDERING IS BEHAVIOUR, NOT STYLE, AND IT IS THE WHOLE REASON THIS FUNCTION EXISTS.
- * The legacy member clears the default-SKU reference at `L70` BEFORE deleting the product at
- * `L72`, because `model/validation/Sku.json` declares a delete guard on the default flag —
- * `"defaultFlag": [{"contexts":"delete","eq":false}]` — so a SKU that is still its product's
- * default cannot be deleted. Reversing the two steps trips that guard and the teardown fails.
- * Preserving the sequence is therefore preserving observable behaviour, and this function
- * enforces it rather than merely documenting it.
+ * THE ORDERING IS BEHAVIOUR, NOT STYLE, AND IT IS THE WHOLE REASON THIS FUNCTION EXISTS. The legacy
+ * member clears the default-SKU reference at :L70 BEFORE deleting the product at :L72, because
+ * model/validation/Sku.json declares a delete guard on the default flag —
+ * `"defaultFlag": [{"contexts":"delete","eq":false}]` — so a SKU that is still its product's default
+ * cannot be deleted. Reversing the two steps trips that guard and the teardown fails, so this
+ * function enforces the sequence rather than merely documenting it.
  *
- * WHY IT TAKES CALLBACKS INSTEAD OF A PRODUCT. This module is pure and owns no persistence, so
- * it cannot delete anything itself, and inventing a persistence mechanism purely to have
- * something to tear down would fabricate behaviour the legacy fixture never had. The caller
- * supplies the two operations — normally closing over the in-memory repository doubles in
- * `test/support/inMemoryRepositories.ts` — and this function guarantees the order in which they
- * run. It performs no I/O of its own.
+ * WHY IT TAKES CALLBACKS INSTEAD OF A PRODUCT. This module is pure and owns no persistence, so it
+ * cannot delete anything itself, and inventing a persistence mechanism purely to have something to
+ * tear down would fabricate behaviour the legacy fixture never had. The caller supplies the two
+ * operations — typically closures over whatever repository doubles that suite constructs — and this
+ * function guarantees the order in which they run. It performs no I/O of its own.
  *
- * NO FLUSH, AND NO RESET FUNCTION. The `ormFlush()` at `L74` is not carried, per mismatch M5 in
- * the header. Nor is there a companion "reset the fixture" helper: this module holds no
- * module-scope mutable state to reset, because {@link createTestMerchandiseProductData} builds
- * a fresh frozen value on every call. An exported no-op reset would be a placeholder pretending
- * to be an API, so none is offered.
+ * NO FLUSH, AND NO RESET FUNCTION. The `ormFlush()` at :L74 is not carried, per mismatch M5 in the
+ * header. Nor is there a companion reset helper: this module holds no module-scope mutable state to
+ * reset, because {@link createTestMerchandiseProductData} builds a fresh frozen value on every call,
+ * and an exported no-op reset would be a placeholder pretending to be an API.
  *
  * @param operations the caller's two teardown operations.
  *

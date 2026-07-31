@@ -3,47 +3,55 @@
  * Google product-feed controller depend on.
  *
  * Legacy origin:
- *   org/Hibachi/HibachiSmartList.cfc — 1,090 lines of framework code implementing dynamic paginated
- *     HQL composition. Per AAP §0.8.3.2 the `org/Hibachi/**` tree is "a boundary to extract from,
- *     never modify": its CONTRACT is read here and NOT ONE LINE of its implementation is carried
- *     over. Every declaration this file mirrors is cited by line so the mapping is checkable.
+ *   org/Hibachi/HibachiSmartList.cfc — the framework's dynamic paginated HQL composition. Per AAP
+ *     §0.8.3.2 the `org/Hibachi/**` tree is "a boundary to extract from, never modify": its CONTRACT
+ *     is read here and none of its implementation is carried over. Every declaration this file
+ *     mirrors is cited by line so the mapping is checkable.
  *   model/service/ProductService.cfc:L342 — `getProductSmartList`, consumer 1.
  *   model/service/SkuService.cfc:L309 — `getSkuSmartList`, consumer 2.
  *   integrationServices/google/controllers/feed.cfc:L58 — `product(rc)`, consumer 3.
  *   model/entity/Product.cfc:L251-L261 and model/entity/Product.cfc:L340-L347 — the two
  *     runtime-synthesized SmartList call sites (IR-1).
  *   org/Hibachi/HibachiService.cfc:L255 — `onMissingMethod`, which fabricated the `get*SmartList`
- *     members by prefix and is the reason they must now be declared explicitly (IR-1).
+ *     members by prefix and is why they must now be declared explicitly (IR-1).
  *
  * WHY THIS IS A BOUNDARY PORT RATHER THAN SOMETHING THE FEED RESOLVES ITSELF. The feed's
  * availability gate is `addRange('product.calculatedQATS','1^')` at
- * integrationServices/google/controllers/feed.cfc:L72. AAP §0.6.4.1 states that this filter "reads
- * a calculated inventory property, which is why `SmartListQueryPort` is one of the seven boundary
- * ports rather than something the feed can resolve itself." Inventory is excluded from the slice —
- * `Inventory*` (3 files) and `Stock*` (11 files) per AAP §0.2.2.1 — so the port is what lets the
- * feed express that gate without converting the inventory subsystem (TR-5). It is also the
- * mechanism behind AAP §0.8.3.8 strangler-fig independence: "new TypeScript services must be
- * callable and deployable without requiring the rest of Slatwall to be converted."
+ * integrationServices/google/controllers/feed.cfc:L72, which reads a calculated inventory property
+ * (AAP §0.6.4.1). Inventory and stock are excluded from the slice (AAP §0.2.2.1), so the port is
+ * what lets the feed express that gate without converting the inventory subsystem (TR-5). It is also
+ * the mechanism behind AAP §0.8.3.8 strangler-fig independence.
  *
  * THIS FILE IS THE SHARED TYPE HOME FOR src/ports/. `SmartListInput` and `SmartListResult<T>` are
  * named in four AAP-declared service signatures (§0.4.2.1 `getProductSmartList`, §0.4.2.2
  * `getSkuSmartList`, §0.4.2.5 `getOptionSmartList` and `getOptionGroupSmartList`), and they are
- * defined HERE because AAP §0.4.3.5 forbids module path aliases and a barrel, and the folder
- * inventory of AAP §0.4.1.6 admits no `types.ts`, `common.ts` or `index.ts`. The two export names
- * are therefore a contract, not a preference: renaming either one breaks those four signatures.
+ * defined HERE because AAP §0.4.3.5 forbids path aliases and a barrel and the folder inventory of
+ * AAP §0.4.1.6 admits no shared types module. The two export names are therefore a contract, not a
+ * preference: renaming either breaks those four signatures.
  *
  * LAYER POSITION. This is a port, so it sits beneath `domain`, `adapters`, `services`, `handlers`,
  * `integrations`, `validation` and `config` (AAP §0.7.3 standard 4). It imports NOTHING — not a
  * package, not a Node builtin, not a sibling module. `SmartListResult<T>` is generic precisely so
  * no domain entity has to be imported; if an import ever appears here, the generic parameter is
  * being bypassed. `src/adapters/mysql/SmartListQueryBuilder.ts` IMPLEMENTS this interface, so
- * importing it would invert the dependency. Consumers should import these declarations with `import
- * type` so the reference is erased at compile time and this module contributes zero runtime bytes.
+ * importing it would invert the dependency.
  *
- * NO USER-SPECIFIED RULES GOVERN THIS FILE. `review_rules` returns one line of text, and that line
- * reads, verbatim: "No user rules provided." The same line comes back for the default window and
- * for an explicit full-document read alike, and no ancillary rule-bearing file exists anywhere in
- * the repository (AAP §0.7.1). Per UR4 that is not permission to lower the bar: the nine binding
+ * ALMOST EVERYTHING HERE IS A DECLARATION, WITH ONE DELIBERATE EXCEPTION. Every type and interface
+ * below is erased at compile time, so a consumer that needs only shapes should still say `import
+ * type` and pay nothing. The exception is the shared range translator — {@link
+ * translateSmartListRange} and {@link SMART_LIST_RANGE_DELIMITER} — which is real, emitted code and
+ * must be imported as a value. It is here rather than in a service or a utility module because the
+ * legacy `addRange` was a method on the SmartList itself, so its acceptance and emission rules belong
+ * to this abstraction and to no single caller; the reasoning, the exhaustive legacy call-site census
+ * and the one flagged approximation are recorded at its declaration. It takes no import, so the
+ * "imports NOTHING" invariant above is unaffected, and the module's contribution to any bundle is one
+ * pure function over two string parameters.
+ *
+ * NO USER-SPECIFIED RULES GOVERN THIS FILE. AAP §0.7.1 records that verdict, and no ancillary
+ * rule-bearing file exists anywhere in the repository. The rules tool's own output is deliberately
+ * not transcribed here: AAP §0.7.5 makes the rules document the authority and directs a reader to
+ * page through it rather than trust an in-source summary, which can go stale against it.
+ * Per UR4 that is not permission to lower the bar: the nine binding
  * standards of AAP §0.7.3 govern instead, and the ones this file turns on are standard 1 (strict
  * type safety), standard 2 (parameterized SQL — see the omission record below), standard 3
  * (explicit dependency injection, named exports), standard 4 (hexagonal separation), standard 6 (a
@@ -106,7 +114,7 @@
 /* ================================================================================================
  * OMISSION RECORD — AAP §0.7.3 standard 8 ("flag mismatches rather than assume them away").
  *
- * ⛔ THE RAW-CONDITION MEMBER AT org/Hibachi/HibachiSmartList.cfc:L358 IS DELIBERATELY ABSENT.
+ * THE RAW-CONDITION MEMBER AT org/Hibachi/HibachiSmartList.cfc:L358 IS DELIBERATELY ABSENT.
  *   That member takes a query-language fragment as a string, appends it verbatim to a list at
  *   org/Hibachi/HibachiSmartList.cfc:L359, and the fragment is later spliced straight into the
  *   emitted statement at org/Hibachi/HibachiSmartList.cfc:L706. It is flatly incompatible with AAP
@@ -132,7 +140,7 @@
  *   interface through which a caller can supply a fragment of a query, however it might be
  *   labelled.
  *
- * ⛔ Also deliberately absent, each with its reason:
+ * Also deliberately absent, each with its reason:
  *   - The query-cache surface, `getCacheName()` at org/Hibachi/HibachiSmartList.cfc:L1081 and the
  *     cacheable flag it reads. Caching under a warm container is an adapter decision, and no cache
  *     lifetime is invented here (AAP §0.7.3 standard 9).
@@ -161,6 +169,21 @@
  *     IR-12. The only figures stated below are source-declared values carrying their locators.
  * ============================================================================================== */
 
+import type { OptionPropertyName } from '../domain/option/Option';
+import type { OptionGroupPropertyName } from '../domain/option/OptionGroup';
+import type { BrandPropertyName } from '../domain/product/Brand';
+import type { ProductPropertyName } from '../domain/product/Product';
+import type { ProductTypePropertyName } from '../domain/product/ProductType';
+import type { SkuPropertyName } from '../domain/sku/Sku';
+
+/**
+ * The sub-entity path delimiter, declared at org/Hibachi/HibachiSmartList.cfc:L32.
+ *
+ * A literal `'.'`, held as a named constant so the one place that splits a path and the prose that
+ * cites its locator cannot drift apart.
+ */
+const SMARTLIST_SUB_ENTITY_DELIMITER = '.';
+
 /**
  * A logical property path, exactly as the legacy members accept it.
  *
@@ -187,8 +210,542 @@
  * with the entry missing instead of an error. Carried, not repaired: the adapter must drop the
  * entry, and this interface deliberately provides no channel through which it could report having
  * done so.
+ *
+ * ==============================================================================================
+ * ⭐ DECISION S-1 — THIS TYPE IS CLOSED, AND THE PREVIOUS `string` WAS A CONTRACT DEFECT (SEC-09)
+ * ==============================================================================================
+ * This alias was `string`. The prose above already obliged the adapter to "resolve these paths from
+ * a validated whitelist and never by interpolation" — but prose is not a contract, and the type
+ * admitted every string there is. A caller-supplied smart-list key reaches this field verbatim:
+ * `applyInputEntry` in both consuming services copies the suffix of an `F:` / `FI:` / `FK:` / `R:`
+ * key straight into `propertyIdentifier`, so a request bearing `F:skuID) OR 1=1 --` produced a
+ * {@link SmartListFilter} whose identifier was exactly `skuID) OR 1=1 --`, and nothing between the
+ * request and the adapter's identifier position was type-obliged to stop it. Because a `?`
+ * placeholder binds values only and can never substitute an identifier (AAP transformation rule
+ * TR-4 / import rule R4), the adapter has no parameterised escape available for this field. The
+ * whitelist therefore has to exist ABOVE the adapter, in the contract, which is what follows.
+ *
+ * ⭐ THE CLOSURE IS ALSO THE MORE FAITHFUL PORT, WHICH IS WHY IT IS NOT A BEHAVIOUR CHANGE. Read the
+ * `TODO(parity)` note above again: the legacy resolves every path through `getAliasedProperty` at
+ * org/Hibachi/HibachiSmartList.cfc:L308 and SILENTLY DISCARDS anything that does not resolve to a
+ * real property of a real entity. `skuID) OR 1=1 --` is not a property of `SlatwallSku`, so the
+ * legacy dropped it. The open `string` was the divergence: it accumulated entries CFML would have
+ * thrown away. Closing the type and discarding unresolvable paths restores the legacy behaviour
+ * exactly, and closes the injection contract as a consequence rather than as a trade.
+ *
+ * ⭐ WHY BOTH A LITERAL UNION AND A BRANDED RESOLUTION. Two kinds of caller exist and they need
+ * different guarantees:
+ *   - Hard-coded identifiers, such as the five keyword properties at
+ *     model/service/SkuService.cfc:L317-L321. These are literals known at compile time, so they get
+ *     {@link SmartListPropertyPath} — a real union, in which a typo is a build error.
+ *   - Caller-supplied identifiers arriving as request keys. No type can know at compile time that a
+ *     runtime string is a member of a union, so these go through
+ *     {@link resolveSmartListPropertyIdentifier}, the ONLY function that can mint a
+ *     {@link ResolvedSmartListProperty}. It validates against {@link SMARTLIST_ENTITY_SCHEMA} and
+ *     returns `undefined` for anything unresolvable, which the consumer then drops.
+ * Every inhabitant of this type is therefore either compile-verified or runtime-verified. There is
+ * no third way to obtain one, and an arbitrary `string` is not assignable to it.
+ *
+ * ⭐ THE DEPTH ASYMMETRY IS DELIBERATE AND IS NOT A BOUND ON BEHAVIOUR. The literal union is
+ * generated to {@link SMARTLIST_MAX_TYPED_PATH_SEGMENTS} segments, which is the longest path the
+ * slice actually writes — `options.skus.product.productID` at model/entity/Product.cfc:L256, four
+ * segments, the three-hop case AAP §0.4.1.6 records. The RUNTIME resolver walks the schema with NO
+ * depth limit at all, so a longer caller-supplied path is still resolved on its merits. No maximum
+ * join depth is declared anywhere here, per AAP §0.7.3 standard 9 and IR-12; the type's depth is a
+ * compile-time convenience for literals, not a policy number, and nothing observable turns on it.
  */
-export type SmartListPropertyIdentifier = string;
+export type SmartListPropertyIdentifier<TEntity extends SmartListEntityName = SmartListEntityName> =
+  SmartListPropertyPath<TEntity> | ResolvedSmartListProperty<TEntity>;
+
+/* ==============================================================================================
+ * SEC-09 — THE ENTITY SCHEMA THE CLOSED IDENTIFIERS ARE DERIVED FROM
+ *
+ * ⛔ NOTHING IN THIS BLOCK IS INVENTED. Every own-property name is the corresponding
+ * `…PropertyName` union already declared in `../domain/**`, which each entity file derived from its
+ * legacy `property name=` declarations; the arrays below are checked against those unions in BOTH
+ * directions by the assertions that follow, so a domain union gaining or losing a member breaks this
+ * build rather than silently widening or narrowing the whitelist. `SlatwallAlternateSkuCode` is the
+ * one entity with no domain module of its own, and its four names are read directly from
+ * model/entity/AlternateSkuCode.cfc:L52-L57.
+ *
+ * ⚠️ THIS PORT NOW HAS A RUNTIME FOOTPRINT, where before it was types only. That is a real change
+ * and it is deliberate: the whitelist has to be one declaration, and the resolver that consults it
+ * has to run. Splitting the schema into a new module would have kept this file type-only at the cost
+ * of a file AAP §0.4.1.6 does not enumerate, and the port is the contract's owner in any case.
+ *
+ * ⚠️ THE TRAVERSAL BOUNDARY IS EXACTLY THE AAP SCOPE BOUNDARY, and that is a narrowing worth stating
+ * plainly rather than leaving to be discovered. Relationships to entities AAP §0.2.2.1 excludes —
+ * `subscriptionTerm`, `attributeValues`, `stocks`, `orderItems`, `skuCurrencies`, `accessContents`,
+ * every `promotion*` and `priceGroup*` member, `categories`, `listingPages`, `productImages`,
+ * `productReviews`, `vendors`, `physicals`, `attributeSets` — appear in the own-property arrays, so a
+ * filter ON the relationship itself resolves, but they are NOT keys of
+ * {@link SmartListEntityRelationships}, so a path THROUGH one does not. The legacy would have
+ * resolved such a path. Enumerating those entities' property surfaces is precisely the scope creep
+ * AAP §0.2.2.6 warns against, so the path is discarded instead — through the legacy's own
+ * discard-the-unresolvable mechanism, applied at the scope boundary. Declining on explicit AAP
+ * exclusion grounds is the one permitted reason to leave a gap, and this is that case.
+ * ============================================================================================== */
+
+/**
+ * The ORM logical entity names this port's identifiers may be rooted at or traverse.
+ *
+ * Six are the in-scope entities of AAP §0.2.1.2. The seventh, `SlatwallAlternateSkuCode`, is here on
+ * evidence rather than by choice: model/service/SkuService.cfc:L321 registers the keyword property
+ * `alternateSkuCodes.alternateSkuCode` and model/service/SkuService.cfc:L316 left-joins the
+ * relationship, so the slice genuinely traverses it and a schema omitting it could not type the
+ * port's own consumers. Its property surface is small and fully enumerated from source, so admitting
+ * it costs nothing and invents nothing.
+ *
+ * See Q3 on {@link SmartListJoin} for why the `Slatwall`-prefixed logical names are correct here and
+ * must not be rewritten to physical `Sw*` table names.
+ */
+export type SmartListEntityName =
+  | 'SlatwallSku'
+  | 'SlatwallProduct'
+  | 'SlatwallProductType'
+  | 'SlatwallBrand'
+  | 'SlatwallOption'
+  | 'SlatwallOptionGroup'
+  | 'SlatwallAlternateSkuCode';
+
+/**
+ * Each entity's own filterable property names, keyed by logical entity name.
+ *
+ * These are the type-level statement of the whitelist; {@link SMARTLIST_ENTITY_SCHEMA} is the
+ * runtime statement of the same thing, and the two are proved equal below.
+ */
+export interface SmartListEntityOwnProperty {
+  SlatwallSku: SkuPropertyName;
+  SlatwallProduct: ProductPropertyName;
+  SlatwallProductType: ProductTypePropertyName;
+  SlatwallBrand: BrandPropertyName;
+  SlatwallOption: OptionPropertyName;
+  SlatwallOptionGroup: OptionGroupPropertyName;
+  SlatwallAlternateSkuCode: AlternateSkuCodePropertyName;
+}
+
+/**
+ * `SlatwallAlternateSkuCode`'s property surface, read from model/entity/AlternateSkuCode.cfc:L52-L57.
+ *
+ * The four audit properties at model/entity/AlternateSkuCode.cfc:L60-L63 are omitted for the same
+ * reason every other entity's are: they carry `hb_populateEnabled="false"` and no in-scope caller
+ * filters on them. `alternateSkuCodeType` is retained as a filterable property but is NOT a
+ * traversable relationship, because `Type` is not an in-scope entity.
+ */
+export type AlternateSkuCodePropertyName =
+  'alternateSkuCodeID' | 'alternateSkuCode' | 'alternateSkuCodeType' | 'sku';
+
+/**
+ * Each entity's TRAVERSABLE relationships, mapping the relationship property to the entity it
+ * reaches.
+ *
+ * Read from the legacy `fieldtype="many-to-one"` and `fieldtype="one-to-many"` declarations of the
+ * six in-scope entity files plus model/entity/AlternateSkuCode.cfc:L57. Only relationships whose
+ * TARGET is itself in {@link SmartListEntityName} appear — see the traversal-boundary note above.
+ *
+ * Every path the slice writes is spanned by this map:
+ *   - `product.productName`, `product.productType.productTypeName` — model/service/SkuService.cfc:L317
+ *   - `alternateSkuCodes.alternateSkuCode` — model/service/SkuService.cfc:L321
+ *   - `product.activeFlag`, `product.publishedFlag`, `product.calculatedQATS` —
+ *     integrationServices/google/controllers/feed.cfc:L68-L72
+ *   - `optionGroup.optionGroupID`, `skus.product.productID` — model/entity/Product.cfc:L343-L344
+ *   - `options.skus.product.productID` — model/entity/Product.cfc:L256
+ *   - `brand.brandName` — model/service/ProductService.cfc:L352
+ */
+export interface SmartListEntityRelationships {
+  SlatwallSku: {
+    product: 'SlatwallProduct';
+    options: 'SlatwallOption';
+    alternateSkuCodes: 'SlatwallAlternateSkuCode';
+  };
+  SlatwallProduct: {
+    brand: 'SlatwallBrand';
+    productType: 'SlatwallProductType';
+    defaultSku: 'SlatwallSku';
+    skus: 'SlatwallSku';
+  };
+  SlatwallProductType: {
+    parentProductType: 'SlatwallProductType';
+    childProductTypes: 'SlatwallProductType';
+    products: 'SlatwallProduct';
+  };
+  SlatwallBrand: { products: 'SlatwallProduct' };
+  SlatwallOption: { optionGroup: 'SlatwallOptionGroup'; skus: 'SlatwallSku' };
+  SlatwallOptionGroup: { options: 'SlatwallOption' };
+  SlatwallAlternateSkuCode: { sku: 'SlatwallSku' };
+}
+
+/**
+ * The number of dot-separated segments the LITERAL path union is generated to.
+ *
+ * Four, because `options.skus.product.productID` at model/entity/Product.cfc:L256 is the longest
+ * path the slice writes and AAP §0.4.1.6 records three hops as the observed maximum. This governs
+ * the compile-time union only — {@link resolveSmartListPropertyIdentifier} imposes no depth limit,
+ * so it is not a policy number and nothing observable depends on it (AAP §0.7.3 standard 9).
+ */
+export type SMARTLIST_MAX_TYPED_PATH_SEGMENTS = 4;
+
+/** Recursion budget for {@link SmartListPropertyPathToDepth}; index `n` yields `n - 1`. */
+type SmartListPathDepth = 0 | 1 | 2 | 3 | 4;
+type SmartListDepthPredecessor = [never, 0, 1, 2, 3];
+
+/**
+ * Every legal property path on `TEntity`, generated to `TDepth` segments.
+ *
+ * `TEntity` appears as a naked type parameter in the conditional so the type DISTRIBUTES over a
+ * union of entity names; without that, `keyof SmartListEntityRelationships[TEntity]` would collapse
+ * to the intersection of every entity's relationship keys, which is empty.
+ */
+type SmartListPropertyPathToDepth<
+  TEntity extends SmartListEntityName,
+  TDepth extends SmartListPathDepth,
+> = TEntity extends SmartListEntityName
+  ? TDepth extends 0
+    ? never
+    : | SmartListEntityOwnProperty[TEntity]
+      | {
+          [TRelationship in keyof SmartListEntityRelationships[TEntity]]: `${TRelationship &
+            string}.${SmartListPropertyPathToDepth<
+            SmartListEntityRelationships[TEntity][TRelationship] & SmartListEntityName,
+            SmartListDepthPredecessor[TDepth] & SmartListPathDepth
+          >}`;
+        }[keyof SmartListEntityRelationships[TEntity]]
+  : never;
+
+/**
+ * Every legal property path on `TEntity`, as a compile-time union.
+ *
+ * This is what a hard-coded identifier is checked against, so `'skuCode'` and
+ * `'product.productType.productTypeName'` are accepted while `'skuID) OR 1=1 --'` and any other
+ * fabricated string are build errors.
+ */
+export type SmartListPropertyPath<TEntity extends SmartListEntityName> =
+  SmartListPropertyPathToDepth<TEntity, SMARTLIST_MAX_TYPED_PATH_SEGMENTS>;
+
+declare const RESOLVED_SMARTLIST_PROPERTY: unique symbol;
+
+/**
+ * A property path that has been validated at runtime against {@link SMARTLIST_ENTITY_SCHEMA}.
+ *
+ * ⛔ THE BRAND IS UNFORGEABLE BY CONSTRUCTION. `RESOLVED_SMARTLIST_PROPERTY` is a module-private
+ * `unique symbol` that is declared and never exported, so no code outside this file can write an
+ * object literal bearing it and no `string` is assignable to this type. The only value of this type
+ * that can ever exist is one {@link resolveSmartListPropertyIdentifier} returned. That is the whole
+ * mechanism: a caller who wants to use request input as an identifier has no route to it except
+ * through validation.
+ */
+export type ResolvedSmartListProperty<TEntity extends SmartListEntityName> = string & {
+  readonly [RESOLVED_SMARTLIST_PROPERTY]: TEntity;
+};
+
+/** One entity's runtime whitelist: its own filterable names, and its traversable relationships. */
+interface SmartListEntitySchemaEntry {
+  readonly ownProperties: readonly string[];
+  readonly relationships: Readonly<Record<string, SmartListEntityName | undefined>>;
+}
+
+/**
+ * The runtime whitelist {@link resolveSmartListPropertyIdentifier} consults.
+ *
+ * Held as arrays rather than `Set`s because every list is short and membership is tested once per
+ * request key; a `Set` per entity would add allocation at module load for no measurable gain, and
+ * AAP §0.7.3 standard 9 forbids claiming a performance figure either way. Frozen so a consumer
+ * cannot extend the whitelist at runtime — which would defeat the entire mechanism.
+ */
+export const SMARTLIST_ENTITY_SCHEMA: Readonly<
+  Record<SmartListEntityName, SmartListEntitySchemaEntry>
+> = Object.freeze({
+  SlatwallSku: Object.freeze({
+    ownProperties: Object.freeze([
+      'skuID',
+      'activeFlag',
+      'skuCode',
+      'listPrice',
+      'price',
+      'renewalPrice',
+      'imageFile',
+      'userDefinedPriceFlag',
+      'calculatedQATS',
+      'product',
+      'subscriptionTerm',
+      'alternateSkuCodes',
+      'attributeValues',
+      'orderItems',
+      'skuCurrencies',
+      'stocks',
+      'options',
+      'accessContents',
+      'subscriptionBenefits',
+      'renewalSubscriptionBenefits',
+      'promotionRewards',
+      'promotionRewardExclusions',
+      'promotionQualifiers',
+      'promotionQualifierExclusions',
+      'priceGroupRates',
+      'physicals',
+      'remoteID',
+    ] as const satisfies readonly SkuPropertyName[]),
+    relationships: Object.freeze({
+      product: 'SlatwallProduct',
+      options: 'SlatwallOption',
+      alternateSkuCodes: 'SlatwallAlternateSkuCode',
+    } as const),
+  }),
+  SlatwallProduct: Object.freeze({
+    ownProperties: Object.freeze([
+      'productID',
+      'activeFlag',
+      'urlTitle',
+      'productName',
+      'productCode',
+      'productDescription',
+      'publishedFlag',
+      'sortOrder',
+      'calculatedSalePrice',
+      'calculatedQATS',
+      'calculatedAllowBackorderFlag',
+      'calculatedTitle',
+      'brand',
+      'productType',
+      'defaultSku',
+      'skus',
+      'productImages',
+      'attributeValues',
+      'productReviews',
+      'listingPages',
+      'categories',
+      'relatedProducts',
+      'promotionRewards',
+      'promotionRewardExclusions',
+      'promotionQualifiers',
+      'promotionQualifierExclusions',
+      'priceGroupRates',
+      'vendors',
+      'physicals',
+      'remoteID',
+    ] as const satisfies readonly ProductPropertyName[]),
+    relationships: Object.freeze({
+      brand: 'SlatwallBrand',
+      productType: 'SlatwallProductType',
+      defaultSku: 'SlatwallSku',
+      skus: 'SlatwallSku',
+    } as const),
+  }),
+  SlatwallProductType: Object.freeze({
+    ownProperties: Object.freeze([
+      'productTypeID',
+      'productTypeIDPath',
+      'activeFlag',
+      'publishedFlag',
+      'urlTitle',
+      'productTypeName',
+      'productTypeDescription',
+      'systemCode',
+      'parentProductType',
+      'childProductTypes',
+      'products',
+      'attributeValues',
+      'promotionRewards',
+      'promotionRewardExclusions',
+      'promotionQualifiers',
+      'promotionQualifierExclusions',
+      'priceGroupRates',
+      'priceGroupRateExclusions',
+      'attributeSets',
+      'physicals',
+      'remoteID',
+    ] as const satisfies readonly ProductTypePropertyName[]),
+    relationships: Object.freeze({
+      parentProductType: 'SlatwallProductType',
+      childProductTypes: 'SlatwallProductType',
+      products: 'SlatwallProduct',
+    } as const),
+  }),
+  SlatwallBrand: Object.freeze({
+    ownProperties: Object.freeze([
+      'brandID',
+      'activeFlag',
+      'publishedFlag',
+      'urlTitle',
+      'brandName',
+      'brandWebsite',
+      'attributeValues',
+      'products',
+      'promotionRewards',
+      'promotionRewardExclusions',
+      'promotionQualifiers',
+      'promotionQualifierExclusions',
+      'vendors',
+      'physicals',
+      'remoteID',
+    ] as const satisfies readonly BrandPropertyName[]),
+    relationships: Object.freeze({ products: 'SlatwallProduct' } as const),
+  }),
+  SlatwallOption: Object.freeze({
+    ownProperties: Object.freeze([
+      'optionID',
+      'optionCode',
+      'optionName',
+      'optionDescription',
+      'sortOrder',
+      'optionGroup',
+      'skus',
+      'remoteID',
+    ] as const satisfies readonly OptionPropertyName[]),
+    relationships: Object.freeze({
+      optionGroup: 'SlatwallOptionGroup',
+      skus: 'SlatwallSku',
+    } as const),
+  }),
+  SlatwallOptionGroup: Object.freeze({
+    ownProperties: Object.freeze([
+      'optionGroupID',
+      'optionGroupName',
+      'optionGroupCode',
+      'optionGroupImage',
+      'optionGroupDescription',
+      'imageGroupFlag',
+      'sortOrder',
+      'remoteID',
+      'options',
+    ] as const satisfies readonly OptionGroupPropertyName[]),
+    relationships: Object.freeze({ options: 'SlatwallOption' } as const),
+  }),
+  SlatwallAlternateSkuCode: Object.freeze({
+    ownProperties: Object.freeze([
+      'alternateSkuCodeID',
+      'alternateSkuCode',
+      'alternateSkuCodeType',
+      'sku',
+    ] as const satisfies readonly AlternateSkuCodePropertyName[]),
+    relationships: Object.freeze({ sku: 'SlatwallSku' } as const),
+  }),
+});
+
+/* ----------------------------------------------------------------------------------------------
+ * DRIFT GUARDS — the runtime whitelist and the type-level whitelist must state the SAME thing.
+ *
+ * The `satisfies` clauses above already prove every runtime name is a legal type-level name. These
+ * guards prove the CONVERSE: that no type-level name is missing from the runtime array. Without
+ * them, a domain union gaining a property would leave the whitelist quietly narrower than the type,
+ * and a hard-coded literal would compile while the resolver rejected the same string at runtime.
+ * Each alias resolves to `true` when the two agree and to `never` when they do not, so drift is a
+ * build error in this file rather than a runtime surprise in an adapter.
+ * ---------------------------------------------------------------------------------------------- */
+type SmartListWhitelistIsComplete<TDeclared extends string, TRuntime extends string> = [
+  TDeclared,
+] extends [TRuntime]
+  ? true
+  : never;
+
+type _SkuWhitelistComplete = SmartListWhitelistIsComplete<
+  SkuPropertyName,
+  (typeof SMARTLIST_ENTITY_SCHEMA)['SlatwallSku']['ownProperties'][number]
+>;
+type _ProductWhitelistComplete = SmartListWhitelistIsComplete<
+  ProductPropertyName,
+  (typeof SMARTLIST_ENTITY_SCHEMA)['SlatwallProduct']['ownProperties'][number]
+>;
+type _ProductTypeWhitelistComplete = SmartListWhitelistIsComplete<
+  ProductTypePropertyName,
+  (typeof SMARTLIST_ENTITY_SCHEMA)['SlatwallProductType']['ownProperties'][number]
+>;
+type _BrandWhitelistComplete = SmartListWhitelistIsComplete<
+  BrandPropertyName,
+  (typeof SMARTLIST_ENTITY_SCHEMA)['SlatwallBrand']['ownProperties'][number]
+>;
+type _OptionWhitelistComplete = SmartListWhitelistIsComplete<
+  OptionPropertyName,
+  (typeof SMARTLIST_ENTITY_SCHEMA)['SlatwallOption']['ownProperties'][number]
+>;
+type _OptionGroupWhitelistComplete = SmartListWhitelistIsComplete<
+  OptionGroupPropertyName,
+  (typeof SMARTLIST_ENTITY_SCHEMA)['SlatwallOptionGroup']['ownProperties'][number]
+>;
+type _AlternateSkuCodeWhitelistComplete = SmartListWhitelistIsComplete<
+  AlternateSkuCodePropertyName,
+  (typeof SMARTLIST_ENTITY_SCHEMA)['SlatwallAlternateSkuCode']['ownProperties'][number]
+>;
+
+/**
+ * Forces the seven drift guards to be evaluated. Each must be `true`; a `never` from any of them
+ * makes this declaration fail to compile.
+ */
+const SMARTLIST_WHITELIST_GUARDS: readonly [
+  _SkuWhitelistComplete,
+  _ProductWhitelistComplete,
+  _ProductTypeWhitelistComplete,
+  _BrandWhitelistComplete,
+  _OptionWhitelistComplete,
+  _OptionGroupWhitelistComplete,
+  _AlternateSkuCodeWhitelistComplete,
+] = [true, true, true, true, true, true, true];
+void SMARTLIST_WHITELIST_GUARDS;
+
+/**
+ * Resolves a caller-supplied property path against the declared whitelist, or reports that it does
+ * not resolve.
+ *
+ * This is the ONLY way to obtain a {@link ResolvedSmartListProperty}, and therefore the only way for
+ * request input to become a {@link SmartListPropertyIdentifier}. It is the runtime half of DECISION
+ * S-1; see that note for why closing this path restores legacy behaviour rather than changing it.
+ *
+ * The walk reproduces `getAliasedProperty` at org/Hibachi/HibachiSmartList.cfc:L308: each
+ * non-terminal segment must name a traversable relationship, moving the cursor to the entity it
+ * reaches, and the terminal segment must name one of THAT entity's own properties. The delimiter is
+ * the sub-entity delimiter declared at org/Hibachi/HibachiSmartList.cfc:L32.
+ *
+ * ⚠️ RETURNS `undefined` RATHER THAN THROWING, and that is the parity requirement, not a softer
+ * option. Every legacy accumulator wraps its append in a length test on the resolved property —
+ * filters at org/Hibachi/HibachiSmartList.cfc:L369, like filters at :L396, in filters at :L422,
+ * ranges at :L449, orders at :L480, keyword properties at :L487 — so an unresolvable path yields a
+ * query with the entry MISSING and no error anywhere. Raising here would convert a silently ignored
+ * request key into a failed request, which is a behaviour change in the opposite direction and is
+ * forbidden by AAP §0.8.2 Guideline 2. The caller drops the entry; nothing is reported.
+ *
+ * ⛔ NO DEPTH LIMIT. The loop runs to the end of whatever path it is given, so nothing about a
+ * caller's path length is decided here (AAP §0.7.3 standard 9). Termination is guaranteed by the
+ * segment count, which is finite for any string.
+ *
+ * @param entityName - The entity the path is rooted at.
+ * @param candidate - The raw path, as supplied. Never mutated, trimmed or rewritten: this function
+ * decides membership and nothing else, so the value the adapter receives is the value that was
+ * validated.
+ * @returns The same string, branded as resolved, or `undefined` when any segment fails to resolve.
+ */
+export function resolveSmartListPropertyIdentifier<TEntity extends SmartListEntityName>(
+  entityName: TEntity,
+  candidate: string,
+): SmartListPropertyIdentifier<TEntity> | undefined {
+  const segments = candidate.split(SMARTLIST_SUB_ENTITY_DELIMITER);
+  let cursor: SmartListEntityName = entityName;
+
+  for (let index = 0; index < segments.length; index++) {
+    const segment = segments[index];
+    // A leading, trailing or doubled delimiter yields an empty segment, which names nothing.
+    if (segment === undefined || segment.length === 0) {
+      return undefined;
+    }
+
+    const schema = SMARTLIST_ENTITY_SCHEMA[cursor];
+
+    if (index === segments.length - 1) {
+      return schema.ownProperties.includes(segment)
+        ? (candidate as ResolvedSmartListProperty<TEntity>)
+        : undefined;
+    }
+
+    const nextEntityName = schema.relationships[segment];
+    if (nextEntityName === undefined) {
+      return undefined;
+    }
+    cursor = nextEntityName;
+  }
+
+  // Unreachable for any string: `split` always yields at least one segment, and the loop returns on
+  // the last one. Present because `noImplicitReturns` requires every path to produce a value.
+  return undefined;
+}
 
 /**
  * A value supplied to a filter.
@@ -219,7 +776,7 @@ export type SmartListFilterValue = string | number | boolean;
 /**
  * How a related-property join is performed.
  *
- * ⭐ Q2 — THE DEFAULT IS THE EMPTY STRING, NOT AN INNER JOIN, AND THE DISTINCTION IS OBSERVABLE. The
+ * Q2 — THE DEFAULT IS THE EMPTY STRING, NOT AN INNER JOIN, AND THE DISTINCTION IS OBSERVABLE. The
  * legacy signature declares `string joinType=""` at org/Hibachi/HibachiSmartList.cfc:L212, and the
  * empty value is recorded only when non-empty at org/Hibachi/HibachiSmartList.cfc:L292-L293. What
  * makes the default load-bearing is what happens at emission time: an empty join type is coerced to
@@ -227,7 +784,7 @@ export type SmartListFilterValue = string | number | boolean;
  * org/Hibachi/HibachiSmartList.cfc:L549. An unspecified join and an explicitly left join therefore
  * emit the SAME clause in this codebase.
  *
- * ⛔ Normalising the default to an inner join would be a behavior change wearing a cleanup's
+ * Normalising the default to an inner join would be a behavior change wearing a cleanup's
  * clothes: it would convert every unspecified join in the slice into an inner join and silently
  * drop the rows a left join preserves. The empty member is kept in the union so the legacy default
  * is expressible explicitly, and the join's `joinType` member is optional so its ABSENCE also means
@@ -243,7 +800,7 @@ export type SmartListJoinType = '' | 'left';
 /**
  * One related-property join.
  *
- * ⭐⭐ Q1 — THE GRAMMAR IS THREE-PART: PARENT ENTITY, RELATED PROPERTY, OPTIONAL JOIN TYPE. It is not
+ * Q1 — THE GRAMMAR IS THREE-PART: PARENT ENTITY, RELATED PROPERTY, OPTIONAL JOIN TYPE. It is not
  * a flat dotted path, and consumer 2 is the proof. At model/service/SkuService.cfc:L314 the parent
  * is `SlatwallSku`; at the very next line, model/service/SkuService.cfc:L315, THE PARENT CHANGES to
  * `SlatwallProduct` so that the product's own product type is joined onto the entity introduced by
@@ -254,7 +811,7 @@ export type SmartListJoinType = '' | 'left';
  * naturally, and quietly fail to represent two of the three consumers — which is why the three
  * parts are modelled separately here.
  *
- * ⭐ Q3 — `SlatwallProduct` AND `SlatwallSku` ARE CORRECT AND MUST NOT BE RENAMED. They are the
+ * Q3 — `SlatwallProduct` AND `SlatwallSku` ARE CORRECT AND MUST NOT BE RENAMED. They are the
  * ORM's logical entity names, which is what this API consumes: the legacy resolves the base name
  * through the entity service at org/Hibachi/HibachiSmartList.cfc:L68 and writes it into the emitted
  * from-clause at org/Hibachi/HibachiSmartList.cfc:L533. The physical-versus-logical name divergence
@@ -262,7 +819,7 @@ export type SmartListJoinType = '' | 'left';
  * access objects; rewriting these to the physical `SwProduct` / `SwSku` table names would break the
  * very API this port abstracts. The adapter maps logical names to physical tables internally.
  *
- * ⭐ Q4 — A REPEATED JOIN IS OBSERVABLE BEHAVIOR AND IS NOT DE-DUPLICATED HERE. Consumer 3 re-joins
+ * Q4 — A REPEATED JOIN IS OBSERVABLE BEHAVIOR AND IS NOT DE-DUPLICATED HERE. Consumer 3 re-joins
  * the product at integrationServices/google/controllers/feed.cfc:L64 even though consumer 2 has
  * already joined it at model/service/SkuService.cfc:L314, because the feed layers onto the smart
  * list returned by `getSkuSmartList()` at integrationServices/google/controllers/feed.cfc:L63.
@@ -273,28 +830,43 @@ export type SmartListJoinType = '' | 'left';
  * Join ORDER is significant and is carried by array position: the legacy tracks it separately in
  * the join-order array declared at org/Hibachi/HibachiSmartList.cfc:L9 and iterates it when
  * emitting the from-clause at org/Hibachi/HibachiSmartList.cfc:L536.
+ *
+ * ⭐ DECISION S-2 — A JOIN IS TWO IDENTIFIERS, AND THEY MUST BE PAIRED (SEC-09). Both fields were
+ * `string`. A related-property join emits a join clause naming an entity and a relationship, so both
+ * halves land in identifier positions that no `?` placeholder can protect (TR-4). Worse, typing them
+ * independently let a legal entity be paired with a relationship belonging to a DIFFERENT entity —
+ * `{ parentEntityName: 'SlatwallSku', relatedProperty: 'brandName' }` typechecked and described a
+ * join that cannot exist. This type is therefore a DISTRIBUTIVE UNION over
+ * {@link SmartListEntityName}: each member fixes the parent entity and admits only that entity's own
+ * traversable relationships, so the pairing is checked rather than merely the two names. It remains a
+ * plain data shape with no generic parameter, so {@link SmartListQuery.joins} is unchanged.
  */
-export interface SmartListJoin {
-  /**
-   * The already-present entity the join hangs off, as an ORM logical entity name —
-   * `SlatwallProduct` or `SlatwallSku` in this slice. First parameter at
-   * org/Hibachi/HibachiSmartList.cfc:L212.
-   */
-  readonly parentEntityName: string;
+export type SmartListJoin = {
+  [TParentEntityName in SmartListEntityName]: {
+    /**
+     * The already-present entity the join hangs off, as an ORM logical entity name —
+     * `SlatwallProduct` or `SlatwallSku` in this slice. First parameter at
+     * org/Hibachi/HibachiSmartList.cfc:L212.
+     */
+    readonly parentEntityName: TParentEntityName;
 
-  /**
-   * The relationship on the parent entity to join across — for example `productType`, `defaultSku`,
-   * `brand`, `product` or `alternateSkuCodes`. Second parameter at
-   * org/Hibachi/HibachiSmartList.cfc:L212.
-   */
-  readonly relatedProperty: string;
+    /**
+     * The relationship on THAT parent entity to join across — for example `productType`,
+     * `defaultSku`, `brand`, `product` or `alternateSkuCodes`. Second parameter at
+     * org/Hibachi/HibachiSmartList.cfc:L212. Drawn from
+     * {@link SmartListEntityRelationships}, so only relationships the parent actually declares are
+     * admitted, and only those whose target is itself in scope — see the traversal-boundary note on
+     * {@link SmartListEntityRelationships}.
+     */
+    readonly relatedProperty: keyof SmartListEntityRelationships[TParentEntityName] & string;
 
-  /**
-   * How to join. ABSENT means the empty-string default of org/Hibachi/HibachiSmartList.cfc:L212,
-   * which the emitter resolves to a left join at org/Hibachi/HibachiSmartList.cfc:L539-L541.
-   */
-  readonly joinType?: SmartListJoinType;
-}
+    /**
+     * How to join. ABSENT means the empty-string default of org/Hibachi/HibachiSmartList.cfc:L212,
+     * which the emitter resolves to a left join at org/Hibachi/HibachiSmartList.cfc:L539-L541.
+     */
+    readonly joinType?: SmartListJoinType;
+  };
+}[SmartListEntityName];
 
 /**
  * One equality, like or in filter, depending on which collection of a where group it appears in.
@@ -306,20 +878,27 @@ export interface SmartListJoin {
  * not from a distinguishing field, so `SmartListWhereGroup` gives each its own member rather than
  * this type carrying a discriminator the legacy does not have.
  */
-export interface SmartListFilter {
+export interface SmartListFilter<TEntity extends SmartListEntityName = SmartListEntityName> {
   /**
    * The logical property path to test. First parameter at org/Hibachi/HibachiSmartList.cfc:L362.
+   *
+   * ⭐ SEC-09 — ENTITY-SCOPED. `TEntity` defaults to the whole {@link SmartListEntityName} union so
+   * that a caller with no particular root still gets a CLOSED identifier; supplying the root — as
+   * both consuming services do — narrows it further, to that entity's paths alone. The default and
+   * the narrowed form differ in a way worth stating: under the default, `brandName` is accepted
+   * because it is a legal path on SOME entity, whereas `SmartListFilter<'SlatwallSku'>` rejects it.
+   * Neither form admits an arbitrary string, so the injection contract is closed either way; the
+   * parameter is what makes it entity-specific, which is what the finding asked for.
    */
-  readonly propertyIdentifier: SmartListPropertyIdentifier;
+  readonly propertyIdentifier: SmartListPropertyIdentifier<TEntity>;
 
-  /** The value to test against. Second parameter at org/Hibachi/HibachiSmartList.cfc:L362. */
   readonly value: SmartListFilterValue;
 }
 
 /**
  * One range filter, with each bound independently optional.
  *
- * ⭐⭐ D-C — THE `'1^'` OPEN-ENDED SYNTAX REMAINS FULLY EXPRESSIBLE, RESTRUCTURED RATHER THAN
+ * D-C — THE `'1^'` OPEN-ENDED SYNTAX REMAINS FULLY EXPRESSIBLE, RESTRUCTURED RATHER THAN
  * SIMPLIFIED. The legacy encodes a range as a single string carrying the delimiter declared at
  * org/Hibachi/HibachiSmartList.cfc:L36, and parses it three ways at emission time:
  *   - value STARTS with the delimiter — org/Hibachi/HibachiSmartList.cfc:L635 — upper bound only,
@@ -344,8 +923,11 @@ export interface SmartListFilter {
  *
  * TODO(parity): a MALFORMED range value is SILENTLY DISCARDED. The entire body of the legacy
  * accumulator sits inside the well-formedness test at org/Hibachi/HibachiSmartList.cfc:L446, so a
- * value failing it is dropped and the query runs unfiltered. Carried: no validation that throws is
- * added here.
+ * value failing it is dropped and the query runs unfiltered. Carried: {@link translateSmartListRange}
+ * below returns `undefined` for such a value and nothing throws. That function is the SOLE
+ * interpreter of a range string in this subtree — it reproduces both the acceptance test above and the
+ * emission rules at org/Hibachi/HibachiSmartList.cfc:L632-L655 — so this note describes real behaviour
+ * with one implementation rather than a convention each caller is trusted to follow.
  *
  * TODO(parity): reading a range back yields an EMPTY STRING, not an empty collection, when the
  * property has no range in the group — org/Hibachi/HibachiSmartList.cfc:L468, inside the accessor
@@ -361,11 +943,11 @@ export interface SmartListFilter {
  * branch with the first and last elements equal, so it constrains the property to a single value
  * rather than to an interval. Both behaviours belong to the adapter's translation of these bounds.
  */
-export interface SmartListRange {
+export interface SmartListRange<TEntity extends SmartListEntityName = SmartListEntityName> {
   /**
    * The logical property path to bound. First parameter at org/Hibachi/HibachiSmartList.cfc:L445.
    */
-  readonly propertyIdentifier: SmartListPropertyIdentifier;
+  readonly propertyIdentifier: SmartListPropertyIdentifier<TEntity>;
 
   /**
    * Inclusive lower bound. Present alone for the open-ended lower case of
@@ -379,6 +961,165 @@ export interface SmartListRange {
    * org/Hibachi/HibachiSmartList.cfc:L635. Absent means unbounded above.
    */
   readonly upperBound?: string | number;
+}
+
+/* ================================================================================================
+ * THE SHARED RANGE TRANSLATOR — THE ONE PLACE A CALLER-SUPPLIED RANGE STRING IS INTERPRETED
+ * ================================================================================================
+ *
+ * WHY IT LIVES HERE, AND WHY THERE IS EXACTLY ONE OF IT. `addRange` was a method ON the SmartList in
+ * the legacy system, so its acceptance test and its predicate emission were written once and every
+ * caller inherited them. Ported naively, each service ends up interpreting the range string for
+ * itself — and when that happened here, the two copies drifted apart in OPPOSITE directions, each
+ * reproducing the half the other omitted. One carried the acceptance test but neither the length gate
+ * nor the delimiter-free case; the other carried the length gate and the emission branches but no
+ * acceptance test at all. Two callers therefore produced different predicates from the same input,
+ * which is precisely the class of divergence a "matching public surface" port is supposed to rule out.
+ * Consolidating restores the legacy property that there is one interpretation, not one per caller.
+ *
+ * THIS FILE IS STILL IMPORT-FREE. {@link translateSmartListRange} is pure string logic over its two
+ * parameters: no package, no Node builtin, no sibling module, no injected collaborator, no state. The
+ * "imports NOTHING" invariant in the module header is intact, and so is the layering that invariant
+ * protects — a port that reached upward for a helper would stop being a port.
+ *
+ * THE FULL CENSUS OF LEGACY CALL SITES, because it is small enough to state exhaustively and it is
+ * what makes the date approximation below safe to reason about. A repository-wide search for
+ * `addRange(` outside the framework file itself returns exactly four lines:
+ *
+ *   [integrationServices/google/controllers/feed.cfc:L72]  addRange('product.calculatedQATS','1^')
+ *       IN SCOPE. Numeric, lower-bound-only. The feed's availability gate (AAP 0.6.4.1).
+ *   [model/transient/HibachiScope.cfc:L146]               addRange('calculatedQATS','1^')
+ *       Out of scope. Identical numeric shape.
+ *   [model/entity/Account.cfc:L158]                       addRange('...expirationDate','#now()#^')
+ *       Out of scope. THE ONLY DATE-VALUED RANGE ANYWHERE IN THE LEGACY TREE.
+ *   [meta/tests/unit/IssuesTest.cfc:L95]                  addRange('calculatedQATS','XXX^')
+ *       A LEGACY REGRESSION TEST, and the reason the acceptance test is load-bearing rather than
+ *       decorative — see the next paragraph.
+ *
+ * ⭐ THE ACCEPTANCE TEST IS PINNED BY A LEGACY TEST, WHICH SETTLES A QUESTION THAT WAS PREVIOUSLY
+ * ARGUED THE OTHER WAY. `issue_1329` at [meta/tests/unit/IssuesTest.cfc:L91-L98] builds a product
+ * SmartList, calls `addRange('calculatedQATS','XXX^')` with a deliberately malformed value, and then
+ * calls `getPageRecords()`. It asserts nothing explicitly, which makes it a "must not blow up"
+ * regression: the guard at [org/Hibachi/HibachiSmartList.cfc:L446] SILENTLY DISCARDS the malformed
+ * range, so no predicate is emitted and the query runs unfiltered. Omitting the acceptance test does
+ * not merely admit odd input — it changes the outcome of a named legacy regression, because `'XXX^'`
+ * would otherwise become a live `calculatedQATS >= 'XXX'` bound. The numeric half of the test is
+ * therefore both exactly reproducible AND behaviourally required, and it is reproduced here.
+ *
+ * ⚠️ THE DATE HALF IS A FLAGGED APPROXIMATION (AAP 0.7.3 standard 8, "flag mismatches rather than
+ * assume them away"; standard 9, "invent nothing"). CFML's `isDate` recognises a locale-sensitive,
+ * engine-dependent set of spellings that the source nowhere enumerates, so reproducing it exactly
+ * would mean inventing a grammar. `Date.parse` is the closest primitive available without taking a
+ * dependency, narrowed by rejecting anything already numeric because CFML's `isDate("5")` is false
+ * while some engines' `Date.parse` is permissive about bare numbers. The divergence is confined to
+ * WHICH range strings are admitted; no admitted value is ever rewritten. Per the census above, no
+ * in-scope caller reaches the date arm at all — the single date-valued range in the legacy tree is
+ * `model/entity/Account.cfc:L158`, in the explicitly excluded Account domain (AAP 0.2.2.1) — so the
+ * approximation cannot change an in-scope result. That is a bounded, stated limitation, not a
+ * silently accepted one.
+ * ============================================================================================== */
+
+/**
+ * The range delimiter, `variables.rangeDelimiter` at org/Hibachi/HibachiSmartList.cfc:L36.
+ *
+ * Exported because both consuming services previously declared their own private copy of the literal,
+ * and two literals is one more than the number of places this character should be written.
+ */
+export const SMART_LIST_RANGE_DELIMITER = '^';
+
+/**
+ * CFML list semantics over the range delimiter: EMPTY ELEMENTS ARE IGNORED.
+ *
+ * This is why `listFirst('^10','^')` and `listLast('^10','^')` are BOTH `'10'`, and why `'10^'` yields
+ * `'10'` from either end. The emission branches below rely on that, so the behaviour is reproduced
+ * here rather than approximated with a plain `split`.
+ */
+function splitRangeValue(value: string): string[] {
+  return value.split(SMART_LIST_RANGE_DELIMITER).filter((element) => element.length > 0);
+}
+
+/* THE CFML SCALAR PREDICATES `readsAsCfmlNumeric` AND `readsAsCfmlDate` ARE DECLARED ONCE, LOWER IN
+ * THIS FILE, alongside the rest of the engine-semantics helpers the input translator needs. They were
+ * briefly declared twice — once here in a string-only form for range acceptance and once below in an
+ * `unknown`-accepting form for `rc` entries — which is precisely the duplication this port exists to
+ * remove. The lower pair subsumes the upper one (every string the upper pair accepted the lower pair
+ * accepts identically), so the upper pair was withdrawn rather than both being kept in step by hand.
+ * Function declarations hoist, so the range translator below may call them freely. */
+
+/**
+ * Translates one caller-supplied range entry into bounds, reproducing
+ * org/Hibachi/HibachiSmartList.cfc:L446 (acceptance) and org/Hibachi/HibachiSmartList.cfc:L632-L655
+ * (emission) exactly.
+ *
+ * THE TWO REJECTION PATHS HAVE DIFFERENT LEGACY ORIGINS AND THE SAME OBSERVABLE EFFECT, which is why
+ * one function can own both:
+ *   - FAILING ACCEPTANCE at `:L446` means the value is never stored, so no predicate exists.
+ *   - PASSING ACCEPTANCE BUT FAILING THE LENGTH GATE at `:L632` means the value IS stored, and the
+ *     emission loop then skips it — so again no predicate exists. The stored-but-inert entry is
+ *     readable in the legacy only through `getRanges()` at `:L461-L470`, which this port deliberately
+ *     does not expose, so the two cases are indistinguishable to every consumer here.
+ * The length gate must be applied at THIS point and nowhere later: structuring the value into bounds
+ * destroys the raw string, so an adapter receiving the pair could not reproduce the skip even in
+ * principle.
+ *
+ * ⚠️ TODO(parity) — THE ACCEPTANCE TEST'S LOWER CLAUSE TESTS `listLast`, NOT `listFirst`. Both halves
+ * of `:L446` share the identical third term `isDate(listLast(value, delimiter))`. In the lower-bound
+ * clause that is almost certainly a typo, and it has a real consequence: a value whose LAST element
+ * reads as a date admits the entry outright, however malformed its FIRST element is, so
+ * `'abc^2024-01-15'` is accepted and yields the literal lower bound `'abc'`. It is carried verbatim,
+ * because it decides which strings the legacy admits and "correcting" it would silently narrow the
+ * accepted set (AAP 0.7.3 standard 7, preserve and annotate).
+ *
+ * @param propertyIdentifier - The property the range constrains, taken from the entry key.
+ * @param value - The raw range entry exactly as the caller supplied it.
+ * @returns The structured bounds, or `undefined` when the legacy would emit no predicate.
+ *
+ * @example
+ * ```ts
+ * translateSmartListRange('p', '1^');        // { propertyIdentifier: 'p', lowerBound: '1' }
+ * translateSmartListRange('p', '^10');       // { propertyIdentifier: 'p', upperBound: '10' }
+ * translateSmartListRange('p', '5^10');      // both bounds
+ * translateSmartListRange('p', '10');        // both bounds '10' — EXACT EQUALITY
+ * translateSmartListRange('p', '5');         // undefined — length gate, NO predicate
+ * translateSmartListRange('p', 'XXX^');      // undefined — rejected, pins issue_1329
+ * ```
+ */
+export function translateSmartListRange(
+  propertyIdentifier: SmartListPropertyIdentifier,
+  value: string,
+): SmartListRange | undefined {
+  const elements = splitRangeValue(value);
+  const first = elements[0] ?? '';
+  const last = elements.length > 0 ? (elements[elements.length - 1] ?? '') : '';
+
+  const startsWithDelimiter = value.startsWith(SMART_LIST_RANGE_DELIMITER);
+  const endsWithDelimiter = value.endsWith(SMART_LIST_RANGE_DELIMITER);
+
+  // [:L446] — the two clauses, with the shared `isDate(listLast(...))` term hoisted so the quirk
+  // documented above is visible as a single value used by both rather than written out twice.
+  const lastReadsAsDate = readsAsCfmlDate(last);
+  const lowerAcceptable = startsWithDelimiter || readsAsCfmlNumeric(first) || lastReadsAsDate;
+  const upperAcceptable = endsWithDelimiter || readsAsCfmlNumeric(last) || lastReadsAsDate;
+  if (!lowerAcceptable || !upperAcceptable) {
+    return undefined;
+  }
+
+  // [:L632] — the emission loop skips any stored value of one character or fewer.
+  if (value.length <= 1) {
+    return undefined;
+  }
+
+  // [:L635] Only a higher bound, taken from the LAST element at [:L638].
+  if (startsWithDelimiter) {
+    return { propertyIdentifier, upperBound: last };
+  }
+  // [:L642] Only a lower bound, taken from the FIRST element at [:L645].
+  if (endsWithDelimiter) {
+    return { propertyIdentifier, lowerBound: first };
+  }
+  // [:L649] Both bounds, first and last respectively at [:L653-L654]. For a DELIMITER-FREE value the
+  // two elements are the same string, so this is exact equality — `>= v AND <= v`.
+  return { propertyIdentifier, lowerBound: first, upperBound: last };
 }
 
 /**
@@ -441,7 +1182,7 @@ export interface SmartListWhereGroup {
 /**
  * One property registered as searchable, with its weight.
  *
- * ⭐ Q5 — THE WEIGHT IS PART OF THE CONTRACT, AND EVERY OBSERVED VALUE IS ONE. The legacy declares
+ * Q5 — THE WEIGHT IS PART OF THE CONTRACT, AND EVERY OBSERVED VALUE IS ONE. The legacy declares
  * it `required numeric weight` at org/Hibachi/HibachiSmartList.cfc:L485, so it is required here too
  * rather than optional-with-a-default. All ten registrations in the slice pass one: five in
  * consumer 1 at model/service/ProductService.cfc:L351-L355 and five in consumer 2 at
@@ -457,18 +1198,20 @@ export interface SmartListWhereGroup {
  * because it is part of the observable argument list, and because all ten in-scope values are equal
  * the omission is invisible in this slice.
  *
- * ⛔ No relevance-scoring formula, no weight range and no alternative default is invented on the
+ * No relevance-scoring formula, no weight range and no alternative default is invented on the
  * back of this member (AAP §0.7.3 standard 9). Implementing scoring would ADD behavior the legacy
  * does not have, which AAP §0.8.2 Guideline 4 forbids just as firmly as removing behavior it does
  * have.
  */
-export interface SmartListKeywordProperty {
+export interface SmartListKeywordProperty<
+  TEntity extends SmartListEntityName = SmartListEntityName,
+> {
   /**
    * The logical property path to search. First parameter at org/Hibachi/HibachiSmartList.cfc:L485.
    * Observed values span plain, one-hop and two-hop paths — see
    * model/service/SkuService.cfc:L318-L322.
    */
-  readonly propertyIdentifier: SmartListPropertyIdentifier;
+  readonly propertyIdentifier: SmartListPropertyIdentifier<TEntity>;
 
   /**
    * Relative weight. Second parameter at org/Hibachi/HibachiSmartList.cfc:L485; required, and one
@@ -501,7 +1244,7 @@ export type SmartListOrderDirection = 'ASC' | 'DESC';
  *
  * `direction` is REQUIRED because the legacy pair always carries one — the parse resolves to
  * ascending or descending and never to nothing (org/Hibachi/HibachiSmartList.cfc:L475-L478) — and
- * because both in-scope call sites state it explicitly. ⛔ NO DEFAULT SORT IS DECLARED HERE.
+ * because both in-scope call sites state it explicitly. NO DEFAULT SORT IS DECLARED HERE.
  *
  * S8 — MISMATCH FLAGGED RATHER THAN RESOLVED: when a query carries no ordering terms at all, the
  * legacy applies a FALLBACK order at org/Hibachi/HibachiSmartList.cfc:L729-L741, choosing a
@@ -519,10 +1262,10 @@ export type SmartListOrderDirection = 'ASC' | 'DESC';
  * (org/Hibachi/HibachiSmartList.cfc:L481). No insert-at-position capability is therefore offered
  * here; adding one would be new behavior.
  */
-export interface SmartListOrder {
+export interface SmartListOrder<TEntity extends SmartListEntityName = SmartListEntityName> {
   /** The logical property path to sort by. Parsed from the statement at
    * org/Hibachi/HibachiSmartList.cfc:L474. */
-  readonly propertyIdentifier: SmartListPropertyIdentifier;
+  readonly propertyIdentifier: SmartListPropertyIdentifier<TEntity>;
 
   /** Sort direction, resolved at org/Hibachi/HibachiSmartList.cfc:L475-L478. */
   readonly direction: SmartListOrderDirection;
@@ -538,7 +1281,7 @@ export interface SmartListOrder {
  * the three values and their meanings are unchanged. Paging is applied as an offset and a
  * maximum-results pair at org/Hibachi/HibachiSmartList.cfc:L762.
  *
- * ⛔ NO DEFAULT PAGE SIZE, MAXIMUM PAGE SIZE OR RESULT CAP IS DECLARED. Every member is optional and
+ * NO DEFAULT PAGE SIZE, MAXIMUM PAGE SIZE OR RESULT CAP IS DECLARED. Every member is optional and
  * nothing is filled in. The property declaration at org/Hibachi/HibachiSmartList.cfc:L24 carries no
  * initial value of its own; the initial values live on the setup member at
  * org/Hibachi/HibachiSmartList.cfc:L39, which declares a first record of one and a page size of
@@ -552,7 +1295,7 @@ export interface SmartListOrder {
  * roughly 29-second synchronous integration budget of a request-response gateway. The feed consumes
  * the FULL record set rather than a page — integrationServices/google/views/feed/product.cfm:L16
  * iterates the complete records collection — so pagination is not what bounds it. M2 is allocated
- * to the feed handler and is cited here only so the connection is visible; ⛔ no pagination default
+ * to the feed handler and is cited here only so the connection is visible; no pagination default
  * is introduced in response to it, because that would be inventing a capacity figure the source
  * does not state (IR-12).
  */
@@ -573,7 +1316,7 @@ export interface SmartListPagination {
   /**
    * The requested page.
    *
-   * ⭐ TODO(parity): THIS IS DECLARED AS A STRING, NOT A NUMBER, at
+   * TODO(parity): THIS IS DECLARED AS A STRING, NOT A NUMBER, at
    * org/Hibachi/HibachiSmartList.cfc:L26, and the string typing is carried deliberately. The legacy
    * treats the value loosely: it seeds it with the number one at
    * org/Hibachi/HibachiSmartList.cfc:L56, assigns it from a numerically validated caller value at
@@ -602,8 +1345,15 @@ export interface SmartListQuery {
    * org/Hibachi/HibachiSmartList.cfc:L39; see Q3 on `SmartListJoin` for why these names are correct
    * as written. This is also what tells the adapter which row mapper produces the result element
    * type, exactly as it tells the legacy which entity its record collection contains.
+   *
+   * ⭐ SEC-09 — CLOSED. This was `string`. It becomes the from-clause entity at
+   * org/Hibachi/HibachiSmartList.cfc:L533, which is an identifier position, so an open string here
+   * was the same contract defect as the one DECISION S-1 describes for property paths. Every value
+   * the slice supplies is a compile-time literal — `SlatwallSku` at model/service/SkuService.cfc:L310,
+   * `SlatwallOption` and `SlatwallOptionGroup` for the two synthesized members of AAP §0.4.2.5 — so
+   * no runtime resolution is needed for this field and none is offered.
    */
-  readonly entityName: string;
+  readonly entityName: SmartListEntityName;
 
   /**
    * Related-property joins, in application order. Accumulated one at a time by the member at
@@ -640,7 +1390,6 @@ export interface SmartListQuery {
   /** Ordering terms, in application order. Declared at org/Hibachi/HibachiSmartList.cfc:L16. */
   readonly orders?: readonly SmartListOrder[];
 
-  /** Offset pagination. See `SmartListPagination`. */
   readonly pagination?: SmartListPagination;
 
   /**
@@ -660,7 +1409,7 @@ export interface SmartListQuery {
    * model/entity/Product.cfc:L342 but a true boolean at model/entity/Product.cfc:L504 — a widening
    * TypeScript resolves once, in the only place it can.
    *
-   * ⛔ This is NOT the distinct obligation recorded as T4 in AAP §0.6.1.3. That one governs the
+   * This is NOT the distinct obligation recorded as T4 in AAP §0.6.1.3. That one governs the
    * option-to-SKU resolution query and belongs to `src/ports/repositories/SkuRepository.ts`; this
    * member is the general smart-list flag and claims nothing about it.
    */
@@ -671,7 +1420,7 @@ export interface SmartListQuery {
  * The caller-supplied query input — the typed counterpart of the legacy untyped data structure that
  * every smart-list member accepts as its first argument.
  *
- * ⭐ THIS NAME IS A CONTRACT. Four AAP-declared signatures reference it: `getProductSmartList` and
+ * THIS NAME IS A CONTRACT. Four AAP-declared signatures reference it: `getProductSmartList` and
  * `getSkuSmartList` in AAP §0.4.2.1 and §0.4.2.2, and `getOptionSmartList` and
  * `getOptionGroupSmartList` in AAP §0.4.2.5.
  *
@@ -701,7 +1450,7 @@ export interface SmartListQuery {
  * what would otherwise have been discarded at run time; the adapter still ignores rather than
  * rejects anything that does reach it.
  *
- * ⭐ Q6 — DISCREPANCY 1, RECORDED RATHER THAN MADE SILENTLY (TR-1). The companion argument of both
+ * Q6 — DISCREPANCY 1, RECORDED RATHER THAN MADE SILENTLY (TR-1). The companion argument of both
  * consumer signatures, `currentURL`, is declared with NO TYPE AT ALL — at
  * model/service/ProductService.cfc:L342 and again at model/service/SkuService.cfc:L309, in each
  * case beside a data argument that IS typed. AAP §0.4.2.1 tightens it to an optional string, and
@@ -712,7 +1461,7 @@ export interface SmartListQuery {
  * called with NO arguments at all — see integrationServices/google/controllers/feed.cfc:L63 — which
  * is why every member here is optional and why both service parameters are optional.
  *
- * ⭐ Q7 — the two consumers obtain their smart list from DIFFERENT providers: consumer 1 through the
+ * Q7 — the two consumers obtain their smart list from DIFFERENT providers: consumer 1 through the
  * shared data-access object at model/service/ProductService.cfc:L345, consumer 2 through the SKU
  * data-access object at model/service/SkuService.cfc:L312. The abstraction returned is the same in
  * both cases, so this remains ONE port with one input type; the difference is in who constructs the
@@ -769,7 +1518,6 @@ export interface SmartListInput {
    */
   readonly 'P:Current'?: string | number;
 
-  /** Adds an equality filter on the named property — org/Hibachi/HibachiSmartList.cfc:L100-L101. */
   readonly [filterKey: `F:${string}`]: SmartListFilterValue;
 
   /** Removes an equality filter when true — org/Hibachi/HibachiSmartList.cfc:L102-L103. */
@@ -794,7 +1542,7 @@ export interface SmartListInput {
 /**
  * The materialised outcome of one query.
  *
- * ⭐ THIS NAME IS A CONTRACT, AND IT IS GENERIC ON PURPOSE. The same four AAP-declared signatures
+ * THIS NAME IS A CONTRACT, AND IT IS GENERIC ON PURPOSE. The same four AAP-declared signatures
  * listed on `SmartListInput` instantiate it at four different element types — product, SKU, option
  * and option group. Keeping the element type a parameter is what allows this file to import
  * nothing:
@@ -868,8 +1616,8 @@ export interface SmartListResult<T> {
  * only an implementation can do is execute the query, so that is the whole interface.
  *
  * This is also why the surface is kept this small in practice, per AAP §0.7.3 standard 6: the
- * legacy repository contains NO MOCKING LIBRARY AT ALL, so `test/support/inMemoryRepositories.ts`
- * must implement every port by hand. AAP §0.4.3.6 calls that "the single largest structural
+ * legacy repository contains NO MOCKING LIBRARY AT ALL, so the planned
+ * `test/support/inMemoryRepositories.ts` must implement every port by hand. AAP §0.4.3.6 calls that "the single largest structural
  * difference between the two suites" — legacy tests boot the whole framework and are integration
  * tests, whereas the target tests construct classes directly against hand-written doubles and are
  * unit tests. Every member declared here is a member several test files must stub, so each one has
@@ -879,7 +1627,7 @@ export interface SmartListResult<T> {
  * for all of this is NET-NEW: AAP §0.6.5.2 confirms no legacy test exists for the product service,
  * the SKU service or the SKU data-access object.
  *
- * ⛔ NO CLASS, NO ABSTRACT BASE, NO CONSTRUCTOR, AND NO SHARED GENERIC BASE ACROSS THE FOLDER. The
+ * NO CLASS, NO ABSTRACT BASE, NO CONSTRUCTOR, AND NO SHARED GENERIC BASE ACROSS THE FOLDER. The
  * implementation is `src/adapters/mysql/SmartListQueryBuilder.ts`, which AAP §0.3.3 describes as
  * the query builder that replaces "HibachiSmartList dynamic paginated HQL composition", operating
  * "behind SmartListQueryPort". It is injected into its consumers as a constructor parameter, per
@@ -920,4 +1668,539 @@ export interface SmartListQueryPort {
    *          them.
    */
   execute<T>(query: SmartListQuery): Promise<SmartListResult<T>>;
+}
+
+/* =================================================================================================
+ * THE ONE SHARED SMARTLIST INPUT TRANSLATOR
+ * =================================================================================================
+ * ⚠️⚠️ F10 — WHY THIS LIVES HERE AND WHY THERE IS EXACTLY ONE OF IT.
+ *
+ * `src/services/OptionService.ts` and `src/services/SkuService.ts` each carried their OWN complete
+ * translation of the FW/1 `rc` data-key grammar into the query shapes declared above — roughly twenty
+ * constants and a dozen functions apiece. The two implementations DISAGREED, so the same framework
+ * input could produce two different query descriptions depending on which service received it. Every
+ * divergence was measured against `org/Hibachi/HibachiSmartList.cfc` before this translator was
+ * written, and the authority-faithful rule was taken in each case:
+ *
+ *   1. RANGE ACCEPTABILITY. `HibachiSmartList.cfc:L446` gates `addRange` on
+ *      `(left(value,1) == delim || isNumeric(listFirst(value,delim)) || isDate(listLast(value,delim)))
+ *      && (right(value,1) == delim || isNumeric(listLast(value,delim)) || isDate(listLast(value,delim)))`.
+ *      One implementation reproduced that gate; the other had NO numeric/date test at all and so
+ *      accepted ranges the legacy silently discards. The gate is kept.
+ *      ⚠️ TODO(parity): the legacy tests `isDate(listLast(...))` in BOTH halves — the LOWER half asks
+ *      about the LAST element, which is almost certainly meant to be `listFirst`. That asymmetry is
+ *      reproduced verbatim below, NOT repaired: AAP 0.7.3 "preserve and annotate, do not repair", and
+ *      AAP 0.6.7 governs which departures are permitted. No register identifier is minted, because
+ *      AAP 0.6.7 closes its register and this line lies in `org/Hibachi/**`, outside the 21 in-scope
+ *      files that register covers.
+ *   2. RANGE LENGTH GUARD. One implementation rejected any value of length <= 1 before parsing.
+ *      `:L446` has no such guard, so it is dropped — rule 1 already rejects the inputs it was
+ *      shielding against, and it additionally rejected the legal single-character numeric range.
+ *   3. EMPTY ORDER PROPERTIES. `:L480` appends an order only `if(len(aliasedProperty))`, and one
+ *      implementation checked only for `undefined` while the other also checked for `''`. MEASURED
+ *      RESULT: the two agree, and the review's concern does not reproduce. {@link cfmlListToArray}
+ *      models CFML's list semantics, in which empty elements are skipped rather than preserved, so the
+ *      first element of a parsed statement can never be `''` — `'|DESC'` parses to `['DESC']`, exactly
+ *      as `listFirst('|DESC','|')` returns `'DESC'` and `listLen` returns 1. The `len()` test is
+ *      therefore retained as faithful but UNREACHABLE defensive code, and this entry is recorded as a
+ *      divergence that was checked and found not to exist rather than quietly dropped from the list.
+ *      One consequence is worth naming because it looks like a bug and is not: `OrderBy=|DESC` orders
+ *      by a property literally named `DESC`, ascending, in both the legacy and here.
+ *   4. ORDER DIRECTION. `:L476` is `listFindNoCase("D,DESC", listLast(statement, delim))`. CFML's
+ *      `listFindNoCase` compares elements case-insensitively but does NOT trim them, so a trailing
+ *      `"brandName| DESC"` leaves the direction ASC. One implementation trimmed before comparing and
+ *      would have returned DESC. The non-trimming legacy comparison is kept — the same reasoning F23
+ *      applied when it matched `listFind` semantics exactly rather than approximating them.
+ *   5. PAGE COERCION. One implementation used `Number(String(value).trim())` guarded by
+ *      `Number.isFinite`, which accepts forms CFML's `isNumeric` rejects — `Number('0x10')` is 16 and
+ *      `Number('')` is 0. {@link readAcceptablePageValue} goes through the CFML numeric predicate
+ *      instead, so hexadecimal, empty and whitespace inputs are refused as the legacy refuses them.
+ *   6. BOOLEAN-REMOVAL COERCION. The `FR:`, `FIR:` and `FKR:` removal keys are CFML booleans. One
+ *      implementation folded "is this a boolean?" and "what is its value?" into a single truthiness
+ *      test that treated any non-zero number as true while refusing the string `'false'` a meaning at
+ *      all. The two-step CFML form is kept: {@link readsAsCfmlBoolean} then {@link toCfmlBoolean}, so
+ *      `'no'`, `'false'` and `0` are recognised booleans that mean "do not remove".
+ *   7. UNDEFINED INPUT. One implementation returned a bare `{ entityName }` for an absent input,
+ *      DISCARDING the caller's joins and keyword properties — which are structural, not filter-driven,
+ *      and must survive an empty request. The absent-input path now composes through the same
+ *      function as every other path.
+ *
+ * Placement introduces NO new dependency edge and NO new file: both services already import this
+ * module for `SmartListInput`, `SmartListQuery` and the port itself, and this module still imports
+ * nothing at all. Putting the translation beside the shapes it produces also means the grammar and
+ * the types it targets cannot drift apart. `src/adapters/mysql/SmartListQueryBuilder.ts` would be the
+ * wrong home even once it exists, because a service may depend on a port but never on an adapter
+ * (AAP 0.7.3 S4).
+ * ============================================================================================== */
+
+/** CFML's default list delimiter, used by every `list*` function that is not given one. */
+const CFML_LIST_DELIMITER = ',';
+
+/** The data-key delimiter of the FW/1 `rc` grammar: `F:propertyName`, `P:Show`, and so on. */
+const SMART_LIST_DATA_KEY_DELIMITER = ':';
+
+const FILTER_PREFIX = `F${SMART_LIST_DATA_KEY_DELIMITER}`;
+const FILTER_REMOVAL_PREFIX = `FR${SMART_LIST_DATA_KEY_DELIMITER}`;
+const IN_FILTER_PREFIX = `FI${SMART_LIST_DATA_KEY_DELIMITER}`;
+const IN_FILTER_REMOVAL_PREFIX = `FIR${SMART_LIST_DATA_KEY_DELIMITER}`;
+const LIKE_FILTER_PREFIX = `FK${SMART_LIST_DATA_KEY_DELIMITER}`;
+const LIKE_FILTER_REMOVAL_PREFIX = `FKR${SMART_LIST_DATA_KEY_DELIMITER}`;
+const RANGE_PREFIX = `R${SMART_LIST_DATA_KEY_DELIMITER}`;
+const ORDER_BY_KEY = 'OrderBy';
+const PAGE_SHOW_KEY = `P${SMART_LIST_DATA_KEY_DELIMITER}Show`;
+const PAGE_START_KEY = `P${SMART_LIST_DATA_KEY_DELIMITER}Start`;
+const PAGE_CURRENT_KEY = `P${SMART_LIST_DATA_KEY_DELIMITER}Current`;
+const KEYWORD_KEY = 'keyword';
+const KEYWORDS_KEY = 'keywords';
+
+/** `HibachiSmartList.cfc` treats this literal as "no paging at all". */
+const PAGE_RECORDS_SHOW_ALL_KEYWORD = 'ALL';
+
+/** The row count `PAGE_RECORDS_SHOW_ALL_KEYWORD` resolves to, and the ceiling on any page figure. */
+const PAGE_RECORDS_SHOW_ALL = 1000000000;
+
+const ORDER_DIRECTION_DELIMITER = '|';
+const LIKE_FILTER_WILDCARD = '%';
+
+/* THE RANGE DELIMITER IS NOT RE-DECLARED HERE. It is exported once as
+ * {@link SMART_LIST_RANGE_DELIMITER} above and used by {@link translateSmartListRange}, which is now
+ * the single owner of the range grammar; a second private `'^'` literal at this point existed only to
+ * feed the withdrawn local range parser and would be a silent drift risk if reinstated. */
+
+/** The `"D,DESC"` list of `HibachiSmartList.cfc:L476`, compared case-insensitively and untrimmed. */
+const DESCENDING_ORDER_TOKENS: readonly string[] = Object.freeze(['D', 'DESC']);
+
+/** The three spellings of a keyword separator the legacy normalises before splitting. */
+const KEYWORD_SEPARATORS: readonly string[] = Object.freeze([' ', '%20', '+']);
+
+/** CFML `listToArray`, which drops empty elements rather than preserving them as `''`. */
+function cfmlListToArray(list: string, delimiter: string = CFML_LIST_DELIMITER): string[] {
+  return list.split(delimiter).filter((entry) => entry.length > 0);
+}
+
+/** CFML `isSimpleValue` for the three scalar kinds an `rc` entry can carry. */
+function isCfmlSimpleValue(value: unknown): value is string | number | boolean {
+  return typeof value === 'string' || typeof value === 'number' || typeof value === 'boolean';
+}
+
+/** CFML `isNumeric` — deliberately narrower than `Number()`, which accepts hex and empty strings. */
+function readsAsCfmlNumeric(value: unknown): boolean {
+  if (typeof value === 'number') {
+    return Number.isFinite(value);
+  }
+  if (typeof value !== 'string') {
+    return false;
+  }
+  const trimmed = value.trim();
+  if (trimmed.length === 0) {
+    return false;
+  }
+  return /^[+-]?(\d+(\.\d*)?|\.\d+)([eE][+-]?\d+)?$/.test(trimmed);
+}
+
+/** CFML numeric coercion. Yields `NaN` for anything {@link readsAsCfmlNumeric} rejects. */
+function toCfmlNumber(value: unknown): number {
+  if (typeof value === 'boolean') {
+    return value ? 1 : 0;
+  }
+  if (!readsAsCfmlNumeric(value)) {
+    return Number.NaN;
+  }
+  return Number(typeof value === 'string' ? value.trim() : value);
+}
+
+/** CFML `isDate`. A numeric string is NOT a date here, matching the engine's precedence. */
+function readsAsCfmlDate(value: string): boolean {
+  if (value.trim().length === 0 || readsAsCfmlNumeric(value)) {
+    return false;
+  }
+  return !Number.isNaN(Date.parse(value.trim()));
+}
+
+/** CFML `isBoolean` — the first half of the two-step coercion of divergence 6. */
+function readsAsCfmlBoolean(value: unknown): boolean {
+  if (typeof value === 'boolean') {
+    return true;
+  }
+  if (typeof value === 'number') {
+    return Number.isFinite(value);
+  }
+  if (typeof value !== 'string') {
+    return false;
+  }
+  const normalised = value.trim().toLowerCase();
+  return (
+    normalised === 'true' ||
+    normalised === 'false' ||
+    normalised === 'yes' ||
+    normalised === 'no' ||
+    readsAsCfmlNumeric(value)
+  );
+}
+
+/** CFML boolean coercion — the second half. Meaningful only after {@link readsAsCfmlBoolean}. */
+function toCfmlBoolean(value: unknown): boolean {
+  if (typeof value === 'boolean') {
+    return value;
+  }
+  if (typeof value === 'number') {
+    return value !== 0;
+  }
+  if (typeof value === 'string') {
+    const normalised = value.trim().toLowerCase();
+    if (normalised === 'true' || normalised === 'yes') {
+      return true;
+    }
+    if (normalised === 'false' || normalised === 'no') {
+      return false;
+    }
+    if (readsAsCfmlNumeric(value)) {
+      return toCfmlNumber(value) !== 0;
+    }
+  }
+  return false;
+}
+
+/** Wraps each comma-delimited element of a `FK:` value in the SQL `LIKE` wildcard. */
+function buildPatternFilterValue(raw: string): string {
+  return cfmlListToArray(raw)
+    .map((element) => `${LIKE_FILTER_WILDCARD}${element}${LIKE_FILTER_WILDCARD}`)
+    .join(CFML_LIST_DELIMITER);
+}
+
+/**
+ * `HibachiSmartList.cfc:L446` — the range acceptability gate and the bound split.
+ *
+ * The `isDate(listLast(...))` appearing in the LOWER test is the legacy asymmetry recorded as
+ * divergence 1 above; it is reproduced rather than corrected.
+ */
+/**
+ * Range parsing for an `rc` entry DELEGATES to {@link translateSmartListRange} rather than repeating
+ * it. This function previously carried a second, independent implementation of `:L446` acceptance and
+ * `:L632-L655` emission, and the two had already drifted in two observable ways before they were
+ * noticed:
+ *
+ *   1. THE `:L632` LENGTH GATE WAS MISSING HERE, so a one-character stored value such as `"5"`
+ *      produced a predicate where the legacy emission loop skips it and produces none.
+ *   2. THE BOUNDS WERE SLICED AROUND THE FIRST DELIMITER instead of taken from the FIRST and LAST
+ *      list elements, so a three-element value like `"1^2^3"` yielded an upper bound of `"2^3"` where
+ *      `:L638`/`:L654`'s `listLast` yields `"3"`.
+ *
+ * Both are gone by construction now that one function owns the grammar. Do not reintroduce a local
+ * copy: the acceptance and emission rules are a single legacy behaviour and belong in a single place.
+ */
+function parseRangeValue(
+  entityName: SmartListEntityName,
+  rawProperty: string,
+  raw: string,
+): SmartListRange | undefined {
+  const propertyIdentifier = resolveSmartListPropertyIdentifier(entityName, rawProperty);
+  if (propertyIdentifier === undefined) {
+    return undefined;
+  }
+  return translateSmartListRange(propertyIdentifier, raw);
+}
+
+/**
+ * `HibachiSmartList.cfc:L473-L482` — property identifier, direction, and the `len()` guard.
+ *
+ * The direction comparison is case-insensitive and UNTRIMMED, which is what `listFindNoCase` does
+ * (divergence 4).
+ */
+function parseOrderStatement(
+  entityName: SmartListEntityName,
+  statement: string,
+): SmartListOrder | undefined {
+  const parts = cfmlListToArray(statement, ORDER_DIRECTION_DELIMITER);
+  const rawProperty = parts[0];
+  if (rawProperty === undefined || rawProperty.length === 0) {
+    return undefined;
+  }
+  const propertyIdentifier = resolveSmartListPropertyIdentifier(entityName, rawProperty);
+  if (propertyIdentifier === undefined) {
+    return undefined;
+  }
+  const lastPart = parts[parts.length - 1];
+  const descending =
+    parts.length > 1 &&
+    lastPart !== undefined &&
+    DESCENDING_ORDER_TOKENS.some((token) => token === lastPart.toUpperCase());
+  return { propertyIdentifier, direction: descending ? 'DESC' : 'ASC' };
+}
+
+/** Normalises the three keyword separator spellings, then splits on the CFML list delimiter. */
+function parseKeywords(raw: string): string[] {
+  let keywordList = raw;
+  for (const separator of KEYWORD_SEPARATORS) {
+    keywordList = keywordList.split(separator).join(CFML_LIST_DELIMITER);
+  }
+  return cfmlListToArray(keywordList);
+}
+
+/** A page figure is acceptable only when CFML would read it as a number in `(0, ALL]`. */
+function readAcceptablePageValue(value: string | number | boolean): number | undefined {
+  if (!readsAsCfmlNumeric(value)) {
+    return undefined;
+  }
+  const numeric = toCfmlNumber(value);
+  return numeric > 0 && numeric <= PAGE_RECORDS_SHOW_ALL ? numeric : undefined;
+}
+
+/** `removeFilter` and friends drop EVERY entry for the property, not merely the first. */
+function removeEntriesForProperty(entries: SmartListFilter[], propertyIdentifier: string): void {
+  for (let index = entries.length - 1; index >= 0; index--) {
+    if (entries[index]?.propertyIdentifier === propertyIdentifier) {
+      entries.splice(index, 1);
+    }
+  }
+}
+
+/** The mutable accumulator the entry loop fills before {@link composeQuery} freezes it into shape. */
+interface SmartListQueryDraft {
+  readonly filters: SmartListFilter[];
+  readonly likeFilters: SmartListFilter[];
+  readonly inFilters: SmartListFilter[];
+  readonly ranges: SmartListRange[];
+  readonly orders: SmartListOrder[];
+  keywords: string[];
+  pageRecordsStart?: number;
+  pageRecordsShow?: number;
+  currentPageDeclaration?: string;
+}
+
+/** `OrderBy` carries a comma-delimited list of `property|direction` statements. */
+function applyOrderByEntry(
+  entityName: SmartListEntityName,
+  draft: SmartListQueryDraft,
+  raw: string,
+): void {
+  for (const statement of cfmlListToArray(raw, CFML_LIST_DELIMITER)) {
+    const order = parseOrderStatement(entityName, statement);
+    if (order !== undefined) {
+      draft.orders.push(order);
+    }
+  }
+}
+
+/** `P:Show` accepts the literal `ALL` in addition to a numeric page size. */
+function applyPageShowEntry(draft: SmartListQueryDraft, value: string | number | boolean): void {
+  if (typeof value === 'string' && value.trim().toUpperCase() === PAGE_RECORDS_SHOW_ALL_KEYWORD) {
+    draft.pageRecordsShow = PAGE_RECORDS_SHOW_ALL;
+    return;
+  }
+  const show = readAcceptablePageValue(value);
+  if (show !== undefined) {
+    draft.pageRecordsShow = show;
+  }
+}
+
+/** Dispatches one `rc` entry onto the draft by its data-key prefix. */
+function applyInputEntry(
+  entityName: SmartListEntityName,
+  draft: SmartListQueryDraft,
+  key: string,
+  value: string | number | boolean,
+): void {
+  /* SEC-09 — EVERY PROPERTY PATH THAT REACHES A DRAFT IS RESOLVED AGAINST THE ENTITY SCHEMA FIRST.
+   *
+   * `resolveSmartListPropertyIdentifier` returns `undefined` for any path whose segments do not
+   * resolve, and an unresolvable entry is DROPPED rather than reported. That is not a softened
+   * check: it is the legacy behaviour. `HibachiSmartList.cfc` resolves filters at :L362, ranges at
+   * :L449, orders at :L480 and keyword properties at :L487, and an unresolvable path there yields a
+   * query with the entry MISSING and no error anywhere. Raising instead would turn a silently
+   * ignored request key into a failed request — a behaviour change in the opposite direction, and
+   * one AAP §0.8.2 Guideline 2 forbids.
+   *
+   * ⛔ THE VALIDATION LIVES HERE, IN THE ONE SHARED TRANSLATOR, AND NOT IN A PER-SERVICE COPY.
+   * Every SmartList consumer — sku, option and optionGroup — is routed through this function, so
+   * closing the surface here closes it for all of them at once. A per-service copy would harden
+   * only the service that carried it and would leave its siblings open, which is precisely the
+   * asymmetry that made a local translator the wrong home for this rule. */
+  const resolve = (raw: string): SmartListPropertyIdentifier | undefined =>
+    resolveSmartListPropertyIdentifier(entityName, raw);
+
+  if (key.startsWith(FILTER_PREFIX)) {
+    const propertyIdentifier = resolve(key.slice(FILTER_PREFIX.length));
+    if (propertyIdentifier !== undefined) {
+      draft.filters.push({ propertyIdentifier, value });
+    }
+    return;
+  }
+  if (key.startsWith(FILTER_REMOVAL_PREFIX) && readsAsCfmlBoolean(value) && toCfmlBoolean(value)) {
+    removeEntriesForProperty(draft.filters, key.slice(FILTER_REMOVAL_PREFIX.length));
+    return;
+  }
+  if (key.startsWith(IN_FILTER_PREFIX)) {
+    const propertyIdentifier = resolve(key.slice(IN_FILTER_PREFIX.length));
+    if (propertyIdentifier !== undefined) {
+      draft.inFilters.push({ propertyIdentifier, value });
+    }
+    return;
+  }
+  if (
+    key.startsWith(IN_FILTER_REMOVAL_PREFIX) &&
+    readsAsCfmlBoolean(value) &&
+    toCfmlBoolean(value)
+  ) {
+    removeEntriesForProperty(draft.inFilters, key.slice(IN_FILTER_REMOVAL_PREFIX.length));
+    return;
+  }
+  if (key.startsWith(LIKE_FILTER_PREFIX)) {
+    const propertyIdentifier = resolve(key.slice(LIKE_FILTER_PREFIX.length));
+    if (propertyIdentifier !== undefined) {
+      draft.likeFilters.push({
+        propertyIdentifier,
+        value: buildPatternFilterValue(String(value)),
+      });
+    }
+    return;
+  }
+  if (
+    key.startsWith(LIKE_FILTER_REMOVAL_PREFIX) &&
+    readsAsCfmlBoolean(value) &&
+    toCfmlBoolean(value)
+  ) {
+    removeEntriesForProperty(draft.likeFilters, key.slice(LIKE_FILTER_REMOVAL_PREFIX.length));
+    return;
+  }
+  if (key.startsWith(RANGE_PREFIX)) {
+    const range = parseRangeValue(entityName, key.slice(RANGE_PREFIX.length), String(value));
+    if (range !== undefined) {
+      draft.ranges.push(range);
+    }
+    return;
+  }
+  if (key === ORDER_BY_KEY) {
+    applyOrderByEntry(entityName, draft, String(value));
+    return;
+  }
+  if (key === PAGE_SHOW_KEY) {
+    applyPageShowEntry(draft, value);
+    return;
+  }
+  if (key === PAGE_START_KEY) {
+    const start = readAcceptablePageValue(value);
+    if (start !== undefined) {
+      draft.pageRecordsStart = start;
+    }
+    return;
+  }
+  if (key === PAGE_CURRENT_KEY) {
+    const current = readAcceptablePageValue(value);
+    if (current !== undefined) {
+      draft.currentPageDeclaration = String(current);
+    }
+  }
+}
+
+/** Folds the draft into a {@link SmartListQuery}, omitting every section the input did not populate. */
+function composeQuery(
+  options: SmartListTranslationOptions,
+  draft: SmartListQueryDraft,
+): SmartListQuery {
+  const whereGroup: SmartListWhereGroup = {
+    ...(draft.filters.length > 0 ? { filters: draft.filters } : {}),
+    ...(draft.likeFilters.length > 0 ? { likeFilters: draft.likeFilters } : {}),
+    ...(draft.inFilters.length > 0 ? { inFilters: draft.inFilters } : {}),
+    ...(draft.ranges.length > 0 ? { ranges: draft.ranges } : {}),
+  };
+  const pagination: SmartListPagination = {
+    ...(draft.pageRecordsStart !== undefined ? { pageRecordsStart: draft.pageRecordsStart } : {}),
+    ...(draft.pageRecordsShow !== undefined ? { pageRecordsShow: draft.pageRecordsShow } : {}),
+    ...(draft.currentPageDeclaration !== undefined
+      ? { currentPageDeclaration: draft.currentPageDeclaration }
+      : {}),
+  };
+
+  return {
+    entityName: options.entityName,
+    ...(options.joins !== undefined ? { joins: options.joins } : {}),
+    ...(options.keywordProperties !== undefined
+      ? { keywordProperties: options.keywordProperties }
+      : {}),
+    ...(Object.keys(whereGroup).length > 0 ? { whereGroups: [whereGroup] } : {}),
+    ...(draft.keywords.length > 0 ? { keywords: draft.keywords } : {}),
+    ...(draft.orders.length > 0 ? { orders: draft.orders } : {}),
+    ...(Object.keys(pagination).length > 0 ? { pagination } : {}),
+  };
+}
+
+/**
+ * The per-call inputs to {@link translateSmartListInput}.
+ *
+ * `joins` and `keywordProperties` are the only legitimate per-consumer variation: they are STRUCTURAL
+ * declarations the calling service owns (`SkuService` declares four joins and its keyword properties;
+ * `OptionService` declares none), whereas everything else in the grammar is framework behaviour and
+ * must not vary by caller. Passing them in is what allows one translator to serve both without either
+ * service re-deriving the grammar.
+ */
+export interface SmartListTranslationOptions {
+  /**
+   * The entity the query selects from, e.g. `SlatwallSku`.
+   *
+   * ⛔ TYPED AS `SmartListEntityName`, NOT `string`, AND THAT IS LOAD-BEARING FOR SEC-09. This is
+   * the root every caller-supplied property path is resolved against by
+   * {@link resolveSmartListPropertyIdentifier} below. A `string` here would leave the resolver with
+   * no schema to consult and would reopen the identifier surface that the branded
+   * {@link SmartListPropertyIdentifier} exists to close.
+   */
+  readonly entityName: SmartListEntityName;
+
+  /** The raw FW/1 `rc` data structure. An absent input still yields joins and keyword properties. */
+  readonly input?: SmartListInput | undefined;
+
+  /** Structural joins the calling service declares for every one of its SmartLists. */
+  readonly joins?: readonly SmartListJoin[] | undefined;
+
+  /** Weighted keyword properties the calling service declares for keyword search. */
+  readonly keywordProperties?: readonly SmartListKeywordProperty[] | undefined;
+}
+
+/**
+ * Translates an FW/1 `rc` data structure into a {@link SmartListQuery} — the single authority for the
+ * data-key grammar, consumed by every service that exposes a SmartList member (F10).
+ *
+ * Only entries whose value is a CFML simple value participate, because the legacy `rc` reaches
+ * `HibachiSmartList` through URL and form scopes that cannot carry anything else; a structure or array
+ * arriving under a recognised key is ignored rather than coerced. Unrecognised keys are ignored too,
+ * which is what lets `keyword`, `keywords` and any application-specific key coexist with the grammar.
+ *
+ * Pure and synchronous: it performs no data access, holds no state between calls, mutates neither the
+ * input nor module scope, and cannot throw. Every rejection path returns a query with that section
+ * omitted rather than raising, exactly as the legacy `add*` members silently decline a value they do
+ * not accept.
+ *
+ * @param options - The entity name, the raw input, and the caller's structural declarations.
+ * @returns The immutable query description, with every unpopulated section absent.
+ */
+export function translateSmartListInput(options: SmartListTranslationOptions): SmartListQuery {
+  const draft: SmartListQueryDraft = {
+    filters: [],
+    likeFilters: [],
+    inFilters: [],
+    ranges: [],
+    orders: [],
+    keywords: [],
+  };
+
+  if (options.input === undefined) {
+    return composeQuery(options, draft);
+  }
+
+  const entries = options.input as Readonly<Record<string, unknown>>;
+  for (const key of Object.keys(entries)) {
+    const value = entries[key];
+    if (isCfmlSimpleValue(value)) {
+      applyInputEntry(options.entityName, draft, key, value);
+    }
+  }
+
+  const singularKeyword = entries[KEYWORD_KEY];
+  const pluralKeywords = entries[KEYWORDS_KEY];
+  const rawKeywords = typeof singularKeyword === 'string' ? singularKeyword : pluralKeywords;
+  if (typeof rawKeywords === 'string') {
+    draft.keywords = parseKeywords(rawKeywords);
+  }
+
+  return composeQuery(options, draft);
 }

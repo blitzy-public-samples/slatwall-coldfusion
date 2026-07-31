@@ -1,163 +1,111 @@
-// No user-specified rules were provided for this project; the nine enterprise
-// standards of AAP §0.7.3 govern instead, and the bar is not lowered.
-
 /**
  * BaseIntegration — the default-implementation base class every Slatwall integration adapter
  * extends, and the reason `GoogleIntegration.ts` can be a faithful stub rather than a six-member
  * duplication.
  *
- * AUTHORITY
- * ---------
- * AAP §0.4.1.10 states the target for this file in four words: "Default implementations
- * preserved." That is the whole mandate — no member is enhanced, no member is generalised, and no
- * member is added. Every value returned below is the value the legacy component returns.
+ * Legacy origin: `integrationServices/BaseIntegration.cfc:L49-L74`, which declares exactly six
+ * public members, each with a one-line body:
  *
- * LEGACY ORIGIN — integrationServices/BaseIntegration.cfc:L49-L74
- * --------------------------------------------------------------
- * A declaration scan of that span returns EXACTLY SIX members, each with a one-line body:
+ *   :L51  init                 returns the component itself
+ *   :L55  getDisplayName       returns the two-word fallback display name reproduced below
+ *   :L59  getIntegrationTypes  returns the empty string
+ *   :L63  getSettings          returns an empty structure
+ *   :L67  getEventHandlers     returns an empty array
+ *   :L71  getAdminNavbarHTML   returns the empty string
  *
- *   L51  init                 returns the component itself
- *   L55  getDisplayName       returns the two-word fallback display name reproduced below
- *   L59  getIntegrationTypes  returns the empty string
- *   L63  getSettings          returns an empty structure
- *   L67  getEventHandlers     returns an empty array
- *   L71  getAdminNavbarHTML   returns the empty string
- *
- * Six is a scan result, not an assumption. The legacy component declares every one of them
- * `public`, declares no properties, and declares no constructor.
+ * No member is enhanced, generalised or added: every value returned below is the value the legacy
+ * component returns. The legacy component declares no properties and no constructor.
  *
  * FIVE OF THE SIX ARE CONTRACTUAL, AND THE ASYMMETRY IS DELIBERATE
- * ---------------------------------------------------------------
- * `IntegrationContract` declares five members, because
- * integrationServices/IntegrationInterface.cfc:L50-L89 declares five. The sixth member on this
- * class, `getAdminNavbarHTML`, is declared by the legacy BASE COMPONENT
- * (integrationServices/BaseIntegration.cfc:L71) and by no `<cfinterface>` member at all. It is
- * therefore implemented here and deliberately absent from the contract. The full reasoning sits at
- * the member itself, below; it is flagged here too because a reviewer scanning the interface for a
- * sixth declaration would otherwise read its absence as an oversight rather than as fidelity.
- * `IntegrationContract.ts` records the same decision from the interface side.
+ * `IntegrationContract` declares five members because
+ * `integrationServices/IntegrationInterface.cfc:L50-L89` declares five. The sixth member here,
+ * `getAdminNavbarHTML`, is declared by the legacy BASE COMPONENT
+ * (`integrationServices/BaseIntegration.cfc:L71`) and by no `<cfinterface>` member, so it is
+ * implemented on this class and deliberately absent from the contract. It is flagged up here as well
+ * as at the member itself, because a reader scanning the interface for a sixth declaration would
+ * otherwise read its absence as an oversight rather than as fidelity.
  *
  * WHY THIS CLASS HAS NO SUPERTYPE
- * -------------------------------
- * integrationServices/BaseIntegration.cfc:L49 declares the legacy component as extending a
- * Hibachi framework base object. That inheritance is NOT carried forward. `org/Hibachi/**` is the
- * framework boundary this port extracts FROM, and AAP §0.8.3.2 is unambiguous: nothing from it is
- * ported or depended upon. The 938 files under that tree are reference-only.
- *
- * The boundary falls here cleanly, and that is checkable rather than asserted: none of the six
- * bodies below reads inherited state or calls an inherited member — each returns a fixed value —
- * so discarding the framework supertype costs nothing observable. The legacy supertype's own
- * symbol is deliberately not reproduced in this file — the locator above is the reference — so a
- * scan of this subtree for framework identifiers returns nothing from it.
+ * `integrationServices/BaseIntegration.cfc:L49` declares the legacy component as extending a
+ * Hibachi framework base object. That inheritance is not carried forward: `org/Hibachi/**` is the
+ * framework boundary this port extracts FROM, and AAP §0.8.3.2 ports nothing from it. The boundary
+ * falls here cleanly — none of the six bodies below reads inherited state or calls an inherited
+ * member, each returns a fixed value — so discarding the supertype costs nothing observable. The
+ * legacy supertype's own symbol is deliberately not reproduced anywhere in this file; the locator
+ * above is the reference.
  *
  * WHY INHERITANCE IS NEVERTHELESS THE RIGHT SHAPE FOR THIS ONE CLASS
- * -----------------------------------------------------------------
- * This deserves stating plainly, because a reviewer who knows the subtree-wide rule will read the
- * `extends BaseIntegration` clause in `GoogleIntegration.ts` as a violation of it.
+ * A reader who knows the subtree-wide rule will read the `extends BaseIntegration` clause in
+ * `GoogleIntegration.ts` as a violation of it, so the judgment is recorded here (prompt
+ * Guideline 6). The composition-over-inheritance decision of AAP §0.3.3 targets one specific thing:
+ * template-method reuse through `extends="HibachiService"` and the `super.save()` call chain, where
+ * a service inherited a large framework surface it never used and the inherited behavior was
+ * invisible at the call site. It does not prohibit a small, in-scope adapter base whose entire
+ * purpose is to supply defaults.
  *
- * It is not. The composition-over-inheritance decision of AAP §0.3.3 targets one specific thing:
- * template-method reuse through `extends="HibachiService"` and the `super.save()` call chain,
- * where a service inherited a large framework surface it never used and where the inherited
- * behavior was invisible at the call site. Replacing THAT with an injected collaborator is what
- * the decision buys. It does not prohibit a small, in-scope adapter base whose entire purpose is
- * to supply defaults.
+ * Keeping the inheritance earns something concrete: `getEventHandlers()` and `getAdminNavbarHTML()`
+ * are inherited by `GoogleIntegration` unchanged, exactly as the legacy adapter inherits them
+ * (`integrationServices/google/Integration.cfc:L49` extends this component). Composing instead would
+ * force the adapter to redeclare both members purely to delegate — duplication the legacy tree does
+ * not have. The legacy adapter overrides four members and inherits two; the port reproduces that
+ * shape member for member.
  *
- * Keeping the inheritance here is a documented judgment under prompt Guideline 6, and it earns
- * something concrete: `getEventHandlers()` and `getAdminNavbarHTML()` are inherited by
- * `GoogleIntegration` unchanged, exactly as the legacy adapter inherits them
- * (integrationServices/google/Integration.cfc:L49 extends this component). Composing instead would
- * force the adapter to redeclare both members purely to delegate — duplication the legacy tree
- * does not have. The legacy adapter overrides four members and inherits two; the port reproduces
- * that shape member for member.
- *
- * WHY IT IS COLOCATED HERE AND NOT HOISTED
- * ----------------------------------------
- * In the CFML tree this base component sits in the PARENT directory, `integrationServices/`,
- * because seventeen adapters share it. In this subtree exactly one adapter is in scope — `google`
- * — and those seventeen siblings, together with the six sibling contract and base components for
- * authentication, payment and shipping, are explicitly out of scope (AAP §0.2.2.3). The AAP
- * therefore colocates this class inside `src/integrations/google/`. There is no second subclass to
- * share it with, and a parent-level copy would imply a generality this port does not have.
- *
- * For the same reason the class is NOT widened to serve the payment or shipping adapter families:
- * none of their members appears below, and no token, credential, endpoint or rate concept enters
- * this file.
+ * COLOCATED, NOT HOISTED
+ * In the CFML tree this base component sits in the parent `integrationServices/` directory because
+ * seventeen adapters share it. Here exactly one adapter is in scope, and the sibling adapters along
+ * with the authentication, payment and shipping contracts and bases are out of scope
+ * (AAP §0.2.2.3), so the class is colocated with its one subclass. It is deliberately not widened to
+ * serve those families: none of their members appears below, and no token, credential, endpoint or
+ * rate concept enters this file.
  *
  * DIRECTLY INSTANTIABLE, AND WITHOUT COLLABORATORS
- * ------------------------------------------------
- * Two alternative shapes were available, and both are rejected on evidence:
+ * The class is not declared abstract and declares no unimplemented member. The legacy component is
+ * directly instantiable and all six of its bodies are concrete, so nothing is left for a subclass to
+ * supply, and making instantiation impossible would change the contract — which the Minimal Change
+ * Clause (AAP §0.8.1) forbids, under which idiom may change freely but behavior may not. It declares
+ * no constructor and takes no parameters, matching the legacy component, whose `init()` is merely an
+ * initializer returning the instance. With zero collaborators there is nothing to inject.
  *
- *   - The class is NOT declared as an incomplete base awaiting a subclass. The legacy component is
- *     directly instantiable and every one of its six bodies is concrete, so no member is left for
- *     a subclass to supply. Declaring the class or a member as unimplemented would change the
- *     contract by making instantiation impossible, which the Minimal Change Clause (AAP §0.8.1)
- *     forbids: idiom may change freely, behavior may not.
- *   - The class declares NO constructor and takes NO parameters. The legacy component declares no
- *     constructor either; `init()` is its initializer and it merely returns the instance. This
- *     class has zero collaborators, so there is nothing to inject — which is why AAP §0.7.3 S3,
- *     explicit constructor injection, is satisfied here by having no dependency at all rather than
- *     by wiring one.
+ * ONE IMPORT ONLY, AND IT MUST BE TYPE-ONLY
+ * The sibling contract is imported with `import type` for a structural reason rather than a
+ * stylistic one: `IntegrationContract.ts` holds only interface declarations and emits no runtime
+ * code, so a value import would name a module that does not exist after compilation.
  *
- * ARCHITECTURAL POSITION (AAP §0.7.3 S4 — hexagonal separation)
- * ------------------------------------------------------------
- * This module declares exactly ONE import: a type-only import of its sibling contract. The
- * `import type` form is required rather than stylistic — `IntegrationContract.ts` contains only
- * interface declarations and emits no runtime code, so a value import would name a module that
- * does not exist after compilation. Everything else is deliberately absent:
+ * A FRESH VALUE PER CALL — MISMATCH M7
+ * `getSettings()` and `getEventHandlers()` each construct their empty value inline on every call,
+ * and this module holds no module-scope state at all. Two independent reasons make that the only
+ * compliant shape. FIDELITY: the legacy bodies construct a new structure and a new array per
+ * invocation (`integrationServices/BaseIntegration.cfc:L64` and `:L68`), so a shared instance would
+ * hand every caller the same object and one caller mutating it would change what a later caller
+ * observes. MISMATCH M7: module-scope state persists on a warm container, so a shared mutable value
+ * would outlive the invocation that touched it and could carry data across a tenant boundary. The
+ * declared return types are read-only views, which states the intent; constructing fresh values
+ * enforces it even against a caller that discards those types.
  *
- *   - No port, no repository, no service, no handler and no configuration module is referenced.
- *   - No provider event, result or invocation-context type is named. All provider coupling is
- *     confined to `src/handlers/`.
- *   - The environment is never read here. Configuration flows one way through `src/config/`
- *     (AAP §0.4.3.5), and nothing below the config layer reads it.
- *   - No database driver, connection, statement text, table or column identifier appears.
- *   - No filesystem, path or address-parsing builtin, and no transport, markup, date or vendor
- *     package either. The in-scope adapter is a stub that makes no outbound call (AAP §0.8.3.3),
- *     so no client of that sort belongs in this folder.
- *   - No package is added (AAP §0.7.3 S5 — the dependency set is frozen).
- *
- * A FRESH VALUE PER CALL — EXECUTION-MODEL MISMATCH M7
- * ---------------------------------------------------
- * `getSettings()` and `getEventHandlers()` each construct their empty value inline, on every call.
- * Neither reads a shared binding, and this module holds no module-scope state at all: no hoisted
- * empty constant, no cache, no memo, no counter, and no reassignable module-scope binding.
- *
- * That is not incidental. Two independent reasons make it the only compliant shape:
- *
- *   - FIDELITY. The legacy bodies construct a new structure and a new array per invocation
- *     (integrationServices/BaseIntegration.cfc:L64 and L68). A shared instance would hand every
- *     caller the same object, so one caller mutating it would change what a later caller observes
- *     — behavior the legacy component does not have.
- *   - MISMATCH M7. Nothing survives between invocations of a stateless handler except
- *     module-scope state, which persists on a warm container. A shared mutable value here would
- *     outlive the invocation that touched it and could carry data across a tenant boundary. The
- *     declared return types are read-only views, which states the intent; constructing fresh
- *     values enforces it even against a caller that discards those types.
- *
- * WHAT IS DELIBERATELY NOT DECLARED (AAP §0.7.3 S9 — invent nothing)
- * -----------------------------------------------------------------
- *   - No seventh member. The two settings-related members declared solely on the Google adapter
- *     (integrationServices/google/Integration.cfc:L67 and L73) belong exclusively to
- *     `GoogleIntegration.ts`, and their names are deliberately not reproduced here so that each
- *     resolves to exactly one declaring file. Adding either, even as an empty default, would give
- *     this base class behavior the legacy base component does not have.
- *   - No lookup table, no discovery scan, no factory, no static single-instance accessor and no
- *     self-declaration hook. The legacy framework located integrations by scanning components on
- *     the ORM CFC path; AAP §0.8.3.2 and TR-3 retire that machinery rather than translating it, so
- *     its replacement is the one explicit `implements` clause written by hand below.
- *   - No lifecycle hook, no configuration hook, and no threshold, budget, retry or limit. None is
- *     observable in the legacy component, and AAP §0.6.6 together with IR-12 forbid inventing one.
- *   - Every member is synchronous. No body defers, and the keyword that would mark a member as
- *     awaitable appears nowhere in this file. Deferring a member would change the observable
- *     contract for every implementor and every caller.
+ * WHAT IS DELIBERATELY NOT DECLARED
+ * No seventh member: the two settings-related members declared solely on the Google adapter
+ * (`integrationServices/google/Integration.cfc:L67` and `:L73`) belong to `GoogleIntegration.ts`
+ * alone, and their names are not reproduced here so that each resolves to exactly one declaring
+ * file. No lookup table, discovery scan, factory or self-registration hook either — the legacy
+ * framework located integrations by scanning the ORM CFC path, and AAP §0.8.3.2 with TR-3 retires
+ * that machinery rather than translating it, so its replacement is the one hand-written `implements`
+ * clause below. No lifecycle hook, threshold, budget, retry or limit: none is observable in the
+ * legacy component, and AAP §0.6.6 with IR-12 forbid inventing one. Every member is synchronous,
+ * because deferring one would change the observable contract for every implementor and caller.
  *
  * CARRIED-DEFECT DISCIPLINE
  * -------------------------
  * This file carries no entry of the plan's carried-defect catalogue and mints no new number in it.
- * This folder owns exactly two entries and neither is this file's: the adapter's display-name
- * copy-paste artifact is annotated in `GoogleIntegration.ts`, and the dead, syntactically broken
- * feed data-access component is evidenced in this folder's `README.md`. An entry must be findable
- * in exactly one place, and this module is not that place for either.
+ * This folder owns exactly two entries (AAP §0.6.7) and neither is this file's: the adapter's
+ * display-name copy-paste artifact D11 is annotated in `GoogleIntegration.ts`, and the dead,
+ * syntactically broken feed data-access component is D12.
+ *
+ * ⚠️ F19 — THE D12 POINTER USED TO NAME AN UNDELIVERED FILE. This said the D12 evidence "is evidenced
+ * in this folder's `README.md`" and appealed to the rule that an entry must be findable in exactly one
+ * place. That `README.md` is not delivered at this checkpoint — the folder holds FOUR files — so the
+ * rule was being broken by the very sentence invoking it: the evidence was findable in NO place. It is
+ * now carried in `IntegrationContract.ts`, the module every other file in the folder depends on, and
+ * this file continues to hold neither entry.
  *
  * One legacy inconsistency inside this file's own span is recorded here and given no number,
  * because it is not a defect: integrationServices/BaseIntegration.cfc:L60 writes the empty string
@@ -273,8 +221,8 @@ export class BaseIntegration implements IntegrationContract {
    *
    * THIS MEMBER IS NOT PART OF `IntegrationContract`, AND THAT IS CORRECT.
    *
-   * A declaration scan of integrationServices/IntegrationInterface.cfc:L50-L89 returns five
-   * members, and this is not one of them: it is declared on the legacy BASE COMPONENT only
+   * The legacy `<cfinterface>` at integrationServices/IntegrationInterface.cfc:L50-L89 declares
+   * five members, and this is not one of them: it is declared on the legacy BASE COMPONENT only
    * (integrationServices/BaseIntegration.cfc:L71). Promoting it to the contract would impose a
    * requirement the legacy `<cfinterface>` never imposed and would force every future implementor
    * to supply it — invention forbidden by AAP §0.7.3 S9. Dropping it instead would remove a member

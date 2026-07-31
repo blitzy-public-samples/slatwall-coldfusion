@@ -1,38 +1,56 @@
 {
   /* ==============================================================================================
-   * slatwall-ts — the TypeScript compiler contract for the extracted Slatwall Catalog slice.
+   * The TypeScript compiler contract for the extracted Slatwall Catalog slice.
    *
-   * This file has no legacy counterpart. The Slatwall repository contains zero Node or TypeScript
-   * artifacts (AAP 0.3.1), so the extracted subtree carries its own compiler, test, lint and build
-   * configuration and inherits nothing from the CFML tree. Nothing outside slatwall-ts/ is ever
-   * part of a program defined here (AAP 0.8.2 guideline 5, transformation rule TR-6: the legacy
-   * tree is reference-only and stays byte-for-byte unchanged — including by not being compiled).
+   * This is the DEVELOPMENT / TYPE-CHECK program. It type-checks src/** and test/**, so the test
+   * tree is held to production strictness rather than to a relaxed test-only configuration. The
+   * sibling tsconfig.build.json extends this file and narrows the program to shippable src/** for
+   * the packaging step, so nothing test-only can reach a Lambda artifact. eslint.config.mjs uses
+   * typescript-eslint with `projectService: true`, so the "include" list below is also the file set
+   * the type-aware lint rules operate on.
    *
-   * This is the DEVELOPMENT / TYPE-CHECK program:
-   *   - `npm run typecheck` (tsc --noEmit) loads it, and that is the first half of the
-   *     deployability bar defined in AAP 0.8.3.10 (`npm run typecheck && npm run build`).
-   *   - eslint.config.mjs uses typescript-eslint with `projectService: true`, so the "include"
-   *     list below is also the file set the type-aware lint rules operate on.
-   *   - ts-jest resolves this same file, so the test tree is held to identical rules rather than
-   *     to a relaxed test-only configuration. See the isolatedModules note below for which of the
-   *     two commands actually performs the type check.
-   *   - The sibling tsconfig.build.json extends this file and narrows the program to shippable
-   *     src/** for the packaging step, so nothing test-only can reach a Lambda artifact. That is
-   *     the whole division of labour: this file type-checks src/** AND test/**; the build file
-   *     emits src/** only.
+   * Nothing outside this subtree is ever part of a program defined here: the CFML tree is
+   * reference-only and is not compiled.
    *
-   * The settings below reproduce the configuration that was compile-proved before the port was
-   * designed (AAP 0.1.2.3: a strict configuration with exactOptionalPropertyTypes and
-   * noUncheckedIndexedAccess, targeting ES2022 with NodeNext resolution, compiling an
-   * APIGatewayProxyHandler probe cleanly under `tsc --noEmit`). They are a contract, not a
-   * starting point: when a source file fails to compile, THE SOURCE FILE IS FIXED. This
-   * configuration is never weakened to let code through.
+   * These settings are a contract, not a starting point. When a source file fails to compile, THE
+   * SOURCE FILE IS FIXED; this configuration is never weakened to let code through.
    * ============================================================================================ */
   "compilerOptions": {
     /* --- Language and runtime target ----------------------------------------------------------
      * ES2022 is the language level of the Node 20 Lambda runtime this service targets, and the
      * level build/esbuild.mjs emits for (--target=node20). Keeping the two in step means a
      * construct that type-checks is a construct the runtime can execute.
+     *
+     * ⚠️ RUNTIME LIFECYCLE DISCLOSURE — THE NODE 20 TARGET IS KNOWN TO BE OUT OF SUPPORT, AND
+     * THE PIN STANDS ANYWAY. This is a deliberate, cited decision, not an oversight, and it is
+     * recorded here as well as in the plan so that a reader of the configuration finds it without
+     * having to read the plan first. The verified dates:
+     *   - Node.js 20 reached upstream end-of-life on 2026-03-24.
+     *   - AWS deprecated the Lambda `nodejs20.x` managed runtime on 2026-04-30; after that date
+     *     AWS stops applying security patches and removes the runtime from the console's creation
+     *     list, though it stays selectable through the CLI, CloudFormation, SAM and CDK, and
+     *     already-deployed functions remain invocable.
+     *   - Published AWS timelines CONFLICT on the subsequent hard gates. One gives a block on new
+     *     function creation at 2026-08-31 and on function updates at 2026-09-30; another gives
+     *     2027-02-01 and 2027-03-03. Both are recorded because neither can be treated as settled.
+     *
+     * WHY NOTHING HERE CHANGES. Node 20.x / `nodejs20.x` is the runtime the frozen plan specifies,
+     * and AAP 0.5.5 resolves the conflict explicitly — "The pin stands." — while AAP 0.5.3.2
+     * deliberately REJECTS the newer @types/node major for the same reason. Retargeting the
+     * runtime is a product decision recorded against the plan, not something this configuration
+     * may take unilaterally: aligning the code to the plan is the instruction, and silently
+     * contradicting the frozen runtime target would be the worse failure. The disclosure is the
+     * deliverable here; the migration is not.
+     *
+     * THE BLAST RADIUS IS SMALL BY CONSTRUCTION, AND A LATER MOVE IS MECHANICAL. Infrastructure as
+     * code is out of scope, so no `Runtime: nodejs20.x` string is authored anywhere in this
+     * subtree. Exactly four artifacts are version-coupled — `--target=node20` in
+     * build/esbuild.mjs, the `engines` field together with .nvmrc, the @types/node pin, and the
+     * version statements in the subtree README — and the hexagonal boundary confines every AWS
+     * type to src/handlers/**, so a runtime bump touches those four plus this "target"/"lib" pair
+     * and nothing under src/domain/**, src/ports/**, src/services/** or src/adapters/**. None of
+     * the above is a performance, latency, throughput or availability claim; no such figure is
+     * stated anywhere in this port (AAP IR-12).
      *
      * "lib" is pinned to ES2022 alone, so the browser (window / document / fetch-era) typings
      * TypeScript would otherwise make ambiently available are deliberately absent. This is a
@@ -46,23 +64,18 @@
     "lib": ["ES2022"],
 
     /* --- Module system -----------------------------------------------------------------------
-     * NodeNext for BOTH "module" and "moduleResolution" (AAP 0.4.3.5). Under NodeNext the nearest
-     * package.json "type" field decides each file's module format; slatwall-ts/package.json
-     * declares "type": "commonjs", so every .ts file here resolves and emits as CommonJS. That is
-     * deliberate and load-bearing: build/esbuild.mjs bundles with --format=cjs because that is
-     * what the Node 20 Lambda runtime loads, and ts-jest runs CommonJS by default. tsc, ts-jest
-     * and esbuild therefore agree on module semantics with no runtime resolver shim.
+     * NodeNext for both "module" and "moduleResolution". Under NodeNext the nearest package.json
+     * "type" field decides each file's module format, and package.json declares "type": "commonjs",
+     * so every .ts file resolves and emits as CommonJS — matching the --format=cjs bundle the Node
+     * 20 Lambda runtime loads and ts-jest's default. tsc, ts-jest and esbuild therefore agree on
+     * module semantics with no runtime resolver shim.
      *
-     * NO MODULE PATH ALIASES ARE DECLARED — neither the `baseUrl` anchor nor the `paths` map.
-     * Every intra-subtree import is a relative path. This is a correctness requirement, not a
-     * style preference: esbuild does not honour tsconfig alias maps the way tsc does, so an alias
-     * that type-checks cleanly can fail to resolve at bundle time and the packaged handler would
-     * throw MODULE_NOT_FOUND on cold start. Keeping resolution identical across both tools also
-     * protects the hexagonal boundary (AAP 0.7.3 standard 4): a relative import makes a
-     * domain -> adapter or service -> handler direction violation visible in the import line
-     * itself. A consequence worth stating because it looks like an omission otherwise:
-     * jest.config.ts correspondingly needs no moduleNameMapper alias block. An awkward-looking
-     * relative path is accepted as correct; an alias is not. */
+     * NO MODULE PATH ALIASES ARE DECLARED — neither `baseUrl` nor `paths`. Every intra-subtree
+     * import is relative. This is a correctness requirement: esbuild does not honour tsconfig alias
+     * maps, so an alias that type-checks can fail to resolve at bundle time and the packaged
+     * handler would throw MODULE_NOT_FOUND on cold start. Identical resolution across both tools
+     * also keeps the hexagonal boundary visible in the import line itself. Consequently
+     * jest.config.ts needs no moduleNameMapper alias block. */
     "module": "NodeNext",
     "moduleResolution": "NodeNext",
 
@@ -110,30 +123,23 @@
 
     /* --- Interop and hygiene ------------------------------------------------------------------
      * isolatedModules keeps tsc's semantics aligned with the per-file transpilation performed by
-     * esbuild and ts-jest, so a construct that needs whole-program information (and would be
-     * dropped by a single-file transform) is rejected here rather than misbehaving in the bundle.
-     * esModuleInterop lets the CommonJS runtime dependency (mysql2, the only bundled package) be
-     * imported with standard ESM syntax.
+     * esbuild and ts-jest, so a construct that needs whole-program information is rejected here
+     * rather than misbehaving in the bundle. esModuleInterop lets the CommonJS runtime dependency
+     * be imported with standard ESM syntax.
      *
-     * One consequence of isolatedModules is worth stating because it is easy to misread as a gap:
-     * ts-jest reads this very flag and, when it is set, transforms each test file individually
-     * instead of building a whole program, so `jest` reports runtime failures but not type errors.
-     * Type checking of the test tree is therefore owned by `npm run typecheck`, and that is
-     * exactly why "test/**" appears in this file's "include" list rather than only in a test-only
-     * configuration. Production source and tests are held to one identical rule set; the two
-     * commands simply divide the work — tsc proves the types, jest proves the behaviour.
+     * isolatedModules also makes ts-jest transform each test file individually instead of building
+     * a whole program, so the runner reports runtime failures but not type errors. Type checking of
+     * the test tree therefore belongs to the typecheck command, which is why "test/**" appears in
+     * this file's "include" list.
      *
-     * skipLibCheck excludes dependency .d.ts files from checking, which keeps the signal on this
-     * subtree's own source. It is safe here precisely because the type packages are exact-pinned
-     * rather than floating, and one pin is deliberate and worth restating: @types/node is held on
-     * the 20.x line (20.19.43) to track the Node 20 Lambda runtime. A newer major definition set
-     * would describe APIs that runtime does not have, turning a passing compile into a false
-     * assurance (AAP 0.5.3.2).
+     * skipLibCheck excludes dependency .d.ts files, keeping the signal on this subtree's own
+     * source. It is safe because the type packages are exact-pinned rather than floating, and
+     * @types/node is deliberately held on the 20.x line so it describes the APIs the Node 20
+     * runtime actually has.
      *
-     * "types" is deliberately NOT declared. Automatic @types inclusion covers @types/node,
-     * @types/jest and @types/aws-lambda together; naming a subset would silently drop
-     * @types/aws-lambda from the handler layer, which is the one place AWS coupling is allowed to
-     * exist at all (AAP 0.7.3 standard 4). */
+     * "types" is deliberately NOT declared. Automatic @types inclusion covers node, jest and
+     * aws-lambda together; naming a subset would silently drop the aws-lambda definitions from the
+     * handler layer, the one place AWS coupling is permitted. */
     "esModuleInterop": true,
     "forceConsistentCasingInFileNames": true,
     "isolatedModules": true,
@@ -168,11 +174,9 @@
   },
 
   /* Program scope. src/** and test/** are both checked so the test suite is held to production
-   * strictness, and jest.config.ts is listed so the runner's own configuration is type-checked
-   * too. build/esbuild.mjs is intentionally absent: it is .mjs, not TypeScript, and belongs to no
-   * TypeScript program. Every entry is subtree-relative and none of them walks up out of this
-   * directory, so the program cannot reach the CFML tree at all — that is how the additive-only
-   * invariant of AAP 0.4.1.1 is enforced mechanically rather than by convention. */
+   * strictness, and jest.config.ts is listed so the runner's own configuration is type-checked too.
+   * build/esbuild.mjs is intentionally absent: it is .mjs and belongs to no TypeScript program.
+   * Every entry is subtree-relative, so the program cannot reach the CFML tree. */
   "include": ["src/**/*.ts", "test/**/*.ts", "jest.config.ts"],
   "exclude": ["node_modules", "dist", "coverage"]
 }

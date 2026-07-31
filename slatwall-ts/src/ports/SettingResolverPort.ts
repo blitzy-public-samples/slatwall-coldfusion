@@ -1,70 +1,29 @@
 /**
- * Boundary port for platform-configuration reads made by the extracted Slatwall Catalog slice.
+ * Boundary port for the platform-configuration reads made by the extracted Catalog slice.
  *
- * This is a TYPE-ONLY module. It declares a contract and nothing else: no runtime code, no
- * imports, no input/output, no third-party package. It therefore emits nothing and contributes
- * zero bytes to the Lambda bundle, which is the property that lets the layers above it depend on
- * a settings capability without any of them depending on a settings implementation.
+ * Type-only: it declares a contract and imports nothing, so it emits no runtime code.
  *
- * LEGACY ORIGINS (reference only; the CFML tree is never modified — AAP §0.4.1.1 / TR-6):
- *   - model/entity/HibachiEntity.cfc:L128-L131 — `setting()`, the single accessor through which
- *     every in-scope entity reads configuration. Its declared return type is CFML's untyped
- *     `any`, and its body is one delegation:
- *       `getService("settingService").getSettingValue(settingName=..., object=this, ...)`
- *     The `object=this` argument is the load-bearing detail — see the RESOLUTION CONTEXT block.
- *   - model/service/SettingService.cfc:L443 — `getSettingValue(required string settingName,
- *     any object, array filterEntities, formatValue=false)`, the effective-value engine that
- *     `setting()` delegates to. Explicitly OUT OF SCOPE — AAP §0.2.2.1 excludes the
- *     `Setting*.cfc` family, which is exactly 3 files: model/entity/Setting.cfc,
- *     model/service/SettingService.cfc and model/dao/SettingDAO.cfc. That exclusion is
- *     precisely why this port exists.
- *   - config/dbdata/SlatwallSetting.xml.cfm — the `SwSetting` seed data. Its `settingValue`
- *     column is declared untyped at L6, and its `productTypeID` / `emailTemplateID` /
- *     `paymentMethodID` columns at L7-L9 are the scoping columns that make resolution
- *     per-object rather than global.
+ * Legacy origin (reference only; the CFML tree is never modified — AAP §0.4.1.1 / TR-6):
+ *   model/entity/HibachiEntity.cfc:L128-L131 — `setting()`, the one accessor every in-scope entity
+ *     reads configuration through. Its body delegates to `settingService.getSettingValue(...)`
+ *     passing `object=this`, which is what makes resolution per-object rather than global; see the
+ *     RESOLUTION CONTEXT block below.
+ *   model/service/SettingService.cfc:L443 — `getSettingValue(...)`, the effective-value engine that
+ *     `setting()` delegates to. Out of scope: AAP §0.2.2.1 excludes the `Setting*.cfc` family, and
+ *     that exclusion is precisely why this port exists.
+ *   config/dbdata/SlatwallSetting.xml.cfm:L6-L9 — the untyped `settingValue` column and the three
+ *     scoping columns that make resolution per-object.
  *
- * REQUIREMENT SATISFIED — IR-2: "A narrow setting-resolution port is unavoidable. The slice
- * reads eighteen distinct configuration keys through `HibachiEntity.setting()`
- * [model/entity/HibachiEntity.cfc:L129], whose effective-value engine lives in the out-of-scope
- * `SettingService`. A typed `SettingResolverPort` covering exactly those keys — including the
- * interpolated `productImage<size>Width` / `productImage<size>Height` form — is required, rather
- * than porting the platform-wide settings engine."
+ * IR-2 requires a NARROW port covering exactly the keys this slice reads, including the
+ * interpolated `productImage<size>Width` / `productImage<size>Height` form, rather than porting the
+ * platform-wide settings engine. So this module models the contract — which names may be asked for,
+ * against which object, and what shape comes back — and none of the resolution algorithm: no
+ * hierarchy walk, no scoping precedence, no metadata default and no caching, all of which stay
+ * inside the out-of-scope collaborator and its in-scope adapter.
  *
- * The emphasis on NARROW is the whole point. This module models the *contract* — which names may
- * be asked for, against which object, and what shape comes back. It deliberately models none of
- * the resolution *algorithm*: no hierarchy walk, no scoping precedence, no metadata defaults, no
- * caching. All of that stays inside the out-of-scope collaborator and its in-scope adapter.
- *
- * HEXAGONAL POSITION (AAP §0.7.3 S4). `src/ports/` is the innermost declaration layer. This file
- * imports nothing at all: not from `domain/`, and certainly not from `adapters/`, `services/`,
- * `config/`, `validation/`, `integrations/` or `handlers/`, all of which sit above it and would
- * invert the hexagon. It reads no environment variable — `src/config/env.ts` is the only file in
- * the subtree permitted to do that — contains no SQL and no `SwSetting` query, and names no AWS
- * type. Persistence belongs to `src/adapters/settings/StaticSettingResolver.ts`; AWS coupling
- * belongs to `src/handlers/**`.
- *
- * TESTABILITY (AAP §0.7.3 S6). Every declaration below is a plain structural type, so a bare
- * object literal satisfies the port — no class to extend, no abstract base, no registry, no
- * decorator, no framework. That matters because the legacy suite vendored no mocking library at
- * all and instead booted the entire FW/1 application and resolved collaborators through DI/1;
- * AAP §0.4.3.6 calls the difference "the single largest structural difference between the two
- * suites". `test/support/inMemoryRepositories.ts` hand-implements this contract. Coverage for it
- * is NET-NEW: AAP §0.6.5.2 verified that no legacy setting-service test of any kind exists.
- *
- * RULES. `review_rules` reports "No user rules provided." for this project, so zero files enter
- * scope by rule and no rule-derived constraint applies. Per UR4 that is not licence to lower the
- * bar: the nine binding standards of AAP §0.7.3 (S1 strict type safety, S2 parameterized SQL,
- * S3 explicit dependency injection, S4 hexagonal separation, S5 exact-version pinning, S6 one
- * labelled test per converted method, S7 preserve-and-annotate, S8 flag mismatches, S9 invent
- * nothing) govern this file instead, together with the prompt-borne constraints of AAP §0.7.4.
- *
- * NO DEFAULTS ARE SUPPLIED HERE (AAP §0.7.3 S9). Of the eighteen names below, exactly one —
- * `skuEligibleFulfillmentMethods` — is seeded at all, as three `productTypeID`-scoped rows at
- * config/dbdata/SlatwallSetting.xml.cfm:L14-L16. The remaining seventeen have no seeded row and
- * fall back to metadata defaults declared inside the out-of-scope
- * `model/service/SettingService.cfc`. Recording which names fall back, and to what, is
- * `src/adapters/settings/StaticSettingResolver.ts`'s job (AAP §0.4.1.7). This module therefore
- * declares no default, no fallback, no sentinel and no cache policy for any name.
+ * No default, fallback, sentinel or cache policy is declared here for any name. Recording which
+ * names have a seeded row and which fall back to a metadata default is the job of
+ * src/adapters/settings/StaticSettingResolver.ts (AAP §0.4.1.7).
  */
 
 /*
@@ -110,9 +69,7 @@
  * model/entity/Product.cfc:L224], so it appears at the third entry rather than on its own.
  */
 export type CatalogSettingName =
-  /** model/entity/Product.cfc:L208 (`getProductURL`), L212 (`getListingProductURL`). */
   | 'globalURLKeyProduct'
-  /** model/entity/Product.cfc:L217 (`getTemplate`, the fallback branch). */
   | 'productDisplayTemplate'
   /**
    * model/entity/Product.cfc:L224 (`getAlternateImageDirectory`),
@@ -121,37 +78,26 @@ export type CatalogSettingName =
    * no-entity receiver form described in the RESOLUTION CONTEXT block below.
    */
   | 'globalAssetsImageFolderPath'
-  /** model/entity/Product.cfc:L542 (`getTitle`, interpolated by `replaceStringTemplate`). */
   | 'productTitleString'
-  /** model/entity/Product.cfc:L552 (`getAllowBackorderFlag`). */
   | 'skuAllowBackorderFlag'
-  /** model/entity/Sku.cfc:L135 (`generateImageFileName`, the option-code separator). */
   | 'productImageOptionCodeDelimiter'
-  /** model/entity/Sku.cfc:L138 (`generateImageFileName`, the file extension). */
   | 'productImageDefaultExtension'
-  /** model/entity/Sku.cfc:L159, L160 (`getResizedImage`, the alt-text template). */
   | 'imageAltString'
-  /** model/entity/Sku.cfc:L165 (`getResizedImage`), L199 (`getResizedImagePath`). */
   | 'imageMissingImagePath'
   /**
    * model/entity/Sku.cfc:L362 (`getCurrencyCode`), L385, L418, L422, L425
    * (`getCurrencyDetails`) — five reads, the most of any single name in the slice.
    */
   | 'skuCurrency'
-  /** model/entity/Sku.cfc:L373, L375 (`getCurrencyDetails`, the eligibility list). */
   | 'skuEligibleCurrencies'
   /**
    * model/entity/Sku.cfc:L452 (`getEligibleFulfillmentMethods`). The only one of the eighteen
    * with seeded rows: config/dbdata/SlatwallSetting.xml.cfm:L14-L16.
    */
   | 'skuEligibleFulfillmentMethods'
-  /** model/entity/Sku.cfc:L462, L470, L472 (`getNextEstimatedAvailableDate`). */
   | 'globalDateFormat'
-  /** integrationServices/google/views/feed/product.cfm:L58 (`g:shipping_weight`, the value). */
   | 'skuShippingWeight'
-  /** integrationServices/google/views/feed/product.cfm:L58 (`g:shipping_weight`, the unit). */
   | 'skuShippingWeightUnitCode'
-  /** model/service/ProductService.cfc:L159 (`processProduct_addProductReview`). */
   | 'productAutoApproveReviewsFlag';
 
 /*
@@ -219,7 +165,7 @@ export type ProductImageDimensionSettingName =
 /**
  * Every setting name the Catalog slice may ask for: the 16 literals of {@link CatalogSettingName}
  * plus the 2 interpolated forms of {@link ProductImageDimensionSettingName}. 16 + 2 = 18, which
- * is the count IR-2 states, so a reviewer can check the figure without recounting the census.
+ * is the count IR-2 states.
  *
  * The union is closed on purpose. Anything outside the Catalog slice is a compile error here
  * rather than a silent runtime miss, and that is the mechanism by which this port stays narrow.
@@ -276,7 +222,7 @@ export type SettingName = CatalogSettingName | ProductImageDimensionSettingName;
 export type SettingValue = string;
 
 /*
- * ⭐ RESOLUTION CONTEXT — S8 DECISION (AAP §0.7.3 S8, AAP §0.8.2 Guideline 6).
+ * RESOLUTION CONTEXT — S8 DECISION (AAP §0.7.3 S8, AAP §0.8.2 Guideline 6).
  *
  * A bare `(name) => value` resolver would be UNFAITHFUL, and this is the single most important
  * semantic in the file. `setting()` passes `object=this` to the engine on every single call
@@ -291,7 +237,7 @@ export type SettingValue = string;
  *      model/entity/Option.cfc:L82
  *   2. `this.setting('x')` — the same thing written explicitly:
  *      model/entity/Sku.cfc:L362, L385, L418, L422, L425
- *   3. ⭐ `getProduct().setting('x')` — resolves against the PRODUCT, not the SKU. All six
+ *   3. `getProduct().setting('x')` — resolves against the PRODUCT, not the SKU. All six
  *      image-related reads take this form: model/entity/Sku.cfc:L135, L138, L184, L185, L212,
  *      L213. A SKU-scoped global resolver would return the wrong effective value here.
  *   4. `arguments.product.setting('x')` — a service resolving against a passed-in Product:
@@ -378,7 +324,6 @@ export type SettingResolutionEntityName = 'Product' | 'Sku' | 'Option';
  * mutable accumulator.
  */
 export interface SettingResolutionContext {
-  /** Which kind of object is resolving. See {@link SettingResolutionEntityName}. */
   readonly entityName: SettingResolutionEntityName;
   /**
    * That object's primary identifier — the counterpart of `getPrimaryIDValue()`
@@ -389,7 +334,7 @@ export interface SettingResolutionContext {
 }
 
 /*
- * ⭐⭐ SYNCHRONY — S8 DECISION, EXECUTION-MODEL MISMATCH M8
+ * SYNCHRONY — S8 DECISION, EXECUTION-MODEL MISMATCH M8
  * (AAP §0.6.6 M8; AAP §0.7.3 S8; AAP §0.8.2 Guideline 6).
  *
  * The accessor below is synchronous. It returns a plain value, it is not `async`, and it does not

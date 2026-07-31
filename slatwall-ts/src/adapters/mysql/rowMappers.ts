@@ -1,23 +1,15 @@
 /**
  * rowMappers — explicit, typed column-to-field hydration for the extracted Catalog slice.
  *
- * AUTHORITY. AAP 0.4.1.7 "MySQL Adapters", row 9: *"`slatwall-ts/src/adapters/mysql/rowMappers.ts`
- * | CREATE | REFERENCE the six in-scope entity files | Explicit column-to-field mapping replacing
- * Hibernate hydration; 32-character string identifiers honoured (IR-6)"*. Supporting authority:
- * AAP 0.3.3's "Data mapper / row mapper" row, which replaces *"Hibernate hydration driven by CFC
- * property metadata"* with *"explicit, typed, testable"* mapping; AAP 0.2.2.6 (the
- * calculated-property boundary); IR-6.
+ * AAP §0.4.1.7 makes this file CREATE against the six in-scope entity files: "Explicit column-to-field
+ * mapping replacing Hibernate hydration; 32-character string identifiers honoured (IR-6)". The legacy
+ * system never wrote a mapper — Hibernate hydrated each entity from the CFC `property` metadata, so the
+ * correspondence between a `Sw*` column and an entity field was implicit and unverifiable. Every mapping
+ * decision the ORM used to absorb is made here instead, which makes this module the single place the
+ * physical column vocabulary is spoken. `src/ports/repositories/SkuRepository.ts` and
+ * `src/domain/base/AuditableEntity.ts` both defer to it by name.
  *
- * WHY THIS FILE EXISTS AT ALL
- * ---------------------------
- * The legacy system never wrote a mapper. Hibernate hydrated each entity from the CFC `property`
- * metadata, so the correspondence between a `Sw*` column and an entity field was implicit,
- * undocumented and unverifiable. Every mapping decision that used to be absorbed by the ORM is made
- * here instead, in the open, where a compiler and a test can see it. Sibling ports state the same
- * ownership from the other side — `src/ports/repositories/SkuRepository.ts` records that
- * *"Column-to-field mapping has one owner, `src/adapters/mysql/rowMappers.ts` (AAP 0.4.1.7)"*, and
- * `src/domain/base/AuditableEntity.ts` defers the audit foreign-key translation to this module by
- * name. This file is therefore the single place the physical column vocabulary is spoken.
+ * WHAT THIS MODULE DOES NOT DO, because each boundary is load-bearing:
  *
  * WHAT THIS FILE IS NOT
  * --------------------
@@ -32,6 +24,13 @@
  *     name and no service locator (AAP 0.7.3 S3). For contrast, `model/dao/ProductDAO.cfc` builds a
  *     credential-reading connection in three separate places, at `:L155-L158`, `:L329-L330` and
  *     `:L420`; none of that shape survives.
+ *
+ *     THE SIX `*_ENTITY_METADATA` IMPORTS ARE NOT A REGISTRY, in case they read like one. Each is a
+ *     frozen constant exported by the entity module that owns it, imported under its own name and
+ *     referenced at exactly one call site — there is no map from an entity name to a declaration, no
+ *     lookup, no default branch and nothing this file could be asked to register into. The entity is
+ *     chosen by which function the caller called, exactly as it was before, and nothing here is
+ *     mutated: {@link manageEntity} reads the declaration and never writes to it.
  *   - IT CACHES NOTHING. No module-scope `Map`, no memoised mapper, no interned string table, no
  *     lazily built column-name index. This is the M7 execution-model mismatch made explicit:
  *     `cacheuse="transactional"` sits on 111 of the 113 legacy entities and the legacy entities also
@@ -43,39 +42,34 @@
  *   - IT READS NO ENVIRONMENT AND NAMES NO CLOUD TYPE. Configuration flows one way through
  *     `src/config/`, and all AWS coupling is confined to `src/handlers/` (AAP 0.7.3 S4).
  *
- * IMPORT DIRECTION (AAP 0.7.3 S4 — hexagonal separation)
- * ----------------------------------------------------
- * An adapter may reach `domain/`, `ports/`, `util/`, `errors/` and the `mysql2` package, and nothing
- * else. This module reaches only `domain/` and `errors/` — it needs no `util/` helper, and it needs
- * no `mysql2` type either, because {@link toRows} accepts `unknown` and narrows rather than
- * restating the driver's result union. Nothing from `config/`, `services/`, `handlers/`,
- * `integrations/` or `validation/` is imported, and neither is the sibling
- * `src/adapters/settings/StaticSettingResolver.ts`. Every import is relative and extensionless,
- * because `tsconfig.json` declares no `baseUrl` and no `paths`: an alias that type-checks under
- * `tsc` can still fail to resolve under `esbuild` and throw `MODULE_NOT_FOUND` at Lambda cold start.
+ * IMPORT DIRECTION. An adapter may reach `domain/`, `ports/`, `util/`, `errors/` and `mysql2`, and
+ * nothing else. This module reaches only `domain/` and `errors/`; it needs no `mysql2` type either,
+ * because {@link toRows} accepts `unknown` and narrows rather than restating the driver's result union.
+ * Every import is relative and extensionless, because `tsconfig.json` declares no `baseUrl` and no
+ * `paths` — an alias that type-checks under `tsc` can still fail to resolve under `esbuild`.
  *
- * THE FAILURE MODE THIS FILE IS BUILT TO PREVENT
- * ---------------------------------------------
- * A nullable column mapped to `null`, or to a present-but-`undefined` property, instead of to an
- * ABSENT property. It compiles, it reads naturally, and it silently diverges from the convention the
- * domain layer settled on — `src/domain/base/populate.ts` implements CFML null semantics as
- * `delete target[name]`, because `org/Hibachi/HibachiTransient.cfc` sets a property to NULL by
- * deleting its key. Nothing at the database boundary would catch the difference. Every nullable
- * column in this file therefore routes through {@link assignOptional}, which deletes rather than
- * assigns, and no line in this file ever assigns `undefined` or `null` to a field.
+ * THE FAILURE MODE THIS FILE IS BUILT TO PREVENT: a nullable column mapped to `null`, or to a
+ * present-but-`undefined` property, instead of to an ABSENT property. It compiles, it reads naturally,
+ * and it silently diverges from the convention the domain layer settled on — `src/domain/base/populate.ts`
+ * implements CFML null semantics as `delete target[name]`, because `org/Hibachi/HibachiTransient.cfc`
+ * sets a property to NULL by deleting its key. Nothing at the database boundary would catch the
+ * difference. Every nullable column here therefore routes through {@link assignOptional}, which deletes
+ * rather than assigns, and no line in this file ever assigns `undefined` or `null` to a field.
  *
- * @see slatwall-ts/src/domain/base/populate.ts for the sibling half of the same convention.
+ * @see `src/domain/base/populate.ts` for the sibling half of the same null convention.
  */
 
-import { Brand } from '../../domain/product/Brand';
-import { Option } from '../../domain/option/Option';
-import { OptionGroup } from '../../domain/option/OptionGroup';
-import { Product } from '../../domain/product/Product';
-import { ProductType } from '../../domain/product/ProductType';
-import { Sku } from '../../domain/sku/Sku';
-import { DomainError } from '../../errors/DomainError';
+import { Brand, BRAND_ENTITY_METADATA } from '../../domain/product/Brand';
+import { Option, OPTION_ENTITY_METADATA } from '../../domain/option/Option';
+import { OptionGroup, OPTION_GROUP_ENTITY_METADATA } from '../../domain/option/OptionGroup';
+import { Product, PRODUCT_ENTITY_METADATA } from '../../domain/product/Product';
+import { ProductType, PRODUCT_TYPE_ENTITY_METADATA } from '../../domain/product/ProductType';
+import { Sku, SKU_ENTITY_METADATA } from '../../domain/sku/Sku';
+import { manageEntity } from '../../domain/base/populate';
+import { DataIntegrityError, DomainError } from '../../errors/DomainError';
 
 import type { AuditableEntity } from '../../domain/base/AuditableEntity';
+import type { ManagedEntity } from '../../domain/base/populate';
 import type {
   UnusedOptionGroupRow,
   UnusedOptionRow,
@@ -101,7 +95,7 @@ import type { SkuSearchRow } from '../../ports/repositories/SkuRepository';
  * plus the many-to-many link table SwSkuOption, declared at [model/entity/Sku.cfc:L76] on the owning
  * side with `fkcolumn="skuID" inversejoincolumn="optionID"`, and mirrored at
  * [model/entity/Option.cfc:L66] with `inverse="true"`. Its two columns are therefore `skuID` and
- * `optionID`, which is what `MySqlSkuRepository.ts` binds when it builds its existence sub-queries.
+ * `optionID`, which is what `MySqlSkuRepository.ts` is to bind when it builds its existence sub-queries.
  * The two remaining SKU link tables are SwSkuAccessContent [model/entity/Sku.cfc:L77] and
  * SwSkuSubsBenefit [:L78].
  *
@@ -115,8 +109,18 @@ import type { SkuSearchRow } from '../../ports/repositories/SkuRepository';
  * One in-scope statement is worth knowing about because this file maps its output: the product-type
  * tree query at [model/dao/ProductTypeDAO.cfc:L54-L62] is native statement text that nonetheless
  * names the logical entities. Deciding what to emit for it belongs to `MySqlProductTypeRepository.ts`
- * and not here; the finding takes no new register number, the defect register being closed at
- * D1-D22 and the mismatch register at M1-M8.
+ * and not here; the finding takes no new register number, because it is already covered by D22 above.
+ *
+ * THE AUTHORITATIVE REGISTER BOUNDS ARE D1-D24 AND M1-M9. AAP 0.6.7 catalogues D1-D21 and AAP 0.6.6
+ * catalogues M1-M8; the three defects and one mismatch beyond those were found during the port and
+ * are each recorded once, at the file that owns the behaviour: D22 here and in
+ * `src/ports/repositories/SkuRepository.ts` (the logical-versus-physical name vocabulary), D23 at
+ * `src/services/SkuService.ts` (`getTransactionExistsFlag` declares no arguments yet forwards an
+ * argument collection), D24 at the same file (`processImageUpload` returns a boolean rather than the
+ * SKU), and M9 at the same file (CFML struct iteration is unordered where the target's is not).
+ * Within M1-M9, M5 is the request-end implicit transaction demarcation and M6 is the validation
+ * read-back loop; those two are adjacent, easy to transpose, and must not be swapped, because
+ * `src/adapters/mysql/UnitOfWork.ts` is answerable for both and for different reasons.
  *
  * THIS FILE ITSELF NAMES NO TABLE IN ANY EXECUTABLE POSITION. The block above is documentation.
  * =============================================================================================== */
@@ -168,23 +172,17 @@ function isMySqlRow(value: unknown): value is MySqlRow {
 /**
  * Narrows a driver result to the rows it carries.
  *
- * This is the one place the driver's heterogeneous result shape is dealt with. `mysql2` types the
- * first element of an `execute()` result as a union covering row arrays, nested row arrays,
- * write-acknowledgement packets, result-set headers and procedure-call packets, and its row type
- * carries an index signature that widens every column to `any`. The parameter is therefore declared
- * `unknown`: a caller may hand over the driver value directly, no driver type is imported, and
- * nothing downstream of this function ever sees the union.
+ * This is the one place the driver's heterogeneous result shape is dealt with. `mysql2` types the first
+ * element of an `execute()` result as a union covering row arrays, nested row arrays,
+ * write-acknowledgement packets, result-set headers and procedure-call packets, and its row type carries
+ * an index signature that widens every column to `any`. The parameter is therefore declared `unknown`: a
+ * caller may hand over the driver value directly, no driver type is imported, and nothing downstream of
+ * this function ever sees the union. The narrowing is performed by the two type predicates above, which
+ * is why the body needs no cast and no assertion.
  *
- * A LINT ESCAPE HATCH IS DELIBERATELY NOT USED HERE, AND THE ABSENCE IS THE POINT. The narrowing is
- * performed by the two type predicates above, so this module contains no `any`, no assertion, no
- * `as` cast and no suppression comment of any kind — which is a strictly stronger position than the
- * single inline exception the folder convention would have permitted for exactly this function. A
- * reviewer searching this file for a disable directive and finding none is looking at the intended
- * outcome, not at a missing annotation.
- *
- * A result that is not an array of row objects is a genuine programming fault at the call site — a
- * write statement routed into a read path, or a multi-statement result handed in whole — so it
- * raises rather than degrading to an empty array, which would silently report "no rows found".
+ * A result that is not an array of row objects is a genuine programming fault at the call site — a write
+ * statement routed into a read path, or a multi-statement result handed in whole — so it raises rather
+ * than degrading to an empty array, which would silently report "no rows found".
  *
  * @param result - The value a driver returned for a statement, unnarrowed.
  * @returns The rows, in the order the driver produced them.
@@ -292,7 +290,7 @@ type DefaultedFieldName<TTarget> = {
  * Writes a nullable column into an optional domain field, DELETING the field when the column is
  * NULL.
  *
- * ⚠️ THIS IS THE MOST IMPORTANT FUNCTION IN THE MODULE, AND THE REASON IS A SPECIFIC LEGACY CALL
+ * THIS IS THE MOST IMPORTANT FUNCTION IN THE MODULE, AND THE REASON IS A SPECIFIC LEGACY CALL
  * SITE. `model/service/ProductService.cfc:L268` tests `isNull(arguments.product.getURLTitle())` and
  * nothing else, whereas the sibling `saveProductType` at `:L295` tests `isNull(...) || !len(...)`.
  * So a product whose `urlTitle` arrives blank must end up with the key ABSENT: if absence were
@@ -439,15 +437,52 @@ function readRequiredString(
     return value;
   }
   if (alternateColumnName !== undefined) {
-    return readOptionalString(row, alternateColumnName) ?? '';
+    const alternateValue = readOptionalString(row, alternateColumnName);
+    if (alternateValue !== undefined) {
+      return alternateValue;
+    }
   }
-  return '';
+
+  /*
+   * ⚠️ F17 — NEITHER ALIAS IS PRESENT, SO THIS RAISES. An earlier revision returned `''` here, and
+   * that substitution is the finding: every caller of this function is building an IDENTIFIER or a
+   * human-readable LABEL for a projection row — `id`/`value` for the SKU and product search rows,
+   * `name`/`value` for the two unused-option rows — and not one of those has a meaningful empty
+   * value. A blank id cannot be selected, fetched or round-tripped, and a blank label renders as an
+   * empty entry in a picker.
+   *
+   * WHAT THE EMPTY STRING ACTUALLY HID. This branch is reached only when the column is ABSENT from
+   * the row or holds NULL. Absent means the SQL projection and this mapper have DRIFTED — a renamed
+   * alias, a dropped column, a query edited without its mapper. That is a defect in the adapter
+   * pair, and returning `''` converted it into plausible-looking data that flowed all the way to a
+   * response body. The failure would then surface far from its cause, as a mysteriously blank row.
+   *
+   * A PRESENT-BUT-EMPTY COLUMN IS STILL NOT AN ERROR, and that distinction is deliberate: the first
+   * branch above returns whatever `readOptionalString` yields, including `''`. Only absence and NULL
+   * raise. So this check tightens the ADAPTER CONTRACT without inventing a non-empty constraint on
+   * the data that the legacy schema does not impose — validation of column CONTENT belongs to
+   * `../../validation/**`, not here.
+   *
+   * `DataIntegrityError` rather than a bare `DomainError`, so the fault classifies as
+   * service-attributable and sanitises to a 500 through `../../handlers/httpResponse.ts`. A caller
+   * cannot correct an alias mismatch, so reporting it as a 4xx would be a lie.
+   */
+  throw new DataIntegrityError(
+    alternateColumnName === undefined
+      ? `Column "${columnName}" is required by this projection but the row supplies no value.`
+      : `Neither column "${columnName}" nor its alias "${alternateColumnName}" is present in the row, ` +
+          `so this projection cannot be mapped.`,
+    {
+      context:
+        alternateColumnName === undefined ? { columnName } : { columnName, alternateColumnName },
+    },
+  );
 }
 
 /**
  * Reads a numeric column.
  *
- * ⚠️ A NUMERIC STRING IS ACCEPTED, AND IT HAS TO BE. `ormtype="big_decimal"` — the type of
+ * A NUMERIC STRING IS ACCEPTED, AND IT HAS TO BE. `ormtype="big_decimal"` — the type of
  * `price`, `listPrice` and `renewalPrice` at `model/entity/Sku.cfc:L53-L55` and of
  * `calculatedSalePrice` at `model/entity/Product.cfc:L62` — becomes a MySQL `DECIMAL`, and the Node
  * driver hands `DECIMAL` back as a JavaScript string so that no precision is lost in transit. The
@@ -478,7 +513,23 @@ function readOptionalNumber(row: MySqlRow, columnName: string): number | undefin
     throw columnTypeError(columnName, 'a finite number', value);
   }
   if (typeof value === 'bigint') {
-    return Number(value);
+    /*
+     * ⚠️ F16 — DEFENCE IN DEPTH. An earlier revision returned `Number(value)` unchecked, which
+     * silently rounds any magnitude beyond 2^53. This reader serves the INTEGER columns
+     * (`sortOrder`, `calculatedQATS`; `ormtype="integer"`), whose declared range fits a double
+     * comfortably — so the guard should never fire. It is written anyway because the cost is one
+     * comparison and the alternative is an undetectable off-by-a-few in a quantity. Monetary
+     * columns do NOT come through here at all; see {@link readOptionalExactDecimal}.
+     */
+    const converted = Number(value);
+    if (BigInt(converted) === value) {
+      return converted;
+    }
+    throw integrityError(
+      `Column "${columnName}" holds the integer ${value.toString()}, which cannot be represented ` +
+        `exactly as a JavaScript number.`,
+      { columnName, exactValue: value.toString() },
+    );
   }
   if (typeof value === 'string') {
     const parsed = Number(value.trim());
@@ -514,7 +565,7 @@ function readRequiredNumber(row: MySqlRow, columnName: string): number {
 /**
  * Reads a boolean-flag column.
  *
- * ⚠️ FOUR REPRESENTATIONS ARE ACCEPTED BECAUSE MySQL AND ITS DRIVER PRODUCE FOUR. `ormtype="boolean"`
+ * FOUR REPRESENTATIONS ARE ACCEPTED BECAUSE MySQL AND ITS DRIVER PRODUCE FOUR. `ormtype="boolean"`
  * has no single physical form: depending on how the legacy ORM generated the column it is a
  * `TINYINT(1)`, which the driver returns as the number 0 or 1, or a `BIT(1)`, which the driver
  * returns as a one-byte binary value. A driver configured to stringify results yields `'0'` / `'1'`,
@@ -634,6 +685,150 @@ function columnTypeError(columnName: string, expectation: string, value: unknown
 }
 
 /**
+ * Builds the row-integrity fault raised when a column's VALUE cannot be carried without loss, or when
+ * a column the projection promised is missing.
+ *
+ * Distinct from {@link columnTypeError} on purpose. That helper reports a runtime TYPE that does not
+ * match the field — a wiring mistake in the mapper. This one reports a value that is the right type
+ * and still cannot be represented, or a projection that did not deliver. Both are service faults, but
+ * only this one classifies as `DataIntegrityError`, which is what makes it sanitise to a 500 with the
+ * service-data code rather than the generic fault code.
+ *
+ * @param message - The internal diagnostic. Never reaches a response body; the public presentation is
+ *   supplied by `DataIntegrityError.getPublicError()`.
+ * @param context - Structured diagnostic fields, kept server-side.
+ * @returns The error to throw.
+ */
+function integrityError(message: string, context: Record<string, unknown>): DataIntegrityError {
+  return new DataIntegrityError(message, { context });
+}
+
+/**
+ * The MySQL DECIMAL wire form: an optional sign, digits, and an optional fractional part. No exponent,
+ * no whitespace, no grouping separators — MySQL never emits any of those for a DECIMAL column.
+ */
+const EXACT_DECIMAL_PATTERN = /^[+-]?\d+(?:\.\d+)?$/;
+
+/**
+ * Strips the presentational parts of a decimal string so two spellings of the SAME NUMBER compare
+ * equal: `'100.00'`, `'+100'` and `'100'` all normalise to `'100'`, and `'-0.10'` to `'-0.1'`.
+ *
+ * Scale is presentation, not value. A DECIMAL(19,2) holding one hundred is numerically identical to
+ * the integer one hundred, so treating the lost trailing zeros as a data-integrity failure would
+ * reject nearly every well-formed monetary column. Trailing-zero RENDERING is a separate concern and
+ * belongs to the feed layer, which formats to an explicit scale.
+ *
+ * @param decimalText - A string already matched by {@link EXACT_DECIMAL_PATTERN}.
+ * @returns The canonical spelling of the same numeric value.
+ */
+function canonicaliseDecimalText(decimalText: string): string {
+  const negative = decimalText.startsWith('-');
+  const unsigned = decimalText.replace(/^[+-]/, '');
+  const [rawWhole = '', rawFraction = ''] = unsigned.split('.');
+  const whole = rawWhole.replace(/^0+(?=\d)/, '');
+  const fraction = rawFraction.replace(/0+$/, '');
+  const magnitude = fraction.length > 0 ? `${whole}.${fraction}` : whole;
+  // Negative zero is the one value whose sign is not meaningful for equality here.
+  return negative && /[1-9]/.test(magnitude) ? `-${magnitude}` : magnitude;
+}
+
+/**
+ * Reads an EXACT-DECIMAL (`ormtype="big_decimal"`) column, converting it to a number ONLY when the
+ * conversion provably loses nothing.
+ *
+ * ⚠️⚠️ F16 — WHY THIS EXISTS SEPARATELY FROM {@link readOptionalNumber}. The catalog's monetary
+ * columns are declared `big_decimal`: `listPrice`, `price` and `renewalPrice` at
+ * [model/entity/Sku.cfc:L55-L57], and `calculatedSalePrice` at [model/entity/Product.cfc:L62].
+ * Hibernate mapped those to Java `BigDecimal` — exact, arbitrary precision. An IEEE-754 double is
+ * neither. Routing them through the general numeric reader converted a `BigDecimal` to a double with
+ * NO CHECK, so a value the double cannot represent was silently replaced by the nearest one it can.
+ * A price that changes in the fourth digit produces no error, no warning and no failing test; it
+ * produces a wrong number in a feed, an invoice or a comparison.
+ *
+ * WHY THE DOMAIN FIELD REMAINS A NUMBER. The three Sku fields stay `number` deliberately rather than
+ * becoming a decimal string, because arithmetic and ORDER COMPARISON are performed on them: the feed's
+ * sale-price gate at [integrationServices/google/views/feed/product.cfm:L28] is a strict
+ * greater-than, and the value it compares against arrives from `PricingPort`, an out-of-scope
+ * boundary port this slice may not redefine (AAP §0.2.2.7). Changing the field type alone would not
+ * make that comparison exact; it would only move the conversion somewhere less visible. So the
+ * decision taken here is the honest one: KEEP the double, and REFUSE to produce one when it would be
+ * wrong.
+ *
+ * THE LOSSLESSNESS TEST IS A ROUND TRIP, NOT A RANGE CHECK. The exact digits are converted to a
+ * double and the double is converted back to its shortest decimal spelling; the two are compared
+ * after {@link canonicaliseDecimalText} removes purely presentational differences. `'1.15'` passes:
+ * although 1.15 has no exact binary representation, `String(1.15)` returns `'1.15'`, so no digit of
+ * the stored value is lost. `'12345678901234567890.12'` fails: it returns `'12345678901234568000'`,
+ * five digits away from what the database holds. That is precisely the discrimination a magnitude
+ * check would get wrong in both directions.
+ *
+ * A JAVASCRIPT NUMBER IS REFUSED OUTRIGHT. With `../../config/env.ts`'s pool configured as
+ * `../../config/database.ts` specifies — `decimalNumbers: false`, `supportBigNumbers` and
+ * `bigNumberStrings` both true — a `big_decimal` column ALWAYS arrives as an exact string. If one
+ * arrives as a number then the driver has already done the lossy conversion and the exact digits are
+ * gone beyond recovery, so accepting it would be accepting a value that is possibly already wrong.
+ * Refusing turns a silent configuration regression into a loud, classified fault.
+ *
+ * @param row - The row being read.
+ * @param columnName - The column or projection alias to read.
+ * @returns The exact value as a number, or `undefined` when the column is absent or NULL.
+ * @throws {DataIntegrityError} When the value cannot be represented exactly, when the text is not a
+ *   well-formed decimal, or when the driver delivered a pre-converted number.
+ */
+function readOptionalExactDecimal(row: MySqlRow, columnName: string): number | undefined {
+  const value = row[columnName];
+  if (value === null || value === undefined) {
+    return undefined;
+  }
+
+  if (typeof value === 'string') {
+    const decimalText = value.trim();
+    if (!EXACT_DECIMAL_PATTERN.test(decimalText)) {
+      throw integrityError(
+        `Column "${columnName}" holds ${JSON.stringify(decimalText)}, which is not a well-formed ` +
+          `exact-decimal value.`,
+        { columnName },
+      );
+    }
+    const converted = Number(decimalText);
+    if (
+      Number.isFinite(converted) &&
+      canonicaliseDecimalText(String(converted)) === canonicaliseDecimalText(decimalText)
+    ) {
+      return converted;
+    }
+    throw integrityError(
+      `Column "${columnName}" holds the exact decimal ${decimalText}, which cannot be represented ` +
+        `exactly as a JavaScript number (nearest is ${String(converted)}).`,
+      { columnName, exactValue: decimalText, nearestDouble: String(converted) },
+    );
+  }
+
+  if (typeof value === 'bigint') {
+    const converted = Number(value);
+    if (BigInt(converted) === value) {
+      return converted;
+    }
+    throw integrityError(
+      `Column "${columnName}" holds the exact integer ${value.toString()}, which cannot be ` +
+        `represented exactly as a JavaScript number.`,
+      { columnName, exactValue: value.toString() },
+    );
+  }
+
+  if (typeof value === 'number') {
+    throw integrityError(
+      `Column "${columnName}" is an exact-decimal column but the driver delivered a JavaScript ` +
+        `number, so its exact digits have already been lost. Check that the pool keeps ` +
+        `decimalNumbers disabled, as ../../config/database.ts requires.`,
+      { columnName, deliveredValue: value },
+    );
+  }
+
+  throw columnTypeError(columnName, 'an exact-decimal string', value);
+}
+
+/**
  * Hydrates the four audit fields every in-scope entity declares.
  *
  * The block is byte-identical on all six entities — `model/entity/Product.cfc:L96-L99`,
@@ -645,7 +840,7 @@ function columnTypeError(columnName: string, expectation: string, value: unknown
  * on its own surface and satisfies the contract structurally, and this function writes through that
  * contract without any entity inheriting anything.
  *
- * ⚠️ TWO OF THE FOUR ARE COLUMN-TO-FIELD RENAMES, AND THIS IS THE ONLY PLACE THAT KNOWS IT. The
+ * TWO OF THE FOUR ARE COLUMN-TO-FIELD RENAMES, AND THIS IS THE ONLY PLACE THAT KNOWS IT. The
  * legacy declarations are `many-to-one` associations to `cfc="Account"` carrying
  * `fkcolumn="createdByAccountID"` and `fkcolumn="modifiedByAccountID"`, while the domain fields are
  * the un-suffixed `createdByAccount` and `modifiedByAccount`, typed as the 32-character identifier
@@ -671,15 +866,21 @@ function assignAuditColumns(entity: AuditableEntity, row: MySqlRow): void {
 }
 
 /* ===============================================================================================
- * THE ENTITY MAPPERS — FOUR RULES THAT APPLY TO ALL SEVEN
+ * THE ENTITY MAPPERS — FIVE RULES THAT APPLY TO ALL SEVEN
  * ===============================================================================================
  *
- * RULE 1 — PLAIN FIELD WRITES, NEVER A SETTER. No accessor pair exists anywhere in `domain/`: the
+ * RULE 1 — PLAIN FIELD WRITES, NEVER A SETTER. No accessor PAIR exists anywhere in `domain/`: the
  * entities are plain public fields, because `src/domain/base/populate.ts` clears a property with
  * `delete` and *"you cannot `delete` an accessor-backed value"*. So each mapper constructs the entity
  * and writes its fields directly. The one apparent exception is not one: nothing here calls
  * `setOptionGroup`, `addSku` or any other bidirectional helper, because nothing here hydrates an
  * association at all — see RULE 3.
+ *
+ *   RULE 5 DOES NOT WEAKEN THIS. The seven members `manageEntity` attaches are framework
+ *   INTROSPECTION members, not property accessors: there is no `set*` among them, none of them is
+ *   defined with `get`/`set` syntax, and each is an ordinary own value property holding a function.
+ *   So every field this file writes stays a plain writable, deletable data property, and
+ *   {@link assignOptional}'s `delete` keeps working on exactly the same terms it did before.
  *
  * RULE 2 — ONE MAPPER READS ONE TABLE'S COLUMNS. A mapper never inspects a joined table's columns,
  * because two joined tables in one row can collide on a column name — `activeFlag`, `urlTitle`,
@@ -696,23 +897,49 @@ function assignAuditColumns(entity: AuditableEntity, row: MySqlRow): void {
  * left UNRESOLVED, meaning this module writes nothing to it whatsoever, and every collection keeps
  * the empty array its own class initialised.
  *
- *   What "unresolved" looks like at runtime differs across the domain layer, and the difference is
- *   worth stating rather than leaving to be discovered. `src/domain/product/Product.ts:L945`,
- *   `src/domain/sku/Sku.ts:L1002` and `src/domain/product/Brand.ts` prefix their association fields
- *   with `declare`, which emits no field definition, so a fresh instance does not carry the key at
- *   all. `src/domain/option/Option.ts:L657`, `src/domain/option/OptionGroup.ts` and
- *   `src/domain/product/ProductType.ts:L653` do not, and under `useDefineForClassFields` — on by
- *   default at the ES2022 target this subtree compiles to — a declared field IS defined on the
- *   instance, so a fresh instance carries that key holding `undefined`. Either way no association is
- *   resolved and no stub is fabricated, which is the part that carries behaviour.
+ *   WHAT "UNRESOLVED" LOOKS LIKE AT RUNTIME IS NOW UNIFORM ACROSS THE DOMAIN LAYER, and the
+ *   uniformity is deliberate rather than incidental. Every association field on every in-scope entity
+ *   is declared with `declare` — `src/domain/product/Product.ts` (`brand` at `:L976`, `productType`
+ *   at `:L990`, `defaultSku` at `:L1010`), `src/domain/sku/Sku.ts` (`product` at `:L1023`,
+ *   `subscriptionTerm` at `:L1033`), `src/domain/option/Option.ts` (`optionGroup` at `:L737`) and
+ *   `src/domain/product/ProductType.ts` (`parentProductType` at `:L677`) — which emits no field
+ *   definition, so a
+ *   FRESH INSTANCE DOES NOT CARRY THE KEY AT ALL and an unresolved association is genuinely absent.
+ *   That is what makes the invariant this module states an invariant rather than an aspiration: a
+ *   mapped entity's association keys are absent, full stop, with no per-entity exception a consumer
+ *   would have to know about. (`src/domain/product/Brand.ts` and `src/domain/option/OptionGroup.ts`
+ *   need no such declaration because neither declares a many-to-one at all.)
  *
- *   THAT DIFFERENCE IS ALSO WHY {@link assignOptional} DELETES RATHER THAN MERELY SKIPPING THE WRITE.
- *   For a column this module does map, "skip the assignment when the value is NULL" would leave the
- *   class-defined `undefined` sitting on those three entities, so one NULL column would yield an
- *   absent key on `Product` and a present-but-undefined key on `Option` — precisely the silent
- *   divergence a downstream `exactOptionalPropertyTypes` consumer is entitled to assume cannot
- *   happen. Deleting normalises absence across both declaration styles, which is why the helper is
- *   written the way it is and must not be simplified into a conditional assignment.
+ *   SCALAR COLUMN FIELDS ARE A DIFFERENT AND GENUINELY NON-UNIFORM STORY, measured rather than
+ *   assumed. Under `useDefineForClassFields` — on by default at the ES2022 target this subtree
+ *   compiles to — an optional field declared WITHOUT `declare` is emitted as a real field definition,
+ *   so it is PRESENT holding `undefined` on a fresh instance, whereas one declared WITH `declare`
+ *   emits nothing and is ABSENT. The six in-scope entities do not agree with each other on which form
+ *   they use for scalars, and a fresh-instance probe of all six reports the split exactly:
+ *
+ *     `Product`, `Sku`, `Brand`            every optional scalar uses `declare`  -> ABSENT
+ *     `Option`, `ProductType`, `OptionGroup`  optional scalars are ordinary       -> PRESENT/undefined
+ *
+ *   Primary keys are present in all six, holding the `''` their own initialiser assigned, and every
+ *   collection is present holding its own fresh array. The divergence is confined to OPTIONAL SCALARS.
+ *
+ *   THAT TABLE DESCRIBES A FRESH INSTANCE, AND THIS MODULE ERASES IT. Every column a mapper reads goes
+ *   through {@link assignOptional}, which DELETES on absence, so a MAPPED entity is uniformly absent on
+ *   both sides of the split: `'optionName' in mapOptionRow({optionID})` is `false` even though
+ *   `'optionName' in new Option()` is `true`. The divergence therefore survives only on an unmapped
+ *   instance, and only for fields no mapper touches. It is recorded here rather than "corrected"
+ *   because changing a domain field's declaration form to tidy the table would be a behaviour change
+ *   no finding asked for, and because the output of this module is already uniform without it.
+ *
+ *   SO {@link assignOptional} MUST DELETE RATHER THAN MERELY SKIP THE WRITE, and the table above is
+ *   precisely why. For a column this module maps on `Option`, `ProductType` or `OptionGroup`, "skip the
+ *   assignment when the value is NULL" would leave the class-defined `undefined` sitting on the field,
+ *   so a NULL column would yield a present-but-undefined key there while the same NULL column on
+ *   `Product`, `Sku` or `Brand` yielded an absent one — two different shapes for one concept, varying
+ *   by entity, which is exactly the silent divergence a downstream `exactOptionalPropertyTypes`
+ *   consumer is entitled to assume cannot happen. Deleting is what collapses the two cases into one,
+ *   which is why the helper is written the way it is, why it is the single mechanism every nullable
+ *   column routes through, and why it must not be simplified into a conditional assignment.
  *
  *   Why not populate a stub carrying just the foreign key, in imitation of a lazy proxy? Because a
  *   stub answers non-identifier reads with class defaults instead of failing. `Sku.generateImageFileName`
@@ -730,6 +957,54 @@ function assignAuditColumns(entity: AuditableEntity, row: MySqlRow): void {
  * The empty array is also the state the legacy suite pins: `meta/tests/unit/entity/BrandTest.cfc`
  * overrides `defaults_are_correct` to assert `getProducts()` equals `[]`.
  *
+ * RULE 5 — EVERY ENTITY MAPPER RETURNS A MANAGED ENTITY, NEVER A BARE INSTANCE. Each of the six
+ * entity mappers routes construction through {@link manageEntity} from `src/domain/base/populate.ts`
+ * with that entity's own frozen declaration — `PRODUCT_ENTITY_METADATA`, `SKU_ENTITY_METADATA`,
+ * `PRODUCT_TYPE_ENTITY_METADATA`, `BRAND_ENTITY_METADATA`, `OPTION_ENTITY_METADATA` and
+ * `OPTION_GROUP_ENTITY_METADATA` — and is typed `ManagedEntity<X>` rather than `X`.
+ *
+ *   WHY IT HAS TO HAPPEN HERE. In CFML these members were INHERITED, so no entity could exist
+ *   without them: `getClassName` at `org/Hibachi/HibachiObject.cfc:L135-L137`, `hasProperty` at
+ *   `org/Hibachi/HibachiTransient.cfc:L763-L765`, `getPropertyMetaData` at `:L738-L747`,
+ *   `getValueByPropertyIdentifier` at `:L466-L481`, `getEntityName` at
+ *   `org/Hibachi/HibachiEntity.cfc:L287-L289`, `getPrimaryIDValue` at `:L244-L246` and
+ *   `getPrimaryIDPropertyName` at `:L249-L251` were all in place from the instant Hibernate hydrated
+ *   a row. Three collaborators in this subtree read them: `src/validation/Validator.ts` needs
+ *   `getClassName` and `hasProperty` (and at `HibachiValidationService.cfc:L171` a rule whose property
+ *   `hasProperty` denies is SILENTLY SKIPPED, so a missing member does not fail loudly — it disables
+ *   validation), `src/ports/UniquePropertyPort.ts` needs the five accessors
+ *   `HibachiDAO.cfc:L134-L138` reads in that order, and `src/services/BaseService.ts` needs
+ *   `getPrimaryIDValue`. A repository is one of only two doors an entity enters this system through —
+ *   the other being the IR-1 `new*` members in `src/services/**` — so attaching the surface here is
+ *   what makes "every entity has it" true rather than aspirational. It is not a convenience: a
+ *   hydrated row handed to `BaseService.save` without it would reach `getClassName()` and throw
+ *   `TypeError: entity.getClassName is not a function`.
+ *
+ *   IT IS NOT A WRAPPER, AND THAT MATTERS TO THIS FILE SPECIFICALLY. {@link manageEntity} uses
+ *   `Object.assign`, so it returns THE SAME OBJECT it was handed, with own function properties added.
+ *   No proxy, no decorator, no second instance, no copy. `instanceof Product` still holds, reference
+ *   identity is preserved, and every subsequent `assignOptional`/`assignDefaulted`/
+ *   {@link assignAuditColumns} call in the mapper body writes to the very object that will be
+ *   returned — which is why construction is wrapped at the TOP of each mapper rather than the result
+ *   being wrapped at the bottom, and why the field-write lines below needed no change at all. A
+ *   repository may hand the returned reference to `UnitOfWork.ts` and identity comparisons still work.
+ *
+ *   THE PROJECTION MAPPERS DELIBERATELY DO NOT GET IT. {@link mapSkuSearchRow},
+ *   {@link mapProductSearchRow}, {@link mapUnusedOptionRow} and {@link mapUnusedOptionGroupRow}
+ *   return `{name, value}`-shaped projections, not entities: nothing validates them, nothing saves
+ *   them, no unique rule reads them, and they have no primary-key property to answer with. Giving
+ *   them an introspection surface would be inventing a capability the legacy projections never had.
+ *   {@link mapProductTypeTreeRow} is the boundary case and it DOES carry the surface, because it
+ *   delegates to {@link mapProductTypeRow} and then adds two computed columns to the same object —
+ *   it is a product type with extra fields, not a projection.
+ *
+ *   WHAT THIS FILE STILL DOES NOT DO. It does not validate, does not evaluate a rule, does not read a
+ *   resource-bundle key and does not import from `src/validation/**` — the introspection surface
+ *   answers *"does this entity declare that property, and what does it hold"*, which was a different
+ *   section of the same legacy component from rule evaluation, split at
+ *   `org/Hibachi/HibachiTransient.cfc:L462`. The import direction stated in the file header is
+ *   therefore unchanged: `domain/` and `errors/` only.
+ *
  * THE CALCULATED-PROPERTY BOUNDARY (AAP 0.2.2.6). No non-persistent member is mapped, in any form.
  * The sixteen excluded members have no column at all and are served — where a retained member needs
  * them — by `PricingPort`, `ImagePathPort` and their siblings, never by hydration. Two traps in that
@@ -746,12 +1021,12 @@ function assignAuditColumns(entity: AuditableEntity, row: MySqlRow): void {
  *     exclusion list: three of these column names — `calculatedSalePrice`,
  *     `calculatedAllowBackorderFlag` and `calculatedQATS` — each embed the name of an excluded
  *     derived member as a suffix, but the camel-case join re-capitalises that embedded word every
- *     time, and upper-cases the acronym one outright. A case-SENSITIVE search for any excluded name
- *     therefore finds nothing anywhere in this module, exactly as it should, and this sentence is
- *     careful not to spell one. A case-INSENSITIVE search does hit all three, and every one of those
- *     hits is the persisted column rather than the excluded derived member.
+ *     time, and upper-cases the acronym one outright. No excluded name therefore appears in this module in
+ *     its exact declared spelling, and this sentence is careful not to spell one. Where such a
+ *     name matches case-insensitively, the match is the persisted column and never the excluded
+ *     derived member.
  *
- * ATTRIBUTE CENSUS, RECORDED SO NOBODY HUNTS FOR MISSING HANDLING. Across the whole in-scope slice:
+ * ATTRIBUTE COVERAGE, SO AN UNHANDLED ATTRIBUTE IS DISTINGUISHABLE FROM AN ABSENT ONE. In scope:
  * `notNull` appears exactly once, at `model/entity/Product.cfc:L55`, and is a validation concern
  * owned by `src/validation/rules/product.rules.ts` rather than a hydration one; `hb_sessionDefault`,
  * `hb_populateArray` and `hb_fileUpload` appear zero times; `hb_populateEnabled="public"` appears
@@ -786,9 +1061,11 @@ function assignAuditColumns(entity: AuditableEntity, row: MySqlRow): void {
  * and the twenty non-persistent properties at `:L102-L123`, which have no column, per AAP 0.2.2.6.
  *
  * @param row - One `SwProduct` row.
- * @returns A product carrying every persistent column the row supplied, with its associations
- *   unresolved and its collections empty and live.
+ * @returns A MANAGED product (RULE 5) carrying every persistent column the row supplied, with its
+ *   associations unresolved and its collections empty and live.
  * @throws {DomainError} When a column holds a value whose runtime type does not match its field.
+ * @throws {DataIntegrityError} When an exact-decimal column holds a value a JavaScript number
+ *   cannot carry without loss, or the driver delivered it pre-converted (F16).
  *
  * @example
  * ```ts
@@ -797,8 +1074,8 @@ function assignAuditColumns(entity: AuditableEntity, row: MySqlRow): void {
  * 'urlTitle' in product; // false — the column was absent, so the field is too
  * ```
  */
-export function mapProductRow(row: MySqlRow): Product {
-  const product = new Product();
+export function mapProductRow(row: MySqlRow): ManagedEntity<Product> {
+  const product = manageEntity(new Product(), PRODUCT_ENTITY_METADATA);
 
   assignDefaulted(product, 'productID', readOptionalString(row, 'productID'));
   assignOptional(product, 'activeFlag', readOptionalBoolean(row, 'activeFlag'));
@@ -812,7 +1089,18 @@ export function mapProductRow(row: MySqlRow): Product {
   // The four persisted columns under the legacy "Calculated Properties" comment. See the
   // calculated-property boundary note above for why these are mapped and the sixteen derived members
   // are not.
-  assignOptional(product, 'calculatedSalePrice', readOptionalNumber(row, 'calculatedSalePrice'));
+  /*
+   * ⚠️ F16 — `calculatedSalePrice` is `ormtype="big_decimal"` at [model/entity/Product.cfc:L62], the
+   * same exact type as the three Sku monetary columns and carrying the same loss if converted
+   * unchecked. It is read through the exact reader for that reason; the finding named the Sku three,
+   * but the defect is the ormtype, not the entity, so fixing only the named three would have left the
+   * identical bug one file away. It stays `assignOptional` because it declares no legacy default.
+   */
+  assignOptional(
+    product,
+    'calculatedSalePrice',
+    readOptionalExactDecimal(row, 'calculatedSalePrice'),
+  );
   assignOptional(product, 'calculatedQATS', readOptionalNumber(row, 'calculatedQATS'));
   assignOptional(
     product,
@@ -854,19 +1142,27 @@ export function mapProductRow(row: MySqlRow): Product {
  * one.
  *
  * @param row - One `SwSku` row.
- * @returns A SKU carrying every persistent column the row supplied, with its associations unresolved
- *   and its options collection empty and live.
+ * @returns A MANAGED SKU (RULE 5) carrying every persistent column the row supplied, with its
+ *   associations unresolved and its options collection empty and live.
  * @throws {DomainError} When a column holds a value whose runtime type does not match its field.
+ * @throws {DataIntegrityError} When an exact-decimal column holds a value a JavaScript number
+ *   cannot carry without loss, or the driver delivered it pre-converted (F16).
  */
-export function mapSkuRow(row: MySqlRow): Sku {
-  const sku = new Sku();
+export function mapSkuRow(row: MySqlRow): ManagedEntity<Sku> {
+  const sku = manageEntity(new Sku(), SKU_ENTITY_METADATA);
 
   assignDefaulted(sku, 'skuID', readOptionalString(row, 'skuID'));
   assignDefaulted(sku, 'activeFlag', readOptionalBoolean(row, 'activeFlag'));
   assignOptional(sku, 'skuCode', readOptionalString(row, 'skuCode'));
-  assignDefaulted(sku, 'listPrice', readOptionalNumber(row, 'listPrice'));
-  assignDefaulted(sku, 'price', readOptionalNumber(row, 'price'));
-  assignDefaulted(sku, 'renewalPrice', readOptionalNumber(row, 'renewalPrice'));
+  /*
+   * ⚠️ F16 — the three `ormtype="big_decimal"` columns of [model/entity/Sku.cfc:L55-L57] are read
+   * through {@link readOptionalExactDecimal}, NOT the general numeric reader, so a value the double
+   * cannot carry raises instead of being silently replaced by the nearest one. Their legacy
+   * `default="0"` is what `assignDefaulted` supplies when the column is absent or NULL.
+   */
+  assignDefaulted(sku, 'listPrice', readOptionalExactDecimal(row, 'listPrice'));
+  assignDefaulted(sku, 'price', readOptionalExactDecimal(row, 'price'));
+  assignDefaulted(sku, 'renewalPrice', readOptionalExactDecimal(row, 'renewalPrice'));
   assignOptional(sku, 'imageFile', readOptionalString(row, 'imageFile'));
   assignDefaulted(sku, 'userDefinedPriceFlag', readOptionalBoolean(row, 'userDefinedPriceFlag'));
 
@@ -894,15 +1190,17 @@ export function mapSkuRow(row: MySqlRow): Sku {
  *
  * Not read: the self-referencing foreign key `parentProductTypeID` at `:L62`, the three collections at
  * `:L65-L67`, and the eight inverse many-to-many collections at `:L70-L77`. All three seeded rows
- * carry a null parent, so absence is also the ordinary state for a root.
+ * carry a null parent, so absence is also the ordinary state for a root — and it is genuine absence:
+ * `parentProductType` is declared with `declare`, so a mapped product type carries no such own key at
+ * all, per RULE 3 in the module header.
  *
  * @param row - One `SwProductType` row.
- * @returns A product type carrying every persistent column the row supplied, with its parent
- *   unresolved and its collections empty and live.
+ * @returns A MANAGED product type (RULE 5) carrying every persistent column the row supplied, with
+ *   its parent unresolved and its collections empty and live.
  * @throws {DomainError} When a column holds a value whose runtime type does not match its field.
  */
-export function mapProductTypeRow(row: MySqlRow): ProductType {
-  const productType = new ProductType();
+export function mapProductTypeRow(row: MySqlRow): ManagedEntity<ProductType> {
+  const productType = manageEntity(new ProductType(), PRODUCT_TYPE_ENTITY_METADATA);
 
   assignDefaulted(productType, 'productTypeID', readOptionalString(row, 'productTypeID'));
   assignOptional(productType, 'productTypeIDPath', readOptionalString(row, 'productTypeIDPath'));
@@ -930,7 +1228,7 @@ export function mapProductTypeRow(row: MySqlRow): ProductType {
  * table — hence the full column set, delegated to {@link mapProductTypeRow} rather than duplicated —
  * plus two correlated count sub-selects, ordered by product-type name.
  *
- * ⚠️ `isAssigned` IS A COUNT, NOT A FLAG. It is `count(...)` over the products of this product type,
+ * `isAssigned` IS A COUNT, NOT A FLAG. It is `count(...)` over the products of this product type,
  * at `model/dao/ProductTypeDAO.cfc:L55-L57`, so its value is zero through N and never a boolean. The
  * name is a misnomer inherited from the legacy source and is preserved exactly, because the port
  * declares it and callers observe it; treating it as a boolean would make every product type with any
@@ -948,12 +1246,22 @@ export function mapProductTypeRow(row: MySqlRow): ProductType {
  * tree projection — and quietly substituting zero there would report "no products assigned" for every
  * product type, which is a wrong answer that no test of the mapper in isolation would catch.
  *
+ * THE RETURN TYPE IS DELIBERATELY WIDER THAN THE PORT'S. `ProductTypeRepository.findAllForTree`
+ * promises `ProductTypeTreeRow[]`, and `ManagedEntity<ProductTypeTreeRow>` is assignable to that, so
+ * the port contract is satisfied without the port having to change. Declaring the narrower type here
+ * would be worse than redundant: the object genuinely carries the RULE 5 surface at run time, and a
+ * return type that hides a capability the value really has is the same class of silent divergence
+ * between the static and runtime shapes that this module exists to eliminate. The port stays narrow
+ * because nothing validates or saves a tree row — it is a read-only projection for the admin tree —
+ * and widening it would advertise a capability its consumers have no reason to want.
+ *
  * @param row - One row of the product-type tree projection.
- * @returns A product type carrying its two derived counts.
+ * @returns A MANAGED product type (RULE 5) carrying its two derived counts, and the SAME object
+ *   {@link mapProductTypeRow} produced rather than a copy of it.
  * @throws {DomainError} When a column holds a value whose runtime type does not match its field, or
  *   when either count is missing or not numeric.
  */
-export function mapProductTypeTreeRow(row: MySqlRow): ProductTypeTreeRow {
+export function mapProductTypeTreeRow(row: MySqlRow): ManagedEntity<ProductTypeTreeRow> {
   const productType = mapProductTypeRow(row);
 
   return Object.assign(productType, {
@@ -980,13 +1288,33 @@ export function mapProductTypeTreeRow(row: MySqlRow): ProductTypeTreeRow {
  * property at all — its non-persistent section is empty — so there is nothing further that hydration
  * could contribute and nothing here has been trimmed for brevity.
  *
+ * ⚠️⚠️ F05 — THE HYDRATED BRAND IS A FULLY MANAGED ENTITY, AND THAT IS ENFORCED BY THE COMPILER, NOT
+ * BY THIS COMMENT. The finding reported that `new Brand()` lacked the framework-inherited members
+ * `../../services/BaseService.ts` and `../../validation/Validator.ts` require, so a hydrated brand
+ * could not legally be handed to the save path — a gap type bivariance had hidden rather than
+ * surfaced.
+ *
+ * It is closed at the SOURCE of the gap rather than papered over here. `Brand` now declares
+ * `implements AuditableEntity, ManagedEntity` and implements all seven members the legacy entity
+ * inherited: `getClassName` [org/Hibachi/HibachiObject.cfc:L135], `getEntityName`
+ * [org/Hibachi/HibachiEntity.cfc:L287], `getPrimaryIDPropertyName` [:L249], `getPrimaryIDValue`
+ * [:L244], `hasProperty` [org/Hibachi/HibachiTransient.cfc:L763], `getPropertyMetaData` [:L738] and
+ * `getValueByPropertyIdentifier` [:L466].
+ *
+ * SO THIS MAPPER NEEDS NO ADAPTER, NO WRAPPER AND NO CAST — and deliberately has none. Constructing a
+ * separate "managed facade" around the entity was one option the finding offered; it was rejected
+ * because it would have left the domain object itself still unable to satisfy its own contract, and
+ * every other producer of a `Brand` would have needed the same wrapper. Because the guarantee lives
+ * in the `implements` clause, deleting one of those members is a compile error in `Brand.ts` rather
+ * than a runtime failure discovered here.
+ *
  * @param row - One `SwBrand` row.
- * @returns A brand carrying every persistent column the row supplied, with its collections empty and
- *   live.
+ * @returns A MANAGED brand (RULE 5) carrying every persistent column the row supplied, with its
+ *   collections empty and live.
  * @throws {DomainError} When a column holds a value whose runtime type does not match its field.
  */
-export function mapBrandRow(row: MySqlRow): Brand {
-  const brand = new Brand();
+export function mapBrandRow(row: MySqlRow): ManagedEntity<Brand> {
+  const brand = manageEntity(new Brand(), BRAND_ENTITY_METADATA);
 
   assignDefaulted(brand, 'brandID', readOptionalString(row, 'brandID'));
   assignOptional(brand, 'activeFlag', readOptionalBoolean(row, 'activeFlag'));
@@ -1014,20 +1342,33 @@ export function mapBrandRow(row: MySqlRow): Brand {
  * applied here.
  *
  * Not read: the option-group foreign key `optionGroupID` at `:L59` and the `skus` collection at
- * `:L66`, whose rows live in the `SwSkuOption` link table. The domain declares neither the image
- * association at `:L60` nor the image collection at `:L63` nor the four promotion collections at
- * `:L67-L70`, all of which reach out-of-scope entities, so no column of theirs is read either.
+ * `:L66`, whose rows live in the `SwSkuOption` link table. The unresolved group is genuinely absent
+ * rather than present holding `undefined`: `optionGroup` is declared with `declare`, per RULE 3 in the
+ * module header. The domain declares neither the image association at `:L60` nor the image collection
+ * at `:L63` nor the four promotion collections at `:L67-L70`, all of which reach out-of-scope
+ * entities, so no column of theirs is read either.
  *
  * THIS MAPPER IS COMPLETE, NOT ABBREVIATED. `model/entity/Option.cfc` declares no non-persistent
  * property at all.
  *
+ * THAT IS NOT CONTRADICTED BY `OPTION_ENTITY_METADATA` CARRYING SIX `declaredNonFieldProperties`, and
+ * the distinction is worth stating because the two look alike from a distance. Those six —
+ * `defaultImage` [model/entity/Option.cfc:L60], `images` [:L63], `promotionRewards` [:L67],
+ * `promotionRewardExclusions` [:L68], `promotionQualifiers` [:L69] and `promotionQualifierExclusions`
+ * [:L70] — are PERSISTENT associations that reach explicitly out-of-scope domains (AAP 0.2.2.1), so
+ * `src/domain/option/Option.ts` models no field for them; they are listed in the declaration purely so
+ * `hasProperty` keeps answering `true` the way the legacy `getPropertiesStruct()` did. Option is the
+ * one in-scope entity whose declared property set is wider than its field set, and neither set has
+ * anything to do with `persistent="false"`. Nothing here maps them: they have no column on `SwOption`
+ * in the first place, being collections and a many-to-one.
+ *
  * @param row - One `SwOption` row.
- * @returns An option carrying every persistent column the row supplied, with its group unresolved and
- *   its SKU collection empty and live.
+ * @returns A MANAGED option (RULE 5) carrying every persistent column the row supplied, with its
+ *   group unresolved and its SKU collection empty and live.
  * @throws {DomainError} When a column holds a value whose runtime type does not match its field.
  */
-export function mapOptionRow(row: MySqlRow): Option {
-  const option = new Option();
+export function mapOptionRow(row: MySqlRow): ManagedEntity<Option> {
+  const option = manageEntity(new Option(), OPTION_ENTITY_METADATA);
 
   assignDefaulted(option, 'optionID', readOptionalString(row, 'optionID'));
   assignOptional(option, 'optionCode', readOptionalString(row, 'optionCode'));
@@ -1060,12 +1401,12 @@ export function mapOptionRow(row: MySqlRow): Option {
  * property at all.
  *
  * @param row - One `SwOptionGroup` row.
- * @returns An option group carrying every persistent column the row supplied, with its options
- *   collection empty and live.
+ * @returns A MANAGED option group (RULE 5) carrying every persistent column the row supplied, with
+ *   its options collection empty and live.
  * @throws {DomainError} When a column holds a value whose runtime type does not match its field.
  */
-export function mapOptionGroupRow(row: MySqlRow): OptionGroup {
-  const optionGroup = new OptionGroup();
+export function mapOptionGroupRow(row: MySqlRow): ManagedEntity<OptionGroup> {
+  const optionGroup = manageEntity(new OptionGroup(), OPTION_GROUP_ENTITY_METADATA);
 
   assignDefaulted(optionGroup, 'optionGroupID', readOptionalString(row, 'optionGroupID'));
   assignOptional(optionGroup, 'optionGroupName', readOptionalString(row, 'optionGroupName'));
@@ -1130,6 +1471,8 @@ export function mapOptionGroupRow(row: MySqlRow): OptionGroup {
  * @param row - One row of the SKU search projection.
  * @returns The projected row.
  * @throws {DomainError} When either column holds a value that is not a string.
+ * @throws {DataIntegrityError} When a required column and its alias are both absent from the row,
+ *   which means the SQL projection and this mapper have drifted (F17).
  *
  * @example
  * ```ts
@@ -1154,6 +1497,8 @@ export function mapSkuSearchRow(row: MySqlRow): SkuSearchRow {
  * @param row - One row of the product search projection.
  * @returns The projected row.
  * @throws {DomainError} When either column holds a value that is not a string.
+ * @throws {DataIntegrityError} When a required column and its alias are both absent from the row,
+ *   which means the SQL projection and this mapper have drifted (F17).
  */
 export function mapProductSearchRow(row: MySqlRow): ProductSearchRow {
   return {
@@ -1165,7 +1510,7 @@ export function mapProductSearchRow(row: MySqlRow): ProductSearchRow {
 /**
  * Maps one row of the unused-product-options projection.
  *
- * ⚠️ THE LABEL IS NOT BUILT HERE. `model/dao/OptionDAO.cfc:L88` composes `name` from the option
+ * THE LABEL IS NOT BUILT HERE. `model/dao/OptionDAO.cfc:L88` composes `name` from the option
  * group's name and the option's name joined by a spaced hyphen, and in the port that composition
  * belongs to `MySqlOptionRepository.ts` — the data-access layer assembles it in the legacy source too,
  * which is why it stays there rather than moving up to the service. This mapper lifts the label the
@@ -1176,6 +1521,8 @@ export function mapProductSearchRow(row: MySqlRow): ProductSearchRow {
  * @param row - One row of the unused-product-options projection, its label already composed.
  * @returns The projected row.
  * @throws {DomainError} When either key holds a value that is not a string.
+ * @throws {DataIntegrityError} When a required column and its alias are both absent from the row,
+ *   which means the SQL projection and this mapper have drifted (F17).
  */
 export function mapUnusedOptionRow(row: MySqlRow): UnusedOptionRow {
   return {
@@ -1197,6 +1544,8 @@ export function mapUnusedOptionRow(row: MySqlRow): UnusedOptionRow {
  * @param row - One row of the unused-product-option-groups projection.
  * @returns The projected row.
  * @throws {DomainError} When either column holds a value that is not a string.
+ * @throws {DataIntegrityError} When a required column and its alias are both absent from the row,
+ *   which means the SQL projection and this mapper have drifted (F17).
  */
 export function mapUnusedOptionGroupRow(row: MySqlRow): UnusedOptionGroupRow {
   return {

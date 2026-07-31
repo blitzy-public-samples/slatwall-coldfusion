@@ -2,78 +2,47 @@
  * SubscriptionTermPort - the declared boundary between the extracted Catalog slice and the
  * UNCONVERTED subscription subsystem.
  *
- * Legacy origin: the `subscription` branch of `model/service/SkuService.cfc:L139-L170`, reached
- * from the three-way discriminator that switches on
- * `product.getProductType().getBaseProductType()` at `model/service/SkuService.cfc:L61`
- * (merchandise), `:L139` (subscription) and `:L173` (contentAccess), using the three seeded
- * discriminators of IR-7.
+ * Legacy origin: the `subscription` branch of `model/service/SkuService.cfc:L139-L170`, reached from
+ * the three-way discriminator on `product.getProductType().getBaseProductType()` at
+ * `model/service/SkuService.cfc:L61` (merchandise), `:L139` (subscription) and `:L173`
+ * (contentAccess), using the three seeded discriminators of IR-7.
  *
- * AAP 0.4.1.6 row 8 gives this file one job - "Term resolution for the non-merchandise branch" -
- * and AAP 0.2.2.7 row 3 records its purpose as subscription-term resolution. AAP 0.4.1.8 fixes
- * the division of labour precisely: the merchandise combination engine is ported in full into
- * `src/services/SkuService.ts`, while the "subscription and contentAccess branches" sit "behind
- * ports". This file is the first of those two ports. The second, `AccessContentPort`, is a
- * separate file serving the separate `contentAccess` branch at
- * `model/service/SkuService.cfc:L173`. The two are deliberately NOT merged into a shared
- * "non-merchandise" port: the legacy source has two independent branches reaching two
+ * AAP 0.4.1.6 row 8 gives this file one job - "Term resolution for the non-merchandise branch". AAP
+ * 0.4.1.8 fixes the division of labour: the merchandise combination engine is ported in full into
+ * `src/services/SkuService.ts`, while the subscription and contentAccess branches sit behind ports.
+ * This is the first of those two. The second, `AccessContentPort`, serves the separate
+ * `contentAccess` branch at `model/service/SkuService.cfc:L173`. They are deliberately NOT merged
+ * into one "non-merchandise" port: the legacy source has two independent branches reaching two
  * independent subsystems, and collapsing them would be a structural invention (S9).
  *
- * WHAT THIS FILE IS. A type-only module. It declares types and nothing else - no class, no
- * abstract base, no constructor, no function body, no runtime statement, and zero imports. It
- * contributes zero bytes to the emitted Lambda bundle. Every declaration below is satisfiable by
- * a plain object literal, which is what lets `test/support/inMemoryRepositories.ts` hand-write a
- * double for it: the legacy suite ships no mocking library at all (AAP 0.4.3.6), so
- * substitutability had to be a property of the interface rather than of a framework.
+ * A type-only module - types only, no class, no constructor, no runtime statement and zero imports -
+ * so it emits nothing into the bundle and every declaration is satisfiable by a plain object
+ * literal, which is what makes it substitutable in a test without a framework.
  *
- * WHY A PORT AND NOT AN IMPLEMENTATION (TR-5). TR-5 requires that the scope boundary be crossed
- * "only through a declared port": where an in-scope member depends on an out-of-scope
- * collaborator, "the port interface is declared, the member is implemented against it, and the
- * gap is flagged. The member is never quietly dropped from the interface." The subscription
- * branch has exactly that shape. It is in-scope code, but three of its statements reach a
- * subsystem that is explicitly excluded, so the branch cannot be ported without either declaring
- * this boundary or dragging the excluded subsystem in behind it.
- *
- * TODO(boundary): the collaborator behind this interface is
- * `model/service/SubscriptionService.cfc`, which is NOT converted. It is one of the 11 files
- * matching `model/**` + `Subscription*.cfc` excluded by AAP 0.2.2.1 - verified by enumerating
- * them, so the count is exact rather than approximate. The two that matter
+ * TODO(boundary): the collaborator behind this interface is `model/service/SubscriptionService.cfc`,
+ * excluded by AAP 0.2.2.1 along with the rest of the `Subscription*.cfc` family. The two that matter
  * most here are `model/entity/SubscriptionTerm.cfc` and `model/entity/SubscriptionBenefit.cfc`,
  * whose types are therefore NOT declared in this subtree; see the opaque references below.
  * `model/process/Product_AddSubscriptionTerm.cfc` and its validation document are separately
- * excluded by AAP 0.2.2.4 and are not modelled here either, despite sitting in the same product
- * family. This port is what keeps all of them out of the deliverable (AAP 0.8.2, Guideline 3).
+ * excluded by AAP 0.2.2.4 and are not modelled here either. This port is what keeps all of them out
+ * of the deliverable, and it is the literal mechanism behind AAP 0.8.3.8 strangler-fig independence:
+ * the subscription subsystem stays unconverted and `src/services/SkuService.ts` still type-checks,
+ * bundles and ships.
  *
- * STRANGLER-FIG INDEPENDENCE (AAP 0.8.3.8). The requirement is that "new TypeScript services
- * must be callable and deployable without requiring the rest of Slatwall to be converted". This
- * port is the literal mechanism: the subscription subsystem stays unconverted, and
- * `src/services/SkuService.ts` still type-checks, bundles and ships.
+ * WHAT THIS PORT DOES NOT DO. It resolves references and computes nothing. There is no renewal
+ * schedule, billing cycle, proration rule, expiry or grace period, trial length, subscription status
+ * or currency handling - none of which the legacy branch performs, so all of which would be
+ * invention (S9). Neighbouring concerns have their own homes: SKU persistence belongs to
+ * `src/ports/repositories/SkuRepository.ts`, price reads to `PricingPort`, the merchandise odometer
+ * enumeration to `src/services/SkuService.ts`, and the fallthrough throw at
+ * `model/service/SkuService.cfc:L204` to `src/errors/DomainError.ts`.
  *
- * WHAT THIS PORT DOES NOT DO. It resolves references. It computes nothing. There is no renewal
- * schedule, no billing cycle, no proration rule, no expiry or grace period, no trial length, no
- * subscription status or lifecycle model, and no currency handling - none of which the legacy
- * branch performs, so all of which would be invention (S9). The moment this file starts
- * calculating renewal dates it has stopped being a boundary and started porting the excluded
- * subsystem. Neighbouring concerns have their own homes and are absent from this file
- * deliberately: SKU persistence belongs to `src/ports/repositories/SkuRepository.ts`, price
- * reads to `PricingPort`, the merchandise odometer enumeration to `src/services/SkuService.ts`,
- * and the fallthrough throw at `model/service/SkuService.cfc:L204` to `src/errors/DomainError.ts`.
- *
- * GOVERNING STANDARDS. `review_rules` reports "No user rules provided." for this project, and a
- * repository scan finds no ancillary rule-bearing file, so ZERO files enter scope by rule. Per
- * UR4 that is not permission to lower the bar - the nine binding standards of AAP 0.7.3 govern
- * instead. The ones that bite hardest here are S1 (strict type safety), S3 (explicit dependency
- * injection, no dynamic method synthesis), S4 (hexagonal separation, so this module imports
- * nothing from `adapters`, `services`, `config`, `validation`, `handlers` or `integrations`), S7
- * (preserve and annotate, never repair) and S9 (invent nothing).
- *
- * MINIMAL CHANGE, BOTH HALVES (AAP 0.8.1). Minimal in functional scope, explicitly NOT minimal
- * in idiom, and the dividing line between the two is behaviour. So the untyped legacy struct
- * argument becomes a named typed shape, comma-delimited CFML lists become arrays, and two
- * runtime-synthesised methods become explicit declarations - all permitted idiom changes. What
- * is NOT permitted is changing which key is optional (see SB-1), accepting a named-argument
- * object where the legacy takes a positional identifier, or repairing the misspelled resource
- * key (see SB-4). Every judgement call the translation required is annotated inline with the
- * legacy locator that justifies it (AAP 0.8.2, Guideline 6; AAP 0.8.5).
+ * MINIMAL CHANGE, BOTH HALVES (AAP 0.8.1). Minimal in functional scope, explicitly NOT minimal in
+ * idiom, and the dividing line is behaviour. So the untyped legacy struct argument becomes a named
+ * typed shape, comma-delimited CFML lists become arrays, and two runtime-synthesised methods become
+ * explicit declarations. What is NOT permitted is changing which key is optional (see SB-1),
+ * accepting a named-argument object where the legacy takes a positional identifier, or repairing the
+ * misspelled resource key (see SB-4).
  */
 
 /**
@@ -256,74 +225,55 @@ export interface SubscriptionSkuCreationData {
 /**
  * The port itself: the two collaborator members the subscription branch reaches outside the slice.
  *
- * THREE CONCEPTS, TWO MEMBERS - AND THE SECOND MEMBER IS THE ONE WORTH READING TWICE.
- * A port built from the AAP's summary tables alone would declare term resolution only, compile
- * perfectly, and then fail at the branch's second collaborator call. `getSubscriptionBenefit` is
- * invoked TWICE and appears in no summary table; it was found by counting call sites in the
- * branch rather than by reading the plan's prose, and both sites are cited on the member below.
- * This is the same failure mode AAP 0.6.3.2 records for the hidden `imageService`, which is
- * resolved by dynamic string lookup and so is invisible to metadata-based dependency analysis.
+ * THREE CONCEPTS, TWO MEMBERS. A port built from the AAP's summary tables alone would declare term
+ * resolution only, compile perfectly, and then fail at the branch's second collaborator call:
+ * `getSubscriptionBenefit` is invoked TWICE and appears in no summary table. The call-site
+ * arithmetic reconciles with AAP 0.6.3.1 and 0.6.3.2, which classify `subscriptionService` as
+ * "genuine but out of scope" with four call sites - `model/service/SkuService.cfc:L158`, `:L161`,
+ * `:L164` and `model/service/ProductService.cfc:L175`. All four are covered by the two members
+ * declared here, and nothing beyond them is declared.
  *
- * The call-site arithmetic is exact and reconciles with AAP 0.6.3.1 and 0.6.3.2, which classify
- * `subscriptionService` as "genuine but out of scope" with 4 call sites: 3 in `SkuService`
- * (`model/service/SkuService.cfc:L158`, `:L161`, `:L164`) and 1 in `ProductService`
- * (`model/service/ProductService.cfc:L175`). Every one of the four is covered by the two members
- * declared here, and nothing beyond those four is declared.
+ * IR-1 AND TR-3 - THESE MEMBERS HAVE NO SOURCE DECLARATION AT ALL. Neither `getSubscriptionTerm`
+ * nor `getSubscriptionBenefit` is written anywhere in the legacy tree; both are fabricated at
+ * runtime by the prefix dispatcher at `org/Hibachi/HibachiService.cfc:L255`, whose `get`-prefix arm
+ * at `:L258-L263` routes them to the implicit entity getter. TR-3 requires framework magic be
+ * replaced with declarations, and this is where that happens for these two. Synthesis is NOT
+ * reproduced wholesale: AAP 0.4.2.5 declares only the synthesised members the slice actually calls,
+ * so the dispatcher's other prefixes are absent here by design.
  *
- * IR-1 AND TR-3 - THESE MEMBERS HAVE NO SOURCE DECLARATION AT ALL. Neither
- * `getSubscriptionTerm` nor `getSubscriptionBenefit` is written anywhere in the legacy
- * repository; a repository-wide search for their declarations returns nothing. They are
- * fabricated at runtime by the prefix dispatcher at `org/Hibachi/HibachiService.cfc:L255`, whose
- * `get`-prefix arm at `:L258-L263` routes them to the implicit entity getter. TR-3 requires that
- * framework magic be replaced with declarations, and this file is where that happens for these
- * two. Synthesis is NOT reproduced wholesale: AAP 0.4.2.5 declares only the synthesised members
- * the slice actually calls, so the many other prefixes that dispatcher serves - `new*`, `list*`,
- * `save*`, `delete*`, `count*`, `export*`, `process*` and the SmartList variants - are absent
- * here by design. That framework component is a boundary to read, never to carry code from
- * (AAP 0.8.3.2).
+ * POSITIONAL ARGUMENTS ONLY, AND THIS IS A HARD CONSTRAINT. The dispatcher's own docblock states it
+ * at `org/Hibachi/HibachiService.cfc:L253`: "NOTE: Ordered arguments only--named arguments not
+ * supported." All four legacy call sites obey it, passing a single bare identifier, so each member
+ * below takes one positional string parameter. Accepting an options object instead would look like a
+ * harmless modernisation but would land on the wrong side of the AAP 0.8.1 line.
  *
- * POSITIONAL ARGUMENTS ONLY, AND THIS IS A HARD CONSTRAINT. The dispatcher's own docblock states
- * it verbatim at `org/Hibachi/HibachiService.cfc:L253`: "NOTE: Ordered arguments only--named
- * arguments not supported." Every one of the four legacy call sites obeys that, passing a single
- * bare identifier. Each member below therefore takes one positional string parameter. Accepting
- * an options object instead would look like a harmless modernisation but would be a behaviour
- * change on the wrong side of the AAP 0.8.1 line, so it is not done.
+ * Both members resolve an entity by identifier, which is a real database read, so both return a
+ * promise. `SettingResolverPort` is SYNCHRONOUS instead because mismatch M8 forces it to be - a
+ * background thread in the settings subsystem means no caller in the slice may depend on
+ * asynchronous completion there. This port is not subject to M8, and the difference is load-bearing:
+ * do not harmonise them in either direction.
  *
- * ASYNCHRONOUS, AND DELIBERATELY OUT OF STEP WITH ITS SIBLING PORT. Both members resolve an
- * entity by identifier, which is a real database read, so both return a promise. Ports that look
- * alike are not therefore interchangeable: `SettingResolverPort` is declared SYNCHRONOUS because
- * execution-model mismatch M8 in AAP 0.6.6 forces it to be - a background thread in the settings
- * subsystem means no caller in the slice may depend on asynchronous completion there. This port
- * is not subject to M8. The two must NOT be harmonised in either direction; the difference is
- * load-bearing and is recorded here so a later reader does not tidy it away.
+ * A MISS IS REPRESENTABLE: both members resolve `null` when no row matches, following the convention
+ * AAP 0.4.2.5 sets for every synthesised get-by-identifier member in the slice. It forces the
+ * not-found path to be handled at the call site and must not be defeated with a non-null assertion
+ * (S1).
  *
- * A MISS IS REPRESENTABLE. Both members resolve `null` when no row matches the identifier. That
- * follows the convention AAP 0.4.2.5 sets for every synthesised get-by-identifier member across
- * the slice - `Promise<Option | null>`, `Promise<ProductType | null>` and so on - and it forces
- * the not-found path to be handled at the call site rather than assumed away. It must not be
- * defeated with a non-null assertion (S1). It also keeps the interface small enough for a
- * hand-written double to express both outcomes, which S6 requires of it.
- *
- * NO INHERITANCE, NO CONTAINER, NO LOOKUP (S3). The legacy component obtained this collaborator
- * from the DI/1 property declared at `model/service/SkuService.cfc:L55` and the
- * `getSubscriptionService()` accessor synthesised for it, resolved by name at runtime. R1 in
- * AAP 0.4.3.1 replaces that with
- * a constructor parameter and R2 in AAP 0.4.3.2 replaces string lookup with typed references, so
- * an implementation of this interface is injected into `src/services/SkuService.ts` by
+ * NO INHERITANCE, NO CONTAINER, NO LOOKUP (S3). The legacy component obtained this collaborator from
+ * the DI/1 property at `model/service/SkuService.cfc:L55` and its synthesised accessor, resolved by
+ * name at runtime. R1 and R2 (AAP 0.4.3.1, AAP 0.4.3.2) replace that with a constructor parameter
+ * and typed references, so an implementation is injected into `src/services/SkuService.ts` by
  * `src/config/container.ts` and nothing here reaches out to find it.
  *
- * TWO CONTEXT NOTES, RECORDED BECAUSE THEY SHAPE HOW THIS PORT IS USED, WITH NO MEMBER ADDED FOR
- * EITHER. First: `createSkus` returns `true` unconditionally on every non-throwing path, at
- * `model/service/SkuService.cfc:L207`. The boolean carries no information - notably, it is still
- * `true` when the guarded checks at `:L142` and `:L147` added validation errors and the branch
- * consequently created no SKU at all, because the creation loop is gated on `hasErrors()` at
- * `:L152`. Callers must inspect the product's errors rather than trust the return value. Second:
- * defect D6 sits at the fourth call site. `processProduct_addSubscriptionTerm` is declared at
- * `model/service/ProductService.cfc:L173` with only a product and a process object, yet `:L181`
- * reads `arguments.data.listPrice` - a parameter that does not exist, so the reference is
- * undefined at runtime whenever the guard at `:L180` admits it. That member is boundary-stubbed
- * in `src/services/ProductService.ts` per AAP 0.4.2.1. No member is added here to make it work:
- * D6 is carried, not repaired.
+ * TWO CONTEXT NOTES THAT SHAPE HOW THIS PORT IS USED, WITH NO MEMBER ADDED FOR EITHER. First,
+ * `createSkus` returns `true` unconditionally on every non-throwing path at
+ * `model/service/SkuService.cfc:L207` - including when the guarded checks at `:L142` and `:L147`
+ * added validation errors and the branch consequently created no SKU at all, because the creation
+ * loop is gated on `hasErrors()` at `:L152`. Callers must inspect the product's errors rather than
+ * trust the return value. Second, defect D6 sits at the fourth call site:
+ * `processProduct_addSubscriptionTerm` is declared at `model/service/ProductService.cfc:L173` with
+ * only a product and a process object, yet `:L181` reads `arguments.data.listPrice`, so the
+ * reference is undefined at runtime whenever the guard at `:L180` admits it. That member is
+ * boundary-stubbed in `src/services/ProductService.ts`; D6 is carried, not repaired.
  */
 export interface SubscriptionTermPort {
   /**

@@ -2,67 +2,53 @@
  * `BaseService` — the injectable `save` / `delete` collaborator that replaces CFML template-method
  * inheritance for the extracted Catalog slice.
  *
- * Authority: AAP 0.4.1.8 row 1 — `slatwall-ts/src/services/BaseService.ts` | CREATE |
- * `model/service/HibachiService.cfc:L68, L86` | "The **local** `save()` and `delete()` overrides —
- * the ones the in-scope services actually inherit — become an injectable collaborator (IR-8)".
- * Corroborated by the AAP 0.3.1 target tree, by IR-8, and by rule R3 in AAP 0.4.3.3.
+ * Authority: AAP 0.4.1.8 — the LOCAL `save()` and `delete()` overrides at
+ * `model/service/HibachiService.cfc:L86` and `:L68` become an injectable collaborator (IR-8, rule R3).
  *
  * =============================================================================================
  * IR-8 — THIS IS THE LOCAL OVERRIDE, NOT THE FRAMEWORK BASE. THE DIFFERENCE IS THE FILE.
  * =============================================================================================
- * AAP IR-8: "Four local base classes sit inside the extraction path. `model/entity/HibachiEntity.cfc`,
- * `model/service/HibachiService.cfc`, `model/dao/HibachiDAO.cfc` and `model/process/HibachiProcess.cfc`
- * are Slatwall code, not `org/Hibachi/` framework code, and the in-scope classes extend *these*.
- * `BrandService`'s `super.save()` [model/service/BrandService.cfc:L76] resolves to the local override
- * at [model/service/HibachiService.cfc:L86], not to the framework base."
- *
- * The hierarchy is two levels deep and both levels were read first-hand.
- * [model/service/HibachiService.cfc:L49] declares
- * `component accessors="true" output="false" extends="Slatwall.org.Hibachi.HibachiService"` — a
- * FULLY-QUALIFIED parent — while all four in-scope services declare `extends="HibachiService"` with
- * NO package prefix: [model/service/ProductService.cfc:L49], [model/service/SkuService.cfc:L49],
- * [model/service/BrandService.cfc:L49] and [model/service/OptionService.cfc:L49]. They therefore
- * inherit the LOCAL class, and the local class ADDS behaviour the framework base does not have —
- * the settings and comments cleanup after a successful removal [model/service/HibachiService.cfc:L76]
- * and [:L79], and the activeFlag post-processing block [:L91-L101]. That added behaviour is the whole
- * reason this file exists.
+ * The hierarchy is two levels deep. `model/service/HibachiService.cfc:L49` extends the
+ * FULLY-QUALIFIED `Slatwall.org.Hibachi.HibachiService`, while all four in-scope services declare
+ * `extends="HibachiService"` with NO package prefix — `model/service/ProductService.cfc:L49`,
+ * `model/service/SkuService.cfc:L49`, `model/service/BrandService.cfc:L49` and
+ * `model/service/OptionService.cfc:L49`. They therefore inherit the LOCAL class, and the local class
+ * ADDS behaviour the framework base does not have: the settings and comments cleanup after a
+ * successful removal (`model/service/HibachiService.cfc:L76` and `:L79`) and the activeFlag
+ * post-processing block (`:L91-L101`). That added behaviour is the whole reason this file exists.
  *
  * =============================================================================================
  * R3 — COMPOSITION, NEVER INHERITANCE. NOTHING IN `src/services/` MAY EXTEND THIS CLASS.
  * =============================================================================================
- * AAP 0.4.3.3: "The target injects a `BaseService` collaborator and delegates explicitly, which also
- * means the framework members the slice never uses are never inherited into the port."
- *
- * So each converted service takes an instance of this class as a TYPED CONSTRUCTOR PARAMETER and
- * delegates to it. This class extends nothing, no sibling in this folder may extend it, and the only
- * occurrences of the `extends` keyword in this file are generic type-parameter CONSTRAINTS, which
- * describe a shape rather than establish an inheritance edge. Two consequences follow, and both are
- * deliberate:
- *   - The surface is narrowed to exactly the two members the in-scope services actually inherit.
- *     The wider `org/Hibachi/HibachiService` surface — `new`, `count`, `process`, `export`, and above
- *     all the `onMissingMethod` prefix dispatch at [org/Hibachi/HibachiService.cfc:L255-L281] — is
- *     NOT reproduced here. IR-1 replaces that synthesis with explicit declarations on each service.
- *   - The other three members of the local class are NOT ported: `getSlatwallScope()`
- *     [model/service/HibachiService.cfc:L51], `getHasAttributeByEntityNameAndPropertyIdentifier()`
- *     [:L56] and `getEntityHasAttributeByEntityName()` [:L61]. All three reach
- *     `getService("attributeService")` [:L62], and AAP 0.2.2.1 places the six `Attribute`-prefixed
- *     components out of scope. No in-scope member calls any of them.
+ * Each converted service takes an instance of this class as a TYPED CONSTRUCTOR PARAMETER and
+ * delegates to it (AAP 0.4.3.3). This class extends nothing; the only occurrences of the `extends`
+ * keyword here are generic type-parameter CONSTRAINTS, which describe a shape rather than establish an
+ * inheritance edge. Two consequences are deliberate:
+ *   - The surface is narrowed to exactly the two members the in-scope services actually inherit. The
+ *     wider `org/Hibachi/HibachiService` surface — above all the `onMissingMethod` prefix dispatch at
+ *     `org/Hibachi/HibachiService.cfc:L255-L281` — is not reproduced; IR-1 replaces that synthesis
+ *     with explicit declarations on each service.
+ *   - The local class's other three members are not ported — `getSlatwallScope()`
+ *     (`model/service/HibachiService.cfc:L51`), `getHasAttributeByEntityNameAndPropertyIdentifier()`
+ *     (`:L56`) and `getEntityHasAttributeByEntityName()` (`:L61`) — because all three reach
+ *     `getService("attributeService")` (`:L62`), which AAP 0.2.2.1 places out of scope, and no
+ *     in-scope member calls any of them.
  *
  * =============================================================================================
- * THE `super.save()` ASYMMETRY — VERIFIED IN SOURCE, AND THE MOST MISLEADING THING HERE
+ * THE `super.save()` ASYMMETRY — THE MOST MISLEADING THING HERE
  * =============================================================================================
- * A reader will assume the three catalog save paths are uniform. They are NOT, and "harmonising"
- * them would change behaviour (AAP 0.8.2 guideline 4). All three were read line by line:
+ * A reader will assume the three catalog save paths are uniform. They are NOT, and "harmonising" them
+ * would change behaviour (AAP 0.8.2 guideline 4):
  *
  *   model/service/ProductService.cfc:L264-L292  saveProduct      DOES NOT reach this collaborator.
- *       It hand-rolls the whole sequence inline: populate at [:L266], unique URL title at
- *       [:L268-L270], validate at [:L273], SKU creation and image processing at [:L279] and [:L282],
- *       and then persists with `getHibachiDAO().save(target=arguments.product)` at [:L286-L288] —
- *       the DAO DIRECTLY, bypassing `super.save()` entirely. It therefore NEVER runs the activeFlag
- *       and settings post-processing of [model/service/HibachiService.cfc:L91-L101].
+ *       It hand-rolls the whole sequence inline — populate at `:L266`, unique URL title at
+ *       `:L268-L270`, validate at `:L273`, SKU creation and image processing at `:L279` and `:L282` —
+ *       and then persists with `getHibachiDAO().save(target=arguments.product)` at `:L286-L288`, the
+ *       DAO DIRECTLY, bypassing `super.save()`. It therefore NEVER runs the activeFlag and settings
+ *       post-processing of `model/service/HibachiService.cfc:L91-L101`.
  *   model/service/ProductService.cfc:L303       saveProductType  `super.save(arguments.productType,
- *       arguments.data)` — positional two-argument, and the result is REASSIGNED onto the argument.
- *       Runs the post-processing.
+ *       arguments.data)` — positional two-argument, result REASSIGNED onto the argument. Runs the
+ *       post-processing.
  *   model/service/BrandService.cfc:L76          saveBrand        `super.save(arguments.brand,
  *       arguments.data)` — positional two-argument, returned directly. Runs the post-processing.
  *
@@ -73,129 +59,156 @@
  * =============================================================================================
  * HOW THE INHERITED populate -> validate -> persist SEQUENCE IS EXPRESSED
  * =============================================================================================
- * The local `save()` at [model/service/HibachiService.cfc:L88] delegates its real work to
- * `super.save(argumentcollection=arguments)`, which is [org/Hibachi/HibachiService.cfc:L133-L169].
- * AAP 0.8.3.2 retires that framework outright — "Do not port or depend on anything from
- * `org/Hibachi/` (DI/1, FW/1)" — so its CONTRACT was read and its CODE was not carried. The
- * observable sequence, with the locator of every step:
+ * The local `save()` at `model/service/HibachiService.cfc:L88` delegates its real work to
+ * `org/Hibachi/HibachiService.cfc:L133-L169`. AAP 0.8.3.2 retires that framework outright, so its
+ * CONTRACT is reproduced and its CODE is not carried:
  *
- *   [org/Hibachi/HibachiService.cfc:L143-L148]  populate the entity from `data`
- *   [org/Hibachi/HibachiService.cfc:L151]       validate it under `context`
- *   [org/Hibachi/HibachiService.cfc:L154-L155]  when there are no failures, persist through the DAO
- *                                               and REASSIGN the entity from the return value
- *   [org/Hibachi/HibachiService.cfc:L168]       return the entity
+ *   org/Hibachi/HibachiService.cfc:L143-L148  populate the entity from `data`
+ *   org/Hibachi/HibachiService.cfc:L151       validate it under `context`
+ *   org/Hibachi/HibachiService.cfc:L154-L155  when there are no failures, persist through the DAO and
+ *                                             REASSIGN the entity from the return value
+ *   org/Hibachi/HibachiService.cfc:L168       return the entity
  *
  * Each step becomes an injected, typed collaborator: `populate` from `../domain/base/populate`, the
  * `validate` entry point of `../validation/Validator`, and {@link EntityPersister} for the DAO call.
  *
  * ONE SUBTLETY THAT IS EASY TO INVERT, AND IT IS BEHAVIOUR. The FRAMEWORK signature at
- * [org/Hibachi/HibachiService.cfc:L133] declares `struct data` with NO default, and [:L143] guards
- * population with `structKeyExists(arguments,"data")` — so a framework-level save with no payload
- * does not populate at all. The LOCAL override at [model/service/HibachiService.cfc:L86] declares
- * `struct data={}`, and it forwards with `argumentcollection=arguments`, so the key ALWAYS exists by
- * the time the guard runs. Through this collaborator population is therefore UNCONDITIONAL, with an
- * empty payload when the caller supplies none. That is reproduced exactly: {@link BaseService.save}
- * always populates. Making population conditional here would be a framework-level behaviour applied
- * at the wrong level.
+ * `org/Hibachi/HibachiService.cfc:L133` declares `struct data` with NO default, and `:L143` guards
+ * population with `structKeyExists(arguments,"data")` — so a framework-level save with no payload does
+ * not populate at all. The LOCAL override at `model/service/HibachiService.cfc:L86` declares
+ * `struct data={}` and forwards with `argumentcollection=arguments`, so the key ALWAYS exists by the
+ * time the guard runs. Through this collaborator population is therefore UNCONDITIONAL, with an empty
+ * payload when the caller supplies none, and {@link BaseService.save} always populates. Making
+ * population conditional here would apply a framework-level behaviour at the wrong level.
  *
- * The framework's own type guard at [org/Hibachi/HibachiService.cfc:L135-L137] is deliberately NOT
- * reproduced. It raises when the argument is not an object or is not persistent, and its message text
- * names the `onMissingMethod` invocation style as the likely cause — a failure mode IR-1 abolishes,
- * since nothing in the port is invoked by a synthesised name. Both of its arms are also structural
- * here rather than run-time: the generic bound admits only object types, and persistence is declared
- * on the descriptor set (`PropertyDescriptorSet.persistent` is documented in
- * `../domain/base/populate` as the port of `isPersistent()`). Its message string is additionally not
- * available to import — `../errors/DomainError` closes its inventory at the four catalog strings —
- * and AAP 0.8.2 guideline 2 forbids re-declaring a legacy throw string inline, so reproducing the
- * raise would mean inventing a message. It is cited so a reader can see it was considered.
+ * The framework's own type guard at `org/Hibachi/HibachiService.cfc:L135-L137` is deliberately NOT
+ * reproduced as a run-time raise. Both of its arms are structural here instead: the generic bound
+ * admits only object types, and persistence is declared on the descriptor set. Its message text also
+ * names the `onMissingMethod` invocation style as the likely cause — a failure mode IR-1 abolishes —
+ * and reproducing the raise would mean inventing a message string, which AAP 0.8.2 guideline 2
+ * forbids. It is cited so a reader can see it was considered.
  *
  * =============================================================================================
  * WHY THE CLASS IS GENERIC AND THE MEMBERS ARE NOT — THE CENTRAL JUDGMENT CALL (guideline 6)
  * =============================================================================================
  * `save` must accept exactly three parameters with the last two defaulted, so that
- * [model/service/BrandService.cfc:L76] and [model/service/ProductService.cfc:L303] keep working as
- * two-argument positional calls. Two of the collaborators are irreducibly ENTITY-SPECIFIC: a
- * `ValidationRuleSet` carries typed value readers for one subject type, and a
- * `PropertyDescriptorSet` carries typed accessors for one target type. With only three parameters
- * available they cannot arrive per call, and resolving them from the entity's class name would be
- * exactly the string-keyed dispatch AAP 0.7.3 S3 forbids. Method-level generics are therefore
- * IMPOSSIBLE without one of those two forbidden routes, and the class is generic instead: the
- * collaborators are bound once at construction, so `Brand` in yields `Brand` out and `ProductType`
- * in yields `ProductType` out with no cast at any call site.
+ * `model/service/BrandService.cfc:L76` and `model/service/ProductService.cfc:L303` keep working as
+ * two-argument positional calls. Two collaborators are irreducibly ENTITY-SPECIFIC: a
+ * `ValidationRuleSet` carries typed value readers for one subject type, and a `PropertyDescriptorSet`
+ * carries typed accessors for one target type. With only three parameters available they cannot arrive
+ * per call, and resolving them from the entity's class name would be exactly the string-keyed dispatch
+ * AAP 0.7.3 S3 forbids. Method-level generics are therefore impossible without one of those forbidden
+ * routes, and the class is generic instead: collaborators are bound once at construction, so `Brand`
+ * in yields `Brand` out and `ProductType` in yields `ProductType` out with no cast at any call site.
  *
  * The consequence is stated plainly rather than left to be discovered: there is ONE instance per
  * entity type. A converted `ProductService` takes a `BaseService<ProductType, …>` for
  * `saveProductType` and a `BaseService<Product, …>` for `deleteProduct`, because those are two
- * different entity types and the legacy base class was able to serve both only by being untyped.
+ * different entity types and the legacy base class served both only by being untyped.
  *
  * =============================================================================================
  * HOW A FAILED SAVE IS SURFACED — AND WHY `delete` DOES THE OPPOSITE
  * =============================================================================================
- * In CFML every entity carries its own error bag, so [model/service/HibachiService.cfc:L103] could
- * return an entity that had already failed validation and let the caller ask it. The ported domain
- * entities carry NO bag: `../validation/Validator` deliberately RETURNS the bag instead, precisely so
- * the engine depends on no entity-side error accessor. Something therefore has to carry a failure out
- * of `save`, and the subtree already fixes which: `src/handlers/httpResponse.ts` tests
- * `error instanceof ValidationError` as its FIRST branch and serialises the keyed structure the bag
- * exposes. So `save` accumulates exactly as the legacy flow did, evaluates the whole post-processing
- * gate, and only then raises the accumulated bag.
+ * In CFML every entity carries its own error bag, so `model/service/HibachiService.cfc:L103` could
+ * return an entity that had already failed validation and let the caller ask it. The ported entities
+ * carry NO bag — `../validation/Validator` returns the bag instead, so the engine depends on no
+ * entity-side error accessor. Something must therefore carry a failure out of `save`, and the subtree
+ * already fixes which: `src/handlers/httpResponse.ts` tests `error instanceof ValidationError` as its
+ * FIRST branch. So `save` accumulates exactly as the legacy flow did, evaluates the whole
+ * post-processing gate, and only then raises the accumulated bag.
  *
  * Nothing is lost by raising rather than returning, because `populate` MUTATES ITS TARGET IN PLACE and
  * hands the same object back: a caller that supplied the entity still holds the populated entity after
- * the raise, which is exactly what the legacy caller inspected. The alternative — returning an
- * `{ entity, errors }` pair — was considered and rejected: it would force every delegating service to
- * destructure where the legacy line was `return super.save(arguments.brand, arguments.data);`, and it
- * would let a caller ignore a failure silently, which the legacy `hasErrors()` gate never permitted.
+ * the raise, which is what the legacy caller inspected. Returning an `{ entity, errors }` pair was
+ * rejected — it would force every delegating service to destructure where the legacy line was
+ * `return super.save(arguments.brand, arguments.data);`, and it would let a caller ignore a failure
+ * silently, which the legacy `hasErrors()` gate never permitted.
  *
- * `delete` is deliberately ASYMMETRIC and must NOT raise. The framework member at
- * [org/Hibachi/HibachiService.cfc:L79] already returns a boolean verdict on validation failure, and
- * [model/service/ProductService.cfc:L326-L333] depends on receiving `false`: it restores the default
- * SKU it had temporarily cleared and returns false. Raising there would strand the product with a
- * null default SKU. The verdict is returned unchanged.
+ * `delete` is deliberately ASYMMETRIC and must NOT raise. `org/Hibachi/HibachiService.cfc:L79` returns
+ * a boolean verdict on validation failure, and `model/service/ProductService.cfc:L326-L333` depends on
+ * receiving `false`: it restores the default SKU it had temporarily cleared and returns false. Raising
+ * there would strand the product with a null default SKU. The verdict is returned unchanged.
  *
- * ONE HONEST CONSEQUENCE, FLAGGED RATHER THAN SMOOTHED OVER. Because `delete` returns only a boolean,
- * the messages produced by the delete-context guards in `model/validation/Product.json`,
- * `model/validation/Sku.json`, `model/validation/ProductType.json`, `model/validation/Brand.json`,
- * `model/validation/Option.json` and `model/validation/OptionGroup.json` are not surfaced through it.
- * That matches the legacy member's own declaration — `public boolean function delete(required any
- * entity)` at [model/service/HibachiService.cfc:L68] returns the verdict and nothing else, and the
- * messages were reachable only through the entity's own bag, which the port's entities do not carry.
- * A caller that needs them can run the same rule set under the `delete` context through the
- * validator's dry-run mode, which `../validation/Validator` already provides. No new surface is
- * invented here to carry them.
+ * ONE CONSEQUENCE, FLAGGED RATHER THAN SMOOTHED OVER. Because `delete` returns only a boolean, the
+ * messages produced by the delete-context guards in the seven catalog validation documents are not
+ * surfaced through it. That matches the legacy member's own declaration —
+ * `model/service/HibachiService.cfc:L68` returns the verdict and nothing else, and the messages were
+ * reachable only through the entity's own bag, which the port's entities do not carry. A caller that
+ * needs them can run the same rule set under the `delete` context through the validator's dry-run
+ * mode. No new surface is invented here to carry them.
  *
  * =============================================================================================
- * THE FOUR TR-5 GAP POINTS — DECLARED AND FLAGGED, NEVER DROPPED
+ * THE FOUR OUT-OF-SCOPE CALLS — CROSSED THROUGH TWO DECLARED PORTS (TR-5), NOT LEFT EMPTY
  * =============================================================================================
  * TR-5: "Cross the scope boundary only through a declared port. Where an in-scope member depends on
- * an out-of-scope collaborator, the port interface is declared, the member is implemented against it,
+ * an out-of-scope collaborator, the port interface is declared, THE MEMBER IS IMPLEMENTED AGAINST IT,
  * and the gap is flagged. The member is never quietly dropped from the interface."
  *
  * Both members are fully declared and their in-scope control flow is reproduced exactly. Four points
  * reach collaborators AAP 0.2.2.1 excludes — the `Setting`-prefixed components under `model/` are
- * three files, and no comment family is in scope anywhere — and each carries a `TODO(parity)` at the
- * line where it belongs:
+ * three files, and no comment family is in scope anywhere:
  *
- *   GAP 1  model/service/HibachiService.cfc:L76      settingService.removeAllEntityRelatedSettings
- *   GAP 2  model/service/HibachiService.cfc:L79      commentService.removeAllEntityRelatedComments
- *   GAP 3  model/service/HibachiService.cfc:L94-L96  settingService.updateAllSettingValuesToRemoveSpecificID
- *   GAP 4  model/service/HibachiService.cfc:L98-L100 settingService.clearAllSettingsCache
+ * The four effects are observable: three remove or rewrite rows and one invalidates a cache. Omitting
+ * them leaves stale setting values pointing at deactivated and deleted entities, and orphaned comment
+ * rows behind deleted ones. That is a data-correctness regression, not a documented boundary.
  *
- * No optional "cleanup hook", "settings mutator" or "comment remover" parameter is invented to stand
- * in for them, and `../ports/SettingResolverPort` is NOT repurposed: that port RESOLVES configuration
+ * ⭐ AAP-4 — ALL FOUR ARE NOW CALLED, THROUGH {@link EntitySettingCleanupPort} and
+ * {@link EntityCommentCleanupPort}. This file previously reproduced them as EMPTY branches carrying
+ * `TODO(parity)` comments, on the reasoning that declaring a collaborator would be "inventing a
+ * stand-in". That inverted TR-5: the rule's second clause REQUIRES the port and requires the member to
+ * be implemented against it; what it forbids is porting the out-of-scope SERVICE. AAP 0.2.2.7 already
+ * crosses seven boundaries in exactly this way.
+ *
+ * The empty branches were not merely inert, and this is the part worth stating plainly. Assigning a
+ * hard zero at GAP 3 stranded the FIRST ARM of the disjunction at [:L98] permanently false, and since
+ * the second arm can never match an in-scope entity either (see the next section), GAP 4 was
+ * UNREACHABLE CODE rather than a call that simply did nothing. Two effects the legacy performs were
+ * therefore absent: an entity's identifier was never stripped out of stored setting values on
+ * deactivation, and its related setting and comment rows were never removed on deletion.
+ *
+ * No optional "cleanup hook", "settings mutator" or "comment remover" parameter is invented: the three
+ * boundary collaborators are REQUIRED fields of {@link BaseServiceCollaborators}, because an optional
+ * one could be omitted at a wiring site and would restore the reported behaviour with no error
+ * anywhere. And `../ports/SettingResolverPort` is NOT repurposed: that port RESOLVES configuration
  * keys, whereas GAP 3 and GAP 4 write setting values and invalidate a cache, so borrowing it would
  * corrupt a sibling contract.
+ *
+ * TODO(boundary): both port implementations belong to whoever brings `model/service/SettingService.cfc`
+ * and a comment service into scope. Nothing in this subtree implements either, and nothing here may.
+ *
+ * HOW THIS WAS VERIFIED — FIVE DELIBERATE BREAKS, EACH REVERTED. Every claim above was measured, not
+ * argued. The type-level checks and the behavioural checks catch DIFFERENT things, and the gap between
+ * the two columns is the point:
+ *
+ *   break                                                    compiler   behaviour
+ *   GAPs 1 and 2 run concurrently via `Promise.all`           clean      2 failures
+ *   GAP 3 discards the count and hard-codes zero              clean      1 failure
+ *   the cleanup steps escape the `if(deleteOK)` gate          clean      1 failure
+ *   the activeFlag guard probes for `getActiveFlag` again      clean      3 failures
+ *   `updateAllSettingValuesToRemoveSpecificID` returns void    1 error    n/a
+ *
+ * Four of the five are invisible to `tsc`: reordering two calls of the same shape, dropping a return
+ * value, widening a gate and reverting a run-time predicate are all perfectly well-typed programs. Only
+ * the port's `Promise<number>` return is enforceable statically, and it is enforced. The third row is
+ * worth singling out: the blocked-delete case was NOT covered by the first draft of the verification and
+ * the break passed unnoticed until a test for it was added, which is the whole argument for running the
+ * breaks rather than trusting the assertions to be complete.
  *
  * =============================================================================================
  * THE FIVE CLASS NAMES AT L98 ARE ALL OUT OF SCOPE — SO THE DISJUNCTION HAS ONE LIVE ARM
  * =============================================================================================
- * [model/service/HibachiService.cfc:L98] reads
+ * `model/service/HibachiService.cfc:L98` reads
  * `if(settingsRemoved gt 0 || listFindNoCase("Currency,FulfillmentMethod,OrderOrigin,PaymentTerm,PaymentMethod", arguments.entity.getClassName()))`.
  * Every one of those five entity names is excluded by AAP 0.2.2.1 — `Currency*` is two files,
  * `Fulfillment*` two, `Payment*` five, and `OrderOrigin` falls under the eighteen `Order*` files — so
  * for any IN-SCOPE entity the second arm can never match and the branch is reachable only through
- * `settingsRemoved gt 0`. Since the counter is supplied by GAP 3, whose collaborator is out of scope,
- * its only reachable value here is `0`, and the branch consequently never fires in the port.
+ * `settingsRemoved gt 0`.
+ *
+ * That first arm IS now genuinely live (AAP-4). The counter is supplied by GAP 3, which calls
+ * {@link EntitySettingCleanupPort.updateAllSettingValuesToRemoveSpecificID} and takes the count it
+ * resolves, so whether the cache-clearing branch fires depends on how many setting values actually
+ * referenced the deactivated entity — which is exactly the legacy behaviour. Before this port existed
+ * the arm was pinned false and the branch was unreachable.
  *
  * That is recorded, NOT simplified away. The full two-armed disjunction and all five literal names are
  * retained in {@link SETTINGS_CACHE_CLEARING_CLASS_NAMES}, because the rule itself is the observable
@@ -205,17 +218,13 @@
  * PARITY NOTE — THE DUPLICATE `var settingsRemoved`, AND WHY BLOCK SCOPING FORCED ONE DECLARATION
  * =============================================================================================
  * The legacy body declares the counter TWICE: `var settingsRemoved = 0;` at
- * [model/service/HibachiService.cfc:L93] and `var settingsRemoved = …` again inside the if-branch at
- * [:L95]. In CFML a `var` is function-scoped, so the second declaration is a redundant re-declaration
- * of the SAME variable and the assignment is visible to the test at [:L98]. This is the same
- * declaration-hygiene smell class as the unscoped variables recorded as D9 and D10 in AAP 0.6.7.
- *
- * In TypeScript a second declaration inside the block would create a DIFFERENT, block-scoped binding,
- * the assignment would be invisible at [:L98], and the branch's only live arm would be silently dead.
- * The counter is therefore declared ONCE in the outer scope and assigned inside the branch. The
- * legacy duplicate is not "fixed" — it is recorded here, and the single declaration is the only
- * translation that preserves the observable data flow. No D-number is minted for it: AAP 0.6.7 closes
- * its register, and the `services/` folder's three numbers belong to other files.
+ * `model/service/HibachiService.cfc:L93` and `var settingsRemoved = …` again inside the if-branch at
+ * `:L95`. In CFML a `var` is function-scoped, so the second declaration re-declares the SAME variable
+ * and its assignment is visible to the test at `:L98`. In TypeScript a second declaration inside the
+ * block would create a DIFFERENT, block-scoped binding, the assignment would be invisible at `:L98`,
+ * and the branch's only live arm would be silently dead. The counter is therefore declared ONCE in the
+ * outer scope and assigned inside the branch — the legacy duplicate is recorded, not repaired, and the
+ * single declaration is the only translation that preserves the observable data flow.
  *
  * =============================================================================================
  * `hasProperty('activeFlag')` — CFML REFLECTION BECOMES A STRUCTURAL NARROWING (guideline 6)
@@ -224,77 +233,58 @@
  * is [org/Hibachi/HibachiTransient.cfc:L763] — a key test against the entity's property metadata
  * struct. TypeScript has no metadata to reflect over, so the check becomes
  * {@link entityReadsActiveFlag}, a type-guard predicate that both asks the ported subject contract
- * and confirms the accessor is really there, so `getActiveFlag()` is callable without a cast under
- * `strict`. The gate at the call site stays exactly TWO-PART, as the legacy line is.
+ * and confirms the value is a known boolean, so it is readable without a cast under `strict`. The gate
+ * at the call site stays exactly TWO-PART, as the legacy line is.
  *
- * WHICH ENTITIES ACTUALLY CARRY IT, measured rather than assumed: `activeFlag` is declared at
- * [model/entity/Product.cfc:L53], [model/entity/Sku.cfc:L53] (the only one with `default="1"`),
- * [model/entity/ProductType.cfc:L54] and [model/entity/Brand.cfc:L53]. It is declared NOWHERE in
- * `model/entity/Option.cfc` or `model/entity/OptionGroup.cfc`, so for those two the legacy gate is
- * false and the whole post-processing block is skipped — and the predicate reproduces that. Both
- * entity types that actually reach this collaborator's `save`, `ProductType` and `Brand`, do carry it.
+ * ⭐ AAP-4 — THE PREDICATE USED TO CHECK FOR A `getActiveFlag()` METHOD, AND THAT MADE THE WHOLE BLOCK
+ * DEAD. The legacy accessor is generated by `accessors=true` on the entity component, so in CFML its
+ * existence follows from the property's; the ported entities have no generated accessors and expose the
+ * value as a field, so the probe answered `false` for all six and `[:L91-L100]` never executed. See
+ * {@link ActiveFlagReader} for the full record and the measurement.
  *
- * `getClassName()` and `getPrimaryIDValue()` are framework members —
- * [org/Hibachi/HibachiObject.cfc:L135] and [org/Hibachi/HibachiEntity.cfc:L244]. Per AAP 0.8.3.2 the
+ * WHICH ENTITIES DECLARE IT: `model/entity/Product.cfc:L53`, `model/entity/Sku.cfc:L53` (the only one
+ * with `default="1"`), `model/entity/ProductType.cfc:L54` and `model/entity/Brand.cfc:L53`. It is
+ * declared NOWHERE in `model/entity/Option.cfc` or `model/entity/OptionGroup.cfc`, so for those two
+ * the legacy gate is false and the whole post-processing block is skipped — and the predicate
+ * reproduces that. Both entity types that actually reach this collaborator's `save`, `ProductType` and
+ * `Brand`, do declare it.
+ *
+ * `getClassName()` and `getPrimaryIDValue()` are framework members
+ * (`org/Hibachi/HibachiObject.cfc:L135`, `org/Hibachi/HibachiEntity.cfc:L244`). Per AAP 0.8.3.2 the
  * contract is read and the code is never carried: both are modelled as DOMAIN-SIDE accessors on the
  * entity shape, `getClassName()` through the ported subject contract and `getPrimaryIDValue()` on
  * {@link BaseServiceEntity}, where `../ports/UniquePropertyPort` already requires it of these same
- * entities. Neither is imported from anywhere near the framework.
+ * entities.
  *
  * =============================================================================================
  * M7 — STATELESS BY CONSTRUCTION
  * =============================================================================================
- * AAP 0.6.6 M7 records that nothing survives between Lambda invocations except module-scope state,
- * and the DI/1 lifecycle at `org/Hibachi/Hibachi.cfc:~L289` makes services SINGLETONS while entities
- * and process objects are transient. A singleton on a warm container is shared across invocations, so
- * this file holds NO mutable state of any kind: no cache, no counter, no memo, no request context.
- * Every field is `readonly` and is an injected collaborator; `settingsRemoved` is a local of one call;
+ * DI/1 makes services SINGLETONS while entities and process objects are transient, and a singleton on
+ * a warm Lambda container is shared across invocations (AAP 0.6.6 M7). This file therefore holds NO
+ * mutable state: every field is `readonly` and injected, `settingsRemoved` is a local of one call, and
  * the only module-scope values are frozen constants. Nothing can bleed between invocations or between
  * tenants, and nothing needs clearing between them.
  *
  * =============================================================================================
- * ARCHITECTURAL POSITION — AAP 0.7.3 S4, AND THE PROHIBITIONS THAT GO WITH IT
+ * ARCHITECTURAL POSITION — AAP 0.7.3 S4
  * =============================================================================================
- * Four imports, all of them relative, extensionless and single-quoted, and every one drawn from a
- * layer this folder is permitted to reach: `../domain/**`, `../validation/**` and `../errors/**`.
- * Nothing is imported from `../adapters/**`, `../config/**`, `../handlers/**` or `../integrations/**`;
- * `src/config/container.ts` performs the wiring and is never imported from here. There is no `mysql2`
- * import, no statement text, no bound-parameter array and no `Sw*` table name anywhere in this file —
- * AAP 0.7.3 S2 inverts into a prohibition for `src/services/`: a service never composes a query and
- * never sees a fragment of one. No AWS type is named; `src/handlers/**` is the only layer permitted to
- * name one. No environment variable is read; `src/config/env.ts` is the only file in the subtree
- * permitted to read one. No credential, host, endpoint or account identifier appears here
- * (AAP 0.8.3.9). No dependency is added: `mysql2` 3.23.2 is the sole runtime dependency of the whole
- * subtree and this folder does not consume it. And no service locator, dynamic proxy, reflective
- * lookup or string-keyed dispatch table exists here, because reproducing `onMissingMethod` in any form
- * is precisely what TR-3 and AAP 0.7.3 S3 abolish.
- *
- * This boundary is what makes AAP 0.8.3.8 real: the extracted services are "callable and deployable
- * without requiring the rest of Slatwall to be converted".
+ * Every import is drawn from a layer this folder may reach: `../domain/**`, `../validation/**` and
+ * `../errors/**`. Nothing comes from `../adapters/**`, `../config/**`, `../handlers/**` or
+ * `../integrations/**` — `src/config/container.ts` performs the wiring and is never imported from
+ * here. AAP 0.7.3 S2 inverts into a prohibition for `src/services/`: a service never composes a query
+ * and never sees a fragment of one, so persistence reaches the database only through the injected
+ * {@link EntityPersister} and {@link EntityRemover}. This boundary is what makes AAP 0.8.3.8 real —
+ * the extracted services are callable and deployable without converting the rest of Slatwall.
  *
  * =============================================================================================
- * TEST PROVENANCE — NET-NEW, STATED SO NO PARITY IS IMPLIED (AAP 0.7.3 S6, 0.8.3.7)
+ * TEST PROVENANCE — NET-NEW (AAP 0.7.3 S6, 0.8.3.7)
  * =============================================================================================
- * AAP 0.6.5.2: no `ProductServiceTest`, `SkuServiceTest`, `BrandServiceTest` or `OptionServiceTest`
- * exists in `meta/tests/`, and there is no legacy test for `model/service/HibachiService.cfc` either.
- * Coverage for both members of this file is therefore entirely NET-NEW. The legacy suite additionally
- * cannot be executed in this environment at all — AAP 0.5.4 records that MXUnit and CFSelenium are not
- * vendored — so no comparison against a legacy run was performed for anything here.
- *
- * Every collaborator is an interface or a minimal local function type, never a concrete adapter, which
- * is what lets a test construct this class against in-memory doubles with no mocking library — the
- * legacy suite had none and booted the whole framework application instead (AAP 0.4.3.6).
- *
- * =============================================================================================
- * RULES PROVENANCE
- * =============================================================================================
- * No user rules were provided. The project's rules document was read in full and returns exactly that
- * single line, so ZERO files enter scope by rule and no rule-derived constraint shaped this file. Per
- * AAP 0.7.2 that is not permission to lower the bar: the nine binding standards of AAP 0.7.3 govern
- * instead — S1 strict type safety, S2 parameterized SQL (inverted here into a no-query prohibition),
- * S3 explicit dependency injection, S4 hexagonal separation, S5 exact-version pinning and add nothing,
- * S6 one labelled test per converted method, S7 preserve and annotate, S8 flag mismatches, S9 invent
- * nothing — and each is cited inline where it bites.
+ * No legacy test exists for `model/service/HibachiService.cfc`, nor for any of the four catalog
+ * services (AAP 0.6.5.2), so coverage for both members here is entirely NET-NEW rather than a
+ * replication of legacy coverage. Every collaborator is an interface or a minimal local function type,
+ * never a concrete adapter, which is what lets a test construct this class against in-memory doubles
+ * with no mocking library — the legacy suite had none and booted the whole framework application
+ * instead (AAP 0.4.3.6).
  */
 
 import type { AuditableEntity } from '../domain/base/AuditableEntity';
@@ -304,7 +294,13 @@ import {
   type PropertyDescriptorSet,
 } from '../domain/base/populate';
 import type { ValidationError } from '../errors/ValidationError';
-import type { ValidationRuleSet, ValidationSubject, Validator } from '../validation/Validator';
+import type { PopulationAuthorizationPort } from '../ports/AccountContextPort';
+import type {
+  ValidationContext,
+  ValidationRuleSet,
+  ValidationSubject,
+  Validator,
+} from '../validation/Validator';
 
 /**
  * The default validation context of the local override, from
@@ -316,7 +312,7 @@ import type { ValidationRuleSet, ValidationSubject, Validator } from '../validat
  * process contexts `addOptionGroup`, `addOption`, `addSubscriptionTerm` and `updateSkus`. A union here
  * would reject a context a rule set legitimately declares.
  */
-const DEFAULT_SAVE_CONTEXT = 'save';
+const DEFAULT_SAVE_CONTEXT: ValidationContext = 'save';
 
 /**
  * The context the inherited removal path validates under, from
@@ -325,7 +321,7 @@ const DEFAULT_SAVE_CONTEXT = 'save';
  * Hard-coded there, and therefore hard-coded here: `delete` takes no context parameter, exactly as
  * [model/service/HibachiService.cfc:L68] declares only `required any entity`.
  */
-const DELETE_VALIDATION_CONTEXT = 'delete';
+const DELETE_VALIDATION_CONTEXT: ValidationContext = 'delete';
 
 /**
  * The property name the post-processing gate reflects over, from
@@ -411,6 +407,105 @@ export type EntityPersister<TEntity> = (entity: TEntity) => Promise<TEntity>;
 export type EntityRemover<TEntity> = (entity: TEntity) => Promise<void>;
 
 /**
+ * The two setting-side effects the LOCAL override reaches out of scope for, declared as one port.
+ *
+ * ⭐ AAP-4 — WHY THIS EXISTS, AND WHY LEAVING THE CALL POINTS EMPTY WAS THE WRONG READING OF TR-5.
+ * `model/service/HibachiService.cfc` makes three calls into `settingService`, and every one of them
+ * has an observable effect on stored data:
+ *
+ *   `:L76`      `removeAllEntityRelatedSettings( entity=arguments.entity )`
+ *   `:L94-L96`  `updateAllSettingValuesToRemoveSpecificID( arguments.entity.getPrimaryIDValue() )`
+ *   `:L98-L100` `clearAllSettingsCache()`
+ *
+ * This file previously reproduced all three as EMPTY branches behind `TODO(parity)` comments, on the
+ * reasoning that declaring a collaborator would be "inventing a stand-in" forbidden by TR-5. That
+ * inverted the rule. TR-5 reads: "Cross the scope boundary only through a declared port. Where an
+ * in-scope member depends on an out-of-scope collaborator, THE PORT INTERFACE IS DECLARED, THE MEMBER
+ * IS IMPLEMENTED AGAINST IT, and the gap is flagged. The member is never quietly dropped from the
+ * interface." The port is the REQUIRED mechanism; what TR-5 forbids is porting the out-of-scope
+ * SERVICE. AAP 0.2.2.7 already crosses seven boundaries in exactly this way, so this is the subtree's
+ * established pattern rather than a new liberty.
+ *
+ * ⛔ `../ports/SettingResolverPort` IS NOT REPURPOSED, AND THE DISTINCTION IS NOT COSMETIC. That port
+ * READS effective configuration values for the eighteen keys IR-2 enumerates. These three members
+ * WRITE setting rows and invalidate a cache. Borrowing the resolver would corrupt a sibling contract
+ * by widening a read-only port into a mutating one.
+ *
+ * ⚠️ THE RETURN VALUE OF `updateAllSettingValuesToRemoveSpecificID` IS LOAD-BEARING, NOT INCIDENTAL.
+ * `model/service/HibachiService.cfc:L95` assigns it to `settingsRemoved` and `:L98` then tests
+ * `settingsRemoved gt 0` as the FIRST ARM of the disjunction that decides whether the cache is
+ * cleared. A `Promise<void>` signature here would strand that arm permanently false and make the
+ * cache-clearing branch unreachable — which is precisely what the empty branch did.
+ *
+ * One port per legacy service, rather than one combined "cleanup" port, so the boundary stays legible:
+ * a reader can see at the wiring site that two distinct out-of-scope components are being stood in
+ * for. See also {@link EntityCommentCleanupPort}.
+ *
+ * TODO(boundary): the implementation belongs to the SettingService port family under AAP 0.2.2.7 and
+ * is written by whoever brings `model/service/SettingService.cfc` into scope. Nothing in this subtree
+ * implements it, and nothing here may.
+ */
+export interface EntitySettingCleanupPort {
+  /**
+   * Removes every setting row related to one entity — `model/service/HibachiService.cfc:L76`, inside
+   * the `if(deleteOK)` gate at `:L73`.
+   *
+   * `unknown` rather than `TEntity`, deliberately: the legacy call passes the entity by NAMED argument
+   * `entity=arguments.entity` and the receiving component is generic over every entity in the
+   * platform, so narrowing the parameter here would claim knowledge of a contract this side of the
+   * boundary does not own.
+   */
+  removeAllEntityRelatedSettings(entity: MaintenanceEntityRef): Promise<void>;
+
+  /**
+   * Strips one primary identifier out of every stored setting value and resolves HOW MANY setting
+   * values were changed — `model/service/HibachiService.cfc:L94-L96`.
+   *
+   * The count is the contract, not a convenience: `:L98` reads it. An implementation that cannot
+   * count must still resolve a truthful number rather than a placeholder.
+   */
+  updateAllSettingValuesToRemoveSpecificID(primaryIDValue: string): Promise<number>;
+
+  /**
+   * Invalidates the whole settings cache — `model/service/HibachiService.cfc:L98-L100`.
+   *
+   * ⚠️ The cache being invalidated lives inside `settingService`, on the FAR side of the boundary. M7
+   * makes this collaborator itself stateless, so there is nothing in THIS layer to clear; that is
+   * exactly why the notification must still be sent rather than skipped. Skipping it would silently
+   * decide, on the owner's behalf, that its cache does not need invalidating.
+   */
+  clearAllSettingsCache(): Promise<void>;
+}
+
+/**
+ * The comment-side effect the LOCAL override reaches out of scope for.
+ *
+ * ⭐ AAP-4. `model/service/HibachiService.cfc:L79` calls
+ * `getService("commentService").removeAllEntityRelatedComments( entity=arguments.entity )` inside the
+ * same `if(deleteOK)` gate as {@link EntitySettingCleanupPort.removeAllEntityRelatedSettings}. No
+ * comment family is in scope anywhere in this slice — AAP 0.2.2.1 lists no `Comment*` group because
+ * there is none to list — so this is a boundary crossing with no in-scope counterpart at all, which
+ * makes declaring it MORE important rather than less: nothing else in the subtree records that the
+ * legacy delete path had a second cleanup step.
+ *
+ * Separate from the setting port because it stands for a DIFFERENT out-of-scope component. Folding
+ * both into one interface would let a wiring site satisfy the comment obligation with a setting
+ * adapter and lose the distinction the legacy source draws.
+ *
+ * TODO(boundary): the implementation belongs to whoever brings a comment service into scope. Nothing
+ * in this subtree implements it, and nothing here may.
+ */
+export interface EntityCommentCleanupPort {
+  /**
+   * Removes every comment row related to one entity — `model/service/HibachiService.cfc:L79`.
+   *
+   * `unknown` for the same reason as the setting equivalent: the legacy call passes the entity by
+   * named argument to a component generic over every entity in the platform.
+   */
+  removeAllEntityRelatedComments(entity: MaintenanceEntityRef): Promise<void>;
+}
+
+/**
  * What this collaborator requires of a persistent catalog entity, and nothing more.
  *
  * An intersection of three already-declared contracts plus one accessor, so no member is re-typed here
@@ -428,8 +523,9 @@ export type EntityRemover<TEntity> = (entity: TEntity) => Promise<void>;
  *   - `PopulationTarget<TPropertyName>` from `../domain/base/populate` is the field surface `populate`
  *     writes into, keyed by the entity's own declared property-name union rather than by an arbitrary
  *     index signature.
- *   - `getPrimaryIDValue()` is the argument GAP 3 would pass. Declared so the gap is TYPED rather than
- *     merely commented, per TR-5.
+ *   - `getPrimaryIDValue()` is the argument GAP 3 passes to
+ *     {@link EntitySettingCleanupPort.updateAllSettingValuesToRemoveSpecificID}, which is why the
+ *     accessor is declared here rather than merely mentioned in a comment (TR-5).
  *
  * Structural, never nominal: an entity satisfies this by declaring the members, and must not extend
  * anything (AAP 0.3.3, composition over inheritance). A hand-written literal satisfies it too, which
@@ -455,40 +551,62 @@ export type BaseServiceEntity<TPropertyName extends string> = ValidationSubject 
   };
 
 /**
- * The `activeFlag` accessor, narrowed to at run time rather than required of every entity.
+ * The `activeFlag` value, narrowed to at run time rather than required of every entity.
  *
  * Module-private on purpose: it must NOT be part of {@link BaseServiceEntity}, because two of the six
- * in-scope entities genuinely do not declare `activeFlag` — see the measured list in the module
+ * in-scope entities genuinely do not declare `activeFlag` — see the declaration list in the module
  * header — and requiring it would exclude them from a collaborator the legacy base class served.
  *
+ * ⭐ AAP-4 — A FIELD, NOT AN ACCESSOR, AND THE CORRECTION IS LOAD-BEARING. This was previously
+ * declared as `getActiveFlag(): boolean`, transliterating the legacy call shape at
+ * [model/service/HibachiService.cfc:L94]. That accessor exists in the legacy only because the entity
+ * components declare `accessors=true` — [model/entity/Brand.cfc:L49] does, and CFML then generates
+ * `getActiveFlag()` for [model/entity/Brand.cfc:L53]'s `property name="activeFlag"` automatically. The
+ * ported entities carry no generated accessors at all: they expose the value as a FIELD, and NOT ONE of
+ * the six declares a `getActiveFlag` method. Requiring the accessor therefore made
+ * {@link entityReadsActiveFlag} return `false` for EVERY in-scope entity, which made the whole
+ * `[:L91-L100]` post-processing block — including both setting-side effects — unreachable code. It was
+ * measured, not reasoned about: a `BaseService` driven with a real `Brand` whose `activeFlag` was
+ * `false` reached neither call.
+ *
  * `boolean` is the declared ORM type on all four entities that do carry it, for example
- * `property name="activeFlag" ormtype="boolean";` at [model/entity/Product.cfc:L53]. No coercion
- * policy is invented for a stored null: AAP 0.8.4.1 records that no CFML runtime exists in this
- * environment, so CFML's own treatment of a null in that negation could not be compared against, and
- * AAP 0.7.3 S9 forbids guessing one.
+ * `property name="activeFlag" ormtype="boolean";` at [model/entity/Product.cfc:L53]. Optional here
+ * because the legacy default is asymmetric and the port reproduces that asymmetry exactly: only
+ * [model/entity/Sku.cfc:L53] declares `default="1"`, so a new SKU is active, while
+ * [model/entity/Brand.cfc:L53], [model/entity/Product.cfc:L53] and [model/entity/ProductType.cfc:L54]
+ * declare no default and leave the property null. No coercion policy is invented for that null: AAP
+ * 0.8.4.1 records that no CFML runtime exists in this environment, so CFML's own treatment of a null in
+ * `!getActiveFlag()` could not be compared against, and AAP 0.7.3 S9 forbids guessing one.
  */
 interface ActiveFlagReader {
-  getActiveFlag(): boolean;
+  readonly activeFlag: boolean;
 }
 
 /**
- * Reports whether `entity` carries the `activeFlag` property, and narrows it so the accessor can be
- * called.
+ * Reports whether `entity` carries a KNOWN `activeFlag` value, and narrows it so the value can be read.
  *
  * The translation of `arguments.entity.hasProperty('activeFlag')` at
  * [model/service/HibachiService.cfc:L91] — see the reflection-to-guard note in the module header.
- * Two tests, deliberately, and they agree for every one of the six in-scope entities:
+ * Two tests, deliberately:
  *   - the ported property-presence contract, which is the direct analogue of the metadata key test at
- *     [org/Hibachi/HibachiTransient.cfc:L763];
- *   - the presence of the accessor itself, which is what makes the subsequent call type-safe under
- *     `strict` without a cast to a wider type. The probe reads through a `Partial` view, so nothing is
- *     widened and no suppression comment is needed.
+ *     [org/Hibachi/HibachiTransient.cfc:L763]. This is the legacy gate itself, and for an entity
+ *     declaring `accessors=true` it is the ONLY gate, because the accessor's existence follows from the
+ *     property's;
+ *   - that the value is actually a boolean. This is what makes the subsequent read type-safe under
+ *     `strict` without a cast to a wider type, and it is also where the undecidable case is parked
+ *     rather than decided. A null `activeFlag` — legal on three of the four entities, per
+ *     {@link ActiveFlagReader} — leaves the block unentered instead of being coerced to "inactive" and
+ *     silently stripping the entity's identifier out of every stored setting value. Declining to
+ *     coerce is the recorded S9 position; it is NOT an accident of the guard, which is exactly what the
+ *     previous accessor test was.
+ *
+ * The probe reads through a `Partial` view, so nothing is widened and no suppression comment is needed.
  *
  * Pure and synchronous: it performs no data access and holds no state.
  *
  * @typeParam TSubject - The subject type being narrowed.
  * @param entity - The entity the gate is being evaluated for.
- * @returns `true` when the property is declared and its accessor is present.
+ * @returns `true` when the property is declared and its value is a known boolean.
  */
 function entityReadsActiveFlag<TSubject extends ValidationSubject>(
   entity: TSubject,
@@ -497,9 +615,9 @@ function entityReadsActiveFlag<TSubject extends ValidationSubject>(
     return false;
   }
 
-  const accessor: unknown = (entity as TSubject & Partial<ActiveFlagReader>).getActiveFlag;
+  const value: unknown = (entity as TSubject & Partial<ActiveFlagReader>).activeFlag;
 
-  return typeof accessor === 'function';
+  return typeof value === 'boolean';
 }
 
 /**
@@ -539,6 +657,64 @@ function clearsAllSettingsCacheForClassName(className: string): boolean {
  * @typeParam TEntity - The entity type this instance serves.
  * @typeParam TPropertyName - The union of that entity's declared property names.
  */
+/**
+ * The narrow identity surface the two maintenance ports need in order to act on an entity.
+ *
+ * Deliberately two members rather than the whole entity type. The legacy calls pass `entity=` and the
+ * out-of-scope services then read the entity's class name and primary identifier to locate the rows
+ * they own — so those two reads ARE the dependency, and declaring only them keeps an implementation of
+ * either port from reaching into catalog fields it has no business seeing (S4). Every
+ * {@link BaseServiceEntity} satisfies this structurally, so no adapter is needed at the call sites.
+ */
+export interface MaintenanceEntityRef {
+  /** [org/Hibachi/HibachiObject.cfc:L135] — the bare class name. */
+  getClassName(): string;
+
+  /** [org/Hibachi/HibachiEntity.cfc:L244] — the primary identifier's value. */
+  getPrimaryIDValue(): string;
+}
+
+/* THERE IS NO `EntitySettingMaintenancePort`. It was declared as a same-shape rival of
+ * {@link EntitySettingCleanupPort} — identical members, identical legacy locators, a different
+ * noun — and two port interfaces for one collaborator is a drift hazard, not a choice: a
+ * wiring site satisfying one of them would leave the other unimplemented with nothing
+ * reporting it. EntitySettingCleanupPort is the surviving declaration and it KEPT the stronger
+ * typing the rival introduced: its entity parameter is {@link MaintenanceEntityRef} rather
+ * than `unknown`, so an implementation can read `getClassName()` and `getPrimaryIDValue()`
+ * off it without a cast, which is exactly what the legacy call site does. */
+
+/* THERE IS NO `EntityCommentMaintenancePort`. It was declared as a same-shape rival of
+ * {@link EntityCommentCleanupPort} — identical members, identical legacy locators, a different
+ * noun — and two port interfaces for one collaborator is a drift hazard, not a choice: a
+ * wiring site satisfying one of them would leave the other unimplemented with nothing
+ * reporting it. EntityCommentCleanupPort is the surviving declaration and it KEPT the stronger
+ * typing the rival introduced: its entity parameter is {@link MaintenanceEntityRef} rather
+ * than `unknown`, so an implementation can read `getClassName()` and `getPrimaryIDValue()`
+ * off it without a cast, which is exactly what the legacy call site does. */
+
+/**
+ * Resolves an entity into the subject its DELETE-context rules can actually evaluate.
+ *
+ * ⚠️⚠️ F09 — WHY A RESOLUTION STEP IS NEEDED AT ALL. Delete guards in this domain do not read stored
+ * columns; they read DERIVED values. `model/validation/Sku.json` gates deletion on `defaultFlag`,
+ * `transactionExistsFlag` and `physicalCounts`, and the middle one is a database existence check
+ * ([model/dao/SkuDAO.cfc:L53]) while the first is calculated. Handing the raw entity to the validator
+ * therefore asked the rules to read values that were simply not present.
+ *
+ * AND THE ABSENT-VALUE SEMANTICS MAKE THAT WORSE, NOT HARMLESS. `eq` is one of only two constraints
+ * that FAIL on a missing value ([org/Hibachi/HibachiValidationService.cfc:L387-L390]), so an unresolved
+ * flag does not skip the guard — it REFUSES THE DELETE. Both `eq` guards in `Sku.json` are therefore
+ * unconditionally hostile until the values are resolved. Those semantics are correct and are left
+ * exactly as they are; what was missing is a required opportunity to supply the values, which is what
+ * this seam provides. The safe direction is preserved: resolve first, then let a genuinely absent value
+ * refuse.
+ *
+ * @param entity - The entity being deleted.
+ * @returns The subject to validate. It may be the entity itself once enriched, or a distinct view of
+ *   it; `delete` uses whatever comes back and never re-reads the argument for validation.
+ */
+export type DeleteSubjectResolver<TEntity> = (entity: TEntity) => Promise<TEntity>;
+
 export interface BaseServiceCollaborators<
   TEntity extends BaseServiceEntity<TPropertyName>,
   TPropertyName extends string,
@@ -570,13 +746,83 @@ export interface BaseServiceCollaborators<
    */
   readonly propertyDescriptors: PropertyDescriptorSet<TEntity, TPropertyName>;
 
+  /**
+   * The resolved authorisation context for population — ARMS 2 AND 3 of the legacy population gate
+   * [org/Hibachi/HibachiTransient.cfc:L186-L190], declared in `../ports/AccountContextPort`.
+   *
+   * ⚠️ REQUIRED, WITH NO DEFAULT, AND THAT IS THE WHOLE MECHANISM. This service is the ONLY
+   * production caller of `populate` in the subtree, so requiring the policy here is what makes
+   * "mutate a persistent entity's declared properties from a request payload without deciding
+   * whether the caller may" unreachable rather than merely discouraged. A wiring site that forgets it
+   * does not fall back to permissive behaviour; it fails to compile.
+   *
+   * WHY IT IS A CONSTRUCTOR COLLABORATOR RATHER THAN A `save` PARAMETER. Rule R1 (AAP §0.4.3.1)
+   * replaces DI/1 property injection with constructor injection, and the legacy gate read the policy
+   * out of ambient request state rather than taking it as an argument — so no legacy signature gains
+   * a parameter, and TR-1's preservation of `save`'s three-parameter shape
+   * [model/service/HibachiService.cfc:L86] is untouched. The two positional two-argument call sites
+   * that AAP §0.4.2.3 pins, [model/service/BrandService.cfc:L76] and
+   * [model/service/ProductService.cfc:L303], still translate literally.
+   *
+   * ITS IMPLEMENTATION MUST DENY BY DEFAULT. Every terminal branch of the legacy ladder returns
+   * false — [org/Hibachi/HibachiAuthenticationService.cfc:L118], [:L369] and [:L383-L386] — and the
+   * port documents that obligation on the member itself.
+   *
+   * AAP-5 — REQUIRED, NOT OPTIONAL, AND THAT IS THE WHOLE POINT. `../domain/base/populate`
+   * default-denies a persistent property when no collaborator is supplied. Were this field optional a
+   * wiring site could omit it and every persistent property would silently stop populating — a
+   * failure mode that produces no error, only an entity that quietly ignored its payload. Declaring
+   * it required makes the omission a compile error instead. The three authorization arms it feeds are
+   * ported from `org/Hibachi/HibachiTransient.cfc:L186-L190`.
+   */
+  readonly populationAuthorization: PopulationAuthorizationPort;
+
   /** The persistence step of [org/Hibachi/HibachiService.cfc:L155]. See {@link EntityPersister}. */
   readonly persist: EntityPersister<TEntity>;
 
-  /**
-   * The removal step of [org/Hibachi/HibachiService.cfc:L61] and [:L64]. See {@link EntityRemover}.
-   */
+  /** The removal step of `org/Hibachi/HibachiService.cfc:L61` and `:L64`. */
   readonly remove: EntityRemover<TEntity>;
+
+  /**
+   * The out-of-scope setting cleanup the LOCAL override performs — see
+   * {@link EntitySettingCleanupPort}.
+   *
+   * AAP-4 — REQUIRED, NOT OPTIONAL, for the same reason as
+   * {@link BaseServiceCollaborators.populationAuthorization}. An optional collaborator would let a
+   * wiring site omit it and restore exactly the reported behaviour — deactivation not stripping the
+   * entity's identifier out of stored setting values, deletion not removing the entity's setting
+   * rows — with nothing anywhere reporting the omission.
+   */
+  readonly settingCleanup: EntitySettingCleanupPort;
+
+  /**
+   * The out-of-scope comment cleanup the LOCAL override performs — see
+   * {@link EntityCommentCleanupPort}.
+   *
+   * AAP-4 — REQUIRED for the same reason as {@link BaseServiceCollaborators.settingCleanup}.
+   */
+  readonly commentCleanup: EntityCommentCleanupPort;
+
+  /**
+   * The delete-context resolution step; see {@link DeleteSubjectResolver}.
+   *
+   * Optional in the TYPE, and required in effect for any entity whose delete guards read derived
+   * values. `Sku` is the case in point: `../validation/rules/sku.rules.ts` exports
+   * `ResolvedSkuDeleteSubject`, whose three guard properties are NON-optional, so a SKU wiring cannot
+   * produce a valid delete subject without going through a resolver. Entities whose delete guards read
+   * only owned collections — `Brand`, `Option`, `OptionGroup` — need none and omit it.
+   *
+   * ⚠️ THE ONE OPTIONAL MEMBER OF THIS INTERFACE, AND THE ASYMMETRY WITH THE THREE ABOVE IS
+   * DELIBERATE. `populationAuthorization`, `settingCleanup` and `commentCleanup` are REQUIRED because
+   * omitting any of them silently RESTORES a reported defect — a payload quietly ignored, or rows
+   * quietly left behind — and nothing reports the omission. Omitting this one restores nothing: the
+   * delete still runs, the guards still evaluate, and for the three entities whose guards read only
+   * owned collections the raw entity IS the correct subject. Where it is NOT correct the compiler says
+   * so, because `ResolvedSkuDeleteSubject` cannot be produced without it. So the safety here is
+   * carried by the SUBJECT type rather than by requiredness, which is why requiredness would buy
+   * nothing but three wiring sites obliged to pass a resolver they have no use for.
+   */
+  readonly resolveDeleteSubject?: DeleteSubjectResolver<TEntity>;
 }
 
 /**
@@ -598,13 +844,17 @@ export interface BaseServiceCollaborators<
  *
  * @example
  * ```ts
- * // Wiring, in src/config/container.ts — one instance per entity type.
+ * // Wiring, in src/config/container.ts — one instance per entity type. The `authorization`
+ * // collaborator is REQUIRED: it supplies ARMs 2 and 3 of the population master gate at
+ * // [org/Hibachi/HibachiTransient.cfc:L186-L190], and omitting it is a compile error rather than a
+ * // save that silently populates nothing. See BaseServiceCollaborators.authorization.
  * const brandBaseService = new BaseService({
  *   validator,
  *   ruleSet: brandValidationRules,
  *   propertyDescriptors: brandPropertyDescriptors,
  *   persist: (brand) => brandRepository.saveBrand(brand),
  *   remove: (brand) => brandRepository.removeBrand(brand),
+ *   authorization: propertyUpdateAuthorizer,
  * });
  *
  * // Delegation, in BrandService.saveBrand — the literal translation of
@@ -616,37 +866,65 @@ export class BaseService<
   TEntity extends BaseServiceEntity<TPropertyName>,
   TPropertyName extends string,
 > {
-  /** See {@link BaseServiceCollaborators.validator}. */
   private readonly validator: Validator;
 
-  /** See {@link BaseServiceCollaborators.ruleSet}. */
   private readonly ruleSet: ValidationRuleSet<TEntity>;
 
-  /** See {@link BaseServiceCollaborators.propertyDescriptors}. */
   private readonly propertyDescriptors: PropertyDescriptorSet<TEntity, TPropertyName>;
+
+  /** See {@link BaseServiceCollaborators.populationAuthorization}. */
+  private readonly populationAuthorization: PopulationAuthorizationPort;
 
   /** See {@link BaseServiceCollaborators.persist}. */
   private readonly persist: EntityPersister<TEntity>;
 
-  /** See {@link BaseServiceCollaborators.remove}. */
   private readonly remove: EntityRemover<TEntity>;
+
+  private readonly settingCleanup: EntitySettingCleanupPort;
+
+  private readonly commentCleanup: EntityCommentCleanupPort;
+
+  /* THE THREE COLLABORATOR FIELDS ARE DECLARED ONCE, DIRECTLY ABOVE, AND THEY ARE NOT OPTIONAL.
+   *
+   * A second declaration of them widened to `| undefined` was withdrawn. The widening looked like a
+   * concession to `exactOptionalPropertyTypes` and was in fact a downgrade of AAP-5: `../domain/base/populate`
+   * DEFAULT-DENIES a persistent property when no authorisation collaborator is supplied
+   * [org/Hibachi/HibachiAuthenticationService.cfc:L104-L120], so an omittable field lets a wiring site
+   * silently stop every persistent property from populating, and an omittable cleanup port lets a
+   * wiring site silently restore the two reported defects — deactivation not stripping the entity's
+   * identifier out of stored setting values, deletion not removing its setting and comment rows. All
+   * three failures produce NO error: only an entity that quietly ignored its payload, or rows that
+   * quietly stayed behind. Required fields make each omission a compile error instead, which is the
+   * entire point of declaring them. `exactOptionalPropertyTypes` is satisfied without widening,
+   * because the constructor assigns all three unconditionally. */
+
+  /** See {@link BaseServiceCollaborators.resolveDeleteSubject}. */
+  private readonly resolveDeleteSubject: DeleteSubjectResolver<TEntity> | undefined;
 
   /**
    * Binds the collaborators once.
    *
-   * A single parameter object rather than five positional parameters, because five same-shaped
+   * A single parameter object rather than six positional parameters, because six same-shaped
    * arguments are trivially transposable at a wiring site and a transposition would still compile for
    * the two function-typed ones. Every field is copied into a `readonly` field, so the instance is
    * immutable after construction — which is what M7 requires of a singleton on a warm container.
    *
-   * @param collaborators - The validator, rule set, property descriptors, persister and remover.
+   * @param collaborators - Eight REQUIRED members — validator, rule set, property descriptors,
+   *   population authorisation, persister, remover, setting cleanup and comment cleanup — plus ONE
+   *   optional crossing, {@link BaseServiceCollaborators.resolveDeleteSubject}, whose absence changes
+   *   behaviour rather than failing loudly: `delete` then validates the raw entity, which is correct
+   *   only for entities whose guards read owned collections. Its own field documents the asymmetry.
    */
   public constructor(collaborators: BaseServiceCollaborators<TEntity, TPropertyName>) {
     this.validator = collaborators.validator;
     this.ruleSet = collaborators.ruleSet;
     this.propertyDescriptors = collaborators.propertyDescriptors;
+    this.populationAuthorization = collaborators.populationAuthorization;
     this.persist = collaborators.persist;
     this.remove = collaborators.remove;
+    this.settingCleanup = collaborators.settingCleanup;
+    this.commentCleanup = collaborators.commentCleanup;
+    this.resolveDeleteSubject = collaborators.resolveDeleteSubject;
   }
 
   /**
@@ -675,7 +953,17 @@ export class BaseService<
    *   population runs unconditionally as a result — see the subtlety recorded in the module header.
    *   Keys matching no declared property are silently ignored, as they were in CFML.
    * @param context - The validation context. Defaults to the literal `'save'` from [:L86] and is
-   *   passed through UNCHANGED, so a caller may select any context the rule set declares.
+   *   passed through UNCHANGED, so a caller may select any context the rule set declares — but only
+   *   from the closed {@link ValidationContext} union.
+   *
+   *   ⚠️ WHY THIS PARAMETER IS NOT A `string`. It was, and that made the validation bypass at
+   *   [org/Hibachi/HibachiValidationService.cfc:L162] reachable from every save: a context of
+   *   `'false'`, `'no'` or `'0'` skips every required, uniqueness, format, method and delete-guard
+   *   rule and returns an EMPTY bag, after which STEP 3 below sees a clean entity and PERSISTS IT.
+   *   This method is the one production path from a use case to `Validator.validate`, so closing the
+   *   parameter here is what stops a request-supplied value from selecting the bypass. DECISION V-1
+   *   on {@link ValidationContext} carries the enumeration proving no legacy call site selected it
+   *   either, so this is behaviour preservation rather than a behavioural change.
    * @returns The persisted entity — the value produced by the persistence step, never merely the
    *   argument that was handed in.
    * @throws {ValidationError} the accumulated failure bag, keyed by property identifier, when the
@@ -684,7 +972,7 @@ export class BaseService<
   public async save(
     entity: TEntity,
     data: Record<string, unknown> = {},
-    context: string = DEFAULT_SAVE_CONTEXT,
+    context: ValidationContext = DEFAULT_SAVE_CONTEXT,
   ): Promise<TEntity> {
     /*
      * [model/service/HibachiService.cfc:L88] — the inherited path, whose contract is
@@ -700,8 +988,26 @@ export class BaseService<
      * position, and that omission is a flagged boundary gap already owned and documented by
      * `../domain/base/populate`. It is not re-flagged here, and no attribute collaborator is invented
      * to fill it.
+     *
+     * ⭐ THE INJECTED AUTHORISATION IS PASSED THROUGH. It supplies ARMS 2 and 3 of the master gate
+     * [org/Hibachi/HibachiTransient.cfc:L186-L190]; ARM 1 is the descriptor set's own `persistent`
+     * flag and short-circuits ahead of both. An unauthorised property is SKIPPED, not rejected —
+     * `../domain/base/populate` records why that matches the legacy `if`-around-the-block shape and
+     * why raising instead would leak which properties exist.
+     *
+     * IT CAN NOW RAISE, AND THE RAISE PROPAGATES DELIBERATELY. `populate` throws a `DomainError` when
+     * a payload value cannot be represented in its property's declared value type. Nothing is caught
+     * here: a value that has no representation must not reach validation, because a validation bag
+     * would present it as a recoverable field error when the request is malformed at a level the rule
+     * sets do not model. Nothing has been persisted at this point, and the caller's entity reference
+     * is unmodified for every property the loop had not yet reached.
      */
-    const populatedEntity: TEntity = populate(entity, data, this.propertyDescriptors);
+    const populatedEntity: TEntity = populate(
+      entity,
+      data,
+      this.propertyDescriptors,
+      this.populationAuthorization,
+    );
 
     /*
      * STEP 2 — validate, [org/Hibachi/HibachiService.cfc:L151]. The context is forwarded verbatim.
@@ -734,7 +1040,8 @@ export class BaseService<
      * stays two-part: no failures, and the entity declares `activeFlag`. The second conjunct is the
      * CFML reflection call translated to a structural narrowing; for `Option` and `OptionGroup`, which
      * declare no `activeFlag` at all, it is false and this whole block is skipped exactly as the
-     * legacy line skips it.
+     * legacy line skips it. It also reads the FIELD rather than probing for a generated accessor — see
+     * {@link ActiveFlagReader}, without which correction this block was unreachable for every entity.
      */
     if (!errors.hasErrors() && entityReadsActiveFlag(savedEntity)) {
       /*
@@ -747,42 +1054,53 @@ export class BaseService<
        */
       let settingsRemoved = NO_SETTINGS_REMOVED;
 
-      // [:L94] `if(!arguments.entity.getActiveFlag())`
-      if (!savedEntity.getActiveFlag()) {
+      /*
+       * [:L94] `if(!arguments.entity.getActiveFlag())` — the generated accessor read as a field, for
+       * the reason recorded on {@link ActiveFlagReader}. {@link entityReadsActiveFlag} has already
+       * established that the value is a known boolean, so this negation is total.
+       */
+      if (!savedEntity.activeFlag) {
         /*
-         * TODO(parity): GAP 3 — [model/service/HibachiService.cfc:L94-L96] called
-         * `getService("settingService").updateAllSettingValuesToRemoveSpecificID(
-         * arguments.entity.getPrimaryIDValue() )` here and assigned its COUNT of removed setting
-         * values to the counter, which then feeds the gate at [:L98]. `settingService` is out of scope
-         * — AAP 0.2.2.1 excludes `Setting`-prefixed components — and TR-5 forbids inventing a
-         * stand-in: no cleanup hook, no settings mutator, and not `../ports/SettingResolverPort`,
-         * which resolves configuration keys and does not write setting values.
+         * [model/service/HibachiService.cfc:L94-L96] — `var settingsRemoved =
+         * getService("settingService").updateAllSettingValuesToRemoveSpecificID(
+         * arguments.entity.getPrimaryIDValue() )`, reproduced through
+         * {@link EntitySettingCleanupPort} (AAP-4, TR-5).
          *
-         * The branch is kept reachable and the assignment is kept, with the only count this port can
-         * honestly report: with no collaborator to remove anything, nothing is removed, so the counter
-         * is zero. The consequence is stated at GAP 4 below rather than used to simplify it.
+         * The identifier passed is `getPrimaryIDValue()`, exactly the legacy argument, and the COUNT
+         * it resolves is assigned to the counter the gate at [:L98] reads — which is why the port
+         * member returns `Promise<number>` rather than `Promise<void>`. Awaited rather than
+         * fire-and-forget: the legacy call is synchronous and its result is consumed on the very next
+         * line, so the gate must not be evaluated before it has resolved.
          */
-        settingsRemoved = NO_SETTINGS_REMOVED;
+        settingsRemoved = await this.settingCleanup.updateAllSettingValuesToRemoveSpecificID(
+          savedEntity.getPrimaryIDValue(),
+        );
       }
 
       /*
        * [:L98] the disjunction, retained in FULL — both arms, and all five literal class names inside
        * {@link SETTINGS_CACHE_CLEARING_CLASS_NAMES}. For an in-scope entity the second arm can never
-       * match, because every one of those five names is an excluded entity, and the first arm can
-       * never be true either, because GAP 3 leaves the counter at zero. The rule is nevertheless the
-       * observable behaviour, so it is reproduced rather than collapsed (AAP 0.8.2 guideline 4).
+       * match, because every one of those five names is an excluded entity; the FIRST arm is live,
+       * carrying the real count GAP 3 above resolved. The five names are reproduced rather than
+       * collapsed because the rule itself is the observable behaviour (AAP 0.8.2 guideline 4).
        */
       if (
         settingsRemoved > NO_SETTINGS_REMOVED ||
         clearsAllSettingsCacheForClassName(savedEntity.getClassName())
       ) {
         /*
-         * TODO(parity): GAP 4 — [model/service/HibachiService.cfc:L98-L100] called
-         * `getService("settingService").clearAllSettingsCache()` here. `settingService` is out of
-         * scope, so the cache invalidation is not performed and no replacement is invented. There is
-         * no cache in this layer to invalidate in any case: M7 makes this collaborator stateless by
-         * construction, and any memoisation elsewhere in the subtree is request-scoped.
+         * [model/service/HibachiService.cfc:L98-L100] — `getService("settingService")
+         * .clearAllSettingsCache()`, reproduced through {@link EntitySettingCleanupPort} (AAP-4,
+         * TR-5).
+         *
+         * ⚠️ THE CACHE INVALIDATED HERE IS NOT THIS LAYER'S CACHE, WHICH IS WHY THE CALL CANNOT BE
+         * SKIPPED. M7 makes this collaborator stateless on a warm container and every memoisation
+         * elsewhere in the subtree is request-scoped, so there is nothing local to clear. The cache
+         * belongs to `settingService`, on the far side of the boundary. Omitting the notification
+         * would silently decide, on the owner's behalf, that its cache does not need invalidating —
+         * a decision this layer has no standing to make.
          */
+        await this.settingCleanup.clearAllSettingsCache();
       }
     }
 
@@ -821,7 +1139,7 @@ export class BaseService<
    * [model/service/ProductService.cfc:L326-L333] clears the product's default SKU before calling this,
    * and restores it only when it receives `false`. Raising would leave the product without its default
    * SKU. The failure messages are consequently not surfaced through this boolean — the legacy member's
-   * own `boolean` return type did not surface them either. See the honest consequence recorded in the
+   * own `boolean` return type did not surface them either. See the consequence recorded in the
    * module header.
    *
    * @param entity - The entity to remove.
@@ -838,8 +1156,28 @@ export class BaseService<
      * the delete-context guards — a transaction-existence check, a default-SKU check, dependent
      * collection checks and a system-code check — live in the same rule set as the save-context rules.
      */
+    /*
+     * ⚠️⚠️ F09 — RESOLVE BEFORE VALIDATING. See {@link DeleteSubjectResolver} for why the raw entity is
+     * not a usable delete subject: this domain's delete guards read DERIVED values, and `eq` is one of
+     * only two constraints that FAIL rather than pass on an absent value
+     * ([org/Hibachi/HibachiValidationService.cfc:L387-L390]), so an unresolved flag actively refuses the
+     * delete instead of ignoring it.
+     *
+     * The legacy needed no such step because CFML called the calculated getter during validation and it
+     * hit the database then and there. This port's validator receives a subject rather than invoking
+     * getters, so the equivalent work has to happen HERE — before the rules run, and inside the same
+     * member, so no caller can forget it.
+     *
+     * When no resolver is wired the entity is validated as-is, which is correct for the entities whose
+     * delete guards read only owned collections. It is NOT silently correct for `Sku`, and that is
+     * enforced by types rather than by trust: `ResolvedSkuDeleteSubject` declares the three guard
+     * properties non-optional, so a SKU wiring that omits the resolver does not compile.
+     */
+    const deleteSubject: TEntity =
+      this.resolveDeleteSubject === undefined ? entity : await this.resolveDeleteSubject(entity);
+
     const errors: ValidationError = await this.validator.validate(
-      entity,
+      deleteSubject,
       this.ruleSet,
       DELETE_VALIDATION_CONTEXT,
     );
@@ -860,23 +1198,24 @@ export class BaseService<
       deleteOK = true;
     }
 
-    // [model/service/HibachiService.cfc:L73] `if(deleteOK)` — the cleanup gate, reproduced exactly:
-    // both steps sit inside it, so neither can run for an entity that was not removed.
     if (deleteOK) {
       /*
-       * TODO(parity): GAP 1 — [model/service/HibachiService.cfc:L76] called
-       * `getService("settingService").removeAllEntityRelatedSettings( entity=arguments.entity )` here.
-       * `settingService` is out of scope (AAP 0.2.2.1), so the entity's related setting rows are not
-       * removed and no stand-in collaborator is invented for them (TR-5).
+       * [model/service/HibachiService.cfc:L76] then [:L79] — the two cleanup steps, reproduced through
+       * {@link EntitySettingCleanupPort} and {@link EntityCommentCleanupPort} (AAP-4, TR-5). Both sit
+       * inside the `if(deleteOK)` gate and both run AFTER {@link EntityRemover}, exactly as the legacy
+       * lines do relative to `super.delete()` at [:L70].
        *
-       * TODO(parity): GAP 2 — [model/service/HibachiService.cfc:L79] called
-       * `getService("commentService").removeAllEntityRelatedComments( entity=arguments.entity )` here.
-       * No comment family is in scope anywhere in this slice, so the entity's related comment rows are
-       * not removed and, again, nothing is invented to stand in.
+       * ⚠️ AWAITED SEQUENTIALLY, IN SOURCE ORDER, AND NOT THROUGH `Promise.all`. The legacy calls are
+       * two consecutive synchronous statements, so settings are gone before comments are touched.
+       * Running them concurrently would be an invention (AAP 0.7.3, S9) and would also be unsafe in a
+       * way the type system cannot see: a comment-cleanup implementation is free to read the setting
+       * rows the first call removes, and interleaving the two would make the outcome depend on
+       * scheduling.
        */
+      await this.settingCleanup.removeAllEntityRelatedSettings(entity);
+      await this.commentCleanup.removeAllEntityRelatedComments(entity);
     }
 
-    // [model/service/HibachiService.cfc:L83] — the boolean, unchanged.
     return deleteOK;
   }
 }

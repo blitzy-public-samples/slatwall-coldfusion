@@ -2,111 +2,91 @@
  * Static setting-resolution adapter — the in-scope implementation of
  * `src/ports/SettingResolverPort.ts` for the extracted Slatwall Catalog slice.
  *
- * It answers the eighteen configuration names the slice reads, from the metadata defaults declared
- * in the legacy source, with no input/output of any kind: no database read, no `SwSetting` query,
- * no filesystem access, no network call, no environment variable and no clock. Every value it
- * returns is a compile-time constant transcribed from a legacy declaration and carries that
- * declaration's `path:Lnnn` locator inline, so a reviewer can diff any answer against the source
- * that produced it without trusting this narrative.
+ * It answers the eighteen configuration names the slice reads, from the metadata defaults declared in
+ * the legacy source, with no input/output of any kind: no database read, no `SwSetting` query, no
+ * filesystem access, no network call, no environment variable and no clock. Every value it returns is a
+ * compile-time constant transcribed from a legacy declaration, and each value whose transcription
+ * required a judgment carries that declaration's `path:Lnnn` locator inline.
  *
  * LEGACY ORIGINS (reference only; the CFML tree is never modified — AAP §0.4.1.1 / TR-6):
- *   - config/dbdata/SlatwallSetting.xml.cfm — the `SwSetting` seed document, and the reason this
- *     adapter can be static at all. See THE SEED DATA below.
- *   - model/service/SettingService.cfc — the out-of-scope effective-value engine. Its per-name
- *     metadata block (the struct that opens above L150 and closes at L269) is the source of every
- *     default reproduced here, and its `getSettingDetails` at L468-L600 is the source of the
- *     resolution ORDER reproduced here. AAP §0.2.2.1 excludes the whole `Setting*` family — three
- *     files: model/entity/Setting.cfc, model/service/SettingService.cfc, model/dao/SettingDAO.cfc.
- *   - model/entity/HibachiEntity.cfc:L128-L131 — `setting()`, the accessor every in-scope entity
- *     reads through. Its body is one delegation, and both halves of it disappear here rather than
- *     being re-created: the `getService("settingService")` string lookup at L130 becomes a typed
- *     constructor-injected collaborator (AAP §0.4.3.2 rule R2, AAP §0.7.3 S3), and the hierarchical
- *     accessor itself becomes the declared, compile-checked port this class implements.
- *   - model/transient/HibachiScope.cfc:L201 — a second, identically shaped `setting()` declaration
- *     on the request-scope transient, used by model/service/ProductService.cfc:L200, L201 and L240.
- *     It is the evidence that a resolution context is genuinely optional rather than merely
- *     convenient, because those three reads have no entity receiver at all.
+ *   - config/dbdata/SlatwallSetting.xml.cfm — the `SwSetting` seed document, and the reason this adapter
+ *     can be static at all. See THE SEED DATA below.
+ *   - model/service/SettingService.cfc — the out-of-scope effective-value engine. Its per-name metadata
+ *     block (opening above L150 and closing at L269) is the source of every default reproduced here, and
+ *     `getSettingDetails` at L468-L600 is the source of the resolution ORDER reproduced here.
+ *     AAP §0.2.2.1 excludes the whole `Setting*` family.
+ *   - model/entity/HibachiEntity.cfc:L128-L131 — `setting()`, the accessor every in-scope entity reads
+ *     through. Its body is one delegation, and both halves disappear here rather than being re-created:
+ *     the `getService("settingService")` string lookup at L130 becomes a typed constructor-injected
+ *     collaborator (AAP §0.4.3.2 rule R2, AAP §0.7.3 S3), and the hierarchical accessor itself becomes
+ *     the declared, compile-checked port this class implements.
+ *   - model/transient/HibachiScope.cfc:L201 — a second, identically shaped `setting()` declaration on
+ *     the request-scope transient, used by model/service/ProductService.cfc:L200, L201 and L240. It is
+ *     the evidence that a resolution context is genuinely optional rather than merely convenient,
+ *     because those three reads have no entity receiver at all.
  *
- * WHY THIS FILE EXISTS — IR-2, verbatim: "A narrow setting-resolution port is unavoidable. The
- * slice reads eighteen distinct configuration keys through `HibachiEntity.setting()`
- * [model/entity/HibachiEntity.cfc:L129], whose effective-value engine lives in the out-of-scope
- * `SettingService`. A typed `SettingResolverPort` covering exactly those keys — including the
- * interpolated `productImage<size>Width` / `productImage<size>Height` form — is required, rather
- * than porting the platform-wide settings engine." This class is the other half of that sentence:
- * the port declares which names may be asked for, and this adapter declares what they answer.
- *
- * RULES. `review_rules` reports "No user rules provided." for this project — the on-disk rules
- * document was read in full, both with the default window and with an explicit full range, and it
- * returns that single line with no paginated remainder. Zero files therefore enter scope by rule
- * and no rule-derived constraint applies to this file. Per UR4 that is emphatically NOT licence to
- * lower the bar: the nine binding standards of AAP §0.7.3 govern in its place — S1 strict type
- * safety, S2 parameterized SQL, S3 explicit dependency injection, S4 hexagonal separation, S5
- * exact-version pinning, S6 one labelled test per converted method, S7 preserve-and-annotate, S8
- * flag mismatches, S9 invent nothing — together with the prompt-borne constraints of AAP §0.7.4.
+ * WHY THIS FILE EXISTS — IR-2. The slice reads eighteen distinct configuration keys through
+ * `HibachiEntity.setting()`, whose effective-value engine lives in the out-of-scope `SettingService`, so
+ * a typed port covering exactly those keys — including the interpolated `productImage<size>Width` and
+ * `productImage<size>Height` form — is required rather than a port of the platform-wide settings engine.
+ * The port declares which names may be asked for; this adapter declares what they answer.
  *
  * ---------------------------------------------------------------------------------------------
- * ⭐⭐ SYNCHRONOUS BY DECISION — EXECUTION-MODEL MISMATCH M8 (AAP §0.6.6, §0.8.2 Guideline 6)
+ * SYNCHRONOUS BY DECISION — EXECUTION-MODEL MISMATCH M8 (AAP §0.6.6, §0.8.2 Guideline 6)
  * ---------------------------------------------------------------------------------------------
- * The single member below returns a plain value. It is not declared asynchronous, it returns no
- * promise, it takes no callback and it waits on nothing. That is the port's recorded decision, and
- * this adapter honours it exactly rather than "harmonising" with the six asynchronous sibling ports.
+ * The single member below returns a plain value. It is not declared asynchronous, it returns no promise,
+ * it takes no callback and it waits on nothing. That is the port's recorded decision, and this adapter
+ * honours it exactly rather than "harmonising" with the six asynchronous sibling ports.
  *
  * THE MISMATCH ITSELF is out of scope and is flagged rather than reimplemented: the out-of-scope
  * `SettingService.updateStockCalculated` at model/service/SettingService.cfc:L717 launches a named
  * out-of-band thread — `thread action="run" name="updateStockThread"` at
- * model/service/SettingService.cfc:L722. A persistent ColdFusion or Railo application server can
- * carry such a thread past the request that started it; a single stateless Lambda invocation
- * cannot. AAP §0.6.6 M8 records the consequence: the port "is declared synchronous so no caller in
- * the slice depends on background completion". Nothing here starts a thread, schedules a refresh,
- * warms a cache or performs any deferred work.
+ * model/service/SettingService.cfc:L722. A persistent ColdFusion or Railo application server can carry
+ * such a thread past the request that started it; a single stateless Lambda invocation cannot. AAP §0.6.6
+ * M8 records the consequence: the port is declared synchronous so no caller in the slice depends on
+ * background completion. Nothing here starts a thread, schedules a refresh, warms a cache or performs any
+ * deferred work.
  *
- * WHY SYNCHRONY IS LOAD-BEARING RATHER THAN COSMETIC. The legacy readers are plain synchronous
- * property getters, and several of them would have to become asynchronous if this contract were
- * promise-returning: `Product.getProductURL` [model/entity/Product.cfc:L207-L209],
- * `Product.getTemplate` [model/entity/Product.cfc:L215-L221], `Sku.getCurrencyCode`
- * [model/entity/Sku.cfc:L360-L365] and `Option.getImageDirectory`
- * [model/entity/Option.cfc:L81-L83]. The Google product-feed view would inherit it too, since it
- * reads two settings inline while rendering [integrationServices/google/views/feed/product.cfm:L58].
- * A synchronous contract keeps all of that faithful.
+ * WHY SYNCHRONY IS LOAD-BEARING RATHER THAN COSMETIC. The legacy readers are plain synchronous property
+ * getters, and several of them would have to become asynchronous if this contract were promise-returning:
+ * `Product.getProductURL` (model/entity/Product.cfc:L207-L209), `Product.getTemplate`
+ * (model/entity/Product.cfc:L215-L221), `Sku.getCurrencyCode` (model/entity/Sku.cfc:L360-L365) and
+ * `Option.getImageDirectory` (model/entity/Option.cfc:L81-L83). The Google product-feed view would
+ * inherit it too, since it reads two settings inline while rendering
+ * (integrationServices/google/views/feed/product.cfm:L58).
  *
  * ---------------------------------------------------------------------------------------------
  * HEXAGONAL POSITION AND IMPORT DISCIPLINE (AAP §0.7.3 S4)
  * ---------------------------------------------------------------------------------------------
- * This module imports its own port (type-only) and the seeded product-type data it must not
- * duplicate, and nothing else. It does not reach into `services/`, `handlers/`, `integrations/`,
- * `validation/`, `util/`, `errors/`, `config/` or the sibling `adapters/mysql/` — an adapter never
+ * This module imports its own port (type-only) and the seeded product-type data it must not duplicate,
+ * and nothing else. In particular it does not reach the sibling `adapters/mysql/**` — an adapter never
  * depends on a peer adapter implementation, and `adapters/mysql/**` depends on the ABSTRACTION
- * `ports/SettingResolverPort.ts` rather than on this concrete class, which is the correct
- * direction. It introduces no third-party dependency: the MySQL client pinned in `package.json`
- * remains the service's single runtime dependency (AAP §0.7.3 S5), and this file imports no part of
- * it — no client, no pool, no query runner and no row mapper, because it performs no query at all.
- * It reads no environment variable either: `src/config/env.ts` is the only file in the subtree
- * permitted to do that, which is exactly what keeps the apparent `config` ↔ `adapters` relationship
- * acyclic. Every import is relative, extensionless and single-quoted, because `tsconfig.json`
- * declares no `paths` and no `baseUrl`, so an alias that type-checks could still fail to resolve at
- * run time (AAP §0.4.3.5).
+ * `ports/SettingResolverPort.ts` rather than on this concrete class, which is the correct direction. It
+ * reads no environment variable either: `src/config/env.ts` is the only file in the subtree permitted to
+ * do that, which is what keeps the apparent `config` <-> `adapters` relationship acyclic. Every import is
+ * relative and extensionless, because `tsconfig.json` declares no `paths` and no `baseUrl`, so an alias
+ * that type-checks could still fail to resolve at run time (AAP §0.4.3.5).
  *
- * NO MODULE-SCOPE MUTABLE STATE, AND NO CACHE (M7; see CARRIED, NOT REPAIRED below). The two
- * lookup tables and the seeded-row map are frozen compile-time literals; freezing this module's
- * own freshly created literals is self-contained initialisation with no observable side effect, so
- * the module is safe to load at cold start. Nothing is written after load, nothing is memoized and
- * nothing per-request is held, so a warm container cannot leak one invocation's data into the next.
+ * NO MODULE-SCOPE MUTABLE STATE, AND NO CACHE (M7; see CARRIED, NOT REPAIRED below). The two lookup
+ * tables and the seeded-row map are frozen compile-time literals; freezing this module's own freshly
+ * created literals is self-contained initialisation with no observable side effect, so the module is safe
+ * to load at cold start. Nothing is written after load, nothing is memoized and nothing per-request is
+ * held, so a warm container cannot leak one invocation's data into the next.
  *
- * TESTABILITY (AAP §0.7.3 S6). The class has no constructor parameters, so `new
- * StaticSettingResolver()` is the whole construction story: no bootstrap, no container, no
- * registry, no service locator and no decorator. Its single method is deterministic and free of
- * input/output, so a test asserts it directly, and because the port is a structural interface a
- * bare object literal can stand in for this class wherever a collaborator needs one. That matters
- * because the legacy suite vendored no mocking library at all and instead booted the entire FW/1
- * application (AAP §0.4.3.6), and because no CFML runtime exists in this environment to compare
- * against. Coverage here is NET-NEW: AAP §0.6.5.2 verified that no legacy setting test of any kind
- * exists.
+ * TESTABILITY (AAP §0.7.3 S6). The class has no constructor parameters, so `new StaticSettingResolver()`
+ * is the whole construction story: no bootstrap, no container, no registry, no service locator and no
+ * decorator. Its single method is deterministic and free of input/output, so a test asserts it directly,
+ * and because the port is a structural interface a bare object literal can stand in for this class
+ * wherever a collaborator needs one — which matters because the legacy suite vendored no mocking library
+ * at all and instead booted the entire FW/1 application (AAP §0.4.3.6). Coverage here is NET-NEW: no
+ * legacy setting test of any kind exists (AAP §0.6.5.2).
  */
 
 import {
   SEEDED_PRODUCT_TYPES_BY_SYSTEM_CODE,
   type BaseProductType,
 } from '../../domain/BaseProductType';
+import { ConfigurationError } from '../../errors/DomainError';
 import type {
   CatalogSettingName,
   ProductImageDimensionSettingName,
@@ -122,7 +102,7 @@ import type {
  * (config/dbdata/SlatwallSetting.xml.cfm, 98 lines, read in full)
  * =============================================================================================
  *
- * ⭐ BOTH NUMBERS, BECAUSE THE TWO DISAGREE AND A READER WILL RE-DERIVE ONE OF THEM: the document
+ * BOTH NUMBERS, BECAUSE THE TWO DISAGREE AND A READER WILL RE-DERIVE ONE OF THEM: the document
  * holds SEVEN `<Record>` rows spanning FIVE distinct `settingName` values. AAP §0.4.1.7's phrase
  * "only five setting rows are actually seeded" refers to the five distinct names; anyone who counts
  * rows instead gets seven. Both figures are correct about different things, and both are stated
@@ -136,7 +116,7 @@ import type {
  *   L20  taskFailureEmailTemplate                       — global scope
  *   L21  taskSuccessEmailTemplate                       — global scope
  *
- * ⭐⭐ THE HEADLINE DISCLOSURE — 1 SEEDED, 17 DEFAULT-BACKED. Of the eighteen names this adapter
+ * THE HEADLINE DISCLOSURE — 1 SEEDED, 17 DEFAULT-BACKED. Of the eighteen names this adapter
  * answers, EXACTLY ONE — `skuEligibleFulfillmentMethods` — has any seeded row at all. The other
  * four seeded names above are email and task infrastructure that sit entirely outside the
  * eighteen-name set. SEVENTEEN of the eighteen therefore have no seeded row anywhere, at any
@@ -159,10 +139,10 @@ import type {
  *     skuEligibleCurrencies L222, skuEligibleFulfillmentMethods L223
  *   12 + 2 + 1 + 3 = 18, the count IR-2 states.
  *
- * Corollary, verified rather than assumed: none of the five seeded names is an image-sizing name
+ * Corollary: none of the five seeded names is an image-sizing name
  * or `globalImageExtension`, so the interpolated pair and that name alike have no seeded row.
  *
- * FOUR FURTHER FIRST-HAND FINDINGS ABOUT THE SEED DOCUMENT, each recorded with its locator:
+ * FOUR FURTHER FINDINGS ABOUT THE SEED DOCUMENT, each recorded with its locator:
  *
  *   1. Six columns are declared — settingID L4 (`fieldtype="id"`), settingName L5, settingValue L6,
  *      productTypeID L7, emailTemplateID L8, paymentMethodID L9 — but `emailTemplateID` and
@@ -181,7 +161,7 @@ import type {
  *      heading telling the reader to delete them once used. None of them is data, none is
  *      referenced anywhere, and none is reproduced in this file or in this comment (AAP §0.7.3 S9).
  *
- * ⚠️ LOCATOR TRAP, stated because the two line sets are one apart and easy to transpose: the three
+ * LOCATOR TRAP, stated because the two line sets are one apart and easy to transpose: the three
  * `skuEligibleFulfillmentMethods` rows are at config/dbdata/SlatwallSetting.xml.cfm:L14, L15, L16,
  * whereas the three product-type rows they point at are at
  * config/dbdata/SlatwallProductType.xml.cfm:L13, L14, L15. Each is cited against its own file
@@ -190,7 +170,7 @@ import type {
 
 /*
  * =============================================================================================
- * ⭐ THE RESOLUTION ORDER — DEFAULT FIRST, ROW OVERRIDES. THIS IS THE FILE'S DESIGN JUSTIFICATION
+ * THE RESOLUTION ORDER — DEFAULT FIRST, ROW OVERRIDES. THIS IS THE FILE'S DESIGN JUSTIFICATION
  * =============================================================================================
  *
  * A reader meeting a "static" resolver reasonably suspects that metadata defaults are being used
@@ -223,7 +203,7 @@ import type {
  *      relationship BACKWARD (`nextPathListIndex--` at L558) and stopping at the first match
  *      (L591). A final relationship-free retry follows at L596.
  *
- * ⭐ WHY OBJECT-INDEPENDENT ANSWERS ARE FAITHFUL HERE, NOT A SIMPLIFICATION. Steps 3, 5 and 6 can
+ * WHY OBJECT-INDEPENDENT ANSWERS ARE FAITHFUL HERE, NOT A SIMPLIFICATION. Steps 3, 5 and 6 can
  * only change the answer if a matching `SwSetting` row EXISTS. Seventeen of the eighteen names have
  * no row at any scope (see THE SEED DATA above), so for those seventeen every lookup misses, every
  * override is skipped, and the value assigned at step 2 survives to be returned. The resolution
@@ -243,8 +223,13 @@ import type {
  * CARRIED, NOT REPAIRED — the observations this file owns (AAP §0.7.3 S7 / S8, §0.8.2 Guideline 4)
  * =============================================================================================
  *
- * The defect and mismatch registers of AAP §0.6.7 and §0.6.6 are CLOSED at D1-D21 and M1-M8. Every
- * finding below is therefore recorded with a `path:Lnnn` locator and no new identifier is minted.
+ * The defect and mismatch registers are CLOSED at D1-D24 and M1-M9. AAP §0.6.7 catalogues D1-D21 and
+ * AAP §0.6.6 catalogues M1-M8; the three defects and one mismatch beyond those were found during the
+ * port and are each recorded once at the file that owns the behaviour — D22 at
+ * `src/adapters/mysql/rowMappers.ts` and `src/ports/repositories/SkuRepository.ts`, and D23, D24 and
+ * M9 at `src/services/SkuService.ts`. Within M1-M9, M5 is the request-end implicit transaction
+ * demarcation and M6 is the validation read-back loop; the two are adjacent and must not be swapped.
+ * Every finding below is recorded with a `path:Lnnn` locator and no new identifier is minted.
  * Nothing below is repaired: preserving legacy behaviour and annotating it is the standard, and the
  * plan's single declared exception to it (D18, SQL parameterization) belongs to
  * `src/adapters/mysql/MySqlProductRepository.ts`, not to this file. This file claims no exception.
@@ -315,7 +300,7 @@ import type {
  *   (d) It is marked deprecated in source: its declaration at
  *       model/service/SettingService.cfc:L247 sits inside the `// DEPRECATED***` block opened at
  *       model/service/SettingService.cfc:L246.
- * ⚠️ `globalImageExtension` [model/service/SettingService.cfc:L247] and the in-scope
+ * `globalImageExtension` [model/service/SettingService.cfc:L247] and the in-scope
  * `productImageDefaultExtension` [model/service/SettingService.cfc:L191] happen to share the
  * default value `'jpg'`. They are distinct names and are never aliased or merged.
  *
@@ -344,7 +329,7 @@ import type {
  * defaults are therefore carried as `'0'`, `'0'` and `'1'`: a deliberate TR-1 tightening, recorded
  * here rather than performed silently, and applied only to the representation — never to the value.
  *
- * ⚠️ THE COERCION THIS ADAPTER DOES NOT PERFORM, AND WHICH CONSUMERS MUST NOT ASSUME AWAY. CFML
+ * THE COERCION THIS ADAPTER DOES NOT PERFORM, AND WHICH CONSUMERS MUST NOT ASSUME AWAY. CFML
  * applies its own coercion at each point of use: `Product.getAllowBackorderFlag()` is declared
  * `numeric` and returns the value directly [model/entity/Product.cfc:L551-L552], and
  * `ProductService` uses one in a boolean condition, `if(arguments.product.setting(
@@ -398,7 +383,7 @@ import type {
 
 /**
  * The twelve names whose effective value is a literal `defaultValue` declared in the legacy
- * metadata struct, transcribed byte-exactly with the locator of the declaration that produced each.
+ * metadata struct, transcribed character for character from the declaration that produced each.
  *
  * Ordered by locator so the table can be diffed straight down against
  * model/service/SettingService.cfc rather than compared entry by entry.
@@ -411,9 +396,7 @@ import type {
  * one name with no declared default, and the two interpolated forms, all handled explicitly below.
  */
 const METADATA_DEFAULTS = Object.freeze({
-  /** model/service/SettingService.cfc:L163 — `{fieldType="text", defaultValue="mmm dd, yyyy"}`. */
   globalDateFormat: 'mmm dd, yyyy',
-  /** model/service/SettingService.cfc:L178 — `{fieldType="text", defaultValue="sp"}`. */
   globalURLKeyProduct: 'sp',
   /**
    * model/service/SettingService.cfc:L183 — `{fieldType="text", defaultValue=""}`.
@@ -429,15 +412,13 @@ const METADATA_DEFAULTS = Object.freeze({
    * `{fieldType="text", defaultValue="/assets/images/missingimage.jpg"}`.
    */
   imageMissingImagePath: '/assets/images/missingimage.jpg',
-  /** model/service/SettingService.cfc:L191 — `{fieldType="text", defaultValue="jpg"}`. */
   productImageDefaultExtension: 'jpg',
-  /** model/service/SettingService.cfc:L192 — `{fieldType="select", defaultValue="-"}`. */
   productImageOptionCodeDelimiter: '-',
   /**
    * model/service/SettingService.cfc:L193 —
    * `{fieldType="text", defaultValue="${brand.brandName} ${productName}"}`.
    *
-   * ⚠️ WRITTEN WITH SINGLE QUOTES ON PURPOSE, AND NEVER WITH A BACKTICK. The value contains two
+   * WRITTEN WITH SINGLE QUOTES ON PURPOSE, AND NEVER WITH A BACKTICK. The value contains two
    * `${...}` tokens which a TypeScript template literal would interpolate away, silently replacing
    * the tokens the consumer is supposed to receive. They are substituted downstream by
    * `replaceStringTemplate` [model/entity/Product.cfc:L542 →
@@ -455,7 +436,6 @@ const METADATA_DEFAULTS = Object.freeze({
    * NUMBER in source, carried as text per the TR-1 note above.
    */
   skuAllowBackorderFlag: '0',
-  /** model/service/SettingService.cfc:L221 — `{fieldType="select", defaultValue="USD"}`. */
   skuCurrency: 'USD',
   /**
    * model/service/SettingService.cfc:L232 — `{fieldType="text", defaultValue=1}`, an UNQUOTED
@@ -470,7 +450,6 @@ const METADATA_DEFAULTS = Object.freeze({
   skuShippingWeightUnitCode: 'lb',
 } as const satisfies Readonly<Partial<Record<CatalogSettingName, SettingValue>>>);
 
-/** The subset of the port's literal names this module answers from {@link METADATA_DEFAULTS}. */
 type MetadataDefaultedSettingName = keyof typeof METADATA_DEFAULTS;
 
 /**
@@ -519,21 +498,14 @@ const PRODUCT_DISPLAY_TEMPLATE_UNRESOLVED_VALUE: SettingValue = '';
  * not match `productImage<size>Width` or `productImage<size>Height` is a compile error here.
  */
 const PRODUCT_IMAGE_DIMENSION_DEFAULTS = Object.freeze({
-  /** model/service/SettingService.cfc:L261 — `defaultValue="150"`. */
   productImageSmallWidth: '150',
-  /** model/service/SettingService.cfc:L262 — `defaultValue="150"`. */
   productImageSmallHeight: '150',
-  /** model/service/SettingService.cfc:L263 — `defaultValue="300"`. */
   productImageMediumWidth: '300',
-  /** model/service/SettingService.cfc:L264 — `defaultValue="300"`. */
   productImageMediumHeight: '300',
-  /** model/service/SettingService.cfc:L265 — `defaultValue="600"`. */
   productImageLargeWidth: '600',
-  /** model/service/SettingService.cfc:L266 — `defaultValue="600"`. */
   productImageLargeHeight: '600',
 } as const satisfies Readonly<Record<ProductImageDimensionSettingName, SettingValue>>);
 
-/** The six interpolated names that have a declared default; every other size segment is a gap. */
 type DeclaredProductImageDimensionSettingName = keyof typeof PRODUCT_IMAGE_DIMENSION_DEFAULTS;
 
 /**
@@ -572,12 +544,12 @@ interface SeededProductTypeScopedSetting {
  * {@link BaseProductType}, a missing or extra discriminator is a compile error and reads of a
  * narrowed code need no non-null assertion under `noUncheckedIndexedAccess`.
  *
- * ⚠️ THE ASYMMETRY IS THE DATA AND MUST NOT BE TIDIED: `subscription` and `contentAccess` SHARE the
+ * THE ASYMMETRY IS THE DATA AND MUST NOT BE TIDIED: `subscription` and `contentAccess` SHARE the
  * same fulfillment method, while `merchandise` differs. Both values are confirmed
  * `fulfillmentMethodID` foreign keys against config/dbdata/SlatwallFulfillmentMethod.xml.cfm:L10
  * (`Shipping`) and L11 (`Auto`).
  *
- * ⭐ WHY A STATIC ANSWER IS LEGITIMATE FOR THESE THREE, AND ONLY THESE THREE. All three seeded
+ * WHY A STATIC ANSWER IS LEGITIMATE FOR THESE THREE, AND ONLY THESE THREE. All three seeded
  * product types declare `productTypeIDPath` EQUAL to their own `productTypeID`
  * [config/dbdata/SlatwallProductType.xml.cfm:L13-L15], so for them the engine's backward path walk
  * [model/service/SettingService.cfc:L534-L591, stepping with `nextPathListIndex--` at L558]
@@ -679,13 +651,93 @@ function describeResolutionContext(context: SettingResolutionContext | undefined
 }
 
 /**
+ * The deployment-supplied values this adapter cannot derive from the legacy source alone.
+ *
+ * ⚠️⚠️ F18 — WHY THIS INTERFACE EXISTS. Three of the eighteen declared names have a default that the
+ * legacy engine COMPUTES at run time rather than declares as a literal, so there is no static answer
+ * to read out of the source tree:
+ *
+ *   | name                            | legacy computation                                        |
+ *   |---------------------------------|-----------------------------------------------------------|
+ *   | `globalAssetsImageFolderPath`   | [SettingService.cfc:L164] app root mapping path + a suffix |
+ *   | `skuEligibleCurrencies`         | [SettingService.cfc:L222] out-of-scope `currencyService`   |
+ *   | `skuEligibleFulfillmentMethods` | [SettingService.cfc:L223] out-of-scope `fulfillmentService`|
+ *
+ * An earlier revision responded by RAISING for all three, which left the adapter advertising the full
+ * port while rejecting names the port declares — and one of those names has genuinely in-scope
+ * readers: `getAlternateImageDirectory` at [model/entity/Product.cfc:L224] and `getImageDirectory` at
+ * [model/entity/Option.cfc:L82]. Those two members could therefore never succeed, no matter how the
+ * deployment was set up. That is the finding.
+ *
+ * THE FIX IS TO ACCEPT THE VALUES, NOT TO INVENT THEM. Each field below is the input the legacy
+ * computation would have produced, supplied by whoever knows it — the composition root, from the
+ * deployment environment. Nothing is fabricated: AAP §0.7.3 S9 forbids inventing a default, and a
+ * hard-coded path would look authoritative while being wrong on every deployment. So the adapter still
+ * refuses to guess; it now has a legitimate channel through which the answer can arrive, which is what
+ * separates "unconfigured" from "unanswerable".
+ *
+ * EVERY FIELD IS OPTIONAL, and that is deliberate. Fifteen of the eighteen names resolve from frozen
+ * literals in this file and need none of this, so `new StaticSettingResolver()` remains valid for the
+ * consumers that only read those. Supplying a field is what makes the corresponding name resolvable;
+ * omitting it leaves that ONE name raising a classified {@link ConfigurationError}, while every other
+ * name continues to work. The alternative — making the object required — would force a caller that
+ * reads only `globalDateFormat` to invent currency and fulfillment lists it has no business knowing.
+ */
+export interface StaticSettingResolverConfiguration {
+  /**
+   * The CFML application scope's `applicationRootMappingPath`, from which
+   * `globalAssetsImageFolderPath` is derived exactly as [model/service/SettingService.cfc:L164]
+   * derives it.
+   *
+   * The path only, WITHOUT the `/custom/assets/images` suffix — the suffix is the legacy's, and this
+   * adapter appends it, so the concatenation stays a single locator-backed expression here rather than
+   * being duplicated into every deployment's configuration where it could drift.
+   */
+  readonly applicationRootMappingPath?: string;
+
+  /**
+   * The value [model/service/SettingService.cfc:L222] computes as
+   * `getCurrencyService().getAllActiveCurrencyIDList()`.
+   *
+   * A comma-delimited identifier list, matching the CFML list shape the legacy consumer expects —
+   * [model/entity/Sku.cfc:L373] and [:L375] read it with list functions. `currencyService` is out of
+   * scope (AAP §0.2.2.1 excludes the `Currency*` family), so the deployment supplies the list it would
+   * have returned.
+   */
+  readonly skuEligibleCurrencies?: string;
+
+  /**
+   * The value [model/service/SettingService.cfc:L223] computes as
+   * `getFulfillmentService().getAllActiveFulfillmentMethodIDList()`.
+   *
+   * A comma-delimited identifier list. Two independent reasons this cannot be answered statically, both
+   * recorded at the member that reads it: the computation reaches the excluded `Fulfillment*` family,
+   * and the three seeded rows at [config/dbdata/SlatwallSetting.xml.cfm:L14-L16] are scoped by
+   * `productTypeID` while the port's resolution context carries an entity kind and identifier only. The
+   * seeded values remain readable, by base product type, from
+   * {@link SEEDED_SKU_ELIGIBLE_FULFILLMENT_METHODS}.
+   */
+  readonly skuEligibleFulfillmentMethods?: string;
+}
+
+/**
+ * The suffix [model/service/SettingService.cfc:L164] appends to the application root mapping path.
+ *
+ * Held as a named constant so the one place it is concatenated stays traceable to that locator, and so
+ * a deployment cannot accidentally supply a root path that already includes it.
+ */
+const GLOBAL_ASSETS_IMAGE_FOLDER_SUFFIX = '/custom/assets/images';
+
+/**
  * The static setting-resolution adapter: the in-scope implementation of {@link SettingResolverPort}.
  *
- * Construction is deliberately trivial — `new StaticSettingResolver()` — because the class holds no
- * state, needs no collaborator and performs no input/output. Any collaborator it might one day need
- * would arrive as a typed constructor parameter wired once in `src/config/container.ts`
- * (AAP §0.7.3 S3); it imports no container, exposes no singleton and has no default export, so
- * there is no service-locator path into it.
+ * Construction takes one optional argument — see {@link StaticSettingResolverConfiguration} — because
+ * three of the eighteen declared names have a run-time-computed legacy default that no static table
+ * can hold. Beyond those values the class holds no state, needs no collaborator and performs no
+ * input/output. Any collaborator it might one day need would arrive the same way, as a typed
+ * constructor parameter wired once in `src/config/container.ts` (AAP §0.7.3 S3); it imports no
+ * container, exposes no singleton and has no default export, so there is no service-locator path into
+ * it.
  *
  * DI/1 registers services and DAOs as singletons and entities as transients
  * [org/Hibachi/Hibachi.cfc:L289 onward]. The target container honours that distinction, so a single
@@ -694,7 +746,18 @@ function describeResolutionContext(context: SettingResolutionContext | undefined
  *
  * @example
  * ```ts
+ * // Fifteen of the eighteen names need no configuration at all:
  * const settings: SettingResolverPort = new StaticSettingResolver();
+ *
+ * // The three run-time-computed defaults are supplied by the composition root, from the
+ * // deployment environment. Supplying only what a consumer reads is expected and supported:
+ * const configured: SettingResolverPort = new StaticSettingResolver({
+ *   applicationRootMappingPath: '/var/www/slatwall',
+ *   skuEligibleCurrencies: 'USD,CAD',
+ *   skuEligibleFulfillmentMethods: '444df2b4a2ef0b4c5b6e5b7c8d9e0f11',
+ * });
+ * // -> configured.setting('globalAssetsImageFolderPath')
+ * //      === '/var/www/slatwall/custom/assets/images'   (SettingService.cfc:L164)
  *
  * // A global-prefixed name needs no receiver — the form used at
  * // model/service/ProductService.cfc:L200, L201 and L240.
@@ -710,6 +773,20 @@ function describeResolutionContext(context: SettingResolutionContext | undefined
  * ```
  */
 export class StaticSettingResolver implements SettingResolverPort {
+  /** The deployment-supplied values; see {@link StaticSettingResolverConfiguration}. */
+  private readonly configuration: StaticSettingResolverConfiguration;
+
+  /**
+   * Binds the deployment-supplied values, if any.
+   *
+   * @param configuration - The three run-time-computed legacy defaults this adapter cannot derive from
+   *   source. Defaults to an empty object, so `new StaticSettingResolver()` remains valid for the
+   *   fifteen names that resolve from frozen literals.
+   */
+  public constructor(configuration: StaticSettingResolverConfiguration = {}) {
+    this.configuration = configuration;
+  }
+
   /**
    * Resolves the effective value of one of the eighteen names the Catalog slice reads.
    *
@@ -731,14 +808,24 @@ export class StaticSettingResolver implements SettingResolverPort {
    *   [model/service/ProductService.cfc:L200]. It cannot change any value this adapter returns, for
    *   the reason given under THE RESOLUTION ORDER, and is reported in the diagnostics below.
    * @returns The resolved value in the port's normalised text shape.
-   * @throws {Error} When the requested name has no locator-backed static answer: the three names
-   *   whose only declared default is COMPUTED from an out-of-scope collaborator, and any
-   *   interpolated name whose size segment has no declaration. Failing loudly with the locator is
-   *   deliberate — AAP §0.7.3 S9 forbids inventing a value, and a fabricated default here would be
-   *   indistinguishable at the call site from a real one. A plain `Error` is raised rather than a
-   *   `src/errors/**` type because this folder's hexagonal import discipline (S4) confines it to its
-   *   own port and the seeded domain data, and because an unanswerable name is a wiring fault to be
-   *   surfaced to a developer, not a domain outcome to be handled.
+   * @throws {ConfigurationError} When the requested name cannot be resolved: one of the three names
+   *   whose legacy default is COMPUTED at run time and whose value the deployment did not supply
+   *   (see {@link StaticSettingResolverConfiguration}), or an interpolated name whose size segment
+   *   has no declaration anywhere in the legacy source. Failing loudly with the locator is deliberate
+   *   — AAP §0.7.3 S9 forbids inventing a value, and a fabricated default here would be
+   *   indistinguishable at the call site from a real one.
+   *
+   *   ⚠️ F24 — WHY THIS IS NO LONGER A PLAIN `Error`. An earlier revision raised bare `Error`s and
+   *   justified it by claiming that this folder's hexagonal import discipline (S4) confines the
+   *   adapter to its own port and the seeded domain data. That justification was simply FALSE: S4
+   *   constrains the direction of dependencies between LAYERS, and `src/errors/**` is a foundational
+   *   module every layer may depend on — the sibling adapter `../mysql/rowMappers.ts` imports
+   *   `DomainError` and always has. The real consequence of the bare `Error` was that
+   *   `../../handlers/httpResponse.ts` could not classify the fault, so it fell through to the
+   *   generic handling path with no code of its own. `ConfigurationError` carries the
+   *   `SERVICE_CONFIGURATION` public code and sanitises to a 500, which correctly reports a
+   *   deployment fault as the service's rather than the caller's, while keeping the locator-bearing
+   *   diagnostic message server-side.
    */
   public setting(settingName: SettingName, context?: SettingResolutionContext): SettingValue {
     if (isMetadataDefaultedSettingName(settingName)) {
@@ -757,21 +844,29 @@ export class StaticSettingResolver implements SettingResolverPort {
         return PRODUCT_DISPLAY_TEMPLATE_UNRESOLVED_VALUE;
 
       case 'globalAssetsImageFolderPath':
-        // TODO(boundary): the only declared default is COMPUTED at
-        // model/service/SettingService.cfc:L164 as
-        // `getApplicationValue('applicationRootMappingPath') & '/custom/assets/images'`, reading the
-        // CFML application scope of a running ColdFusion or Railo server. There is no static
-        // equivalent, and no plausible substitute is supplied — not an empty string, and above all
-        // not a hard-coded path, which would look authoritative while being wrong on every
-        // deployment (AAP §0.7.3 S9). The in-scope readers are
-        // model/entity/Product.cfc:L224 and model/entity/Option.cfc:L82, both of which wrap the
-        // result in `getURLFromPath` [org/Hibachi/HibachiObject.cfc:L83-L91]; a deployment that
-        // needs them supplies a different implementation of this same port.
-        throw new Error(
-          `Setting 'globalAssetsImageFolderPath' has no static answer: its only declared default is` +
-            ` computed at model/service/SettingService.cfc:L164 from the CFML application scope,` +
-            ` which this input/output-free adapter cannot read (requested for` +
+        /*
+         * ⚠️ F18 — RESOLVED FROM THE DEPLOYMENT-SUPPLIED ROOT PATH. The legacy default is COMPUTED at
+         * [model/service/SettingService.cfc:L164] as
+         * `getApplicationValue('applicationRootMappingPath') & '/custom/assets/images'`, reading the
+         * application scope of a running ColdFusion or Railo server. The concatenation is reproduced
+         * here EXACTLY — same order, same suffix — with the root path arriving through the
+         * constructor instead of the application scope.
+         *
+         * This name is the reason the finding is a MAJOR rather than a note: its readers are in
+         * scope. `getAlternateImageDirectory` at [model/entity/Product.cfc:L224] and
+         * `getImageDirectory` at [model/entity/Option.cfc:L82] both wrap the result in
+         * `getURLFromPath` [org/Hibachi/HibachiObject.cfc:L83-L91], so while this member raised
+         * unconditionally neither of them could ever succeed.
+         */
+        if (this.configuration.applicationRootMappingPath !== undefined) {
+          return `${this.configuration.applicationRootMappingPath}${GLOBAL_ASSETS_IMAGE_FOLDER_SUFFIX}`;
+        }
+        throw new ConfigurationError(
+          `Setting 'globalAssetsImageFolderPath' cannot be resolved: its legacy default is computed` +
+            ` at model/service/SettingService.cfc:L164 from the CFML application scope, so the` +
+            ` deployment must supply 'applicationRootMappingPath' to this resolver (requested for` +
             ` ${describeResolutionContext(context)}).`,
+          { context: { settingName, missingConfiguration: 'applicationRootMappingPath' } },
         );
 
       case 'skuEligibleCurrencies':
@@ -783,10 +878,17 @@ export class StaticSettingResolver implements SettingResolverPort {
         // inside the excluded calculated property `currencyDetails` (AAP §0.2.2.6). No substitute
         // is invented: not an empty string, not an empty list, and not `'USD'` borrowed from the
         // distinct `skuCurrency` default at model/service/SettingService.cfc:L221.
-        throw new Error(
-          `Setting 'skuEligibleCurrencies' has no static answer: its only declared default is` +
-            ` computed at model/service/SettingService.cfc:L222 by the out-of-scope currencyService` +
-            ` (requested for ${describeResolutionContext(context)}).`,
+        // ⚠️ F18 — the deployment supplies the list the excluded service would have returned. Still
+        // nothing invented: absent configuration raises rather than guessing.
+        if (this.configuration.skuEligibleCurrencies !== undefined) {
+          return this.configuration.skuEligibleCurrencies;
+        }
+        throw new ConfigurationError(
+          `Setting 'skuEligibleCurrencies' cannot be resolved: its legacy default is computed at` +
+            ` model/service/SettingService.cfc:L222 by the out-of-scope currencyService, so the` +
+            ` deployment must supply 'skuEligibleCurrencies' to this resolver (requested for` +
+            ` ${describeResolutionContext(context)}).`,
+          { context: { settingName, missingConfiguration: 'skuEligibleCurrencies' } },
         );
 
       case 'skuEligibleFulfillmentMethods':
@@ -805,13 +907,20 @@ export class StaticSettingResolver implements SettingResolverPort {
         // type, from SEEDED_SKU_ELIGIBLE_FULFILLMENT_METHODS above. The legacy consumer is the
         // excluded calculated property `eligibleFulfillmentMethods`
         // [model/entity/Sku.cfc:L449-L455], so nothing in scope loses a value it had.
-        throw new Error(
-          `Setting 'skuEligibleFulfillmentMethods' has no static answer: its declared default is` +
-            ` computed at model/service/SettingService.cfc:L223 by the out-of-scope` +
-            ` fulfillmentService, and its three seeded rows are scoped by productTypeID` +
+        // ⚠️ F18 — the deployment supplies the list. The seeded, product-type-scoped rows remain
+        // readable from SEEDED_SKU_ELIGIBLE_FULFILLMENT_METHODS for a caller that knows its type.
+        if (this.configuration.skuEligibleFulfillmentMethods !== undefined) {
+          return this.configuration.skuEligibleFulfillmentMethods;
+        }
+        throw new ConfigurationError(
+          `Setting 'skuEligibleFulfillmentMethods' cannot be resolved: its legacy default is computed` +
+            ` at model/service/SettingService.cfc:L223 by the out-of-scope fulfillmentService, and` +
+            ` its three seeded rows are scoped by productTypeID` +
             ` (config/dbdata/SlatwallSetting.xml.cfm:L14-L16), which a resolution context of` +
-            ` ${describeResolutionContext(context)} cannot select among. The seeded values are` +
-            ` exposed as SEEDED_SKU_ELIGIBLE_FULFILLMENT_METHODS.`,
+            ` ${describeResolutionContext(context)} cannot select among. The deployment must supply` +
+            ` 'skuEligibleFulfillmentMethods'; the seeded values are exposed as` +
+            ` SEEDED_SKU_ELIGIBLE_FULFILLMENT_METHODS.`,
+          { context: { settingName, missingConfiguration: 'skuEligibleFulfillmentMethods' } },
         );
 
       default:
@@ -830,11 +939,17 @@ export class StaticSettingResolver implements SettingResolverPort {
         // [model/service/SettingService.cfc:L261-L266]; any other segment has no locator-backed
         // default anywhere in the legacy source, so it is reported as the declared gap it is rather
         // than defaulted to a size the caller did not ask for.
-        throw new Error(
-          `Setting '${settingName}' has no static answer: image dimensions are declared only for` +
+        // ⚠️ F24 — a ConfigurationError, not a plain Error. Unlike the three names above this one is
+        // genuinely UNANSWERABLE rather than merely unconfigured: the legacy declares no default for
+        // an unmapped size, so there is no value a deployment could legitimately supply. It therefore
+        // still raises unconditionally — but as a classified fault that sanitises to a 5xx instead of
+        // an unclassifiable bare Error.
+        throw new ConfigurationError(
+          `Setting '${settingName}' has no answer: image dimensions are declared only for` +
             ` the Small, Medium and Large sizes (model/service/SettingService.cfc:L261-L266), and` +
             ` an unmapped size segment reaches model/entity/Sku.cfc:L184-L185 unchanged (requested` +
             ` for ${describeResolutionContext(context)}).`,
+          { context: { settingName } },
         );
     }
   }

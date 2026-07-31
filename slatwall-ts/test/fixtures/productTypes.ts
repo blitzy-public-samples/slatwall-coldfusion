@@ -21,108 +21,146 @@
  */
 
 /*
- * ---------------------------------------------------------------------------------------
  * WHY THESE ARE FIXED DATA, NOT TEST DATA (IR-7)
- * ---------------------------------------------------------------------------------------
- * These values are hard-coded rather than generated, and that is the faithful choice, not
- * a fragile one. Three independent pieces of evidence:
+ * ----------------------------------------------
+ * These values are hard-coded rather than generated, and that is the faithful choice:
  *
  *  1. The `systemCode` strings are literal BRANCH KEYS of production logic. The legacy
  *     `SkuService.createSkus` discriminates three ways on
- *     `product.getProductType().getBaseProductType()` at
- *     `model/service/SkuService.cfc:L61` (merchandise), `:L139` (subscription) and
- *     `:L173` (contentAccess). A single wrong character silently stops a branch from ever
- *     matching — it produces no compile error and no obvious failure.
+ *     `product.getProductType().getBaseProductType()` at model/service/SkuService.cfc:L61
+ *     (merchandise), :L139 (subscription) and :L173 (contentAccess). A single wrong character
+ *     silently stops a branch from ever matching, with no compile error and no obvious failure.
  *
- *  2. The identifiers already predate this port inside the legacy suite itself:
- *     `meta/tests/unit/Helper.cfc:L58` and `meta/tests/unit/IssuesTest.cfc:L58` both pin
- *     the merchandise `productTypeID`, and `meta/tests/unit/IssuesTest.cfc:L105` pins the
- *     contentAccess one.
+ *  2. The identifiers already predate this port inside the legacy suite: meta/tests/unit/Helper.cfc:L58
+ *     and meta/tests/unit/IssuesTest.cfc:L58 both pin the merchandise `productTypeID`, and
+ *     meta/tests/unit/IssuesTest.cfc:L105 pins the contentAccess one.
  *
- *  3. The seeded rows are PROTECTED FROM DELETION by a declarative validation guard:
- *     `model/validation/ProductType.json` declares
- *     `"systemCode": [{"contexts":"delete","maxLength":0}]`, so a row bearing a
- *     `systemCode` cannot be deleted. The rows are therefore stable platform data, which
- *     is precisely what makes hard-coding them correct.
+ *  3. The seeded rows are protected from deletion by a declarative guard: model/validation/ProductType.json
+ *     declares `"systemCode": [{"contexts":"delete","maxLength":0}]`, so a row bearing a `systemCode`
+ *     cannot be deleted. The rows are stable platform data, which is what makes hard-coding correct.
  *
- * Consequence: these values are transcribed. They are never regenerated, dashed,
- * re-cased or derived from one another.
+ * The values are therefore transcribed, never regenerated, dashed, re-cased or derived from one
+ * another. Their format follows IR-6: 32 lowercase hexadecimal characters with no dashes, matching
+ * the identifiers `createSlatwallUUID()` produces.
  *
- * ---------------------------------------------------------------------------------------
- * IDENTIFIER FORMAT (IR-6)
- * ---------------------------------------------------------------------------------------
- * Legacy primary keys are 32-character lowercase-hex strings produced in application code
- * by `createSlatwallUUID()`, never dashed RFC-4122 values. The three `productTypeID`
- * literals below are exactly that shape: 32 characters, lowercase hex, no dashes.
- *
- * ---------------------------------------------------------------------------------------
  * THIS MODULE IS A PURE LEAF — IT IMPORTS NOTHING
- * ---------------------------------------------------------------------------------------
- * There is deliberately no `import` of any kind here, not even `import type`. The fixture
- * exists so tests can reference the discriminators without reaching into production code,
- * so it must not couple itself to `src/**`. Its agreement with the literals declared in
- * `src/domain/BaseProductType.ts` is guaranteed by independent transcription from the same
- * authoritative legacy lines and verified by a grep comparison — not by module coupling.
- * There is no barrel file in this subtree, by design.
+ * ----------------------------------------------
+ * There is deliberately no `import` of any kind here, not even `import type`. The fixture exists so
+ * tests can reference the discriminators without reaching into production code, so it must not couple
+ * itself to src/**. Its agreement with src/domain/BaseProductType.ts comes from independent
+ * transcription of the same authoritative legacy lines rather than from module coupling.
  *
- * Correspondingly, nothing under `src/**` imports this module: `tsconfig.build.json`
- * excludes `test/`, so this file is intentionally absent from any emitted Lambda artifact.
- * It is a development-only artifact.
+ * Correspondingly nothing under src/** imports this module, and tsconfig.build.json excludes test/,
+ * so this file is absent from any emitted artifact. It is development-only.
  *
- * ---------------------------------------------------------------------------------------
  * DELIBERATE EXCLUSION — THE DEVELOPER SCRATCH IDENTIFIERS
- * ---------------------------------------------------------------------------------------
- * The same legacy document carries an XML comment block at `L19`-`L31` holding unused
- * developer scratch identifiers, introduced by a note telling the reader to delete them
- * after use. None of them is a `<Record>`; a repository-wide search finds each one only
- * inside that comment block, with zero consumers anywhere. They are not seeded rows and
- * not fixed data, so they are excluded here entirely — not as constants, not as a
- * "reserved" list, and not reproduced in any comment. This module exposes exactly the
- * three seeded discriminators and nothing else.
+ * -------------------------------------------------------
+ * config/dbdata/SlatwallProductType.xml.cfm:L19-L31 carries an XML comment block of unused developer
+ * scratch identifiers, introduced by a note telling the reader to delete them after use. None is a
+ * `<Record>` and none has a consumer, so they are not seeded rows and not fixed data. They are
+ * excluded here entirely — not as constants, not as a "reserved" list, and not reproduced in any
+ * comment. This module exposes exactly the three seeded discriminators.
  *
- * ---------------------------------------------------------------------------------------
  * TRANSLATION DECISION — CFML `==` IS CASE-INSENSITIVE, TYPESCRIPT `===` IS NOT
- * ---------------------------------------------------------------------------------------
- * The legacy discriminator comparison at `model/service/SkuService.cfc:L61` uses CFML
- * `==`, which compares strings case-insensitively: it would also have matched
- * `"Merchandise"` or `"MERCHANDISE"`. A TypeScript `===` comparison will not. Keeping the
- * exact-case literals from the seed data is the correct translation — the seeded rows are
- * the only values the comparison can legitimately see — but the narrowing is a real
- * behavioural divergence and is flagged here so any consumer comparing `systemCode` values
- * understands that the ported check is strictly stricter than the original.
+ * ----------------------------------------------------------------------------
+ * The legacy discriminator comparison at model/service/SkuService.cfc:L61 uses CFML `==`, which
+ * compares strings case-insensitively and would also have matched `"Merchandise"` or `"MERCHANDISE"`.
+ * A TypeScript `===` comparison will not. Keeping the exact-case literals from the seed data is the
+ * correct translation, since the seeded rows are the only values the comparison can legitimately see,
+ * but the narrowing is a real behavioural divergence and is flagged so any consumer comparing
+ * `systemCode` values knows the ported check is strictly stricter than the original.
  *
- * ---------------------------------------------------------------------------------------
- * EXECUTION-MODEL NOTE (M7) — MODULE SCOPE IS SAFE *HERE SPECIFICALLY*
- * ---------------------------------------------------------------------------------------
- * The legacy entities declare `cacheuse="transactional"` (a Hibernate second-level cache),
- * and in the target model nothing survives between Lambda invocations except module-scope
- * state. Module-scope caching and memoization are therefore avoided almost everywhere in
- * this subtree, to prevent state from bleeding across warm invocations. This module is the
- * documented exception: it holds immutable compile-time constants only — no per-request
- * data, no memoized query results, nothing invocation-specific — so declaring them at
- * module scope is both correct and safe. The general rule points the other way, which is
- * exactly why this exception is stated rather than assumed.
+ * MODULE SCOPE IS SAFE HERE SPECIFICALLY (M7)
+ * ------------------------------------------
+ * Nothing survives between Lambda invocations except module-scope state, so module-scope caching and
+ * memoization are avoided almost everywhere in this subtree to stop state bleeding across warm
+ * invocations. This module is the documented exception: it holds immutable compile-time constants
+ * only — no per-request data, no memoized results, nothing invocation-specific. The general rule
+ * points the other way, which is why this exception is stated rather than assumed.
  */
 
 /**
- * Shape of a seeded product-type record: exactly the four fields carried across from the
- * legacy `<Record>` elements, and no others.
+ * Shape of a seeded product-type record: EVERY column the legacy `<Record>` elements carry,
+ * and no others.
+ *
+ * The legacy `<Columns>` block declares exactly seven columns at
+ * `config/dbdata/SlatwallProductType.xml.cfm:L4`-`L10`, and each of the three `<Record>`
+ * elements at `:L13`-`L15` supplies a value for all seven. This interface therefore declares
+ * seven members, one per column, so the module IS the exact seeded-row fixture rather than a
+ * partial projection of it: a consumer asserting against a seeded row can read any column the
+ * legacy document defines, and no column exists only in prose.
+ *
+ * Members are grouped for the reader rather than ordered to mirror the document: the four
+ * columns production logic reads come first, then the three that complete the row. The
+ * physical attribute order inside each `<Record>` element differs from the `<Columns>`
+ * declaration order anyway — `productTypeIDPath` and `parentProductTypeID` are swapped — and
+ * attribute order is cosmetic in XML, so no ordering is reproduced for its own sake.
  *
  * Used only in `satisfies` position, which gives two guarantees at compile time: excess
  * property checking rejects any invented field, and — unlike a type annotation — the
- * literal types survive instead of widening to `string`.
+ * literal types survive instead of widening to `string`. Because `satisfies` also demands
+ * every declared member be present, adding a column here forces all three records to carry
+ * it; the interface and the records cannot drift out of agreement.
  *
  * Intentionally NOT exported. The public surface of this module is data, not types: the
  * `BaseProductType` union is owned by `src/domain/BaseProductType.ts`, and declaring a
  * competing exported type here would create two definitions of one concept. Consumers that
  * need a type derive it structurally, e.g. `typeof MERCHANDISE_PRODUCT_TYPE` or
  * `(typeof ALL_SEEDED_PRODUCT_TYPES)[number]`.
+ *
+ * ⚠️ `src/domain/BaseProductType.ts` deliberately models a NARROWER record — the four members
+ * production code branches on. That is not a drift to reconcile: that module is the domain
+ * discriminator surface, whereas this one is the seeded-ROW fixture, and only the fixture is
+ * required to reproduce the row in full. The consistency gate between the two files is over the
+ * three `productTypeID` literals, and those remain byte-identical.
  */
 interface SeededProductTypeRecord {
+  /** `config/dbdata/SlatwallProductType.xml.cfm:L8` — the value production logic branches on. */
   readonly systemCode: string;
+
+  /** `config/dbdata/SlatwallProductType.xml.cfm:L4` — `fieldtype="id"`, 32-char lowercase hex. */
   readonly productTypeID: string;
+
+  /** `config/dbdata/SlatwallProductType.xml.cfm:L7` — declared `update="false"`. */
   readonly productTypeName: string;
+
+  /** `config/dbdata/SlatwallProductType.xml.cfm:L9` — declared `update="false"`. */
   readonly urlTitle: string;
+
+  /**
+   * `config/dbdata/SlatwallProductType.xml.cfm:L6` — the materialised hierarchy path.
+   *
+   * Equal to the row's own `productTypeID` on all three seeded records, because all three are
+   * ROOTS of the product-type hierarchy. Each record below takes this value FROM the
+   * corresponding `*_PRODUCT_TYPE_ID` constant rather than repeating the literal, so the
+   * identity is structural and cannot be broken by an edit to one of the two.
+   */
+  readonly productTypeIDPath: string;
+
+  /**
+   * `config/dbdata/SlatwallProductType.xml.cfm:L5` — the parent reference.
+   *
+   * ⚠️ TRANSCRIBED AS THE LITERAL FOUR-CHARACTER STRING `'NULL'`, which is what the seed
+   * document actually renders on all three records: this format spells SQL NULL as that
+   * literal rather than omitting the attribute. It is deliberately NOT modelled as `null`, as
+   * `undefined`, or as an absent member — every one of those would be a representation the
+   * source does not carry, and the whole point of this fixture is that a reviewer diffing it
+   * against `:L13`-`L15` finds the source's own characters.
+   */
+  readonly parentProductTypeID: string;
+
+  /**
+   * `config/dbdata/SlatwallProductType.xml.cfm:L10` — active on all three seeded records.
+   *
+   * ⚠️ TRANSCRIBED AS THE LITERAL STRING `'1'`, the value the seed document renders, even
+   * though `:L10` declares the column `datatype="bit"` (and `update="false"`). The column's
+   * eventual storage type is a fact about the schema; the fixture's job is to reproduce the
+   * ROW as written, so the rendered characters are what is carried. Coercing to `true` or to
+   * the number `1` would substitute a representation the document does not contain, and a
+   * consumer that wants a boolean can derive one at its own call site with an explicitly
+   * documented comparison.
+   */
+  readonly activeFlag: string;
 }
 
 /**
@@ -156,14 +194,19 @@ export const CONTENT_ACCESS_PRODUCT_TYPE_ID = '444df313ec53a08c32d8ae434af5819a'
  * literals is self-contained initialisation — there is no I/O, no global mutation and no
  * other observable side effect at import time.
  *
- * VERIFIED LEGACY FACTS THAT ARE DELIBERATELY *NOT* MODELLED AS FIELDS. All three are real
- * properties of the seeded rows, recorded here because materialising unused fields would
- * exceed this fixture's stated four-field scope:
+ * ALL SEVEN COLUMNS ARE MODELLED AS FIELDS, and the three completing ones carry facts a
+ * reader would otherwise have to take on trust from a comment:
  *   - `productTypeIDPath` equals the row's own `productTypeID` on all three records — that
- *     is, all three seeded product types are roots of the hierarchy.
- *   - `parentProductTypeID` is the literal four-character string `"NULL"` on all three, as
- *     rendered by this seed-data format — not a null value.
- *   - `activeFlag` is `"1"` on all three.
+ *     is, all three seeded product types are ROOTS of the hierarchy. Each record takes the
+ *     value from its own `*_PRODUCT_TYPE_ID` constant, so the equality is structural.
+ *   - `parentProductTypeID` is the literal four-character string `'NULL'` on all three, as
+ *     rendered by this seed-data format — NOT a null value, and not an absent member.
+ *   - `activeFlag` is the literal `'1'` on all three, transcribed as rendered even though
+ *     `config/dbdata/SlatwallProductType.xml.cfm:L10` declares the column `datatype="bit"`.
+ *
+ * Each of the three carries its full rationale on its declaration in
+ * {@link SeededProductTypeRecord} above; the summary here exists so the record constants can
+ * be read without scrolling back.
  */
 
 /**
@@ -178,6 +221,9 @@ export const MERCHANDISE_PRODUCT_TYPE = Object.freeze({
   productTypeID: MERCHANDISE_PRODUCT_TYPE_ID,
   productTypeName: 'Merchandise',
   urlTitle: 'merchandise',
+  productTypeIDPath: MERCHANDISE_PRODUCT_TYPE_ID,
+  parentProductTypeID: 'NULL',
+  activeFlag: '1',
 } as const satisfies SeededProductTypeRecord);
 
 /**
@@ -188,6 +234,9 @@ export const SUBSCRIPTION_PRODUCT_TYPE = Object.freeze({
   productTypeID: SUBSCRIPTION_PRODUCT_TYPE_ID,
   productTypeName: 'Subscription',
   urlTitle: 'subscription',
+  productTypeIDPath: SUBSCRIPTION_PRODUCT_TYPE_ID,
+  parentProductTypeID: 'NULL',
+  activeFlag: '1',
 } as const satisfies SeededProductTypeRecord);
 
 /**
@@ -211,6 +260,9 @@ export const CONTENT_ACCESS_PRODUCT_TYPE = Object.freeze({
   productTypeID: CONTENT_ACCESS_PRODUCT_TYPE_ID,
   productTypeName: 'Content Access',
   urlTitle: 'content-access',
+  productTypeIDPath: CONTENT_ACCESS_PRODUCT_TYPE_ID,
+  parentProductTypeID: 'NULL',
+  activeFlag: '1',
 } as const satisfies SeededProductTypeRecord);
 
 /**

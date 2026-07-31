@@ -39,16 +39,11 @@ import { randomUUID } from 'node:crypto';
  */
 
 /*
- * IR-7 — the three seeded product-type discriminators are fixed seed data, not generated
- * values, and must never be routed through this function:
- *   444df2f7ea9c87e60051f3cd87b435a1  merchandise
- *   444df2f9c7deaa1582e021e894c0e299  subscription
- *   444df313ec53a08c32d8ae434af5819a  contentAccess
- * They are seeded at config/dbdata/SlatwallProductType.xml.cfm:L13-L15 and are the literal
- * branch keys of `SkuService.createSkus`. They belong to src/domain/BaseProductType.ts and
- * test/fixtures/productTypes.ts as constants; this module deliberately neither declares nor
- * re-exports them. Their format is also the third independent corroboration of the shape this
- * function produces.
+ * IR-7 — the three seeded product-type discriminators are fixed seed data, not generated values, and
+ * must never be routed through this function. They are declared once, as typed constants, in
+ * src/domain/BaseProductType.ts (mirrored for the suite in test/fixtures/productTypes.ts); this
+ * module deliberately neither declares nor re-exports them, so there is only one place they can
+ * drift from their seed rows at config/dbdata/SlatwallProductType.xml.cfm:L13-L15.
  */
 
 /**

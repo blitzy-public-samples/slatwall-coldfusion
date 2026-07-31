@@ -2,112 +2,55 @@
  * `SkuRepository` — the repository port for the Catalog's SKU query surface, and the contract that
  * carries the option-to-SKU resolution algorithm across the migration boundary.
  *
- * =================================================================================================
- * WHY THIS PORT CARRIES MORE BEHAVIOUR THAN THE SERVICE ABOVE IT
- * =================================================================================================
- * Legacy origin: `model/dao/SkuDAO.cfc`, a 228-line component. AAP 0.1.1 explains why a
- * service-oriented reading of this codebase misleads — the Catalog's option-to-SKU resolution
- * "lives in a DAO as a hand-assembled HQL string", so a transliteration of the four named services
- * "would therefore produce four thin, nearly empty TypeScript classes and silently lose the
- * system's behavior." That string is `model/dao/SkuDAO.cfc:L107-L128`, and this file is its
- * contract. AAP 0.2.1.3 makes the same point for the folder as a whole: the refactoring prompt
- * names no data-access components at all, and all four are added as implicit scope because "this is
- * where the Catalog's business logic actually resides".
+ * Legacy origin: `model/dao/SkuDAO.cfc`. AAP §0.1.1 explains why a service-oriented reading of this
+ * codebase misleads — the Catalog's option-to-SKU resolution "lives in a DAO as a hand-assembled HQL
+ * string", so transliterating the four named services would produce thin, nearly empty classes and
+ * silently lose the system's behaviour. That string is `model/dao/SkuDAO.cfc:L107-L128`, and this
+ * file is its contract. The consuming service corroborates it: `model/service/SkuService.cfc`
+ * reaches this component eight times, the heaviest dependency in the slice (AAP §0.6.3.2), and four
+ * of its members are one-line pass-throughs at `L272`, `L282`, `L286` and `L290`.
  *
- * The consuming service corroborates it. `model/service/SkuService.cfc` reaches this component
- * eight times — the heaviest dependency in the slice (AAP 0.6.3.2) — and four of its members are
- * one-line pass-throughs: `L272`, `L282`, `L286` and `L290`. Every behaviour worth preserving in
- * those four lives here, not above.
+ * AAP §0.4.1.6 mandates the shape — "Six public members plus the two private helpers become a typed
+ * interface; the memoized sort-order cache becomes explicit request-scoped state" — and AAP §0.4.2.6
+ * fixes each target name, which is the authority followed below.
  *
- * AAP 0.4.1.6 mandates this file with one instruction: "Six public members plus the two private
- * helpers become a typed interface; the memoized sort-order cache becomes explicit request-scoped
- * state". AAP 0.4.2.6 then fixes each target name individually, and those names are the authority
- * followed below.
+ * SEVEN MEMBERS, NOT SIX (Discrepancy 7). AAP §0.2.1.3 characterises the component as "6 public, 2
+ * private"; the declarations read SEVEN public and ONE private, because only
+ * `model/dao/SkuDAO.cfc:L204` restricts access while `model/dao/SkuDAO.cfc:L222` declares itself
+ * public. AAP §0.4.2.6 enumerates seven target methods, so seven are declared rather than one being
+ * dropped. The count is easy to get wrong because the component MIXES BOTH CFML SYNTAXES — tag at
+ * `model/dao/SkuDAO.cfc:L49-L98`, script at `L100-L170`, tag again at `L172-L226` — so a scan
+ * matching only script-style declarations finds four members and misses the other four, including
+ * the memoized sort order and its clearing member.
  *
- * =================================================================================================
- * SEVEN MEMBERS, NOT SIX — AND THE SOURCE SETTLES IT (Discrepancy 7)
- * =================================================================================================
- * AAP 0.2.1.3 characterises the component as "6 public, 2 private". Reading the declarations
- * yields SEVEN public and ONE private: only `model/dao/SkuDAO.cfc:L204` carries an
- * access-restricting attribute, while `model/dao/SkuDAO.cfc:L222` declares itself public
- * explicitly. AAP 0.4.2.6 is the authoritative per-member mapping and it enumerates seven target
- * methods, so seven are declared. The characterisation is NOT used to drop a member; per AAP 0.8.5
- * the source line is cited rather than the plan where the two differ.
- *
- * The count is easy to get wrong because THE COMPONENT MIXES BOTH CFML SYNTAXES, and the boundaries
- * were read rather than assumed: a licence banner at `model/dao/SkuDAO.cfc:L1-L48`, tag syntax at
- * `L49-L98`, a script block at `L100-L170`, tag syntax again at `L172-L226`, and the component
- * closing at `L228`. A scan matching only script-style declarations finds FOUR of the EIGHT members
- * — `L102`, `L107`, `L130` and `L150` — and misses the other four entirely, including the memoized
- * sort order and its clearing member. That is exactly why those two are the easiest in the slice to
- * overlook, and it is recorded here so a reader auditing this surface against the source knows that
- * half of it is invisible to a script-only search.
- *
- * =================================================================================================
- * THE FIVE SEMANTICS THAT MUST SURVIVE TRANSLATION, AND WHY FOUR OF THEM ARE TYPES
- * =================================================================================================
- * AAP 0.6.1.3 names five semantics of the option resolver and calls them "silent-drift traps: a
- * plausible, well-intentioned 'improvement' that changes results without producing an error." Each
- * is documented on {@link SkuRepository.findSkusBySelectedOptions} under its own identifier, T1
- * through T5, because that is the member whose signature decides them. Four are decided HERE rather
- * than in the adapter, which is the whole reason they belong in a port file:
+ * THE FIVE SEMANTICS THAT MUST SURVIVE TRANSLATION. AAP §0.6.1.3 names five semantics of the option
+ * resolver and calls them silent-drift traps — a plausible "improvement" that changes results
+ * without producing an error. Each is documented on
+ * {@link SkuRepository.findSkusBySelectedOptions} as T1 through T5, because that is the member whose
+ * signature decides them, and four are decided HERE rather than in the adapter:
  *
  *   T1 is an array parameter rather than a deduplicating collection type.
  *   T2 is a required parameter rather than an optional one.
  *   T5 is a plain array type rather than a non-empty one.
  *   T3 and T4 are documentation obligations on the returned set.
  *
- * An adapter cannot recover a semantic the interface has already discarded. If T1's parameter type
+ * An adapter cannot recover a semantic the interface has already discarded: if T1's parameter type
  * deduplicated, no adapter could reconstruct the duplicates; if T5's type forbade emptiness, no
- * adapter would ever see the degenerate case that two legacy callers depend on. AAP 0.8.2
- * Guideline 6 requires technology-specific translation decisions to be documented "especially
- * anywhere legacy behavior (e.g. option-to-SKU resolution edge cases) required an explicit judgment
- * call" — that parenthetical names this file's subject, so the judgement calls are recorded on the
- * members where they are made.
+ * adapter would ever see the degenerate case two legacy callers depend on.
  *
- * =================================================================================================
- * TYPE-ONLY, THEREFORE WEIGHTLESS
- * =================================================================================================
- * Everything below is a type declaration. There is no executable statement, no statement text, no
- * driver reference, no I/O and no state of any kind. TypeScript erases the whole file at compile
- * time, so it contributes zero bytes to the artifact `build/esbuild.mjs` emits — while still being
- * what `src/adapters/mysql/**`, `src/services/**`, the composition root and the hand-written test
- * doubles are all checked against. Both imports are type-only for the same reason: they are erased,
- * so no runtime dependency edge and no bundler ordering constraint is created (AAP 0.7.3, S4).
- *
- * Every member is expressed as an interface method, so a test double satisfies the whole contract
- * with a plain object literal. That property is load-bearing rather than stylistic: the legacy
- * repository vendors NO mocking library at all, and its tests boot the entire framework application
- * and resolve collaborators at runtime (AAP 0.4.3.6). Target tests instead construct the unit under
- * test directly against doubles from `test/support/inMemoryRepositories.ts`, which is only possible
- * because this contract is small enough to implement by hand.
- *
- * Coverage for this surface is NET-NEW in its entirety. AAP 0.6.5.2 records that no test exists for
- * any data-access component in this slice, so the option resolver, the odometer ordering, the
- * ten-way existence chain, the alternate-code fallback and the conditional fetch are all new
- * coverage; AAP 0.4.1.12 assigns it to `test/adapters/MySqlSkuRepository.test.ts`, where T1 through
- * T5 each get an explicit assertion. No test file belongs in this folder. The wider limitation
- * behind that label is AAP 0.8.4.2: the legacy suite cannot be executed in this environment,
- * because the runtime is unavailable and the test frameworks are not vendored. Source reading with
- * locators therefore IS the evidence for every behavioural claim made here (AAP 0.8.5).
- *
- * =================================================================================================
- * WHERE THE STATEMENTS LIVE INSTEAD
- * =================================================================================================
  * Statement text, placeholder generation, identifier handling and row mapping belong to
- * `src/adapters/mysql/MySqlSkuRepository.ts` (AAP 0.4.1.7 and 0.4.3.4). Nothing statement-shaped
- * crosses this boundary: no fragment, no table or column name as a parameter, no placeholder array,
- * no ordering expression (AAP 0.7.3, S2). What this file DOES carry is the set of adapter
- * OBLIGATIONS the type system cannot express, each stated on the member it constrains and each with
- * the legacy locator that justifies it.
+ * `src/adapters/mysql/MySqlSkuRepository.ts` (AAP §0.4.1.7, §0.4.3.4). Nothing statement-shaped
+ * crosses this boundary — no fragment, no table or column name as a parameter, no placeholder array,
+ * no ordering expression (AAP §0.7.3 S2). What this file DOES carry is the adapter OBLIGATIONS the
+ * type system cannot express, each stated on the member it constrains with its legacy locator.
  *
- * TWO PARAMETER CONVENTIONS COEXIST IN THE LEGACY COMPONENT, and the adapter must reconcile them
- * without disturbing order. The existence chain binds by NAME, while the option resolver binds
- * POSITIONALLY. The target driver supports positional placeholders only, so named bindings are
- * converted to positional ones while PRESERVING THE LEGACY SEQUENCE exactly (TR-4). Where a value
- * is currently composed into statement text rather than bound, the adapter binds it — see
- * {@link SkuRepository.findSortedSkuIdsByProduct}, which is the one place in this component where a
- * memoized NUMBER occupies a value position and must become a bound parameter.
+ * TWO PARAMETER CONVENTIONS COEXIST in the legacy component and the adapter must reconcile them
+ * without disturbing order: the existence chain binds by NAME, the option resolver binds
+ * POSITIONALLY. The target driver supports positional placeholders only, so named bindings become
+ * positional ones while PRESERVING THE LEGACY SEQUENCE exactly (TR-4). Where a value is composed
+ * into statement text rather than bound, the adapter binds it — see
+ * {@link SkuRepository.findSortedSkuIdsByProduct}, the one place where a memoized NUMBER occupies a
+ * value position.
  *
  * =================================================================================================
  * THE ONE STATEFUL DATA-ACCESS COMPONENT OF THE FOUR (execution-model mismatch M7)
@@ -118,8 +61,8 @@
  * cache lifetime to reason about, and the reasoning is recorded on
  * {@link SkuRepository.clearOptionGroupSortOrderCache}: under mismatch M7 the memo becomes EXPLICIT
  * REQUEST-SCOPED state and never module-scope state, because module-scope state survives between
- * warm invocations and would bleed across them. No new mismatch identifier is introduced — the
- * register is closed at M1-M8.
+ * warm invocations and would bleed across them. No new mismatch identifier is introduced HERE — but
+ * the mismatch register is NOT closed at M1-M8, and see the register note below (F27).
  *
  * =================================================================================================
  * THE COMPONENT USES TWO NAMING CONVENTIONS FOR THE SAME TABLES (defect D22)
@@ -133,85 +76,88 @@
  * statements do not receive. The conclusion for implementers is unchanged and must be carried:
  * never "fix" mapping-layer entity names to physical ones, and never assume a logical name works in
  * a native statement. Which convention each member's statement uses is stated on that member. No
- * new defect identifier is introduced — the register is closed at D1-D22.
+ * new defect identifier is introduced BY THIS MEMBER'S ANNOTATION.
  *
  * =================================================================================================
- * WHAT IS DELIBERATELY NOT HERE
+ * ⚠️ F27 — THE REGISTERS ARE NOT "CLOSED", AND SAYING SO WAS A FALSE STATEMENT OF FACT
  * =================================================================================================
- * A CONVENTION FIRST, BECAUSE IT IS WHAT MAKES THIS LIST CHECKABLE: each omitted member below is
- * identified by its BEHAVIOUR AND ITS LOCATOR, never by its legacy identifier string. That is
- * deliberate and it follows the precedent the sibling ports in this folder already set. An
- * automated audit of this contract's surface greps for member identifiers, so reproducing an
- * omitted member's name — even inside a comment — would make a documented ABSENCE indistinguishable
- * from a declaration. Cite the locator, describe the behaviour, and the omission stays both legible
- * to a reader and invisible to a surface scan.
+ * This block previously ended "No new defect identifier is introduced — the register is closed at
+ * D1-D22", and the sentence refuted itself: D22 is annotated immediately above it, and D22 is NOT an
+ * AAP entry. The accurate position is stated here ONCE, because this is where the first port-minted
+ * number is defined, and every other register note in the subtree now points at it rather than
+ * restating a range.
  *
- *   - THE PRIVATE MEMOIZED SORT-ORDER ACCESSOR at `model/dao/SkuDAO.cfc:L204-L220`. AAP 0.4.2.6
- *     marks it "Internal to the adapter", so it is absent from this contract BY INSTRUCTION, not by
- *     oversight. Its observable consequences are nevertheless documented, on
- *     {@link SkuRepository.findSortedSkuIdsByProduct} (it supplies the ordering exponent) and on
- *     {@link SkuRepository.clearOptionGroupSortOrderCache} (it is the thing not being cleared).
+ *   AAP §0.6.7 IS AUTHORITATIVE AND FROZEN AT D1–D21 — twenty-one entries: three literal source
+ *   TODOs (D8, D20, D21) plus eighteen defects surfaced during analysis. No file in this port may
+ *   amend that range, and none does.
  *
- *   - THE INHERITED PAGINATED DYNAMIC-QUERY READER at `org/Hibachi/HibachiDAO.cfc:L102-L111`. It is
- *     framework plumbing rather than a member of this component: one inherited implementation
- *     serves every service, and it prefixes the entity name at `L104-L106`. That whole surface
- *     belongs to the dedicated paginated dynamic-query port at the root of `src/ports/`, and none
- *     of it is restated here. Nothing from `org/Hibachi/**` is carried across in any case — AAP
- *     0.8.3.2 is explicit that the framework "is being retired for this slice, not carried forward"
- *     — so that file was read as a contract and reproduced nowhere.
+ *   THIS PORT HAS MINTED THREE IDENTIFIERS BEYOND IT, each where a verified source-level finding had
+ *   no AAP entry. D22 is the one above. D23 and D24 are both in `src/services/SkuService.ts`:
+ *   `getTransactionExistsFlag` forwards arguments its signature never declares
+ *   (`model/service/SkuService.cfc:L285-L287`), and `processImageUpload` returns a boolean rather
+ *   than the `Promise<Sku>` AAP §0.4.2.2 tabulates (`:L210-L218`).
  *
- *   - THE STOCK-DELETABILITY FLAG READER that `model/service/SkuService.cfc:L281-L283` delegates
- *     to. It DOES NOT EXIST anywhere in the repository: searching the whole tree for it returns
- *     exactly three lines — the service declaration, the delegation itself, and the entity call
- *     site at `model/entity/Sku.cfc:L569` — and no data-access definition. That absence IS
- *     defect D4, and inventing the member here to make the service compile is precisely the
- *     wrong repair. AAP 0.4.2.2 requires an explicit not-implemented boundary in the SERVICE
- *     instead. It is named in this list so a later reader does not helpfully add it.
+ *   THE MISMATCH REGISTER IS EXTENDED THE SAME WAY. AAP §0.6.6 allocates M1–M8; `SkuService.ts`
+ *   mints M9, because CFML specifies no iteration order for a plain struct while the port's `Map`
+ *   preserves insertion order.
  *
- *   - THE UNIQUENESS CHECK at `org/Hibachi/HibachiDAO.cfc:L129-L147`. Application-side uniqueness
- *     checking is real behaviour (IR-5) and it is genuinely needed by the SKU-code rule of
- *     `model/validation/Sku.json`, but it is a framework-level member shared by every entity, so it
- *     is owned by the dedicated uniqueness port at the root of `src/ports/`. Declaring a
- *     SKU-specific copy would fork that contract.
+ *   THERE IS NO D25 AND NO M10. Nothing in this subtree mints or cites either, so there is no
+ *   authoritative D25 classification outstanding to supply: the numbering runs D1–D24 and M1–M9
+ *   with no gap and no reservation.
+ *
+ * The only honest claim a single file can therefore make is LOCAL — "no new identifier is minted
+ * here" — and that is what every register note in this subtree now says. A GLOBAL closure claim is
+ * unverifiable by a reviewer reading one file, and as of D22 it is simply untrue.
+ *
+ * WHAT IS DELIBERATELY NOT HERE. Each omission is identified by its behaviour and its locator, never
+ * by its legacy identifier string, so that a documented ABSENCE cannot be mistaken for a declaration
+ * by a surface scan:
+ *
+ *   - THE PRIVATE MEMOIZED SORT-ORDER ACCESSOR at `model/dao/SkuDAO.cfc:L204-L220`. AAP §0.4.2.6
+ *     marks it "Internal to the adapter", so it is absent BY INSTRUCTION. Its observable
+ *     consequences are documented on {@link SkuRepository.findSortedSkuIdsByProduct} (it supplies
+ *     the ordering exponent) and {@link SkuRepository.clearOptionGroupSortOrderCache} (it is the
+ *     thing not being cleared).
+ *
+ *   - THE INHERITED PAGINATED DYNAMIC-QUERY READER at `org/Hibachi/HibachiDAO.cfc:L102-L111`, which
+ *     is framework plumbing serving every service and belongs to the paginated dynamic-query port at
+ *     the root of `src/ports/`. Nothing from `org/Hibachi/**` is carried across (AAP §0.8.3.2).
+ *
+ *   - THE STOCK-DELETABILITY FLAG READER that `model/service/SkuService.cfc:L281-L283` delegates to.
+ *     It does not exist anywhere in the legacy tree — only the service declaration, the delegation
+ *     and the entity call site at `model/entity/Sku.cfc:L569` — and that absence IS defect D4.
+ *     Inventing it here to make the service compile is the wrong repair; AAP §0.4.2.2 requires an
+ *     explicit not-implemented boundary in the SERVICE instead. Named so a later reader does not
+ *     helpfully add it.
+ *
+ *   - THE UNIQUENESS CHECK at `org/Hibachi/HibachiDAO.cfc:L129-L147`. Real behaviour (IR-5) and
+ *     genuinely needed by the SKU-code rule of `model/validation/Sku.json`, but framework-level and
+ *     shared by every entity, so it is owned by the uniqueness port at the root of `src/ports/`.
  *
  *   - THE IDENTIFIER GENERATOR. `model/dao/HibachiDAO.cfc` — the LOCAL base this component extends,
- *     not the framework one (IR-8) — exposes the 32-character identifier generator ported to
- *     `src/util/uuid.ts` (IR-6). This port neither generates nor validates identifiers.
+ *     not the framework one (IR-8) — exposes the 32-character generator ported to `src/util/uuid.ts`
+ *     (IR-6). This port neither generates nor validates identifiers.
  *
  *   - ANY TRANSACTION, SESSION, FLUSH OR VISIBILITY PARAMETER. The read-back ordering hazard of AAP
- *     0.6.2 passes straight through this contract and is documented on
+ *     §0.6.2 passes straight through this contract and is documented on
  *     {@link SkuRepository.findSkusBySelectedOptions}, but the guarantee is owned by
- *     `src/adapters/mysql/UnitOfWork.ts` under mismatch M5. Expressing it as a parameter here would
- *     place a demarcation concern in a query contract.
+ *     `src/adapters/mysql/UnitOfWork.ts` under mismatch M6 — the VALIDATION READ-BACK, which is M6
+ *     and not M5. M5 is the request-end implicit transaction demarcation; the two are adjacent and
+ *     easy to transpose, and `UnitOfWork.ts` answers for both for different reasons. Expressing
+ *     either as a parameter here would place a demarcation concern in a query contract.
  *
- *   - ANY TIMEOUT, RETRY, BATCH-SIZE, PAGE-SIZE, MAXIMUM-RESULTS, CACHE-LIFETIME OR EVICTION
- *     NUMBER, and any filter, sort-key or collation argument. AAP 0.7.3 S9 and IR-12 forbid
- *     inventing figures or knobs the source does not state. Every number appearing below is a
+ *   - ANY TIMEOUT, RETRY, BATCH-SIZE, PAGE-SIZE, MAXIMUM-RESULTS, CACHE-LIFETIME OR EVICTION NUMBER,
+ *     and any filter, sort-key or collation argument (AAP §0.7.3 S9, IR-12). Every number below is a
  *     source-declared value carrying its locator.
  *
- *   - THE SERVICE-LAYER PROJECTION TYPE NAME that AAP 0.4.2.2 uses for the search member's return
- *     value. That name belongs to `src/services/SkuService.ts`; the repository-level projection
- *     declared here is {@link SkuSearchRow}.
- *
- *   - THE LICENCE BANNER at `model/dao/SkuDAO.cfc:L1-L48`. No file in this subtree carries a
- *     per-file banner, and inventing one here would diverge from the established convention. The
- *     omission is recorded so the 228-line accounting above is complete rather than silently short
- *     by 48 lines.
- *
- * =================================================================================================
- * REFERENCE-ONLY, AND WHAT MAY CHANGE
- * =================================================================================================
- * `model/dao/SkuDAO.cfc` is REFERENCE-ONLY and is never modified: AAP 0.4.1.1 makes every target
- * file a creation and every legacy file a reference, and TR-6 states it as "change no existing
- * file". The Minimal Change Clause (AAP 0.8.1) then draws the line this file is built on — idiom
- * may change freely, behaviour may not. So a delimited list becomes an array, a column-oriented
- * record set becomes a typed array, one-based loops become zero-based, and synchronous members
- * become promise-returning ones, because the target reaches the database through an asynchronous
- * driver whereas a CFML query blocks the request thread. Exactly one member below stays
- * synchronous, and its rationale is stated on it. Meanwhile duplicate option identifiers survive,
- * an empty option list stays legal, option-less SKUs stay excluded, a required argument stays
- * required, a singular argument name keeps carrying a plural value, a multi-match still raises, and
- * an inert clearing member still exists.
+ * `model/dao/SkuDAO.cfc` is REFERENCE-ONLY and never modified (AAP §0.4.1.1, TR-6). The Minimal
+ * Change Clause (AAP §0.8.1) draws the line this file is built on — idiom may change freely,
+ * behaviour may not. So a delimited list becomes an array, a column-oriented record set becomes a
+ * typed array, one-based loops become zero-based, and synchronous members become promise-returning
+ * ones because the target driver is asynchronous; exactly one member stays synchronous and says why.
+ * Meanwhile duplicate option identifiers survive, an empty option list stays legal, option-less SKUs
+ * stay excluded, a required argument stays required, a singular argument name keeps carrying a plural
+ * value, a multi-match still raises, and an inert clearing member still exists.
  */
 
 import type { Product } from '../../domain/product/Product';
@@ -452,130 +398,91 @@ export interface SkuRepository {
   /**
    * Resolves the SKUs of one product that carry EVERY option in a given list.
    *
-   * ===============================================================================================
-   * THE ALGORITHM THE WHOLE EXERCISE IS ABOUT
-   * ===============================================================================================
    * `model/dao/SkuDAO.cfc:L107-L128` assembles its statement in a loop, appending one correlated
-   * existence test per option and growing the bound-parameter array in lockstep. The source
-   * documents its own intent at `model/dao/SkuDAO.cfc:L106`, and the comment is both accurate and
-   * load-bearing: "returns product skus which matches ALL options (list of optionIDs) that are
-   * passed in". That sentence is the strongest available evidence against the rewrite T1 warns
-   * about, and it is quoted rather than paraphrased for exactly that reason.
+   * existence test per option and growing the bound-parameter array in lockstep. The source states
+   * its own intent at `model/dao/SkuDAO.cfc:L106` — "returns product skus which matches ALL options
+   * (list of optionIDs) that are passed in" — which is the strongest available evidence against the
+   * rewrite T1 warns about, and is quoted rather than paraphrased for that reason.
    *
-   * Four call sites exist in the whole repository and all four were enumerated (AAP 0.6.1.1): the
-   * uniqueness validation rule at `model/entity/Sku.cfc:L763`, the single-result wrapper at
-   * `model/entity/Product.cfc:L349-L364`, the plural wrapper at
-   * `model/entity/Product.cfc:L366-L368`, and one OUT-OF-SCOPE caller in the order domain at
-   * `model/process/Order_AddOrderItem.cfc:L238`. They all funnel through the one-line delegation at
-   * `model/service/ProductService.cfc:L104-L106`, which is this member's only path.
+   * Four call sites exist (AAP §0.6.1.1): the uniqueness validation rule at
+   * `model/entity/Sku.cfc:L763`, the single-result wrapper at `model/entity/Product.cfc:L349-L364`,
+   * the plural wrapper at `model/entity/Product.cfc:L366-L368`, and one OUT-OF-SCOPE caller in the
+   * order domain at `model/process/Order_AddOrderItem.cfc:L238`. All four funnel through the
+   * one-line delegation at `model/service/ProductService.cfc:L104-L106`.
    *
    * THE POSITIONAL ARGUMENT ORDER IS LOAD-BEARING, WHICH IS WHY THE PRODUCT COMES SECOND. Both the
-   * out-of-scope caller and `model/entity/Product.cfc:L367` pass their two arguments POSITIONALLY
-   * as options-then-product. AAP Goal B names the order-domain caller as one the port must not
-   * break, so that sequence is fixed here. It is also why the adapter's bound array is every option
-   * identifier in list order FOLLOWED BY the product identifier: the legacy appends the option
-   * parameters inside the loop at `model/dao/SkuDAO.cfc:L120` and the product parameter afterwards
-   * at `model/dao/SkuDAO.cfc:L125`, and TR-4 requires that sequence to be preserved exactly.
+   * out-of-scope caller and `model/entity/Product.cfc:L367` pass their arguments POSITIONALLY as
+   * options-then-product, and AAP Goal B names the order-domain caller as one the port must not
+   * break. It is also why the adapter's bound array is every option identifier in list order
+   * FOLLOWED BY the product identifier: the legacy appends the option parameters inside the loop at
+   * `model/dao/SkuDAO.cfc:L120` and the product parameter afterwards at
+   * `model/dao/SkuDAO.cfc:L125`, and TR-4 requires that sequence exactly.
    *
-   * ===============================================================================================
    * T1 — CONJUNCTION, NOT INTERSECTION. AN ARRAY, NEVER A DEDUPLICATING COLLECTION.
-   * ===============================================================================================
-   * `model/dao/SkuDAO.cfc:L113-L121` appends ONE separate correlated existence test per list
-   * element and combines them with AND, so a SKU qualifies only by carrying EVERY listed option.
-   * Two rewrites look like simplifications and are both wrong: a set-membership predicate over the
-   * whole list turns the conjunction into a DISJUNCTION, and a grouped counting predicate diverges
-   * as soon as the list contains a DUPLICATE, because the legacy appends one test per element with
-   * NO DEDUPLICATION ANYWHERE. Implementations MUST emit one existence test per element, duplicates
-   * included.
+   * `model/dao/SkuDAO.cfc:L113-L121` appends ONE correlated existence test per list element and
+   * combines them with AND, so a SKU qualifies only by carrying EVERY listed option. Two rewrites
+   * look like simplifications and are both wrong: a set-membership predicate over the whole list
+   * turns the conjunction into a DISJUNCTION, and a grouped counting predicate diverges as soon as
+   * the list contains a DUPLICATE, because the legacy deduplicates nowhere. Implementations MUST
+   * emit one existence test per element, duplicates included — which is why the parameter is a plain
+   * array: a deduplicating type would discard duplicates before any adapter could see them.
    *
-   * That is why the parameter below is a plain array. A deduplicating collection type would drop
-   * duplicate identifiers before the adapter ever saw them, and no adapter could reconstruct what
-   * the type had already discarded — the semantic would be lost in the signature, silently, with
-   * every gate still passing.
-   *
-   * ===============================================================================================
    * T2 — THE PRODUCT IDENTIFIER IS REQUIRED, AND THAT IS A DECLARED DECISION.
-   * ===============================================================================================
-   * The legacy declaration at `model/dao/SkuDAO.cfc:L107` marks it OPTIONAL, and
-   * `model/dao/SkuDAO.cfc:L123` guards the product predicate on the argument's presence. On the
-   * real path that guard is never false: `model/service/ProductService.cfc:L104` declares the
-   * argument REQUIRED and forwards its whole argument scope, and it is this member's ONLY caller,
-   * so the predicate is always appended. The target therefore types the parameter as required,
-   * exactly as AAP 0.6.1.4 specifies.
-   *
-   * This is recorded as a DECISION rather than made silently, which is the obligation AAP 0.8.2
-   * Guideline 6 imposes. The alternative — typing it optional "to be faithful to the declaration" —
-   * would hand every implementation and every test double an unreachable branch to invent behaviour
-   * for, and would let a caller omit the product scope and receive SKUs from other products.
+   * `model/dao/SkuDAO.cfc:L107` marks it OPTIONAL and `model/dao/SkuDAO.cfc:L123` guards the product
+   * predicate on presence, but on the real path that guard is never false:
+   * `model/service/ProductService.cfc:L104` declares the argument REQUIRED and forwards its whole
+   * argument scope, and it is this member's ONLY caller. The target therefore types it required, as
+   * AAP §0.6.1.4 specifies. Typing it optional "to be faithful to the declaration" would hand every
+   * implementation an unreachable branch and would let a caller omit the product scope and receive
+   * SKUs from other products.
    *
    * ADAPTER OBLIGATION — THE PRODUCT PREDICATE IS GUARDED ON PRESENCE ONLY, NOT ON EMPTINESS.
-   * `model/dao/SkuDAO.cfc:L123` tests solely that the argument exists; it applies no length or
-   * whitespace test, so an EMPTY-STRING product identifier still appends the predicate and still
-   * binds the empty value, matching nothing. Contrast `model/dao/SkuDAO.cfc:L134`, where the
-   * sibling search member additionally requires a non-blank value. That intra-component divergence
-   * in guard strictness is preserved, and it is why this member's product argument and
+   * `model/dao/SkuDAO.cfc:L123` tests solely that the argument exists, applying no length or
+   * whitespace test, so an EMPTY-STRING product identifier still appends the predicate and binds the
+   * empty value, matching nothing. Contrast `model/dao/SkuDAO.cfc:L134`, where the sibling search
+   * member additionally requires a non-blank value. That divergence in guard strictness is
+   * preserved, so this member's product argument and
    * {@link SkuRepository.searchByProductType}'s product-type argument cannot be reasoned about
    * interchangeably.
    *
-   * ===============================================================================================
    * T3 — THE VESTIGIAL JOIN IS LOAD-BEARING. THE RESULT IS OPTION-BEARING SKUS ONLY.
-   * ===============================================================================================
-   * `model/dao/SkuDAO.cfc:L110` joins the SKU to its options and gives the join an alias THAT IS
-   * NEVER REFERENCED in the rest of the statement. It looks removable. It is not: because the join
-   * is inner, it silently EXCLUDES every SKU that carries no options — from every result, including
-   * when the option list is empty. This contract therefore promises option-bearing SKUs and nothing
-   * more, and implementations MUST retain an equivalent existence guard against the SKU-option link
-   * table. Dropping it would widen every result set, and nothing in the type system would notice.
+   * `model/dao/SkuDAO.cfc:L110` joins the SKU to its options with an alias THAT IS NEVER REFERENCED
+   * again. It looks removable; it is not. Because the join is inner it silently EXCLUDES every SKU
+   * carrying no options, from every result, including when the option list is empty. Implementations
+   * MUST retain an equivalent existence guard against the SKU-option link table; dropping it would
+   * widen every result set with nothing in the type system noticing.
    *
-   * ===============================================================================================
-   * T4 — THE DISTINCT PROJECTION IS MANDATORY.
-   * ===============================================================================================
-   * `model/dao/SkuDAO.cfc:L109` projects DISTINCTLY, and the join at `L110` fans out one row per
-   * SKU-option pair. Without distinctness a SKU carrying N options is returned N TIMES, and every
-   * arity assertion layered above this member breaks at once — the single-result wrapper at
-   * `model/entity/Product.cfc:L349-L364` counts results and raises on more than one, and the
-   * uniqueness rule at `model/entity/Sku.cfc:L756-L769` compares a count against one. This contract
-   * returns each qualifying SKU EXACTLY ONCE.
+   * T4 — THE DISTINCT PROJECTION IS MANDATORY. `model/dao/SkuDAO.cfc:L109` projects DISTINCTLY and
+   * the join at `L110` fans out one row per SKU-option pair, so without distinctness a SKU carrying
+   * N options is returned N TIMES and every arity assertion above this member breaks — the
+   * single-result wrapper at `model/entity/Product.cfc:L349-L364` raises on more than one, and the
+   * uniqueness rule at `model/entity/Sku.cfc:L756-L769` compares a count against one. Each
+   * qualifying SKU is returned EXACTLY ONCE.
    *
-   * ===============================================================================================
-   * T5 — AN EMPTY OPTION LIST IS LEGAL, MEANINGFUL, AND RELIED UPON BY TWO CALLERS.
-   * ===============================================================================================
-   * The plural wrapper at `model/entity/Product.cfc:L366-L368` defaults its option list to the
-   * empty string, and a delimited-list length of an empty string is ZERO — so the loop at
-   * `model/dao/SkuDAO.cfc:L113` appends NO existence tests and the statement legitimately
-   * degenerates to "all option-bearing SKUs of this product". That degenerate form is not an edge
-   * case to be defended against; it is depended upon by both the single-result wrapper at
-   * `model/entity/Product.cfc:L349-L364` and the uniqueness rule at
-   * `model/entity/Sku.cfc:L756-L769`.
+   * T5 — AN EMPTY OPTION LIST IS LEGAL, MEANINGFUL AND RELIED UPON BY TWO CALLERS. The plural
+   * wrapper at `model/entity/Product.cfc:L366-L368` defaults its option list to the empty string,
+   * whose delimited-list length is ZERO, so the loop at `model/dao/SkuDAO.cfc:L113` appends NO
+   * existence tests and the statement degenerates to "all option-bearing SKUs of this product". That
+   * form is depended upon by both `model/entity/Product.cfc:L349-L364` and
+   * `model/entity/Sku.cfc:L756-L769`. The parameter is therefore a plain array and NOT a non-empty
+   * one, empty input is NOT invalid, and NO guard clause exists at this boundary.
    *
-   * The parameter is therefore a plain array and NOT a non-empty one, empty input is NOT documented
-   * as invalid, and NO guard clause exists at this boundary. Rejecting or short-circuiting an empty
-   * array would break both callers.
-   *
-   * ===============================================================================================
-   * THE JUDGEMENT CALLS THE TRANSLATION REQUIRED (AAP 0.8.2, Guideline 6)
-   * ===============================================================================================
    * NAVIGATION SIDE — AN EXPLICIT, EQUIVALENT SIMPLIFICATION. The legacy existence test at
-   * `model/dao/SkuDAO.cfc:L116-L118` navigates the many-to-many relationship STARTING AT THE OPTION
-   * END: it enters at the option entity, joins to that option's SKUs, correlates them to the outer
-   * SKU and then compares the option identifier — a two-hop entity navigation. AAP 0.3.3.1 fixes
-   * the target shape as reading the SKU-option LINK TABLE directly instead, correlating on the SKU
-   * identifier and comparing the option identifier. The two are equivalent, and the simplification
-   * is recorded here because it is invisible otherwise: a reviewer diffing the legacy statement
-   * against the generated one will find a TABLE that appears in no legacy text and an ENTITY that
-   * appears in no generated text. Unexplained, that reads as drift; explained, it is the correct
-   * translation of an association the mapping layer used to hide (TR-2).
+   * `model/dao/SkuDAO.cfc:L116-L118` navigates the many-to-many relationship starting at the OPTION
+   * end, in two hops. AAP §0.3.3.1 fixes the target shape as reading the SKU-option LINK TABLE
+   * directly, correlating on the SKU identifier and comparing the option identifier. The two are
+   * equivalent, and the simplification is recorded because a reader diffing the statements will
+   * otherwise find a TABLE in no legacy text and an ENTITY in no generated text: that is the correct
+   * translation of an association the mapping layer hid (TR-2).
    *
-   * IDENTIFIER ALIASES — THE STATEMENT TEXT DOES NOT REVEAL THE MAPPING. This member's statement
-   * uses the mapping layer's implicit identifier alias in two places, `model/dao/SkuDAO.cfc:L117`
-   * and `model/dao/SkuDAO.cfc:L124`, while other members of the SAME component spell the property
-   * names out — `model/dao/SkuDAO.cfc:L60`, `L62` and `L163` all do. Both idioms therefore appear
-   * in one file, and the adapter must resolve the implicit alias to the concrete SKU and product
-   * identifier columns. Nothing in the legacy text says which columns those are; only the entity
-   * mappings do.
+   * IDENTIFIER ALIASES — THE STATEMENT TEXT DOES NOT REVEAL THE MAPPING. This member's statement uses
+   * the mapping layer's implicit identifier alias at `model/dao/SkuDAO.cfc:L117` and
+   * `model/dao/SkuDAO.cfc:L124`, while other members of the SAME component spell the property names
+   * out (`model/dao/SkuDAO.cfc:L60`, `L62`, `L163`). The adapter must resolve the implicit alias to
+   * the concrete SKU and product identifier columns; nothing in the legacy text says which they are.
    *
    * ===============================================================================================
-   * THIS MEMBER SITS INSIDE A VALIDATION READ-BACK CYCLE (mismatch M5, defect D19)
+   * THIS MEMBER SITS INSIDE A VALIDATION READ-BACK CYCLE (mismatch M6, defect D19)
    * ===============================================================================================
    * TODO(parity): AAP 0.6.2 identifies this as the highest-risk item in the slice, and the risk
    * passes through this member. The uniqueness rule at `model/entity/Sku.cfc:L756-L769` is not an
@@ -588,36 +495,41 @@ export interface SkuRepository {
    * everything and then validates — or validates before inserting — produces DIFFERENT RESULTS with
    * no error anywhere.
    *
-   * That guarantee is NOT this contract's to express. It is owned by
-   * `src/adapters/mysql/UnitOfWork.ts` under mismatch M5, which must make each insert visible to
-   * the next read within the same transaction, and it is asserted in
-   * `test/services/SkuService.test.ts`. This member deliberately declares NO transaction, session,
-   * flush or visibility parameter: a query contract that accepted one would be expressing a
-   * demarcation concern, and every test double would then have to model transaction semantics to
-   * satisfy it. The cycle is recorded here because this is the file a reader traces it through.
+   * ⚠️ F01 — WHERE THAT GUARANTEE LIVES, CORRECTED. This note previously said the guarantee "is NOT
+   * this contract's to express", assigning it wholly to `src/adapters/mysql/UnitOfWork.ts`. The
+   * consequence was that NOTHING expressed it: this contract declared seven read and cache members
+   * and no way to write a SKU at all, so no implementation could make an insert visible to the next
+   * read, and the cycle above could not be reproduced in either direction. Documenting a required
+   * ordering while omitting the operation that ordering governs left the highest-risk item in the
+   * slice unimplementable.
+   *
+   * THE PART OF THE OLD REASONING THAT WAS RIGHT, AND IS KEPT. This member still declares NO
+   * transaction, session, flush or visibility parameter, and none may be added: a QUERY contract
+   * that accepted one would be expressing a demarcation concern, and every test double would then
+   * have to model transaction semantics to satisfy it. The capability is therefore declared as a
+   * SEPARATE member — {@link SkuRepository.persistSku} — which carries the visibility guarantee
+   * explicitly while leaving all seven read members exactly as demarcation-free as they were.
+   * Transaction DEMARCATION remains the adapter's and composition root's concern; what belongs here
+   * is the guarantee a caller may rely on, and that is now stated.
    *
    * TODO(parity): defect D19 follows directly from T5 and is carried, not repaired. For a SKU with
-   * ZERO options the assembled list is empty, so by T5 this member returns ALL option-bearing SKUs
-   * of the product; the legacy guard at `model/entity/Sku.cfc:L764` can then only pass when the
+   * ZERO options the assembled list is empty, so by T5 this member returns ALL option-bearing SKUs of
+   * the product, and the legacy guard at `model/entity/Sku.cfc:L764` can then only pass when the
    * product has none. An option-less default SKU on a product that already has option-bearing SKUs
    * therefore FAILS its uniqueness rule. That is observed behaviour flowing from a correct
-   * translation of this member, not a fault in it, and any repair would belong to the entity in any
-   * case (AAP 0.7.3, S7).
-   *
-   * The sibling rule at `model/entity/Sku.cfc:L772-L784` is mentioned only to forestall the
-   * assumption that it behaves alike: it is pure and in-memory, walks the SKU's own options and
-   * touches no repository at all.
+   * translation, and any repair would belong to the entity in any case (AAP §0.7.3 S7). The sibling
+   * rule at `model/entity/Sku.cfc:L772-L784` does NOT behave alike: it is pure and in-memory, walks
+   * the SKU's own options and touches no repository.
    *
    * ADAPTER OBLIGATION — THE STATEMENT USES MAPPING-LAYER ENTITY NAMES throughout
    * `model/dao/SkuDAO.cfc:L109-L124`, unlike the physical names of
    * {@link SkuRepository.findSortedSkuIdsByProduct}; see the D22 note in the file header.
    *
    * TR-1 TIGHTENING, RECORDED. The legacy option list is a COMMA-DELIMITED STRING
-   * [`model/dao/SkuDAO.cfc:L107`] read element by element inside the loop at
+   * (`model/dao/SkuDAO.cfc:L107`) read element by element inside the loop at
    * `model/dao/SkuDAO.cfc:L114`; the target takes an array, which is an idiom change under AAP
-   * 0.8.1 and preserves both duplicates and order. The declared return type is widened from untyped
-   * to a typed array of hydrated SKUs, matching what `model/dao/SkuDAO.cfc:L127` actually resolves
-   * to.
+   * §0.8.1 that preserves both duplicates and order. The return type is widened from untyped to a
+   * typed array of hydrated SKUs, matching what `model/dao/SkuDAO.cfc:L127` resolves to.
    *
    * @param optionIds - The option identifiers a SKU must ALL carry. Order is preserved and passed
    *   through to the bound parameters; DUPLICATES ARE PRESERVED AND MUST NOT BE COLLAPSED (T1); the
@@ -753,7 +665,8 @@ export interface SkuRepository {
    * are recorded rather than passed over: the behavioural difference is that the target's flag test
    * is unambiguous. Two nearby reads at `model/dao/SkuDAO.cfc:L88` and `L90` declare a local INSIDE
    * a conditional branch, which is the same scoping category; they are noted here under D9 rather
-   * than given an identifier of their own, because the register is closed at D1-D22.
+   * than given an identifier of their own, because this file mints no identifier beyond D22 — see the
+   * register note in this module's header (F27), which states the registers' true position.
    *
    * TODO(parity): defect D13 is the DOWNSTREAM CONSEQUENCE of this member's companion, and it is
    * recorded here because the cause lives in this contract rather than in the service that fails.
@@ -884,77 +797,114 @@ export interface SkuRepository {
    * Discards the memoized option-group sort order used by
    * {@link SkuRepository.findSortedSkuIdsByProduct}.
    *
-   * ===============================================================================================
-   * THIS MEMBER IS INERT TWICE OVER — AND IT IS STILL DECLARED (defect D7)
-   * ===============================================================================================
-   * TODO(parity): the guard at `model/dao/SkuDAO.cfc:L222-L226` is INVERTED. The removal runs only
-   * when the memoized key is ABSENT, so it deletes a key that does not exist and never touches the
-   * key that does. THE MEMO IS THEREFORE NEVER CLEARED. A repository-wide search for callers of the
-   * legacy member returns NONE, so it is inert for a second, independent reason. Neither is
-   * repaired: AAP 0.7.3 S7 requires legacy behaviour to be preserved and annotated, and AAP 0.8.2
-   * Guideline 4 singles out this exact case, naming "an inverted cache guard" among the things a
-   * competent engineer would instinctively fix and forbidding the fix. Implementations MUST NOT
-   * correct the condition and MUST NOT document this member as working.
+   * TODO(parity) — THIS MEMBER IS INERT TWICE OVER, AND IS STILL DECLARED (defect D7). The guard at
+   * `model/dao/SkuDAO.cfc:L222-L226` is INVERTED: the removal runs only when the memoized key is
+   * ABSENT, so it deletes a key that does not exist and never touches the key that does. THE MEMO IS
+   * THEREFORE NEVER CLEARED. The legacy member also has no callers, so it is inert for a second,
+   * independent reason. Neither is repaired: AAP §0.7.3 S7 requires legacy behaviour to be preserved
+   * and annotated, and AAP §0.8.2 Guideline 4 singles out "an inverted cache guard" as exactly the
+   * kind of thing a competent engineer would instinctively fix and forbids the fix. Implementations
+   * MUST NOT correct the condition and MUST NOT document this member as working.
    *
-   * WHY AN INERT MEMBER IS ON THE INTERFACE AT ALL, AND THE RULE THAT DECIDES IT. Two authorities
-   * converge: AAP 0.4.2.6 maps the legacy member explicitly to this named target method, and
-   * transformation rule TR-5 is unambiguous — "The member is never quietly dropped from the
-   * interface." The contrast with the one dead member the plan DOES omit is deliberate and worth
-   * naming, because it is the difference between following instructions and improvising: the
-   * private, only-self-recursive method at `model/service/ProductService.cfc:L82-L97` (defect D15)
-   * is omitted SOLELY because AAP 0.4.1.8 instructs it. Nothing instructs that for this one. DEAD
-   * CODE IS DROPPED ON EXPLICIT INSTRUCTION, NEVER ON A PORT AUTHOR'S OWN REACHABILITY ANALYSIS.
+   * It is on the interface because AAP §0.4.2.6 maps the legacy member explicitly to this target
+   * name and TR-5 is unambiguous: "The member is never quietly dropped from the interface." The one
+   * dead member the plan DOES omit — the private, only-self-recursive method at
+   * `model/service/ProductService.cfc:L82-L97`, defect D15 — is omitted solely because AAP §0.4.1.8
+   * instructs it. Dead code is dropped on explicit instruction, never on a port author's own
+   * reachability analysis.
    *
    * SYNCHRONOUS, AND THE ABSENCE OF A PROMISE IS THE POINT. `model/dao/SkuDAO.cfc:L222` declares a
-   * void return, and the body performs a single in-memory key removal: no statement is issued, no
-   * connection is acquired, no row is read or written. Declaring this member synchronous states
-   * that fact in the type. It is the ONLY synchronous member of the seven — the shape the sibling
-   * brand port already established for its own non-database primitive — and a promise-returning
-   * signature would compile perfectly while obliging every caller, production and test double
-   * alike, to await something that never yields, permanently encoding an I/O boundary that does not
-   * exist.
+   * void return and the body performs a single in-memory key removal: no statement, no connection,
+   * no row. This is the ONLY synchronous member of the seven, and a promise-returning signature would
+   * compile perfectly while obliging every caller — production and test double alike — to await
+   * something that never yields, permanently encoding an I/O boundary that does not exist.
    *
-   * ===============================================================================================
-   * THE MEMO'S SCOPE IS AN EXECUTION-MODEL MISMATCH (M7), AND THIS IS THE ONLY PORT IT TOUCHES
-   * ===============================================================================================
-   * TODO(parity): the memoized value is GLOBAL, not per-product. It is produced by a whole-table
-   * maximum at `model/dao/SkuDAO.cfc:L210-L212` that takes NO parameters and applies NO product
-   * scoping whatsoever, then held in the component property declared at `model/dao/SkuDAO.cfc:L51`
-   * — the only such property among the four data-access components, and the reason this component
-   * alone declares generated accessors at `model/dao/SkuDAO.cfc:L49`. Combined with D7, that means
-   * one global number, computed once, never invalidated, and used to order every product's SKUs.
+   * TODO(parity) — THE MEMO'S SCOPE IS AN EXECUTION-MODEL MISMATCH (M7). The memoized value is
+   * GLOBAL, not per-product: it comes from a whole-table maximum at
+   * `model/dao/SkuDAO.cfc:L210-L212` that takes no parameters and applies no product scoping, held in
+   * the component property at `model/dao/SkuDAO.cfc:L51` — the only such property among the four
+   * data-access components, and why this one alone declares generated accessors at
+   * `model/dao/SkuDAO.cfc:L49`. Combined with D7 that means one global number, computed once, never
+   * invalidated, ordering every product's SKUs. Under M7 nothing persists between invocations of a
+   * stateless handler EXCEPT module-scope state, so a module-scope memo would share that global
+   * maximum across invocations and across callers on a warm container. AAP §0.4.2.6 and AAP §0.4.1.6
+   * therefore require EXPLICIT REQUEST-SCOPED state: on a persistent application server the
+   * never-cleared memo is merely stale, on a warm container it would be cross-caller bleed.
+   * Implementations MUST hold it per request and MUST NOT hoist it to module scope.
    *
-   * Under mismatch M7 that arrangement DOES NOT SURVIVE THE MOVE UNCHANGED, and the resolution is
-   * stated rather than assumed. Nothing persists between invocations of a stateless handler EXCEPT
-   * module-scope state, so a module-scope memo would share one global maximum across invocations
-   * and across tenants on a warm container. AAP 0.4.2.6 therefore requires the memo to become
-   * EXPLICIT REQUEST-SCOPED STATE, and AAP 0.4.1.6 says the same in its one-line instruction for
-   * this file. On a persistent application server the never-cleared memo is merely stale; on a warm
-   * container it would be cross-tenant bleed. Implementations MUST hold it per request and MUST NOT
-   * hoist it to module scope — and this file, being type-only, declares no state of any kind and
-   * could not host such a cache even if that were wanted.
+   * TODO(parity): one further observation belongs to the adapter and is recorded from here because
+   * this is the only member that reaches it. The seeding at `model/dao/SkuDAO.cfc:L206` assigns a
+   * starting value and the guard at `model/dao/SkuDAO.cfc:L213-L215` then tests whether the aggregate
+   * returned any row — which for a bare maximum is ALWAYS TRUE, since an aggregate always returns
+   * exactly one row, so the seed is always overwritten. On an EMPTY option-group table the maximum is
+   * null, which the legacy language surfaces as an empty string, so incrementing it yields the same
+   * value as the seed: the two paths coincide by coincidence rather than by design. Implementations
+   * MUST reproduce the resulting value in both cases and MUST NOT rely on the guard to mean what it
+   * appears to mean.
    *
-   * TODO(parity): one further observation about the memo belongs to the adapter and is recorded
-   * from here because this is the only member that reaches it. The seeding at
-   * `model/dao/SkuDAO.cfc:L206` assigns a starting value, and the guard at
-   * `model/dao/SkuDAO.cfc:L213-L215` then tests whether the aggregate returned any row — which for
-   * a bare maximum is ALWAYS TRUE, since an aggregate always returns exactly one row. The seed is
-   * therefore always overwritten. On an EMPTY option-group table the maximum is null, which the
-   * legacy language surfaces as an empty string, so incrementing it yields the same value as the
-   * seed — the two paths coincide by coincidence rather than by design. Implementations MUST
-   * reproduce the resulting value in both cases, including the empty-table case, and MUST NOT rely
-   * on the guard to mean what it appears to mean. Recorded as observed, with no new register
-   * number.
+   * NO LIFETIME, SIZE OR EVICTION PARAMETER IS OFFERED, and none may be added: the legacy exposes a
+   * single argument-free removal, so any lifetime, maximum size, refresh mode or eviction policy
+   * would be an invented knob (AAP §0.7.3 S9). What "request-scoped" means concretely is the
+   * composition root's and the adapter's decision, not a parameter of this contract.
    *
-   * NO LIFETIME, SIZE OR EVICTION PARAMETER IS OFFERED, and none may be added. The legacy exposes a
-   * single argument-free removal and nothing else, so a lifetime, maximum size, refresh mode or
-   * eviction policy would each be an invented knob (AAP 0.7.3, S9). What "request-scoped" means
-   * concretely is the composition root's and the adapter's decision, not a parameter of this
-   * contract.
-   *
-   * @returns Nothing. Synchronous by design, per `model/dao/SkuDAO.cfc:L222`. Note that in the
-   *   legacy this call has NO EFFECT AT ALL — see the inverted-guard note above — and
-   *   implementations reproduce that rather than correcting it.
+   * @returns Nothing. Synchronous by design, per `model/dao/SkuDAO.cfc:L222`. Note that in the legacy
+   *   this call has NO EFFECT AT ALL — see the inverted-guard note above — and implementations
+   *   reproduce that rather than correcting it.
    */
   clearOptionGroupSortOrderCache(): void;
+
+  /**
+   * Persists ONE SKU, and makes it visible to every subsequent read issued through this repository.
+   *
+   * ===============================================================================================
+   * THE MEMBER THAT CLOSES THE M6 READ-BACK CYCLE (AAP 0.6.2)
+   * ===============================================================================================
+   * ⭐ THIS IS THE HIGHEST-RISK CONTRACT IN THE SLICE, and its risk is entirely about ORDERING
+   * rather than about storage. `model/service/SkuService.cfc:L58-L211` creates a BATCH of SKUs, and
+   * `model/validation/Sku.json` registers `hasUniqueOptions` — a validation rule that executes a
+   * database read through {@link SkuRepository.findSkusBySelectedOptions} — against each one. So the
+   * batch reads the very rows it is writing, and the answer depends on which siblings are visible at
+   * the moment each read runs. Under the legacy mapping layer that visibility came from ORM session
+   * flush ordering, which the target does not have: there is no session and no automatic flush.
+   *
+   * ⛔ THE VISIBILITY GUARANTEE IS PART OF THIS CONTRACT, NOT AN IMPLEMENTATION DETAIL. Once the
+   * returned promise resolves, the persisted SKU MUST be observable to every read subsequently
+   * issued through this repository WITHIN THE SAME TRANSACTION — in particular to
+   * {@link SkuRepository.findSkusBySelectedOptions}, which is the read the uniqueness rule performs.
+   * An implementation that defers the write until the transaction commits does NOT satisfy this
+   * contract, because the next uniqueness read would then observe none of its siblings, and every
+   * SKU in a batch would validate as though it were the first.
+   *
+   * ⛔ AND THE WRITE MUST NOT BE COMMITTED HERE. Visibility within the transaction is required;
+   * DURABILITY is not, and must not be assumed. `model/service/SkuService.cfc` performs no commit of
+   * its own — the legacy commits once, implicitly, at request end and only when the ORM reports no
+   * errors (mismatch M5) — so committing per SKU would make a partially-created, validation-failing
+   * batch permanent, which the legacy never does. Demarcation stays with the caller.
+   *
+   * ⭐ WHERE IN THE SEQUENCE THE CALL BELONGS, DECIDED DELIBERATELY RATHER THAN GUESSED. AAP 0.6.2
+   * requires each insert to be visible to "the NEXT SKU's uniqueness read", so a SKU is persisted
+   * AFTER its own validation and BEFORE the next SKU is validated. The alternative — persisting
+   * before its own validation, so a SKU can observe ITSELF — is not chosen, and the reason is
+   * recorded because the code looks like it anticipates it: `model/entity/Sku.cfc:L763-L768` guards
+   * with `arrayLen(skus) == 1 && skus[1].getSkuID() == getSkuID()`, which tolerates the rule finding
+   * exactly one SKU that IS the subject. Under the chosen ordering that self-exclusion clause is a
+   * defensive no-op on insert, exactly as the same clause is in
+   * `org/Hibachi/HibachiDAO.cfc:L130-L146`, where a not-yet-persisted subject can never match its
+   * own identifier either. Both orderings satisfy "visible to the next"; this one is what the AAP
+   * and the source's own self-exclusion idiom together indicate.
+   *
+   * TODO(parity): mismatch M5 is carried, not resolved. The legacy's implicit request-end commit has
+   * no equivalent in a stateless invocation, so the transaction this member participates in is opened
+   * and closed by the caller. That difference is flagged rather than smoothed over, per AAP 0.6.6.
+   *
+   * NO BATCH FORM IS OFFERED, and none may be added. A `persistSkus(skus)` member would invite an
+   * implementation that writes the whole batch in one statement, which is precisely the naive port
+   * AAP 0.6.2 warns produces different results with no error anywhere: the per-SKU boundary IS the
+   * behaviour, because it is what interleaves the writes with the uniqueness reads between them.
+   *
+   * @param sku - The SKU to persist. Carries its own 32-character identifier, generated in
+   *   application code per AAP IR-6, so no identifier is returned or assigned by this call.
+   * @returns Nothing, once the SKU is visible to subsequent reads in the same transaction.
+   */
+  persistSku(sku: Sku): Promise<void>;
 }

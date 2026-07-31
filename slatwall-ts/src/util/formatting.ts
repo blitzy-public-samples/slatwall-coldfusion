@@ -1,63 +1,48 @@
 /**
  * Setting-driven date and title formatting for the extracted Slatwall Catalog slice.
  *
- * SCOPE — exactly two setting keys, and nothing else (AAP 0.4.1.11):
+ * SCOPE — exactly two setting keys, and nothing else:
  *   - `globalDateFormat`   drives `formatDate`
  *   - `productTitleString` drives `replaceStringTemplate`
  *
  * Every other key the in-scope entities read belongs elsewhere: image sizing and paths to
- * `ImagePathPort`, currency to `PricingPort`, and so on. In particular there is deliberately no
- * currency formatter here — AAP 0.2.2.6 places every currency-derived calculated member on the
- * excluded list.
+ * `ImagePathPort`, currency to `PricingPort`. There is deliberately no currency formatter here,
+ * because every currency-derived calculated member is outside this slice.
  *
- * LEGACY ORIGINS (reference only; the CFML tree is never modified — AAP 0.4.1.1 / TR-6):
- *   - model/entity/Sku.cfc:L459-L480 — `getNextEstimatedAvailableDate()`, which contains the only
- *     three `globalDateFormat` reads in the entire in-scope entity set (L462, L470, L472), each of
- *     the identical shape `dateFormat(<date>, setting('globalDateFormat'))`.
+ * Legacy origins, reference only:
+ *   - model/entity/Sku.cfc:L459-L480 — `getNextEstimatedAvailableDate()`, holding the only three
+ *     `globalDateFormat` reads in the in-scope entity set, each of the shape
+ *     `dateFormat(<date>, setting('globalDateFormat'))`.
  *   - model/entity/Product.cfc:L540-L545 — `getTitle()`, which interpolates `productTitleString`.
- *   - org/Hibachi/HibachiUtilityService.cfc:L70-L101 — `replaceStringTemplate()`, the token
- *     substitution mechanism that `getTitle()` delegates to.
- *   - model/entity/HibachiEntity.cfc:L128-L131 — `setting()`, which forwards to the out-of-scope
- *     `settingService`. This is the declared origin of `SettingResolverPort`.
+ *   - org/Hibachi/HibachiUtilityService.cfc:L70-L101 — the token substitution `getTitle()` uses.
+ *   - model/entity/HibachiEntity.cfc:L128-L131 — `setting()`, the declared origin of
+ *     `SettingResolverPort`.
  *
  * THIS MODULE RESOLVES NO SETTINGS. Both functions receive an already-resolved value as a plain
- * parameter. Resolution is owned by `SettingResolverPort` and its implementation
- * `src/adapters/settings/StaticSettingResolver.ts`; the legacy `getService("settingService")` and
- * `getService("hibachiUtilityService")` lookups disappear rather than being re-created here
- * (AAP 0.7.3 S3, and 0.4.3.2 R2: dynamic string lookup becomes a typed collaborator).
+ * parameter, so the legacy dynamic `getService("settingService")` and
+ * `getService("hibachiUtilityService")` lookups disappear rather than being re-created here.
  *
- * NO IMPORTS. `src/util/` is a leaf of the hexagonal layering (S4): it may not reach into
- * `domain/`, `ports/`, `adapters/`, `services/`, `validation/`, `integrations/`, `handlers/` or
- * `config/`, and it introduces no third-party dependency — `mysql2` remains the service's single
- * runtime dependency (S5). It reads no environment variable; `src/config/env.ts` is the only file
- * permitted to do that.
+ * NO IMPORTS. `src/util/` is a leaf of the hexagonal layering: it may not reach into any other layer
+ * and it introduces no third-party dependency. It reads no environment variable, since src/config/
+ * owns that.
  *
- * BOTH EXPORTS ARE SYNCHRONOUS, and that is a decision rather than an accident. Execution-model
- * mismatch M8 (AAP 0.6.6) records that the out-of-scope `SettingService.updateStockCalculated`
- * launches a named out-of-band `cfthread`; `SettingResolverPort` is declared synchronous precisely
- * so that no caller in this slice can come to depend on background completion. Formatting inherits
- * that synchrony: neither function is `async` and neither returns a `Promise`.
+ * BOTH EXPORTS ARE SYNCHRONOUS, and that is a decision rather than an accident. `SettingResolverPort`
+ * is declared synchronous so that no caller in this slice can come to depend on the background
+ * completion of the out-of-scope setting updater flagged as mismatch M8. Formatting inherits that
+ * synchrony: neither function is `async` and neither returns a `Promise`.
  *
- * NEITHER SETTING IS SEEDED. `config/dbdata/SlatwallSetting.xml.cfm` holds 7 `<Record>` rows
- * spanning 5 distinct `settingName` values, and neither `globalDateFormat` nor `productTitleString`
- * is among them; both fall back to metadata defaults declared in the out-of-scope
- * `model/service/SettingService.cfc` (L163 and L193 respectively). This module therefore hardcodes
+ * NEITHER SETTING IS SEEDED. Neither key appears among the rows in
+ * config/dbdata/SlatwallSetting.xml.cfm, so both fall back to metadata defaults declared in the
+ * out-of-scope model/service/SettingService.cfc (L163 and L193). This module therefore hardcodes
  * neither default — no fallback parameter, no `??` default, no constant. Recording which keys fall
- * back to defaults is `StaticSettingResolver`'s job (AAP 0.4.1.7); supplying a value here would
- * breach S9.
+ * back is the setting resolver's job; supplying a value here would invent one.
  *
- * NOT IN SCOPE HERE. The Google product feed builds its sale-price effective-date range out of
+ * NOT IN SCOPE HERE. The Google product feed builds its sale-price effective-date range from
  * hard-coded literal masks plus a time-of-day and a timezone offset
- * (integrationServices/google/views/feed/product.cfm:L30), and at L18 reads the persisted
- * `getCalculatedTitle()` column rather than `getTitle()`. That assembly — including the `T`
- * separator, the range separator, the timezone-offset lookup and any time-of-day rendering —
- * belongs to `src/integrations/google/ProductFeedBuilder.ts`, which may legitimately call
- * `formatDate` with a literal mask such as `YYYY-MM-DD`; hence the case-insensitive matching below.
+ * (integrationServices/google/views/feed/product.cfm:L30), and at :L18 reads the persisted
+ * calculated title rather than `getTitle()`. That assembly belongs to the feed builder, which may
+ * legitimately call `formatDate` with a literal mask — hence the case-insensitive matching below.
  */
-
-/* ------------------------------------------------------------------------------------------------
- * Date formatting
- * --------------------------------------------------------------------------------------------- */
 
 /**
  * English month names, indexed by `Date.prototype.getMonth()` (0-11).

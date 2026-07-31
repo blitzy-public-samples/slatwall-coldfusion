@@ -1,26 +1,27 @@
 /**
  * ProductType — the self-referencing hierarchy of the Slatwall Catalog.
  *
- * PORT OF `model/entity/ProductType.cfc` (318 lines). Every line of that file is either ported
- * below or accounted for in a comment; the consolidated omission register at the foot of this file
- * carries a locator and a reason for each member that is deliberately not carried across, so no
- * absence has to be reconstructed by a reader diffing the two files.
+ * Ported from [model/entity/ProductType.cfc]. Scope per AAP §0.4.1.4: the self-referencing hierarchy,
+ * `productTypeIDPath`, `systemCode`, `getBaseProductType()` [:L110], and
+ * `getInheritedAttributeSetAssignments()` boundary-stubbed with defect D21 flagged. The consolidated
+ * register at the foot of this file gives a locator and a reason for every member deliberately not
+ * carried across.
  *
- * AAP AUTHORITY — §0.4.1.4 "Domain Layer": CREATE from `model/entity/ProductType.cfc`, key change
- * "Self-referencing hierarchy, `productTypeIDPath`, `systemCode`, `getBaseProductType()` [L110];
- * `getInheritedAttributeSetAssignments()` boundary-stubbed with defect D21 flagged."
+ * Standards citations below use the AAP §0.7.3 identifiers S1-S9. `F<n>` markers are this port's own
+ * file-scope rules; the two cited most often are F9 (SmartList members belong to
+ * `src/ports/SmartListQueryPort.ts` and `src/adapters/mysql/SmartListQueryBuilder.ts`, never to the
+ * domain layer) and F22 (framework members are not declared on domain entities).
  *
- * WHY THIS ENTITY MATTERS MORE THAN ITS SIZE SUGGESTS. `getBaseProductType()` produces the literal
+ * THIS ENTITY CARRIES MORE WEIGHT THAN ITS SIZE SUGGESTS. `getBaseProductType()` produces the literal
  * three-way branch key of the largest business rule in the slice, `SkuService.createSkus`
- * [model/service/SkuService.cfc:L58-L211], whose merchandise arm is selected at :L61 by
+ * [model/service/SkuService.cfc:L58-L211], whose merchandise arm is selected at [:L61] by
  * `arguments.product.getProductType().getBaseProductType() == "merchandise"` and whose fallthrough
- * `throw` sits at :L204. `model/entity/Sku.cfc:L577-L584` (`getSkuDefinition`) and
- * `model/dao/SkuDAO.cfc:L154-L156` discriminate on the same value. A wrong answer from this one
- * method silently produces the wrong SKUs, or none, with no error anywhere.
+ * `throw` sits at [:L204]. [model/entity/Sku.cfc:L577-L584] and [model/dao/SkuDAO.cfc:L154-L156]
+ * discriminate on the same value. A wrong answer from this one method silently produces the wrong
+ * SKUs, or none, with no error raised anywhere.
  *
- * ---------------------------------------------------------------------------------------------
- * THE LEGACY COMPONENT DECLARATION — `model/entity/ProductType.cfc:L49`, fact by fact
- * ---------------------------------------------------------------------------------------------
+ * THE LEGACY COMPONENT DECLARATION — [model/entity/ProductType.cfc:L49] — fact by fact:
+ *
  *     component displayname="Product Type" entityname="SlatwallProductType" table="SwProductType"
  *       persistent="true" extends="HibachiEntity" cacheuse="transactional"
  *       hb_serviceName="productService" hb_permission="this"
@@ -35,9 +36,14 @@
  *     with composition, so the two behaviours this file needs from its former base classes arrive
  *     as imported free functions (`../base/AuditableEntity`) and as an exported descriptor set
  *     consumed by `../base/populate`.
- *   - `entityname="SlatwallProductType"` / `table="SwProductType"`. Both names appear in this file
- *     ONLY as prose provenance, never as code: S2 confines every table name, column name and SQL
- *     fragment to `src/adapters/mysql/**`, and this module issues no query and imports no driver.
+ *   - `entityname="SlatwallProductType"` / `table="SwProductType"`. The TABLE name appears in this
+ *     file ONLY as prose provenance, never as code: S2 confines every table name, column name and
+ *     SQL fragment to `src/adapters/mysql/**`, and this module issues no query and imports no
+ *     driver. The LOGICAL ORM name is declared exactly once as a value, in
+ *     {@link PRODUCT_TYPE_ENTITY_METADATA}, because `getEntityName()`
+ *     [org/Hibachi/HibachiEntity.cfc:L287-L289] is observable behaviour that
+ *     `src/ports/UniquePropertyPort.ts` consumes; a logical entity name is not a table identifier
+ *     and S2 is unaffected.
  *   - `cacheuse="transactional"` — a Hibernate second-level cache directive, declared on 111 of the
  *     113 legacy entities. FLAGGED, NOT IMPLEMENTED (mismatch M7): nothing survives between Lambda
  *     invocations except module-scope state, and module-scope caching of per-entity data would
@@ -45,37 +51,24 @@
  *     mutable binding and adds no cache; the single legacy memoization it does carry
  *     (`variables.productTypeIDPath`, `model/entity/ProductType.cfc:L251-L253`) is reproduced as
  *     PER-INSTANCE state on {@link ProductType.getProductTypeIDPath}.
- *   - `hb_serviceName="productService"` — THERE IS NO `ProductTypeService`, and no such file exists
- *     anywhere in `model/service/`. Product types are served by `ProductService`:
- *     `saveProductType` is declared at `model/service/ProductService.cfc:L294`, and the reader
- *     `getProductType(id)` has no declaration at all — it is fabricated at runtime by
- *     `org/Hibachi/HibachiService.cfc:L255-L281`'s `onMissingMethod` prefix dispatch and is one of
- *     the members AAP §0.4.2.5 requires to be declared explicitly (IR-1). That synthesized reader
- *     is exactly the capability {@link ProductTypeRootResolver} stands in for.
- *   - `hb_permission="this"` — an admin-authorisation hint consumed by the retired framework's
+ *   - `hb_serviceName="productService"` — THERE IS NO `ProductTypeService`. Product types are served by
+ *     `ProductService`: `saveProductType` is declared at [model/service/ProductService.cfc:L294], and
+ *     the reader `getProductType(id)` has no declaration at all — it is fabricated at runtime by
+ *     `onMissingMethod` prefix dispatch [org/Hibachi/HibachiService.cfc:L255-L281] and is one of the
+ *     members AAP §0.4.2.5 requires to be declared explicitly (IR-1). That synthesized reader is
+ *     exactly the capability {@link ProductTypeRootResolver} stands in for.
+ *   - `hb_permission="this"` is an admin-authorisation hint consumed by the retired framework's
  *     permission layer. Recorded; nothing here reads or enforces it.
- *   - `hb_parentPropertyName="parentProductType"` — the DECLARATIVE STATEMENT OF THE SELF-REFERENCE.
- *     The framework's identifier-path machinery keys off this attribute, and it is the reason the
- *     ported {@link ProductType.getProductTypeIDPath} walks `parentProductType` specifically rather
- *     than a property named at run time.
+ *   - `hb_parentPropertyName="parentProductType"` is the DECLARATIVE STATEMENT OF THE SELF-REFERENCE.
+ *     The framework's identifier-path machinery keyed off this attribute, which is why the ported
+ *     {@link ProductType.getProductTypeIDPath} walks `parentProductType` specifically rather than a
+ *     property named at run time.
  *
- * ---------------------------------------------------------------------------------------------
- * WHAT THE LEGACY LICENSE HEADER DOES, AND WHY IT IS NOT REPRODUCED
- * ---------------------------------------------------------------------------------------------
- * `model/entity/ProductType.cfc:L1-L48` is the GPL-v3-with-linking-exception banner that opens
- * every file in the CFML tree, ending in an empty `Notes:` section at :L46-L47. It is not carried
- * across: the files already established in this subtree — `src/domain/BaseProductType.ts`,
- * `src/domain/base/AuditableEntity.ts`, `src/domain/base/populate.ts` — carry no per-file banner,
- * and inventing one here would diverge from that convention. The omission is recorded so the
- * line-accounting above is complete rather than silently short by 48 lines.
- *
- * ---------------------------------------------------------------------------------------------
- * `model/validation/ProductType.json` — DOCUMENTED HERE, ENFORCED ELSEWHERE (Phase F / F12)
- * ---------------------------------------------------------------------------------------------
- * The rules below are behaviour, not configuration (IR-4), and they are interpreted by
- * `src/validation/rules/productType.rules.ts` together with `src/validation/Validator.ts`. THIS
- * FILE IMPLEMENTS, EVALUATES AND ENFORCES NONE OF THEM. They are reproduced because two of them
- * explain why fields on this class exist at all. All six, exactly as the JSON declares them:
+ * [model/validation/ProductType.json] — DOCUMENTED HERE, ENFORCED ELSEWHERE. These rules are
+ * behaviour, not configuration (IR-4); `src/validation/rules/productType.rules.ts` and
+ * `src/validation/Validator.ts` interpret them and THIS FILE ENFORCES NONE OF THEM. They are
+ * reproduced because two of them explain why fields on this class exist at all. There are exactly two
+ * contexts, `save` and `delete`:
  *
  *     "productTypeName":   [{"contexts":"save",  "required":true}]
  *     "urlTitle":          [{"contexts":"save",  "required":true, "unique":true}]
@@ -84,71 +77,34 @@
  *     "systemCode":        [{"contexts":"delete","maxLength":0}]
  *     "physicalCounts":    [{"contexts":"delete","maxCollection":0}]
  *
- * There are exactly TWO contexts across this entity — `save` and `delete` — and nothing else.
+ *   - THE `systemCode` `maxLength: 0` DELETE GUARD IS WHAT PROTECTS THE THREE SEEDED DISCRIMINATORS
+ *     FROM DELETION. A product type carrying ANY `systemCode` fails the delete context, and the only
+ *     rows that carry one are the three seeded at [config/dbdata/SlatwallProductType.xml.cfm:L13-L15].
+ *     That rule READS {@link ProductType.systemCode}, which is why the field exists here even though
+ *     this file enforces nothing.
+ *   - `urlTitle`'s `unique: true` is not implemented here either. Application-side uniqueness is IR-5,
+ *     enforced by an existence query in `src/adapters/mysql/UniquePropertyChecker.ts` ported from
+ *     [org/Hibachi/HibachiDAO.cfc:L130-L146], independently of the column's `unique="true"` metadata.
+ *   - `physicalCounts` — S9, DO NOT INVENT IT. All three validation documents in this product family
+ *     reference the key ([model/validation/Product.json:L7], [model/validation/Brand.json:L7],
+ *     [model/validation/ProductType.json:L8]) and none of the corresponding entities declares it —
+ *     they declare `physicals`. The only `physicalCounts` property declaration is
+ *     [model/entity/Physical.cfc:L59]. It is a genuine undeclared-property validation reference in the
+ *     legacy source; no field is added here to make it resolve.
  *
- *   THE `systemCode` `maxLength: 0` DELETE GUARD IS WHAT PROTECTS THE THREE SEEDED DISCRIMINATORS
- *   FROM DELETION. A product type carrying ANY `systemCode` at all fails the delete context, and
- *   the only rows that carry one are the three seeded at
- *   `config/dbdata/SlatwallProductType.xml.cfm:L13-L15`. That rule is the clearest justification
- *   for {@link ProductType.systemCode} existing as a field on this class even though this file
- *   enforces nothing: the rule READS the field.
- *
- *   `urlTitle`'s `unique: true` is NOT implemented here either. Application-side uniqueness is
- *   IR-5, enforced by an existence query in `src/adapters/mysql/UniquePropertyChecker.ts`, ported
- *   from `org/Hibachi/HibachiDAO.cfc:L130-L146`, independently of the column's `unique="true"`
- *   metadata.
- *
- *   `physicalCounts` — S9, DO NOT INVENT IT. The key is referenced by all three validation
- *   documents in this product family (`model/validation/Product.json:L7`,
- *   `model/validation/Brand.json:L7`, `model/validation/ProductType.json:L8`) and is declared by
- *   NONE of the corresponding entities: they declare `physicals`. Repository-wide, the only
- *   `physicalCounts` PROPERTY declaration is `model/entity/Physical.cfc:L59`. It is therefore a
- *   genuine undeclared-property validation reference in the legacy source. No `physicalCounts`
- *   field is added to this class to make it resolve; the finding is recorded and left alone.
- *
- * ---------------------------------------------------------------------------------------------
- * THE TEST CONTRACT (Phase H) — `test/domain/ProductType.test.ts` IS NET-NEW
- * ---------------------------------------------------------------------------------------------
- * AAP §0.6.5.2 verified that NO `ProductTypeTest` exists anywhere in `meta/tests/`: this entity had
- * ZERO legacy coverage, and the target test is net-new rather than an extension of an existing
- * signal. It nonetheless follows the four inherited assertions of
- * `meta/tests/unit/entity/SlatwallEntityTestBase.cfc:L51-L67`, which split across three layers:
- *
- *   1. `validate_as_save_for_a_new_instance_doesnt_pass` — `validate(context="save")` then
- *      `hasErrors()`. Lands on the VALIDATION LAYER, not here: F22 forbids this file from declaring
- *      `validate` or `hasErrors`.
- *   2. `simple_representation_exists_and_is_simple` — `isSimpleValue(getSimpleRepresentation())`.
- *      LANDS HERE, satisfied by {@link ProductType.getSimpleRepresentation}, which is this file's
- *      single sanctioned F22 exception because the legacy genuinely overrides it with a real
- *      recursive body at `model/entity/ProductType.cfc:L273-L278`.
- *   3. `has_primary_id_property_name` — `len(getPrimaryIDPropertyName())`. Lands on the exported
- *      descriptor set: `'productTypeID'` is declared there and in {@link ProductTypePropertyName},
- *      not as a framework accessor on this class.
- *   4. `defaults_are_correct` — `isNew()` and `!len(getPrimaryIDValue())`. Satisfied by
- *      {@link ProductType.isNew} together with `productTypeID` defaulting to the empty string.
- *
- * The obligation this file carries for that suite (S6) is that `new ProductType()` succeeds with NO
- * arguments — no framework bootstrap, no container, no database, no I/O and no async work in the
- * constructor — and that every collaborator is substitutable by a plain object literal satisfying a
- * structural interface. Because {@link ProductType.getBaseProductType} takes its resolver as an
- * explicit parameter, both of its branches are reachable from a two-line stub.
- *
- * ---------------------------------------------------------------------------------------------
- * STANDARDS IN FORCE, RECORDED RATHER THAN ASSUMED (UR4)
- * ---------------------------------------------------------------------------------------------
- * `review_rules` returns the single line "No user rules provided." for this project, with no
- * paginated remainder — confirmed on the default window and again with an explicit full range — and
- * the repository contains no `.blitzyignore`, `.cursorrules`, `AGENTS.md` or `CLAUDE.md`. Zero files
- * enter scope by rule and no rule-derived constraint applies here. That is not permission to lower
- * the bar; the nine enterprise standards of AAP §0.7.3 govern instead. The ones with teeth in this
- * file are S1 (strict type safety — this file contains no `any`, no non-null assertion, no `as`
- * cast and no suppression comment, and every narrowing is an explicit guard), S2 (negative: no SQL,
- * no driver, no table name as code), S3 (no service locator — every collaborator is an explicit
- * typed parameter), S4 (hexagonal separation — the only imports are the two `../base/` modules,
- * `../BaseProductType` and a type-only `./Product`; nothing from `adapters/`, `services/`,
- * `config/`, `validation/`, `handlers/`, `integrations/` or `ports/`, and no AWS type), S5
- * (negative: no npm dependency and no `node:` built-in), S6, S7 (preserve and annotate — see the
- * `TODO(parity)` markers, which are carried findings and never deferred work), S8/M7 and S9.
+ * THE TEST CONTRACT. `test/domain/ProductType.test.ts` is NET-NEW: AAP §0.6.5.2 establishes that no
+ * `ProductTypeTest` exists anywhere in `meta/tests/`, so this entity had zero legacy coverage. The
+ * target test still follows the four inherited assertions of
+ * [meta/tests/unit/entity/SlatwallEntityTestBase.cfc:L51-L67], which land across three layers: the
+ * validate-as-save assertion on the validation layer (F22 keeps `validate` and `hasErrors` out of this
+ * file), the simple-representation assertion HERE on
+ * {@link ProductType.getSimpleRepresentation}, the primary-identifier assertion on the exported
+ * descriptor set, and the defaults assertion on {@link ProductType.isNew}. The obligation this file
+ * carries for that suite (S6) is that `new ProductType()` succeeds with NO arguments — no framework
+ * bootstrap, no container, no database, no I/O and no async work in the constructor — and that every
+ * collaborator is substitutable by a plain object literal satisfying a structural interface. Because
+ * {@link ProductType.getBaseProductType} takes its resolver as an explicit parameter, both of its
+ * branches are reachable from a two-line stub.
  */
 
 import type { BaseProductType } from '../BaseProductType';
@@ -156,11 +112,18 @@ import {
   applyPreInsertAudit,
   applyPreUpdateAudit,
   AUDIT_PROPERTY_NAMES,
+  hasDeclaredProperty,
+  readValueByPropertyIdentifier,
+  requireDeclaredPropertyMetaData,
   type AuditableEntity,
   type AuditPropertyName,
+  type DeclaredPropertyNameSet,
+  type EntityPropertyMetaData,
+  type ManagedEntity,
 } from '../base/AuditableEntity';
 import type {
-  ColumnPropertyDescriptor,
+  DisabledPropertyDescriptor,
+  EntityMetadataDeclaration,
   ManyToOnePropertyDescriptor,
   OneToManyPropertyDescriptor,
   PopulatePropertyDescriptor,
@@ -278,18 +241,15 @@ export interface ProductTypeRootResolver {
 /**
  * One attribute-set assignment, as returned by the D21 stub — DELIBERATELY OPAQUE.
  *
- * S9 — INVENT NOTHING. `AttributeSetAssignment` is not a shape that can be read from anywhere,
- * because the entity does not exist: a repository-wide search for the identifier finds it at
- * exactly two locations, `model/entity/ProductType.cfc:L92` and :L94, and there is no
- * `model/entity/AttributeSetAssignment.cfc` in release 3.1.39 (the `model/entity/` directory
- * contains `AttributeSet.cfc` and no assignment entity). So no field is guessed here.
+ * S9 — INVENT NOTHING. `AttributeSetAssignment` is not a shape that can be read from anywhere: the
+ * identifier occurs only at [model/entity/ProductType.cfc:L92] and [:L94], and release 3.1.39 has no
+ * `model/entity/AttributeSetAssignment.cfc` at all. So no field is guessed here.
  *
- * `object` is the chosen representation, over two alternatives that both fail: `unknown` would be
- * wider than the legacy value, which is always an entity instance and never a primitive or null;
- * and `Record<string, unknown>` would be NARROWER in practice, because a class instance is not
- * assignable to an index-signature type, so a future adapter handing back real entities could not
- * satisfy it. The type is exported because it appears in a public return type and a caller must be
- * able to name it.
+ * `object` is chosen over two alternatives that both fail. `unknown` would be wider than the legacy
+ * value, which is always an entity instance and never a primitive or null. `Record<string, unknown>`
+ * would be NARROWER in practice, because a class instance is not assignable to an index-signature
+ * type, so a future adapter handing back real entities could not satisfy it. The type is exported
+ * because it appears in a public return type and a caller must be able to name it.
  */
 export type InheritedAttributeSetAssignment = object;
 
@@ -418,7 +378,7 @@ export interface PhysicalReference {
  * The value {@link ProductType.getBaseProductType} yields: a `systemCode` read out of the database,
  * which MAY be one of the three seeded discriminators and may equally be anything else.
  *
- * ⚠️ THIS TYPE IS THE SINGLE MOST IMPORTANT DECLARATION IN THIS FILE, AND WIDENING IT IS NOT A
+ * THIS TYPE IS THE SINGLE MOST IMPORTANT DECLARATION IN THIS FILE, AND WIDENING IT IS NOT A
  * TIDY-UP — NARROWING IT IS A SILENT DELETION OF LEGACY BEHAVIOUR.
  *
  * `model/service/SkuService.cfc:L58-L211` branches three ways on this value and ends in a
@@ -488,13 +448,20 @@ export type BaseProductTypeCode = BaseProductType | (string & {});
  * `isNull(getURLTitle())` ALONE. If population assigned `''` instead of removing the key, the
  * product-side test could never fire and unique-URL-title generation would be dead code.
  *
- * ⚠️ G6 — HOW TO TEST FOR AN ABSENT PROPERTY IN THIS PORT, BECAUSE THE OBVIOUS ANSWER IS WRONG.
+ * G6 — HOW TO TEST FOR AN ABSENT PROPERTY IN THIS PORT, BECAUSE THE OBVIOUS ANSWER IS WRONG.
  * `tsconfig.json` targets ES2022, which turns `useDefineForClassFields` ON by default, so the emitted
- * constructor DEFINES every field declared below — including the optional ones with no initialiser —
- * as an own property whose value is `undefined`. A freshly constructed instance therefore carries all
- * twenty-five keys, and `'systemCode' in productType`, `Object.keys(productType)` and
- * `hasOwnProperty('parentProductType')` are all MEANINGLESS as absence tests here. They are not the
- * translation of CFML's `structKeyExists(variables, …)`, however much they resemble it.
+ * constructor DEFINES every ordinarily-declared field below — including the optional ones with no
+ * initialiser — as an own property whose value is `undefined`. A freshly constructed instance
+ * therefore carries every SCALAR key, and `'systemCode' in productType` and `Object.keys(productType)`
+ * are MEANINGLESS as absence tests for those. They are not the translation of CFML's
+ * `structKeyExists(variables, …)`, however much they resemble it.
+ *
+ * ONE FIELD IS DELIBERATELY DIFFERENT: {@link ProductType.parentProductType} carries `declare`, so it
+ * is NOT defined on a fresh instance and IS genuinely absent. That single exception exists because it
+ * is the class's only ASSOCIATION field and `src/adapters/mysql/rowMappers.ts` guarantees an
+ * unresolved association is absent rather than present-and-undefined; the field's own doc comment
+ * gives the full reasoning. It changes nothing about how this file TESTS for absence — every guard
+ * still uses `=== undefined`, which is correct for both states — so the rule below is unaffected.
  *
  * `value === undefined` IS the translation of the legacy `isNull(...)`, and it is what every guard in
  * this file uses, without exception — which is also what the framework itself used at every decision
@@ -503,14 +470,15 @@ export type BaseProductTypeCode = BaseProductType | (string & {});
  * Three consequences worth stating so nobody has to rediscover them:
  *
  *   - `delete this.parentProductType` in {@link ProductType.removeParentProductType} remains the
- *     faithful port of `structDelete` and remains genuinely effective: it removes the own key. The
- *     state before the delete (present, `undefined`) and after (absent) read identically through
+ *     faithful port of `structDelete`. Because that field carries `declare`, the key is absent on a
+ *     fresh instance and present only once a parent has genuinely been assigned, so the delete
+ *     removes a key that really is there. Either way the state reads identically through
  *     `=== undefined`, which is the only lens this port looks through.
  *   - `exactOptionalPropertyTypes` still earns its keep, at the level where it applies: it forbids
  *     ASSIGNING `undefined` to any of these properties, so nothing in this file can manufacture the
  *     "explicitly undefined" state, and `../base/populate` clears a property by deleting it
  *     (`clearPropertyValue`) rather than by blanking it.
- *   - Every dependency agrees on the `=== undefined` convention, verified rather than assumed:
+ *   - Every dependency agrees on the `=== undefined` convention:
  *     `../base/AuditableEntity`'s accessors test `entity.createdDateTime === undefined`, and neither
  *     `../base/populate` nor `src/validation/Validator.ts` ever inspects key presence on an ENTITY —
  *     `populate`'s `hasOwnProperty` call reads the incoming PAYLOAD, and the validator's key count is
@@ -534,7 +502,7 @@ export type BaseProductTypeCode = BaseProductType | (string & {});
  * three entity modules in this folder legitimately have three different shapes; they are not to be
  * harmonised.
  */
-export class ProductType implements AuditableEntity {
+export class ProductType implements AuditableEntity, ManagedEntity {
   /*
    * ─── Persistent properties — `model/entity/ProductType.cfc:L52-L59` ──────────────────────────
    */
@@ -642,15 +610,25 @@ export class ProductType implements AuditableEntity {
    * The self-reference that makes this entity a hierarchy, and the property named declaratively by
    * `hb_parentPropertyName="parentProductType"` on the component tag.
    *
-   * ⚠️ OPTIONAL BY NECESSITY, NOT BY STYLE. `model/entity/ProductType.cfc:L163` ends
+   * OPTIONAL BY NECESSITY, NOT BY STYLE. `model/entity/ProductType.cfc:L163` ends
    * `removeParentProductType` with `structDelete(variables, "parentProductType")` — it REMOVES the
    * key rather than blanking it — and the faithful translation is `delete this.parentProductType`,
    * which the compiler permits only on an optional property. Under `exactOptionalPropertyTypes` the
    * field is therefore either present with a real `ProductType` or ABSENT; `undefined` is never
    * assigned to it anywhere in this file. Roots have no parent, which is the same absent state:
    * all three seeded rows carry `parentProductTypeID="NULL"`.
+   *
+   * ⚠️ `declare`, AND IT IS THE ONLY FIELD IN THIS CLASS THAT CARRIES IT. `declare` suppresses the
+   * field DEFINITION while keeping the type, so a fresh instance does not carry this key at all —
+   * absent, rather than present holding `undefined`. That matters here and nowhere else in this class
+   * because this is the one ASSOCIATION field: `src/adapters/mysql/rowMappers.ts` hydrates scalar
+   * columns only and leaves every many-to-one UNRESOLVED, and it states an absence-normalisation
+   * invariant for exactly that state. Without `declare` a mapped `ProductType` would carry an own
+   * `parentProductType` key holding `undefined`, breaking that invariant and diverging from the
+   * sibling entities `Product`, `Sku` and `Brand`, which already `declare` their association fields.
+   * The scalar columns above deliberately do NOT use it — see the G6 note in the class doc comment.
    */
-  parentProductType?: ProductType;
+  declare parentProductType?: ProductType;
 
   /*
    * ─── Related object properties (one-to-many) — `model/entity/ProductType.cfc:L65-L67` ─────────
@@ -706,8 +684,8 @@ export class ProductType implements AuditableEntity {
    * make this class's data surface quietly narrower than the row it maps; they are typed opaquely
    * because nothing here reads more than an identifier from them.
    *
-   * ⚠️ NONE OF THE EIGHT IS POPULATE-DISABLED. `hb_populateEnabled="false"` appears EXACTLY FOUR
-   * TIMES on this entity — the audit block at `:L83-L86` — verified line by line against `:L70-L77`.
+   * NONE OF THE EIGHT IS POPULATE-DISABLED. `hb_populateEnabled="false"` appears EXACTLY FOUR
+   * TIMES on this entity — the audit block at `:L83-L86`, and nowhere in `:L70-L77`.
    * That is a real difference from `Brand.cfc`, which carries NINE such declarations (its four audit
    * properties at `:L77-L80` plus `promotionRewards` `:L66`, `promotionRewardExclusions` `:L67`,
    * `promotionQualifiers` `:L68`, `promotionQualifierExclusions` `:L69` and `physicals` `:L71`).
@@ -835,7 +813,7 @@ export class ProductType implements AuditableEntity {
   /**
    * The LIVE `childProductTypes` array, BY REFERENCE.
    *
-   * ⚠️ F2 — NEVER RETURN A COPY FROM THIS METHOD. No `.slice()`, no spread, no `ReadonlyArray`, no
+   * F2 — NEVER RETURN A COPY FROM THIS METHOD. No `.slice()`, no spread, no `ReadonlyArray`, no
    * defensive clone. Three legacy call sites MUTATE the value this method returns:
    * `model/entity/ProductType.cfc:L152` appends into it, and `:L159`/`:L161` find-then-splice it. A
    * defensive copy would not fail to compile and would not fail a naive test — it would silently
@@ -983,7 +961,7 @@ export class ProductType implements AuditableEntity {
    * the class of execution-model difference AAP §0.6.6 requires be FLAGGED rather than papered over,
    * and it is flagged here rather than hidden behind a synchronous facade over blocking I/O.
    *
-   * ⚠️ THE RETURN TYPE ADMITS UNRECOGNISED CODES ON PURPOSE — see {@link BaseProductTypeCode} for
+   * THE RETURN TYPE ADMITS UNRECOGNISED CODES ON PURPOSE — see {@link BaseProductTypeCode} for
    * the full reasoning. Narrowing it to the three seeded codes would statically delete the
    * `model/service/SkuService.cfc:L204` fallthrough.
    *
@@ -1030,10 +1008,9 @@ export class ProductType implements AuditableEntity {
    */
 
   /**
-   * The human-readable representation of this product type: the full ancestry chain, root-most
-   * segment first, joined by the HTML right-guillemet entity.
-   *
-   * Ports `model/entity/ProductType.cfc:L273-L278` verbatim in structure:
+   * The human-readable representation of this product type: the full ancestry chain, root-most segment
+   * first, joined by the HTML right-guillemet entity. Ports
+   * [model/entity/ProductType.cfc:L273-L278] verbatim in structure:
    *
    * ```cfml
    * public string function getSimpleRepresentation() {
@@ -1046,36 +1023,31 @@ export class ProductType implements AuditableEntity {
    *
    * THE ONE MEMBER F22 SANCTIONS ON THIS CLASS, because it is a genuine override with a genuine
    * recursive body rather than framework plumbing. It is also what makes base assertion 2 of
-   * `meta/tests/unit/entity/SlatwallEntityTestBase.cfc:L56-L59`
-   * (`isSimpleValue(entity.getSimpleRepresentation())`) satisfiable against THIS class rather than
-   * against the validation layer. There is deliberately no `getSimpleRepresentationPropertyName()`
-   * companion here — that override is `Product.ts`'s
-   * [`model/entity/Product.cfc:L791-L793`] — and `Brand.ts` has neither.
+   * [meta/tests/unit/entity/SlatwallEntityTestBase.cfc:L56-L59] satisfiable against THIS class rather
+   * than against the validation layer.
    *
-   * ⚠️ THE SEPARATOR IS BYTE-EXACT: `' &raquo; '` — the HTML ENTITY, with exactly ONE leading space
-   * and exactly ONE trailing space. It is observable output: it reaches the Google feed's
-   * `g:product_type` element through
-   * `integrationServices/google/views/feed/product.cfm`'s use of the product type's simple
-   * representation. Do NOT substitute the literal `»` character, do NOT substitute `&#187;`, do NOT
-   * collapse or trim the spaces, and do NOT switch to a `join()` over a collected segment array with
-   * a different separator string. Any of those changes bytes on the wire.
+   * THE SEPARATOR IS BYTE-EXACT: `' &raquo; '` — the HTML ENTITY, with exactly one leading and one
+   * trailing space. It is observable output, reaching the Google feed's `g:product_type` element
+   * through [integrationServices/google/views/feed/product.cfm]. Do not substitute the literal `»` or
+   * `&#187;`, do not collapse or trim the spaces, and do not switch to a `join()` over a collected
+   * segment array with a different separator. Any of those changes bytes on the wire.
    *
-   * `TODO(parity)`: NO CYCLE GUARD. Like {@link buildProductTypeIDPathList}, the legacy recursion has
-   * no visited set and no depth limit [`model/entity/ProductType.cfc:L274-L276`], so a cyclic
-   * `parentProductType` chain recurses until the stack is exhausted. G4 forbids adding a guard: that
-   * would be an enhancement to business logic, and the resulting behaviour difference (a bounded
-   * result where the legacy failed) would be invisible to a reviewer comparing outputs.
+   * TODO(parity) [model/entity/ProductType.cfc:L274-L276] — NO CYCLE GUARD. Like
+   * {@link buildProductTypeIDPathList}, the legacy recursion keeps no visited set and no depth limit,
+   * so a cyclic `parentProductType` chain recurses until the stack is exhausted. AAP §0.8.2
+   * Guideline 4 forbids adding a guard: a bounded result where the legacy failed is a behaviour
+   * difference invisible to a reader comparing outputs.
    *
-   * NOT `async`, deliberately: no I/O and no collaborator, purely the in-memory parent chain — the
-   * one respect in which this member differs from {@link ProductType.getBaseProductType}, which walks
-   * the same hierarchy but must cross a repository boundary to do it.
+   * Not `async`, deliberately: no I/O and no collaborator, purely the in-memory parent chain — the one
+   * respect in which this member differs from {@link ProductType.getBaseProductType}, which walks the
+   * same hierarchy but must cross a repository boundary to do it.
    *
-   * ABSENCE IS EXPLICIT, NOT DEFAULTED (S9). `productTypeName` is nullable [`:L57`] and the legacy
-   * `&` concatenation raises on a null operand, so a missing name is an ERROR STATE in the legacy,
-   * not the empty string. No default is invented here and no non-null assertion is used; the absence
-   * is returned as `undefined` so a caller sees the unset state instead of a fabricated label. The
-   * same applies transitively to an ancestor with no name, which is why the parent's representation
-   * is checked before it is concatenated.
+   * ABSENCE IS EXPLICIT, NOT DEFAULTED (S9). `productTypeName` is nullable [:L57] and the legacy `&`
+   * concatenation raises on a null operand, so a missing name is an ERROR STATE in the legacy rather
+   * than the empty string. No default is invented and no non-null assertion is used; the absence is
+   * returned as `undefined` so a caller sees the unset state instead of a fabricated label. The same
+   * applies transitively to an ancestor with no name, which is why the parent's representation is
+   * checked before it is concatenated.
    */
   getSimpleRepresentation(): string | undefined {
     const productTypeName = this.productTypeName;
@@ -1086,7 +1058,7 @@ export class ProductType implements AuditableEntity {
       if (parentSimpleRepresentation === undefined || productTypeName === undefined) {
         return undefined;
       }
-      // ⚠️ ' &raquo; ' — HTML entity, one leading space, one trailing space. Byte-exact.
+      // ' &raquo; ' — HTML entity, one leading space, one trailing space. Byte-exact.
       return `${parentSimpleRepresentation} &raquo; ${productTypeName}`;
     }
 
@@ -1115,7 +1087,7 @@ export class ProductType implements AuditableEntity {
    * }
    * ```
    *
-   * ⚠️ DEFECT D21 — AAP §0.6.7.1. THE LEGACY RETURNS **EVERY** ATTRIBUTE-SET ASSIGNMENT IN THE
+   * DEFECT D21 — AAP §0.6.7.1. THE LEGACY RETURNS **EVERY** ATTRIBUTE-SET ASSIGNMENT IN THE
    * SYSTEM, COMPLETELY UNFILTERED. It never filters by this product type, never walks the parent
    * chain, and never consults `productTypeIDPath` — the word "Inherited" in the member name describes
    * an intention, not the implementation. That is exactly what the carried TODO admits. D21 is one of
@@ -1125,12 +1097,13 @@ export class ProductType implements AuditableEntity {
    */
   // Todo get by all the parent productTypeIDs
   /*
-   * ⚠️ `TODO(parity)` — the line above is `model/entity/ProductType.cfc:L93` VERBATIM: capital `T`,
+   * `TODO(parity)` — the line above is `model/entity/ProductType.cfc:L93` VERBATIM: capital `T`,
    * lowercase `odo`, no colon. It is reproduced exactly, once, and left in place of the filtering it
    * asks for. Locator: `model/entity/ProductType.cfc:L92-L99`; AAP §0.6.7.1 defect **D21**.
    *
    * ADDITIONAL D21 PROVENANCE FOUND WHILE PORTING, recorded against the existing defect ID because
-   * AAP §0.6.7 is CLOSED at D1–D21 and no new identifier may be minted: this member has ZERO callers
+   * this finding is provenance for D21 rather than a distinct behaviour — AAP §0.6.7 catalogues
+   * D1–D21 and the port's register is CLOSED at D1-D24: this member has ZERO callers
    * anywhere in the repository, and the `AttributeSetAssignment` entity it claims to return EXISTS
    * NOWHERE in release 3.1.39 — the string occurs only at `:L92` and `:L94` of this one file. So the
    * legacy member could never have executed successfully even once. That strengthens the case for
@@ -1190,7 +1163,7 @@ export class ProductType implements AuditableEntity {
    * parent's products onto the child product type. That call site is also the evidence for what
    * {@link ProductType.addProduct} must do — see the note there.
    *
-   * ⚠️ `TODO(parity)` — THIS OVERRIDE REPLACES THE ARRAY REFERENCE INSTEAD OF EMPTYING IT IN PLACE.
+   * `TODO(parity)` — THIS OVERRIDE REPLACES THE ARRAY REFERENCE INSTEAD OF EMPTYING IT IN PLACE.
    * `model/entity/ProductType.cfc:L103` assigns a brand-new array, so any holder of the previous
    * array — including anything that obtained it from {@link ProductType.getProducts} — keeps a STALE
    * reference and will never see the reset. That breaks the F2 live-array contract INSIDE THE LEGACY
@@ -1209,11 +1182,10 @@ export class ProductType implements AuditableEntity {
    *
    * THE RESET IS THE ONLY DIRECT WRITE TO THE COLLECTION. Nothing after it appends to
    * `this.products`; every element travels through {@link ProductType.addProduct}, exactly as the
-   * legacy loop does. The legacy inline comment `// first, clear existing collection` [`:L102`] is
-   * carried below.
+   * `this.products`; every element travels through {@link ProductType.addProduct}, exactly as the
+   * legacy loop does, and the legacy labelled that reset step with an inline comment at [:L102].
    */
   setProducts(products: readonly Product[]): void {
-    // first, clear existing collection
     this.products = [];
     for (const product of products) {
       this.addProduct(product);
@@ -1291,7 +1263,7 @@ export class ProductType implements AuditableEntity {
    * the guard's second operand calls back into the parent, and reordering would change what that call
    * observes.
    *
-   * ⚠️ `TODO(parity)` — THE GUARD IS A SHORT-CIRCUIT AND THE SHORT-CIRCUIT IS THE BEHAVIOUR. When
+   * `TODO(parity)` — THE GUARD IS A SHORT-CIRCUIT AND THE SHORT-CIRCUIT IS THE BEHAVIOUR. When
    * this entity `isNew()`, CFML's `or` never evaluates `hasChildProductType`, so the append happens
    * UNCONDITIONALLY; only for a persisted entity is membership actually tested. The consequence is
    * that calling this method twice on a NEW entity appends it to the parent's collection TWICE.
@@ -1299,7 +1271,7 @@ export class ProductType implements AuditableEntity {
    * the membership test must NOT be hoisted out of the `||` "for clarity", because hoisting it is
    * precisely the fix G4 forbids. Locator: `model/entity/ProductType.cfc:L151`.
    *
-   * ⚠️ THE APPEND TARGETS THE PARENT'S LIVE ARRAY [`:L152`], obtained through
+   * THE APPEND TARGETS THE PARENT'S LIVE ARRAY [`:L152`], obtained through
    * {@link ProductType.getChildProductTypes}. If that getter ever returned a copy, this append would
    * become a silent no-op — see the warning on the getter itself.
    */
@@ -1333,7 +1305,7 @@ export class ProductType implements AuditableEntity {
    * `:L156-L158` defaults it from this entity's own reference. Both halves are reproduced: the
    * parameter is optional and the default is read from the field.
    *
-   * ⚠️ `TODO(parity)` — CFML 1-BASED INDEX ARITHMETIC, TRANSLATED BY SEMANTICS AND NOT BY LITERAL.
+   * `TODO(parity)` — CFML 1-BASED INDEX ARITHMETIC, TRANSLATED BY SEMANTICS AND NOT BY LITERAL.
    * `arrayFind` returns **0** when the element is absent and a 1-based position otherwise, which is
    * why the legacy guard reads `if(index > 0)`. `Array.prototype.indexOf` returns **-1** when absent
    * and a 0-based position otherwise, so the guard becomes `!== -1`. Copying `> 0` across would have
@@ -1341,7 +1313,7 @@ export class ProductType implements AuditableEntity {
    * not-found sentinel `-1` as merely "not positive" — and with `splice(-1, 1)` it would have deleted
    * the LAST element instead. Locator: `model/entity/ProductType.cfc:L159-L161`.
    *
-   * ⚠️ `TODO(parity)` — THE LOCAL LINK IS SEVERED UNCONDITIONALLY. `structDelete` at `:L163` sits
+   * `TODO(parity)` — THE LOCAL LINK IS SEVERED UNCONDITIONALLY. `structDelete` at `:L163` sits
    * OUTSIDE the `if(index > 0)` block and runs even when the supplied parent was never this entity's
    * parent, so the reference is always dropped whether or not the reverse-side removal happened. That
    * asymmetry is preserved exactly, and it is the reason
@@ -1389,7 +1361,7 @@ export class ProductType implements AuditableEntity {
    * declared ORM property and its `singularname` are `childProductTypes` / `childProductType`
    * [`:L65`] — three spellings of one name, harmless only because CFML is case-insensitive
    * throughout. Conventional camelCase is used here for both the method and the parameter. Nothing in
-   * scope calls these members by the legacy spelling (verified repository-wide), §0.8.1 explicitly
+   * scope calls these members by the legacy spelling, §0.8.1 explicitly
    * licenses idiomatic TypeScript while forbidding behaviour change, and the delegation behaviour is
    * untouched — so this is a naming decision recorded in the open, not a silent divergence.
    */
@@ -1456,7 +1428,7 @@ export class ProductType implements AuditableEntity {
   /*
    * ─── ORM event hooks — `model/entity/ProductType.cfc:L305-L313` ────────────────────────────────
    *
-   * ⚠️ `TODO(boundary)` — IN THE LEGACY THESE FIRE THEMSELVES; HERE THEY MUST BE CALLED. Hibernate
+   * `TODO(boundary)` — IN THE LEGACY THESE FIRE THEMSELVES; HERE THEY MUST BE CALLED. Hibernate
    * invokes `preInsert`/`preUpdate` automatically as part of the flush that the framework triggers at
    * request end [`org/Hibachi/Hibachi.cfc` performs a double `ormFlush()` when the ORM has no errors,
    * with `flushAtRequestEnd=false`]. A stateless Lambda invocation has NO ORM session, NO automatic
@@ -1508,30 +1480,20 @@ export class ProductType implements AuditableEntity {
   }
 
   /**
-   * Pre-update hook — ports `model/entity/ProductType.cfc:L310-L313`:
+   * Pre-update hook — ports [model/entity/ProductType.cfc:L310-L313], which refreshes the identifier
+   * path and then delegates to the framework audit block.
    *
-   * ```cfml
-   * public void function preUpdate(struct oldData){
-   *     setProductTypeIDPath( buildIDPathList( "parentProductType" ) );;
-   *     super.preUpdate(argumentcollection=arguments);
-   * }
-   * ```
+   * S7 — THE `;;` AT [model/entity/ProductType.cfc:L311] IS RECORDED, NOT REPRODUCED. That line
+   * genuinely ends `);;`: an extra empty statement, harmless in CFML and with no runtime effect. The
+   * TypeScript below emits one statement. Recording the difference keeps the two files reconcilable
+   * without emitting an empty statement the linter would flag.
    *
-   * S7 — THE `;;` AT `model/entity/ProductType.cfc:L311` IS CARRIED AS A DOCUMENTED OBSERVATION,
-   * NOT AS CODE. That line genuinely ends `);;` — an extra empty statement, harmless in CFML and with
-   * no runtime effect whatsoever. The TypeScript below emits ONE statement. Recording it rather than
-   * silently normalising it is the faithful treatment: a reviewer diffing the two files sees the
-   * difference accounted for, and nothing about behaviour changed in either direction. Reproducing an
-   * empty statement to match byte-for-byte would be theatre, and an empty statement would also be
-   * flagged by the linter.
-   *
-   * @param oldData - The pre-modification snapshot Hibernate hands to the hook. Preserved in the
-   *   FIRST parameter position for signature fidelity with the legacy `struct oldData`, and typed as
-   *   an explicit record of unknown values rather than `any` (S1). It is deliberately not forwarded:
-   *   the legacy passed it on through `argumentcollection=arguments` to the framework hook, and the
-   *   target's audit functions take no snapshot because the audit block they write depends only on
-   *   the clock and the actor — verified against
-   *   `org/Hibachi/HibachiEntity.cfc:L657-L681`, which reads `oldData` nowhere.
+   * @param oldData - The pre-modification snapshot Hibernate handed the hook. Kept in the FIRST
+   *   parameter position for signature fidelity with the legacy `struct oldData`, and typed as a
+   *   record of unknown values rather than `any` (S1). It is deliberately NOT forwarded: the legacy
+   *   passed it on through `argumentcollection=arguments`, but the audit block that receives it reads
+   *   it nowhere [org/Hibachi/HibachiEntity.cfc:L657-L681], because the fields written depend only on
+   *   the clock and the actor.
    * @param auditActor - As on {@link ProductType.preInsert}.
    */
   preUpdate(oldData?: Record<string, unknown>, auditActor?: AuditActor): void {
@@ -1539,6 +1501,121 @@ export class ProductType implements AuditableEntity {
     this.productTypeIDPath = buildProductTypeIDPathList(this);
     // `super.preUpdate(argumentcollection=arguments)` [`:L312`] — the framework audit block.
     applyPreUpdateAudit(this, auditActor);
+  }
+
+  /* ============================================================================================
+   * THE MANAGED-ENTITY CONTRACT — [org/Hibachi/**], INHERITED IN CFML, DECLARED HERE (IR-1 / TR-3)
+   * ============================================================================================
+   * Seven members every legacy entity received down the
+   * `HibachiObject` -> `HibachiTransient` -> `HibachiEntity` -> `model/entity/HibachiEntity.cfc`
+   * inheritance chain, and which `src/validation/Validator.ts` and
+   * `src/ports/UniquePropertyPort.ts` both require BY NAME. Neither contract can be satisfied by a
+   * plain data class, which is why they are declared rather than assumed:
+   * `ValidationSubject` reads `getClassName` and `hasProperty`, and `UniquePropertyEntity` reads
+   * `getEntityName`, `getPrimaryIDValue`, `getPrimaryIDPropertyName`, `getPropertyMetaData` and
+   * `getValueByPropertyIdentifier` in exactly the order [org/Hibachi/HibachiDAO.cfc:L134-L138]
+   * reads them.
+   *
+   * `src/domain/base/AuditableEntity.ts` owns the shared behaviour and every word of the rationale —
+   * including why there is no base class, why the member names are not modernised, and which
+   * inherited members are deliberately NOT ported. Each member below is the thin delegation plus the
+   * constant only this entity can state.
+   * ============================================================================================ */
+
+  /**
+   * `ProductType` — [org/Hibachi/HibachiObject.cfc:L135-L137], the last dot-delimited segment of the
+   * component's fully qualified name. Interpolated into every validation message
+   * [org/Hibachi/HibachiValidationService.cfc:L202, :L213, :L216].
+   *
+   * @returns The bare class name.
+   */
+  getClassName(): string {
+    return PRODUCT_TYPE_CLASS_NAME;
+  }
+
+  /**
+   * `SlatwallProductType` — [org/Hibachi/HibachiEntity.cfc:L287-L289]. Live metadata reflection is replaced by the
+   * declared constant, per TR-3.
+   *
+   * @returns The mapped ORM entity name, NOT the physical table name.
+   */
+  getEntityName(): string {
+    return PRODUCT_TYPE_ENTITY_NAME;
+  }
+
+  /**
+   * `productTypeID` — [org/Hibachi/HibachiEntity.cfc:L249-L251]. The legacy resolved this through
+   * `getService("hibachiService")`; the string-keyed service locator is replaced by the declared
+   * constant, per TR-3 and AAP 0.7.3 S3.
+   *
+   * @returns The name of the primary identifier property.
+   */
+  getPrimaryIDPropertyName(): string {
+    return PRODUCT_TYPE_PRIMARY_ID_PROPERTY_NAME;
+  }
+
+  /**
+   * The primary identifier's VALUE — [org/Hibachi/HibachiEntity.cfc:L244-L246], which forwards to
+   * the generated getter for whichever property `getPrimaryIDPropertyName` names.
+   *
+   * ⚠️ RETURNS `''` FOR AN UNSAVED INSTANCE, because [model/entity/ProductType.cfc:L52] declares
+   * `unsavedvalue=""` and this class initialises the field to `''`. That is what makes the
+   * self-exclusion term of the uniqueness query a NO-OP on insert — an observation AAP 0.4.1.7
+   * requires be reproduced rather than tidied away, and which `src/ports/UniquePropertyPort.ts`
+   * carries as a `TODO(parity)`. It is also the value
+   * [meta/tests/unit/entity/SlatwallEntityTestBase.cfc:L64-L67] asserts on a fresh instance.
+   *
+   * @returns The identifier, or `''` while unsaved.
+   */
+  getPrimaryIDValue(): string {
+    return this.productTypeID;
+  }
+
+  /**
+   * Whether this entity DECLARES the named property —
+   * [org/Hibachi/HibachiTransient.cfc:L763-L765].
+   *
+   * ⚠️ A FALSE ANSWER SILENTLY SKIPS A VALIDATION RULE rather than failing it
+   * [org/Hibachi/HibachiValidationService.cfc:L171]. See PRODUCT_TYPE_DECLARED_PROPERTIES, whose
+   * exhaustiveness is compile-checked precisely because of that.
+   *
+   * @param propertyIdentifier - The name to test, in its declared casing.
+   * @returns `true` when the property is declared.
+   */
+  hasProperty(propertyIdentifier: string): boolean {
+    return hasDeclaredProperty(PRODUCT_TYPE_DECLARED_PROPERTIES, propertyIdentifier);
+  }
+
+  /**
+   * Resolves a declared property's metadata, RAISING for an undeclared name —
+   * [org/Hibachi/HibachiTransient.cfc:L738-L747], whose present-key branch is at [:L741-L743] and
+   * whose throw is at [:L746]. The non-optional return type is faithful to that declaration.
+   *
+   * @param propertyName - The name to resolve.
+   * @returns The metadata for that property.
+   * @throws DomainError - When no property of that name is declared. Withheld from every response
+   *   by the deny-by-default presentation, because it signals a fault in the port rather than
+   *   anything a caller can provoke.
+   */
+  getPropertyMetaData(propertyName: string): EntityPropertyMetaData {
+    return requireDeclaredPropertyMetaData(
+      PRODUCT_TYPE_DECLARED_PROPERTIES,
+      propertyName,
+      PRODUCT_TYPE_CLASS_NAME,
+    );
+  }
+
+  /**
+   * Reads a value by property identifier, walking a path delimited by EITHER `.` OR `_` —
+   * [org/Hibachi/HibachiTransient.cfc:L466-L481]. An unresolvable path yields `''`, never an absent
+   * value; `readValueByPropertyIdentifier` documents all four traversal rules and why each is
+   * behaviour rather than convenience.
+   *
+   * @param propertyIdentifier - A property name, or a delimited path.
+   * @returns The resolved value, or `''`.
+   */
+  getValueByPropertyIdentifier(propertyIdentifier: string): unknown {
+    return readValueByPropertyIdentifier(this, propertyIdentifier);
   }
 }
 
@@ -1548,9 +1625,8 @@ export class ProductType implements AuditableEntity {
 
 /**
  * Builds the comma-delimited, ROOT-FIRST identifier path for `startingProductType` by walking its
- * `parentProductType` chain to the root.
- *
- * Ports `buildIDPathList` from `org/Hibachi/HibachiEntity.cfc:L308-L324` verbatim in structure:
+ * `parentProductType` chain to the root. Ports `buildIDPathList` from
+ * [org/Hibachi/HibachiEntity.cfc:L308-L324] verbatim in structure:
  *
  * ```cfml
  * public string function buildIDPathList(required string parentPropertyName) {
@@ -1569,62 +1645,52 @@ export class ProductType implements AuditableEntity {
  * }
  * ```
  *
- * PORTED HERE, NOT BEHIND A PORT, AND THAT IS DELIBERATE: the algorithm is pure, walks only
- * in-memory `parentProductType` references, performs no I/O and needs no collaborator — so it needs
- * no port, no interface and no new file. It lives at module scope rather than as a method for a
- * concrete reason: the legacy walk opens with `var thisEntity = this`, and a `this` alias in a
- * TypeScript method is both a lint violation and a weaker formulation than a parameter. Taking the
- * starting entity as an argument expresses the same walk without aliasing anything, and makes the
- * function directly testable.
+ * It lives at module scope rather than behind a port or as a method: the algorithm is pure, walks only
+ * in-memory `parentProductType` references and needs no collaborator, and the legacy walk opens with
+ * `var thisEntity = this`, which a parameter expresses without aliasing `this`.
  *
- * ⚠️ ROOT-FIRST, SELF-LAST — THE SINGLE MOST IMPORTANT PROPERTY OF THIS FUNCTION. `listPrepend` puts
- * each newly visited ancestor IN FRONT of what has been collected, so walking child → parent →
- * grandparent yields `grandparent,parent,child`. That ordering is exactly why
+ * ROOT-FIRST, SELF-LAST — THE SINGLE MOST IMPORTANT PROPERTY OF THIS FUNCTION. `listPrepend` puts each
+ * newly visited ancestor IN FRONT of what has been collected, so walking child → parent → grandparent
+ * yields `grandparent,parent,child`. That ordering is exactly why
  * {@link ProductType.getBaseProductType} reads the ROOT with `listFirst`. Reverse it — by appending
  * instead of prepending, or by reversing at the end — and `getBaseProductType` starts silently
- * returning a LEAF's `systemCode`, or nothing at all, with no error raised anywhere and no test
- * failing unless the test was written for a chain deeper than one level.
+ * returning a LEAF's `systemCode`, or nothing at all, with no error raised and no test failing unless
+ * the test was written for a chain deeper than one level.
  *
- * ⚠️ NO LEADING COMMA FOR A SINGLE-ELEMENT PATH. CFML's `listPrepend("", "abc")` returns exactly
- * `"abc"`, whereas the naive translation — seeding an accumulator array with `''` and calling
- * `join(',')` — produces `",abc"`. {@link listPrependIdentifier} reproduces the CFML rule directly:
- * when the accumulated list is empty the value IS the list. Two consequences follow and both are
- * legacy behaviour, faithfully preserved rather than smoothed:
+ * NO LEADING COMMA FOR A SINGLE-ELEMENT PATH. CFML's `listPrepend("", "abc")` returns exactly `"abc"`,
+ * whereas the naive translation — seeding an accumulator array with `''` and calling `join(',')` —
+ * produces `",abc"`. {@link listPrependIdentifier} reproduces the CFML rule directly: when the
+ * accumulated list is empty the value IS the list. Two consequences follow, both legacy behaviour
+ * preserved rather than smoothed:
  *
  *   - A BRAND-NEW ROOT YIELDS THE EMPTY STRING, because `getPrimaryIDValue()` on an unsaved entity is
- *     `''` [the `unsavedvalue=""` of `model/entity/ProductType.cfc:L52`] and prepending it to an
- *     empty list leaves the list empty. No placeholder is substituted (S9). This is precisely the
- *     state that makes {@link ProductType.getBaseProductType}'s root lookup fail for a new root.
+ *     `''` [the `unsavedvalue=""` of model/entity/ProductType.cfc:L52] and prepending it to an empty
+ *     list leaves the list empty. No placeholder is substituted (S9). This is precisely the state that
+ *     makes {@link ProductType.getBaseProductType}'s root lookup fail for a new root.
  *   - A PERSISTED CHILD UNDER A NEW PARENT YIELDS A LEADING COMMA — `",C"` — because the accumulator
  *     is non-empty when the parent's empty identifier is prepended. CFML list functions treat empty
  *     elements as non-elements, so `listFirst(",C")` is `"C"`; {@link listFirstIdentifier} reproduces
  *     that rule rather than blindly taking element zero.
  *
- * ⚠️ `TODO(parity)` — NO CYCLE GUARD, NO DEPTH LIMIT. The legacy `do`/`while`
- * [`org/Hibachi/HibachiEntity.cfc:L313-L321`] keeps no visited set and no counter, so a cyclic
- * `parentProductType` chain — which nothing in the schema, in `model/validation/ProductType.json` or
- * in {@link ProductType.setParentProductType} prevents — loops forever. §0.8.2 Guideline 4 forbids
- * adding the guard: it would be an enhancement to business logic, and it would change a hang into a
- * result, which is a behaviour change a reviewer comparing outputs could not see. The unbounded walk
- * is preserved exactly, including its `do`/`while` shape, so the starting entity is always visited
- * even when it has no parent.
+ * TODO(parity) [org/Hibachi/HibachiEntity.cfc:L313-L321] — NO CYCLE GUARD, NO DEPTH LIMIT. The legacy
+ * `do`/`while` keeps no visited set and no counter, so a cyclic `parentProductType` chain — which
+ * nothing in the schema, in [model/validation/ProductType.json] or in
+ * {@link ProductType.setParentProductType} prevents — loops forever. AAP §0.8.2 Guideline 4 forbids
+ * the guard, which would turn a hang into a result. The `do`/`while` shape is preserved too, so the
+ * starting entity is always visited even when it has no parent.
  *
  * TWO PIECES OF FRAMEWORK MACHINERY DISAPPEAR HERE, both by declaration rather than by dispatch
- * (R2 / S3 / TR-3):
+ * (R2 / S3 / TR-3). The string-composed dynamic call
+ * `evaluate("thisEntity.get#arguments.parentPropertyName#()")`, evaluated twice per legacy iteration,
+ * becomes a direct field read; the generic `parentPropertyName` parameter is not reproduced because
+ * the slice only ever passes `"parentProductType"` ([model/entity/ProductType.cfc:L306], [:L311] and
+ * the lazy getter at [:L252]) and because `hb_parentPropertyName` on the component tag is the
+ * declarative statement of that specialisation. And `thisEntity.getPrimaryIDValue()`
+ * [org/Hibachi/HibachiEntity.cfc:L244] becomes a read of {@link ProductType.productTypeID}, the same
+ * slot it read, because F22 forbids declaring the framework member.
  *
- *   1. `evaluate("thisEntity.get#arguments.parentPropertyName#()")` — a string-composed dynamic
- *      method call, evaluated TWICE per iteration in the legacy — becomes a direct field read. The
- *      generic `parentPropertyName` parameter is not reproduced because the entire slice only ever
- *      calls it with `"parentProductType"` (both hooks at `model/entity/ProductType.cfc:L306`/`:L311`
- *      and the lazy getter at `:L252`), and because `hb_parentPropertyName="parentProductType"` on
- *      the component tag [`:L49`] is the declarative statement of that specialisation. A generic
- *      version would have to reintroduce string-keyed member access to serve one caller.
- *   2. `thisEntity.getPrimaryIDValue()` [`org/Hibachi/HibachiEntity.cfc:L244`] becomes a read of
- *      {@link ProductType.productTypeID}, because F22 forbids declaring the framework member and the
- *      field is the same slot it read.
- *
- * @param startingProductType - The entity whose ancestry is walked; it is always the LAST element of
- *   the returned path.
+ * @param startingProductType - The entity whose ancestry is walked; always the LAST element of the
+ *   returned path.
  * @returns The comma-delimited identifier path, root first. Empty when the walk collects no
  *   identifiers at all.
  */
@@ -1642,7 +1708,6 @@ function buildProductTypeIDPathList(startingProductType: ProductType): string {
       // `if( isNull( … ) ) { hasParent = false; }` [`:L314-L316`]
       hasParent = false;
     } else {
-      // `else { thisEntity = … }` [`:L317-L319`]
       currentProductType = parentProductType;
     }
   } while (hasParent);
@@ -1671,7 +1736,7 @@ function listPrependIdentifier(idPathList: string, identifier: string): string {
  * Reproduces CFML's `listFirst(list)` for the comma-delimited identifier path — the call at
  * `model/entity/ProductType.cfc:L112`.
  *
- * ⚠️ CFML LISTS TREAT EMPTY ELEMENTS AS NON-ELEMENTS, so `listFirst(",C")` is `"C"` and NOT `""`.
+ * CFML LISTS TREAT EMPTY ELEMENTS AS NON-ELEMENTS, so `listFirst(",C")` is `"C"` and NOT `""`.
  * Splitting on `,` and taking index zero would therefore return the wrong value for precisely the
  * path shape {@link buildProductTypeIDPathList} produces for a persisted child under an unsaved
  * parent. The first NON-EMPTY element is returned instead, which is what the CFML function does. This
@@ -1735,6 +1800,151 @@ export type ProductTypePropertyName =
   | AuditPropertyName;
 
 /**
+ * ProductType's frozen metadata declaration — the runtime answer to the seven framework
+ * introspection members the negative mandate in this module's class documentation forbids as
+ * hand-written methods.
+ *
+ * ⭐ THIS IS HOW BOTH THINGS STAY TRUE AT ONCE. The mandate says there is no `getPrimaryIDValue`,
+ * `getPrimaryIDPropertyName` or `getPropertyMetaData` anywhere in this CLASS, and there still is
+ * not: the members are composed onto an instance by `../base/manageEntity` from the declaration
+ * below, so the behaviour exists exactly once for all six entities instead of six times over. See
+ * {@link EntityMetadataDeclaration} for what each member ports and why.
+ *
+ * This constant is the ONLY place in this module where the class name and the ORM entity name appear
+ * as VALUES rather than as prose, and {@link createProductTypePropertyDescriptorSet} reads its
+ * `className` from here so the literal is written once.
+ *
+ * TWENTY-FIVE FIELD KEYS — every persistent property [model/entity/ProductType.cfc] declares: the
+ * eight scalars at [`:L52-L59`], the parent relationship at [`:L62`], the collections at
+ * [`:L65-L67`] and [`:L70-L77`], the remote identifier at [`:L80`] and the four audit properties at
+ * [`:L83-L86`].
+ */
+export const PRODUCT_TYPE_ENTITY_METADATA: EntityMetadataDeclaration<ProductTypePropertyName> =
+  Object.freeze({
+    className: 'ProductType',
+    entityName: 'SlatwallProductType',
+    primaryIDPropertyName: 'productTypeID',
+    properties: Object.freeze({
+      productTypeID: true,
+      productTypeIDPath: true,
+      activeFlag: true,
+      publishedFlag: true,
+      urlTitle: true,
+      productTypeName: true,
+      productTypeDescription: true,
+      systemCode: true,
+      parentProductType: true,
+      childProductTypes: true,
+      products: true,
+      attributeValues: true,
+      promotionRewards: true,
+      promotionRewardExclusions: true,
+      promotionQualifiers: true,
+      promotionQualifierExclusions: true,
+      priceGroupRates: true,
+      priceGroupRateExclusions: true,
+      attributeSets: true,
+      physicals: true,
+      remoteID: true,
+      createdDateTime: true,
+      createdByAccount: true,
+      modifiedDateTime: true,
+      modifiedByAccount: true,
+    } satisfies Readonly<Record<ProductTypePropertyName, true>>),
+    /*
+     * The single `persistent="false"` property this entity declares — `parentProductTypeOptions` at
+     * [model/entity/ProductType.cfc:L89], an administrative select-option list whose legacy getter
+     * reaches the framework's own option machinery. It is declared here because the legacy predicate
+     * answers TRUE for it and `src/validation/Validator.ts` silently skips a rule whose property
+     * answers false; no `model/validation/ProductType.json` rule names it today, so listing it
+     * changes no rule's behaviour and closes the gap for any that ever does.
+     */
+    declaredNonFieldProperties: Object.freeze({ parentProductTypeOptions: true }),
+  } satisfies EntityMetadataDeclaration<ProductTypePropertyName>);
+
+/* ================================================================================================
+ * THE PER-ENTITY METADATA CONSTANTS — ONE SOURCE, TWO VOCABULARIES
+ * ================================================================================================
+ * `PRODUCT_TYPE_ENTITY_METADATA` above is the single frozen declaration of this entity's class name, ORM entity name,
+ * primary-identifier property name and declared-property set. The four constants below NAME those
+ * same four facts individually, because the entity's own metadata members and the population
+ * descriptor set read them one at a time, and a named constant states the intent better at each of
+ * those sites than reaching into a record does.
+ *
+ * ⛔ THEY ARE DERIVED, NEVER RE-SPELLED. Every one reads out of `PRODUCT_TYPE_ENTITY_METADATA`; not one repeats a literal.
+ * That is the whole point. The class name in particular is consumed in three places that MUST agree
+ * — `getClassName()`, every validation message
+ * [org/Hibachi/HibachiValidationService.cfc:L202, :L213, :L216], and the third arm of the population
+ * authorisation gate through `PropertyDescriptorSet.className` — and a second literal would let two
+ * of the three drift apart with no compile error and no test failure.
+ *
+ * ⚠️ `PRODUCT_TYPE_CLASS_NAME` IS NOT `PRODUCT_TYPE_ENTITY_NAME`. The first is the bare `ProductType`, the last
+ * dot-delimited segment [org/Hibachi/HibachiObject.cfc:L135-L137]; the second carries the `Slatwall`
+ * prefix declared by the `entityname` attribute at [`:L49`] and read at
+ * [org/Hibachi/HibachiEntity.cfc:L287-L289]. Interchanging them changes observable message text in
+ * one direction and breaks the mapped-graph vocabulary in the other.
+ * ================================================================================================ */
+
+/**
+ * The bare class name — [org/Hibachi/HibachiObject.cfc:L135-L137], the last dot-delimited segment of
+ * the component's fully qualified name. Carries NO `Slatwall` prefix.
+ */
+export const PRODUCT_TYPE_CLASS_NAME: string = PRODUCT_TYPE_ENTITY_METADATA.className;
+
+/**
+ * The mapped ORM entity name declared by the `entityname` attribute at [`:L49`] and read at
+ * [org/Hibachi/HibachiEntity.cfc:L287-L289].
+ *
+ * ⚠️ THE LOGICAL ENTITY NAME, NOT THE PHYSICAL `Sw*` TABLE. The legacy uniqueness statement
+ * [org/Hibachi/HibachiDAO.cfc:L140] is expressed over the mapped object graph, so the prefixed form
+ * is correct there; translating it into a table is the adapter's responsibility, never this module's.
+ */
+export const PRODUCT_TYPE_ENTITY_NAME: string = PRODUCT_TYPE_ENTITY_METADATA.entityName;
+
+/**
+ * The NAME of the primary identifier property — [`:L52`], which declares
+ * `fieldtype="id" generator="uuid" ormtype="string" length="32" unsavedvalue=""` (AAP IR-6).
+ *
+ * The legacy resolved this name through `getService("hibachiService")`
+ * [org/Hibachi/HibachiEntity.cfc:L249-L251]. Declaring it removes the string-keyed service locator
+ * AAP 0.7.3 S3 forbids, and it is what makes the value safe in identifier position: the name comes
+ * from entity metadata, never from caller input.
+ */
+export const PRODUCT_TYPE_PRIMARY_ID_PROPERTY_NAME: string =
+  PRODUCT_TYPE_ENTITY_METADATA.primaryIDPropertyName;
+
+/**
+ * Every property name the LEGACY entity declares, as a keyed set — the port of the
+ * `getPropertiesStruct()` structure [org/Hibachi/HibachiTransient.cfc:L739] that both `hasProperty`
+ * [:L764] and `getPropertyMetaData` [:L741] key into. Membership is an own-key test in both.
+ *
+ * ⚠️ IT IS THE UNION OF THE TWO RECORDS `PRODUCT_TYPE_ENTITY_METADATA` KEEPS SEPARATE, AND IT HAS TO BE. `properties`
+ * holds the names this port carries as fields; `declaredNonFieldProperties` holds the names the
+ * legacy entity declares that this port does NOT carry — accessors and boundary members such as
+ * `defaultFlag` and `transactionExistsFlag`. The legacy predicate reads the entity's WHOLE declared
+ * property table, and `src/validation/Validator.ts` SILENTLY SKIPS a rule whose property is absent
+ * [org/Hibachi/HibachiValidationService.cfc:L171] — so answering false for a name in the second
+ * record would turn a live validation rule inert with no error reported anywhere.
+ *
+ * ⚠️ THE COMPILE-CHECKED EXHAUSTIVENESS LIVES ON `PRODUCT_TYPE_ENTITY_METADATA`, NOT HERE, and that is deliberate. The
+ * `satisfies` annotations there check both records against the entity's property-name unions in BOTH
+ * directions — a missing name and an invented one each fail the build. This constant merges two
+ * already-checked records, so widening it to `string` keys loses nothing: there is no union to check
+ * the merged set against, since the second record's names are by definition the ones no
+ * property-name union carries.
+ *
+ * ⚠️ A NAME ABSENT FROM BOTH RECORDS STAYS ABSENT HERE, AND THAT IS ALSO LOAD-BEARING.
+ * `physicalCounts` is named by the validation JSON and declared by NEITHER entity, so the legacy
+ * engine skips those rules and this port must too. TODO(parity): carried as observed and NOT
+ * repaired, per AAP 0.8.2 Guidelines 2 and 4. Adding it "for completeness" would activate a rule the
+ * legacy system has never run.
+ */
+export const PRODUCT_TYPE_DECLARED_PROPERTIES: DeclaredPropertyNameSet<string> = Object.freeze({
+  ...PRODUCT_TYPE_ENTITY_METADATA.properties,
+  ...(PRODUCT_TYPE_ENTITY_METADATA.declaredNonFieldProperties ?? {}),
+});
+
+/**
  * The collaborators the relationship descriptors need, supplied by the composition root
  * (`src/config/container.ts`) rather than resolved here.
  *
@@ -1750,22 +1960,16 @@ export type ProductTypePropertyName =
  * domain, which this slice does not convert.
  */
 export interface ProductTypePopulationCollaborators {
-  /** Resolves a `ProductType` by identifier — used for the parent and for each child. */
   readonly productTypeLoader: RelatedEntityLoader<ProductType>;
 
-  /** Recursively populates a related `ProductType` from a nested payload. */
   readonly populateProductType: SubPropertyPopulator<ProductType>;
 
-  /** Resolves a `Product` by identifier. */
   readonly productLoader: RelatedEntityLoader<Product>;
 
-  /** Recursively populates a related `Product` from a nested payload. */
   readonly populateProduct: SubPropertyPopulator<Product>;
 
-  /** Resolves an attribute value by identifier. */
   readonly attributeValueLoader: RelatedEntityLoader<ProductTypeAttributeValueOwner>;
 
-  /** Recursively populates a related attribute value from a nested payload. */
   readonly populateAttributeValue: SubPropertyPopulator<ProductTypeAttributeValueOwner>;
 }
 
@@ -1788,10 +1992,10 @@ export interface ProductTypePopulationCollaborators {
  * declaration order below at risk of drifting from the legacy's, which the population layer treats as
  * observable, so they are declared together in one place.
  *
- * ⚠️ EXACTLY FOUR PROPERTIES ARE POPULATE-DISABLED — the audit block, and nothing else. Their names
+ * EXACTLY FOUR PROPERTIES ARE POPULATE-DISABLED — the audit block, and nothing else. Their names
  * come from `AUDIT_PROPERTY_NAMES` by mapping over it, never by re-typing the four strings, so this
- * declaration cannot drift from `../base/AuditableEntity`. Verified line by line against
- * `model/entity/ProductType.cfc:L70-L77`: NONE of the eight many-to-many inverses carries
+ * declaration cannot drift from `../base/AuditableEntity`. Across
+ * `model/entity/ProductType.cfc:L70-L77`, NONE of the eight many-to-many inverses carries
  * `hb_populateEnabled="false"` on THIS entity — unlike `model/entity/Brand.cfc`, which carries nine
  * such declarations in total. Brand's five extra relationship exclusions belong to `Brand.ts`; if
  * they ever appear here, they were copied in error.
@@ -1800,7 +2004,7 @@ export interface ProductTypePopulationCollaborators {
  * rather than payload keys, which makes declaration order the population order — observable whenever
  * two properties feed the same downstream value.
  *
- * ⚠️ `TODO(boundary)` — THE EIGHT MANY-TO-MANY INVERSES HAVE NO DESCRIPTOR, AND THE OMISSION IS A
+ * `TODO(boundary)` — THE EIGHT MANY-TO-MANY INVERSES HAVE NO DESCRIPTOR, AND THE OMISSION IS A
  * DECISION. A `ManyToManyPropertyDescriptor` requires add, remove, read and identifier-read
  * operations over the related entity; for these eight, the legacy add/remove members
  * [`model/entity/ProductType.cfc:L174-L228`, `:L238-L244`] are exactly the sixteen the NOT-PORTED
@@ -1896,185 +2100,119 @@ export function createProductTypePropertyDescriptorSet(
 
   // The four `hb_populateEnabled="false"` audit properties [`:L83-L86`], derived from the shared
   // list so the four name strings are never written out a second time.
-  const auditPropertyDescriptors: readonly ColumnPropertyDescriptor<AuditPropertyName>[] =
-    AUDIT_PROPERTY_NAMES.map((auditPropertyName) => ({
-      name: auditPropertyName,
-      populateEnabled: false,
-    }));
+  const auditPropertyDescriptors: readonly DisabledPropertyDescriptor<AuditPropertyName>[] =
+    AUDIT_PROPERTY_NAMES.map<DisabledPropertyDescriptor<AuditPropertyName>>(
+      (auditPropertyName) => ({
+        name: auditPropertyName,
+        populateEnabled: false,
+      }),
+    );
 
   const properties: readonly PopulatePropertyDescriptor<ProductType, ProductTypePropertyName>[] = [
     // `:L52-L59` — the eight persistent scalars. None declares `fieldtype`, so `kind` is omitted;
     // none declares `notNull`, so a blank value DELETES the key rather than assigning `''`.
-    { name: 'productTypeID' },
-    { name: 'productTypeIDPath' },
-    { name: 'activeFlag' },
-    { name: 'publishedFlag' },
-    { name: 'urlTitle' },
-    { name: 'productTypeName' },
-    { name: 'productTypeDescription' },
-    { name: 'systemCode' },
+    { name: 'productTypeID', valueType: 'string' },
+    { name: 'productTypeIDPath', valueType: 'string' },
+    { name: 'activeFlag', valueType: 'boolean' },
+    { name: 'publishedFlag', valueType: 'boolean' },
+    { name: 'urlTitle', valueType: 'string' },
+    { name: 'productTypeName', valueType: 'string' },
+    { name: 'productTypeDescription', valueType: 'string' },
+    { name: 'systemCode', valueType: 'string' },
     parentProductTypeDescriptor,
     childProductTypesDescriptor,
     productsDescriptor,
     attributeValuesDescriptor,
     // `:L70-L77` — the eight many-to-many inverses are declared in the legacy HERE, between the
     // one-to-many block and `remoteID`. They have no descriptor; see the warning above.
-    { name: 'remoteID' },
+    { name: 'remoteID', valueType: 'string' },
     ...auditPropertyDescriptors,
   ];
 
-  return { persistent: true, properties };
+  /*
+   * `entityName` is the legacy `getClassName()` value [org/Hibachi/HibachiObject.cfc:L135-L137] for
+   * [model/entity/ProductType.cfc:L49] — the bare component name. It is the ARM 3 operand of the
+   * population gate [org/Hibachi/HibachiTransient.cfc:L190] and the key the out-of-scope permission
+   * records are stored under [org/Hibachi/HibachiAuthenticationService.cfc:L131-L141], so the legacy
+   * spelling is carried verbatim rather than read from `ProductType.name` at runtime.
+   */
+  return { entityName: 'ProductType', persistent: true, properties };
 }
 
 /* ================================================================================================
  * NOT PORTED — every omission with its locator and its reason
  *
- * Consolidated so that each entry reads as a DECISION rather than as an oversight. Twenty-one legacy
- * members are deliberately absent from this module. Nothing below is "left for later": each one is
- * excluded because its collaborator is out of scope, because it is unreachable, or because the layer
- * that owns it is elsewhere in the target.
+ * Each entry is a DECISION, not an oversight: excluded because its collaborator is out of scope,
+ * because it is unreachable, or because the layer that owns it is elsewhere in the target.
  *
- * ── 1. `parentProductTypeOptions` — the sole non-persistent property [`:L89`] and its accessor
- *       `getParentProductTypeOptions( string baseProductType="" )` [`:L122-L142`].
+ * ── 1. `parentProductTypeOptions`, the sole non-persistent property [:L89], and its accessor
+ *       `getParentProductTypeOptions( string baseProductType="" )` [:L122-L142]. Three independent
+ *       reasons, any one sufficient: it is built on `getPropertyOptionsSmartList( "parentProductType" )`
+ *       [:L128], a framework-synthesized SmartList member that F9 keeps out of the domain layer; [:L129]
+ *       calls `getService('productService').getProductTypeBySystemCode( … )`, WHICH IS DECLARED NOWHERE
+ *       IN THE REPOSITORY — the same defect class as D5 [model/entity/Product.cfc:L631-L633] — and S9
+ *       forbids inventing it; and it calls {@link ProductType.getBaseProductType} at [:L125], which is
+ *       asynchronous here, so even the reachable part could not keep its synchronous shape. Its two
+ *       lazy caches disappear with it, which is why this module has exactly ONE memoization.
  *
- *    THREE INDEPENDENT REASONS, any one of which would be sufficient:
- *      (a) F9 — it is built on `getPropertyOptionsSmartList( "parentProductType" )` [`:L128`], a
- *          framework-synthesized SmartList member. SmartLists belong to
- *          `src/ports/SmartListQueryPort.ts` and `src/adapters/mysql/SmartListQueryBuilder.ts`, never
- *          to the domain layer.
- *      (b) S9 — `:L129` calls
- *          `getService('productService').getProductTypeBySystemCode( arguments.baseProductType )`, and
- *          THAT METHOD EXISTS NOWHERE IN THE REPOSITORY. Verified by repository-wide search: the name
- *          occurs only at this line and at one other call site, with no declaration anywhere. It is
- *          the same defect class as D5 [`model/entity/Product.cfc:L631-L633`]. The member is recorded
- *          as a finding and NOT invented — writing it would be fabricating a legacy API.
- *      (c) It calls {@link ProductType.getBaseProductType} at `:L125`, which is asynchronous in the
- *          port, so even the reachable part of the body could not keep its synchronous shape.
+ * ── 2. `getAppliedPriceGroupRateByPriceGroup( required any priceGroup )` [:L117-L119]. Delegates to
+ *       `priceGroupService`, and `model/**\/PriceGroup*.cfc` is out of scope (AAP §0.2.2.1). Not
+ *       boundary-stubbed, because unlike the attribute-value pair there is no in-scope caller, so a
+ *       port for it would create surface the slice never exercises (S9). A legacy defect recorded in
+ *       passing rather than repaired (Guideline 4): the call passes `product=this` — a ProductType,
+ *       under an argument named `product` — harmless in untyped CFML.
  *
- *    Its two lazy caches (`variables.parentProductTypeOptions`) disappear with it, which is why S8
- *    leaves this module with exactly ONE memoization — the identifier path.
+ * ── 3. `getProductsSmartList()` [:L261-L267]. F9 twice over: a SmartList getter obtaining its
+ *       SmartList from `productService`. It also injects a RAW
+ *       `addWhereCondition(" aslatwallproducttype.productTypeIDPath LIKE '#getProductTypeIDPath()#%'")`
+ *       [:L264] — the path INTERPOLATED into SQL, which S2 forbids. `SmartListQueryPort` and
+ *       `src/adapters/mysql/SmartListQueryBuilder.ts` own both the query and the parameterized form of
+ *       that predicate.
  *
- * ── 2. `getAppliedPriceGroupRateByPriceGroup( required any priceGroup )` [`:L117-L119`].
+ * ── 4. `getAssignedAttributeSetSmartList()` [:L280-L299]. F9, plus the out-of-scope `attributeService`
+ *       [:L283]. It builds an `IN` list by `replace()`-ing the commas of the identifier path into
+ *       quoted separators [:L292], the exact string-interpolation pattern S2 forbids and the same shape
+ *       AAP §0.4.3.4 flags on [model/dao/OptionDAO.cfc:L93-L116], where the target emits one `?` per
+ *       value instead.
  *
- *    Delegates to `getService("priceGroupService").getRateForProductTypeBasedOnPriceGroup(...)`, and
- *    `model/**\/PriceGroup*.cfc` (4 files) is explicitly out of scope (AAP §0.2.2.1). Not
- *    boundary-stubbed, because unlike the attribute-value pair there is no in-scope caller and no
- *    in-scope behaviour that depends on it; declaring a port for it would create surface the slice
- *    never exercises (S9).
+ * ── 5. The sixteen many-to-many-inverse bidirectional helpers, eight pairs:
+ *       `add/removePromotionReward` [:L175-L180], `add/removePromotionRewardExclusion` [:L183-L188],
+ *       `add/removePromotionQualifier` [:L191-L196],
+ *       `add/removePromotionQualifierExclusion` [:L199-L204], `add/removePriceGroupRate` [:L207-L212],
+ *       `add/removePriceGroupRateExclusion` [:L215-L220], `add/removeAttributeSet` [:L223-L228] and
+ *       `add/removePhysical` [:L239-L244]. Every collaborator is an excluded family — `Promotion*`,
+ *       `PriceGroup*`, `Attribute*`, `Physical*` — and no in-scope code calls any of the sixteen. Each
+ *       is a two-line delegation to the far side's own helper (for example [:L240]
+ *       `arguments.physical.addProductType( this )`), so porting them would mean declaring sixteen
+ *       capability interfaces for behaviour nothing in this slice invokes. The COLLECTIONS are declared
+ *       on the class, because the row really has them; only the mutators are omitted. Contrast entry 6.
  *
- *    A LEGACY DEFECT WORTH RECORDING WHILE PASSING: the call passes `product=this` — a ProductType,
- *    under an argument named `product`. Harmless in CFML, where the argument is untyped, and recorded
- *    here rather than repaired (G4) so that whoever eventually ports the price-group domain meets it
- *    knowingly.
+ * ── 6. NOT an omission — `addAttributeValue`/`removeAttributeValue` [:L231-L236] ARE ported even
+ *       though `AttributeValue` is out of scope, because TR-5 requires a boundary-crossing member to be
+ *       declared against a port rather than dropped, and because the legacy inverse side
+ *       [model/entity/AttributeValue.cfc:L257-L272] calls back into this entity, making the pair a live
+ *       bidirectional contract. The difference from entry 5 is exactly that: a live contract versus
+ *       sixteen uncalled delegations.
  *
- * ── 3. `getProductsSmartList()` [`:L261-L267`].
+ * ── 7. The framework member surface F22 forbids — the primary-identifier, new-flag, validation,
+ *       metadata, dynamic-dispatch, populate, SmartList, setting, service-locator and attribute-value
+ *       accessors. None is declared here; `getSimpleRepresentation` is the one sanctioned exception,
+ *       for the reason given on the method itself. Their owners in the target are
+ *       `src/validation/Validator.ts` with `src/validation/rules/productType.rules.ts`,
+ *       `src/ports/SettingResolverPort.ts`, `src/adapters/mysql/UniquePropertyChecker.ts` (IR-5), and
+ *       `../base/populate` served from here by {@link createProductTypePropertyDescriptorSet}.
  *
- *    F9 twice over: it is a SmartList getter that obtains its SmartList from `productService`. It also
- *    injects a RAW `addWhereCondition(" aslatwallproducttype.productTypeIDPath LIKE
- *    '#getProductTypeIDPath()#%'")` [`:L264`] — the path INTERPOLATED into SQL. S2 forbids exactly
- *    that: every statement in the target binds through `?` placeholders, and identifiers come from a
- *    validated whitelist. `SmartListQueryPort` and `src/adapters/mysql/SmartListQueryBuilder.ts` own
- *    both the query and the correct parameterized form of that predicate.
+ * ── 8. `getAttributeValues()` and `hasAttributeValue()` — IR-1 synthesized members whose only call
+ *       sites are out of scope [model/entity/AttributeValue.cfc:L257-L272]. Compare
+ *       {@link ProductType.hasChildProductType}, admitted precisely because [:L151] of this very file
+ *       calls it. The asymmetry is the declare-only-what-is-used rule working as intended.
  *
- * ── 4. `getAssignedAttributeSetSmartList()` [`:L280-L299`].
+ * ── 9. The GPL v3 with-linking-exception banner [:L1-L48], including its empty `Notes:` block at
+ *       [:L46-L47], and every section banner in the file. The licence header is not reproduced because
+ *       no file in this subtree carries one: the deliverable is an additive subtree under the
+ *       repository's own licence. The banners' CONTENT is carried — each legacy section is reproduced
+ *       as a section comment above the members it introduced, misspellings and all where quoted.
  *
- *    F9, plus the out-of-scope `attributeService` [`:L283`]. It builds an `IN` list by
- *    `replace()`-ing the commas of the identifier path into quoted separators
- *    [`:L292`: `IN ('#replace(getProductTypeIDPath(),",","','","all")#')`] — the exact
- *    string-interpolation pattern S2 forbids, and the same shape AAP §0.4.3.4 flags on
- *    `model/dao/OptionDAO.cfc:L93-L116`, where the target emits one `?` per value instead.
- *
- * ── 5. The SIXTEEN many-to-many-inverse bidirectional helpers, eight pairs:
- *       `addPromotionReward`/`removePromotionReward`                     [`:L175-L180`]
- *       `addPromotionRewardExclusion`/`removePromotionRewardExclusion`   [`:L183-L188`]
- *       `addPromotionQualifier`/`removePromotionQualifier`               [`:L191-L196`]
- *       `addPromotionQualifierExclusion`/`removePromotionQualifierExclusion` [`:L199-L204`]
- *       `addPriceGroupRate`/`removePriceGroupRate`                       [`:L207-L212`]
- *       `addPriceGroupRateExclusion`/`removePriceGroupRateExclusion`     [`:L215-L220`]
- *       `addAttributeSet`/`removeAttributeSet`                           [`:L223-L228`]
- *       `addPhysical`/`removePhysical`                                   [`:L239-L244`]
- *
- *    Every collaborator is an excluded family — `Promotion*` (9 files), `PriceGroup*` (4),
- *    `Attribute*` (6), `Physical*` (6) — and NO IN-SCOPE CODE CALLS ANY OF THE SIXTEEN, verified
- *    repository-wide. Each is a two-line delegation to the far side's own helper (for example `:L240`
- *    `arguments.physical.addProductType( this )`), so porting them would mean declaring sixteen
- *    capability interfaces to express behaviour nothing in this slice invokes. The COLLECTIONS
- *    themselves are declared on the class, because the row they map really has them; only the
- *    mutators are omitted. Contrast entry 6.
- *
- * ── 6. NOT an omission — `addAttributeValue`/`removeAttributeValue` [`:L231-L236`] ARE ported, even
- *       though `AttributeValue` is out of scope, because TR-5 requires a boundary-crossing member to
- *       be declared against a port rather than dropped, and because the legacy inverse side
- *       [`model/entity/AttributeValue.cfc:L257-L272`] calls back into this entity — so the pair is
- *       part of a live bidirectional contract. This mirrors `Brand.ts`'s treatment of
- *       `model/entity/Brand.cfc:L90-L95`. The difference from entry 5 is exactly that: a live
- *       contract versus sixteen uncalled delegations.
- *
- * ── 7. The framework member surface F22 forbids: `getPrimaryIDValue`, `getPrimaryIDPropertyName`,
- *       `getSimpleRepresentationPropertyName`, `getNewFlag`, `validate`, `hasErrors`, `getErrors`,
- *       `getPropertyMetaData`, `onMissingMethod`, `populate`, `getPropertySmartList`,
- *       `getPropertyOptionsSmartList`, `setting`, `getService`, `getAttributeValue` and
- *       `hasUniqueProperty`. None is declared here. `getSimpleRepresentation` is the ONE sanctioned
- *       exception, for the reason given on the method itself. `validate`/`hasErrors` land on
- *       `src/validation/Validator.ts` with `src/validation/rules/productType.rules.ts`; `setting`
- *       lands on `src/ports/SettingResolverPort.ts`; `hasUniqueProperty` lands on
- *       `src/adapters/mysql/UniquePropertyChecker.ts` (IR-5); `populate` lands on
- *       `../base/populate` and is served from here by
- *       {@link createProductTypePropertyDescriptorSet}.
- *
- * ── 8. `getAttributeValues()` and `hasAttributeValue()` — IR-1 synthesized members whose ONLY call
- *       sites are out of scope [`model/entity/AttributeValue.cfc:L257-L272`], so Rule 2's second
- *       clause does not admit them. Compare {@link ProductType.hasChildProductType}, admitted
- *       precisely because `:L151` of this very file calls it. The asymmetry is the rule working as
- *       intended, not an inconsistency.
- *
- * ── 9. The GPL v3 with-linking-exception banner [`:L1-L48`], including its empty `Notes:` block at
- *       `:L46-L47`, and every section banner in the file [`:L51`, `:L61`, `:L64`, `:L69`, `:L79`,
- *       `:L82`, `:L88`, `:L121`, `:L144`, `:L146`, `:L246`, `:L248`, `:L257`, `:L259`, `:L269`,
- *       `:L271`, `:L301`, `:L303`, `:L315`]. The licence header is not reproduced because no file in
- *       this subtree carries one — the deliverable is an additive subtree under the repository's own
- *       licence, and duplicating a per-file banner in eighty new files would be a change of
- *       convention this port has no mandate to make. The banners' CONTENT is carried: each legacy
- *       section is reproduced as a section comment above the members it introduced, misspellings and
- *       all where quoted.
- *
- * ── 318-LINE ACCOUNTING, so nothing is silently dropped:
- *       L1-L48    licence banner ............................ documented, entry 9
- *       L49       component declaration ..................... module header, fact by fact
- *       L50-L51   banner / blank ............................ entry 9
- *       L52-L59   eight persistent scalars .................. public fields + descriptors
- *       L60-L62   banner + `parentProductType` .............. optional public field + descriptor
- *       L63-L67   banner + three one-to-many ................ eager `[]` fields + descriptors
- *       L68-L77   banner + eight many-to-many inverse ....... eager `[]` fields; no descriptors (why
- *                                                             above); mutators entry 5
- *       L78-L80   banner + `remoteID` ....................... public field + descriptor
- *       L81-L86   banner + four audit properties ............ public fields + populate-disabled
- *       L87-L89   banner + `parentProductTypeOptions` ....... entry 1
- *       L90-L99   `getInheritedAttributeSetAssignments` ..... PORTED, D21 stub, verbatim TODO
- *       L100-L107 `setProducts` ............................. PORTED, TODO(parity) on `:L103`
- *       L108-L115 `getBaseProductType` (+ `:L109` comment) .. PORTED, async, resolver injected
- *       L116-L119 `getAppliedPriceGroupRateByPriceGroup` .... entry 2
- *       L120-L142 banner + `getParentProductTypeOptions` .... entry 1
- *       L143-L148 banners ................................... entry 9
- *       L149-L154 `setParentProductType` ................... PORTED, short-circuit preserved
- *       L155-L164 `removeParentProductType` ................ PORTED, index + unconditional delete
- *       L165-L172 `add/removechildProductType` ............. PORTED, camelCase rename recorded
- *       L173-L228 eight m2m helper pairs (14 of 16) ........ entry 5
- *       L229-L236 `add/removeAttributeValue` ............... PORTED, entry 6
- *       L237-L244 `add/removePhysical` (16 of 16) .......... entry 5
- *       L245-L249 banners ................................. entry 9
- *       L250-L255 `getProductTypeIDPath` .................. PORTED, per-instance memo
- *       L256-L260 banners ................................. entry 9
- *       L261-L267 `getProductsSmartList` .................. entry 3
- *       L268-L272 banners ................................. entry 9
- *       L273-L278 `getSimpleRepresentation` ............... PORTED, byte-exact separator
- *       L279-L299 `getAssignedAttributeSetSmartList` ...... entry 4
- *       L300-L304 banners ................................. entry 9
- *       L305-L308 `preInsert` ............................. PORTED, audit delegated
- *       L309-L313 `preUpdate` (incl. the `:L311` `;;`) .... PORTED, typo documented
- *       L314-L316 banner + closing brace .................. entry 9
- *       L317-L318 trailing blank lines .................... nothing to port
- *
- *    Additionally ported from OUTSIDE this file, because this entity's behaviour depends on it:
- *       `buildIDPathList` [`org/Hibachi/HibachiEntity.cfc:L308-L324`] -> the module-private walker.
+ * Also ported from OUTSIDE this file, because this entity's behaviour depends on it:
+ * `buildIDPathList` [org/Hibachi/HibachiEntity.cfc:L308-L324] -> the module-private walker above.
  * ============================================================================================= */

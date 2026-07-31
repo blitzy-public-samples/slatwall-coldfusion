@@ -1,186 +1,104 @@
 /**
  * PricingPort — the extracted Catalog slice's single window onto the excluded pricing subsystem.
  *
- * This is a TYPE-ONLY module. It declares an interface and two supporting types and contains no
- * executable statement of its own, so it contributes zero bytes to the packaged Lambda artifact.
- * It exists for exactly one reason: so that RETAINED catalog members can read EXCLUDED pricing
- * members without the promotion, price-group and currency subsystems being dragged into the port.
+ * Type-only: it declares an interface and two supporting types, contains no executable statement
+ * and imports nothing, so it emits no runtime code. It exists for one reason — so that RETAINED
+ * catalog members can read EXCLUDED pricing members without the promotion, price-group and currency
+ * subsystems being dragged into the port (TR-5: cross the boundary only through a declared port,
+ * and never quietly drop the member from the interface).
  *
- * WHY IT EXISTS (transformation rule TR-5): "Cross the scope boundary only through a declared
- * port. Where an in-scope member depends on an out-of-scope collaborator, the port interface is
- * declared, the member is implemented against it, and the gap is flagged. The member is never
- * quietly dropped from the interface." AAP 0.2.2.7 lists this port with the origin
- * "model/entity/Sku.cfc sale-price members and Product.price" and the purpose "Price reads by
- * retained members"; AAP 0.4.1.6 states its key change as "Price reads required by retained
- * members, notably the feed's conditional sale-price fields".
+ * IR-3 (calculated-property containment) is why it is so small: the pricing, promotion, inventory
+ * and currency-derived members among the non-persistent properties at
+ * model/entity/Product.cfc:L102-L123 and model/entity/Sku.cfc:L99-L121 reach exclusively into
+ * excluded services, so a reader following those getters would pull half the platform in. This port
+ * exposes ONE retrieval.
  *
- * WHY IT IS SO SMALL (implicit requirement IR-3, calculated-property containment): the in-scope
- * entities declare 20 non-persistent properties on model/entity/Product.cfc:L102-L123 and 23 on
- * model/entity/Sku.cfc:L99-L121, and the pricing, promotion, inventory and currency-derived
- * members among them reach exclusively into excluded services. Without a stated boundary a reader
- * following those getters would pull half the platform into the port. The port's value is measured
- * by how little it exposes, so it exposes ONE retrieval.
- *
- * ------------------------------------------------------------------------------------------------
- * THE ONE BOUNDARY CALL, TRACED END TO END (all four hops read first-hand; reference only)
- * ------------------------------------------------------------------------------------------------
- *
+ * THE ONE BOUNDARY CALL, TRACED END TO END (reference only):
  *   1. model/entity/Product.cfc:L517-L522 — `getSalePriceDetailsForSkus()` memoizes into
- *      `variables.salePriceDetailsForSkus` and, on the miss path at model/entity/Product.cfc:L519,
- *      performs the ONLY out-of-scope pricing call in the entire slice:
- *        getService("promotionService")
- *          .getSalePriceDetailsForProductSkus(productID=getProductID())
+ *      `variables.salePriceDetailsForSkus` and, on the miss path at
+ *      model/entity/Product.cfc:L519, makes the only out-of-scope pricing call in the slice:
+ *      `getService("promotionService").getSalePriceDetailsForProductSkus(productID=...)`.
+ *   2. model/service/PromotionService.cfc:L1022 — the collaborator. Three facts from its body shape
+ *      this file: model/service/PromotionService.cfc:L1023 builds the result with
+ *      `queryToStructOfStructures(..., "skuID")`, so the map is KEYED BY skuID; the same line runs a
+ *      database query, so the member is asynchronous; and
+ *      model/service/PromotionService.cfc:L1024-L1028 applies a rounding rule, so ROUNDING HAPPENS
+ *      ON THE FAR SIDE and this port performs no arithmetic and names no rounding mode, precision
+ *      or decimal scale.
+ *   3. model/entity/Product.cfc:L182-L187 — `getSkuSalePriceDetails(skuID)` slices one SKU out of
+ *      that map, guarding at model/entity/Product.cfc:L183 and returning an EMPTY STRUCT on a miss
+ *      at model/entity/Product.cfc:L186, which makes every downstream key guard false.
+ *   4. model/entity/Sku.cfc:L539-L544 — `getSalePriceDetails()` reaches its own details indirectly
+ *      through `getProduct().getSkuSalePriceDetails(getSkuID())`. The SKU never calls the promotion
+ *      service itself, which is why this port is shaped around the PRODUCT identifier: a per-SKU
+ *      member would change the number of boundary crossings and is deliberately absent.
  *
- *   2. model/service/PromotionService.cfc:L1022 — the collaborator, declared
- *      `public struct function getSalePriceDetailsForProductSkus(required string productID)`. Three
- *      facts were read from its body and each one shaped a decision here:
- *        (a) model/service/PromotionService.cfc:L1023 builds the result with
- *            `queryToStructOfStructures(..., "skuID")`, so the returned map is KEYED BY skuID. That
- *            is why `SalePriceDetailsBySkuId` below is keyed by the SKU identifier.
- *        (b) the same line runs a database query, which is why the port member is asynchronous.
- *        (c) model/service/PromotionService.cfc:L1024-L1028 applies a rounding rule to
- *            `salePrice` when `roundingRuleID` is not empty — so ROUNDING HAPPENS ON THE FAR SIDE
- *            OF THE BOUNDARY. The port therefore receives already-rounded values and performs no
- *            arithmetic of its own; inventing a rounding mode, precision or decimal scale here
- *            would breach AAP 0.7.3 standard 9.
+ * Hops 1, 3 and 4 are in-scope domain behaviour belonging to src/domain/product/Product.ts and
+ * src/domain/sku/Sku.ts. Only hop 2 crosses the boundary, so only hop 2 is declared here.
  *
- *   3. model/entity/Product.cfc:L182-L187 — `getSkuSalePriceDetails(required skuID)` slices one
- *      SKU out of that map: it guards with `structKeyExists` at model/entity/Product.cfc:L183,
- *      returns the slice at model/entity/Product.cfc:L184, and on a MISS returns an EMPTY STRUCT at
- *      model/entity/Product.cfc:L186. An empty struct makes every downstream key guard false, which
- *      is precisely the fallback path described under `salePrice` below.
+ * The legacy result is cached twice, on the product at model/entity/Product.cfc:L518 and again on
+ * the SKU at model/entity/Sku.cfc:L540, both for the lifetime of a request-scoped ORM entity.
+ * Mismatch M7 records that only module-scope state survives between Lambda invocations, so
+ * memoization of this port's result must be REQUEST-SCOPED and never promoted to module scope, or a
+ * warm container would serve one caller's sale prices to the next. M7 is referenced, not owned,
+ * here; this port declares no cache, no cache key and no time-to-live.
  *
- *   4. model/entity/Sku.cfc:L539-L544 — `getSalePriceDetails()` reaches its own details INDIRECTLY,
- *      through `getProduct().getSkuSalePriceDetails( getSkuID() )` at model/entity/Sku.cfc:L541.
- *      The SKU never calls the promotion service itself. That indirection is why this port is
- *      shaped around the PRODUCT identifier and not the SKU identifier: the legacy code fetches the
- *      whole product's details in one call and slices per SKU afterwards, so a per-SKU port member
- *      would change the number of boundary crossings and is deliberately absent.
+ * The member returns a `Promise` because hop 2 issues a query. `SettingResolverPort` is by contrast
+ * SYNCHRONOUS because mismatch M8 records an out-of-band thread on the setting side and the
+ * synchronous signature stops a caller depending on background completion. This port is not subject
+ * to M8; the two shapes are intentionally different and must not be harmonised.
  *
- * Hops 1, 3 and 4 are IN-SCOPE domain behaviour and belong to `src/domain/product/Product.ts` and
- * `src/domain/sku/Sku.ts`. Only hop 2 crosses the boundary, so only hop 2 is declared here.
- *
- * TWO-LEVEL MEMOIZATION (AAP 0.7.3 standard 8 — flag mismatches, do not assume them away): the
- * legacy result is cached twice, into `variables.salePriceDetailsForSkus` on the product
- * (model/entity/Product.cfc:L518) and again into `variables.salePriceDetails` on the SKU
- * (model/entity/Sku.cfc:L540). Both caches live for the lifetime of a request-scoped ORM entity.
- * Execution-model mismatch M7 records that nothing survives between Lambda invocations except
- * module-scope state, so memoization of this port's result must be REQUEST-SCOPED and never
- * promoted to module scope, or a warm container would serve one tenant's sale prices to the next.
- * M7 is referenced here, not owned here: its resolution belongs to the repository adapters. This
- * port declares no cache, no cache key and no time-to-live — supplying one would be invention.
- *
- * ASYNCHRONOUS BY EVIDENCE, AND DELIBERATELY UNLIKE ITS SIBLING: the member below returns a
- * `Promise` because the collaborator at model/service/PromotionService.cfc:L1023 issues a database
- * query. `SettingResolverPort` is by contrast declared SYNCHRONOUS, because execution-model
- * mismatch M8 records an out-of-band `cfthread` on the setting side and the synchronous signature
- * is what stops a caller in this slice depending on background completion. This port is not subject
- * to M8. The two shapes are intentionally different and must not be harmonised.
- *
- * ------------------------------------------------------------------------------------------------
- * THE CANONICAL CONSUMER
- * ------------------------------------------------------------------------------------------------
- *
- * integrationServices/google/views/feed/product.cfm:L28-L30 is the only retained consumer of the
- * sale-price surface in the whole slice (established by grepping every in-scope entity, service,
- * DAO and the Google adapter):
- *
+ * THE CANONICAL CONSUMER is the Google feed view:
  *   - integrationServices/google/views/feed/product.cfm:L28 gates the pair on
  *     `local.sku.getPrice() gt local.sku.getSalePrice()` — a STRICT greater-than.
- *   - integrationServices/google/views/feed/product.cfm:L29 emits `g:sale_price` from
- *     `getSalePrice()`.
+ *   - integrationServices/google/views/feed/product.cfm:L29 emits `g:sale_price`.
  *   - integrationServices/google/views/feed/product.cfm:L30 emits `g:sale_price_effective_date`,
  *     passing `getSalePriceExpirationDateTime()` through two format calls.
+ * The one other reader, model/entity/Sku.cfc:L488, sits inside `getLivePrice()`, itself on the
+ * AAP §0.2.2.6 exclusion list, so `livePrice` gets no member here.
  *
- * The one other reader, model/entity/Sku.cfc:L488, sits inside `getLivePrice()`
- * (model/entity/Sku.cfc:L482-L498), which is itself on the AAP 0.2.2.6 exclusion list and also
- * reads `getCurrentAccountPrice()` at model/entity/Sku.cfc:L489. An excluded consumer creates no
- * obligation, so `livePrice` gets no member here. The feed's own controller,
- * integrationServices/google/controllers/feed.cfc, reads no pricing at all.
- *
- * ------------------------------------------------------------------------------------------------
- * STANDARDS THIS FILE IS HELD TO
- * ------------------------------------------------------------------------------------------------
- *
- * No user rules provided — `review_rules` returns exactly that one line, and a filesystem scan
- * confirms the repository carries no ancillary rule-bearing file. Zero files enter scope by rule.
- * That is not permission to lower the bar: the nine binding standards of AAP 0.7.3 govern instead.
- * The ones with teeth here are standard 1 (strict type safety — `exactOptionalPropertyTypes` and
- * `noUncheckedIndexedAccess` do their most valuable work in this file, see below), standard 3
- * (explicit dependency injection — this port IS the replacement for the string-keyed service
- * locator at model/entity/Product.cfc:L519, per rule R2), standard 4 (hexagonal separation — see
- * the no-imports note), standard 7 (preserve and annotate, do not repair — every carried legacy
- * defect below is marked and none is fixed; this file claims no exception to that standard) and
- * standard 9 (invent nothing).
- *
- * NO IMPORTS, BY CONSTRUCTION AND BY CONTRACT (standard 4). `ports/` sits beneath `services/`,
- * `adapters/`, `validation/`, `integrations/`, `handlers/` and `config/` and may never reach up
- * into them; the one direction it is permitted is a TYPE-ONLY import from `domain/`, which is
- * declared before it. This file does not need even that: the details map is keyed by plain
- * identifier strings and its values are primitives plus a `Date`, so no domain type is required and
- * it imports NOTHING at all — which is also the strictest reading of the dependency whitelist,
- * whose only entry is the compiler configuration `slatwall-ts/tsconfig.json`. It introduces no
- * package dependency either — the manifest's single runtime dependency stays the MySQL client and
- * nothing here adds to it, so there is no decimal library, no money library and no date library in
- * this file. It reads no environment variable —
- * `src/config/env.ts` is the only file permitted to do that — declares no database client and no
- * statement text, and names no credential, host or endpoint.
+ * As a port this module imports nothing — not a domain type, not a package, not a decimal, money or
+ * date library — reads no environment variable, and names no statement text, credential, host or
+ * endpoint (AAP §0.7.3 S2, S4, S5).
  */
-
-/* ------------------------------------------------------------------------------------------------
- * The sale-price details record
- * --------------------------------------------------------------------------------------------- */
 
 /**
  * One SKU's sale-price details, as returned by the boundary call for a single SKU identifier.
  *
- * EXACTLY THREE KEYS, AND EVERY ONE OF THEM IS INDEPENDENTLY OPTIONAL. That is not a modelling
- * preference; it is read directly off the three guarded getters at model/entity/Sku.cfc:L546-L565,
- * each of which tests for its own key with `structKeyExists` before reading it and falls back when
- * the key is absent:
+ * EXACTLY THREE KEYS, EACH INDEPENDENTLY OPTIONAL — read off the three guarded getters at
+ * model/entity/Sku.cfc:L546-L565, each of which tests for its own key with `structKeyExists` before
+ * reading it and falls back when the key is absent:
  *
  *   model/entity/Sku.cfc:L546-L551 — `getSalePrice()` guards `salePrice`
  *   model/entity/Sku.cfc:L553-L558 — `getSalePriceDiscountType()` guards `salePriceDiscountType`
  *   model/entity/Sku.cfc:L560-L565 — `getSalePriceExpirationDateTime()` guards
  *                                    `salePriceExpirationDateTime`
  *
- * Because the three guards are independent — model/entity/Sku.cfc:L547, model/entity/Sku.cfc:L554
- * and model/entity/Sku.cfc:L561 each test one key and one key only — "one key present while another
- * is absent" is a reachable legacy state, and the type below is faithful to that: optional
- * properties rather than a discriminated union of "sale" and "no sale". Modelling it as a union
- * would forbid a state the legacy system can actually produce — see the expiration-date note for
- * what that state does to the feed.
+ * The guards at model/entity/Sku.cfc:L547, :L554 and :L561 each test one key only, so "one key
+ * present while another is absent" is a reachable legacy state. Hence optional properties rather
+ * than a discriminated union of "sale" and "no sale": a union would forbid a state the legacy system
+ * can produce.
  *
- * `exactOptionalPropertyTypes` is what makes this honest. Under that flag "key absent" and "key
- * present holding `undefined`" are different types, which is exactly the distinction
- * `structKeyExists` draws at model/entity/Sku.cfc:L547. Implementations must therefore express "no
- * value" by OMITTING the property, never by assigning `undefined` to it, and must clear an
- * already-set optional with `delete` rather than by assignment.
+ * `exactOptionalPropertyTypes` is what keeps that honest. Under it "key absent" and "key present
+ * holding `undefined`" are different types, which is exactly the distinction `structKeyExists`
+ * draws. Implementations must express "no value" by OMITTING the property, never by assigning
+ * `undefined`, and must clear an already-set optional with `delete` rather than by assignment.
  *
- * TIGHTENING RECORDED (transformation rule TR-1). The legacy return types are loose and they are
- * not even loose consistently: the product-side accessor is declared `struct` at
- * model/entity/Product.cfc:L517 while the SKU-side accessor is declared `returntype="any"` at
- * model/entity/Sku.cfc:L539. Both are tightened to this single named shape, and the divergence is
- * recorded here rather than silently normalised. The three property types are taken from the
- * non-persistent declarations themselves: `type="numeric"` at model/entity/Sku.cfc:L115,
- * `type="string"` at model/entity/Sku.cfc:L116 and `type="date"` at model/entity/Sku.cfc:L118.
+ * TIGHTENING RECORDED (TR-1): the legacy return types are loose and inconsistently so — `struct` at
+ * model/entity/Product.cfc:L517 against `returntype="any"` at model/entity/Sku.cfc:L539. Both are
+ * tightened to this one named shape. The three property types come from the non-persistent
+ * declarations themselves: `type="numeric"` at model/entity/Sku.cfc:L115, `type="string"` at
+ * model/entity/Sku.cfc:L116 and `type="date"` at model/entity/Sku.cfc:L118.
  *
- * THE FAR SIDE MAY BE WIDER, AND THAT IS FINE. The collaborator projects database rows, so a row
- * can carry columns beyond these three — model/service/PromotionService.cfc:L1025 reads a
- * `roundingRuleID` off it, for instance. No retained member in this slice reads such a column, so
- * declaring it here would breach standard 9. TypeScript's structural typing already accepts a wider
- * object wherever this type is expected, so nothing is lost by declaring only the three keys that
- * the in-scope guards actually test.
+ * The far side may be wider — model/service/PromotionService.cfc:L1025 reads a `roundingRuleID` off
+ * the same row — but no retained member in this slice reads such a column, so declaring one would be
+ * an invention. Structural typing already accepts a wider object wherever this type is expected.
  *
  * TODO(parity): `salePriceDiscountAmount` is declared as a non-persistent property at
- * model/entity/Sku.cfc:L117 — inside the same block as the three keys above,
- * model/entity/Sku.cfc:L114-L118 — and it appears on the AAP 0.2.2.6 exclusion list, so a reader
- * arriving from that list reasonably expects a FOURTH key here. There is none. A repository-wide
- * grep for the token returns exactly one hit, that declaration: the property has NO getter, no
- * reader and no writer anywhere in the codebase. It is therefore deliberately absent from this
- * type, and the finding is recorded so the question does not need reopening. (The AAP cites this
- * declaration as L118; L118 is in fact `salePriceExpirationDateTime`, and the verified locator for
- * `salePriceDiscountAmount` is L117.)
+ * model/entity/Sku.cfc:L117 and appears on the AAP §0.2.2.6 exclusion list, so a reader arriving
+ * from that list expects a FOURTH key here. There is none: the property has no getter, reader or
+ * writer anywhere in the legacy tree, so it is deliberately absent. (The AAP cites the declaration
+ * as L118; L118 is `salePriceExpirationDateTime`, and the verified locator is L117.)
  */
 export interface SalePriceDetails {
   /**
@@ -204,7 +122,7 @@ export interface SalePriceDetails {
    * ordinary price becomes strictly greater than the reported sale price for every SKU, and every
    * product in the merchant feed acquires a bogus sale price. There is no compile error and no test
    * failure unless a test covers the no-sale branch, which is why
-   * `test/integrations/ProductFeedBuilder.test.ts` is required to assert BOTH branches.
+   * the planned `test/integrations/ProductFeedBuilder.test.ts` is required to assert BOTH branches.
    *
    * The rule for implementations is therefore: OMIT this property when no sale applies. Do not
    * substitute a sentinel, and do not let the ordinary price be read from this type — the fallback
@@ -276,10 +194,6 @@ export interface SalePriceDetails {
   readonly salePriceExpirationDateTime?: Date;
 }
 
-/* ------------------------------------------------------------------------------------------------
- * The product-wide result, keyed by SKU identifier
- * --------------------------------------------------------------------------------------------- */
-
 /**
  * Every SKU's sale-price details for one product, keyed by SKU identifier.
  *
@@ -311,10 +225,6 @@ export interface SalePriceDetails {
  */
 export type SalePriceDetailsBySkuId = Readonly<Record<string, SalePriceDetails>>;
 
-/* ------------------------------------------------------------------------------------------------
- * The port
- * --------------------------------------------------------------------------------------------- */
-
 /**
  * The Catalog slice's read-only window onto the excluded pricing subsystem.
  *
@@ -338,13 +248,13 @@ export type SalePriceDetailsBySkuId = Readonly<Record<string, SalePriceDetails>>
  * bundler ordering problem and no runtime bytes.
  *
  * DELIBERATELY NOT A CLASS. No abstract base and no constructor, so a test double is a plain object
- * literal — which is how `test/support/inMemoryRepositories.ts` supplies one. That matters because
+ * literal — which is how the planned `test/support/inMemoryRepositories.ts` is to supply one. That matters because
  * the legacy repository contains no mocking library at all: its tests extend an MXUnit base that
  * boots the whole application to obtain collaborators (meta/tests/unit/SlatwallUnitTestBase.cfc:L49
  * and meta/tests/unit/SlatwallUnitTestBase.cfc:L52). The ports are what make direct substitution
  * possible instead. Coverage of this
  * port is NET-NEW: no legacy test exercises the sale-price surface, and
- * `test/integrations/ProductFeedBuilder.test.ts` must drive both branches of the feed's conditional
+ * The planned `test/integrations/ProductFeedBuilder.test.ts` must drive both branches of the feed's conditional
  * by returning a record with and then without the `salePrice` key.
  */
 export interface PricingPort {

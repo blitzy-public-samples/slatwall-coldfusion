@@ -1,89 +1,49 @@
 /**
- * AccessContentPort — the declared boundary between the content-access branch of SKU creation
- * and the unconverted Slatwall content subsystem.
+ * AccessContentPort — the declared boundary between the content-access branch of SKU creation and
+ * the unconverted Slatwall content subsystem.
  *
- * ============================================================================================
- * WHAT THIS FILE IS
- * ============================================================================================
- * A type-only module. It declares exactly two concepts, holds no executable statement and imports
- * nothing at all, so every declaration below is erased by the compiler — a standalone transform
- * emits an empty module wrapper and not one of these names survives it. A consumer that reaches
- * these declarations through a type-only import therefore drops the module from the bundle
- * entirely: no identifier declared here appears in the packaged artifact. That is what makes the
- * module safe for the domain and service layers to depend on, and why it can introduce neither a
- * runtime cycle nor a bundler ordering hazard.
+ * A type-only module: two concepts, no executable statement, no imports, so nothing it declares
+ * survives compilation and a consumer reaching it through a type-only import drops the module from
+ * the bundle. That is what makes it safe for the domain and service layers to depend on, and why it
+ * can introduce neither a runtime cycle nor a bundler ordering hazard.
  *
  * Legacy origin — the content-access branch of `createSkus`:
  *   model/service/SkuService.cfc:L172-L202 — the branch itself, entered at
- *     model/service/SkuService.cfc:L173, which is the third arm of the three-way discriminator
- *     on `product.getProductType().getBaseProductType()` declared at
- *     model/service/SkuService.cfc:L58. The first arm is `merchandise`
- *     [model/service/SkuService.cfc:L61] and the second is `subscription`
- *     [model/service/SkuService.cfc:L139].
- *   model/service/SkuService.cfc:L56 — `property name="contentService"`, the injected
- *     collaborator this port replaces. It is exercised at exactly two call sites, both inside
- *     this branch: model/service/SkuService.cfc:L187 and model/service/SkuService.cfc:L196.
+ *     model/service/SkuService.cfc:L173, the third arm of the three-way discriminator on
+ *     `product.getProductType().getBaseProductType()` declared at
+ *     model/service/SkuService.cfc:L58; the first arm is `merchandise`
+ *     (model/service/SkuService.cfc:L61) and the second `subscription`
+ *     (model/service/SkuService.cfc:L139).
+ *   model/service/SkuService.cfc:L56 — `property name="contentService"`, the injected collaborator
+ *     this port replaces, exercised at exactly two call sites, both inside this branch:
+ *     model/service/SkuService.cfc:L187 and model/service/SkuService.cfc:L196.
  *   org/Hibachi/HibachiService.cfc:L255-L281 — `onMissingMethod`, read for its contract only.
- *     No framework code is carried across.
  *
- * Authority: AAP 0.4.1.6 "Ports" row 9 designates this file CREATE, names
- * `model/service/SkuService.cfc` contentAccess branch as its source, and states its purpose as
- * "Content resolution for the non-merchandise branch". AAP 0.2.2.7 "Boundary Ports" row 4
- * records the same origin with the purpose "Content-access SKU creation".
+ * Authority: AAP §0.4.1.6 "Ports" row 9 and AAP §0.2.2.7 row 4 — CREATE, purpose "content resolution
+ * for the non-merchandise branch". It exists to satisfy TR-5: cross the scope boundary only through
+ * a declared port, and never quietly drop the member from the interface. AAP §0.8.3.8 states the
+ * payoff — the content subsystem stays unconverted and the SKU service still compiles and bundles.
  *
- * Transformation rule TR-5, which this file exists to satisfy: cross the scope boundary only
- * through a declared port. Where an in-scope member depends on an out-of-scope collaborator the
- * port interface is declared, the member is implemented against it, and the gap is flagged — the
- * member is never quietly dropped from the interface. AAP 0.8.3.8 states the payoff: the
- * extracted TypeScript services must be callable and deployable without requiring the rest of
- * Slatwall to be converted. This port is the literal mechanism for that: the content subsystem
- * stays unconverted and the SKU service still compiles, lints and bundles.
+ * NAMING — THE PORT NAME INVERTS THE BRANCH KEY, DELIBERATELY. The legacy branch key is
+ * `contentAccess` (model/service/SkuService.cfc:L173) and the legacy data key is `accessContents`
+ * (model/service/SkuService.cfc:L175), while AAP §0.4.1.6 row 9 fixes this file and its exported
+ * interface as `AccessContentPort`. The name is load-bearing at the consuming call site in
+ * src/services/SkuService.ts and in src/config/container.ts, so it is NOT "corrected" to
+ * `ContentAccessPort`. The SKU-side association really is spelled in this order:
+ * `singularname="accessContent"` at model/entity/Sku.cfc:L77, with the mutator `addAccessContent` at
+ * model/entity/Sku.cfc:L704-L711 that both branch paths call.
  *
- * ============================================================================================
- * NAMING — THE PORT NAME INVERTS THE BRANCH KEY, AND THAT IS DELIBERATE
- * ============================================================================================
- * The legacy branch key is `contentAccess` [model/service/SkuService.cfc:L173] and the legacy
- * data key is `accessContents` [model/service/SkuService.cfc:L175]. The port, per AAP 0.4.1.6
- * row 9, is `AccessContentPort` — the two words in the reverse order. The file name and the
- * exported interface name are fixed character-for-character by that row and are NOT "corrected"
- * to `ContentAccessPort` here, because the name is load-bearing at the consuming call site in
- * `src/services/SkuService.ts` and in the composition root `src/config/container.ts`. The
- * inversion is noted rather than resolved. Note also that the SKU-side association really is
- * spelled in this order: `singularname="accessContent"`
- * [model/entity/Sku.cfc:L77], with the mutator `addAccessContent`
- * [model/entity/Sku.cfc:L704-L711] that both branch paths call.
- *
- * ============================================================================================
- * GOVERNING STANDARDS
- * ============================================================================================
- * No user rules provided. The project's on-disk rules document was read in full and returns
- * that single line, and a repository scan finds no ancillary rule-bearing file. Per the
- * user-rules protocol that absence is stated explicitly and is NOT treated as permission to
- * lower the bar: the nine binding standards of AAP 0.7.3 govern this file instead — strict type
- * safety; parameterized SQL (here a pure prohibition, since this module contains no data
- * access whatsoever); explicit dependency injection; hexagonal separation; exact-version
- * dependency pinning (this module imports nothing from the package manifest, which stays
- * closed); one labelled test per converted method; preserve and annotate rather than repair;
- * flag mismatches rather than assume them away; and invent nothing.
- *
- * ============================================================================================
- * MEMBER AUDIT — EXACTLY TWO CONCEPTS
- * ============================================================================================
- * Concept A-A, content resolution by identifier:
- *   `AccessContentPort`          the interface, one member, asynchronous, absence representable
- *   `AccessContentReference`     the minimal opaque return type of that member
- * Concept A-B, the typed shape of the branch's input data:
- *   `ContentAccessSkuCreationData`  the three keys the branch actually reads, with the exact
- *                                   optionality the legacy guards imply
- *   `ContentAccessSkuCreationMode`  the typed discriminant naming the two verified paths
+ * MEMBER AUDIT — EXACTLY TWO CONCEPTS. Content resolution by identifier (`AccessContentPort`, one
+ * asynchronous member with absence representable, plus the minimal opaque `AccessContentReference`
+ * it returns), and the typed shape of the branch's input data (`ContentAccessSkuCreationData`, the
+ * three keys the branch reads with the exact optionality the legacy guards imply, plus the
+ * `ContentAccessSkuCreationMode` discriminant naming the two verified paths).
  *
  * Deliberately absent, each because it would be an invention or a scope breach: every notion of
- * entitlement, permission, authorization or access granting; a content entity type; a content
- * file path, download address, streaming handle or media type; a creation, save, delete or
- * paginated-list member; a subscription-term member; an account type; and a member for some
- * further entity family that the legacy content service happens to serve elsewhere. This port
- * resolves a content reference by identifier. It authorises nothing, writes nothing, and yields
- * no file.
+ * entitlement, permission, authorization or access granting; a content entity type; a content file
+ * path, download address, streaming handle or media type; a creation, save, delete or paginated-list
+ * member; a subscription-term member; and an account type. This port resolves a content reference by
+ * identifier. It authorises nothing, writes nothing, and yields no file.
  */
 
 /*
@@ -120,7 +80,7 @@
  * ============================================================================================
  * PARITY REGISTER — ANNOTATE, DO NOT REPAIR (AAP 0.7.3 standard 7)
  * ============================================================================================
- * Four findings were verified by direct reading of the branch. Each is recorded here with its
+ * Four findings about the branch. Each is recorded here with its
  * locator because each is behavior a competent engineer would instinctively tidy up, and AAP
  * 0.8.2 Guideline 4 forbids exactly that: do not enhance or optimize business logic beyond what
  * the migration requires. None of them is assigned a defect or mismatch number — the plan's

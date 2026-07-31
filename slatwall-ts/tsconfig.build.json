@@ -1,80 +1,42 @@
 {
   /* ==============================================================================================
-   * slatwall-ts — the EMIT / PACKAGING program for the extracted Slatwall Catalog slice.
+   * The EMIT / PACKAGING program for the extracted Slatwall Catalog slice: the same rules as
+   * ./tsconfig.json over a narrower program — shippable src/** only, with emit switched on.
    *
-   * This file has no legacy counterpart. The Slatwall repository contains zero Node or TypeScript
-   * artifacts (AAP 0.3.1), so nothing here is carried over from the CFML tree, and nothing outside
-   * slatwall-ts/ is ever part of a program defined here: every path below is subtree-relative and
-   * none of them walks up out of this directory. That is how the additive-only invariant of
-   * AAP 0.4.1.1 (transformation rule TR-6, guideline 0.8.2/5) is enforced mechanically rather than
-   * by convention — the legacy tree stays byte-for-byte unchanged, including by not being compiled.
+   * The division of labour with the base configuration:
+   *   tsconfig.json        type-checks src/**, test/** and jest.config.ts, and never emits.
+   *   tsconfig.build.json  emits src/** only, so nothing test-only can reach a Lambda artifact for
+   *                        the simplest possible reason: nothing test-only is in the program.
    *
-   * Its whole requirement is one sentence, AAP 0.4.1.2: "Emit configuration for the bundle step,
-   * excluding tests."
+   * Program scope and emit are the only differences between the two files.
    *
-   * WHY IT EXISTS — the division of labour with the sibling tsconfig.json:
+   * `tsc -p tsconfig.build.json` consumes this file. The bundler does not: build/esbuild.mjs derives
+   * its inputs from the src/handlers entry points plus the import graph and applies its own platform
+   * and format flags. So this program proves the shippable set type-checks and emits cleanly under
+   * the same strict contract as the gate that approved it, and the bundler then packages it.
    *
-   *   tsconfig.json        Type-checks src/** AND test/** AND jest.config.ts, and never emits
-   *                        (noEmit true). `npm run typecheck` loads it, and typescript-eslint's
-   *                        projectService resolves its file list, so production source and the
-   *                        test suite are held to ONE identical rule set instead of the tests
-   *                        getting a relaxed configuration of their own.
-   *
-   *   tsconfig.build.json  This file. The same rules over a narrower program: shippable src/**
-   *                        only, with emit switched on. Nothing test-only can reach a Lambda
-   *                        artifact for the simplest possible reason — nothing test-only is in
-   *                        the program. The 20 test files of AAP 0.4.1.12 and the Jest
-   *                        configuration are development artifacts and stop here.
-   *
-   * Program scope and emit are the ONLY differences between the two files, and that is deliberate.
-   *
-   * WHAT CONSUMES IT: `tsc -p tsconfig.build.json`. The bundler does not read this file —
-   * build/esbuild.mjs derives its inputs from the src/handlers entry points plus the import graph,
-   * and applies its own --platform=node --target=node20 --format=cjs. So the two steps divide the
-   * work: this program proves the shippable set type-checks AND emits cleanly under the same
-   * strict contract as the gate that approved it, then the bundler packages it. Run together they
-   * are the deployability bar of AAP 0.8.3.10 — `npm run typecheck && npm run build` — which is
-   * the whole acceptance criterion, since infrastructure as code is out of scope and no runtime
-   * declaration, function definition or deployment call is authored anywhere in this deliverable
-   * (AAP 0.5.5).
+   * Every path below is subtree-relative and none walks up out of this directory, so no program
+   * defined here can reach the CFML tree.
    * ============================================================================================ */
   "extends": "./tsconfig.json",
   "compilerOptions": {
     /* --- INHERITED, AND NEVER WEAKENED -------------------------------------------------------
      * Everything about the language and the type system comes from ./tsconfig.json and is
-     * deliberately ABSENT below. This file does not restate — and must never override — strict,
-     * exactOptionalPropertyTypes or noUncheckedIndexedAccess, which are the three flags that
-     * constitute AAP 0.7.3 standard 1 ("strict type safety"); nor target ES2022 / lib ES2022 /
-     * module NodeNext / moduleResolution NodeNext; nor noImplicitOverride, noImplicitReturns,
-     * noFallthroughCasesInSwitch, useUnknownInCatchVariables, isolatedModules, esModuleInterop,
-     * forceConsistentCasingInFileNames or skipLibCheck.
+     * deliberately absent below. Inherit and narrow; never duplicate. Duplicating the compiler
+     * options would let the two files drift, and a drifted build config would ship an artifact
+     * checked less strictly than the gate that approved it — precisely the false assurance this
+     * configuration exists to prevent. No relaxing option may ever be added here. If a file under
+     * src/ fails to compile, THE SOURCE IS FIXED. `tsc --showConfig -p tsconfig.build.json` prints
+     * the resolved set, which is how to prove the inheritance is intact rather than assume it.
      *
-     * Inherit and narrow; never duplicate. Duplicating the compiler options would let the two
-     * files drift, and a drifted build config is worse than no build config at all: it would ship
-     * an artifact checked LESS strictly than the gate which approved it, which is precisely the
-     * false assurance this port exists to avoid. The prohibition has no exceptions. No relaxing
-     * option may ever be added here — not a falsified strict flag, not a disabled strictNullChecks,
-     * not an admitted implicit any, not a suppression flag, and not skipLibCheck pressed into
-     * service to hide a real error. If a file under src/ fails to compile, THE SOURCE IS FIXED.
-     * `tsc --showConfig -p tsconfig.build.json` prints the resolved set and is the way to prove
-     * the inheritance is intact rather than assume it.
+     * No module path aliases are declared here and none exist in the base: every intra-subtree
+     * import is relative, because esbuild does not honour tsconfig alias maps and an alias that
+     * type-checks could fail to resolve at bundle time, throwing MODULE_NOT_FOUND on cold start
+     * where no compiler is left to catch it.
      *
-     * NO MODULE PATH ALIASES ARE DECLARED HERE, and none exist in the base either: neither the
-     * `baseUrl` anchor nor the `paths` map appears in either file (AAP 0.4.3.5). Every
-     * intra-subtree import is a relative path. This is a correctness requirement, not a style
-     * preference — esbuild does not honour tsconfig alias maps the way tsc does, so an alias that
-     * type-checks cleanly here could fail to resolve at bundle time and the packaged handler would
-     * throw MODULE_NOT_FOUND on cold start, in the one place there is no compiler left to catch
-     * it. Identical resolution across tsc, ts-jest and esbuild also keeps the hexagonal boundary
-     * legible (AAP 0.7.3 standard 4): a relative specifier makes a domain -> adapter or
-     * service -> handler direction violation visible in the import line itself.
-     *
-     * The five options below are therefore the entire content of this file — two overrides that
-     * turn a type-check program into an emit program, and three emit-only settings restated at
-     * their inherited values because this is the only program that actually emits. Nothing else is
-     * added: per AAP 0.7.3 standard 9 no option appears that cannot be justified in a line, which
-     * is why declarationMap, composite, incremental, tsBuildInfoFile, removeComments and the
-     * decorator-metadata family are all absent, and why they should stay absent. */
+     * The five options below are the entire content of this file — two overrides that turn a
+     * type-check program into an emit program, and three emit settings restated at their inherited
+     * values because this is the only program that emits. */
 
     /* OVERRIDE 1 of 2 — emit. The base sets noEmit true so that `npm run typecheck`, and any bare
      * `tsc -p tsconfig.json`, can never scatter JavaScript into dist/. This is the one
@@ -82,63 +44,42 @@
     "noEmit": false,
 
     /* OVERRIDE 2 of 2 — emit layout. The base uses rootDir "." because its program spans src/,
-     * test/ and jest.config.ts. Here the program is src/ alone, so rootDir "src" makes dist/
-     * mirror src/ directly (dist/handlers/productHandler.js, not dist/src/handlers/...). That is
-     * also the layout build/esbuild.mjs produces, since it sets outbase to src/, so a path in a
-     * stack trace means the same thing whichever step produced the JavaScript. */
+     * test/ and jest.config.ts. Here the program is src/ alone, so rootDir "src" makes dist/ mirror
+     * src/ directly rather than nesting under dist/src/. build/esbuild.mjs sets outbase to src/ for
+     * the same reason, so a path in a stack trace means the same thing whichever step produced the
+     * JavaScript. */
     "rootDir": "src",
 
     /* Restated at the inherited value; never divergent. outDir is an emit concern and this is the
-     * emitting program, so the destination is pinned where emission is switched on rather than
-     * left to be inferred from elsewhere. Three artifacts must agree on this one name, and do:
-     * the `dist/` entry in slatwall-ts/.gitignore (build output is never committed), this option,
-     * and the outDir in build/esbuild.mjs. Renaming it in one place alone would silently break
-     * the other two. */
+     * emitting program, so the destination is pinned where emission is switched on. Three artifacts
+     * must agree on this name: the `dist/` entry in .gitignore, this option, and the outDir in
+     * build/esbuild.mjs. */
     "outDir": "dist",
 
-    /* The one emit extra worth having: source maps are what let a stack trace from a deployed
-     * invocation point back at the TypeScript that produced it. build/esbuild.mjs sets
-     * sourcemap: true for the same reason, so both routes to an artifact stay debuggable. */
+    /* Source maps are what let a stack trace from a deployed invocation point back at the
+     * TypeScript that produced it. build/esbuild.mjs sets sourcemap for the same reason, so both
+     * routes to an artifact stay debuggable. */
     "sourceMap": true,
 
-    /* No .d.ts output. package.json declares "private": true and the deliverable is bundled
-     * Lambda artifacts, so nothing outside this subtree ever consumes it as a typed library and
-     * declaration files would be unread build products. declarationMap is absent for the same
-     * reason (and TypeScript rejects it without declaration anyway). */
+    /* No .d.ts output. The package is private and the deliverable is bundled Lambda artifacts, so
+     * nothing outside this subtree consumes it as a typed library and declaration files would be
+     * unread build products. declarationMap is absent for the same reason. */
     "declaration": false
   },
 
-  /* Program scope — the defining purpose of this file, per AAP 0.4.1.2 ("excluding tests").
+  /* Program scope — the defining purpose of this file: emit excludes tests.
    *
-   * `include` admits shippable TypeScript under src/ and nothing else. `exclude` then states the
-   * same boundary from the other side, belt-and-braces, so the intent survives any later edit to
-   * `include`: the whole test/ tree, the recursive *.test.ts and *.spec.ts globs, and
-   * jest.config.ts (a development configuration, not shippable code) are all kept out, alongside
-   * the usual node_modules, dist and coverage directories.
+   * `include` admits shippable TypeScript under src/ and nothing else. `exclude` states the same
+   * boundary from the other side so the intent survives any later edit to `include`.
    *
-   * Two entries are absent on purpose. build/esbuild.mjs is .mjs rather than TypeScript, so it
-   * belongs to no TypeScript program and needs no exclusion. And no pattern here walks up out of
-   * this directory — every one is subtree-relative — because the CFML tree is reference-only.
+   * build/esbuild.mjs is absent from both lists because it is .mjs and belongs to no TypeScript
+   * program, and no pattern walks up out of this directory.
    *
-   * A note for anyone auditing what actually ships. `exclude` filters the initial file glob; it
+   * One caveat worth knowing when auditing what ships: `exclude` filters the initial file glob and
    * cannot remove a file that an included file imports. Keeping test-only code out of the emitted
-   * output therefore also depends on nothing under src/ importing from test/, which is a rule the
-   * hexagonal layering already implies: test doubles live in test/support and are injected into
-   * production classes through their constructors (AAP 0.4.3.1, 0.4.3.6), never imported by them.
-   * The same reachability argument governs what the bundler pulls in. The AWS SDK is always marked
-   * external in build/esbuild.mjs, because the Node 20 Lambda runtime already provides it and
-   * bundling it would inflate the artifact for no gain. mysql2 — the single runtime dependency, and
-   * the only package that ships inside the bundle (AAP 0.5.2.1) — is bundled by default, with
-   * ESBUILD_EXTERNAL=mysql2 available to externalise it as well when the driver is supplied
-   * alongside the artifact, which is the form the build proof of AAP 0.1.2.3 used.
-   *
-   * Finally, the version coupling worth knowing about when this service is eventually moved to a
-   * newer runtime line. AAP 0.5.5 counts exactly four version-coupled artifacts in the whole
-   * deliverable: --target=node20 in build/esbuild.mjs, the `engines` field together with .nvmrc,
-   * the @types/node pin held on the 20.x line, and the version statements in README.md. This file
-   * is deliberately not a fifth: it names no runtime and no Node version, and it inherits target
-   * ES2022 from the base rather than restating it, so a runtime move touches those four artifacts
-   * and leaves src/domain, src/services, src/ports and src/adapters untouched. */
+   * output therefore also depends on nothing under src/ importing from test/ — which the hexagonal
+   * layering already implies, since test doubles are injected through constructors rather than
+   * imported by production classes. */
   "include": ["src/**/*.ts"],
   "exclude": [
     "node_modules",

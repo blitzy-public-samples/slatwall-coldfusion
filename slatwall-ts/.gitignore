@@ -1,20 +1,26 @@
-# Ignore rules scoped to the slatwall-ts/ subtree. Git applies every pattern below
-# relative to THIS directory, so nothing here can reach — or is duplicated from — the
-# legacy CFML tree.
+# Ignore rules scoped to the slatwall-ts/ subtree. Git applies every pattern below relative
+# to THIS directory, so nothing here reaches the legacy CFML tree.
 #
-# That scoping is the reason the file exists. The repository-root .gitignore covers the
-# legacy application in 15 entries and not one of them covers node_modules, dist or
-# coverage; closing that gap here instead of there keeps the root file, and the whole
-# CFML tree, byte-for-byte unchanged, so this port stays a single additive diff
-# (AAP 0.4.1.1 / TR-6; 0.5.6.2 lists the root .gitignore as "explicitly not updated").
+# That scoping is the reason the file exists. The repository-root .gitignore covers the legacy
+# application and none of its entries covers node_modules, dist or coverage; closing that gap
+# here rather than there keeps the root file, and the whole CFML tree, byte-for-byte unchanged,
+# so this port stays a single additive diff.
 #
-# The list is deliberately short: every entry names an artifact this subtree actually
-# produces, and speculative boilerplate is omitted rather than copied in (AAP 0.7.3
-# standard 9, guideline 0.8.2/1). The three directory names are shared with
-# tsconfig.json "exclude", tsconfig.build.json "outDir" and "exclude",
-# eslint.config.mjs "ignores", jest.config.ts "coverageDirectory" and
+# The list is deliberately short — exactly three patterns and nothing else: every entry
+# names a generated directory this subtree actually produces, and speculative boilerplate
+# is omitted rather than copied in (AAP 0.7.3 standard 9, guideline 0.8.2/1). The three
+# directory names are shared with tsconfig.json "exclude", tsconfig.build.json "outDir"
+# and "exclude", eslint.config.mjs "ignores", jest.config.ts "coverageDirectory" and
 # "testPathIgnorePatterns", and the output directory in build/esbuild.mjs. All six must
 # keep saying the same three words, or a build product ends up tracked.
+#
+# Nothing else belongs here, and the omissions are decisions rather than oversights. No
+# credential file is listed: the plan's contract for this file is exactly the three
+# directories above (AAP 0.3.1, 0.4.1.2, 0.5.6.2), configuration reaches the service only
+# through the process environment (AAP 0.4.3.5, 0.8.3.9), no file in this subtree holds a
+# credential, and the committed .env.example carries variable names with empty values and
+# is therefore tracked on purpose. No editor, OS or tool-cache pattern is listed either:
+# each would be boilerplate for an artifact this subtree never emits.
 
 # Installed dependency tree, materialised by `npm ci` from package-lock.json. The
 # lockfile itself is deliberately NOT ignored: a committed lockfile is what makes the
@@ -28,10 +34,3 @@ dist/
 
 # Jest coverage reports (jest.config.ts, coverageDirectory: 'coverage').
 coverage/
-
-# A real .env is a local developer convenience that may hold live database credentials,
-# so it never enters git; configuration reaches the service through the environment and
-# no credential is hardcoded (AAP 0.8.3.9). The pattern is the exact filename and not a
-# wildcard, so the required, committed .env.example — variable names only, no values —
-# is never swallowed.
-.env

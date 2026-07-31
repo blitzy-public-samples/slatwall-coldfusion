@@ -1,154 +1,112 @@
 /**
  * Option — the `SwOption` catalog entity of Slatwall 3.1.39, re-expressed as strict-mode TypeScript.
  *
- * ---------------------------------------------------------------------------------------------
- * AAP AUTHORITY
- * ---------------------------------------------------------------------------------------------
- * §0.4.1.4 "Domain Layer", verbatim row. It is the authoritative scope boundary for this module and
- * it names exactly three things:
+ * Ported from [model/entity/Option.cfc]. AAP §0.4.1.4 names exactly three things for this module —
+ * five persistent properties, the required option-group relationship, and the SKUs relationship
+ * inverse over `SwSkuOption` — and that row is the scope. [model/entity/Option.cfc] declares six
+ * further relationships and twelve further methods, every one of which reaches explicitly
+ * out-of-scope territory; each is catalogued with its locator in the exclusion block below and then
+ * omitted, so the omission reads as a decision rather than an oversight (S8).
  *
- *   | slatwall-ts/src/domain/option/Option.ts | CREATE | model/entity/Option.cfc |
- *   | Five persistent properties, the required option-group relationship, the SKUs relationship
- *   | inverse over `SwSkuOption` |
+ * THIS IS ONE OF ONLY THREE COMPLETE PORTS IN THE `domain/` SUBTREE. AAP §0.2.2.6 states it directly:
+ * "`Brand.cfc`, `Option.cfc` and `OptionGroup.cfc` declare no non-persistent properties at all, so
+ * they are unaffected." The legacy source declares no `persistent="false"` property, so there is no
+ * calculated-property boundary to negotiate here and nothing is excluded for pricing, promotion,
+ * inventory or currency reasons — contrast the sixteen `Product`/`Sku` members §0.2.2.6 excludes.
+ * Everything this entity omits, it omits because the RELATED TYPE is out of scope, never because the
+ * member itself reaches a port.
  *
- * [model/entity/Option.cfc] declares SIX FURTHER RELATIONSHIPS and TWELVE FURTHER METHODS beyond
- * that row, and every one of them reaches explicitly out-of-scope territory. Each is catalogued with
- * its locator in the exclusion block below and then omitted, so the omission reads as a decision
- * rather than an oversight (S8). The row is the scope; it is not widened.
+ * LABELS USED THROUGHOUT THIS FILE. `S1`-`S9` are the AAP §0.7.3 enterprise standards. `R-A`, `R-B`
+ * and `R-C` are this module's three structural decisions — the type-only mutual reference with
+ * `./OptionGroup`, the declared descriptor set that replaces `populate()`, and the narrow local
+ * interfaces that stand in for out-of-scope collaborators. `F<n>` are this port's file-scope rules,
+ * cited where they bite: F2 (a collection getter returns the LIVE array), F3 (a legacy short-circuit
+ * is preserved exactly), F5 (`optionGroup` is typed optional), F6 (the index-base sentinel
+ * translation), F7 (newly found copy-paste defects, recorded not ported), F8 (a collaborator arrives
+ * as a parameter, never a lookup), F11 (a delegation stays a delegation), F12 (validation lives in
+ * `src/validation/**`), F20 (`sortOrder` is ORM-lifecycle-assigned and never assigned here), F21
+ * (`isNew` is a pure derived predicate) and F22 (no framework member is declared on this class).
  *
- * ---------------------------------------------------------------------------------------------
- * WHY THIS IS ONE OF ONLY THREE COMPLETE PORTS IN THE WHOLE `domain/` SUBTREE
- * ---------------------------------------------------------------------------------------------
- * §0.2.2.6 states it directly: "`Brand.cfc`, `Option.cfc` and `OptionGroup.cfc` declare no
- * non-persistent properties at all, so they are unaffected." Verified by full read — this file's
- * source contains not one `persistent="false"` declaration, so there is NO calculated-property
- * boundary to negotiate here and nothing is excluded for pricing, promotion, inventory or currency
- * reasons. Contrast the sixteen `Product`/`Sku` members §0.2.2.6 excludes outright. Everything this
- * entity omits, it omits because the RELATED TYPE is out of scope, never because the member itself
- * reaches a port.
+ * THE ENTITY-MODULE CONVENTION, SHARED WITH `./OptionGroup`:
  *
- * ---------------------------------------------------------------------------------------------
- * RULES VERDICT, RECORDED RATHER THAN ASSUMED (UR4)
- * ---------------------------------------------------------------------------------------------
- * No user-specified rules were provided for this project: `review_rules` returns the single line
- * "No user rules provided." verbatim, with no paginated remainder. The nine AAP §0.7.3 enterprise
- * standards govern in their place, and the bar is NOT lowered.
+ *   1. THE PERSISTENT DATA SURFACE IS PUBLIC FIELDS, named exactly as the legacy properties. CFML
+ *      generated `getX()`/`setX()` pairs from `accessors=true` [model/entity/Option.cfc:L49] and those
+ *      are deliberately not reproduced, for three reasons of which the third is decisive: the folder
+ *      specification sanctions it; AAP §0.8.1 asks for idiomatic TypeScript rather than preserved CFML
+ *      idioms; and `../base/populate` implements CFML's null semantics as `delete target[name]`, its
+ *      port of `_setProperty`'s `structDelete`, which an accessor-backed value cannot satisfy —
+ *      `populate` and `src/adapters/mysql/rowMappers.ts` are field-oriented by construction, so fields
+ *      are required for interop with the very modules that hydrate this entity. Consequently every
+ *      legacy scalar read becomes direct field access: `getOptionCode()`
+ *      [model/entity/Sku.cfc:L135] becomes `option.optionCode`, `getOptionName()`
+ *      [model/entity/Sku.cfc:L236], [:L581], [:L867], [:L888] and
+ *      [model/service/OptionService.cfc:L59] becomes `option.optionName`, `getOptionID()`
+ *      [model/entity/Sku.cfc:L760] becomes `option.optionID`, and `getSortOrder()` becomes
+ *      `option.sortOrder`.
+ *   2. DECLARE A METHOD ONLY where the legacy declares a real body, or where an implicit ORM member is
+ *      called from in-scope code. For this entity that is exactly six members: `getImageDirectory()`
+ *      [model/entity/Option.cfc:L81-L83], `setOptionGroup()` [:L92-L97], `removeOptionGroup()`
+ *      [:L98-L107], `addSku()` [:L110-L112], `removeSku()` [:L113-L115] and the derived `isNew()`,
+ *      which this entity's own [:L94] calls. Nothing else — and in particular NO collection getter,
+ *      because unlike `OptionGroup.getOptions()` [model/entity/OptionGroup.cfc:L73-L79] this entity
+ *      exposes no collection accessor with a body at all.
+ *   3. EVERY LEGACY BEHAVIOURAL CLAIM CARRIES AN INLINE `path:locator` CITATION so each statement can
+ *      be verified against source. `TODO(parity)` marks a carried defect; `TODO(boundary)` marks an
+ *      out-of-scope collaborator.
  *
- * Corroborated independently: repeated `review_rules` calls return the byte-identical single line,
- * and a filesystem sweep finds no `.blitzyignore`, `.cursorrules`, `AGENTS.md`, `CLAUDE.md`,
- * `.editorconfig`, `.eslintrc*`, `.prettierrc*`, `CONTRIBUTING.md` or `CODEOWNERS` anywhere in the
- * repository. Zero files enter scope by rule. The standards with teeth in this module are S1 (no
- * escape-hatch type, no non-null assertion, no suppression comment), S2 (a purely negative
- * obligation — no query, no driver, no pool, and the three table names appear only as prose
- * provenance), S3 (the one setting read becomes an explicit parameter, never a locator), S4, S5
- * (nothing whatsoever is imported from `node_modules`), S6 (`new Option()` is constructible with no
- * argument, no container and no input/output), S7 (three carried defects, none repaired), S8 and S9.
+ * THE COMPONENT DECLARATION [model/entity/Option.cfc:L49], attribute by attribute:
  *
- * ---------------------------------------------------------------------------------------------
- * THE ENTITY-MODULE CONVENTION, INHERITED FROM `./OptionGroup`
- * ---------------------------------------------------------------------------------------------
- * `OptionGroup.ts` was authored immediately before this file and deliberately established the
- * convention for the folder; this module follows it rather than re-deriving it. Together the two are
- * the exemplar `sku/` and `product/` inherit.
- *
- * CONVENTION 1 — THE PERSISTENT DATA SURFACE IS PUBLIC FIELDS, named exactly as the legacy
- * properties. CFML generated `getX()`/`setX()` pairs from `accessors=true`
- * [model/entity/Option.cfc:L49]; those are deliberately not reproduced. Three justifications, the
- * third decisive:
- *   (a) The folder specification sanctions it — "generated accessors become plain members".
- *   (b) §0.8.1 Minimal Change Clause: "It does not mean preserving CFML idioms in TypeScript;
- *       idiomatic, conventional TypeScript is expected."
- *   (c) DECISIVE — `../base/populate` implements CFML's null semantics as `delete target[name]`, its
- *       port of `_setProperty`'s `structDelete`, and an accessor-backed value cannot be deleted.
- *       `populate` and `src/adapters/mysql/rowMappers.ts` are field-oriented by construction, so
- *       fields are required for interop with the very modules that hydrate this entity.
- * Consequently every scalar read at a legacy call site becomes direct field access in the TypeScript
- * consumers: `getOptionCode()` [model/entity/Sku.cfc:L135] becomes `option.optionCode`,
- * `getOptionName()` [model/entity/Sku.cfc:L236], [:L581], [:L867], [:L888] and
- * [model/service/OptionService.cfc:L59] becomes `option.optionName`, `getOptionID()`
- * [model/entity/Sku.cfc:L760] and [model/service/OptionService.cfc:L59] becomes `option.optionID`,
- * and `getSortOrder()` becomes `option.sortOrder`.
- *
- * CONVENTION 2 — DECLARE A METHOD ONLY where the legacy declares a real body, or where an implicit
- * ORM member is called from in-scope code. For this entity that is exactly six members:
- * `getImageDirectory()` [model/entity/Option.cfc:L81-L83], `setOptionGroup()` [:L92-L97],
- * `removeOptionGroup()` [:L98-L107], `addSku()` [:L110-L112], `removeSku()` [:L113-L115] and
- * `isNew()` (derived — see F21, and note that this entity's own [:L94] calls it). Nothing else. The
- * negative half of this rule is F22, below. In particular NO collection getter is declared, because
- * unlike `OptionGroup.getOptions()` [model/entity/OptionGroup.cfc:L73-L79] this entity exposes no
- * collection accessor with a body at all.
- *
- * CONVENTION 3 — EVERY LEGACY BEHAVIOURAL CLAIM CARRIES AN INLINE `path:locator` CITATION, so a
- * skeptical reviewer can verify each statement against source without trusting the narrative
- * (§0.8.5). `TODO(parity)` marks a carried defect; `TODO(boundary)` marks an out-of-scope
- * collaborator.
- *
- * ---------------------------------------------------------------------------------------------
- * SOURCE MAPPING [model/entity/Option.cfc:L49]
- * ---------------------------------------------------------------------------------------------
  *   entityname="SlatwallOption"          ->  this class
  *   table="SwOption"                     ->  owned by `src/adapters/mysql/**`; never named in an
  *                                            executable position here (S2)
  *   hb_serviceName="optionService"       ->  `src/services/OptionService.ts`
- *   hb_permission="optionGroup.options"  ->  ⚠️ PERMISSION IS DELEGATED THROUGH THE PARENT GROUP,
- *                                            not declared on this entity. That is the same
- *                                            ownership asymmetry that makes
- *                                            `OptionGroup.addOption` a one-line delegation into
- *                                            this class. Authorisation is not part of this slice, so
- *                                            the attribute has no counterpart in the port and is
- *                                            recorded here as provenance.
- *   extends="HibachiEntity"              ->  the LOCAL Slatwall base [model/entity/HibachiEntity.cfc]
- *                                            and NOT the framework one (IR-8). Its `populate()`
- *                                            [:L56] becomes the descriptor set at the foot of this
- *                                            file (R-B), and its `setting()` [:L129-L131] is reached
- *                                            by exactly one member here — see F8 on
+ *   hb_permission="optionGroup.options"  ->  PERMISSION IS DELEGATED THROUGH THE PARENT GROUP, not
+ *                                            declared on this entity — the same ownership asymmetry
+ *                                            that makes `OptionGroup.addOption` a one-line delegation
+ *                                            into this class. Authorisation is not part of this slice,
+ *                                            so the attribute has no counterpart in the port.
+ *   extends="HibachiEntity"              ->  the LOCAL Slatwall base [model/entity/HibachiEntity.cfc],
+ *                                            not the framework one (IR-8). Its `populate()` [:L56]
+ *                                            becomes the descriptor set at the foot of this file
+ *                                            (R-B), and its `setting()` [:L129-L131] is reached by
+ *                                            exactly one member here — see F8 on
  *                                            {@link Option.getImageDirectory}.
- *   cacheuse="transactional"             ->  ⚠️ FLAGGED, NOT EMULATED (S8 / mismatch M7). 111 of the
- *                                            113 legacy entities carry this attribute. A warm Lambda
+ *   cacheuse="transactional"             ->  FLAGGED, NOT EMULATED (S8 / mismatch M7). A warm Lambda
  *                                            container persists module scope across invocations and
- *                                            therefore across tenants, so a module-scope
- *                                            second-level cache would be a correctness hazard rather
- *                                            than an optimisation. This module holds no cache, no
- *                                            registry, no counter, no singleton and no mutable
- *                                            module-scope binding; the two module constants below
- *                                            are frozen and content-free. Loading this module has no
- *                                            side effect, performs no input/output and logs nothing.
- *                                            The legacy entity memoised nothing either, so nothing
- *                                            is lost — contrast [model/entity/Sku.cfc:L500-L522],
- *                                            whose per-instance memoisation carries defects D1/D2.
+ *                                            therefore across tenants, so a module-scope second-level
+ *                                            cache would be a correctness hazard rather than an
+ *                                            optimisation. This module holds no cache and no mutable
+ *                                            module-scope binding; its two module constants are
+ *                                            frozen and content-free, and loading it has no side
+ *                                            effect. The legacy entity memoised nothing either, so
+ *                                            nothing is lost — contrast [model/entity/Sku.cfc:L500-L522],
+ *                                            whose per-instance memoisation carries defects D1 and D2.
  *
- * ---------------------------------------------------------------------------------------------
- * ⚠️ M6 — THE VALIDATION READ-BACK LOOP: THIS FILE SUPPLIES READS AND RESOLVES NOTHING
- * ---------------------------------------------------------------------------------------------
- * §0.6.2 calls this "the highest-risk item in the slice", and both halves of it read THIS entity:
- *   - `Sku.hasUniqueOptions()` [model/entity/Sku.cfc:L756-L769] builds a list from
- *     `getOptions()[i].getOptionID()` at [:L760] and then drives a DATABASE READ-BACK DURING SAVE at
- *     [:L763] through `getProduct().getSkusBySelectedOptions(...)`.
- *   - `Sku.hasOneOptionPerOptionGroup()` [model/entity/Sku.cfc:L772-L784] reads
- *     `getOptions()[i].getOptionGroup().getOptionGroupID()` at [:L776] and [:L779].
- * This module's ONLY obligation is that `optionID` and `optionGroup` are plain, SYNCHRONOUSLY
- * readable fields — no async hop, no port, no lazy load — so those consumers need no collaborator to
- * read them. The ordering hazard itself is owned by `src/adapters/mysql/UnitOfWork.ts` and is
- * deliberately NOT addressed here (S8: flag it, resolve nothing).
- * (Informational, for whoever ports `Sku.ts`, and not acted on here: the `listFind` at
- * [model/entity/Sku.cfc:L776] is CASE-SENSITIVE — `listFindNoCase` is the insensitive variant.)
+ * M6 — THE VALIDATION READ-BACK LOOP: THIS FILE SUPPLIES READS AND RESOLVES NOTHING. AAP §0.6.2 calls
+ * it "the highest-risk item in the slice", and both halves read THIS entity:
+ * `Sku.hasUniqueOptions()` [model/entity/Sku.cfc:L756-L769] builds a list from
+ * `getOptions()[i].getOptionID()` at [:L760] and then drives a DATABASE READ-BACK DURING SAVE at
+ * [:L763] through `getProduct().getSkusBySelectedOptions(...)`; and
+ * `Sku.hasOneOptionPerOptionGroup()` [model/entity/Sku.cfc:L772-L784] reads
+ * `getOptions()[i].getOptionGroup().getOptionGroupID()` at [:L776] and [:L779]. This module's ONLY
+ * obligation is that `optionID` and `optionGroup` are plain, SYNCHRONOUSLY readable fields — no async
+ * hop, no port, no lazy load — so those consumers need no collaborator to read them. The ordering
+ * hazard itself belongs to `src/adapters/mysql/UnitOfWork.ts` and is deliberately not addressed here
+ * (S8: flag it, resolve nothing). One detail for whoever ports `Sku.ts`, not acted on here: the
+ * `listFind` at [model/entity/Sku.cfc:L776] is CASE-SENSITIVE, `listFindNoCase` being the insensitive
+ * variant.
  *
- * ---------------------------------------------------------------------------------------------
- * ⚠️ F22 — NEGATIVE MANDATE: NO FRAMEWORK MEMBER IS INVENTED HERE
- * ---------------------------------------------------------------------------------------------
- * None of the following is declared on this class: `getSimpleRepresentation`,
- * `getSimpleRepresentationPropertyName`, `getPrimaryIDPropertyName`, `getPrimaryIDValue`,
- * `getNewFlag`, `validate`, `hasErrors`, `getErrors`, `getPropertyMetaData`, `onMissingMethod`,
- * `populate`, `getPropertySmartList`, `setting`, `getService`, `getAttributeValue` or
- * `getOptionsForSelect`. Three reasons, each independently sufficient: they are `org/Hibachi/**`
- * members and that tree of 938 files is "a boundary to extract from, never modify" (§0.8.3.2); the
- * AAP key-change row for this file names none of them; and unrequested surface is forbidden outright.
- *
- * `getOptionsForSelect` deserves its own line because it is the one most likely to be mistaken for
- * an entity member: it is a SERVICE member [model/service/OptionService.cfc:L55-L62] and belongs to
- * `src/services/OptionService.ts`. Its `{name, value}` projection [:L59] is assembled THERE, from
- * the plain `optionName` and `optionID` fields declared below. (Its loop variable is unscoped at
- * [:L58] — a real defect in a file this port does not own. It is neither fixed nor imitated: S7.)
+ * F22 — NO FRAMEWORK MEMBER IS DECLARED HERE: not the primary-identifier or new-flag accessors, not
+ * `validate`/`hasErrors`/`getErrors`, and not `getPropertyMetaData`, `onMissingMethod`, `populate`,
+ * `getPropertySmartList`, `setting`, `getService`, `getAttributeValue`, `getSimpleRepresentation` or
+ * `getSimpleRepresentationPropertyName`. They are `org/Hibachi/**` members, and that tree is "a
+ * boundary to extract from, never modify" (AAP §0.8.3.2); the AAP key-change row for this file names
+ * none of them; and unrequested surface is forbidden outright. `getOptionsForSelect` deserves its own
+ * line because it is the member most likely to be mistaken for an entity method: it is a SERVICE
+ * member [model/service/OptionService.cfc:L55-L62] belonging to `src/services/OptionService.ts`, whose
+ * `{name, value}` projection [:L59] is assembled THERE from the plain `optionName` and `optionID`
+ * fields declared below. Its loop variable is unscoped at [:L58] — a real defect in a file this port
+ * does not own, neither fixed nor imitated (S7).
  *
  * Recorded because it looks like a gap and is not: the framework's
  * `getSimpleRepresentationPropertyName()` [org/Hibachi/HibachiEntity.cfc:L74-L87] scanned properties
@@ -156,43 +114,48 @@
  * `optionName`, which is declared below, so the entity satisfies the legacy assertion
  * `simple_representation_exists_and_is_simple`
  * [meta/tests/unit/entity/SlatwallEntityTestBase.cfc:L56-L58] structurally, without the member.
- * `isNew()` is the ONE exception to this mandate, and it is forced by this entity's own [:L94].
+ * `isNew()` is the ONE exception to this mandate, forced by this entity's own [:L94].
  *
- * ---------------------------------------------------------------------------------------------
- * IMPORT DISCIPLINE (S4 hexagonal separation, §0.4.3.5)
- * ---------------------------------------------------------------------------------------------
- * Three import statements, and the list is closed: two reach the sibling `base/` modules that
- * hydrate this entity, and the third is the type-only mutual reference to `./OptionGroup` (R-A).
- * Nothing is imported from `src/adapters/**`, `src/services/**`, `src/config/**`,
- * `src/validation/**`, `src/handlers/**`, `src/integrations/**`, `src/util/**`, `src/errors/**` or
- * `src/ports/**`; no sibling entity module other than `./OptionGroup` is reached; no AWS type
- * appears; no `node:` builtin is used; the environment is never read; and nothing at all comes from
- * `node_modules` — not the single runtime dependency the manifest declares, and none of `uuid`,
- * `zod`, `class-validator`, `lodash`, `date-fns` or `reflect-metadata` (S5: the manifest is closed
- * and this file adds nothing to it).
- *
- * Every specifier is relative, extensionless and single-quoted, because `tsconfig.json` declares
- * neither `paths` nor `baseUrl` so that `tsc` and `esbuild` resolve identically (§0.4.3.5). Named
- * exports only and no default export, no top-level `await` and no `import.meta`, because the
- * artifact is bundled to CommonJS for the Node 20 Lambda runtime.
+ * IMPORT DISCIPLINE (S4 hexagonal separation). Three import statements and the list is closed: two
+ * reach the sibling `base/` modules that hydrate this entity, and the third is the type-only mutual
+ * reference to `./OptionGroup` (R-A). Nothing is imported from `src/adapters/**`, `src/services/**`,
+ * `src/config/**`, `src/validation/**`, `src/handlers/**`, `src/integrations/**`, `src/util/**`,
+ * `src/errors/**` or `src/ports/**`; no sibling entity module other than `./OptionGroup` is reached;
+ * no AWS type appears; no `node:` builtin is used; the environment is never read; and nothing comes
+ * from `node_modules` (S5 — the manifest is closed and this file adds nothing to it). Every specifier
+ * is relative and extensionless because `tsconfig.json` declares neither `paths` nor `baseUrl`, so
+ * `tsc` and `esbuild` resolve identically; named exports only, no default export, no top-level
+ * `await` and no `import.meta`, because the artifact is bundled to CommonJS for the Node 20 Lambda
+ * runtime.
  *
  * ONE DELIBERATE NON-IMPORT, RECORDED SO IT READS AS A DECISION. `src/ports/SettingResolverPort.ts`
- * exists and its own documentation anticipates this file by name, noting that its `setting` member is
- * declared in method syntax with an OPTIONAL context specifically so that "a sibling that narrows the
- * name to a single literal — as `src/domain/option/Option.ts` does for
- * `'globalAssetsImageFolderPath'`, its only read [model/entity/Option.cfc:L82] — still accepts a full
- * implementation of this port". This module honours that design WITHOUT importing the port: the
- * declared dependency set for this file does not include it, and the domain layer reaching into
- * `src/ports/**` would invert the very direction S4 exists to protect. {@link
- * OptionImageDirectoryResolver} is therefore shaped so that a full `SettingResolverPort`
- * implementation satisfies its `setting` half structurally — method syntax, one required parameter,
- * an accepted optional second — which is exactly the interoperability the port asks for.
+ * declares its `setting` member in method syntax with an OPTIONAL context precisely so that a sibling
+ * narrowing the name to a single literal still accepts a full implementation of the port. This module
+ * honours that design WITHOUT importing it: the domain layer reaching into `src/ports/**` would invert
+ * the direction S4 exists to protect. {@link OptionImageDirectoryResolver} is therefore shaped so a
+ * full `SettingResolverPort` implementation satisfies its `setting` half structurally — method syntax,
+ * one required parameter, an accepted optional second — which is exactly the interoperability the port
+ * asks for. This entity's only setting read is `'globalAssetsImageFolderPath'`
+ * [model/entity/Option.cfc:L82].
  */
 
-import { AUDIT_PROPERTY_NAMES } from '../base/AuditableEntity';
-import type { AuditPropertyName, AuditableEntity } from '../base/AuditableEntity';
+import {
+  AUDIT_PROPERTY_NAMES,
+  hasDeclaredProperty,
+  readValueByPropertyIdentifier,
+  requireDeclaredPropertyMetaData,
+} from '../base/AuditableEntity';
+import type {
+  AuditPropertyName,
+  AuditableEntity,
+  DeclaredPropertyNameSet,
+  EntityPropertyMetaData,
+  ManagedEntity,
+} from '../base/AuditableEntity';
 import type {
   ColumnPropertyDescriptor,
+  EntityMetadataDeclaration,
+  DisabledPropertyDescriptor,
   ManyToManyPropertyDescriptor,
   ManyToOnePropertyDescriptor,
   PropertyDescriptorSet,
@@ -200,7 +163,7 @@ import type {
   SubPropertyPopulator,
 } from '../base/populate';
 /*
- * ⚠️ R-A — THE MUTUAL TYPE REFERENCE WITH `./OptionGroup`, AND WHY IT IS SAFE.
+ * R-A — THE MUTUAL TYPE REFERENCE WITH `./OptionGroup`, AND WHY IT IS SAFE.
  *
  * `Option.optionGroup` is an `OptionGroup`; `OptionGroup.options` is an `Option[]`. That is a genuine
  * two-way reference and it is resolved deliberately rather than broken: NEITHER CLASS EVER
@@ -248,11 +211,158 @@ export type OptionPropertyName =
   | 'remoteID'
   | AuditPropertyName;
 
+/* ================================================================================================
+ * THE MANAGED-ENTITY CONSTANTS — WHAT ONLY THIS ENTITY CAN STATE
+ * ================================================================================================
+ * `src/domain/base/AuditableEntity.ts` holds the shared managed-entity contract and every word of
+ * its rationale. Three facts cannot be shared because they differ per entity, and the legacy
+ * resolved all three at runtime — two by reflecting over live component metadata and one through the
+ * DI/1 service locator. TR-3 and AAP 0.7.3 S3 replace all three with declarations.
+ * ================================================================================================ */
+
+/**
+ * The bare class name — the value [org/Hibachi/HibachiObject.cfc:L135-L137] derives by taking the
+ * last dot-delimited segment of the component's fully qualified name.
+ *
+ * ⚠️ NOT the same as {@link OPTION_ENTITY_NAME}: this one carries no `Slatwall` prefix. It is
+ * interpolated into every validation message
+ * [org/Hibachi/HibachiValidationService.cfc:L202, :L213, :L216] and into the property-metadata
+ * failure [org/Hibachi/HibachiTransient.cfc:L746], so a prefixed value here would change observable
+ * message text.
+ */
+export const OPTION_CLASS_NAME = 'Option';
+
+/**
+ * The mapped ORM entity name, declared by the `entityname` attribute on
+ * [model/entity/Option.cfc:L49] and read at runtime by [org/Hibachi/HibachiEntity.cfc:L287-L289].
+ *
+ * ⚠️ THIS IS THE LOGICAL ENTITY NAME, NOT THE PHYSICAL `Sw*` TABLE NAME. The legacy uniqueness
+ * statement [org/Hibachi/HibachiDAO.cfc:L140] is expressed over the mapped object graph, so the
+ * prefixed form is correct there and is not a defect to correct; translating it to a table is the
+ * adapter's responsibility.
+ */
+export const OPTION_ENTITY_NAME = 'SlatwallOption';
+
+/**
+ * The name of the primary identifier property — [model/entity/Option.cfc:L52], which declares
+ * `fieldtype="id" generator="uuid" ormtype="string" length="32" unsavedvalue=""` (AAP IR-6).
+ *
+ * The legacy resolved this name through `getService("hibachiService")`
+ * [org/Hibachi/HibachiEntity.cfc:L249-L251]. Declaring it removes the service locator AAP 0.7.3 S3
+ * forbids, and it is what makes the value safe to place in identifier position after the adapter
+ * validates it: the name comes from entity metadata, never from caller input.
+ */
+export const OPTION_PRIMARY_ID_PROPERTY_NAME = 'optionID';
+
+/**
+ * Every property this entity DECLARES, as a keyed set — the port of `getPropertiesStruct()`, the
+ * structure [org/Hibachi/HibachiTransient.cfc:L739] resolves and which both `hasProperty` [:L764]
+ * and `getPropertyMetaData` [:L741] key into. A CFML struct keyed by property name is what the
+ * legacy held; a keyed object is what this holds, and membership is an own-key test in both.
+ *
+ * ⚠️ THE `DeclaredPropertyNameSet<OptionPropertyName>` ANNOTATION IS THE POINT, NOT DECORATION. It checks this
+ * set against the entity's property-name union in BOTH directions: a MISSING name fails to compile
+ * ("Property 'x' is missing in type"), and an INVENTED one fails to compile too (the object is not
+ * assignable). Both directions matter. A missing name would make `hasProperty` answer false, and
+ * [org/Hibachi/HibachiValidationService.cfc:L171] SILENTLY SKIPS a rule whose property is absent —
+ * so a validation rule would stop running with no error anywhere in the port. An invented name
+ * would START running a rule the legacy never ran.
+ *
+ * ⭐ THIS SET IS THE ENTITY'S COMPLETE DECLARED SURFACE, because [model/entity/Option.cfc] declares
+ * NO non-persistent property at all — a fact AAP 0.2.2.6 records explicitly ("`Brand.cfc`,
+ * `Option.cfc` and `OptionGroup.cfc` declare no non-persistent properties"). Every identifier
+ * `model/validation/Option.json` names — `optionCode` [:L3], `optionName` [:L4], `optionGroup` [:L5]
+ * and `skus` [:L6] — is present here, so all four of that document's rules genuinely RUN, unlike the
+ * `physicalCounts` delete guards on the sibling entities, which the presence gate skips.
+ *
+ * ⚠️ THIS IS A STATEMENT ABOUT WHAT THE LEGACY ENTITY DECLARES, NOT ABOUT WHAT THIS PORT
+ * IMPLEMENTS, and the two differ deliberately. AAP 0.2.2.6 excludes the pricing, promotion,
+ * inventory and currency-derived calculated members from the port because they reach exclusively
+ * into out-of-scope services — yet the legacy still DECLARES them, so `hasProperty` must still
+ * answer true for them exactly as the legacy does. Trimming this set to the implemented surface
+ * would be the "missing name" failure above dressed up as tidiness.
+ */
+export const OPTION_DECLARED_PROPERTIES: DeclaredPropertyNameSet<OptionPropertyName> =
+  Object.freeze({
+    optionID: true,
+    optionCode: true,
+    optionName: true,
+    optionDescription: true,
+    sortOrder: true,
+    optionGroup: true,
+    skus: true,
+    remoteID: true,
+    createdDateTime: true,
+    createdByAccount: true,
+    modifiedDateTime: true,
+    modifiedByAccount: true,
+  });
+
+/**
+ * Option's frozen metadata declaration — the runtime answer to the seven framework introspection
+ * members this class deliberately does not declare.
+ *
+ * See {@link EntityMetadataDeclaration} for what each member ports. This constant is the ONLY place
+ * in this module where the class name and the ORM entity name appear as VALUES rather than as prose,
+ * and {@link OPTION_PROPERTY_DESCRIPTORS} reads its `className` from here so the literal is written
+ * once.
+ *
+ * ⚠️ THIS ENTITY IS THE ONE IN THE SLICE WHOSE DECLARED SET AND FIELD SET DIVERGE, AND THE DIVERGENCE
+ * IS MEASURED RATHER THAN INCIDENTAL. [model/entity/Option.cfc] declares EIGHTEEN persistent
+ * properties; {@link OptionPropertyName} carries TWELVE of them, because six relationships reach
+ * entities AAP §0.2.2.2 excludes and this port therefore does not model. The legacy predicate
+ * `structKeyExists(getPropertiesStruct(), name)` answers true for all eighteen, so the six are
+ * listed under `declaredNonFieldProperties` — that is what keeps `hasProperty` answering exactly as
+ * the legacy predicate did, while leaving the six unreadable through
+ * {@link EntityMetadataSurface.getValueByPropertyIdentifier}, which is the honest state for a
+ * property this port has no field for. No in-scope rule set or uniqueness check names any of the
+ * six, so the read-side divergence is unreachable; the answer-side divergence would have been
+ * reachable and is therefore closed.
+ *
+ * TWELVE FIELD KEYS: [`:L52-L56`], [`:L59`], [`:L66`], [`:L73`] and the four audit properties at
+ * [`:L76-L79`].
+ */
+export const OPTION_ENTITY_METADATA: EntityMetadataDeclaration<OptionPropertyName> = Object.freeze({
+  className: 'Option',
+  entityName: 'SlatwallOption',
+  primaryIDPropertyName: 'optionID',
+  properties: Object.freeze({
+    optionID: true,
+    optionCode: true,
+    optionName: true,
+    optionDescription: true,
+    sortOrder: true,
+    optionGroup: true,
+    skus: true,
+    remoteID: true,
+    createdDateTime: true,
+    createdByAccount: true,
+    modifiedDateTime: true,
+    modifiedByAccount: true,
+  } satisfies Readonly<Record<OptionPropertyName, true>>),
+  /*
+   * The six persistent relationships [model/entity/Option.cfc] declares and this port does not
+   * model: `defaultImage` [`:L60`] and `images` [`:L63`] reach the out-of-scope image entity, and
+   * `promotionRewards` [`:L67`], `promotionRewardExclusions` [`:L68`], `promotionQualifiers`
+   * [`:L69`] and `promotionQualifierExclusions` [`:L70`] reach the out-of-scope promotion entities.
+   * Typed as a plain key record rather than as a union, because by definition these are the names no
+   * property-name union in this module carries; there is nothing to constrain them against.
+   */
+  declaredNonFieldProperties: Object.freeze({
+    defaultImage: true,
+    images: true,
+    promotionRewards: true,
+    promotionRewardExclusions: true,
+    promotionQualifiers: true,
+    promotionQualifierExclusions: true,
+  }),
+} satisfies EntityMetadataDeclaration<OptionPropertyName>);
+
 /**
  * The two framework capabilities {@link Option.getImageDirectory} reaches through — supplied as an
  * explicit parameter rather than resolved.
  *
- * ⚠️ F8 / S3 — WHY THIS INTERFACE EXISTS AND WHY IT IS SHAPED EXACTLY LIKE THIS.
+ * F8 / S3 — WHY THIS INTERFACE EXISTS AND WHY IT IS SHAPED EXACTLY LIKE THIS.
  * The legacy body is one line [model/entity/Option.cfc:L81-L83]:
  *
  *     public string function getImageDirectory() {
@@ -321,37 +431,30 @@ export interface OptionImageDirectoryResolver {
  * The owning side of the `SwSkuOption` relationship, as narrowly as {@link Option.addSku} and
  * {@link Option.removeSku} actually use it.
  *
- * ⚠️ F11 / R-C / IR-1 — THIS IS AN EXPLICIT DECLARATION OF TWO ORM-SYNTHESIZED MEMBERS, NOT MERELY A
- * FORWARD REFERENCE. Verified by grep across [model/entity/Sku.cfc]: that file declares NO
- * `addOption` and NO `removeOption` anywhere. Both members were SYNTHESIZED at runtime from
- * `singularname="option"` on the owning many-to-many at [model/entity/Sku.cfc:L76], which is exactly
- * the implicit surface IR-1 requires to be declared explicitly because TypeScript under `strict` has
- * no equivalent facility. So this interface is not a placeholder for something already written —
- * it is the first place these two members exist as declarations at all.
+ * F11 / R-C / IR-1 — THIS IS AN EXPLICIT DECLARATION OF TWO ORM-SYNTHESIZED MEMBERS, NOT MERELY A
+ * FORWARD REFERENCE. [model/entity/Sku.cfc] declares no `addOption` and no `removeOption` anywhere:
+ * both were SYNTHESIZED at runtime from `singularname="option"` on the owning many-to-many at
+ * [model/entity/Sku.cfc:L76], which is exactly the implicit surface IR-1 requires to be declared
+ * explicitly because TypeScript under `strict` has no equivalent facility. This interface is therefore
+ * the first place those two members exist as declarations at all.
  *
- * THE OWNERSHIP ASYMMETRY, WHICH IS THE WHOLE REASON THOSE TWO METHODS DELEGATE:
- *   - `Sku` is the OWNING side. [model/entity/Sku.cfc:L75] labels the block
- *     "(many-to-many - owner)" and [:L76] declares
- *     `property name="options" singularname="option" cfc="Option" fieldtype="many-to-many"
- *      linktable="SwSkuOption" fkcolumn="skuID" inversejoincolumn="optionID";`
- *     — carrying NO `inverse="true"`.
- *   - `Option` is the INVERSE side. [model/entity/Option.cfc:L66] declares the mirror image,
- *     `linktable="SwSkuOption" fkcolumn="optionID" inversejoincolumn="skuID"`, and it DOES carry
- *     `inverse="true"`.
- * The link table `SwSkuOption` is named here as prose provenance only, never in an executable
+ * THE OWNERSHIP ASYMMETRY, WHICH IS THE WHOLE REASON THOSE TWO METHODS DELEGATE. `Sku` is the OWNING
+ * side: [model/entity/Sku.cfc:L75] labels the block "(many-to-many - owner)" and [:L76] declares
+ * `linktable="SwSkuOption" fkcolumn="skuID" inversejoincolumn="optionID"` carrying NO `inverse="true"`.
+ * `Option` is the INVERSE side: [model/entity/Option.cfc:L66] declares the mirror image,
+ * `linktable="SwSkuOption" fkcolumn="optionID" inversejoincolumn="skuID"`, and it DOES carry
+ * `inverse="true"`. The link table is named here as prose provenance only, never in an executable
  * position (S2); the physical link belongs to `src/adapters/mysql/**`.
  *
- * A LOCAL STRUCTURAL INTERFACE RATHER THAN AN IMPORT, AND DELIBERATELY MINIMAL.
- * `src/domain/sku/Sku.ts` is a different module's file, so it is neither created nor imported here.
- * The interface therefore covers ONLY what [model/entity/Option.cfc:L110-L115] actually touches — the
- * two members — and nothing more. It is NOT typed as an escape-hatch collection (S1), and its name is
- * deliberately distinct from `Sku` so it can never be mistaken for the real domain type. Because
- * TypeScript is structurally typed, a concrete `Sku` declaring these two members satisfies it with no
- * adapter, no cast and no change to this file.
+ * A LOCAL STRUCTURAL INTERFACE RATHER THAN AN IMPORT, AND DELIBERATELY MINIMAL. It covers ONLY what
+ * [model/entity/Option.cfc:L110-L115] touches — the two members — is not typed as an escape-hatch
+ * collection (S1), and is named distinctly from `Sku` so it can never be mistaken for the real domain
+ * type. Because TypeScript is structurally typed, a concrete `Sku` declaring these two members
+ * satisfies it with no adapter and no cast.
  *
  * TODO(boundary): the eventual concrete counterpart is `src/domain/sku/Sku.ts`, which owns the link
- * collection and the `SwSkuOption` write. This module never maintains that collection itself — see
- * the note on {@link Option.addSku}.
+ * collection and the `SwSkuOption` write. This module never maintains that collection itself — see the
+ * note on {@link Option.addSku}.
  */
 export interface SkuOptionOwner {
   /**
@@ -372,7 +475,7 @@ export interface SkuOptionOwner {
 }
 
 /* ===============================================================================================
- * ⛔ THE EXCLUSION REGISTER — SIX RELATIONSHIPS AND TWELVE METHODS THAT ARE NOT PORTED
+ * THE EXCLUSION REGISTER — SIX RELATIONSHIPS AND TWELVE METHODS THAT ARE NOT PORTED
  * ===============================================================================================
  * The AAP key-change row for this file names the five persistent properties, `optionGroup` and
  * `skus`. Everything below is in the source and is deliberately absent from the port. Each is
@@ -405,14 +508,14 @@ export interface SkuOptionOwner {
  *   [model/entity/Option.cfc:L142-L144] addPromotionQualifierExclusion
  *   [model/entity/Option.cfc:L145-L147] removePromotionQualifierExclusion
  *
- * ⚠️ F7 / TODO(parity) — TWO NEWLY DISCOVERED COPY-PASTE DEFECTS, RECORDED HERE AND NEITHER PORTED
+ * F7 / TODO(parity) — TWO NEWLY DISCOVERED COPY-PASTE DEFECTS, RECORDED HERE AND NEITHER PORTED
  * NOR REPAIRED. Both `remove*Exclusion` members call `addExcludedOption` where they plainly intend
  * `removeExcludedOption`:
  *   [model/entity/Option.cfc:L129-L131] `removePromotionRewardExclusion` calls
  *       `arguments.promotionReward.addExcludedOption( this )`
  *   [model/entity/Option.cfc:L145-L147] `removePromotionQualifierExclusion` calls
  *       `arguments.promotionQualifier.addExcludedOption( this )`
- * so asking either to REMOVE an exclusion ADDS one instead. Verified by direct read, and contrast
+ * so asking either to REMOVE an exclusion ADDS one instead. Contrast
  * their correctly-paired siblings at [:L121-L123] and [:L137-L139], which do call `removeOption`.
  * These are NOT in the AAP §0.6.7 D1-D21 register — that register attributes D1, D2, D3, D16 and D19
  * to `Sku.cfc`, D5 to `Product.cfc` and D21 to `ProductType.cfc`, and lists nothing at all for this
@@ -454,13 +557,23 @@ export interface SkuOptionOwner {
  * `../base/populate` clears a value with `delete` and why every nullable column below is optional
  * rather than explicitly union-ed with `undefined`. `tsconfig.json` targets ES2022, so
  * `useDefineForClassFields` defaults to `true` and a declared-but-uninitialised field is materialised
- * with the value `undefined` at construction rather than left absent. The distinction is invisible to
- * every consumer in this slice — `exactOptionalPropertyTypes` already forces each reader to handle
- * `undefined`, `JSON.stringify` omits it, and `delete` restores true absence — so it is documented
- * here rather than papered over with a `declare` modifier or a hand-written constructor the source
- * does not have. The sibling `./OptionGroup` records the identical note; the convention is shared.
+ * with the value `undefined` at construction rather than left absent. For a SCALAR COLUMN that
+ * distinction is invisible to every consumer in this slice — `exactOptionalPropertyTypes` already
+ * forces each reader to handle `undefined`, `JSON.stringify` omits it, and `delete` restores true
+ * absence — so the scalar columns below are documented here rather than papered over with a `declare`
+ * modifier or a hand-written constructor the source does not have. The sibling `./OptionGroup` records
+ * the identical note for its scalars; that convention is shared.
+ *
+ * THE ONE ASSOCIATION FIELD IS THE EXCEPTION, AND IT IS AN EXCEPTION ON PURPOSE.
+ * {@link Option.optionGroup} carries `declare`, so it is genuinely ABSENT on a fresh instance rather
+ * than present holding `undefined`. `./OptionGroup` needs no such exception because it declares no
+ * many-to-one at all. The reason is a contract owned one layer out:
+ * `src/adapters/mysql/rowMappers.ts` hydrates scalar columns only, leaves every many-to-one
+ * UNRESOLVED, and guarantees that an unresolved association is absent — a guarantee the sibling
+ * entities `Product`, `Sku` and `Brand` already honour by declaring their association fields the same
+ * way. See the field's own doc comment.
  */
-export class Option implements AuditableEntity {
+export class Option implements AuditableEntity, ManagedEntity {
   /* -------------------------------------------------------------------------------------------
    * Persistent Properties — [model/entity/Option.cfc:L52-L56]
    * ----------------------------------------------------------------------------------------- */
@@ -472,7 +585,7 @@ export class Option implements AuditableEntity {
    *   property name="optionID" ormtype="string" length="32" fieldtype="id" generator="uuid"
    *            unsavedvalue="" default="";
    *
-   * ⚠️ F21 — TYPED `string` AND INITIALISED TO `''`, NEVER OPTIONAL AND NEVER NULL. This is the single
+   * F21 — TYPED `string` AND INITIALISED TO `''`, NEVER OPTIONAL AND NEVER NULL. This is the single
    * most load-bearing typing decision in the file, and on THIS entity it is doubly so, because
    * {@link Option.setOptionGroup} consults `isNew()` at [model/entity/Option.cfc:L94] and `isNew()` is
    * DERIVED FROM THIS FIELD rather than stored. The chain, end to end:
@@ -564,15 +677,15 @@ export class Option implements AuditableEntity {
    * PORT OF [model/entity/Option.cfc:L56]:
    *   property name="sortOrder" ormtype="integer" sortContext="optionGroup";
    *
-   * ⚠️ F20 / TODO(boundary) — THIS FIELD IS ORM-LIFECYCLE-ASSIGNED AND NOTHING IN APPLICATION CODE
+   * F20 / TODO(boundary) — THIS FIELD IS ORM-LIFECYCLE-ASSIGNED AND NOTHING IN APPLICATION CODE
    * EVER SETS IT. `setSortOrder(` matches EXACTLY ONE LINE in the whole repository —
    * [org/Hibachi/HibachiEntity.cfc:L646] — inside the `preInsert()` block at
    * [org/Hibachi/HibachiEntity.cfc:L637-L647], which reads the current top value through
    * `getService("hibachiService").getTableTopSortOrder(...)`
    * [org/Hibachi/HibachiService.cfc:L777] and assigns `topSortOrder + 1`.
    *
-   * ⭐ THIS ENTITY IS THE ONE THAT EXERCISES THE `sortContext` BRANCH, and that is why the attribute
-   * is worth this much comment. `sortContext=` occurs exactly five times repository-wide —
+   * THIS ENTITY IS THE ONE THAT EXERCISES THE `sortContext` BRANCH, and that is why the attribute
+   * is worth this much comment. `sortContext=` occurs exactly five times in the legacy tree —
    * [model/entity/Attribute.cfc:L60], [model/entity/ShippingMethodRate.cfc:L53],
    * [model/entity/Option.cfc:L56], [model/entity/ShippingMethod.cfc:L55] and
    * [model/entity/AttributeOption.cfc:L55] — and THIS IS THE ONLY IN-SCOPE ONE. The branch at
@@ -595,7 +708,7 @@ export class Option implements AuditableEntity {
    * write it. Unlike [model/entity/OptionGroup.cfc:L58], THIS COLUMN CARRIES NO `required="true"`, so
    * optional is not merely the pragmatic choice — it is what the mapping actually declares.
    *
-   * ⚠️ S7 — LATENT ISSUE RECORDED, NOT REPAIRED. That missing `required` constraint matters, because
+   * S7 — LATENT ISSUE RECORDED, NOT REPAIRED. That missing `required` constraint matters, because
    * this column is a MULTIPLICAND in the sorted-SKU ordering:
    * `SUM(SwOption.sortOrder * POWER(10, <next> - SwOptionGroup.sortOrder))` at
    * [model/dao/SkuDAO.cfc:L195] for SQL Server and [:L197] otherwise. One null here makes the ENTIRE
@@ -618,7 +731,7 @@ export class Option implements AuditableEntity {
    * PORT OF [model/entity/Option.cfc:L59]:
    *   property name="optionGroup" cfc="OptionGroup" fieldtype="many-to-one" fkcolumn="optionGroupID";
    *
-   * ⚠️ THIS ENTITY OWNS THE FOREIGN KEY. `fkcolumn="optionGroupID"` sits HERE, and the mirror
+   * THIS ENTITY OWNS THE FOREIGN KEY. `fkcolumn="optionGroupID"` sits HERE, and the mirror
    * declaration [model/entity/OptionGroup.cfc:L70] carries `inverse="true"`. That single fact explains
    * the whole shape of this module: all bidirectional mutation logic for the relationship lives in
    * {@link Option.setOptionGroup} and {@link Option.removeOptionGroup}, and `OptionGroup.addOption`
@@ -628,7 +741,7 @@ export class Option implements AuditableEntity {
    * The column name is recorded as provenance only; the column-to-field mapping belongs to
    * `src/adapters/mysql/rowMappers.ts`.
    *
-   * ⚠️ F5 — TYPED OPTIONAL, AND THE REASON IS A GENUINE TENSION IN THE SOURCE RATHER THAN A
+   * F5 — TYPED OPTIONAL, AND THE REASON IS A GENUINE TENSION IN THE SOURCE RATHER THAN A
    * RELAXATION OF THE CONTRACT. Both halves are real and both are carried (S8):
    *
    *   REQUIRED — [model/validation/Option.json:L5] declares
@@ -653,8 +766,17 @@ export class Option implements AuditableEntity {
    * `getOptions()[i].getOptionGroup().getOptionGroupID()` at [model/entity/Sku.cfc:L776] and [:L779],
    * and `Sku.generateImageFileName()` reaches `option.getOptionGroup().getImageGroupFlag()` at
    * [:L134]. Both are plain field reads in the port — no port, no lazy load, no async hop.
+   *
+   * ⚠️ `declare`, AND IT IS THE ONLY FIELD IN THIS CLASS THAT CARRIES IT. `declare` suppresses the
+   * field DEFINITION while keeping the type, so a fresh `new Option()` does not carry this key at all
+   * and an unresolved parent group is ABSENT rather than present holding `undefined`. That is what
+   * `src/adapters/mysql/rowMappers.ts` promises for every unhydrated many-to-one, and this is the
+   * class's only many-to-one; the scalar columns above deliberately do NOT use it, for the reason set
+   * out in the class doc comment. `delete` in {@link Option.removeOptionGroup} is unaffected — it
+   * still removes the key when one has genuinely been assigned, which is the faithful port of
+   * `structDelete(variables, "optionGroup")` at [model/entity/Option.cfc:L106].
    */
-  optionGroup?: OptionGroup;
+  declare optionGroup?: OptionGroup;
 
   /* -------------------------------------------------------------------------------------------
    * Related Object Properties (many-to-many - inverse) — [model/entity/Option.cfc:L66]
@@ -667,7 +789,7 @@ export class Option implements AuditableEntity {
    *   property name="skus" singularname="sku" cfc="Sku" fieldtype="many-to-many"
    *            linktable="SwSkuOption" fkcolumn="optionID" inversejoincolumn="skuID" inverse="true";
    *
-   * ⚠️ THE INVERSE SIDE. `Sku` owns this relationship — [model/entity/Sku.cfc:L75] labels its block
+   * THE INVERSE SIDE. `Sku` owns this relationship — [model/entity/Sku.cfc:L75] labels its block
    * "(many-to-many - owner)" and [:L76] declares the mirror with NO `inverse="true"`. Consequently
    * {@link Option.addSku} and {@link Option.removeSku} are PURE DELEGATIONS and THIS ARRAY IS NEVER
    * MUTATED BY THEM; see the note on {@link Option.addSku} for why duplicating the write here would
@@ -744,7 +866,6 @@ export class Option implements AuditableEntity {
    * absence is represented two different ways on purpose.
    * ----------------------------------------------------------------------------------------- */
 
-  /** When the row was first written. PORT OF [model/entity/Option.cfc:L76]. */
   createdDateTime?: Date;
 
   /**
@@ -784,7 +905,7 @@ export class Option implements AuditableEntity {
    *         return getURLFromPath(setting('globalAssetsImageFolderPath')) & '/option/';
    *     }
    *
-   * ⚠️ F8 / S3 — THE COLLABORATOR IS A PARAMETER, NOT A LOOKUP. The legacy reached both of its
+   * F8 / S3 — THE COLLABORATOR IS A PARAMETER, NOT A LOOKUP. The legacy reached both of its
    * collaborators through inheritance, and one of them, `setting()`
    * [model/entity/HibachiEntity.cfc:L129-L131], is a string-keyed service locator onto the
    * out-of-scope settings engine. S3 permits exactly one replacement for that: an explicitly injected,
@@ -839,7 +960,7 @@ export class Option implements AuditableEntity {
    * [model/entity/OptionGroup.cfc:L92-L94] does nothing but call this method, so ALL synchronisation
    * logic for the relationship is here and exists in exactly one place.
    *
-   * ⚠️ F3 / TODO(parity) — THE SHORT-CIRCUIT IS PRESERVED EXACTLY, INCLUDING ITS SURPRISING
+   * F3 / TODO(parity) — THE SHORT-CIRCUIT IS PRESERVED EXACTLY, INCLUDING ITS SURPRISING
    * CONSEQUENCE, AND IT IS NOT REPAIRED. The condition at [model/entity/Option.cfc:L94] is a
    * short-circuiting OR whose FIRST arm is this option's own `isNew()`. CFML's `or` short-circuits and
    * so does `||`, therefore:
@@ -857,7 +978,7 @@ export class Option implements AuditableEntity {
    * [model/entity/PromotionReward.cfc:L219], spelled `arguments.option.isNew() or
    * !hasOption(arguments.option)`.
    *
-   * ⚠️ THE APPEND TARGETS THE LIVE ARRAY, BY REFERENCE — A DEFENSIVE COPY WOULD BE A SILENT NO-OP.
+   * THE APPEND TARGETS THE LIVE ARRAY, BY REFERENCE — A DEFENSIVE COPY WOULD BE A SILENT NO-OP.
    * `OptionGroup.getOptions()` returns its backing array itself, by reference, and guarantees so
    * explicitly (its own F2 note, ported from [model/entity/OptionGroup.cfc:L73-L79]). Pushing onto the
    * returned array is therefore how the group's collection actually changes. Writing
@@ -885,73 +1006,56 @@ export class Option implements AuditableEntity {
   /**
    * Detaches this option from an option group, clearing both sides of the relationship.
    *
-   * PORT OF [model/entity/Option.cfc:L98-L107]. The legacy body, verbatim apart from the guard on the
-   * found index, which is described rather than quoted for the reason given under F6 below:
+   * PORT OF [model/entity/Option.cfc:L98-L107], whose body substitutes the currently-assigned group
+   * when the argument is omitted [:L99-L101], finds the option in the group's collection with
+   * `arrayFind` [:L102], removes it under a found-index guard [:L103-L105], and then clears its own
+   * back-reference with `structDelete` [:L106].
    *
-   *     public void function removeOptionGroup(any optionGroup) {
-   *         if(!structKeyExists(arguments, "optionGroup")) {
-   *             arguments.optionGroup = variables.optionGroup;
-   *         }
-   *         var index = arrayFind(arguments.optionGroup.getOptions(), this);
-   *         ... guard on the found index ...
-   *             arrayDeleteAt(arguments.optionGroup.getOptions(), index);
-   *         ...
-   *         structDelete(variables, "optionGroup");
-   *     }
-   *
-   * THE ARGUMENT IS OPTIONAL IN THE LEGACY — `any optionGroup`, with no `required` — and the fallback
-   * at [model/entity/Option.cfc:L99-L101] substitutes the currently-assigned group. Both paths are
-   * therefore part of the contract and both are reproduced. `OptionGroup.removeOption` passes the group
+   * THE ARGUMENT IS OPTIONAL IN THE LEGACY — `any optionGroup`, with no `required` — so both paths are
+   * part of the contract and both are reproduced. `OptionGroup.removeOption` passes the group
    * explicitly [model/entity/OptionGroup.cfc:L96], and `??` treats an explicitly-passed `undefined`
    * exactly as CFML treated an omitted argument, which is the faithful reading of a
    * `structKeyExists(arguments, ...)` test.
    *
-   * ⭐ ⚠️ F6 — THE INDEX-BASE TRANSLATION. THIS IS THE HIGHEST-RISK TRANSLATION IN THE FILE AND
-   * §0.8.2 GUIDELINE 6 EXISTS TO HAVE IT DOCUMENTED. Two sentinel conventions collide:
+   * F6 — THE INDEX-BASE TRANSLATION, WHERE TWO SENTINEL CONVENTIONS COLLIDE. CFML `arrayFind` returns
+   * a ONE-BASED index and `0` for "not found", so the legacy greater-than-zero guard at
+   * [model/entity/Option.cfc:L103] is correct in CFML. TypeScript `Array.prototype.indexOf` returns a
+   * ZERO-BASED index and `-1` for "not found", so `0` is a PERFECTLY VALID POSITION. Transliterating
+   * that guard would compile, raise nothing, and SILENTLY FAIL TO REMOVE AN OPTION SITTING AT POSITION
+   * 0 of its group's collection — which is where the first option of every group sits, making it the
+   * common case rather than an edge case. The correct translation is a comparison against `-1`, and it
+   * is what appears below; the legacy guard is paraphrased above rather than quoted so that no CFML
+   * one-based sentinel survives anywhere in this file.
    *
-   *   CFML `arrayFind` [model/entity/Option.cfc:L102] returns a ONE-BASED index and returns `0` to
-   *   mean "not found", so the legacy guard at [model/entity/Option.cfc:L103] is a greater-than-zero
-   *   test and is correct in CFML.
-   *
-   *   TypeScript `Array.prototype.indexOf` returns a ZERO-BASED index and returns `-1` to mean "not
-   *   found", so `0` is a PERFECTLY VALID POSITION.
-   *
-   * Transliterating that guard would therefore compile, raise nothing, and SILENTLY FAIL TO REMOVE AN
-   * OPTION SITTING AT POSITION 0 of its group's collection — which is where the first option of every
-   * group sits, making it the common case rather than an edge case. The correct translation is a
-   * comparison against `-1`, and it is what appears below. The legacy guard is deliberately paraphrased
-   * rather than quoted above so that a reviewer grepping this file for a surviving CFML one-based
-   * sentinel finds nothing.
-   *
-   * `arrayFind` matches objects by REFERENCE IDENTITY, and `indexOf` uses strict equality, which for
-   * objects is also reference identity. The port is therefore correct by construction on that point:
-   * two distinct options with equal field values are correctly NOT treated as the same member, and no
+   * `arrayFind` matches objects by REFERENCE IDENTITY and `indexOf` uses strict equality, which for
+   * objects is also reference identity, so the port is correct by construction on that point: two
+   * distinct options with equal field values are correctly NOT treated as the same member, and no
    * identifier is compared. `indexOf` and `splice` are also chosen over an indexed read so that
-   * `noUncheckedIndexedAccess` never produces a possibly-`undefined` value and no non-null assertion is
+   * `noUncheckedIndexedAccess` never yields a possibly-`undefined` value and no non-null assertion is
    * needed (S1).
    *
-   * ⚠️ THE CLEAR AT [model/entity/Option.cfc:L106] IS UNCONDITIONAL, AND ITS POSITION IS PRESERVED. It
+   * THE CLEAR AT [model/entity/Option.cfc:L106] IS UNCONDITIONAL, AND ITS POSITION IS PRESERVED. It
    * runs whether or not the collection entry was found, so it is the last statement here, outside every
    * guard. Under `exactOptionalPropertyTypes` it is a `delete` and never an assignment of `undefined` —
    * the same operation `../base/populate` performs for a null column, and the reason
    * {@link Option.optionGroup} is typed optional (F5).
    *
-   * BOTH MUTATIONS TARGET THE LIVE ARRAY. `getOptions()` is called once and its result held in a local
-   * — that local is a REFERENCE ALIAS to the group's backing array, not a copy, so the splice mutates
-   * the group's own collection exactly as [model/entity/Option.cfc:L104] does. Copying it would make
-   * the removal a silent no-op.
+   * BOTH MUTATIONS TARGET THE LIVE ARRAY. `getOptions()` is called once and its result held in a local;
+   * that local is a REFERENCE ALIAS to the group's backing array, not a copy, so the splice mutates the
+   * group's own collection exactly as [model/entity/Option.cfc:L104] does. Copying it would make the
+   * removal a silent no-op.
    *
    * ONE EDGE PATH DIVERGES, AND IT IS FLAGGED RATHER THAN PAPERED OVER (S8). When the argument is
    * omitted AND no group is currently assigned, the legacy raised a CFML undefined-variable error at
    * [model/entity/Option.cfc:L100] before ever reaching the collection; this port performs only the
-   * unconditional clear. Three reasons that is the right resolution rather than a silent relaxation:
-   * the path is UNREACHABLE in the legacy repository — `removeOptionGroup` has exactly one call site
-   * repository-wide, [model/entity/OptionGroup.cfc:L96], and it always passes the group explicitly;
-   * the legacy failure was an ENGINE diagnostic rather than application behaviour, so it is not one of
-   * the legacy `throw()` message strings `src/errors/DomainError.ts` carries; and manufacturing a
-   * replacement error type or message would be inventing behaviour the source does not state (S9).
-   * With no group to search there is also no collection entry that could be removed, so the clear is
-   * the only work the legacy would have performed had it got that far.
+   * unconditional clear. That is the right resolution rather than a silent relaxation for three
+   * reasons: the path is unreachable, `removeOptionGroup` having exactly one call site
+   * [model/entity/OptionGroup.cfc:L96] which always passes the group explicitly; the legacy failure was
+   * an ENGINE diagnostic rather than application behaviour, so it is not one of the legacy `throw()`
+   * message strings `src/errors/DomainError.ts` carries; and manufacturing a replacement error type or
+   * message would invent behaviour the source does not state (S9). With no group to search there is
+   * also no collection entry that could be removed, so the clear is the only work the legacy would have
+   * performed had it got that far.
    *
    * @param optionGroup - The group to detach from. Omit it to detach from the currently-assigned group.
    */
@@ -979,7 +1083,7 @@ export class Option implements AuditableEntity {
    *         arguments.sku.addOption( this );
    *     }
    *
-   * ⚠️ F11 — A PURE DELEGATION, AND IT MUST STAY ONE. THIS METHOD DOES NOT TOUCH
+   * F11 — A PURE DELEGATION, AND IT MUST STAY ONE. THIS METHOD DOES NOT TOUCH
    * {@link Option.skus}. `inverse="true"` at [model/entity/Option.cfc:L66] means `Sku` owns the
    * `SwSkuOption` link — [model/entity/Sku.cfc:L75] labels its block "(many-to-many - owner)" and
    * [:L76] carries no `inverse` attribute — so the owning side maintains the collection on both ends.
@@ -1025,14 +1129,10 @@ export class Option implements AuditableEntity {
     sku.removeOption(this);
   }
 
-  /* ===========================================================================================
-   * Derived predicate
-   * =========================================================================================== */
-
   /**
    * Whether this option has never been persisted.
    *
-   * ⚠️ F21 — A PURE DERIVED PREDICATE: THE PRIMARY IDENTIFIER EQUALS THE EMPTY STRING. Nothing stores
+   * F21 — A PURE DERIVED PREDICATE: THE PRIMARY IDENTIFIER EQUALS THE EMPTY STRING. Nothing stores
    * this. `newFlag` is declared `persistent="false"` on the framework base, but NO `setNewFlag` EXISTS
    * ANYWHERE IN THE REPOSITORY — the value is computed on every read. The full chain:
    *   `unsavedvalue="" default=""` [model/entity/Option.cfc:L52];
@@ -1061,10 +1161,125 @@ export class Option implements AuditableEntity {
   isNew(): boolean {
     return this.optionID === '';
   }
+
+  /* ============================================================================================
+   * THE MANAGED-ENTITY CONTRACT — [org/Hibachi/**], INHERITED IN CFML, DECLARED HERE (IR-1 / TR-3)
+   * ============================================================================================
+   * Seven members every legacy entity received down the
+   * `HibachiObject` -> `HibachiTransient` -> `HibachiEntity` -> `model/entity/HibachiEntity.cfc`
+   * inheritance chain, and which `src/validation/Validator.ts` and
+   * `src/ports/UniquePropertyPort.ts` both require BY NAME. Neither contract can be satisfied by a
+   * plain data class, which is why they are declared rather than assumed:
+   * `ValidationSubject` reads `getClassName` and `hasProperty`, and `UniquePropertyEntity` reads
+   * `getEntityName`, `getPrimaryIDValue`, `getPrimaryIDPropertyName`, `getPropertyMetaData` and
+   * `getValueByPropertyIdentifier` in exactly the order [org/Hibachi/HibachiDAO.cfc:L134-L138]
+   * reads them.
+   *
+   * `src/domain/base/AuditableEntity.ts` owns the shared behaviour and every word of the rationale —
+   * including why there is no base class, why the member names are not modernised, and which
+   * inherited members are deliberately NOT ported. Each member below is the thin delegation plus the
+   * constant only this entity can state.
+   * ============================================================================================ */
+
+  /**
+   * `Option` — [org/Hibachi/HibachiObject.cfc:L135-L137], the last dot-delimited segment of the
+   * component's fully qualified name. Interpolated into every validation message
+   * [org/Hibachi/HibachiValidationService.cfc:L202, :L213, :L216].
+   *
+   * @returns The bare class name.
+   */
+  getClassName(): string {
+    return OPTION_CLASS_NAME;
+  }
+
+  /**
+   * `SlatwallOption` — [org/Hibachi/HibachiEntity.cfc:L287-L289]. Live metadata reflection is replaced by the
+   * declared constant, per TR-3.
+   *
+   * @returns The mapped ORM entity name, NOT the physical table name.
+   */
+  getEntityName(): string {
+    return OPTION_ENTITY_NAME;
+  }
+
+  /**
+   * `optionID` — [org/Hibachi/HibachiEntity.cfc:L249-L251]. The legacy resolved this through
+   * `getService("hibachiService")`; the string-keyed service locator is replaced by the declared
+   * constant, per TR-3 and AAP 0.7.3 S3.
+   *
+   * @returns The name of the primary identifier property.
+   */
+  getPrimaryIDPropertyName(): string {
+    return OPTION_PRIMARY_ID_PROPERTY_NAME;
+  }
+
+  /**
+   * The primary identifier's VALUE — [org/Hibachi/HibachiEntity.cfc:L244-L246], which forwards to
+   * the generated getter for whichever property `getPrimaryIDPropertyName` names.
+   *
+   * ⚠️ RETURNS `''` FOR AN UNSAVED INSTANCE, because [model/entity/Option.cfc:L52] declares
+   * `unsavedvalue=""` and this class initialises the field to `''`. That is what makes the
+   * self-exclusion term of the uniqueness query a NO-OP on insert — an observation AAP 0.4.1.7
+   * requires be reproduced rather than tidied away, and which `src/ports/UniquePropertyPort.ts`
+   * carries as a `TODO(parity)`. It is also the value
+   * [meta/tests/unit/entity/SlatwallEntityTestBase.cfc:L64-L67] asserts on a fresh instance.
+   *
+   * @returns The identifier, or `''` while unsaved.
+   */
+  getPrimaryIDValue(): string {
+    return this.optionID;
+  }
+
+  /**
+   * Whether this entity DECLARES the named property —
+   * [org/Hibachi/HibachiTransient.cfc:L763-L765].
+   *
+   * ⚠️ A FALSE ANSWER SILENTLY SKIPS A VALIDATION RULE rather than failing it
+   * [org/Hibachi/HibachiValidationService.cfc:L171]. See OPTION_DECLARED_PROPERTIES, whose
+   * exhaustiveness is compile-checked precisely because of that.
+   *
+   * @param propertyIdentifier - The name to test, in its declared casing.
+   * @returns `true` when the property is declared.
+   */
+  hasProperty(propertyIdentifier: string): boolean {
+    return hasDeclaredProperty(OPTION_DECLARED_PROPERTIES, propertyIdentifier);
+  }
+
+  /**
+   * Resolves a declared property's metadata, RAISING for an undeclared name —
+   * [org/Hibachi/HibachiTransient.cfc:L738-L747], whose present-key branch is at [:L741-L743] and
+   * whose throw is at [:L746]. The non-optional return type is faithful to that declaration.
+   *
+   * @param propertyName - The name to resolve.
+   * @returns The metadata for that property.
+   * @throws DomainError - When no property of that name is declared. Withheld from every response
+   *   by the deny-by-default presentation, because it signals a fault in the port rather than
+   *   anything a caller can provoke.
+   */
+  getPropertyMetaData(propertyName: string): EntityPropertyMetaData {
+    return requireDeclaredPropertyMetaData(
+      OPTION_DECLARED_PROPERTIES,
+      propertyName,
+      OPTION_CLASS_NAME,
+    );
+  }
+
+  /**
+   * Reads a value by property identifier, walking a path delimited by EITHER `.` OR `_` —
+   * [org/Hibachi/HibachiTransient.cfc:L466-L481]. An unresolvable path yields `''`, never an absent
+   * value; `readValueByPropertyIdentifier` documents all four traversal rules and why each is
+   * behaviour rather than convenience.
+   *
+   * @param propertyIdentifier - A property name, or a delimited path.
+   * @returns The resolved value, or `''`.
+   */
+  getValueByPropertyIdentifier(propertyIdentifier: string): unknown {
+    return readValueByPropertyIdentifier(this, propertyIdentifier);
+  }
 }
 
 /* ===============================================================================================
- * ⚠️ R-B — THE POPULATION CONTRACT: A DECLARED DESCRIPTOR SET, AND NO `populate()` METHOD
+ * R-B — THE POPULATION CONTRACT: A DECLARED DESCRIPTOR SET, AND NO `populate()` METHOD
  * ===============================================================================================
  * `Option` HAS NO `populate()` MEMBER, deliberately, and for exactly the two reasons its sibling
  * records. In the legacy tree the method arrived by inheritance from the local base
@@ -1074,7 +1289,15 @@ export class Option implements AuditableEntity {
  * parameter, precisely so that per-entity metadata is supplied BY the entity module rather than
  * discovered inside the engine (TR-3). Callers write:
  *
- *     populate(option, data, OPTION_PROPERTY_DESCRIPTORS);
+ *     populate(option, data, OPTION_PROPERTY_DESCRIPTORS, {
+ *         authorization: { entityName: option.getClassName(), authorizer },
+ *     });
+ *
+ * THE FOURTH ARGUMENT IS NOT OPTIONAL IN EFFECT FOR THIS ENTITY. `Option` is persistent, so ARM 1 of
+ * the population master gate at [org/Hibachi/HibachiTransient.cfc:L186] does not short-circuit and the
+ * per-property authorisation arms [:L188-L190] are reached. `../base/populate` fails closed without the
+ * context, so a three-argument call would populate NO declared property. `../../services/BaseService`
+ * builds the object per save from its required authoriser collaborator; only a direct caller writes it.
  *
  * WHAT IS DECLARED, AND THE COUNT AUDIT. This entity declares twelve properties. Eleven are
  * describable and one is not:
@@ -1092,7 +1315,7 @@ export class Option implements AuditableEntity {
  * [:L63] and [:L67-L70] — are absent from this table for the same reason they are absent from the
  * class: they are not fields of this port, so they cannot be populated into one.
  *
- * ⚠️ WHY `optionID` IS OMITTED — A G6 TRANSLATION DECISION, NOT AN OVERSIGHT. The primary identifier
+ * WHY `optionID` IS OMITTED — A G6 TRANSLATION DECISION, NOT AN OVERSIGHT. The primary identifier
  * declares `fieldtype="id"` [model/entity/Option.cfc:L52], and the legacy column branch is gated on
  * `!structKeyExists(currentProperty, "fieldType") || fieldType == "column"`. For an id property that
  * gate is FALSE, and no relationship branch matches either, so THE LEGACY NEVER POPULATED A PRIMARY
@@ -1111,7 +1334,7 @@ export class Option implements AuditableEntity {
  *     are cleared with `delete` rather than with `= undefined` (S1).
  *   - `hb_sessionDefault`, `hb_populateArray` and `hb_fileUpload` occur ZERO times across all six
  *     in-scope entities, so no descriptor below declares them.
- *   - `hb_populateEnabled="public"` occurs 68 times repository-wide and ZERO times in scope; only
+ *   - `hb_populateEnabled="public"` occurs 68 times in the legacy tree and ZERO times in scope; only
  *     `false` and absent occur here, so the tri-value is consumed but never exercised.
  *   - `hb_formatType` occurs once in scope, at [model/entity/Brand.cfc:L57], and the legacy live path
  *     ignores it entirely. Not applicable to this entity. Note that `hb_formFieldType="wysiwyg"` at
@@ -1153,14 +1376,29 @@ export class Option implements AuditableEntity {
  * time, holding no per-request content, in the same documented-safe category as
  * `AUDIT_PROPERTY_NAMES` itself (M7).
  */
-const AUDIT_PROPERTY_DESCRIPTORS: readonly ColumnPropertyDescriptor<AuditPropertyName>[] =
+const AUDIT_PROPERTY_DESCRIPTORS: readonly DisabledPropertyDescriptor<AuditPropertyName>[] =
   Object.freeze(
-    AUDIT_PROPERTY_NAMES.map<ColumnPropertyDescriptor<AuditPropertyName>>((auditPropertyName) => ({
-      name: auditPropertyName,
-      kind: 'column',
-      populateEnabled: false,
-    })),
+    AUDIT_PROPERTY_NAMES.map<DisabledPropertyDescriptor<AuditPropertyName>>(
+      (auditPropertyName) => ({
+        name: auditPropertyName,
+        populateEnabled: false,
+      }),
+    ),
   );
+
+/**
+ * The legacy `getClassName()` value for this entity [org/Hibachi/HibachiObject.cfc:L135-L137], which
+ * for [model/entity/Option.cfc:L49] is the bare component name.
+ *
+ * It is the ARM 3 operand of the population gate [org/Hibachi/HibachiTransient.cfc:L190], and it is
+ * the key the out-of-scope permission records are stored under — `getEntityPermissionDetails()`
+ * derives its key set from a directory listing of `model/entity` at
+ * [org/Hibachi/HibachiAuthenticationService.cfc:L131-L141]. Declared once here because BOTH descriptor
+ * sets below need it and a drifted spelling would silently deny every property, the ladder being
+ * default-deny. It is NOT derived from `Option.name` at runtime: that is the reflection TR-3 retires,
+ * and esbuild is free to rename a class.
+ */
+const OPTION_LEGACY_CLASS_NAME = 'Option';
 
 /**
  * The five simple columns, in source declaration order.
@@ -1182,11 +1420,11 @@ const AUDIT_PROPERTY_DESCRIPTORS: readonly ColumnPropertyDescriptor<AuditPropert
  */
 const OPTION_COLUMN_DESCRIPTORS: readonly ColumnPropertyDescriptor<OptionPropertyName>[] =
   Object.freeze([
-    { name: 'optionCode' },
-    { name: 'optionName' },
-    { name: 'optionDescription' },
-    { name: 'sortOrder' },
-    { name: 'remoteID' },
+    { name: 'optionCode', valueType: 'string' },
+    { name: 'optionName', valueType: 'string' },
+    { name: 'optionDescription', valueType: 'string' },
+    { name: 'sortOrder', valueType: 'integer' },
+    { name: 'remoteID', valueType: 'string' },
   ]);
 
 /**
@@ -1196,10 +1434,13 @@ const OPTION_COLUMN_DESCRIPTORS: readonly ColumnPropertyDescriptor<OptionPropert
  * populate-disabled audit properties of [:L76-L79]. `persistent: true` ports `persistent=true` on the
  * component declaration at [model/entity/Option.cfc:L49], and it is consequential rather than
  * decorative: the legacy authorisation gate short-circuits for NON-persistent targets, so process
- * objects populate freely while entities such as this one had per-property authorisation consulted —
+ * objects populate freely while entities such as this one have per-property authorisation consulted —
  * here through `hb_permission="optionGroup.options"`, which delegates the check to the parent group.
+ * `../base/populate` ports all three arms of that gate and DENIES when no authorisation collaborator
+ * is supplied, so a persistent target is never populated by default. `className` accompanies the flag
+ * because the third arm passes it as its `entityName` argument.
  *
- * ⚠️ WHY NEITHER RELATIONSHIP IS IN THIS CONSTANT — A MISMATCH FLAGGED RATHER THAN ASSUMED AWAY (S8).
+ * WHY NEITHER RELATIONSHIP IS IN THIS CONSTANT — A MISMATCH FLAGGED RATHER THAN ASSUMED AWAY (S8).
  * Both relationship descriptors are required by their own contracts to carry a `RelatedEntityLoader`
  * and a `populateRelated`, and the many-to-many additionally requires an identifier reader. None of
  * those can exist in a static constant declared inside the domain layer: a loader performs DATA
@@ -1220,6 +1461,7 @@ const OPTION_COLUMN_DESCRIPTORS: readonly ColumnPropertyDescriptor<OptionPropert
  */
 export const OPTION_PROPERTY_DESCRIPTORS: PropertyDescriptorSet<Option, OptionPropertyName> =
   Object.freeze({
+    entityName: OPTION_LEGACY_CLASS_NAME,
     persistent: true,
     properties: Object.freeze([...OPTION_COLUMN_DESCRIPTORS, ...AUDIT_PROPERTY_DESCRIPTORS]),
   });
@@ -1249,7 +1491,7 @@ export const OPTION_PROPERTY_DESCRIPTORS: PropertyDescriptorSet<Option, OptionPr
  *     [model/entity/Option.cfc:L110-L115] touches, and widening it with a `skuID` field would make it
  *     a partial duplicate of the real `Sku` domain type instead of a minimal delegation contract.
  *
- * ⚠️ TODO(parity) — THE MANY-TO-ONE ASSIGNMENT DOES NOT ROUTE THROUGH {@link Option.setOptionGroup},
+ * TODO(parity) — THE MANY-TO-ONE ASSIGNMENT DOES NOT ROUTE THROUGH {@link Option.setOptionGroup},
  * AND ON THIS ENTITY THAT IS OBSERVABLE. The legacy helper assigned through a DYNAMIC SETTER:
  * `_setProperty` reads `var theMethod = this["set" & arguments.name]` and calls it
  * [org/Hibachi/HibachiTransient.cfc:L806-L819], so the many-to-one writes at [:L242] and [:L265]
@@ -1266,7 +1508,7 @@ export const OPTION_PROPERTY_DESCRIPTORS: PropertyDescriptorSet<Option, OptionPr
  * in-scope call path already does. It is recorded here rather than repaired because repairing it would
  * mean editing `../base/populate`, a file this file must treat as read-only.
  *
- * ⚠️ TODO(boundary) — `skus` IS THE INVERSE SIDE, SO ITS MUTATIONS LEAVE THIS MODULE.
+ * TODO(boundary) — `skus` IS THE INVERSE SIDE, SO ITS MUTATIONS LEAVE THIS MODULE.
  * `addRelated` and `removeRelated` delegate to {@link Option.addSku} and {@link Option.removeSku},
  * which delegate on to the OWNING side [model/entity/Sku.cfc:L76], exactly as
  * [model/entity/Option.cfc:L110-L115] does. `readRelated` hands back the LIVE `skus` array, which is
@@ -1333,6 +1575,7 @@ export function createOptionPropertyDescriptors(
   };
 
   return Object.freeze({
+    entityName: OPTION_LEGACY_CLASS_NAME,
     persistent: true,
     properties: Object.freeze([
       ...OPTION_PROPERTY_DESCRIPTORS.properties,

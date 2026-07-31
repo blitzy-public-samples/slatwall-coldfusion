@@ -1,98 +1,56 @@
 /**
- * Base product types of Slatwall 3.1.39 — the three seeded discriminators.
+ * The three seeded base product types of Slatwall 3.1.39.
  *
- * PORT OF `config/dbdata/SlatwallProductType.xml.cfm:L13-L15` — the three `<Record>` elements of
- * the `SwProductType` seed-data document. Those rows are the only product types in the system
- * that carry a `systemCode`, and that `systemCode` is the value the Catalog's business logic
- * branches on:
+ * Ported from `config/dbdata/SlatwallProductType.xml.cfm:L13-L15` — the three `<Record>` elements of
+ * the `SwProductType` seed-data document. They are the only product types that carry a `systemCode`,
+ * and that `systemCode` is the value the Catalog branches on: `model/service/SkuService.cfc:L61`
+ * (merchandise), `:L139` (subscription) and `:L173` (contentAccess); `model/entity/Sku.cfc:L574-L590`
+ * (`getSkuDefinition`); and `model/entity/ProductType.cfc:L109-L115` (`getBaseProductType`), which
+ * produces the value.
  *
- *   - `model/service/SkuService.cfc` discriminates three ways in `createSkus` — `:L61`
- *     (merchandise), `:L139` (subscription), `:L173` (contentAccess).
- *   - `model/entity/Sku.cfc:L574-L590` (`getSkuDefinition`) discriminates the same three ways.
- *   - `model/entity/ProductType.cfc:L109-L115` (`getBaseProductType`) produces the value.
+ * FIXED SEED DATA, NOT TEST DATA AND NOT GENERATED IDENTIFIERS (IR-7). The three `productTypeID`
+ * literals are transcribed from that document verbatim — never regenerated through
+ * `createSlatwallUUID()` in `src/util/uuid.ts`, never dashed into RFC-4122 form and never re-cased.
+ * Per IR-6 a legacy primary key is a 32-character lowercase-hex string with no dashes.
  *
- * ---------------------------------------------------------------------------------------------
- * FIXED SEED DATA, NOT TEST DATA, AND NOT GENERATED IDENTIFIERS (IR-7)
- * ---------------------------------------------------------------------------------------------
- * The three `productTypeID` literals below are transcribed from the legacy seed document. They
- * are never regenerated, never routed through `createSlatwallUUID()` in `src/util/uuid.ts`,
- * never dashed into RFC-4122 form and never re-cased. Per IR-6 the legacy primary key is a
- * 32-character lowercase-hex string with no dashes, and all three values below are exactly that.
+ * A wrong character in an identifier produces no compile error: the compiler checks `systemCode`
+ * against the union below, but the identifiers are opaque strings to it. The only defence is a diff
+ * against the seed document, so EACH IDENTIFIER LITERAL APPEARS EXACTLY ONCE IN THIS FILE, declared on
+ * the record that owns it and read from there by every consumer, with no convenience duplicate
+ * exported. `model/validation/ProductType.json` refuses to delete a product type bearing a
+ * `systemCode`, so these three rows are permanent platform data rather than a fragile assumption.
  *
- * WHY BYTE-EXACTNESS IS THE ENTIRE POINT OF THIS FILE. A wrong character in one of these
- * identifiers, or in one of the `systemCode` strings, produces NO compile error and NO obvious
- * test failure. It simply means a branch stops matching: the merchandise arm of `createSkus`
- * never runs, no SKUs are generated, and the legacy fixtures stop being traceable. The compiler
- * can protect the `systemCode` values — they are typed against the union below, so a typo is a
- * compile error — but it cannot protect the identifiers, which are opaque strings to it. They are
- * therefore verified the only way they can be: by diffing them against
- * `config/dbdata/SlatwallProductType.xml.cfm:L13-L15`.
+ * The same document ends with an XML comment block at
+ * `config/dbdata/SlatwallProductType.xml.cfm:L19-L31` holding seven further identifiers, none of them
+ * a `<Record>` and none of them seeded; they are excluded from this module. The seeded rows also carry
+ * `productTypeIDPath` (equal to the row's own `productTypeID`, so all three are hierarchy roots),
+ * `parentProductTypeID` (the literal string `"NULL"` as this seed format renders it, not a null value)
+ * and `activeFlag` `"1"`; no in-scope consumer reads those from the discriminator table, so none is
+ * modelled here.
  *
- * TO KEEP THAT DIFF MEANINGFUL, EACH IDENTIFIER LITERAL APPEARS EXACTLY ONCE IN THIS FILE. It is
- * declared on the record that owns it and read from there by every consumer. No convenience
- * duplicate is exported, because a second copy of a literal is precisely the drift this file
- * exists to prevent.
- *
- * These rows can be relied upon as permanent platform data rather than as a fragile assumption:
- * `model/validation/ProductType.json` declares `"systemCode": [{"contexts":"delete",
- * "maxLength":0}]`, a delete guard that refuses to delete any product type bearing a
- * `systemCode` — which is exactly these three rows and no others.
- *
- * ---------------------------------------------------------------------------------------------
- * DELIBERATE EXCLUSION — THE DEVELOPER SCRATCH IDENTIFIERS
- * ---------------------------------------------------------------------------------------------
- * The same legacy document ends with an XML comment block at `L19`-`L31` holding seven further
- * identifiers, introduced by a note telling the reader to delete them once used. None of them is
- * a `<Record>`, and a repository-wide search finds each one only inside that comment block, with
- * zero consumers. They are not seeded rows, so they are excluded from this module entirely — not
- * as constants, not as a "reserved" list, and not reproduced in any comment here. This module
- * declares exactly the three seeded discriminators and nothing else; there is no fourth member,
- * and no placeholder or unknown member, because the source admits none.
- *
- * The three seeded rows carry three further attributes that are deliberately NOT modelled as
- * fields, recorded here so their absence reads as a decision rather than a loss:
- * `productTypeIDPath` equals the row's own `productTypeID` on all three (so all three are roots
- * of the hierarchy), `parentProductTypeID` is the literal four-character string `"NULL"` as
- * rendered by this seed-data format rather than a null value, and `activeFlag` is `"1"`.
- *
- * ---------------------------------------------------------------------------------------------
- * EXECUTION-MODEL NOTE (M7) — MODULE SCOPE IS SAFE *HERE SPECIFICALLY*
- * ---------------------------------------------------------------------------------------------
- * 111 of the 113 legacy entities declare `cacheuse="transactional"` and memoize derived values in
- * per-request scope; nothing in the target survives between Lambda invocations except module-scope
- * state. Module-scope caching and memoization are therefore avoided almost everywhere under
- * `src/domain/**` — a memoized per-entity value held at module scope would bleed across warm
- * invocations. This module is the documented exception: it holds immutable, frozen compile-time
- * constants only, with no per-request data and nothing invocation-specific, so module scope is
- * both correct and safe. The general rule points the other way, which is why the exception is
- * stated rather than assumed.
- *
- * Nothing here performs I/O, opens a connection, reads an environment variable or logs, so loading
- * this module is free of side effects and it can be used from any context, test included.
+ * MODULE SCOPE IS SAFE HERE SPECIFICALLY (M7). Per-request state held at module scope bleeds across
+ * warm Lambda invocations, so `src/domain/**` avoids it. This module holds immutable frozen constants
+ * only, with nothing per-request and nothing invocation-specific, so module scope is correct here; the
+ * general rule points the other way, which is why the exception is stated.
  */
 
 /**
  * The `systemCode` of a seeded product type — the discriminator the Catalog branches on.
  *
- * Declared explicitly, as a union of the three literals, rather than derived from the data below.
- * The explicit form is greppable and countable: a reviewer can see at a glance that there are
- * exactly three members and compare them against the seed document. Agreement with the data is
- * not left to convention — `SEEDED_PRODUCT_TYPES_BY_SYSTEM_CODE` is typed as a total mapping over
- * this union, so a member missing from the data, an extra key, or a mistyped `systemCode` on a
- * record are all compile errors.
+ * Declared explicitly as a union of the three literals rather than derived from the data below, so
+ * that `SEEDED_PRODUCT_TYPES_BY_SYSTEM_CODE` can be typed as a total mapping over it: a missing
+ * member, an extra key or a mistyped `systemCode` on a record is then a compile error.
  *
- * TRANSLATION DECISION — WHY A UNION AND NOT AN ENUM. A TypeScript `enum` would emit a runtime
- * object and introduce a nominal type that does not compare cleanly against the raw strings read
- * out of the `SwProductType` table. These values must be *equal* to the database strings, so the
- * idiomatic representation is a string-literal union over `as const` data.
+ * TRANSLATION DECISION — A UNION, NOT AN ENUM. A TypeScript `enum` emits a runtime object and
+ * introduces a nominal type that does not compare cleanly against the raw strings read out of
+ * `SwProductType`. These values must be EQUAL to the database strings, so the representation is a
+ * string-literal union over `as const` data.
  *
- * TRANSLATION DECISION — CFML `==` IS CASE-INSENSITIVE, TYPESCRIPT `===` IS NOT. The legacy
- * comparison at `model/service/SkuService.cfc:L61` uses CFML `==`, which would also have matched
- * `"Merchandise"` or `"MERCHANDISE"`. The ported comparison is case-SENSITIVE, and that is the
- * correct translation because the seeded rows are the only values the comparison can legitimately
- * see. It is nonetheless a real behavioural narrowing, flagged here rather than hidden: a row
- * whose `systemCode` had been hand-edited to a different case would have matched in CFML and will
- * not match here.
+ * TRANSLATION DECISION — THE COMPARISON NARROWS TO CASE-SENSITIVE. `model/service/SkuService.cfc:L61`
+ * compares with CFML `==`, which also matched `"Merchandise"` or `"MERCHANDISE"`. The ported
+ * comparison is case-sensitive, which is correct because the seeded rows are the only values it can
+ * legitimately see — but a row whose `systemCode` had been hand-edited to a different case would have
+ * matched in CFML and will not match here.
  */
 export type BaseProductType = 'merchandise' | 'subscription' | 'contentAccess';
 

@@ -1,108 +1,67 @@
 /**
  * ProductAddOption — the typed input object for the legacy `addOption` process context.
  *
- * ---------------------------------------------------------------------------------------------
- * LEGACY ORIGIN
- * ---------------------------------------------------------------------------------------------
- * `model/process/Product_AddOption.cfc` is 57 lines long and its entire body occupies the last
- * nine of them: the component declaration at [L49], one injected entity at [L51-L52] and one data
- * property at [L54-L55], closing at [L57]. The preceding 48 lines are the repository's GPL header.
- * Two facts about that body govern everything in this module.
+ * Ported from [model/process/Product_AddOption.cfc], whose entire body is nine lines: the component declaration
+ * at [:L49], one injected entity at [:L51-L52], one data property at [:L54-L55], and the closing
+ * brace at [:L57]. Two facts about that body govern everything here.
  *
- * FACT ONE — THE COMPONENT DECLARES ZERO FUNCTIONS. A function-declaration count over the file
- * returns 0, so THIS MODULE DECLARES ZERO METHODS. There is no behaviour to port because the
- * legacy component has none: it carries two values and does nothing with them. Every rule the
- * `addOption` context obeys lives somewhere else, and each of those places is named below, so that
- * a reader who comes here looking for the missing logic learns where it went instead of concluding
- * it was lost.
+ * FACT ONE — THE COMPONENT DECLARES ZERO FUNCTIONS, so THIS MODULE DECLARES ZERO METHODS. There is no
+ * behaviour to port because the legacy component has none: it carries two values and does nothing with
+ * them. Every rule the `addOption` context obeys lives somewhere else, and each of those places is
+ * named below, so a reader who comes here looking for the missing logic learns where it went instead of
+ * concluding it was lost.
  *
  * FACT TWO — NEITHER PROPERTY CARRIES A `type=` ATTRIBUTE. `property name="product";` and
- * `property name="option";` are the complete declarations, and no `hb_`-prefixed attribute, no
- * `notNull`, no `fieldtype`, no `cfc` and no `persistent` appears anywhere in the file. CFML asked
- * for no type and the component volunteered none, so the two types below are RECOVERED FROM THE
- * OBSERVED CONTRACT — the single consumer, the admin form that submits the payload, and the query
- * whose projection feeds that form — rather than guessed. Each recovery is documented at the field
- * it produced.
+ * `property name="option";` are the complete declarations, with no `hb_`-prefixed attribute, no
+ * `notNull`, no `fieldtype`, no `cfc` and no `persistent` anywhere in the file. CFML asked for no type
+ * and the component volunteered none, so the two types below are RECOVERED FROM THE OBSERVED CONTRACT
+ * — the single consumer, the admin form that submits the payload, and the query whose projection feeds
+ * that form — rather than guessed. Each recovery is documented at the field it produced.
  *
- * ---------------------------------------------------------------------------------------------
- * THE STRUCTURAL TWIN, AND THE ONE PLACE IT IS DELIBERATELY NOT FOLLOWED
- * ---------------------------------------------------------------------------------------------
- * This module and `ProductAddOptionGroup.ts` port two legacy components that are identical line
- * for line apart from a single property name: both files are 57 lines, both declare the same
- * component attributes at [L49], both group an injected `product` under the same comment at
- * [L51-L52], and both declare exactly one data property at [L54-L55] — `option` here,
- * `optionGroup` there. The two modules are therefore deliberately parallel in structure, ordering
- * and naming, so a reviewer can read them side by side and find only differences the sources
- * themselves justify.
- *
- * They nevertheless remain INDEPENDENT DECLARATIONS. Nothing here imports, re-exports or derives
- * from that sibling module — not by extension and not through a mapped type — because the legacy
- * components do not derive from each other either; they are two separate files that happen to
- * agree. Coupling them here would manufacture a relationship the source does not have and would
- * make a future divergence in one silently change the other.
- *
- * EXACTLY ONE SUBSTANTIVE DIFFERENCE IN COMMENTARY EXISTS, and it has its own block below: a
- * loop-scoping parity note that is TRUE of the sibling context's consumer and NOT TRUE of this
- * one. Accuracy outranks symmetry, so it is stated here in the corrected form rather than copied.
+ * THE STRUCTURAL TWIN. This module and `ProductAddOptionGroup.ts` port two legacy components that are
+ * identical line for line apart from a single property name, so the two modules are deliberately
+ * parallel in structure, ordering and naming and can be read side by side. They nevertheless remain
+ * INDEPENDENT DECLARATIONS: nothing here imports, re-exports or derives from that sibling, not by
+ * extension and not through a mapped type, because the legacy components do not derive from each other
+ * either — they are two separate files that happen to agree. Coupling them would manufacture a
+ * relationship the source does not have and would make a future divergence in one silently change the
+ * other. Exactly one substantive difference in commentary exists, and it has its own block below: a
+ * loop-scoping parity note that is TRUE of the sibling context's consumer and NOT TRUE of this one.
+ * Accuracy outranks symmetry, so it is stated here in the corrected form rather than copied.
  *
  * The legacy tree is REFERENCE-ONLY (AAP §0.4.1.1, TR-6 "Change no existing file"). Nothing under
- * `model/`, `org/`, `config/`, `integrationServices/`, `admin/` or `meta/` is modified, read at
- * runtime or bundled; those paths appear here exclusively as prose citations.
+ * `model/`, `org/`, `config/`, `integrationServices/` or `meta/` is modified, read at runtime or
+ * bundled; those paths appear here exclusively as prose citations.
  *
- * ---------------------------------------------------------------------------------------------
- * AAP AUTHORITY
- * ---------------------------------------------------------------------------------------------
- *   §0.4.1.4 "Domain Layer" — CREATE, source `model/process/Product_AddOption.cfc`, key change:
- *     "Injected `product` plus the `option` data property". That row is the whole mandate: two
- *     members, typed, and nothing more.
- *   §0.2.1.4 — one of exactly THREE in-scope process objects. The 36-component `model/process/`
- *     directory is otherwise out of scope, including the product-family siblings excluded by
- *     §0.2.2.4 and by absence from the §0.3.1 target tree.
- *   TR-3 — "Replace framework magic with declarations." The population metadata this component
- *     relied on was read reflectively at runtime; here it is declared.
- *   IR-8 — `extends="HibachiProcess"` at [L49] resolves to the LOCAL Slatwall base component
- *     `model/process/HibachiProcess.cfc`, not to the framework one. That local file is a verified
- *     empty passthrough — [L49-L51] are `component output="false" accessors="true"
- *     extends="Slatwall.org.Hibachi.HibachiProcess" {` and its closing brace, with nothing between
- *     them. THERE IS NO LOCAL BASE BEHAVIOUR TO PORT, which is why this module declares no base
- *     type, extends nothing, and no sibling base module was created alongside it.
+ * SCOPE. AAP §0.4.1.4 states the whole mandate — CREATE from `model/process/Product_AddOption.cfc`, "Injected `product` plus the `option` data
+ * property" — and §0.2.1.4 makes this one of exactly
+ * three in-scope process objects, the rest of `model/process/` being out of scope including the
+ * product-family siblings §0.2.2.4 excludes. TR-3 governs the shape: "Replace framework magic with
+ * declarations", so the population metadata this component relied on reflectively at runtime is
+ * declared here instead. And per IR-8, `extends="HibachiProcess"` at [:L49] resolves to the LOCAL
+ * Slatwall base `model/process/HibachiProcess.cfc`, not the framework one — and that local file is an
+ * empty passthrough, its [:L49-L51] being the component declaration and its closing brace with nothing
+ * between them. THERE IS NO LOCAL BASE BEHAVIOUR TO PORT, which is why this module declares no base
+ * type, extends nothing, and has no sibling base module.
  *
- * ---------------------------------------------------------------------------------------------
- * WHAT THIS MODULE IS NOT
- * ---------------------------------------------------------------------------------------------
- * It is PURE DECLARATION. It performs no data access, opens no connection, names no `Sw*` table in
- * any query-shaped string and imports no driver (S2). It reads no environment variable, touches no
- * file system and logs nothing (S4). It is synchronous throughout — nothing here is deferred,
- * scheduled or thenable, and there is no I/O to defer (S6). It holds NO module-scope mutable
- * binding: no `let`, no `Map`, no `Set`, no cache and no memoised table, so loading it has no
- * observable effect of any kind and nothing can bleed between invocations on a warm container
- * (M7 / S8, expanded below). It imports nothing outside `src/domain/**`, so the hexagonal
- * direction is visible in the two import lines themselves (S4).
+ * WHAT THIS MODULE IS NOT. It is PURE DECLARATION: no data access, no connection, no `Sw*` table in
+ * any query-shaped string and no driver import (S2); no environment read, no file system and no
+ * logging (S4); synchronous throughout, with no I/O to defer (S6); and NO module-scope mutable binding
+ * of any kind, so loading it has no observable effect and nothing can bleed between invocations on a
+ * warm container (M7 / S8, expanded below). It imports nothing outside `src/domain/**`, so the
+ * hexagonal direction is visible in the import lines themselves (S4). It also generates no identifier:
+ * primary keys in this schema are 32-character identifiers minted by the persistence layer (IR-6),
+ * never by a domain module, and neither member of this object is a primary key in the first place.
  *
- * It also generates no identifier. Primary keys in this schema are 32-character identifiers minted
- * by the persistence layer (IR-6), never by a domain module, and neither member of this object is
- * a primary key in the first place.
- *
- * ---------------------------------------------------------------------------------------------
- * RULES VERDICT, RECORDED RATHER THAN ASSUMED (UR4)
- * ---------------------------------------------------------------------------------------------
- * `review_rules` returns the single line "No user rules provided." for this project. That was
- * re-verified while authoring this file — once with no range and once with the full range — and
- * both calls return the identical single line, so the document has no paginated remainder. No
- * `.blitzyignore`, `.cursorrules`, `AGENTS.md`, `CLAUDE.md` or `.editorconfig` exists anywhere in
- * the repository either. ZERO FILES ENTER SCOPE BY RULE and no rule-derived constraint applies
- * here.
- *
- * That is emphatically not permission to lower the bar. The nine enterprise standards of AAP
- * §0.7.3 govern instead, and each has real teeth in this file: S1 (no `unknown`-widening escape,
- * no cast used to silence the compiler, no suppression comment, no non-null assertion), S2 and S4
- * (the negative obligations above), S3 (no locator, no synthesised member, no string-keyed
- * resolution and no decorator), S5 (no dependency added and no manifest touched), S6 (satisfiable
- * by the empty object literal, so a test needs no harness, no container and no database), S7
- * (preserve and annotate, do not repair — the untyped, all-optional, defaultless shape IS the
- * contract), S8 (the one relevant execution-model mismatch is flagged, not solved) and S9
- * (nothing is invented: no third member, no default, no display metadata, no audit field and no
- * branded identifier type).
+ * Standards citations use the AAP §0.7.3 identifiers S1-S9; the ones with teeth here are S1 (no
+ * escape-hatch type, no cast used to silence the compiler, no suppression comment, no non-null
+ * assertion), S2 and S4 (the negative obligations above), S3 (no locator, no synthesised member, no
+ * string-keyed resolution, no decorator), S5 (no dependency added), S6 (satisfiable by the empty object
+ * literal, so a test needs no harness, container or database), S7 (preserve and annotate — the untyped,
+ * all-optional, defaultless shape IS the contract), S8 (the one relevant execution-model mismatch is
+ * flagged, not solved) and S9 (nothing invented: no third member, no default, no display metadata, no
+ * audit field, no branded identifier type). `G6` marks a technology-specific translation decision,
+ * which AAP §0.8.2 Guideline 6 requires to be documented where it is made.
  */
 
 import type { ColumnPropertyDescriptor, PropertyDescriptorSet } from '../base/populate';
@@ -188,11 +147,11 @@ import type { Product } from '../product/Product';
  * =================================================================================================
  * This is the load-bearing judgment call of the file. The member is named `option` and the legacy
  * declaration gives no type, so typing it as the entity of the same name is the obvious reading —
- * and it is wrong. Three independent lines of evidence, each verified against source, establish
+ * and it is wrong. Three independent lines of evidence establish
  * that the value is the option's 32-character IDENTIFIER.
  *
- * 1. THE SINGLE CONSUMER TREATS IT AS A LOOKUP ARGUMENT, AND THEN PROVES IT BY A ROUND TRIP. A
- *    repository-wide census of this accessor finds EXACTLY ONE call site,
+ * 1. THE SINGLE CONSUMER TREATS IT AS A LOOKUP ARGUMENT, AND THEN PROVES IT BY A ROUND TRIP. The
+ *    accessor has EXACTLY ONE call site in the legacy tree,
  *    [model/service/ProductService.cfc:L130]:
  *
  *        var newOption = getOptionService().getOption(arguments.processObject.getOption());
@@ -241,39 +200,35 @@ import type { Product } from '../product/Product';
  * ============================================================================================== */
 
 /* =================================================================================================
- * G6 PARITY NOTE, STATED IN ITS CORRECTED FORM — THE LOOP-SCOPING DEFECT IS NOT IN THIS PATH
+ * G6 PARITY NOTE, IN ITS CORRECTED FORM — THE LOOP-SCOPING DEFECT IS NOT IN THIS PATH
  * =================================================================================================
- * This is the one block whose content deliberately does NOT mirror `ProductAddOptionGroup.ts`, and
- * the reason is that copying the obvious parallel here would put a FALSE statement in the codebase.
- * It is recorded because a reviewer diffing the two modules will notice the asymmetry and is owed
- * the explanation, and because §0.8.2 Guideline 4 forbids "fixing" a defect that does exist just as
- * firmly as accuracy forbids inventing one that does not.
+ * This is the one block whose content deliberately does NOT mirror `ProductAddOptionGroup.ts`, because
+ * copying the obvious parallel would put a FALSE statement in the codebase. AAP §0.8.2 Guideline 4
+ * forbids "fixing" a defect that does exist just as firmly as accuracy forbids asserting one that does
+ * not.
  *
- * TWO CONSUMERS IN `model/service/ProductService.cfc` LEAK A LOOP COUNTER INTO THE COMPONENT'S
- * SHARED SCOPE. [:L118] in `processProduct_addOptionGroup` writes `for(i=1; i <= arrayLen(skus);
- * i++)` and [:L220] in `processProduct_updateSkus` writes the identical unscoped form. In CFML an
- * assignment with no `var` lands in the component's own `variables` scope, and because services are
- * SINGLETONS — only entities, process objects, transients and reports are registered as transients
- * at [org/Hibachi/Hibachi.cfc:L289-L292] — that counter is shared across every concurrent request.
+ * TWO CONSUMERS IN [model/service/ProductService.cfc] LEAK A LOOP COUNTER INTO THE COMPONENT'S SHARED
+ * SCOPE: [:L118] in `processProduct_addOptionGroup` writes `for(i=1; i <= arrayLen(skus); i++)` and
+ * [:L220] in `processProduct_updateSkus` writes the identical unscoped form. In CFML an assignment with
+ * no `var` lands in the component's own `variables` scope, and because services are SINGLETONS — only
+ * entities, process objects, transients and reports are registered as transients at
+ * [org/Hibachi/Hibachi.cfc:L289-L292] — that counter is shared across every concurrent request.
  *
  * THIS CONTEXT'S CONSUMER DOES NOT HAVE THAT FLAW. `processProduct_addOption`
- * [model/service/ProductService.cfc:L128-L155] declares BOTH of its loop counters correctly:
- * [:L140] is `for(var s=1; s<=arrayLen(arguments.product.getSkus()); s++)` and the inner [:L142] is
- * `for(var o=1; o<=arrayLen(arguments.product.getSkus()[s].getOptions()); o++)`. Both are properly
- * `var`-scoped, so nothing leaks, and no unscoped-counter defect is attributable to the `addOption`
- * path. Nothing in this module or its consumer should be read as carrying one.
+ * [model/service/ProductService.cfc:L128-L155] declares both of its loop counters correctly, [:L140]
+ * as `for(var s=1; …)` and the inner [:L142] as `for(var o=1; …)`, so nothing leaks and no
+ * unscoped-counter defect is attributable to the `addOption` path.
  *
- * NOR DOES THIS CONTEXT OWN THE OTHER `addOptionGroup` PARITY ITEM. The AAP defect register records
- * against `processProduct_addOptionGroup` that only the FIRST option of the newly added group is
- * applied to the existing SKUs — visible at [:L119] as `skus[i].addOption(options[1])`. That entry
- * belongs to that method alone. `processProduct_addOption` applies no such first-element narrowing:
- * it accumulates across every existing SKU and every existing option [:L140-L148]. This module
- * therefore carries NO entry from the register, mints no new one, and needs no parity marker.
+ * NOR DOES THIS CONTEXT OWN THE OTHER `addOptionGroup` PARITY ITEM. AAP §0.6.7 records against
+ * `processProduct_addOptionGroup` that only the FIRST option of the newly added group is applied to the
+ * existing SKUs, visible at [:L119] as `skus[i].addOption(options[1])`. That entry belongs to that
+ * method alone; `processProduct_addOption` applies no such first-element narrowing, accumulating across
+ * every existing SKU and every existing option [:L140-L148]. This module therefore carries no register
+ * entry, mints no new one, and needs no parity marker.
  *
- * WHY THE DISTINCTION IS WORTH THE INK. Both differences are differences in the CONSUMER, not in
- * this input object, and the consumer belongs to `src/services/ProductService.ts`. What this block
- * buys is that the two parallel modules can be diffed without a reader concluding that a missing
- * note is an oversight, or that a copied note is a fact.
+ * Both differences are differences in the CONSUMER rather than in this input object, and the consumer
+ * belongs to `src/services/ProductService.ts`. Stating them keeps the two parallel modules diffable
+ * without a reader concluding that a missing note is an oversight or that a copied note is a fact.
  * ============================================================================================== */
 
 /* =================================================================================================
@@ -334,33 +289,28 @@ import type { Product } from '../product/Product';
  * ============================================================================================== */
 
 /* =================================================================================================
- * G6 TRANSLATION DECISION — THE POST-CONSTRUCTION DEFAULTS HOOK IS A VERIFIED NO-OP HERE
+ * G6 TRANSLATION DECISION — THE POST-CONSTRUCTION DEFAULTS HOOK IS A NO-OP HERE
  * =================================================================================================
  * [org/Hibachi/HibachiEntity.cfc:L179] invokes a defaults hook on the freshly built process object,
- * immediately after the entity injection of [:L175]. It would be reasonable to assume that hook
- * seeds something, and for this component it does not.
+ * immediately after the entity injection at [:L175]. It would be reasonable to assume that hook seeds
+ * something; for this component it does not. The hook is declared at
+ * [org/Hibachi/HibachiProcess.cfc:L10-L12] with an empty body whose entire content is the comment
+ * "Left Blank To Be Done By Each Process Object", and the only two overrides anywhere under `model/`
+ * are [model/process/Order_AddOrderPayment.cfc:L81] and [model/process/Order_CreateReturn.cfc:L64],
+ * both in the out-of-scope order domain. `Product_AddOption.cfc` does not override it.
  *
- * The hook is declared at [org/Hibachi/HibachiProcess.cfc:L10-L12] with an empty body whose entire
- * content is the comment "Left Blank To Be Done By Each Process Object". A scan for overrides
- * across `model/` finds EXACTLY TWO — [model/process/Order_AddOrderPayment.cfc:L81] and
- * [model/process/Order_CreateReturn.cfc:L64] — and both belong to the out-of-scope order domain.
- * `Product_AddOption.cfc` does not override it. The hook consequently does nothing whatsoever for
- * this component.
- *
- * THEREFORE NEITHER MEMBER HAS A DEFAULT, and none is invented (S9). The contrast is instructive:
- * the excluded `model/process/Product_AddSubscriptionTerm.cfc` DOES declare product-derived lazy
- * defaults, so the legacy authors added defaults where they wanted them and deliberately did not
- * here. A freshly produced instance of this type carries the injected `product` and nothing else,
- * and `option` stays ABSENT until a payload supplies it.
+ * THEREFORE NEITHER MEMBER HAS A DEFAULT, and none is invented (S9). The contrast is instructive: the
+ * excluded [model/process/Product_AddSubscriptionTerm.cfc] DOES declare product-derived lazy defaults,
+ * so the legacy authors added defaults where they wanted them and deliberately did not here. A freshly
+ * produced instance carries the injected `product` and nothing else, and `option` stays ABSENT
+ * until a payload supplies it.
  *
  * The same reasoning excludes the framework's own process-object members. The base component at
- * [org/Hibachi/HibachiProcess.cfc:L3-L4] declares two flag properties and exposes two lazy readers
- * for them at [:L14-L26], plus a type predicate at [:L6-L8]. None is ported, and the exclusion is
- * proven rather than assumed: repository-wide scans outside `org/Hibachi/` find zero consumers of
- * the population flag and zero of the predicate, and the display flag has a single consumer in an
- * out-of-scope order process object. They are not observable for this slice, and §0.8.3.2 forbids
- * carrying framework code forward in any case. Nor are the four audit members ported: those belong
- * to persistent entities, and a transient has none.
+ * [org/Hibachi/HibachiProcess.cfc:L3-L4] declares two flag properties with lazy readers at [:L14-L26]
+ * and a type predicate at [:L6-L8]. None is ported: nothing outside `org/Hibachi/` consumes the
+ * population flag or the predicate, the display flag's only consumer is an out-of-scope order process
+ * object, and AAP §0.8.3.2 forbids carrying framework code forward in any case. Nor are the four audit
+ * members ported — those belong to persistent entities, and a transient has none.
  * ============================================================================================== */
 
 /**
@@ -506,7 +456,10 @@ export interface ProductAddOption {
  * this two-entry table is the complete contract.
  */
 const PRODUCT_ADD_OPTION_COLUMN_DESCRIPTORS: readonly ColumnPropertyDescriptor<ProductAddOptionPropertyName>[] =
-  Object.freeze([{ name: 'product' }, { name: 'option' }]);
+  Object.freeze([
+    { name: 'product', valueType: 'untyped' },
+    { name: 'option', valueType: 'untyped' },
+  ]);
 
 /**
  * The complete population contract for {@link ProductAddOption} — the declared replacement for the
@@ -538,6 +491,22 @@ export const PRODUCT_ADD_OPTION_PROPERTY_DESCRIPTORS: PropertyDescriptorSet<
   ProductAddOption,
   ProductAddOptionPropertyName
 > = Object.freeze({
+  /*
+   * The legacy `getClassName()` value [org/Hibachi/HibachiObject.cfc:L135-L137] for
+   * [model/process/Product_AddOption.cfc:L49] — the bare component name, UNDERSCORE AND ALL. The CFML file name is
+   * `Product_AddOption.cfc`, so `listLast(getClassFullname(), ".")` yields `Product_AddOption` and
+   * NOT the TypeScript class name `ProductAddOption`. The legacy spelling is carried because it is
+   * what ARM 3 of the population gate would have been keyed by
+   * [org/Hibachi/HibachiTransient.cfc:L190].
+   *
+   * ⚠️ IT IS NEVER CONSULTED FOR THIS TYPE, and is declared anyway. `persistent: false` below
+   * short-circuits the authorisation OR on its first arm, so no authorisation question is ever
+   * asked about a process object. The member is required rather than optional precisely so that
+   * this fact is stated per type instead of being inferred from an omission — and so that a type
+   * which later becomes persistent cannot silently acquire a defaulted, mismatched key.
+   */
+  entityName: 'Product_AddOption',
+
   persistent: false,
   properties: PRODUCT_ADD_OPTION_COLUMN_DESCRIPTORS,
 });

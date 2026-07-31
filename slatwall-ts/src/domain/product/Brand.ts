@@ -1,223 +1,126 @@
 /**
  * Brand — the Catalog's brand entity, extracted from a retired CFML ORM.
  *
- * PORT OF `model/entity/Brand.cfc`, all 165 lines of it. The legacy component declaration at
- * [model/entity/Brand.cfc:L49] reads, in full:
+ * Ported from [model/entity/Brand.cfc], whose component declaration at [:L49] reads
+ * `component displayname="Brand" entityname="SlatwallBrand" table="SwBrand" persistent=true
+ * output=false accessors=true extends="HibachiEntity" cacheuse="transactional"
+ * hb_serviceName="brandService" hb_permission="this"`. Scope per AAP §0.4.1.4: six persistent
+ * properties and the products relationship. Four of those attributes carry information this port
+ * records rather than reproduces:
  *
- *     component displayname="Brand" entityname="SlatwallBrand" table="SwBrand" persistent=true
- *       output=false accessors=true extends="HibachiEntity" cacheuse="transactional"
- *       hb_serviceName="brandService" hb_permission="this" {
+ *   - `entityname` / `table`. The table is named in PROSE ONLY. This module contains no SQL, no query
+ *     string, no driver import and no table or column identifier in any code position (S2); mapping
+ *     brand rows to and from this type belongs to `src/adapters/mysql/rowMappers.ts`.
+ *   - `extends="HibachiEntity"` resolves to the LOCAL [model/entity/HibachiEntity.cfc], not to
+ *     `org/Hibachi/HibachiEntity.cfc` (IR-8). That local class is the one whose `populate()` override
+ *     [model/entity/HibachiEntity.cfc:L56-L97] and `setting()` helper [:L129] the in-scope entities
+ *     actually inherit. Neither is reproduced as a member here: population belongs to
+ *     `../base/populate`, and Brand has no `setting()` caller at all.
+ *   - `cacheuse="transactional"` is a Hibernate second-level cache directive with no equivalent in a
+ *     stateless Lambda invocation — mismatch M7. FLAGGED and deliberately not implemented: nothing
+ *     survives between invocations except module scope, and module-scope state on a warm container
+ *     leaks across invocations and therefore across tenants. This module holds no cache, no memoized
+ *     value and no module-scope mutable binding; its two module-scope bindings are frozen constants
+ *     with no per-request content.
+ *   - `accessors=true` is why the legacy needed no `getBrandName()` in source and still had one. See
+ *     THE ACCESSOR DECISION below.
  *
- * Four of those attributes carry information this port has to record rather than reproduce:
+ * Standards citations use the AAP §0.7.3 identifiers S1-S9. `F<n>` markers are this port's own
+ * file-scope rules — most often F2 (a collection getter returns the LIVE array), F9 (SmartList
+ * members belong to the SmartList port and its adapter), F12 (validation lives in
+ * `src/validation/**`), F21 (`isNew` is the one sanctioned framework-shaped member) and F22
+ * (framework members are not declared on domain entities). AAP §0.8.2 Guideline 6 requires every
+ * technology-specific translation decision to be documented where it is made; those are labelled
+ * `D-a` through `D-l` at the point each one is made — `D-a` and `D-l` in this header, because they
+ * govern the whole property surface, and the rest at the declaration each one concerns.
  *
  *   - `entityname="SlatwallBrand"` and `table="SwBrand"`. The table is named here in PROSE ONLY.
  *     This module contains no SQL, no query string, no driver import and no table or column
  *     identifier in any code position; mapping brand rows to and from this type is owned by
- *     `src/adapters/mysql/rowMappers.ts` (AAP §0.4.1.7).
+ *     `src/adapters/mysql/rowMappers.ts` (AAP §0.4.1.7). The LOGICAL ORM name is a different thing
+ *     and IS declared as a value, exactly once, in {@link BRAND_ENTITY_METADATA} — `getEntityName()`
+ *     [org/Hibachi/HibachiEntity.cfc:L287-L289] is observable behaviour that
+ *     `src/ports/UniquePropertyPort.ts` consumes, and the two attributes must never be conflated.
  *
- *   - `extends="HibachiEntity"` resolves to the LOCAL `model/entity/HibachiEntity.cfc`, NOT to
- *     `org/Hibachi/HibachiEntity.cfc` (IR-8). That local class is the one whose `populate()`
- *     override at [model/entity/HibachiEntity.cfc:L56-L97] and `setting()` helper at [:L129] the
- *     in-scope entities actually inherit. Neither is reproduced as a member here: population is
- *     owned by `../base/populate`, and `setting()` has no caller on Brand at all (see below).
- *
- *   - `cacheuse="transactional"` is a Hibernate second-level cache directive, and it has NO
- *     equivalent in a stateless Lambda invocation — mismatch M7 (AAP §0.6.6). 111 of the 113 legacy
- *     entities declare it. It is FLAGGED here and deliberately not implemented: nothing survives
- *     between invocations except module-scope state, and module-scope state on a warm container
- *     leaks across invocations and therefore across tenants. Accordingly this module holds no
- *     cache, no memoized value, no module-scope mutable binding and no `let` at all. The two
- *     module-scope bindings it does hold are frozen constants with no per-request content.
- *
- *   - `accessors=true` is why the legacy source needs no `getBrandName()` in it and still had one.
- *     See "THE ACCESSOR DECISION" below, which is the single most visible idiom change in the file.
- *
- * ---------------------------------------------------------------------------------------------
- * AAP AUTHORITY
- * ---------------------------------------------------------------------------------------------
- *   §0.4.1.4 "Domain Layer", the `slatwall-ts/src/domain/product/Brand.ts` row — CREATE, source
- *     `model/entity/Brand.cfc`, key change: "Six persistent properties and the products
- *     relationship; no non-persistent properties exist, so the port is complete."
- *   §0.3.1 places this file in the target tree at `src/domain/product/Brand.ts`.
- *   §0.3.3 mandates composition over inheritance, which is why this class extends NOTHING — not
- *     `../base/AuditableEntity` (it `implements` that structural contract instead), and not any
- *     framework base. `org/Hibachi/**` is a boundary to extract from, never to carry forward
- *     (§0.8.3.2), and not one line of it is inherited, imported or re-implemented here.
- *
- * ---------------------------------------------------------------------------------------------
- * WHY THIS IS THE SIMPLEST ENTITY IN THE SLICE — FOUR VERIFIED FACTS, NOT AN ASSUMPTION
- * ---------------------------------------------------------------------------------------------
- * A reader arriving from `Product.ts`, which must exclude sixteen calculated members, should
- * understand that this file's brevity is a property of the LEGACY SOURCE and not an omission here:
- *
- *   1. THE NON-PERSISTENT SECTION IS EMPTY. [model/entity/Brand.cfc:L83-L85] is nothing but its own
- *      START and END banner comments with a blank line between them. Brand declares ZERO
- *      non-persistent properties, so §0.2.2.6's calculated-property boundary — "the exclusion most
- *      likely to be violated by accident" — simply does not arise. There is no `salePrice`, no
- *      `qats`, no `livePrice`, no `currencyDetails` and nothing else to exclude.
- *   2. ZERO `getService(...)` CALL SITES. Verified by grep over the whole file: 0 occurrences.
- *      Brand reaches no service, in scope or out, so it needs no port, no injected collaborator and
- *      no constructor parameter of any kind.
- *   3. ZERO `setting(...)` CALL SITES. Also 0 occurrences. Brand reads none of the eighteen
- *      configuration keys the slice consumes, so it has no `SettingResolverPort` surface (IR-2).
- *   4. BOTH TAIL SECTIONS ARE EMPTY. [model/entity/Brand.cfc:L157-L159] "Overridden Methods" and
- *      [:L161-L163] "ORM Event Hooks" contain only their banners. Brand overrides NOTHING and
- *      declares no lifecycle hook — see "THE F22 NEGATIVE MANDATE" below, which is why this class
- *      has neither `getSimpleRepresentation()` nor `getSimpleRepresentationPropertyName()` while
- *      its two siblings in this folder each have one.
- *
- * ---------------------------------------------------------------------------------------------
- * THE ACCESSOR DECISION (G6) — PUBLIC FIELDS, NOT GENERATED getX/setX PAIRS
- * ---------------------------------------------------------------------------------------------
- * `accessors=true` made the CFML engine generate a `getX()`/`setX()` pair for every declared
- * property, and legacy callers used them: [model/service/BrandService.cfc:L68] reads
- * `arguments.brand.getURLTitle()`, [:L71-L72] read `getBrandName()`,
- * [model/entity/Product.cfc:L528] reads `getBrand().getBrandName()`,
- * [integrationServices/google/views/feed/product.cfm:L32] reads
- * `sku.getProduct().getBrand().getBrandName()`, and [model/entity/Product.cfc:L814] and
- * [model/entity/Sku.cfc:L345, L831] read `getBrandID()`.
- *
- * NONE of those accessors is reproduced. The persistent data surface is PUBLIC FIELDS named exactly
- * as the legacy properties, so every read above becomes a field read — `brand.urlTitle`,
- * `brand.brandName`, `brand.brandID`. That is the idiomatic TypeScript the Minimal Change Clause
- * asks for (§0.8.1: minimal in functional scope, expressly NOT minimal in idiom), and it is also
- * FORCED, for a reason that has nothing to do with taste:
+ * D-a — THE ACCESSOR DECISION: PUBLIC FIELDS, NOT GENERATED getX/setX PAIRS. `accessors=true` made the
+ * engine generate a pair per property and legacy callers used them: [model/service/BrandService.cfc:L68]
+ * reads `getURLTitle()`, [:L71-L72] read `getBrandName()`, [model/entity/Product.cfc:L528] reads
+ * `getBrand().getBrandName()`, [integrationServices/google/views/feed/product.cfm:L32] reads
+ * `sku.getProduct().getBrand().getBrandName()`, and [model/entity/Product.cfc:L814] with
+ * [model/entity/Sku.cfc:L345, L831] read `getBrandID()`. NONE of those accessors is reproduced: the
+ * persistent surface is PUBLIC FIELDS named exactly as the legacy properties, so every read above
+ * becomes a field read. That is the idiomatic TypeScript AAP §0.8.1 asks for — minimal in functional
+ * scope, expressly NOT minimal in idiom — and it is also FORCED, for a reason unrelated to taste:
  *
  *     `../base/populate` implements CFML's null semantics as `delete target[propertyName]`
  *     (`clearPropertyValue`), and a value behind a getter/setter pair CANNOT be deleted.
  *
- * The observable proof that deletion — rather than assigning `''` — is the correct semantic is in
- * the service layer: [model/service/ProductService.cfc:L268] guards its unique-URL-title generation
- * with `isNull(getURLTitle())` ALONE, whereas `saveProductType` at [:L295] guards with
- * `isNull(...) || !len(...)`. If population assigned `''` instead of deleting the key, the L268
- * branch could never fire and a product saved with a blank `urlTitle` would silently end up with no
- * URL title at all. `exactOptionalPropertyTypes` is enabled for this subtree precisely so that
- * "unset" means the key is ABSENT; `undefined` is never assigned to any property in this file.
+ * The observable proof that deletion rather than assigning `''` is the correct semantic sits in the
+ * service layer: [model/service/ProductService.cfc:L268] guards its unique-URL-title generation with
+ * `isNull(getURLTitle())` ALONE, whereas `saveProductType` at [:L295] guards with
+ * `isNull(...) || !len(...)`. If population assigned `''` instead of deleting the key, the L268 branch
+ * could never fire and a product saved with a blank `urlTitle` would silently end up with none.
+ * `exactOptionalPropertyTypes` is enabled for this subtree precisely so that "unset" means the key is
+ * ABSENT; `undefined` is never assigned to any property in this file.
  *
- * TWO METHODS ARE STILL DECLARED, each for a reason that is not an accessor:
- *   - `getProducts()` carries the LIVE-ARRAY-BY-REFERENCE contract (F2) that three legacy call
- *     sites mutate through. A field read alone would not document that, and a copy would break it.
- *   - `hasProduct()` has no declaration anywhere in the legacy source at all; it was fabricated by
- *     the CFML ORM's `has<singularName>()` collection generation, and IR-1 requires it to become an
- *     explicit, typed declaration.
+ * Two methods are still declared, each for a reason that is not an accessor: `getProducts()` carries
+ * the LIVE-ARRAY-BY-REFERENCE contract (F2) that three legacy call sites mutate through, which a field
+ * read would not document and a copy would break; and `hasProduct()` has no declaration anywhere in
+ * the legacy source, having been fabricated by the ORM's `has<singularName>()` generation, so IR-1
+ * requires it to become an explicit typed declaration.
  *
- * ---------------------------------------------------------------------------------------------
- * THE F22 NEGATIVE MANDATE — WHAT IS DELIBERATELY ABSENT FROM THIS CLASS
- * ---------------------------------------------------------------------------------------------
- * None of the following framework members is declared, and their absence is a decision rather than
- * an oversight: `getSimpleRepresentation`, `getSimpleRepresentationPropertyName`,
- * `getPrimaryIDPropertyName`, `getPrimaryIDValue`, `getNewFlag`, `validate`, `hasErrors`,
- * `getErrors`, `getPropertyMetaData`, `onMissingMethod`, `populate`, `getPropertySmartList`,
- * `setting`, `getService` and `getAttributeValue`. Every one of them lived on the retired framework
- * base classes; §0.8.3.2 states plainly that `org/Hibachi/**` is "being retired for this slice, not
- * carried forward". Their replacements, where they have one, live elsewhere by design: population
- * in `../base/populate`, validation in `src/validation/**`, paginated dynamic queries behind
- * `SmartListQueryPort` and `src/adapters/mysql/SmartListQueryBuilder.ts` (F9 — Brand declares no
- * SmartList member in any case), setting resolution behind `SettingResolverPort`, and the audit
- * lifecycle in `../base/AuditableEntity`.
+ * WHAT IS DELIBERATELY ABSENT (F22). No framework member is declared here — not the primary-identifier
+ * or new-flag accessors, not `validate`/`hasErrors`/`getErrors`, not `getPropertyMetaData`,
+ * `onMissingMethod`, `populate`, `getPropertySmartList`, `setting`, `getService` or
+ * `getAttributeValue`. Every one lived on the retired framework base classes, which AAP §0.8.3.2
+ * retires for this slice rather than carrying forward. Their replacements live elsewhere by design:
+ * population in `../base/populate`, validation in `src/validation/**`, paginated dynamic queries behind
+ * `SmartListQueryPort`, setting resolution behind `SettingResolverPort`, and the audit lifecycle in
+ * `../base/AuditableEntity`. `isNew()` is the ONE exception (F21), exempt because it is a pure derived
+ * predicate over this class's own primary identifier with no dependency on anything.
  *
- * `isNew()` is the ONE exception, and it is exempt because it is not framework machinery at all: it
- * is a pure derived predicate over this class's own primary identifier, with no dependency on
- * anything (F21). See its declaration below.
+ * BRAND OVERRIDES NEITHER SIMPLE-REPRESENTATION MEMBER, and the asymmetry across this folder is legacy
+ * fact: `ProductType.ts` overrides `getSimpleRepresentation()` and `Product.ts` overrides
+ * `getSimpleRepresentationPropertyName()` because their legacy sources declare those overrides.
+ * [model/entity/Brand.cfc] declares neither, so this file declares neither. The three shapes must NOT
+ * be harmonised (AAP §0.8.2 Guideline 2).
  *
- * BRAND OVERRIDES NEITHER SIMPLE-REPRESENTATION MEMBER, and that asymmetry is legacy fact worth
- * stating because the three entities in this folder differ: `ProductType.ts` overrides
- * `getSimpleRepresentation()` and `Product.ts` overrides `getSimpleRepresentationPropertyName()`,
- * because [model/entity/ProductType.cfc] and [model/entity/Product.cfc] respectively declare those
- * overrides. `model/entity/Brand.cfc` declares neither — its "Overridden Methods" section is empty
- * — so this file declares neither. The three shapes must NOT be harmonised (§0.8.2 Guideline 2).
- *
- * ---------------------------------------------------------------------------------------------
- * INDEX OF G6 TRANSLATION DECISIONS RECORDED IN THIS FILE
- * ---------------------------------------------------------------------------------------------
- * §0.8.2 Guideline 6 requires every technology-specific translation decision to be documented where
- * it is made, "especially anywhere legacy behavior required an explicit judgment call". They are:
- *
- *   D-a  Public fields instead of generated accessors — above, and on every field.
- *   D-b  `hb_formatType="url"` on `brandWebsite` is a DEAD PATH — on that field.
- *   D-c  The `arguments.Product` capital-P casing quirk at [:L102] — on `removeProduct`.
- *   D-d  `import type` for `Product`, and why the mutual cycle is harmless — on that import.
- *   D-e  Object-identity membership in `hasProduct` — on that method.
- *   D-f  The live-array contract, and what a defensive copy would break — on `getProducts`.
- *   D-g  Two different representations of absence in the audit block — on those fields.
- *   D-h  The primary identifier is absent from the descriptor set, because no populate branch
- *        admits an `id` field — in the descriptor section.
- *   D-i  Populate-disabled properties declare no relationship machinery — in the descriptor
- *        section.
- *   D-j  `attributeValues` and `vendors` are flagged boundary omissions from the descriptor set,
- *        and absence there does NOT mean populate-disabled — in the descriptor section.
- *   D-k  Opaque `object` element types for never-traversed collections — on that type alias.
- *   D-l  The `declare` modifier on every optional field, so "unset" really means the key is ABSENT
- *        at run time and not merely typed as absent — immediately below.
- *
- * ---------------------------------------------------------------------------------------------
- * D-l — G6 TRANSLATION DECISION: `declare` ON EVERY OPTIONAL FIELD, AND WHY IT IS NOT COSMETIC
- * ---------------------------------------------------------------------------------------------
- * Ten fields carry the `declare` modifier: the five optional persistent scalars, `remoteID` and the
- * four audit properties. It is there for a concrete, verified reason, not for style.
- *
- * `slatwall-ts/tsconfig.json` targets ES2022, and ES2022 turns `useDefineForClassFields` ON —
- * verified by `tsc --showConfig`, which reports `useDefineForClassFields: true` even though the
- * file never mentions it. Under that setting a bare class-field declaration is emitted as a real
- * `Object.defineProperty` at construction time EVEN WITH NO INITIALISER, so `activeFlag?: boolean;`
- * would produce an OWN property whose value is `undefined` on every `new Brand()`. `declare` tells
- * the compiler the field is a type-level declaration only, so nothing is emitted for it and the key
- * stays genuinely absent until something assigns it. Confirmed empirically against this exact
- * compiler configuration: the emitted constructor defines only `brandID` and the eight collections.
- *
- * THREE REASONS THAT MATTERS, IN INCREASING ORDER OF CONSEQUENCE:
- *
- *   1. IT IS THE LEGACY SEMANTIC. CFML properties live in the `variables` scope and simply DO NOT
- *      EXIST until assigned: for a fresh brand `structKeyExists(variables, "urlTitle")` is FALSE
- *      and `isNull(getURLTitle())` is TRUE. An own property holding `undefined` reproduces the
- *      second of those and contradicts the first.
- *   2. IT IS THE SUBTREE'S STATED CONTRACT. `exactOptionalPropertyTypes` is enabled precisely so
- *      that "unset" means the key is ABSENT rather than present-and-`undefined`, and
- *      `../base/AuditableEntity` states in its own words that `undefined` is never assigned into
- *      any of the four audit properties. Emitting them as own `undefined` properties would have
- *      made both claims false at run time while leaving them true at the type level — the worst of
- *      the two possible failures, because nothing would have flagged it.
- *   3. IT KEEPS `delete` MEANINGFUL, WHICH IS THE WHOLE BASIS OF THE ACCESSOR DECISION ABOVE.
- *      `../base/populate`'s `clearPropertyValue` implements CFML's null semantics as
- *      `delete target[propertyName]`. Deletion still works on a defined own property, but the
- *      round trip would then be observably lopsided — absent before the first population, absent
- *      after a blank one, yet present-and-`undefined` on a brand that was merely constructed.
- *      Anything downstream that enumerates the entity — `Object.keys`, object spread, or a row
- *      mapper building a column list — would see a different property set depending on how the
- *      instance came to be. With `declare` the three states coincide, exactly as they do in CFML.
- *
- * `brandID` and the eight collections deliberately DO NOT carry `declare`: they need real emitted
- * initialisers, `''` and `[]` respectively, and the eager `[]` is itself a hard test requirement
- * (see the field declarations and the test-contract note further down).
- *
- * ---------------------------------------------------------------------------------------------
- * RULES VERDICT, RECORDED RATHER THAN ASSUMED (UR4)
- * ---------------------------------------------------------------------------------------------
- * `review_rules` returns the single line "No user rules provided." for this project — confirmed on
- * three independent calls (the default window, an explicit full-document range, and a range past
- * the end), with no paginated remainder — and no `.blitzyignore`, `.cursorrules`, `AGENTS.md` or
- * `CLAUDE.md` exists anywhere in the repository. ZERO files enter scope by rule and no rule-derived
- * constraint applies to this file. That is explicitly NOT permission to lower the bar: the nine
- * enterprise standards of AAP §0.7.3 govern in their place, and the ones with teeth here are S1
- * (strict type safety — this file contains no `any`, no `!` non-null assertion, no type-widening
- * cast and no `@ts-expect-error`/`@ts-ignore`), S2 (a purely negative obligation — no SQL, no
- * `mysql2`, no query string, and `SwBrand`/`SwProduct` in prose only), S3 (collaborators arrive as
- * explicit typed parameters; there is no service locator and no string-keyed resolution anywhere),
- * S4 (nothing is imported from `adapters/`, `services/`, `config/`, `validation/`, `handlers/` or
- * `integrations/`, and no AWS type appears), S5 (no dependency is added and nothing outside the
- * language itself is imported — not even `node:crypto`), S6 (`new Brand()` takes no arguments and
- * performs no I/O), S7 (preserve and annotate, do not repair), S8 (M7 above) and S9 (nothing is
- * invented — no phantom property, no default value the source does not state, no framework member).
+ * D-l — `declare` ON EVERY OPTIONAL FIELD, AND WHY IT IS NOT COSMETIC. Ten fields carry the modifier:
+ * the five optional persistent scalars, `remoteID` and the four audit properties. `tsconfig.json`
+ * targets ES2022, which turns `useDefineForClassFields` on, and under that setting a bare class-field
+ * declaration is emitted as a real `Object.defineProperty` at construction time EVEN WITH NO
+ * INITIALISER — so `activeFlag?: boolean;` would produce an OWN property whose value is `undefined` on
+ * every `new Brand()`. `declare` makes the field a type-level declaration only, so nothing is emitted
+ * and the key stays genuinely absent until something assigns it. Three consequences, in increasing
+ * order of importance: it is the legacy semantic, since CFML properties do not exist until assigned and
+ * `structKeyExists(variables, "urlTitle")` is FALSE on a fresh brand; it is the subtree's stated
+ * contract, since `exactOptionalPropertyTypes` and `../base/AuditableEntity` both promise that unset
+ * means absent, and emitting own `undefined` properties would make both claims false at run time while
+ * leaving them true at the type level, which nothing would flag; and it keeps `delete` meaningful,
+ * because otherwise the round trip is observably lopsided — absent before the first population, absent
+ * after a blank one, yet present-and-`undefined` on a brand that was merely constructed, so anything
+ * enumerating the entity would see a different property set depending on how the instance came to be.
+ * `brandID` and the eight collections deliberately do NOT carry `declare`: they need real emitted
+ * initialisers, `''` and `[]`, and the eager `[]` is itself a test requirement.
  */
 
 import {
   AUDIT_PROPERTY_NAMES,
+  hasDeclaredProperty,
   isAuditPropertyName,
+  readSimpleRepresentation,
+  readValueByPropertyIdentifier,
+  requireDeclaredPropertyMetaData,
+  resolveSimpleRepresentationPropertyName,
   type AuditableEntity,
   type AuditPropertyName,
+  type DeclaredPropertyNameSet,
+  type EntityPropertyMetaData,
+  type ManagedEntity,
 } from '../base/AuditableEntity';
 import type {
   ColumnPropertyDescriptor,
+  EntityMetadataDeclaration,
   OneToManyPropertyDescriptor,
   PopulatePropertyDescriptor,
   PropertyDescriptorSet,
@@ -246,7 +149,7 @@ import type {
  * THE EXACT CONTRACT THIS MODULE REQUIRES OF `./Product`, stated so the two files cannot disagree —
  * `Product` must be an exported class or interface declaring `setBrand(brand: Brand): void` and
  * `removeBrand(brand?: Brand): void`, matching the hand-written members at
- * [model/entity/Product.cfc:L661-L666] and [:L667-L676]. Nothing else about `Product` is touched
+ * [model/entity/Product.cfc:L662-L667] and [:L668-L677]. Nothing else about `Product` is touched
  * here: not its identifier, not its name, not any other member. `setBrand` is the one that
  * maintains both sides of the relationship and carries the duplicate guard, which is why
  * {@link Brand.addProduct} delegates to it rather than appending directly.
@@ -286,10 +189,8 @@ import type { Product } from './Product';
  * `afterPopulate` option, and these two files agree by construction.
  */
 export interface BrandAttributeValueAssociation {
-  /** Sets this brand on the attribute value — the owning side of the `brandID` foreign key. */
   setBrand(brand: Brand): void;
 
-  /** Clears this brand from the attribute value. */
   removeBrand(brand: Brand): void;
 }
 
@@ -297,38 +198,29 @@ export interface BrandAttributeValueAssociation {
  * D-k — the element type of a many-to-many-inverse collection whose collaborator family is entirely
  * out of scope.
  *
- * Five families reach Brand through the six collections declared at
- * [model/entity/Brand.cfc:L66-L71], and every one of them is explicitly excluded by §0.2.2.1:
- * `Promotion*` (9 files), `Vendor*` (15 files) and `Physical*` (6 files).
+ * Three excluded families reach Brand through the six collections at [model/entity/Brand.cfc:L66-L71]:
+ * `Promotion*`, `Vendor*` and `Physical*`, all excluded by AAP §0.2.2.1.
  *
- * WHY `object` AND NOT A DECLARED INTERFACE. No in-scope code traverses any of these six
- * collections, reads a member off an element, or calls a method on one — verified by grep: there is
- * not a single qualified `brand.addPromotionReward(...)`, `brand.addVendor(...)`,
- * `brand.addPhysical(...)` or corresponding `remove*` call anywhere outside the retired
- * `org/Hibachi/**` tree, and the identically named methods on [model/entity/Product.cfc:L732, L772,
- * L780] and [model/entity/Sku.cfc:L672, L744] are those entities' OWN bidirectional helpers rather
- * than calls into Brand. For a collection that is only ever declared and never traversed, an opaque
- * element type is the honest declaration: it carries the fact that the collection holds entities
- * without inventing a shape for them (S9), and because `object` exposes no member, the compiler
- * actively prevents this port from starting to depend on one by accident.
+ * WHY `object` AND NOT A DECLARED INTERFACE. No in-scope code traverses any of these collections, reads
+ * a member off an element or calls a method on one; the identically named methods on
+ * [model/entity/Product.cfc:L732, L772, L780] and [model/entity/Sku.cfc:L672, L744] are those entities'
+ * OWN bidirectional helpers rather than calls into Brand. For a collection that is only ever declared,
+ * an opaque element type is the honest declaration: it carries the fact that the collection holds
+ * entities without inventing a shape for them (S9), and because `object` exposes no member the compiler
+ * actively prevents this port from starting to depend on one by accident. `object` rather than an empty
+ * `interface`, because an empty object type is flagged by `@typescript-eslint/no-empty-object-type` and
+ * inventing a marker member to satisfy the linter is the fabrication S9 forbids; `object` rather than
+ * `unknown` or `any`, because those would admit a string or a number into a collection the legacy
+ * mapping guarantees holds entities.
  *
- * `object` rather than an empty `interface`: an empty object type would be flagged by
- * `@typescript-eslint/no-empty-object-type`, and inventing a marker member to satisfy the linter
- * would be exactly the fabrication S9 forbids. `object` rather than `unknown` or `any`: those would
- * admit a string or a number into a collection the legacy mapping guarantees holds entities.
+ * ONE ALIAS, SIX USES, AND THE CONSEQUENCE STATED PLAINLY: the six collections are mutually assignable.
+ * That is a real limitation, acceptable only because nothing in scope traverses or cross-assigns them,
+ * and preferable to six invented shapes.
  *
- * ONE ALIAS, SIX USES, AND THE CONSEQUENCE STATED PLAINLY: the six collections are therefore
- * mutually assignable. That is a real limitation and not a hidden one — it is acceptable only
- * because nothing in scope traverses or cross-assigns them, and it is preferable to six invented
- * shapes.
- *
- * TODO(boundary): the rightful owners of these element types are the promotion subsystem
- * (`PromotionReward`, `PromotionRewardExclusion`, `PromotionQualifier`,
- * `PromotionQualifierExclusion`), the vendor subsystem (`Vendor`) and the physical-count subsystem
- * (`Physical`) — three families §0.2.2.1 excludes outright. When a later slice converts any of
- * them, replace this alias at the
- * corresponding field declaration with that family's real domain type; no port file is created here
- * and no shape is invented for any of them (TR-5, S9).
+ * TODO(boundary): the rightful owners of these element types are the promotion, vendor and
+ * physical-count subsystems, three families AAP §0.2.2.1 excludes outright. When a later slice converts
+ * any of them, replace this alias at the corresponding field declaration with that family's real
+ * domain type; no port file is created here and no shape is invented (TR-5, S9).
  */
 export type OutOfScopeAssociation = object;
 
@@ -358,7 +250,7 @@ export type OutOfScopeAssociation = object;
  * brand.getProducts();    // []    — the traceable default of BrandTest.cfc:L58-L60
  * ```
  */
-export class Brand implements AuditableEntity {
+export class Brand implements AuditableEntity, ManagedEntity {
   /*
    * ============================================================================================
    * PERSISTENT PROPERTIES — [model/entity/Brand.cfc:L51-L57]
@@ -511,26 +403,21 @@ export class Brand implements AuditableEntity {
    * ============================================================================================
    * RELATED OBJECT PROPERTIES (many-to-many) — [model/entity/Brand.cfc:L63-L71]
    * ============================================================================================
-   * THE "many-to-many - owner" SECTION IS EMPTY. [model/entity/Brand.cfc:L63-L64] is a banner
-   * comment with nothing under it: Brand owns no many-to-many relationship. All six below are
-   * INVERSE sides,
-   * each declaring `inverse="true"` and naming a link table it does not own.
+   * THE "many-to-many - owner" SECTION IS EMPTY: [:L63-L64] is a banner with nothing under it, so
+   * Brand owns no many-to-many relationship. All six below are INVERSE sides, each declaring
+   * `inverse="true"` and naming a link table it does not own.
    *
    * FIVE OF THE SIX CARRY `hb_populateEnabled="false"`, AND THE SIXTH — `vendors` AT [:L70] — DOES
-   * NOT. That is the single most error-prone line in the file to read by eye, because it sits
-   * between two flagged declarations in a block of six near-identical lines. Verified by grep:
-   * `hb_populateEnabled` occurs EXACTLY NINE times in `model/entity/Brand.cfc` — [:L66], [:L67],
-   * [:L68], [:L69], [:L71] and the four audit properties at [:L77-L80] — and `vendors` is not one
-   * of them. Brand is unique in the slice for carrying nine such declarations where the other five
-   * in-scope entities carry exactly four. The descriptor section below encodes that nine, and the
-   * `vendors` exception, as compile-checked structure rather than as a comment somebody can forget.
+   * NOT. It sits between two flagged declarations in a block of six near-identical lines, which makes
+   * it easy to read past. Brand is unique in the slice for carrying nine `hb_populateEnabled="false"`
+   * declarations in total ([:L66], [:L67], [:L68], [:L69], [:L71] and the four audit properties at
+   * [:L77-L80]) where the other five in-scope entities carry exactly four. The descriptor section
+   * below encodes that count, and the `vendors` exception, as compile-checked structure rather than as
+   * a comment somebody can forget.
    *
-   * A SECOND BYTE-LEVEL DETAIL, RECORDED BECAUSE IT IS EASY TO MISS AND CHANGES NOTHING HERE:
-   * `type="array"` is present on [:L67], [:L69] and [:L71] but ABSENT on [:L66], [:L68] and [:L70].
-   * In CFML that inconsistency is inconsequential — Hibernate returns a collection either way — and
-   * all six are modelled as arrays here, which is what the legacy code observed at runtime. The
-   * divergence is a legacy declaration quirk, not behaviour, so it is documented and not
-   * reproduced.
+   * A legacy declaration quirk that changes nothing here: `type="array"` is present on [:L67], [:L69]
+   * and [:L71] and absent on [:L66], [:L68] and [:L70]. Hibernate returns a collection either way, so
+   * all six are modelled as arrays, which is what the legacy code observed at run time.
    */
 
   /**
@@ -566,7 +453,7 @@ export class Brand implements AuditableEntity {
    * [model/entity/Brand.cfc:L70] — `cfc="Vendor"`, link table `SwVendorBrand`,
    * `fkcolumn="brandID"`, `inversejoincolumn="vendorID"`.
    *
-   * ⚠️ THE DELIBERATE EXCEPTION: this declaration carries NO `hb_populateEnabled` attribute, so it
+   * THE DELIBERATE EXCEPTION: this declaration carries NO `hb_populateEnabled` attribute, so it
    * is populate-ENABLED, and it is the only one of the six that is. It sits between
    * `promotionQualifierExclusions` at [:L69] and `physicals` at [:L71], both of which are flagged —
    * an off-by-one that is trivially easy to get wrong when scanning six similar lines. It is
@@ -632,7 +519,6 @@ export class Brand implements AuditableEntity {
    * `createdByAccountID` and `modifiedByAccountID` columns.
    */
 
-  /** [model/entity/Brand.cfc:L77] `hb_populateEnabled="false" ormtype="timestamp"`. */
   declare createdDateTime?: Date;
 
   /**
@@ -641,7 +527,6 @@ export class Brand implements AuditableEntity {
    */
   declare createdByAccount?: string;
 
-  /** [model/entity/Brand.cfc:L79] `hb_populateEnabled="false" ormtype="timestamp"`. */
   declare modifiedDateTime?: Date;
 
   /**
@@ -805,20 +690,19 @@ export class Brand implements AuditableEntity {
    *        arguments.Product.removeBrand(this);
    *     }
    *
-   * D-c — G6 TRANSLATION DECISION: THE CAPITAL-P CASING QUIRK AT [:L102]. The legacy body reads
-   * `arguments.Product` with an upper-case P, while the argument it declares one line above at
-   * [:L101] is `product` and the sibling `addProduct` at [:L99] uses `arguments.product` in lower
-   * case. CFML's `arguments` scope is case-INSENSITIVE, so the mismatch resolved to the same
-   * argument and the method worked; TypeScript is case-SENSITIVE, so a literal transliteration
-   * would reference an identifier that does not exist.
+   * D-c — THE CAPITAL-P CASING QUIRK AT [:L102]. The legacy body reads `arguments.Product` with an
+   * upper-case P while the argument declared one line above at [:L101] is `product`, and the sibling
+   * `addProduct` at [:L99] uses lower case. CFML's `arguments` scope is case-INSENSITIVE, so the
+   * mismatch resolved to the same argument and the method worked; TypeScript is case-SENSITIVE, so a
+   * literal transliteration would reference an identifier that does not exist.
    *
    * THE DECLARED LOWER-CASE NAME IS USED. This is a translation decision, not a repair: nothing
    * about the observable behaviour changes, because both spellings always denoted the same value.
    * §0.8.2 Guideline 4 forbids "enhancing" business logic, and this changes none — it records a
    * language-level difference and picks the only spelling that compiles. The quirk is documented
    * rather than silently normalised so that a reviewer diffing the two files sees why the letter
-   * changed. It is also NOT one of the twenty-one carried defects: AAP §0.6.7 is closed at D1-D21
-   * and this file introduces no new defect identifier (S7).
+   * changed. It is also NOT one of the twenty-one carried defects: AAP §0.6.7 catalogues D1-D21, the
+   * port's register is closed at D1-D24, and this file introduces no new defect identifier (S7).
    *
    * A pure delegation, like its counterpart: [model/entity/Product.cfc:L668-L677] `removeBrand`
    * splices this product out of the live `products` array and then clears its own back-reference.
@@ -833,9 +717,8 @@ export class Brand implements AuditableEntity {
    * ============================================================================================
    * THE TWELVE PROMOTION / QUALIFIER / VENDOR / PHYSICAL HELPERS — DOCUMENTED AND OMITTED
    * ============================================================================================
-   * [model/entity/Brand.cfc:L105-L153] declares twelve further bidirectional helpers. None is
-   * ported, and this comment is the record of that decision so the omission reads as deliberate
-   * rather than as twelve methods somebody forgot:
+   * [model/entity/Brand.cfc:L105-L153] declares twelve further bidirectional helpers. None is ported,
+   * and this is the record of that decision so the omission reads as deliberate:
    *
    *   addPromotionReward             [:L106-L108]  -> promotionReward.addBrand(this)
    *   removePromotionReward          [:L110-L112]  -> promotionReward.removeBrand(this)
@@ -850,46 +733,22 @@ export class Brand implements AuditableEntity {
    *   addPhysical                    [:L148-L150]  -> physical.addBrand(this)
    *   removePhysical                 [:L151-L153]  -> physical.removeBrand(this)
    *
-   * THREE INDEPENDENT REASONS, ALL OF THEM VERIFIED:
-   *   1. EVERY COLLABORATOR IS EXPLICITLY OUT OF SCOPE. §0.2.2.1 excludes `Promotion*` (9 files),
-   *      `Vendor*` (15 files) and `Physical*` (6 files). Implementing the twelve would require
-   *      declaring `addBrand`, `removeBrand`, `addExcludedBrand` and `removeExcludedBrand`
-   *      contracts for three excluded families — four invented members apiece — which S9 forbids.
-   *   2. NOTHING IN SCOPE CALLS ANY OF THEM. Verified by grep across every in-scope entity,
-   *      service, DAO, process object and the Google integration, and then repository-wide: there
-   *      is not one qualified `brand.addPromotionReward(...)`, `brand.addVendor(...)`,
-   *      `brand.addPhysical(...)` or matching `remove*` call anywhere outside the retired
-   *      `org/Hibachi/**` tree. The identically named methods at [model/entity/Product.cfc:L732,
-   *      L772, L780] and [model/entity/Sku.cfc:L672, L744] are those entities' OWN helpers, not
-   *      calls into Brand.
-   *   3. THE AAP ROW FOR THIS FILE NAMES ONLY "Six persistent properties and the products
-   *      relationship" (§0.4.1.4). Adding twelve members it does not name would be scope creep, and
-   *      §0.8.2 Guideline 1 asks for the minimal necessary change in functional scope.
+   * THREE INDEPENDENT REASONS. Every collaborator family — `Promotion*`, `Vendor*`, `Physical*` — is
+   * excluded by AAP §0.2.2.1, so implementing the twelve would mean declaring `addBrand`,
+   * `removeBrand`, `addExcludedBrand` and `removeExcludedBrand` contracts for three excluded families,
+   * which S9 forbids. Nothing in scope calls any of them: the identically named methods at
+   * [model/entity/Product.cfc:L732, L772, L780] and [model/entity/Sku.cfc:L672, L744] are those
+   * entities' own helpers, not calls into Brand. And the AAP row for this file names only the six
+   * persistent properties and the products relationship, so adding twelve members it does not name
+   * would be scope creep.
    *
-   * ⭐ A POSITIVE FINDING, STATED SO A REVIEWER DOES NOT GO LOOKING FOR A DEFECT THAT IS NOT THERE:
-   * BRAND'S EXCLUSION HELPERS ARE CORRECT. `addPromotionRewardExclusion` at [:L116] calls
-   * `addExcludedBrand` and its counterpart at [:L119] calls `removeExcludedBrand`;
-   * `addPromotionQualifierExclusion` at [:L133] calls `addExcludedBrand` and its counterpart at
-   * [:L136] calls `removeExcludedBrand`. Both pairs match. THERE IS NO ADD/REMOVE MISMATCH DEFECT
-   * ON BRAND, and Brand carries no entry at all in the D1-D21 register of §0.6.7.
+   * Brand's exclusion helpers are internally consistent — both exclusion pairs match their
+   * counterparts ([:L116] with [:L119], [:L133] with [:L136]) — so there is no add/remove mismatch
+   * defect on this entity and AAP §0.6.7 carries no Brand entry.
    *
    * The six collections these helpers would have maintained ARE still declared as fields above, for
    * descriptor completeness and so that the nine `hb_populateEnabled="false"` declarations can be
    * recorded faithfully.
-   * ============================================================================================
-   */
-
-  /*
-   * ============================================================================================
-   * OVERRIDDEN METHODS — [model/entity/Brand.cfc:L157-L159]
-   * ORM EVENT HOOKS      — [model/entity/Brand.cfc:L161-L163]
-   * ============================================================================================
-   * BOTH SECTIONS ARE EMPTY IN THE LEGACY SOURCE, and both are therefore empty here. Brand
-   * overrides no framework member — no `getSimpleRepresentation()`, no
-   * `getSimpleRepresentationPropertyName()` — and declares no `preInsert`/`preUpdate` hook.
-   * Verified by grep: `getSimpleRepresentation` and `preInsert` each occur ZERO times in the file.
-   * The audit stamping those hooks performed on the framework base class is ported to
-   * `../base/AuditableEntity` and invoked by the writer, not by the entity.
    * ============================================================================================
    */
 
@@ -913,28 +772,198 @@ export class Brand implements AuditableEntity {
   isNew(): boolean {
     return this.brandID === '';
   }
+
+  /* ============================================================================================
+   * THE MANAGED-ENTITY CONTRACT — [org/Hibachi/**], INHERITED IN CFML, DECLARED HERE (IR-1 / TR-3)
+   * ============================================================================================
+   * Seven members every legacy entity received down the
+   * `HibachiObject` -> `HibachiTransient` -> `HibachiEntity` -> `model/entity/HibachiEntity.cfc`
+   * inheritance chain, and which `src/validation/Validator.ts` and
+   * `src/ports/UniquePropertyPort.ts` both require BY NAME. Neither contract can be satisfied by a
+   * plain data class, which is why they are declared rather than assumed:
+   * `ValidationSubject` reads `getClassName` and `hasProperty`, and `UniquePropertyEntity` reads
+   * `getEntityName`, `getPrimaryIDValue`, `getPrimaryIDPropertyName`, `getPropertyMetaData` and
+   * `getValueByPropertyIdentifier` in exactly the order [org/Hibachi/HibachiDAO.cfc:L134-L138]
+   * reads them.
+   *
+   * `src/domain/base/AuditableEntity.ts` owns the shared behaviour and every word of the rationale —
+   * including why there is no base class, why the member names are not modernised, and which
+   * inherited members are deliberately NOT ported. Each member below is the thin delegation plus the
+   * constant only this entity can state.
+   *
+   * ⭐ THIS IS THE ROOT FIX FOR THE `Brand` SAVE PATH. Without these members a `Brand` is a plain
+   * data class that satisfies neither `ValidationSubject` nor `UniquePropertyEntity`, so the save
+   * path could only type-check by asserting the mismatch away. With them the assertion is
+   * unnecessary and `src/adapters/mysql/rowMappers.ts` hydrates a genuinely valid validation
+   * subject.
+   * ============================================================================================ */
+
+  /**
+   * `Brand` — [org/Hibachi/HibachiObject.cfc:L135-L137], the last dot-delimited segment of the
+   * component's fully qualified name. Interpolated into every validation message
+   * [org/Hibachi/HibachiValidationService.cfc:L202, :L213, :L216].
+   *
+   * @returns The bare class name.
+   */
+  getClassName(): string {
+    return BRAND_CLASS_NAME;
+  }
+
+  /**
+   * `SlatwallBrand` — [org/Hibachi/HibachiEntity.cfc:L287-L289]. Live metadata reflection is replaced by the
+   * declared constant, per TR-3.
+   *
+   * @returns The mapped ORM entity name, NOT the physical table name.
+   */
+  getEntityName(): string {
+    return BRAND_ENTITY_NAME;
+  }
+
+  /**
+   * `brandID` — [org/Hibachi/HibachiEntity.cfc:L249-L251]. The legacy resolved this through
+   * `getService("hibachiService")`; the string-keyed service locator is replaced by the declared
+   * constant, per TR-3 and AAP 0.7.3 S3.
+   *
+   * @returns The name of the primary identifier property.
+   */
+  getPrimaryIDPropertyName(): string {
+    return BRAND_PRIMARY_ID_PROPERTY_NAME;
+  }
+
+  /**
+   * The primary identifier's VALUE — [org/Hibachi/HibachiEntity.cfc:L244-L246], which forwards to
+   * the generated getter for whichever property `getPrimaryIDPropertyName` names.
+   *
+   * ⚠️ RETURNS `''` FOR AN UNSAVED INSTANCE, because [model/entity/Brand.cfc:L52] declares
+   * `unsavedvalue=""` and this class initialises the field to `''`. That is what makes the
+   * self-exclusion term of the uniqueness query a NO-OP on insert — an observation AAP 0.4.1.7
+   * requires be reproduced rather than tidied away, and which `src/ports/UniquePropertyPort.ts`
+   * carries as a `TODO(parity)`. It is also the value
+   * [meta/tests/unit/entity/SlatwallEntityTestBase.cfc:L64-L67] asserts on a fresh instance.
+   *
+   * @returns The identifier, or `''` while unsaved.
+   */
+  getPrimaryIDValue(): string {
+    return this.brandID;
+  }
+
+  /**
+   * Whether this entity DECLARES the named property —
+   * [org/Hibachi/HibachiTransient.cfc:L763-L765].
+   *
+   * ⚠️ A FALSE ANSWER SILENTLY SKIPS A VALIDATION RULE rather than failing it
+   * [org/Hibachi/HibachiValidationService.cfc:L171]. See BRAND_DECLARED_PROPERTIES, whose
+   * exhaustiveness is compile-checked precisely because of that.
+   *
+   * @param propertyIdentifier - The name to test, in its declared casing.
+   * @returns `true` when the property is declared.
+   */
+  hasProperty(propertyIdentifier: string): boolean {
+    return hasDeclaredProperty(BRAND_DECLARED_PROPERTIES, propertyIdentifier);
+  }
+
+  /**
+   * Resolves a declared property's metadata, RAISING for an undeclared name —
+   * [org/Hibachi/HibachiTransient.cfc:L738-L747], whose present-key branch is at [:L741-L743] and
+   * whose throw is at [:L746]. The non-optional return type is faithful to that declaration.
+   *
+   * @param propertyName - The name to resolve.
+   * @returns The metadata for that property.
+   * @throws DomainError - When no property of that name is declared. Withheld from every response
+   *   by the deny-by-default presentation, because it signals a fault in the port rather than
+   *   anything a caller can provoke.
+   */
+  getPropertyMetaData(propertyName: string): EntityPropertyMetaData {
+    return requireDeclaredPropertyMetaData(
+      BRAND_DECLARED_PROPERTIES,
+      propertyName,
+      BRAND_CLASS_NAME,
+    );
+  }
+
+  /**
+   * Reads a value by property identifier, walking a path delimited by EITHER `.` OR `_` —
+   * [org/Hibachi/HibachiTransient.cfc:L466-L481]. An unresolvable path yields `''`, never an absent
+   * value; `readValueByPropertyIdentifier` documents all four traversal rules and why each is
+   * behaviour rather than convenience.
+   *
+   * @param propertyIdentifier - A property name, or a delimited path.
+   * @returns The resolved value, or `''`.
+   */
+  getValueByPropertyIdentifier(propertyIdentifier: string): unknown {
+    return readValueByPropertyIdentifier(this, propertyIdentifier);
+  }
+
+  /**
+   * The property whose value represents this entity — the FRAMEWORK DEFAULT at
+   * [org/Hibachi/HibachiEntity.cfc:L74-L88], resolved by naming convention.
+   *
+   * ⭐ F22 — DECLARED BECAUSE THE LEGACY INHERITED IT, NOT BECAUSE THE LEGACY OVERRODE IT.
+   * `model/entity/Brand.cfc:L157-L159` is an empty override section, so Brand overrode neither this
+   * member nor {@link Brand.getSimpleRepresentation} and both resolved through inheritance. IR-1
+   * requires an inherited member the slice depends on to be declared explicitly, and the dependency
+   * is real: `meta/tests/unit/entity/SlatwallEntityTestBase.cfc:L56-L58` asserts against it, which
+   * AAP §0.6.5.1 counts as traceable legacy coverage for this entity. Before this declaration existed
+   * the assertion could only be re-expressed against a test-local reimplementation of the convention,
+   * which is a documentary claim rather than a traceable one — the gap review finding F22 named.
+   *
+   * ⚠️ THE CONVENTION MATCHES CASE-INSENSITIVELY. `Brand` + `name` gives `Brandname`, which matches
+   * the declared `brandName` only because [:L81] compares with CFML `==`.
+   * `resolveSimpleRepresentationPropertyName` carries the full reasoning and the contrast with the
+   * case-SENSITIVE `listFind` rule in `populate.ts`.
+   *
+   * DISTINCT FROM `Product.ts` AND `Sku.ts`, which return a hard-coded name because their legacy
+   * classes override this member outright. Brand resolves rather than asserts, because resolution is
+   * what it inherited.
+   *
+   * @returns `'brandName'` for this entity, resolved from the declared property set.
+   * @throws DomainError when no declared property satisfies the convention — unreachable for Brand.
+   */
+  getSimpleRepresentationPropertyName(): string {
+    return resolveSimpleRepresentationPropertyName(BRAND_CLASS_NAME, BRAND_DECLARED_PROPERTIES);
+  }
+
+  /**
+   * A simple representation of this entity — the FRAMEWORK DEFAULT at
+   * [org/Hibachi/HibachiEntity.cfc:L59-L71].
+   *
+   * Reads the property {@link Brand.getSimpleRepresentationPropertyName} names and returns it when it
+   * is a simple value, otherwise the legacy BLANK FALLTHROUGH at [:L70].
+   *
+   * ⚠️ A FRESH Brand REPRESENTS AS `''`, AND THAT IS THE CONTRACT. `brandName` is nullable
+   * [model/entity/Brand.cfc:L56], so a new instance takes [:L70] and yields the empty string — a
+   * simple value, which is exactly why the inherited legacy assertion passes on a new instance.
+   * `undefined` would be the natural TypeScript instinct here and would break it.
+   *
+   * DISTINCT FROM `ProductType.ts`, which overrides the representation itself to build a `&raquo;`
+   * separated ancestor path and can legitimately answer `undefined`. Brand inherits the default and
+   * therefore cannot.
+   *
+   * @returns The brand name when set, otherwise the legacy blank fallthrough.
+   */
+  getSimpleRepresentation(): string {
+    return readSimpleRepresentation(this, this.getSimpleRepresentationPropertyName());
+  }
 }
 
 /* ================================================================================================
- * `model/validation/Brand.json` — DOCUMENTED HERE, IMPLEMENTED IN THE VALIDATION LAYER (F12)
+ * [model/validation/Brand.json] — DOCUMENTED HERE, IMPLEMENTED IN THE VALIDATION LAYER
  * ================================================================================================
- * The document is nine lines long and declares five rules. `src/validation/rules/brand.rules.ts`
- * owns them and `src/validation/Validator.ts` evaluates them; NOT ONE of them is implemented,
- * evaluated or enforced in this file. They are recorded because they are behaviour (IR-4 — the
- * declarative rule sets are part of the observable contract, not configuration), and because a
- * reader of this entity needs to know which constraints exist and where they live:
+ * `src/validation/rules/brand.rules.ts` owns these five rules and `src/validation/Validator.ts`
+ * evaluates them; NOT ONE is implemented, evaluated or enforced in this file. They are recorded
+ * because they are behaviour (IR-4 — the declarative rule sets are part of the observable contract,
+ * not configuration) and because a reader of this entity needs to know which constraints exist:
  *
  *   PROPERTY         CONTEXT   RULE
  *   brandName        save      required
  *   brandWebsite     save      dataType: "url"   <- the LIVE url constraint; see the field's note,
- *                                                   where the dead `hb_formatType` path is
- *                                                   explained
+ *                                                   where the dead `hb_formatType` path is explained
  *   urlTitle         save      required AND unique
- *   products         delete    maxCollection: 0  <- a brand with products cannot be deleted;
- *                                                   hence no cascade on `products` at [:L61]
+ *   products         delete    maxCollection: 0  <- a brand with products cannot be deleted; hence no
+ *                                                   cascade on `products` at [:L61]
  *   physicalCounts   delete    maxCollection: 0
  *
- * THERE ARE EXACTLY TWO CONTEXTS ACROSS THE WHOLE FOLDER — `save` and `delete` — and nothing else.
+ * There are exactly two contexts across the whole folder, `save` and `delete`.
  *
  * ⚠️ `physicalCounts` IS A PHANTOM PROPERTY, AND IT IS NOT INVENTED HERE (S9). It is referenced by
  * all three validation documents in this folder and DECLARED BY NONE of the three entities: Brand
@@ -945,12 +974,12 @@ export class Brand implements AuditableEntity {
  * invent schema the legacy system does not have, and it would put a phantom into
  * `src/adapters/mysql/rowMappers.ts`'s column mapping. The finding is recorded and left exactly as
  * it is — preserve and annotate, do not repair (S7). It is likewise NOT assigned a defect
- * identifier: §0.6.7's register is closed at D1-D21.
+ * identifier: §0.6.7 catalogues D1-D21 and the port's register is closed at D1-D24.
  *
- * UNIQUENESS IS NOT AN ENTITY CONCERN. The `urlTitle` unique rule is enforced by the
- * application-side existence query of IR-5 — `isUniqueProperty()`
- * [org/Hibachi/HibachiDAO.cfc:L130-L146], ported to `src/adapters/mysql/UniquePropertyChecker.ts`
- * behind `UniquePropertyPort` — in addition to the database column constraint. Neither runs here.
+ * UNIQUENESS IS NOT AN ENTITY CONCERN. The `urlTitle` unique rule is enforced by the application-side
+ * existence query of IR-5 — `isUniqueProperty()` [org/Hibachi/HibachiDAO.cfc:L130-L146], ported to
+ * `src/adapters/mysql/UniquePropertyChecker.ts` behind `UniquePropertyPort` — in addition to the
+ * database column constraint. Neither runs here.
  * ================================================================================================
  */
 
@@ -986,18 +1015,23 @@ export class Brand implements AuditableEntity {
  *                in the `save` context and both are absent on `new Brand()`.
  *
  *   ASSERTION 2  simple_representation_exists_and_is_simple  [:L56-L58]
- *                `assert(isSimpleValue(entity.getSimpleRepresentation()))`. DOES NOT LAND ON THIS
- *                CLASS AT ALL. Brand overrides neither `getSimpleRepresentation()`
+ *                `assert(isSimpleValue(entity.getSimpleRepresentation()))`.
+ *                ⭐ LANDS ON THIS CLASS. Brand OVERRODE neither `getSimpleRepresentation()`
  *                [org/Hibachi/HibachiEntity.cfc:L59] nor `getSimpleRepresentationPropertyName()`
- *                [:L74] — its "Overridden Methods" section is empty — and F22 forbids declaring
- *                either. The framework default resolved a property by naming convention; for
- *                Brand the human-readable property is `brandName`, which is a plain field read.
+ *                [:L74] — its "Overridden Methods" section is empty — so it INHERITED both, and
+ *                IR-1 turns an inherited member the slice depends on into an explicit declaration.
+ *                Both are declared above: the naming convention resolves `brandName`, and an unset
+ *                name falls through to the blank default at [:L70], which is precisely why the
+ *                legacy `isSimpleValue` assertion passes on a new instance. Review finding F22
+ *                corrected the earlier position that this assertion did not land here.
  *
  *   ASSERTION 3  has_primary_id_property_name  [:L60-L62]
  *                `assert(len(entity.getPrimaryIDPropertyName()))`.
- *                LANDS ON THE DESCRIPTOR SET, NOT ON A MEMBER. `getPrimaryIDPropertyName()`
- *                [org/Hibachi/HibachiEntity.cfc:L249] is a framework member F22 forbids here. The
- *                fact it returned is preserved as documentation and structure instead: Brand's
+ *                ⭐ LANDS ON A REAL MEMBER. `getPrimaryIDPropertyName()`
+ *                [org/Hibachi/HibachiEntity.cfc:L249] is one of the seven `ManagedEntity` members
+ *                this class declares under IR-1; an earlier revision recorded it as forbidden and
+ *                resolved the assertion against the descriptor set instead, which F05 corrected.
+ *                The descriptor set still records the same fact structurally: Brand's
  *                primary identifier property is `brandID`, declared `fieldtype="id"` at
  *                [model/entity/Brand.cfc:L52], it is a member of {@link BrandPropertyName}, and
  *                it is deliberately absent from the descriptor list for the reason at D-h below.
@@ -1061,6 +1095,151 @@ export type BrandPropertyName =
   | 'remoteID'
   | AuditPropertyName;
 
+/* ================================================================================================
+ * THE MANAGED-ENTITY CONSTANTS — WHAT ONLY THIS ENTITY CAN STATE
+ * ================================================================================================
+ * `src/domain/base/AuditableEntity.ts` holds the shared managed-entity contract and every word of
+ * its rationale. Three facts cannot be shared because they differ per entity, and the legacy
+ * resolved all three at runtime — two by reflecting over live component metadata and one through the
+ * DI/1 service locator. TR-3 and AAP 0.7.3 S3 replace all three with declarations.
+ * ================================================================================================ */
+
+/**
+ * The bare class name — the value [org/Hibachi/HibachiObject.cfc:L135-L137] derives by taking the
+ * last dot-delimited segment of the component's fully qualified name.
+ *
+ * ⚠️ NOT the same as {@link BRAND_ENTITY_NAME}: this one carries no `Slatwall` prefix. It is
+ * interpolated into every validation message
+ * [org/Hibachi/HibachiValidationService.cfc:L202, :L213, :L216] and into the property-metadata
+ * failure [org/Hibachi/HibachiTransient.cfc:L746], so a prefixed value here would change observable
+ * message text.
+ */
+export const BRAND_CLASS_NAME = 'Brand';
+
+/**
+ * The mapped ORM entity name, declared by the `entityname` attribute on
+ * [model/entity/Brand.cfc:L49] and read at runtime by [org/Hibachi/HibachiEntity.cfc:L287-L289].
+ *
+ * ⚠️ THIS IS THE LOGICAL ENTITY NAME, NOT THE PHYSICAL `Sw*` TABLE NAME. The legacy uniqueness
+ * statement [org/Hibachi/HibachiDAO.cfc:L140] is expressed over the mapped object graph, so the
+ * prefixed form is correct there and is not a defect to correct; translating it to a table is the
+ * adapter's responsibility.
+ */
+export const BRAND_ENTITY_NAME = 'SlatwallBrand';
+
+/**
+ * The name of the primary identifier property — [model/entity/Brand.cfc:L52], which declares
+ * `fieldtype="id" generator="uuid" ormtype="string" length="32" unsavedvalue=""` (AAP IR-6).
+ *
+ * The legacy resolved this name through `getService("hibachiService")`
+ * [org/Hibachi/HibachiEntity.cfc:L249-L251]. Declaring it removes the service locator AAP 0.7.3 S3
+ * forbids, and it is what makes the value safe to place in identifier position after the adapter
+ * validates it: the name comes from entity metadata, never from caller input.
+ */
+export const BRAND_PRIMARY_ID_PROPERTY_NAME = 'brandID';
+
+/**
+ * Every property this entity DECLARES, as a keyed set — the port of `getPropertiesStruct()`, the
+ * structure [org/Hibachi/HibachiTransient.cfc:L739] resolves and which both `hasProperty` [:L764]
+ * and `getPropertyMetaData` [:L741] key into. A CFML struct keyed by property name is what the
+ * legacy held; a keyed object is what this holds, and membership is an own-key test in both.
+ *
+ * ⚠️ THE `DeclaredPropertyNameSet<BrandPropertyName>` ANNOTATION IS THE POINT, NOT DECORATION. It checks this
+ * set against the entity's property-name union in BOTH directions: a MISSING name fails to compile
+ * ("Property 'x' is missing in type"), and an INVENTED one fails to compile too (the object is not
+ * assignable). Both directions matter. A missing name would make `hasProperty` answer false, and
+ * [org/Hibachi/HibachiValidationService.cfc:L171] SILENTLY SKIPS a rule whose property is absent —
+ * so a validation rule would stop running with no error anywhere in the port. An invented name
+ * would START running a rule the legacy never ran.
+ *
+ * ⚠️⚠️ `physicalCounts` IS ABSENT, AND ITS ABSENCE IS THE FAITHFUL ANSWER RATHER THAN AN OVERSIGHT.
+ * `model/validation/Brand.json:L6` declares a delete guard against `physicalCounts`, but
+ * [model/entity/Brand.cfc:L71] declares that collection as `physicals` and NO property named
+ * `physicalCounts` exists anywhere on the entity. The legacy `hasProperty('physicalCounts')`
+ * therefore answers FALSE and [org/Hibachi/HibachiValidationService.cfc:L171] SKIPS the rule — the
+ * guard has never run in the legacy system. TODO(parity): carried as observed and intentionally NOT
+ * repaired. Adding the name here to "make the rule work" would ENABLE a guard the legacy never
+ * enforced, which AAP 0.8.2 Guidelines 2 and 4 forbid and AAP 0.7.3 S7 requires be annotated
+ * instead.
+ *
+ * ⚠️ THIS IS A STATEMENT ABOUT WHAT THE LEGACY ENTITY DECLARES, NOT ABOUT WHAT THIS PORT
+ * IMPLEMENTS, and the two differ deliberately. AAP 0.2.2.6 excludes the pricing, promotion,
+ * inventory and currency-derived calculated members from the port because they reach exclusively
+ * into out-of-scope services — yet the legacy still DECLARES them, so `hasProperty` must still
+ * answer true for them exactly as the legacy does. Trimming this set to the implemented surface
+ * would be the "missing name" failure above dressed up as tidiness.
+ */
+export const BRAND_DECLARED_PROPERTIES: DeclaredPropertyNameSet<BrandPropertyName> = Object.freeze({
+  brandID: true,
+  activeFlag: true,
+  publishedFlag: true,
+  urlTitle: true,
+  brandName: true,
+  brandWebsite: true,
+  attributeValues: true,
+  products: true,
+  promotionRewards: true,
+  promotionRewardExclusions: true,
+  promotionQualifiers: true,
+  promotionQualifierExclusions: true,
+  vendors: true,
+  physicals: true,
+  remoteID: true,
+  createdDateTime: true,
+  createdByAccount: true,
+  modifiedDateTime: true,
+  modifiedByAccount: true,
+});
+
+/**
+ * Brand's frozen metadata declaration — the runtime answer to the seven framework introspection
+ * members this class deliberately does not declare.
+ *
+ * See {@link EntityMetadataDeclaration} for what each member ports and why the surface is composed
+ * onto an instance by `../base/manageEntity` rather than hand-written here. This constant is the
+ * ONLY place in this module where the class name and the ORM entity name appear as VALUES rather
+ * than as prose, and {@link BRAND_PROPERTY_DESCRIPTORS} reads its `className` from here so the
+ * literal is written once.
+ *
+ * NINETEEN KEYS, WHICH IS EVERY PROPERTY [model/entity/Brand.cfc] DECLARES. The fifteen at
+ * [`:L52-L57`], [`:L60`], [`:L63`], [`:L66-L71`] and [`:L74`] plus the four audit properties at
+ * [`:L77-L80`]. `declaredNonFieldProperties` is deliberately ABSENT rather than empty: this entity
+ * declares NO `persistent="false"` property at all — measured, not assumed — so its declared set
+ * and its field set coincide exactly, and `hasProperty` answers identically to the legacy predicate
+ * for every name.
+ *
+ * ⚠️ `physicalCounts` IS NOT HERE, AND THAT ABSENCE IS LOAD-BEARING. `model/validation/Brand.json`
+ * does not name it, but the sibling product and SKU documents do while neither entity declares it,
+ * and `./Product.ts` records that this module established the compile-checked idiom for that
+ * inertness. Adding a name to this record activates every rule that names it.
+ */
+export const BRAND_ENTITY_METADATA: EntityMetadataDeclaration<BrandPropertyName> = Object.freeze({
+  className: 'Brand',
+  entityName: 'SlatwallBrand',
+  primaryIDPropertyName: 'brandID',
+  properties: Object.freeze({
+    brandID: true,
+    activeFlag: true,
+    publishedFlag: true,
+    urlTitle: true,
+    brandName: true,
+    brandWebsite: true,
+    attributeValues: true,
+    products: true,
+    promotionRewards: true,
+    promotionRewardExclusions: true,
+    promotionQualifiers: true,
+    promotionQualifierExclusions: true,
+    vendors: true,
+    physicals: true,
+    remoteID: true,
+    createdDateTime: true,
+    createdByAccount: true,
+    modifiedDateTime: true,
+    modifiedByAccount: true,
+  } satisfies Readonly<Record<BrandPropertyName, true>>),
+} satisfies EntityMetadataDeclaration<BrandPropertyName>);
+
 /**
  * Brand's five OWN `hb_populateEnabled="false"` relationship declarations — the ones that make this
  * entity unique in the slice.
@@ -1071,7 +1250,7 @@ export type BrandPropertyName =
  * here rather than in the shared `AUDIT_PROPERTY_NAMES` list, which `../base/AuditableEntity`
  * states explicitly in its own note on that constant.
  *
- * ⚠️ THE `satisfies` CLAUSE IS THE POINT, NOT DECORATION. `Exclude<BrandPropertyName,
+ * THE `satisfies` CLAUSE IS THE POINT, NOT DECORATION. `Exclude<BrandPropertyName,
  * AuditPropertyName | 'vendors'>` makes two invariants COMPILE-CHECKED rather than commented:
  *
  *   1. NO AUDIT NAME CAN BE ADDED HERE. The audit four are excluded from the permitted union, so
@@ -1159,11 +1338,11 @@ export function isBrandPopulateDisabledProperty(propertyName: string): boolean {
  * assignment belongs to the persistence layer (IR-6).
  */
 const BRAND_SIMPLE_PROPERTY_DESCRIPTORS: readonly ColumnPropertyDescriptor<BrandPropertyName>[] = [
-  { name: 'activeFlag' },
-  { name: 'publishedFlag' },
-  { name: 'urlTitle' },
-  { name: 'brandName' },
-  { name: 'brandWebsite' },
+  { name: 'activeFlag', valueType: 'boolean' },
+  { name: 'publishedFlag', valueType: 'boolean' },
+  { name: 'urlTitle', valueType: 'string' },
+  { name: 'brandName', valueType: 'string' },
+  { name: 'brandWebsite', valueType: 'string' },
 ];
 
 /**
@@ -1173,6 +1352,7 @@ const BRAND_SIMPLE_PROPERTY_DESCRIPTORS: readonly ColumnPropertyDescriptor<Brand
  */
 const BRAND_REMOTE_ID_DESCRIPTOR: ColumnPropertyDescriptor<BrandPropertyName> = {
   name: 'remoteID',
+  valueType: 'string',
 };
 
 /*
@@ -1323,7 +1503,15 @@ export interface BrandProductsRelationshipCollaborators {
  * ```ts
  * // Dependency-free — what BrandService.saveBrand uses, since per AAP 0.6.3.3 BrandService's only
  * // collaborators are the ported url-title utility and the injected BaseService.
- * populate(brand, data, createBrandPropertyDescriptors());
+ * //
+ * // `Brand` is PERSISTENT, so the authorisation context is required in effect: ARM 1 of the master
+ * // gate at [org/Hibachi/HibachiTransient.cfc:L186] does not short-circuit for it, and omitting the
+ * // context makes `../base/populate` fail closed and populate no declared property at all.
+ * // `../../services/BaseService` assembles this object per save from its required authoriser
+ * // collaborator, so a service never writes it out by hand.
+ * populate(brand, data, createBrandPropertyDescriptors(), {
+ *   authorization: { entityName: brand.getClassName(), authorizer },
+ * });
  * ```
  */
 export function createBrandPropertyDescriptors(
@@ -1372,12 +1560,23 @@ export function createBrandPropertyDescriptors(
 
   return {
     /*
+     * `getClassName()` [org/Hibachi/HibachiObject.cfc:L135-L137] returns `listLast(getClassFullname(),
+     * ".")`, which for [model/entity/Brand.cfc:L49] is the bare component name `Brand`. That LEGACY
+     * name is what the out-of-scope permission records are keyed by — `getEntityPermissionDetails()`
+     * derives its key set from a directory listing of `model/entity` at
+     * [org/Hibachi/HibachiAuthenticationService.cfc:L131-L141] — so it is carried verbatim rather than
+     * derived from this class's TypeScript name, which esbuild is free to rename.
+     */
+    entityName: BRAND_CLASS_NAME,
+
+    /*
      * [model/entity/Brand.cfc:L49] declares `persistent=true`, so this is `true` — and the flag is
      * load-bearing rather than informational. `../base/populate` uses it as the first arm of the
      * legacy authorisation OR at [org/Hibachi/HibachiTransient.cfc:L186-L190]: a transient process
      * object short-circuits that OR and populates freely, whereas a persistent entity such as Brand
-     * did have per-property access control consulted. Those two framework arms are flagged boundary
-     * omissions in that module, not here.
+     * has per-property access control consulted. All three arms of that OR are live in that module,
+     * with ARMS 2 and 3 resolved through `PopulationAuthorizationPort` from
+     * `../../ports/AccountContextPort`; the caller supplies the policy.
      */
     persistent: true,
 

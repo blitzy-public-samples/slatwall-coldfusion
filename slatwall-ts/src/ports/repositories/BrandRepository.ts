@@ -1,13 +1,17 @@
 /**
  * `BrandRepository` — the repository port for the Catalog's brand persistence surface.
  *
- * =================================================================================================
- * THERE IS NO `BrandDAO`. THIS PORT HAS NO LEGACY DECLARATION TO TRANSLITERATE.
- * =================================================================================================
- * Every sibling in this folder derives from a component that exists on disk — `model/dao/SkuDAO.cfc`
- * (228 lines), `model/dao/OptionDAO.cfc` (120), `model/dao/ProductDAO.cfc` (441) and
- * `model/dao/ProductTypeDAO.cfc` (68). This one derives from nothing, and that is a verified finding
- * rather than an incomplete reading. Two independent searches establish it:
+ * THERE IS NO `BrandDAO`, SO THIS PORT HAS NO LEGACY DECLARATION TO TRANSLITERATE. Every sibling in
+ * this folder derives from a component that exists on disk — `model/dao/SkuDAO.cfc`,
+ * `model/dao/OptionDAO.cfc`, `model/dao/ProductDAO.cfc` and `model/dao/ProductTypeDAO.cfc`. This one
+ * derives from nothing: no brand data-access component exists in the tree, and
+ * `model/service/BrandService.cfc:L51` declares `property name="dataService" type="any";` as the only
+ * property the whole component has, so there is no brand data-access injection and no accessor was
+ * ever generated for one. The component corroborates its own emptiness — a scan for function
+ * declarations over it returns exactly ONE hit, `saveBrand` at
+ * `model/service/BrandService.cfc:L67`, and five of its six banner-delimited sections contain nothing
+ * but their own banner comments (`:L53-L55`, `:L57-L59`, `:L61-L63`, `:L81-L83`, `:L85-L87`); only the
+ * save-override section at `:L65-L79` holds anything.
  *
  *   1. A repository-wide filename search for a brand data-access component returns ZERO hits. No
  *      `BrandDAO` exists anywhere in the tree, in any casing.
@@ -26,66 +30,54 @@
  * Worth recording, because a reader checking those locators will notice it: the pass-through
  * section's opening banner is duplicated — `:L57` and `:L59` carry the identical START text where
  * the second should have read END. That is an observation about the source, NOT a carried defect.
- * The register for this slice runs D1 to D22 and is CLOSED (AAP 0.6.7 under AAP 0.7.3, S7); no
- * identifier is minted here, and nothing in the legacy tree is corrected (TR-6).
+ * The register for this slice runs D1 to D24 and is CLOSED (AAP 0.6.7 catalogues D1-D21 under AAP
+ * 0.7.3, S7; D22 through D24 were found during the port); no identifier is minted here, and nothing
+ * in the legacy tree is corrected (TR-6).
  *
  * =================================================================================================
  * WHAT FABRICATES THE SURFACE INSTEAD, AND WHY THAT MAKES THIS FILE NECESSARY (IR-1)
  * =================================================================================================
  * `org/Hibachi/HibachiService.cfc:L255-L281` is a single dispatcher that manufactures the whole
  * implicit persistence surface of every service at call time by matching a lower-cased method-name
- * prefix. Nine branches exist, each with its own locator: `get` at `:L258` (splitting at `:L259-L260`
- * on a nine-character suffix into a paginated variant), `new` at `:L264`, `list` at `:L266`, `save`
- * at `:L268`, `delete` at `:L270`, `count` at `:L272`, `export` at `:L274` and `process` at `:L276`.
- * A name matching none of them reaches the fallthrough raise at `org/Hibachi/HibachiService.cfc:L280`
- * — cited by locator only, because the message literal belongs to the closed inventory owned by
- * `src/errors/DomainError.ts` and is reproduced nowhere else, not even inside a comment.
+ * prefix: `get` at `:L258` (splitting at `:L259-L260` on a nine-character suffix into a paginated
+ * variant), `new` at `:L264`, `list` at `:L266`, `save` at `:L268`, `delete` at `:L270`, `count` at
+ * `:L272`, `export` at `:L274` and `process` at `:L276`. A name matching none of them reaches the
+ * fallthrough raise at `org/Hibachi/HibachiService.cfc:L280` — cited by locator only, because the
+ * message literal belongs to the closed inventory owned by `src/errors/DomainError.ts` and is
+ * reproduced nowhere else, not even inside a comment.
  *
  * That mechanism is why `brandService.newBrand()`, `brandService.getBrand(id)` and
  * `brandService.deleteBrand(entity)` all resolve at runtime while appearing in no source file as a
- * declaration. IR-1 states the consequence plainly: TypeScript under `strict` "has no equivalent
- * facility", so each such call site must become an explicitly declared, typed member. This file is
- * that requirement in its purest form — it writes down a contract that exists nowhere in the legacy
- * tree as a declaration, only as the emergent behaviour of eight prefix comparisons.
+ * declaration. IR-1 states the consequence: TypeScript under `strict` "has no equivalent facility",
+ * so each such call site must become an explicitly declared, typed member. This file is that
+ * requirement in its purest form — a contract that exists nowhere in the legacy tree as a
+ * declaration, only as the emergent behaviour of eight prefix comparisons.
  *
- * =================================================================================================
- * THE FRAMEWORK'S OWN DOCBLOCK MAKES THE CASE FOR REPLACING IT — USING BRAND AS THE EXAMPLE
- * =================================================================================================
+ * THE FRAMEWORK'S OWN DOCBLOCK MAKES THE CASE FOR REPLACING IT, USING BRAND AS THE EXAMPLE.
  * `org/Hibachi/HibachiService.cfc:L256` lower-cases the incoming method name before any comparison,
- * so prefix dispatch is case-insensitive. The framework then had to carve an exception back out, and
+ * so prefix dispatch is case-insensitive; the framework then had to carve an exception back out, and
  * `org/Hibachi/HibachiService.cfc:L299` records why, verbatim: "AND here is case sensetive to avoid
- * matching in property name i.e brAND" (the spelling of "sensetive" is the source's own).
+ * matching in property name i.e brAND" (the spelling of "sensetive" is the source's own). The
+ * compound-filter form at `org/Hibachi/HibachiService.cfc:L298` splits a method name on the word AND,
+ * and the word BRAND CONTAINS the word AND — so string-prefix-and-infix dispatch over entity names is
+ * one naming coincidence away from misrouting, and the framework's own authors special-cased the
+ * letters of this very entity. An explicitly declared interface cannot misroute: a member either
+ * exists with a checked signature or the compiler rejects the call site.
  *
- * Read that carefully. The compound-filter form documented at
- * `org/Hibachi/HibachiService.cfc:L298` splits a method name on the word AND — and the word BRAND
- * CONTAINS the word AND. String-prefix-and-infix dispatch over entity names is therefore one naming
- * coincidence away from misrouting, and the framework's own authors knew it well enough to
- * special-case the letters of this very entity. An explicitly declared interface cannot misroute: a
- * member either exists with a checked signature or the compiler rejects the call site. That single
- * comment is the most persuasive argument available for why this file exists at all.
+ * POSITIONAL ARGUMENTS ONLY — THE CONVENTION THAT FIXES EVERY SIGNATURE BELOW.
+ * `org/Hibachi/HibachiService.cfc:L253`, verbatim: "NOTE: Ordered arguments only--named arguments not
+ * supported." The note is repeated at `org/Hibachi/HibachiService.cfc:L303`, and the dispatcher proves
+ * it structurally: the delete branch at `org/Hibachi/HibachiService.cfc:L286-L288` reads its argument
+ * by NUMERIC index and the read branch at `org/Hibachi/HibachiService.cfc:L306` probes for the string
+ * key `'2'`. Consequently no member below takes a named-argument struct, options object or partial
+ * payload. That is the legacy calling convention preserved (TR-1), not a stylistic preference:
+ * modelling any member as taking a keyed bag would silently widen a contract the framework never
+ * offered.
  *
- * =================================================================================================
- * POSITIONAL ARGUMENTS ONLY — THE CONVENTION THAT FIXES EVERY SIGNATURE BELOW
- * =================================================================================================
- * `org/Hibachi/HibachiService.cfc:L253`, verbatim: "NOTE: Ordered arguments only--named arguments
- * not supported." The note is repeated at `org/Hibachi/HibachiService.cfc:L303`, and the dispatcher
- * proves it structurally rather than merely asserting it: the delete branch at
- * `org/Hibachi/HibachiService.cfc:L286-L288` reads its argument by NUMERIC index, and the read
- * branch at `org/Hibachi/HibachiService.cfc:L306` probes for the string key `'2'`.
- *
- * Consequently no member below takes a named-argument struct, an options object, a configuration bag
- * or a partial payload. Every parameter is positional, explicit and individually typed. That is not
- * a stylistic preference imported from TypeScript; it is the legacy calling convention preserved
- * (TR-1), and modelling any member as taking a keyed bag would silently widen a contract the
- * framework never offered.
- *
- * =================================================================================================
- * FIVE MEMBERS, NOT NINE — THE RESTRAINT IS AS BINDING AS THE DECLARATION
- * =================================================================================================
- * AAP 0.4.2.5 sets the precedent explicitly for the product side: the `count`-, `list`- and
- * `export`-prefixed members are NOT declared, because "synthesis is not reproduced wholesale, only
- * where used". The identical restraint governs here. Four prefixes are declared because the slice
- * genuinely reaches for them, plus one uniqueness read the save path performs:
+ * FIVE MEMBERS, NOT NINE — THE RESTRAINT IS AS BINDING AS THE DECLARATION. AAP §0.4.2.5 sets the
+ * precedent for the product side: the `count`-, `list`- and `export`-prefixed members are NOT
+ * declared, because "synthesis is not reproduced wholesale, only where used". Four prefixes are
+ * declared here because the slice reaches for them, plus one uniqueness read the save path performs:
  *
  *   `new`    -> {@link BrandRepository.newBrand}
  *   `get`    -> {@link BrandRepository.getBrand}
@@ -93,21 +85,27 @@
  *   `delete` -> {@link BrandRepository.deleteBrand}
  *   (read)   -> {@link BrandRepository.isUrlTitleAvailable}
  *
- * Five synthesizable prefixes are deliberately WITHHELD, and their absence is a decision rather than
- * an oversight: no `count`-prefixed member, no `list`-prefixed member (the four list forms documented
- * at `org/Hibachi/HibachiService.cfc:L241-L247`), no `export`-prefixed member, no `process`-prefixed
+ * Five synthesizable prefixes are deliberately WITHHELD, and their absence is a decision: no
+ * `count`-prefixed member, no `list`-prefixed member (the four list forms documented at
+ * `org/Hibachi/HibachiService.cfc:L241-L247`), no `export`-prefixed member, no `process`-prefixed
  * member, and no paginated read variant. The slice calls none of them for brand. The paginated
- * dynamic-query surface is owned in full by the dedicated query-abstraction port declared beside this
- * folder under `src/ports/`, whose legacy implementation is inherited framework plumbing at
+ * dynamic-query surface is owned in full by the query-abstraction port at the root of `src/ports/`,
+ * whose legacy implementation is inherited framework plumbing at
  * `org/Hibachi/HibachiDAO.cfc:L102-L111`; duplicating a brand-shaped entry point for it here would
- * create a second, narrower owner of the same concern. The compound-filter read forms documented at
- * `org/Hibachi/HibachiService.cfc:L296` and `:L298` are withheld for the same reason — synthesizable,
- * never invoked for brand.
+ * create a second, narrower owner of the same concern. The compound-filter read forms at
+ * `org/Hibachi/HibachiService.cfc:L296` and `:L298` are withheld for the same reason. Every member
+ * added here is a member a hand-written double must implement, so an interface padded "for
+ * completeness" imposes real cost for capability nothing exercises (AAP §0.8.2 Guideline 4).
  *
- * This matters practically and not only doctrinally. The legacy repository vendors no mocking library
- * at all (AAP 0.4.3.6), so `test/support/inMemoryRepositories.ts` hand-implements every port. Each
- * member added here is a member that must be hand-stubbed there, so an interface padded "for
- * completeness" imposes real cost for capability nothing exercises (AAP 0.8.2, Guideline 4).
+ * WHERE THE STATEMENTS, THE IDENTIFIERS AND THE TRANSACTION LIVE INSTEAD. Statement text, placeholder
+ * generation and identifier handling are the adapter's responsibility (AAP §0.4.1.7, §0.4.3.4), so
+ * nothing statement-shaped crosses this boundary: no fragment, no physical table or column name in any
+ * code position, no placeholder array (AAP §0.7.3 S2). What this file does carry is the adapter
+ * OBLIGATIONS the type system cannot express, each stated on the member it constrains with its legacy
+ * locator. Transaction demarcation is likewise absent: `model/service/BrandService.cfc` opens no
+ * transaction, performs no flush and commits nothing, because the legacy commit happens implicitly at
+ * request end — execution-model mismatch M5 (AAP §0.6.6) — whose owner in the target is
+ * `src/adapters/mysql/UnitOfWork.ts`. M5 is cited here, not claimed here.
  *
  * =================================================================================================
  * TYPE-ONLY, THEREFORE WEIGHTLESS — AND HAND-IMPLEMENTABLE BY CONSTRUCTION
@@ -135,30 +133,103 @@
  * at request end, which is execution-model mismatch M5 (AAP 0.6.6). Its owner in the target is
  * `src/adapters/mysql/UnitOfWork.ts`, so this port declares no begin, commit, flush or
  * scope-a-transaction member. M5 is cited here, not claimed here, and the mismatch register is CLOSED
- * at M1 to M8 (AAP 0.7.3, S8) — no new identifier is introduced.
+ * at M1 to M9 (AAP 0.6.6 catalogues M1-M8 and M9 was found during the port; AAP 0.7.3, S8) — no new
+ * identifier is introduced.
  *
  * =================================================================================================
  * REFERENCE-ONLY SOURCES, AND WHICH HALF OF "MINIMAL CHANGE" APPLIES
  * =================================================================================================
  * `org/Hibachi/HibachiService.cfc`, `org/Hibachi/HibachiDAO.cfc`, `model/service/BrandService.cfc`,
- * `model/dao/DataDAO.cfc` and `model/service/DataService.cfc` are all REFERENCE-ONLY and are never
- * modified: AAP 0.4.1.1 makes every target file a creation and every legacy file a reference, and
- * TR-6 states it as "change no existing file". The framework files in particular are read for their
- * contract and contribute no code whatsoever — AAP 0.8.3.2 retires `org/Hibachi/**` for this slice
- * rather than carrying it forward, and not one line of it is inherited, imported or re-implemented.
- *
- * The Minimal Change Clause (AAP 0.8.1) is minimal in FUNCTIONAL SCOPE and expressly not in idiom.
- * Runtime prefix synthesis becoming compile-checked declarations, property injection becoming
- * constructor injection, and untyped returns becoming precise types are all the permitted half.
- * Behaviour is the line that does not move: the availability polarity of
+ * `model/dao/DataDAO.cfc` and `model/service/DataService.cfc` are all REFERENCE-ONLY and never
+ * modified (AAP §0.4.1.1, TR-6); the framework files are read for their contract and contribute no
+ * code (AAP §0.8.3.2). The Minimal Change Clause (AAP §0.8.1) is minimal in FUNCTIONAL SCOPE and
+ * expressly not in idiom: runtime prefix synthesis becoming compile-checked declarations, property
+ * injection becoming constructor injection, and untyped returns becoming precise types are all the
+ * permitted half. Behaviour is the line that does not move — the availability polarity of
  * {@link BrandRepository.isUrlTitleAvailable}, the synchronous return of
  * {@link BrandRepository.newBrand}, positional-only arguments, the fixed physical table behind the
- * uniqueness read, and the decision to declare four prefixes rather than nine. Every judgement call
- * the translation required is annotated inline with the locator that justifies it (AAP 0.8.2,
- * Guideline 6).
+ * uniqueness read, and the decision to declare four prefixes rather than nine.
  */
 
+import type { ManagedEntity as EntitySideManagedEntity } from '../../domain/base/AuditableEntity';
+import type { ManagedEntity } from '../../domain/base/populate';
 import type { Brand } from '../../domain/product/Brand';
+
+/**
+ * A brand carrying the framework-inherited member surface that the save and delete path calls at run
+ * time — the EXPLICIT form of a guarantee this port previously left implicit.
+ *
+ * ⚠️⚠️ F05 — WHY THIS ALIAS EXISTS. Every member below used to be typed on the bare domain `Brand`,
+ * which told the composition root NOTHING about whether a hydrated brand could be handed to
+ * `src/services/BaseService.ts` safely. That collaborator, and the `src/validation/Validator.ts` it
+ * drives, call `getClassName()`, `hasProperty()`, `getPrimaryIDValue()`, `getEntityName()` and
+ * `getPropertyMetaData()` on whatever they receive. A contract that promises only `Brand` while the
+ * consumer requires those members is a contract that can be satisfied by an object which fails at run
+ * time — so the requirement is stated here, in the return types, where the composition root reads it.
+ *
+ * `ManagedEntity` is the ported form of the members Hibachi supplied by inheritance and synthesis:
+ * [org/Hibachi/HibachiObject.cfc:L135] (`getClassName`), [org/Hibachi/HibachiEntity.cfc:L244] and
+ * [:L249] (`getPrimaryIDValue`, `getPrimaryIDPropertyName`), [:L287] (`getEntityName`) and
+ * [org/Hibachi/HibachiTransient.cfc:L738] and [:L763] (`getPropertyMetaData`, `hasProperty`). In the
+ * legacy application no equivalent alias could exist, because EVERY entity inherited the surface from
+ * `HibachiEntity` and the guarantee was structural. This port has no inheritance to lean on (AAP
+ * 0.8.3.2 retires `org/Hibachi/**` for this slice), so the guarantee is expressed as a type.
+ *
+ * NO ADAPTER, FACADE OR WRAPPER IS INTRODUCED, and that is a measurement rather than a preference:
+ * `src/domain/product/Brand.ts` declares `class Brand implements AuditableEntity, ManagedEntity` — the
+ * NON-generic entity-side contract in `src/domain/base/AuditableEntity.ts` — and
+ * implements all seven members directly, so `Brand` ALREADY satisfies this alias and
+ * {@link _BrandSatisfiesManagedBrand} proves it at compile time. Wrapping it would add a second
+ * object identity for one entity and buy nothing. The alias therefore tightens what the contract SAYS
+ * without changing what any implementation must DO (AAP 0.4.2, TR-1 — a tightening to the observed
+ * contract, recorded rather than made silently).
+ *
+ * The import direction stays legal: `src/ports/**` imports from `src/domain/**` only, which is the
+ * existing discipline in this folder and the one AAP 0.7.3 S4 requires.
+ *
+ * ⚠️ TWO SPELLINGS OF `ManagedEntity` EXIST AND THIS ALIAS USES THE GENERIC ONE DELIBERATELY.
+ * `src/domain/base/AuditableEntity.ts` declares the NON-generic `interface ManagedEntity` that each
+ * of the six entity classes lists in its `implements` clause — that is the entity's own promise.
+ * `src/domain/base/populate.ts` declares `type ManagedEntity<TEntity>`, the VIEW a collaborator holds
+ * over an entity, composed as the entity intersected with the metadata and error surfaces. A port
+ * describes what it hands back to a collaborator, so the generic view is the correct one here and is
+ * what every member below already returns. Both modules sit BELOW this port and below the service
+ * that consumes it, so nothing here reaches sideways into `src/services/**` or `src/validation/**`.
+ */
+export type ManagedBrand = ManagedEntity<Brand>;
+
+/**
+ * Compile-time proof of the TWO facts this port depends on, stated separately because they are two
+ * different claims and only one of them is about the entity class alone.
+ *
+ * ⚠️ THE OBVIOUS GUARD — `Brand extends ManagedBrand` — WOULD BE FALSE, AND ASSERTING IT WAS A REAL
+ * MISTAKE THAT IS RECORDED HERE RATHER THAN QUIETLY DROPPED. A bare `Brand` does NOT carry the six
+ * members of the error surface (`addError`, `addErrors`, `getErrors`, `getError`, `hasErrors`,
+ * `hasError`); `src/domain/base/populate.ts`'s `manageEntity` is what supplies them, which is exactly
+ * why {@link ManagedBrand} is the intersection it is and why the ADAPTER — not the entity module —
+ * must produce values of that type. Asserting the entity already satisfied it would have compiled
+ * only while `ManagedBrand` was spelled as the weaker non-generic contract, and would then have
+ * silently stopped proving anything the day the port's members were typed at the managed view.
+ *
+ * SO THE TWO TRUE CLAIMS ARE ASSERTED INSTEAD:
+ *
+ *   1. `Brand` satisfies the ENTITY-SIDE contract it declares — the non-generic `ManagedEntity`
+ *      interface in `src/domain/base/AuditableEntity.ts` that appears in its `implements` clause. If a
+ *      future change strips `getClassName`, `getEntityName`, `hasProperty`, `getPropertyMetaData`,
+ *      `getPrimaryIDValue` or `getPrimaryIDPropertyName` off the class, the build breaks here.
+ *   2. Every value this port hands back is still usable AS a `Brand`. That is what lets
+ *      `src/services/BrandService.ts` read declared properties straight off a repository result
+ *      without a cast, and it fails here if `ManagedBrand` ever stops intersecting the entity.
+ *
+ * Both are type-only and contribute nothing to the bundle.
+ */
+type _BrandSatisfiesEntitySideContract = Brand extends EntitySideManagedEntity ? true : never;
+const _brandSatisfiesEntitySideContract: _BrandSatisfiesEntitySideContract = true;
+void _brandSatisfiesEntitySideContract;
+
+type _ManagedBrandIsUsableAsBrand = ManagedBrand extends Brand ? true : never;
+const _managedBrandIsUsableAsBrand: _ManagedBrandIsUsableAsBrand = true;
+void _managedBrandIsUsableAsBrand;
 
 /**
  * Port for the brand persistence primitives `BrandService` consumes, implemented against MySQL in
@@ -196,6 +267,44 @@ import type { Brand } from '../../domain/product/Brand';
  * already-populated entity belongs here. Conflating the two would push populate-and-validate concerns
  * into the persistence layer, which is exactly the layering the hexagonal split exists to prevent
  * (AAP 0.7.3, S4).
+ *
+ * EVERY MEMBER HERE DEALS IN THE MANAGED ENTITY SHAPE, NOT THE BARE DOMAIN CLASS.
+ * =================================================================================================
+ * The four entity-bearing members below are typed `ManagedEntity<Brand>` — `Brand` intersected with
+ * the seven framework introspection members and the six error members that
+ * `src/domain/base/populate.ts` declares and its `manageEntity` supplies. This is a correction, and
+ * the reason is worth stating because the narrower reading looks more conservative and is in fact
+ * less faithful.
+ *
+ * WHAT THE LEGACY BRANCHES ACTUALLY HAND BACK. Two hops, both read rather than inferred. The
+ * `new`-prefixed branch is selected at `org/Hibachi/HibachiService.cfc:L264-L265` and dispatches to
+ * `onMissingNewMethod`, whose whole body is `return new( entityName );` at
+ * `org/Hibachi/HibachiService.cfc:L548`. The `get`-prefixed branch is selected at
+ * `org/Hibachi/HibachiService.cfc:L258` and dispatches to `onMissingGetMethod`, which ends in
+ * `return get( entityName, id, isReturnNewOnNotFound );` at `org/Hibachi/HibachiService.cfc:L326`.
+ * Both yield a full Hibachi ENTITY, not a property bag. Such an entity answers
+ * `getClassName()`, `hasProperty()`, `getPropertyMetaData()`, `getPrimaryIDValue()`,
+ * `getPrimaryIDPropertyName()`, `getEntityName()` and `getValueByPropertyIdentifier()`, and it
+ * carries its own error bean — every one of them INHERITED rather than written per entity. The
+ * inheritance is observable in the source rather than assumed: `model/entity/Sku.cfc:L843-L855`
+ * overrides `getPropertyMetaData` and then falls through to `super.getPropertyMetaData(
+ * argumentCollection=arguments )` at `:L854`, a call that can only resolve because the base class
+ * supplies the member. Declaring these members as bare `Brand` therefore described something the
+ * legacy never produced.
+ *
+ * WHY IT MATTERED RATHER THAN BEING MERELY IMPRECISE. `src/services/BrandService.ts` names the shape
+ * its base collaborator and the ported brand rule set require, and `src/validation/Validator.ts`
+ * calls `getClassName()` on the subject it is handed. With this port narrowed to `Brand`, the only
+ * two sources of a brand in the whole subtree — {@link BrandRepository.newBrand} and
+ * {@link BrandRepository.getBrand} — discarded the surface their implementations already had, so no
+ * code path could produce a value satisfying that requirement and a plain `Brand` reaching the
+ * validator failed at its first call. `src/adapters/mysql/rowMappers.ts` had ALREADY been routing
+ * every brand through `manageEntity`; this contract was throwing that away at the boundary.
+ * `Object.assign` preserves identity, so the managed value IS the entity and nothing is wrapped.
+ *
+ * NO LAYERING RULE IS BENT. `src/domain/base/populate.ts` is a domain module, and this folder already
+ * imports from `src/domain/**` for `Brand` itself; the import added for it is type-only, so nothing
+ * is pulled into any bundle. The three MySQL obligations recorded per member are unchanged.
  */
 export interface BrandRepository {
   /**
@@ -219,46 +328,57 @@ export interface BrandRepository {
    * values parameter would invent a capability the source does not offer (AAP 0.7.3, S9), and
    * population is owned by `src/domain/base/populate.ts` in any case.
    *
-   * @returns A newly instantiated, unpersisted brand. Never null or undefined.
+   * THE INSTANCE IS ALREADY MANAGED WHEN IT LEAVES HERE. The return type is `ManagedEntity<Brand>`
+   * for the reason given in the module header: the `return new( entityName );` this branch reaches at
+   * `org/Hibachi/HibachiService.cfc:L548` produces a Hibachi entity that already answers the
+   * seven introspection members and owns an error bean, so an implementation must route the instance
+   * through `manageEntity` from `src/domain/base/populate.ts` before returning it. That call mutates
+   * and returns the same object, so this member still allocates exactly one entity and still issues
+   * no statement. `src/services/BrandService.ts` relies on this: the value it hands to its base
+   * collaborator and to the validator comes from here.
+   *
+   * @returns A newly instantiated, unpersisted, already-managed brand. Never null or undefined.
    */
-  newBrand(): Brand;
+  newBrand(): ManagedEntity<Brand>;
 
   /**
    * Reads one brand by its primary identifier.
    *
    * ONE PARAMETER, AND THE SECOND IS WITHHELD DELIBERATELY — TR-1 NARROWING, RECORDED. The read
-   * branch's own documentation at `org/Hibachi/HibachiService.cfc:L294` describes the synthesized
-   * form as accepting TWO arguments: the identifier, plus an optional boolean instructing the
-   * dispatcher to hand back a freshly instantiated entity when no row matches. The implementation
-   * honours it — `org/Hibachi/HibachiService.cfc:L306` probes the argument struct for the string key
-   * `'2'` and defaults the flag to false when it is absent.
+   * branch's own documentation at `org/Hibachi/HibachiService.cfc:L294` describes the synthesized form
+   * as accepting TWO arguments: the identifier, plus an optional boolean instructing the dispatcher to
+   * hand back a freshly instantiated entity when no row matches. The implementation honours it —
+   * `org/Hibachi/HibachiService.cfc:L306` probes the argument struct for the string key `'2'` and
+   * defaults the flag to false when it is absent.
    *
-   * The second argument is NOT reproduced. AAP 0.4.2.5 declares the one-argument form, and the same
-   * table states that synthesis is "not reproduced wholesale, only where used". The narrowing is
-   * recorded here rather than left implicit so a reviewer comparing this signature against
-   * `org/Hibachi/HibachiService.cfc:L294` sees a decision instead of an omission. It also removes a
-   * genuine hazard: a single member whose return type flips between "the row, or nothing" and
-   * "always an entity" depending on a boolean cannot be typed honestly without overloads, and the
-   * legacy default of false is the behaviour the slice actually relies on. A caller wanting a fresh
-   * instance calls {@link BrandRepository.newBrand} explicitly.
+   * The second argument is NOT reproduced: AAP §0.4.2.5 declares the one-argument form, and the same
+   * table states that synthesis is "not reproduced wholesale, only where used". It also removes a
+   * genuine hazard — a single member whose return type flips between "the row, or nothing" and "always
+   * an entity" depending on a boolean cannot be typed honestly without overloads, and the legacy
+   * default of false is the behaviour the slice relies on. A caller wanting a fresh instance calls
+   * {@link BrandRepository.newBrand} explicitly.
    *
    * `null` FOR "NO SUCH ROW", NOT AN EXCEPTION. The legacy branch is declared with no return type
    * whatsoever, so its value is entirely untyped; AAP 0.4.2.5 fixes the target as
-   * `Promise<Brand | null>` and that is reproduced exactly. Under `strictNullChecks` the absent case
+   * `Promise<Brand | null>`, and the union with `null` is reproduced exactly. The non-null arm is
+   * narrowed one step further to `ManagedEntity<Brand>` — a TR-1 tightening to the observed contract,
+   * recorded here rather than made silently, since the row this member reads is hydrated by
+   * `src/adapters/mysql/rowMappers.ts`, whose `mapBrandRow` already returns precisely that shape.
+   * Under `strictNullChecks` the absent case
    * becomes unignorable at every call site — precisely the discipline an untyped return could never
    * provide. Implementations MUST resolve `null` for a missing row rather than rejecting: absence is
    * an ordinary outcome here, not a fault.
    *
    * ADAPTER OBLIGATION — BIND THE IDENTIFIER, NEVER INTERPOLATE IT. The value is bound as a
    * placeholder parameter; the physical table and column names are the adapter's fixed, validated
-   * identifiers and never arrive through this signature (AAP 0.7.3, S2).
+   * identifiers and never arrive through this signature (AAP §0.7.3 S2).
    *
    * @param brandID - The brand's primary identifier, a 32-character string per IR-6. Required and
    * positional, matching the ordered-arguments-only convention at
    * `org/Hibachi/HibachiService.cfc:L253`.
    * @returns The matching brand, or `null` when no row matches. Never undefined.
    */
-  getBrand(brandID: string): Promise<Brand | null>;
+  getBrand(brandID: string): Promise<ManagedEntity<Brand> | null>;
 
   /**
    * Persists an already-populated brand, inserting or updating as its identity requires.
@@ -307,10 +427,19 @@ export interface BrandRepository {
    * identifier is ever interpolated (AAP 0.7.3, S2). Transaction demarcation is NOT this member's
    * concern — see the note on M5 in the module header.
    *
-   * @param brand - The fully populated, already-validated entity to persist. Required and positional.
-   * @returns The persisted brand. Never null or undefined.
+   * THE ARGUMENT AND THE RESULT ARE BOTH THE MANAGED SHAPE, AND THE ARGUMENT SIDE IS THE LOAD-BEARING
+   * HALF. Every brand that reaches persistence in this subtree came from
+   * {@link BrandRepository.newBrand} or {@link BrandRepository.getBrand}, so it is managed by the time
+   * it arrives; declaring that is what lets `src/services/BaseService.ts` be instantiated at the same
+   * shape it validates. Because the base collaborator returns whatever this member resolves, the
+   * result is declared managed too — an implementation satisfies it by resolving the entity it was
+   * handed, since `manageEntity` preserves identity and persistence does not replace the object.
+   *
+   * @param brand - The fully populated, already-validated, already-managed entity to persist.
+   * Required and positional.
+   * @returns The persisted brand, still managed. Never null or undefined.
    */
-  saveBrand(brand: Brand): Promise<Brand>;
+  saveBrand(brand: ManagedEntity<Brand>): Promise<ManagedEntity<Brand>>;
 
   /**
    * Removes a brand.
@@ -338,16 +467,18 @@ export interface BrandRepository {
    * nor reports which one failed; a blocked removal never reaches it. That is why the return type is a
    * plain boolean and not a validation result.
    *
-   * @param brand - The entity to remove. Required and positional, matching the numeric-index read at
-   * `org/Hibachi/HibachiService.cfc:L287`.
+   * @param brand - The already-managed entity to remove. Required and positional, matching the
+   * numeric-index read at `org/Hibachi/HibachiService.cfc:L287`. The delete guards evaluated above
+   * this boundary read `getPropertyMetaData` and `getPrimaryIDValue` off the same value, so the
+   * managed shape is what the caller necessarily holds by the time it gets here.
    * @returns `true` when the brand was removed, `false` when it was not. Never null or undefined.
    */
-  deleteBrand(brand: Brand): Promise<boolean>;
+  deleteBrand(brand: ManagedEntity<Brand>): Promise<boolean>;
 
   /**
    * Reports whether a candidate URL title is still free for a brand.
    *
-   * ⚠ TRUE MEANS AVAILABLE — NOT "FOUND", NOT "TAKEN". THIS IS THE HIGHEST-RISK DETAIL IN THE FILE.
+   * TRUE MEANS AVAILABLE — NOT "FOUND", NOT "TAKEN". THIS IS THE HIGHEST-RISK DETAIL IN THE FILE.
    * The legacy primitive is `verifyUniqueTableValue`, declared at `model/dao/DataDAO.cfc:L115` with an
    * explicit boolean return type. Its body runs one existence read at `model/dao/DataDAO.cfc:L123` and
    * then inverts the obvious answer: `model/dao/DataDAO.cfc:L126-L128` returns FALSE when a row IS
@@ -406,7 +537,7 @@ export interface BrandRepository {
    * counter. Harmonising the two would change observable output on one path or the other, so the
    * divergence is documented and CARRIED, not reconciled (AAP 0.7.3 S7; AAP 0.8.2 Guideline 4). No
    * product-shaped variant is added to this brand interface, and no register identifier is minted —
-   * D1 to D22 is closed.
+   * D1 to D24 is closed.
    *
    * @param urlTitle - The candidate URL-title value to test. Required and positional. Bound as a
    * placeholder parameter, exactly as `model/dao/DataDAO.cfc:L123` binds it and nothing else.
