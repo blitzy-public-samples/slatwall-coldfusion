@@ -453,6 +453,17 @@ export class GoogleIntegration implements IntegrationInterface {
       // 'PRODUCTGOOGLEPRODUCTTYPE' just as readily. A language operator would
       // silently narrow that, so `cfEquals` is used rather than any hand-rolled
       // case folding, and the branch is reached for the same inputs as before.
+      //
+      // `cfEquals` raises for a `null` or `undefined` operand - CFML raises when
+      // a null reaches `eq`, and the helper reproduces that - so it is worth
+      // recording why the "returns nothing on every path" contract above still
+      // holds without qualification. It cannot raise here: `settingName` is a
+      // definite `string` (the legacy parameter is `required string settingName`
+      // [integrationServices/google/Integration.cfc:L73], and `strict` with no
+      // `any` anywhere in `src/**` means no caller can pass nullish), and the
+      // right operand is a literal. The raising branch is unreachable, and it is
+      // deliberately NOT guarded: a guard would invent behaviour for a state that
+      // cannot occur, in a method whose entire point is that it invents nothing.
     }
 
     // JUDGMENT CALL: the fall-through is written as an explicit `return

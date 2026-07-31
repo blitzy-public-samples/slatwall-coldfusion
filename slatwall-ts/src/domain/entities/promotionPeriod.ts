@@ -1,4 +1,21 @@
 // ---------------------------------------------------------------------------
+// CHECKPOINT STATUS - FORWARD REFERENCES CARRY THE MARKER `(planned)`
+//
+// The subtree is authored in boundaries, and AAP 0.4.5 makes the authoring
+// order "a compile-order convenience, not a schedule". Commentary in this file
+// therefore names modules of the target layout that DO NOT EXIST YET. Every such
+// name carries `(planned)` at its point of use, meaning exactly: a planned Agent
+// Action Plan target that is ABSENT from the subtree at this checkpoint. Nothing
+// here asserts that any of them exists now, and no behaviour in this file depends
+// on one. The complete set named below, with the role each will play:
+//
+//   src/domain/entities/promotion.ts                    Promotion entity
+//   src/services/promotion                              promotion decomposition folder
+//   tests/traceability/legacyTestMap.ts                 structural coverage map
+//   tests/unit/domain/entities/promotionPeriod.test.ts  promotionPeriod entity suite
+// ---------------------------------------------------------------------------
+
+// ---------------------------------------------------------------------------
 // slatwall-ts - PromotionPeriod entity
 //
 // PORT OF model/entity/PromotionPeriod.cfc (163 lines, confirmed by `wc -l`).
@@ -147,7 +164,7 @@
 // `^[a-zA-Z0-9-_.|:~^]+$` code regexes applies.
 //
 // BUDGET LEDGER FOR THIS FILE
-//   Entity-layer signature widenings ... 1 SPENT - `isCurrent(now?: Date)`.
+//   Entity-layer signature widenings ... 1 SPENT - `isCurrent(now: Date)`.
 //                                        THE PROJECT TOTAL IS EXACTLY 1, so the
 //                                        budget is now EXHAUSTED: no further
 //                                        widening may EVER be spent anywhere in
@@ -194,7 +211,7 @@ import type { PromotionQualifier } from './promotionQualifier.js';
 import type { PromotionReward } from './promotionReward.js';
 
 // LEGACY-NOTE [model/entity/PromotionPeriod.cfc:L100, L101, L108, L88, L92] - THE FAR-SIDE
-// CONTRACT THIS FILE REQUIRES OF `slatwall-ts/src/domain/entities/promotion.ts`, PUBLISHED HERE
+// CONTRACT THIS FILE REQUIRES OF `slatwall-ts/src/domain/entities/promotion.ts` (planned), PUBLISHED HERE
 // AS CANONICAL BECAUSE THAT FILE IS AUTHORED SEPARATELY. Four members, all of which resolve in
 // the legacy tree, so none of them is an invention:
 //   * `getPromotionPeriods(): PromotionPeriod[]` - the generated accessor for
@@ -251,6 +268,52 @@ import type { PromotionReward } from './promotionReward.js';
 // than intent, and it is recorded on the defect marker itself.
 
 /**
+ * Build the framework's terminal missing-method message, BYTE FOR BYTE.
+ *
+ * THIS TEMPLATE IS AN OBSERVABLE ERROR CONTRACT, NOT A DIAGNOSTIC STRING. The legacy statement is
+ * identical at two locators - [org/Hibachi/HibachiEntity.cfc:L565] and
+ * [org/Hibachi/HibachiService.cfc:L280] - and reads:
+ *
+ *   throw('You have called a method #arguments.missingMethodName#() which does
+ *          not exists in the #getClassName()# entity.');
+ *
+ * Three details are load-bearing and must never be "corrected":
+ *
+ *   * "does not exists" is grammatically wrong in the source. Reproduced verbatim.
+ *   * the trailing " entity." is present even for the service-tier copy, so the two tiers are
+ *     byte-identical and one recognizer covers both.
+ *   * `getClassName()` is `listLast(getClassFullname(), ".")` [org/Hibachi/HibachiObject.cfc:L136],
+ *     so the class slot carries the BARE component name - `PromotionReward`, never
+ *     `Slatwall.model.entity.PromotionReward` and never the `entityname="SlatwallPromotionReward"`
+ *     value.
+ *
+ * WHY THE MESSAGE AND NOT A BESPOKE EXPLANATION. `src/handlers/errorMapper.ts` recognizes this
+ * exact shape with an ANCHORED pattern and maps it to its own dedicated category, preserving the
+ * message verbatim in the response body because it is a behavioural contract a caller can observe.
+ * A message that explains the defect in prose instead cannot match that pattern, so the recognizer
+ * silently falls through to the generic arm and the contract is lost. Nothing is lost by shortening
+ * the throw: every piece of the prose that used to sit in the payload is preserved in the
+ * LEGACY-DEFECT markers and the JSDoc immediately above each call site.
+ *
+ * NOT EVERY THROW IN THIS FILE USES THIS TEMPLATE, AND THAT IS DELIBERATE. Six other throws here
+ * reproduce CFML NULL-REFERENCE and UNDEFINED-VARIABLE failures - the two `isCurrent` date guards,
+ * `isDeletable`, `getSimpleRepresentation`, and both arms of `removePromotion`. None of those is a
+ * missing-method contract, so none of them carries this message; giving it to them would have the
+ * error mapper publish a contract the legacy never emitted on those paths.
+ *
+ * A module-private helper rather than a shared module, deliberately. `src/lib/` is closed at the
+ * files the plan enumerates, and one exported unit per file is the standing rule, so the template
+ * lives once per file that needs it rather than becoming a new cross-cutting dependency of the
+ * domain layer.
+ *
+ * @param methodName The dead call target, without parentheses - they are added here.
+ * @param className  The bare component name of the entity the call was made ON.
+ */
+function hibachiMissingMethodMessage(methodName: string, className: string): string {
+  return `You have called a method ${methodName}() which does not exists in the ${className} entity.`;
+}
+
+/**
  * The `SwPromotionPeriod` row: one bounded, use-limited window during which a promotion's
  * rewards may apply.
  *
@@ -287,7 +350,7 @@ import type { PromotionReward } from './promotionReward.js';
  * `Brand.getProducts()` defaulting to `[]` - are none of them settled by this entity. It exposes
  * no include/exclude link table and has no legacy test asserting a default. Its two collections
  * are ordinary owned one-to-many arrays that default to `[]`, and the engine's empty-collection
- * polarity lives in `src/services/promotion/**`.
+ * polarity lives in `src/services/promotion/**` (planned).
  */
 export class PromotionPeriod {
   // --- Persistent Properties [model/entity/PromotionPeriod.cfc:L52-L56] -----------------------
@@ -835,11 +898,27 @@ export class PromotionPeriod {
    * `Promotion.getCurrentPromotionPeriodFlag` [L95], `Promotion.getCurrentPromotionCodeFlag` [L109]
    * and `PromotionCode.getCurrentFlag` [model/entity/PromotionCode.cfc:L85].
    *
-   * The widening is one OPTIONAL parameter that DEFAULTS TO THE INJECTED CLOCK, so the
-   * zero-argument call form every legacy caller uses is preserved exactly while the method becomes
-   * deterministically testable at the boundaries. That testability is the entire justification, and
-   * the boundaries genuinely need it: the start boundary is INCLUSIVE and the end boundary is
-   * EXCLUSIVE, and the end boundary disagrees with `getCurrentFlag()`.
+   * THE PARAMETER IS REQUIRED, NOT OPTIONAL, AND THAT IS THE POINT OF THE WIDENING.
+   * AAP §0.4.2 specifies this signature exactly - "`isCurrent(now: Date)`", described as "signature
+   * widened by one parameter so the UTC policy is EXPLICIT and the method is DETERMINISTICALLY
+   * testable". An earlier revision made the parameter optional and defaulted it to the injected
+   * clock, reasoning that this preserved the zero-argument call form every legacy caller uses. That
+   * defeats both stated purposes and is why it is corrected:
+   *
+   *   * IT RE-ADMITS AMBIENT TIME. `isCurrent()` with no argument reads a clock the caller cannot
+   *     see, which is precisely the ambient-state coupling AAP transformation rule T6 exists to
+   *     remove. A widening whose default restores the thing it was widened to remove has widened
+   *     nothing.
+   *   * IT MAKES THE DETERMINISM OPT-IN. A boundary test only pins a boundary if the instant cannot
+   *     be omitted, and these boundaries genuinely need pinning: the start bound is INCLUSIVE, the
+   *     end bound is EXCLUSIVE, and the end bound DISAGREES with `getCurrentFlag()`. An optional
+   *     parameter leaves the non-deterministic call form as the path of least resistance.
+   *
+   * The zero-argument call form is therefore NOT preserved, deliberately. That costs nothing in
+   * practice and it was verified rather than assumed: `isCurrent()` has no caller anywhere in the
+   * legacy tree - see the "DEAD CODE UPSTREAM" note in the file header, where a repository-wide grep
+   * returns only the declaration itself. Every date-dependent method that IS called from legacy code
+   * keeps its zero-argument signature and reads the injected clock internally.
    *
    * UTC POLICY, per the file header: the comparison is performed on `getTime()`, which is epoch
    * milliseconds in UTC and therefore timezone independent, replacing CFML date comparison that
@@ -850,13 +929,19 @@ export class PromotionPeriod {
    * `getCurrentFlag()` does the opposite - two separate reads - and each method's own call count is
    * reproduced faithfully rather than "improved".
    *
-   * @param now Optional fixed instant. Omit it to read the injected clock exactly once.
+   * @param now The instant to evaluate against. REQUIRED - there is no default and no fallback to
+   *   the injected clock, so the caller always states which instant it means. The injected clock
+   *   remains on this entity for `isExpired()` and `getCurrentFlag()`, whose zero-argument legacy
+   *   signatures AAP §0.4.2 does NOT licence widening.
    * @throws Error when either bound is `undefined`, reproducing the L80 defect above.
    */
-  isCurrent(now?: Date): boolean {
-    // `??` short-circuits, so the injected clock is read exactly once and only when no explicit
-    // instant was supplied. `this.now` is the injected clock function; `now` is the parameter.
-    const currentDateTime: Date = now ?? this.now();
+  isCurrent(now: Date): boolean {
+    // Bound to a local named after the legacy local. `var currentDateTime = now();` at L79 captures
+    // the instant ONCE and reuses it for both comparisons, and that single-read property is
+    // reproduced here for free by the parameter - which is the other reason the parameter is the
+    // right shape. Contrast `getCurrentFlag()` below, which performs TWO separate textual `now()`
+    // reads at L140 and whose call count is reproduced just as faithfully.
+    const currentDateTime: Date = now;
 
     const startDateTime: Date | undefined = this.startDateTime;
     const endDateTime: Date | undefined = this.endDateTime;
@@ -1017,7 +1102,24 @@ export class PromotionPeriod {
    *
    * Same unguarded reach-through as `isDeletable()` - see the shared LEGACY-NOTE above.
    *
-   * @throws Error when `promotion` is `undefined`.
+   * ★ THERE ARE TWO DISTINCT RAISES HERE, NOT ONE, AND CFML RAISES ON BOTH. The first is the
+   * unguarded `getPromotion()` dereference already described. The second is subtler and was
+   * surfaced by typing `Promotion.getPromotionName()` honestly:
+   * [model/entity/Promotion.cfc:L53] declares `property name="promotionName" ormtype="string";`
+   * with NO `notNull="true"` - contrast [model/entity/Product.cfc:L55], which does carry it - so
+   * the column is nullable and the ORM-generated accessor can answer null. Requiredness is
+   * imposed only by [model/validation/Promotion.json], and only in the `save` context
+   * (`"promotionName": [{"contexts":"save","required":true}]`), which says nothing about a row
+   * already in the table or an object hydrated without that column.
+   *
+   * L91 nonetheless declares `returntype="string"`. CFML enforces a declared return type, so
+   * returning null from it is a runtime coercion failure, not a silent `''`. Substituting an empty
+   * string here would therefore INVENT a successful return the legacy runtime does not produce -
+   * and it would do so on a label that reaches the admin UI, hiding a missing promotion name
+   * behind a blank rather than surfacing it. Both raises are preserved for the same reason and
+   * carry distinguishable messages so a reviewer can tell which fired.
+   *
+   * @throws Error when `promotion` is `undefined`, or when the reached promotion has no name.
    */
   getSimpleRepresentation(): string {
     const promotion: Promotion | undefined = this.promotion;
@@ -1031,7 +1133,20 @@ export class PromotionPeriod {
       );
     }
 
-    return promotion.getPromotionName();
+    const promotionName: string | undefined = promotion.getPromotionName();
+
+    if (promotionName === undefined) {
+      throw new Error(
+        'PromotionPeriod.getSimpleRepresentation reached its promotion but the promotion has no ' +
+          'name. model/entity/Promotion.cfc:L53 declares promotionName without notNull, so the ' +
+          'column is nullable, while model/entity/PromotionPeriod.cfc:L91 declares ' +
+          'returntype="string" - CFML raises on the return-type coercion rather than yielding an ' +
+          'empty string. model/validation/Promotion.json requires promotionName only in the save ' +
+          'context, so a persisted or partially hydrated promotion can legitimately lack one.',
+      );
+    }
+
+    return promotionName;
   }
 
   // ============= START: Bidirectional Helper Methods ===================
@@ -1248,18 +1363,20 @@ export class PromotionPeriod {
    * body calls a method that does not exist and which the plan ports as a throwing stub carrying the
    * TODO rather than as invented behaviour.
    *
-   * @throws Error always.
+   * "Mirroring exactly" includes THE MESSAGE. This throw carries the framework's terminal
+   * missing-method text byte for byte - see `hibachiMissingMethodMessage` above for why that is an
+   * observable contract rather than a diagnostic string, and why substituting a prose explanation
+   * would break the recognizer in `src/handlers/errorMapper.ts`. The full explanation of the defect
+   * lives in the LEGACY-DEFECT marker directly above this block, not in the thrown payload.
+   *
+   * @throws Error always - the framework's terminal missing-method message for `setPromotion()` on
+   *         `PromotionReward`.
    */
   addPromotionReward(promotionReward: PromotionReward): void {
-    throw new Error(
-      'PromotionPeriod.addPromotionReward is inoperable in Slatwall 3.1.39: ' +
-        'model/entity/PromotionPeriod.cfc:L117 calls setPromotion(this) on the promotionReward, ' +
-        'but model/entity/PromotionReward.cfc declares its parent property as `promotionPeriod` ' +
-        '(L70) and therefore has NO setPromotion. The call matches none of the onMissingMethod ' +
-        'patterns at org/Hibachi/HibachiEntity.cfc:L507-L565 and throws at L565. The intended ' +
-        'call was setPromotionPeriod(this), declared at model/entity/PromotionReward.cfc:L140. ' +
-        'Preserved defect.',
-    );
+    // [model/entity/PromotionPeriod.cfc:L117]: `arguments.promotionReward.setPromotion(this)`. The
+    // dead target is `setPromotion` and it is called ON a PromotionReward, so those are the two
+    // slots the framework's terminal message carries.
+    throw new Error(hibachiMissingMethodMessage('setPromotion', 'PromotionReward'));
   }
 
   // *** LEGACY-DEFECT [model/entity/PromotionPeriod.cfc:L121]: removePromotionReward() calls
@@ -1278,18 +1395,16 @@ export class PromotionPeriod {
    * remove-shaped - it delegates a `remove*` call to the child rather than an `add*` - so it is not
    * an inversion defect. Its defect is the wrong method NAME.
    *
-   * @throws Error always.
+   * Carries the framework's terminal missing-method message byte for byte, on the same terms as
+   * `addPromotionReward`.
+   *
+   * @throws Error always - the framework's terminal missing-method message for `removePromotion()`
+   *         on `PromotionReward`.
    */
   removePromotionReward(promotionReward: PromotionReward): void {
-    throw new Error(
-      'PromotionPeriod.removePromotionReward is inoperable in Slatwall 3.1.39: ' +
-        'model/entity/PromotionPeriod.cfc:L121 calls removePromotion(this) on the ' +
-        'promotionReward, but model/entity/PromotionReward.cfc declares its parent property as ' +
-        '`promotionPeriod` (L70) and therefore has NO removePromotion. The call matches none of ' +
-        'the onMissingMethod patterns at org/Hibachi/HibachiEntity.cfc:L507-L565 and throws at ' +
-        'L565. The intended call was removePromotionPeriod(this), declared at ' +
-        'model/entity/PromotionReward.cfc:L146. Preserved defect.',
-    );
+    // [model/entity/PromotionPeriod.cfc:L121]: `arguments.promotionReward.removePromotion(this)`.
+    // The dead target is `removePromotion` and it is called ON a PromotionReward.
+    throw new Error(hibachiMissingMethodMessage('removePromotion', 'PromotionReward'));
   }
 
   // Promotion Qualifiers (one-to-many) [model/entity/PromotionPeriod.cfc:L124]
@@ -1306,20 +1421,16 @@ export class PromotionPeriod {
    * Bidirectional helper for the `promotionQualifiers` collection.
    * [model/entity/PromotionPeriod.cfc:L125-L127]
    *
-   * A throwing stub, on identical terms to `addPromotionReward`.
+   * A throwing stub, on identical terms to `addPromotionReward` - including that it carries the
+   * framework's terminal missing-method message byte for byte.
    *
-   * @throws Error always.
+   * @throws Error always - the framework's terminal missing-method message for `setPromotion()` on
+   *         `PromotionQualifier`.
    */
   addPromotionQualifier(promotionQualifier: PromotionQualifier): void {
-    throw new Error(
-      'PromotionPeriod.addPromotionQualifier is inoperable in Slatwall 3.1.39: ' +
-        'model/entity/PromotionPeriod.cfc:L126 calls setPromotion( this ) on the ' +
-        'promotionQualifier, but model/entity/PromotionQualifier.cfc declares its parent property ' +
-        'as `promotionPeriod` (L68) and therefore has NO setPromotion. The call matches none of ' +
-        'the onMissingMethod patterns at org/Hibachi/HibachiEntity.cfc:L507-L565 and throws at ' +
-        'L565. The intended call was setPromotionPeriod(this), declared at ' +
-        'model/entity/PromotionQualifier.cfc:L122. Preserved defect.',
-    );
+    // [model/entity/PromotionPeriod.cfc:L126]: `arguments.promotionQualifier.setPromotion( this )`.
+    // The dead target is `setPromotion` and it is called ON a PromotionQualifier.
+    throw new Error(hibachiMissingMethodMessage('setPromotion', 'PromotionQualifier'));
   }
 
   // *** LEGACY-DEFECT [model/entity/PromotionPeriod.cfc:L129]: removePromotionQualifier() calls
@@ -1343,21 +1454,18 @@ export class PromotionPeriod {
    * Bidirectional helper for the `promotionQualifiers` collection.
    * [model/entity/PromotionPeriod.cfc:L128-L130]
    *
-   * A throwing stub, on identical terms to `removePromotionReward`. Remove-shaped, so not an
-   * inversion defect; the defect is the wrong method name.
+   * A throwing stub, on identical terms to `removePromotionReward` - including that it carries the
+   * framework's terminal missing-method message byte for byte. Remove-shaped, so not an inversion
+   * defect; the defect is the wrong method name.
    *
-   * @throws Error always.
+   * @throws Error always - the framework's terminal missing-method message for `removePromotion()`
+   *         on `PromotionQualifier`.
    */
   removePromotionQualifier(promotionQualifier: PromotionQualifier): void {
-    throw new Error(
-      'PromotionPeriod.removePromotionQualifier is inoperable in Slatwall 3.1.39: ' +
-        'model/entity/PromotionPeriod.cfc:L129 calls removePromotion( this ) on the ' +
-        'promotionQualifier, but model/entity/PromotionQualifier.cfc declares its parent property ' +
-        'as `promotionPeriod` (L68) and therefore has NO removePromotion. The call matches none of ' +
-        'the onMissingMethod patterns at org/Hibachi/HibachiEntity.cfc:L507-L565 and throws at ' +
-        'L565. The intended call was removePromotionPeriod(this), declared at ' +
-        'model/entity/PromotionQualifier.cfc:L128. Preserved defect.',
-    );
+    // [model/entity/PromotionPeriod.cfc:L129]: `arguments.PromotionQualifier.removePromotion( this
+    // )` - capital P in the source, harmless because CFML's `arguments` scope is case-insensitive.
+    // The dead target is `removePromotion` and it is called ON a PromotionQualifier.
+    throw new Error(hibachiMissingMethodMessage('removePromotion', 'PromotionQualifier'));
   }
 
   // =============  END:  Bidirectional Helper Methods ===================
@@ -1544,7 +1652,9 @@ export class PromotionPeriod {
 //     directly at L91. Contrast model/entity/PriceGroupRate.cfc:L270 and
 //     model/entity/PromotionCode.cfc:L171, which declare the property-name variant instead.
 //   * NO `getService(` site anywhere in all 163 lines (verified by `grep -c`, result 0). This is one
-//     of the ten in-scope entities that need NO collaborator port at all - which is why nothing is
+//     of the THIRTEEN in-scope entities that need NO collaborator port at all - eighteen in scope,
+//     minus the five that do have sites (Sku 19, Product 18, ProductType 6, OptionGroup 1,
+//     RoundingRule 1) - which is why nothing is
 //     imported from ../ports/, why there are exactly THIRTEEN ports and no fourteenth, why the clock
 //     is a plain constructor parameter rather than a port, and why EVERY method on this class is
 //     SYNCHRONOUS: no `async`, no `Promise`, no `await`.
@@ -1572,11 +1682,11 @@ export class PromotionPeriod {
 // `nike-air-jorden` fixture verbatim including BOTH the leading and the trailing slash.
 // meta/tests/functional/admin/entity/ProductTest.cfc is an EMPTY STUB - acknowledged as a gap, never
 // counted as coverage. Coverage for THIS module is therefore entirely NET-NEW and must be labelled
-// NET-NEW in tests/traceability/legacyTestMap.ts; presenting it as parity would fail the coverage
+// NET-NEW in tests/traceability/legacyTestMap.ts (planned); presenting it as parity would fail the coverage
 // gate. Regression tests follow the `issue_<ticket#>` convention from meta/tests/unit/IssuesTest.cfc.
 //
 // No test file is authored here - slatwall-ts/tests/ is owned by another agent. The eleven
-// behaviours that tests/unit/domain/entities/promotionPeriod.test.ts must pin are enumerated below
+// behaviours that tests/unit/domain/entities/promotionPeriod.test.ts (planned) must pin are enumerated below
 // so the test author inherits this analysis rather than re-deriving it:
 //
 //   1. `isCurrent(now)` boundary polarity - START INCLUSIVE: at `now === startDateTime` (with a

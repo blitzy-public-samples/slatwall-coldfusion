@@ -1,4 +1,18 @@
 // ---------------------------------------------------------------------------
+// CHECKPOINT STATUS - FORWARD REFERENCES CARRY THE MARKER `(planned)`
+//
+// The subtree is authored in boundaries, and AAP 0.4.5 makes the authoring
+// order "a compile-order convenience, not a schedule". Commentary in this file
+// therefore names modules of the target layout that DO NOT EXIST YET. Every such
+// name carries `(planned)` at its point of use, meaning exactly: a planned Agent
+// Action Plan target that is ABSENT from the subtree at this checkpoint. Nothing
+// here asserts that any of them exists now, and no behaviour in this file depends
+// on one. The complete set named below, with the role each will play:
+//
+//   src/services/promotion/rewardUsageLedger.ts  promotion decomposition module
+// ---------------------------------------------------------------------------
+
+// ---------------------------------------------------------------------------
 // slatwall-ts - Money: THE SOLE ARITHMETIC SURFACE OF THE TARGET
 //
 // WHAT THIS FILE IS
@@ -30,11 +44,24 @@
 //
 // SUBSTRATE - THIS FILE COMPOSES `precision.ts` AND IMPORTS NO `decimal.js`
 // `src/lib/cfml/precision.ts` is the arithmetic SUBSTRATE; this file is the
-// SURFACE. Only those two modules in the whole subtree are permitted to import
-// `decimal.js` directly, and this one deliberately does NOT: every operation
-// below routes through the substrate's primitives, so the absence of a
-// `decimal.js` import is a deliberate choice and not an oversight. One
-// substrate, used uniformly - no operation reaches past it.
+// SURFACE.
+//
+// THE PERMITTED DIRECT-IMPORT SET, STATED EXACTLY. Exactly TWO modules in the
+// whole subtree import `decimal.js` directly, and NEITHER of them is this one:
+//
+//   * `src/lib/cfml/precision.ts`    - the arithmetic substrate;
+//   * `src/lib/cfml/numberFormat.ts` - the stringification and presentation
+//                                      substrate.
+//
+// Verified by direct search rather than asserted: those two files hold the only
+// two `import { Decimal } from 'decimal.js';` STATEMENTS anywhere under `src/`
+// (a plain text search also matches this very sentence and its counterpart in
+// `precision.ts`, so count import statements, not string occurrences). THIS FILE
+// IMPORTS NEITHER `Decimal` NOR `decimal.js` - it is a CONSUMER of the substrates
+// and nothing more. Every operation below routes through their primitives, so
+// the absence of a `decimal.js` import here is a deliberate choice and not an
+// oversight. One substrate per concern, used uniformly - no operation below
+// reaches past either of them.
 //
 // The internal representation is a plain decimal STRING, never a decimal
 // instance. That makes the "never expose the underlying decimal" gate
@@ -109,6 +136,23 @@
 // currency-aware formatting, and no `toNumber` / `valueOf` / `toJSON` escape
 // hatch. If a consumer genuinely needs another operation it is added THEN, with
 // the locator that demands it - not now, speculatively.
+//
+// TWO EGRESS METHODS, AND THEY ARE NOT INTERCHANGEABLE
+// The AAP row quoted above names `toFixed2` as the presentation egress. It is
+// NOT, however, the persistence egress, and using it as one would be a defect
+// rather than an economy:
+//   * `toFixed2()` applies CFML's `"0.00"` mask and therefore ROUNDS to two
+//     decimals. It reproduces [model/service/PromotionService.cfc:L1017] and
+//     [model/service/PriceGroupService.cfc:L339], both of which are the last
+//     line of their function - presentation of a return value.
+//   * `toDecimalString()` imposes NO scale and renders every significant digit.
+//     It is what a `big_decimal` column gets, because a `big_decimal` column is
+//     by definition one that declines to round on the caller's behalf, and the
+//     `Sw*` schema is preserved unchanged (AAP 0.8.1). Writing `'52.47'` where
+//     the value is `52.47375` would narrow the schema.
+// Both are explicitly named calls; neither is reachable by coercion. The four
+// persisted columns they serve are enumerated in the schema-continuity section
+// below.
 //
 // `plus` deserves its own note because it has exactly ONE justification.
 // [model/service/PromotionService.cfc:L417] is
@@ -481,7 +525,7 @@ export class Money {
    * invent money, and returning `undefined` would push a null check onto every
    * caller of every operation. Whether the CALL SITE at L299 wants a guard, and
    * what that guard should do, is a decision owned by
-   * `src/services/promotion/rewardUsageLedger.ts` - not by this file.
+   * `src/services/promotion/rewardUsageLedger.ts` (planned) - not by this file.
    *
    * A non-terminating quotient does NOT throw. It is resolved at the significant
    * digit count and rounding mode the substrate declares, which is why that
@@ -715,6 +759,103 @@ export class Money {
    */
   public toFixed2(): DecimalString {
     return numberFormat(this.amount, '0.00');
+  }
+
+  // -------------------------------------------------------------------------
+  // Persistence
+  // -------------------------------------------------------------------------
+
+  /**
+   * Renders this value at FULL PRECISION for persistence.
+   *
+   * THIS, NOT {@link Money.toFixed2}, IS WHAT A `big_decimal` COLUMN GETS.
+   * The distinction is the whole reason this method exists, and getting it wrong
+   * silently loses money:
+   *
+   *   * `toFixed2()` is a PRESENTATION step. It applies CFML's `"0.00"` mask and
+   *     therefore ROUNDS to two decimals. Persisting through it would write
+   *     `'52.47'` where the computed value is `52.47375`, discarding three
+   *     digits the arithmetic produced.
+   *   * This method imposes NO scale. It renders every significant digit the
+   *     value carries, in plain notation, and nothing else.
+   *
+   * WHY FULL PRECISION IS A SCHEMA REQUIREMENT AND NOT A PREFERENCE.
+   * The columns this value is written to are declared `big_decimal` in the legacy
+   * source - [model/entity/PromotionApplied.cfc:L53] declares
+   * `property name="discountAmount" ormtype="big_decimal";` and
+   * [model/entity/PriceGroupRate.cfc:L54] declares
+   * `property name="amount" ormType="big_decimal" hb_formatType="custom";` - and
+   * the target reads and writes that schema unchanged (AAP 0.8.1, schema
+   * continuity). A `big_decimal` column is precisely a column that declines to
+   * round on the caller's behalf, so a port that rounds before writing has
+   * narrowed the schema rather than preserved it. The legacy engine never rounded
+   * on the way to the database either: its `numberFormat` calls sit at the END of
+   * the calculating functions - [model/service/PromotionService.cfc:L1017] and
+   * [model/service/PriceGroupService.cfc:L339] - as return-value presentation.
+   *
+   * WHAT THE RETURN VALUE IS GUARANTEED TO BE.
+   *   * Plain notation always. Never `1e21`, never `1e-9`, regardless of
+   *     magnitude - guaranteed twice over by the substrate's renderer being
+   *     called with no argument and by its notation thresholds being widened to
+   *     the representable extremes.
+   *   * No thousands separator, ever.
+   *   * A preserved leading minus for a negative value.
+   *   * At least one integer digit, so `'0.42'` and never `'.42'`.
+   *   * Every significant digit the value carries. No scale is imposed, and none
+   *     is discarded.
+   *
+   * JUDGMENT CALL - THE NUMERAL IS CANONICALISED, NOT ECHOED.
+   * The stored numeral is rendered through the substrate rather than returned as
+   * held, and that is a deliberate correction rather than an extra step. `Money`
+   * is a VALUE object, so two instances that report `equals` must serialise
+   * identically - otherwise persistence leaks a distinction the type says does
+   * not exist. Echoing the stored numeral breaks that in two measured ways,
+   * because the amount a value HOLDS depends on how it was spelled on the way in:
+   *   * `fromDecimalString('.42')` holds `'.42'`, since the plain-decimal grammar
+   *     accepts the leading-dot form. Echoing it would emit `'.42'` and break the
+   *     integer-digit guarantee above.
+   *   * `fromDecimalString('19.90')` holds `'19.90'` while the equal computed
+   *     value `19.90 x 1` renders `'19.9'`. Echoing would emit two different
+   *     strings for two values that compare equal.
+   * Canonicalising removes both: the output depends on the VALUE alone and never
+   * on its ingress spelling. The round trip is therefore value-stable rather than
+   * character-stable - `'19.90'` reloads as the equal `'19.9'` - which is exactly
+   * the right guarantee here, because a `DECIMAL(p, s)` column has a fixed scale
+   * and stores those two identically anyway. Preserving a trailing zero would be
+   * preserving a fact about a string that the schema does not record.
+   *
+   * JUDGMENT CALL - THE OUTPUT IS RE-VALIDATED BEFORE IT IS BRANDED.
+   * The rendered numeral is passed through the validating brander from
+   * `numberFormat.ts` rather than being cast. That is not defensive garnish: it is
+   * the same function {@link Money.fromDecimalString} admits values through, so
+   * the validation makes this method's output and that method's input provably the
+   * same language, which is what makes a database round trip type-safe end to
+   * end. It also means a numeral this class could not have re-read cannot escape
+   * to a driver - if the substrate ever rendered something outside the plain
+   * decimal grammar, this throws rather than writing it. The check is a single
+   * pattern test on a short string; there is no reason to skip it.
+   *
+   * JUDGMENT CALL - THE RETURN TYPE IS THE BRANDED `DecimalString`.
+   * Same reasoning as {@link Money.toFixed2}: the brand is a refinement of
+   * `string`, so a caller that only wants a `string` is unaffected, while a
+   * caller that needs a validated numeral - the repository layer binding a
+   * parameter, or {@link Money.fromDecimalString} on the way back in - does not
+   * have to re-validate a value that was validated one call ago.
+   *
+   * NOT NAMED `toString`, `valueOf` OR `toJSON`, DELIBERATELY. Those three are
+   * implicit-coercion hooks, and this class publishes none of them: an accidental
+   * `` `${money}` ``, `money + 1` or `JSON.stringify(money)` must not silently
+   * produce a monetary numeral. Persistence is something a caller ASKS for by
+   * name, exactly like presentation.
+   *
+   * @returns every significant digit of this value as a plain decimal numeral; a
+   *   `DecimalString`, hence a `string`.
+   * @throws the `numberFormat.ts` decimal-numeral error if the rendered numeral
+   *   is somehow not a plain decimal numeral - unreachable through the public
+   *   API, and checked rather than assumed.
+   */
+  public toDecimalString(): DecimalString {
+    return assertPlainDecimalNumeral(renderPlainDecimal(this.amount));
   }
 
   // -------------------------------------------------------------------------

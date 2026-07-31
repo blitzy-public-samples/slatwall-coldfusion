@@ -1,4 +1,20 @@
 // ---------------------------------------------------------------------------
+// CHECKPOINT STATUS - FORWARD REFERENCES CARRY THE MARKER `(planned)`
+//
+// The subtree is authored in boundaries, and AAP 0.4.5 makes the authoring
+// order "a compile-order convenience, not a schedule". Commentary in this file
+// therefore names modules of the target layout that DO NOT EXIST YET. Every such
+// name carries `(planned)` at its point of use, meaning exactly: a planned Agent
+// Action Plan target that is ABSENT from the subtree at this checkpoint. Nothing
+// here asserts that any of them exists now, and no behaviour in this file depends
+// on one. The complete set named below, with the role each will play:
+//
+//   src/handlers/bootstrap.ts                        composition root (wiring)
+//   src/repositories/mysql/mysqlOptionRepository.ts  MySQL option adapter
+//   tests/integration/repositories                   repository integration tier
+// ---------------------------------------------------------------------------
+
+// ---------------------------------------------------------------------------
 // slatwall-ts - option repository port
 //
 // PURPOSE
@@ -133,7 +149,7 @@
 //   architecture. There is no ORM behind these interfaces, so associations are
 //   MATERIALIZED at the repository boundary and laziness is never simulated:
 //   the fetch shape becomes an explicit decision, made and commented at each
-//   repository method in `src/repositories/mysql/mysqlOptionRepository.ts`,
+//   repository method in `src/repositories/mysql/mysqlOptionRepository.ts` (planned),
 //   which also owns the row-to-projection mapping.
 //
 //   This port is the simplest possible case of that rule. It returns a flat
@@ -217,7 +233,7 @@
 //   than port one.
 //
 // IMPLEMENTATION HOME
-//   `src/repositories/mysql/mysqlOptionRepository.ts` implements this port.
+//   `src/repositories/mysql/mysqlOptionRepository.ts` (planned) implements this port.
 //   Three obligations transfer to it:
 //
 //     1. Prepared statements exclusively, with each parsed element of
@@ -230,7 +246,7 @@
 //     3. The row-to-projection mapping, with the fetch shape decided and
 //        commented at each repository method.
 //
-//   `src/handlers/bootstrap.ts` WIRES this port to that adapter. It does not
+//   `src/handlers/bootstrap.ts` (planned) WIRES this port to that adapter. It does not
 //   implement it.
 //
 // TEST COVERAGE IS NET-NEW
@@ -259,77 +275,15 @@
 // ---------------------------------------------------------------------------
 
 /**
- * One entry of a name/value select list, as the legacy option lookups produce it.
+ * One select-list row as the legacy queries build it.
  *
- * This is a READ PROJECTION of the two `<cfquery>` select-lists in
- * `model/dao/OptionDAO.cfc`. It is NOT the `Option` entity and NOT the
- * `OptionGroup` entity, and it must never be grown into a substitute for
- * either: no association, no behaviour, no additional column. If a caller
- * needs the entity, it loads the entity.
- *
- * MEMBER NAMES ARE THE SOURCE'S OWN. Both are taken verbatim from the two
- * sites where the legacy DAO builds each row, at
- * [model/dao/OptionDAO.cfc:L88] and [model/dao/OptionDAO.cfc:L113]. The same
- * two keys appear a third time at [model/service/OptionService.cfc:L59], which
- * is the corroborating evidence that this pair - not an entity - is the shape
- * the option select surfaces consume.
- *
- * THE TYPE NAME HAS NO LEGACY ANTECEDENT. The CFML structures are anonymous
- * literals, so `SelectOption` is introduced by this port; only its two MEMBERS
- * carry parity with the source. It is named for the surface it feeds rather
- * than for either table it is read from, because both methods below return it.
- *
- * ONE DECLARATION, IMPORTED - NEVER REDECLARED. The service-tier
- * `getOptionsForSelect` at [model/service/OptionService.cfc:L55] produces this
- * exact shape from already-loaded option entities, and it MAY import this type
- * from this module rather than declaring its own. Nobody may redeclare it:
- * two structurally-identical declarations of one projection is the failure mode
- * that lets the two drift apart silently, and it is the same reason the branded
- * decimal-string type is declared once in `../../lib/cfml/numberFormat.js` and
- * imported everywhere else rather than restated.
- *
- * Both members are `string`, and neither is optional:
- *
- *   * `string` because every value flowing into them is a character value. The
- *     display labels are option and option-group names, and the identifiers are
- *     the schema's character primary keys - which is corroborated by the legacy
- *     bindings, where each is bound as a varchar parameter at
- *     [model/dao/OptionDAO.cfc:L68], [:L78] and [:L107]. Nothing here is
- *     numeric, and nothing here is monetary, so no value object is involved.
- *   * required, with no `?`, because the legacy code populates BOTH keys
- *     unconditionally at BOTH construction sites - there is no branch on either
- *     path that omits one. An optional member would therefore describe a state
- *     the source cannot produce, so the question `exactOptionalPropertyTypes`
- *     settles does not arise here.
- *
- * Every member is `readonly`: a select-list entry is a value read out of the
- * database, not a mutable record, and a consumer that wants a different label
- * derives a new entry rather than editing this one.
+ * `name` is the label the legacy loop composes and `value` is the identifier: for options it is
+ * "<optionGroupName> - <optionName>" [model/dao/OptionDAO.cfc:L88], and for option groups it is the
+ * group name alone [model/dao/OptionDAO.cfc:L113].
  */
 export interface SelectOption {
-  /**
-   * The display label.
-   *
-   * Composed DIFFERENTLY by the two methods below, and the adapter must
-   * reproduce each composition exactly:
-   *
-   *   * `getUnusedProductOptions` emits the option-group name and the option
-   *     name joined by a space, a hyphen and a space - the qualified label a
-   *     flat option list needs in order to stay unambiguous across groups
-   *     [model/dao/OptionDAO.cfc:L88].
-   *   * `getUnusedProductOptionGroups` emits the option-group name alone
-   *     [model/dao/OptionDAO.cfc:L113].
-   */
   readonly name: string;
 
-  /**
-   * The identifier carried by the entry.
-   *
-   * The option identifier from `getUnusedProductOptions`
-   * [model/dao/OptionDAO.cfc:L88], and the option-group identifier from
-   * `getUnusedProductOptionGroups` [model/dao/OptionDAO.cfc:L113]. It is the
-   * value a caller submits back, and it is opaque to this port.
-   */
   readonly value: string;
 }
 
@@ -344,7 +298,7 @@ export interface SelectOption {
  * existence variant. The service tier receives this interface as a constructor
  * parameter in place of the DI/1 `property name="optionDAO";` declaration at
  * [model/service/OptionService.cfc:L51], and
- * `src/repositories/mysql/mysqlOptionRepository.ts` implements it.
+ * `src/repositories/mysql/mysqlOptionRepository.ts` (planned) implements it.
  *
  * A note that applies to both methods: NEITHER GUARDS AN EMPTY LIST. The legacy
  * functions perform no length test, supply no default and take no branch on
@@ -357,70 +311,28 @@ export interface SelectOption {
  * here or in the adapter to smooth it over.
  */
 export interface OptionRepository {
+  // CFML parity [model/dao/OptionDAO.cfc:L51-L92]: the group list is matched with `IN`, so the result
+  // is restricted to groups already attached to the product, and the `NOT EXISTS` subquery then drops
+  // any option already carried by one of that product's SKUs.
   /**
-   * Options that belong to the given option groups but are not yet used by any
-   * SKU of the given product.
+   * Options belonging to the product's existing option groups that none of its SKUs uses yet.
    *
-   * Ports [model/dao/OptionDAO.cfc:L51].
-   *
-   * The statement combines two filters, and the adapter must reproduce both:
-   *
-   *   * an INCLUSION on the supplied list - the query restricts itself to
-   *     options whose option group is a member of `existingOptionGroupIDList`.
-   *     Note the polarity: on THIS method the list is used positively, to scope
-   *     the search to the groups the caller already has.
-   *   * an EXCLUSION expressed as a correlated `NOT EXISTS` subquery, which is
-   *     what "unused" means here: an option is dropped if the SKU-option link
-   *     table, joined to the SKU table and filtered to the given `productID`,
-   *     already associates it with that product. It is a correlated subquery
-   *     rather than a set-difference or an outer-join-is-null formulation, and
-   *     it correlates on the outer option identifier.
-   *
-   * Rows join the option-group table on the option-group identifier so the
-   * group name is available for the composite label, and ordering is by
-   * option-group name first, then option name - two keys, in that order.
-   *
-   * Returns an empty array when nothing qualifies. That is a meaningful result:
-   * `model/validation/Product.json:L13` constrains `unusedProductOptions` with
-   * `minCollection: 1` in the `addOption` context, so an empty array makes the
-   * caller's validation fail by design and must not be padded.
-   *
-   * @param productID - Identifier of the product whose existing SKU-option
-   *   associations are excluded. Bound as a single parameter by the adapter.
-   * @param existingOptionGroupIDList - A CFML comma-delimited list of
-   *   option-group identifiers. Kept as a `string` for signature parity with
-   *   [model/dao/OptionDAO.cfc:L53]; the adapter splits it with
-   *   `../../lib/cfml/list.js` and binds each element as its own parameter.
-   * @returns The qualifying select-list entries, ordered as described above.
+   * @param productID product whose SKUs are checked for existing option use.
+   * @param existingOptionGroupIDList comma-delimited option group identifiers to search within.
+   * @returns rows ordered by option group name then option name.
    */
   getUnusedProductOptions(
     productID: string,
     existingOptionGroupIDList: string,
   ): Promise<readonly SelectOption[]>;
 
+  // CFML parity [model/dao/OptionDAO.cfc:L94-L117]: this list is matched with `NOT IN` — the opposite
+  // of the sibling query — because an unused group is one the product does not already carry.
   /**
-   * Option groups other than the ones the caller already has.
+   * Option groups the product does not already carry.
    *
-   * Ports [model/dao/OptionDAO.cfc:L94].
-   *
-   * The statement reads the option-group table alone - no join, no subquery -
-   * and excludes rows whose option-group identifier is a member of
-   * `existingOptionGroupIDList`. Note the polarity, which is the OPPOSITE of
-   * the method above: here the list is the exclusion itself, so "unused" means
-   * "not among the identifiers supplied" rather than "not attached to a SKU".
-   * The exclusion is expressed directly as a negated set membership over the
-   * bound list, and ordering is by option-group name - a single key.
-   *
-   * Returns an empty array when nothing qualifies. That is a meaningful result:
-   * `model/validation/Product.json:L14` constrains `unusedProductOptionGroups`
-   * with `minCollection: 1` in the `addOptionGroup` context, so an empty array
-   * makes the caller's validation fail by design and must not be padded.
-   *
-   * @param existingOptionGroupIDList - A CFML comma-delimited list of
-   *   option-group identifiers to exclude. Kept as a `string` for signature
-   *   parity with [model/dao/OptionDAO.cfc:L95]; the adapter splits it with
-   *   `../../lib/cfml/list.js` and binds each element as its own parameter.
-   * @returns The remaining select-list entries, ordered by option-group name.
+   * @param existingOptionGroupIDList comma-delimited option group identifiers to exclude.
+   * @returns rows ordered by option group name.
    */
   getUnusedProductOptionGroups(existingOptionGroupIDList: string): Promise<readonly SelectOption[]>;
 }

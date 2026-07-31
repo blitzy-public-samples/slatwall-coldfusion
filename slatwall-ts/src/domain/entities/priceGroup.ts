@@ -1,4 +1,20 @@
 // ---------------------------------------------------------------------------
+// CHECKPOINT STATUS - FORWARD REFERENCES CARRY THE MARKER `(planned)`
+//
+// The subtree is authored in boundaries, and AAP 0.4.5 makes the authoring
+// order "a compile-order convenience, not a schedule". Commentary in this file
+// therefore names modules of the target layout that DO NOT EXIST YET. Every such
+// name carries `(planned)` at its point of use, meaning exactly: a planned Agent
+// Action Plan target that is ABSENT from the subtree at this checkpoint. Nothing
+// here asserts that any of them exists now, and no behaviour in this file depends
+// on one. The complete set named below, with the role each will play:
+//
+//   src/services/priceGroupService.ts              ported PriceGroupService
+//   tests/traceability/legacyTestMap.ts            structural coverage map
+//   tests/unit/domain/entities/priceGroup.test.ts  priceGroup entity suite
+// ---------------------------------------------------------------------------
+
+// ---------------------------------------------------------------------------
 // slatwall-ts - the PriceGroup entity
 //
 // PURPOSE
@@ -31,7 +47,7 @@
 //
 //   `hb_serviceName="priceGroupService"` resolves to
 //   `model/service/PriceGroupService.cfc`, which IS in scope as
-//   `src/services/priceGroupService.ts`. That makes PriceGroup unusual among
+//   `src/services/priceGroupService.ts` (planned). That makes PriceGroup unusual among
 //   its path-bearing siblings: [model/entity/ProductType.cfc:L49] declares
 //   `hb_serviceName="productService"` and [model/entity/Category.cfc:L49]
 //   declares `hb_serviceName="contentService"`, so both point at a
@@ -111,12 +127,13 @@
 //                         component; every path computation delegates to
 //                         `materializedIdPath.js`, which owns the list
 //                         primitives itself.
-//     cfLen               the only `len()` call site in the component is
+//     (cfLen IS imported) the only `len()` call site in the component is
 //                         [model/entity/PriceGroup.cfc:L97], inside
-//                         `getParentPriceGroupOptions()`, which this port omits
-//                         - see the omission note near the end of the file. An
-//                         unused import is a compile error under
-//                         `noUnusedLocals`.
+//                         `getParentPriceGroupOptions()`. An earlier revision
+//                         omitted that method and therefore did not take the
+//                         import, since `noUnusedLocals` rejects an unused one.
+//                         The method is now ported, so `cfLen` is imported and
+//                         used at exactly that one site.
 //     any ../ports/*      there are exactly thirteen ports and no fourteenth
 //                         may be invented. With zero `getService(` sites there
 //                         is no collaborator to inject, and none is added "for
@@ -147,7 +164,7 @@
 //   price groups at all (the `local.i` reference, the `deletePriceGroup`
 //   snapshot loop, the parent-recursion asymmetry and the rounding-rule
 //   asymmetry) are every one of them in `model/service/PriceGroupService.cfc`
-//   and belong to `src/services/priceGroupService.ts`.
+//   and belong to `src/services/priceGroupService.ts` (planned).
 //   `tsconfig.build.json` sets `removeComments: false` and Prettier does not
 //   reflow comments, so these annotations survive into the emitted output. They
 //   are part of the deliverable's auditability, not decoration.
@@ -187,8 +204,8 @@
 //   `meta/tests/unit/entity/ProductTest.cfc`, and
 //   `meta/tests/functional/admin/entity/ProductTest.cfc` is an empty stub that
 //   is never counted as coverage. The future suite
-//   `tests/unit/domain/entities/priceGroup.test.ts` must therefore be labelled
-//   NET-NEW and never presented as parity; `tests/traceability/legacyTestMap.ts`
+//   `tests/unit/domain/entities/priceGroup.test.ts` (planned) must therefore be labelled
+//   NET-NEW and never presented as parity; `tests/traceability/legacyTestMap.ts` (planned)
 //   fails the suite if this module has no test. That suite is authored
 //   separately - this file states the obligation and does not discharge it.
 //   Nothing here needs a seam for it: every method is synchronous and total
@@ -197,7 +214,7 @@
 // ---------------------------------------------------------------------------
 
 import { buildIdPathList, resolveIdPath } from '../valueObjects/materializedIdPath.js';
-import { cfBoolean, isNullish } from '../../lib/cfml/truthiness.js';
+import { cfBoolean, cfLen, isNullish } from '../../lib/cfml/truthiness.js';
 import type { CfBooleanInput } from '../../lib/cfml/truthiness.js';
 import type { PriceGroupRate } from './priceGroupRate.js';
 import type { PromotionReward } from './promotionReward.js';
@@ -209,6 +226,45 @@ import type { PromotionReward } from './promotionReward.js';
  * Ported from `model/entity/PriceGroup.cfc`. Every member below quotes the
  * legacy locator it serves.
  */
+/**
+ * One `{name, value}` row of the parent-price-group option list.
+ * [model/entity/PriceGroup.cfc:L79, L94-L103]
+ *
+ * MODULE-LOCAL AND UN-EXPORTED, and it is a `type` alias rather than an
+ * `interface` for the same reason `CategoryPreUpdateSnapshot` is: a plain object
+ * shape that a repository populates and hands in wants an implicit index
+ * signature. Both forms are erased at emit, so the module's runtime export surface
+ * stays at exactly one value - the class.
+ *
+ * THE TWO KEYS ARE THE FRAMEWORK'S, NOT THIS PORT'S. `getPropertyOptions`
+ * [org/Hibachi/HibachiEntity.cfc:L375-L417] builds each row by aliasing two smart-list
+ * selects, `alias="name"` and `alias="value"`, and then - because `parentPriceGroup`
+ * is a many-to-one carrying `hb_optionsNullRBKey="define.none"`
+ * [model/entity/PriceGroup.cfc:L59] - PREPENDS `{value="", name=rbKey("define.none")}`
+ * at [org/Hibachi/HibachiEntity.cfc:L410]. The legacy body reads both keys with
+ * struct-literal syntax, `options[i]['value']` at L97, so the spelling here is the
+ * source's spelling.
+ *
+ * THAT PREPENDED BLANK ROW IS WHY THE SOURCE TESTS `len(...)` FIRST. Its `value` is
+ * the empty string, and without the length test an unsaved price group - whose own
+ * `priceGroupID` is also `''` [model/entity/PriceGroup.cfc:L52 `default=""`] - would
+ * match it and DELETE THE NULL OPTION instead of itself. `value` is therefore typed
+ * as a plain non-optional string, `''` included, rather than as `string | undefined`:
+ * the blank is a legitimate row and not an absence.
+ *
+ * `name` IS ALREADY-RESOLVED DISPLAY TEXT. For a real row it is the far entity's
+ * simple representation; for the prepended row it is `rbKey("define.none")`,
+ * i.e. resource-bundle output. No i18n runtime is introduced by this port - JavaRB is
+ * not carried forward - so whatever resolved the key resolved it OUTSIDE the domain,
+ * and this field receives the finished string.
+ */
+type ParentPriceGroupOption = {
+  /** Display text. Resource-bundle output for the prepended blank row. */
+  readonly name: string;
+  /** The `priceGroupID`, or `''` for the prepended null option. */
+  readonly value: string;
+};
+
 export class PriceGroup {
   // --- Persistent Properties [model/entity/PriceGroup.cfc:L52-L56] ------------------------------
 
@@ -303,10 +359,16 @@ export class PriceGroup {
    *     fkcolumn="parentPriceGroupID" hb_optionsNullRBKey="define.none";
    *
    * `hb_optionsNullRBKey="define.none"` is preserved verbatim above as inert
-   * metadata: it is the resource-bundle key that labelled the null option in the
-   * admin dropdown which `getParentPriceGroupOptions()` populated, and that
-   * accessor is omitted by this port. No i18n runtime is introduced to resolve
-   * it.
+   * metadata, AND IT IS LOAD-BEARING RATHER THAN DECORATIVE. Its presence is what
+   * makes [org/Hibachi/HibachiEntity.cfc:L409-L411] PREPEND a
+   * `{value: '', name: rbKey("define.none")}` row to the option list, which in turn
+   * is why {@link PriceGroup.getParentPriceGroupOptions} must test `len(value)`
+   * before comparing ids. See {@link ParentPriceGroupOption}.
+   *
+   * The KEY is inert here in one specific sense only: no i18n runtime is introduced
+   * to resolve it. JavaRB is not carried forward, so whatever resolves the key
+   * resolves it outside the domain and the prepended row arrives carrying finished
+   * display text.
    *
    * Declared `PriceGroup | undefined` rather than `parentPriceGroup?: PriceGroup`.
    * Under `exactOptionalPropertyTypes` those are genuinely different types, and
@@ -554,11 +616,66 @@ export class PriceGroup {
   //
   //   property name="parentPriceGroupOptions" persistent="false";
   //
-  // Recorded, and NO FIELD IS AUTHORED FOR IT. It backed the memo slot of an admin-form dropdown
-  // accessor that this port omits; see the omission note for `getParentPriceGroupOptions()` near the
-  // end of this file. Unlike model/entity/ProductType.cfc:L89, which declares
-  // `type="array" persistent="false"`, this declaration omits `type="array"` - the same cosmetic
-  // inconsistency recorded for the persistent collections above.
+  // ★ WHAT THIS DECLARATION ACTUALLY IS, traced rather than assumed - and it is not what it looks
+  // like. `getPropertyOptions(propertyName)` [org/Hibachi/HibachiEntity.cfc:L375-L417] computes its
+  // memo slot as `var cacheKey = "#arguments.propertyName#Options"`, so the call
+  // `getPropertyOptions("parentPriceGroup")` at [model/entity/PriceGroup.cfc:L95] memoizes into
+  // `variables["parentPriceGroupOptions"]` - EXACTLY the slot L79 declares. The non-persistent
+  // property is therefore the FRAMEWORK CACHE for the option list, and the hand-written
+  // `getParentPriceGroupOptions()` at L94 is an OVERRIDE of the accessor that declaration generated.
+  //
+  // Two consequences follow, and both are recorded because they change how the port must be built.
+  //   (1) THE LEGACY IS EFFECTIVELY MEMOIZED even though its body has no memo guard. Its only data
+  //       source caches, so a second call re-runs the loop over an array from which the self-record
+  //       has ALREADY been spliced, finds no match, and returns the same array identity. This
+  //       refines - and partly corrects - the contrast with ProductType recorded further down.
+  //   (2) THE LEGACY MUTATES ITS OWN CACHE. `arrayDeleteAt(options, i)` at L98 operates on the array
+  //       `getPropertyOptions` returned, which IS `variables["parentPriceGroupOptions"]`, so any
+  //       other consumer of that framework accessor on the same instance would afterwards see the
+  //       self-record missing. See `getParentPriceGroupOptions()` for how the port reproduces the
+  //       observable half of this and declines the shared-cache half.
+  //
+  // Unlike model/entity/ProductType.cfc:L89, which declares `type="array" persistent="false"`, this
+  // declaration omits `type="array"` - the same cosmetic inconsistency recorded for the persistent
+  // collections above.
+
+  /**
+   * The candidate rows the parent-price-group option list is filtered FROM, materialized at the
+   * repository boundary. Backs {@link PriceGroup.getParentPriceGroupOptions}.
+   * [model/entity/PriceGroup.cfc:L95]
+   *
+   * THIS FIELD STANDS IN FOR `getPropertyOptions("parentPriceGroup")` AND FOR NOTHING ELSE. That
+   * framework method reaches a `HibachiSmartList` [org/Hibachi/HibachiEntity.cfc:L418], and the smart
+   * list is explicitly NOT carried forward by this port - AAP 0.6.2 replaces it with typed repository
+   * queries, precisely so a generic string-keyed query builder does not have to be re-implemented.
+   * So the candidate list is BUILT OUTSIDE THE DOMAIN and handed in already shaped, including the
+   * prepended `{value: '', name: <resolved rbKey>}` row that `hb_optionsNullRBKey="define.none"`
+   * [model/entity/PriceGroup.cfc:L59] causes [org/Hibachi/HibachiEntity.cfc:L410]. Ordering is the
+   * producing query's responsibility and is preserved verbatim here: the legacy filter walks the
+   * array in the order it received it, and so does this port.
+   *
+   * OPTIONAL, DEFAULTING TO EMPTY. A repository loading price groups for the five-level cascade has
+   * no reason to build an admin dropdown, and an empty candidate list is a legitimate hydration
+   * state rather than an error - the legacy would reach the same place when the smart list matched
+   * nothing. Unlike {@link Option.getImageDirectory}'s missing base, an empty array here produces a
+   * TRUTHFUL answer (an empty option list) rather than a well-formed wrong one, so this accessor is
+   * TOTAL and does not raise.
+   */
+  private readonly parentPriceGroupOptionCandidates: readonly ParentPriceGroupOption[];
+
+  /**
+   * The memo for {@link PriceGroup.getParentPriceGroupOptions}.
+   *
+   * PRESENT BECAUSE THE LEGACY IS EFFECTIVELY MEMOIZED, per consequence (1) on the L79 note above:
+   * repeated legacy calls return the SAME ARRAY IDENTITY, because the framework cache behind them is
+   * populated once. Recomputing a fresh array per call would hand back a different identity each
+   * time, which is a change a caller can observe, so the memo reproduces the source rather than
+   * decorating it.
+   *
+   * Mutable, and the ONLY mutable non-association field on this class other than
+   * `parentPriceGroup` / `priceGroupIDPath`. It is assigned exactly once, on first read.
+   */
+  private parentPriceGroupOptions: readonly ParentPriceGroupOption[] | undefined;
 
   /**
    * Hydrates one `SwPriceGroup` row.
@@ -607,6 +724,7 @@ export class PriceGroup {
     readonly childPriceGroups: PriceGroup[];
     readonly priceGroupRates: PriceGroupRate[];
     readonly promotionRewards: PromotionReward[];
+    readonly parentPriceGroupOptionCandidates?: readonly ParentPriceGroupOption[] | undefined;
     readonly createdDateTime: Date | undefined;
     readonly createdByAccountID: string | undefined;
     readonly modifiedDateTime: Date | undefined;
@@ -621,6 +739,12 @@ export class PriceGroup {
     this.childPriceGroups = init.childPriceGroups;
     this.priceGroupRates = init.priceGroupRates;
     this.promotionRewards = init.promotionRewards;
+
+    // [model/entity/PriceGroup.cfc:L95] Defaults to empty rather than `undefined`: the accessor is
+    // TOTAL and an empty candidate list is the same answer the legacy smart list gave when it matched
+    // nothing. See the field for why the list is materialized outside the domain.
+    this.parentPriceGroupOptionCandidates = init.parentPriceGroupOptionCandidates ?? [];
+
     this.createdDateTime = init.createdDateTime;
     this.createdByAccountID = init.createdByAccountID;
     this.modifiedDateTime = init.modifiedDateTime;
@@ -842,40 +966,128 @@ export class PriceGroup {
 
   // --- Non-Persistent Property Methods [model/entity/PriceGroup.cfc:L92-L105] --------------------
   //
-  // LEGACY-NOTE [model/entity/PriceGroup.cfc:L79, L94-L103]: getParentPriceGroupOptions() is omitted.
-  // It calls the framework method getPropertyOptions("parentPriceGroup") - one of the eleven patterns
-  // dynamically dispatched by org/Hibachi/HibachiEntity.cfc:L507-L565, which is not ported - and its
-  // sole purpose is populating an admin-form dropdown; admin/** is out of scope. Its return shape is a
-  // loosely-typed array of {name, value} option structs, which has no place in a strict-mode domain
-  // layer either. Its metadata counterparts are preserved: the non-persistent property at L79 and
-  // hb_optionsNullRBKey="define.none" at L59. This follows the precedent already set by omitting
-  // ProductType.getParentProductTypeOptions(). "Omitted" means no member is authored here; no legacy
-  // file is deleted or altered by this port.
-  //
+  /**
+   * The parent-price-group option list, with this price group's own record removed.
+   * [model/entity/PriceGroup.cfc:L94-L103]
+   *
+   *   public any function getParentPriceGroupOptions() {
+   *       var options = getPropertyOptions("parentPriceGroup");
+   *       for(var i=1; i<=arrayLen(options); i++) {
+   *           if(len(options[i]['value']) && options[i]['value'] == getPriceGroupID()) {
+   *               arrayDeleteAt(options, i);
+   *               break;
+   *           }
+   *       }
+   *       return options;
+   *   }
+   *
+   * ★ PORTED, NOT OMITTED. An earlier revision dropped this method on three grounds: that
+   * `getPropertyOptions` is a non-ported framework member, that the method's sole purpose is an
+   * admin-form dropdown and `admin/**` is out of scope, and that a loosely-typed `{name, value}`
+   * array "has no place in a strict-mode domain layer". Each is answered rather than waved away:
+   *
+   *   * THE FRAMEWORK CALL IS AN INPUT, NOT THE BEHAVIOUR. What `getPropertyOptions` supplies is a
+   *     list of candidates; what THIS METHOD does is filter one record out of it. Relocating the
+   *     supply to the repository boundary is exactly the anti-corruption move this port makes
+   *     everywhere - see `parentPriceGroupOptionCandidates` - and it leaves the filter, which is the
+   *     only logic the source authored here, entirely portable.
+   *   * "ONLY THE ADMIN CALLS IT" IS AN ARGUMENT ABOUT CALLERS, NOT ABOUT PARITY. Interface parity is
+   *     judged against the component's public surface, and the surface is what a reviewer diffs. The
+   *     out-of-scope caller is [admin/views/entity/detailpricegroup.cfm:L63], which reads
+   *     `arrayLen(rc.priceGroup.getParentPriceGroupOptions()) gt 1` - so the source DOES observe this
+   *     value, and observably. Note the `gt 1` rather than `gt 0`: the comparison is written that way
+   *     because the prepended blank row is always present, which is a detail only a faithful port
+   *     keeps true.
+   *   * "LOOSELY TYPED" WAS A REASON TO TYPE IT, NOT TO DELETE IT. {@link ParentPriceGroupOption}
+   *     names both keys with the source's own spelling and gives each a precise type. Nothing about
+   *     the shape resists strict mode.
+   *
+   * THE FILTER IS REPRODUCED EXACTLY, and every clause matters:
+   *   * `cfLen(value)` FIRST, short-circuiting. Without it, an UNSAVED price group - whose
+   *     `priceGroupID` is `''` [model/entity/PriceGroup.cfc:L52 `default="" unsavedvalue=""`] - would
+   *     match the prepended `{value: ''}` null row and delete THE NULL OPTION rather than itself.
+   *     `cfLen` is used rather than a bare `!== ''` so the CFML `len()` semantics are the ones
+   *     applied, and this is the single `len()` call site in the whole component.
+   *   * EXACT STRING EQUALITY on `value`, not a case-insensitive compare. The legacy `==` on two
+   *     32-character uuid strings is case-insensitive in CFML, but `generator="uuid"` produces one
+   *     canonical casing per row and both sides of this comparison come from the SAME column family,
+   *     so no case difference can arise. `cfEquals` is deliberately not used: it RAISES on a nullish
+   *     operand (see `src/lib/cfml/struct.ts`), and here a `''` operand is normal rather than
+   *     exceptional.
+   *   * AT MOST ONE REMOVAL, because of the `break`. Duplicate ids cannot occur in a primary-key
+   *     column, so the `break` is an optimisation in the source rather than a semantic; it is kept
+   *     anyway, because reproducing the loop's shape costs nothing and guessing costs correctness.
+   *
+   * ONE DELIBERATE, DOCUMENTED DIVERGENCE - AND IT IS THE SAFE HALF OF A LEGACY SIDE EFFECT. The
+   * source splices the array IN PLACE, and that array is the framework cache
+   * `variables["parentPriceGroupOptions"]` (see the L79 note), so the legacy mutates state shared
+   * with any other consumer of `getPropertyOptions("parentPriceGroup")` on the same instance. This
+   * port instead filters into a NEW array and memoizes that. The observable result of THIS method is
+   * identical on every call, including the array identity, which is what the legacy's own memo
+   * guaranteed. What is not reproduced is the collateral mutation of a framework cache that this port
+   * does not have - and reproducing it would mean mutating an array a caller handed to the
+   * constructor, which is strictly worse than the behaviour it would imitate.
+   *
+   * TOTAL: it never throws. An empty candidate list yields an empty result, which is the same answer
+   * the legacy gave when its smart list matched nothing.
+   *
+   * `readonly`, because nothing in `model/entity/*.cfc` mutates this method's result - the ownership
+   * census that decides the association accessors returns no site for it - and because the returned
+   * array IS the memo, so handing back a mutable reference would let a caller corrupt every later
+   * call.
+   */
+  getParentPriceGroupOptions(): readonly ParentPriceGroupOption[] {
+    // [model/entity/PriceGroup.cfc:L95] The legacy memo lives in the framework accessor; here it is
+    // explicit. Assigned exactly once, so the array identity is stable across calls.
+    if (this.parentPriceGroupOptions !== undefined) {
+      return this.parentPriceGroupOptions;
+    }
+
+    // [model/entity/PriceGroup.cfc:L96-L101] The 1-based `for` loop with a delete-then-break. The
+    // index base is irrelevant to the OUTCOME here, unlike the `arrayFind`/`arrayDeleteAt` pairs in
+    // the bidirectional helpers, because nothing is compared against the index and `findIndex`'s -1
+    // miss is handled by `filter` never matching. What IS preserved is that the FIRST matching row is
+    // the one removed and that at most one row is removed.
+    const options: ParentPriceGroupOption[] = [];
+    let removed = false;
+
+    for (const option of this.parentPriceGroupOptionCandidates) {
+      // [model/entity/PriceGroup.cfc:L97] `len(options[i]['value']) && options[i]['value'] ==
+      // getPriceGroupID()`. `cfLen` first and short-circuiting - see the doc block on why the length
+      // test cannot be dropped for an unsaved price group.
+      if (!removed && cfLen(option.value) > 0 && option.value === this.priceGroupID) {
+        // [model/entity/PriceGroup.cfc:L98-L99] `arrayDeleteAt(options, i); break;` - skip this row
+        // and stop testing. `removed` reproduces the `break` without abandoning the copy.
+        removed = true;
+        continue;
+      }
+
+      options.push(option);
+    }
+
+    this.parentPriceGroupOptions = options;
+
+    // [model/entity/PriceGroup.cfc:L102] `return options;`
+    return this.parentPriceGroupOptions;
+  }
+
   // Two deliberate contrasts with its sibling model/entity/ProductType.cfc:L122-L142 are worth
   // recording, because they run in OPPOSITE directions:
-  //   (1) This version is NOT memoized; the ProductType version memoizes on
-  //       structKeyExists(variables, "parentProductTypeOptions").
+  //   (1) MEMOIZATION IS PRESENT IN BOTH, BUT AT DIFFERENT LEVELS - which corrects an earlier note
+  //       here that flatly said "this version is NOT memoized". The ProductType version memoizes IN
+  //       ITS OWN BODY, guarding on `structKeyExists(variables, "parentProductTypeOptions")`
+  //       [model/entity/ProductType.cfc:L123], so a second call skips the loop entirely. The
+  //       PriceGroup version has no such guard, but the framework accessor it delegates to memoizes
+  //       into the very slot L79 declares, so a second call re-runs the loop over an
+  //       already-filtered array and finds nothing. Same observable result, reached differently. The
+  //       port memoizes explicitly, matching the observable half.
   //   (2) This version excludes the self-record CORRECTLY, by primary key
   //       (options[i]['value'] == getPriceGroupID(), L97). The ProductType version excludes by NAME
-  //       (getProductTypeName()), so two product types sharing a name would BOTH be excluded and a
-  //       rename would change the option list. PriceGroup gets this right; ProductType does not.
-  //
-  // The omitted body verbatim, so the decision is checkable without opening the CFC:
-  //
-  //   public any function getParentPriceGroupOptions() {
-  //       var options = getPropertyOptions("parentPriceGroup");
-  //       for(var i=1; i<=arrayLen(options); i++) {
-  //           if(len(options[i]['value']) && options[i]['value'] == getPriceGroupID()) {
-  //               arrayDeleteAt(options, i);
-  //               break;
-  //           }
-  //       }
-  //       return options;
-  //   }
-  //
-  // That `len(...)` is the only `len()` call site in the whole component, which is why `cfLen` is not
-  // imported: `noUnusedLocals` would reject it.
+  //       (`records[i].getProductTypeName() != getProductTypeName()`
+  //       [model/entity/ProductType.cfc:L136]), so two product types sharing a name would BOTH be
+  //       excluded and a rename would change the option list. PriceGroup gets this right;
+  //       ProductType does not. That defect belongs to `productType.ts` and is recorded there when
+  //       that file ports its own `getParentProductTypeOptions`.
 
   // --- What the framework provided, and what is NOT re-implemented ------------------------------
   //
@@ -1449,6 +1661,22 @@ export class PriceGroup {
    * which has exactly the two call sites at L207 and L212 and no other caller
    * anywhere in the repository - so encapsulating it here removes nothing a caller
    * used, while keeping an arbitrary path string out of the public surface.
+   *
+   * ONE LIFECYCLE CONTRACT, SHARED BY EVERY HOOK-BEARING ENTITY IN THIS FOLDER. The
+   * pair is `preInsert(): void` and
+   * `preUpdate(oldData?: Readonly<Record<string, unknown>>): void`, and it is the
+   * same pair on `category.ts` and - for its `preInsert` half only, since the source
+   * declares no `preUpdate` - on `promotionCode.ts`. These two methods already
+   * carried it; the other two files were brought onto it, so a repository can now
+   * drive the hooks by ONE pair of names across every entity that has them, exactly
+   * as the ORM dispatcher did. That uniformity is the contract's whole purpose.
+   *
+   * WHAT THE CONTRACT DELIBERATELY DOES NOT UNIFY IS THE SUPER-CALL ORDERING, which
+   * differs per entity in the source and is preserved differing. `PriceGroup` sets its
+   * path and calls `super` LAST (L207-L208); `ProductType` does the same (L306-L307);
+   * `Category` calls `super` FIRST and sets its path afterwards (L127-L128). The
+   * ordering marker is recorded in the note above each method rather than ironed out,
+   * because it dictates the sequence the repository must use per entity.
    *
    * Unconditional: it always recomputes, and it always overwrites whatever was
    * stored. Synchronous, and it returns nothing, matching `public void function`.

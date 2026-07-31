@@ -1,4 +1,18 @@
 // ---------------------------------------------------------------------------
+// CHECKPOINT STATUS - FORWARD REFERENCES CARRY THE MARKER `(planned)`
+//
+// The subtree is authored in boundaries, and AAP 0.4.5 makes the authoring
+// order "a compile-order convenience, not a schedule". Commentary in this file
+// therefore names modules of the target layout that DO NOT EXIST YET. Every such
+// name carries `(planned)` at its point of use, meaning exactly: a planned Agent
+// Action Plan target that is ABSENT from the subtree at this checkpoint. Nothing
+// here asserts that any of them exists now, and no behaviour in this file depends
+// on one. The complete set named below, with the role each will play:
+//
+//   src/handlers/bootstrap.ts  composition root (wiring)
+// ---------------------------------------------------------------------------
+
+// ---------------------------------------------------------------------------
 // slatwall-ts - subscription term / subscription benefit lookup port
 //
 // WHAT THIS MODULE IS
@@ -263,7 +277,7 @@
 //   product, sku, option, productType, promotion and priceGroup. This is not
 //   one of them, and it has NO adapter file anywhere in the target layout, so
 //   its ONLY legal implementation home is the composition root at
-//   `src/handlers/bootstrap.ts`. Three obligations attach there:
+//   `src/handlers/bootstrap.ts` (planned). Three obligations attach there:
 //     1. The stub's chosen behaviour MUST be documented explicitly at
 //        `bootstrap.ts`. A caller must never be able to mistake stub output
 //        for a real resolution.
@@ -295,106 +309,29 @@
 // ---------------------------------------------------------------------------
 
 /**
- * An opaque, read-only handle to a subscription term resolved out of the
- * out-of-scope subscription subsystem.
+ * Stub port for the subscription lookups the SKU-creation path performs.
  *
- * This is an ANTI-CORRUPTION HANDLE, not an entity. It exists so that an
- * in-scope service can name the thing it received from
- * `getSubscriptionTerm()` and pass it onward, without the subscription module
- * becoming a dependency of the domain. It carries its identifier and a
- * compile-time brand, and deliberately nothing else, because in-scope code
- * dereferences nothing on it: legacy resolves the term at
- * [model/service/SkuService.cfc:L158] and passes it directly into
- * `thisSku.setSubscriptionTerm( ... )`.
- *
- * IT MUST NOT BE GROWN INTO AN ENTITY. Adding a term length, a renewal
- * period, a price, a date, a flag or a status would invent requirements that
- * do not exist and would quietly pull an out-of-scope aggregate into the
- * domain. NO SUBSCRIPTION BUSINESS LOGIC IS PORTED anywhere in this target; if
- * a caller ever appears to need a field from here, that is a signal the
- * subscription module is being brought into scope, which is a product
- * decision and not a typing change.
- *
- * Both members are REQUIRED rather than optional. Under
- * `exactOptionalPropertyTypes` an optional member would assert that a handle
- * can legitimately exist without one of them, and neither can: a handle
- * without its identifier identifies nothing, and the brand is present by
- * construction because it is erased at compile time. Absence is modelled at
- * the call site instead - as the `undefined` arm of the lookup's return type -
- * which is where it actually occurs.
+ * Subscription behaviour is outside the migrated slice, so this port exists only so the branch at
+ * [model/service/SkuService.cfc:L139-L170] compiles and runs unchanged. Nothing in the domain reads
+ * a field of either result.
+ */
+
+// JUDGMENT CALL: Subscription results are modelled as opaque handles so no out-of-scope entity shape leaks into the domain.
+/**
+ * A reference to one subscription term.
  */
 export interface SubscriptionTermHandle {
-  /**
-   * Compile-time nominal brand. It keeps this handle and
-   * {@link SubscriptionBenefitHandle} mutually non-assignable, so a benefit
-   * can never be passed where a term is expected even though both shapes are
-   * otherwise a single read-only string.
-   *
-   * This name has NO LEGACY ANTECEDENT - it is a target-side typing device,
-   * not a persisted `Sw*` column and not a value any caller should read or
-   * branch on. It is a literal-typed property rather than an `enum` precisely
-   * because an `enum` would emit runtime JavaScript from a module that must
-   * emit none.
-   */
   readonly handleType: 'subscriptionTerm';
 
-  /**
-   * The identifier this handle was resolved by.
-   *
-   * The name is carried over verbatim from legacy: the out-of-scope
-   * `processProduct_addSubscriptionTerm` reads exactly
-   * `processObject.getSubscriptionTermID()` at
-   * [model/service/ProductService.cfc:L175].
-   */
   readonly subscriptionTermID: string;
 }
 
 /**
- * An opaque, read-only handle to a subscription benefit resolved out of the
- * out-of-scope subscription subsystem.
- *
- * This is an ANTI-CORRUPTION HANDLE, not an entity, on exactly the same terms
- * as {@link SubscriptionTermHandle}. In-scope code dereferences nothing on it:
- * legacy resolves a benefit and passes it straight into an association setter
- * at [model/service/SkuService.cfc:L161]
- * (`thisSku.addSubscriptionBenefit( ... )`) and at
- * [model/service/SkuService.cfc:L164]
- * (`thisSku.addRenewalSubscriptionBenefit( ... )`).
- *
- * ONE HANDLE TYPE SERVES BOTH OF THOSE CALL SITES. Legacy calls the same
- * `getSubscriptionBenefit` lookup in both loops, so a benefit destined for the
- * renewal collection is the same kind of thing as one destined for the primary
- * collection. Which collection it ends up in is the caller's concern, and
- * modelling it here - as a second handle type, or as a discriminating field -
- * would invent a distinction the source does not make.
- *
- * IT MUST NOT BE GROWN INTO AN ENTITY. No benefit type, entitlement, usage
- * allowance, price, date or status may be added: NO SUBSCRIPTION BUSINESS
- * LOGIC IS PORTED. Both members are REQUIRED, for the reason given on
- * {@link SubscriptionTermHandle}.
+ * A reference to one subscription benefit.
  */
 export interface SubscriptionBenefitHandle {
-  /**
-   * Compile-time nominal brand, keeping this handle and
-   * {@link SubscriptionTermHandle} mutually non-assignable.
-   *
-   * As with the term handle, this name has NO LEGACY ANTECEDENT: it is a
-   * target-side typing device, not a persisted `Sw*` column, and not
-   * something a caller should read or branch on.
-   */
   readonly handleType: 'subscriptionBenefit';
 
-  /**
-   * The identifier this handle was resolved by.
-   *
-   * Unlike `subscriptionTermID`, this name has NO DIRECT legacy antecedent -
-   * legacy passes a bare comma-list element positionally at
-   * [model/service/SkuService.cfc:L161] and
-   * [model/service/SkuService.cfc:L164] rather than through a named accessor.
-   * It follows the `<entity>ID` naming convention that Slatwall applies
-   * uniformly to its identifiers, which is the closest thing to an antecedent
-   * available.
-   */
   readonly subscriptionBenefitID: string;
 }
 
@@ -405,7 +342,7 @@ export interface SubscriptionBenefitHandle {
  * `imageStore`): a narrow interface with DOCUMENTED STUB BEHAVIOUR, NOT a
  * partial implementation. The contract is whole and honestly typed; only its
  * implementation is a stub, and that implementation belongs to the composition
- * root at `src/handlers/bootstrap.ts` - this port has no adapter anywhere in
+ * root at `src/handlers/bootstrap.ts` (planned) - this port has no adapter anywhere in
  * the target layout.
  *
  * It replaces the DI/1 property `property name="subscriptionService";`,
@@ -446,74 +383,28 @@ export interface SubscriptionBenefitHandle {
  */
 export interface SubscriptionTermProvider {
   /**
-   * Resolve a single subscription term by its identifier.
+   * Resolve one subscription term by identifier.
    *
-   * Legacy call site: [model/service/SkuService.cfc:L158], where the resolved
-   * term is passed straight into `thisSku.setSubscriptionTerm( ... )`. The
-   * same lookup is called again from the out-of-scope
-   * `processProduct_addSubscriptionTerm` at
-   * [model/service/ProductService.cfc:L175].
+   * CFML parity [model/service/SkuService.cfc:L158]: the legacy call is not declared on the
+   * subscription service; it resolves by convention at [org/Hibachi/HibachiService.cfc:L305-L328],
+   * which loads by identifier and yields nothing when the row is absent rather than raising.
    *
-   * The caller has ALREADY SPLIT the `subscriptionTerms` comma-list before
-   * calling this - legacy loops the list and looks up one element at a time,
-   * and that list is key-existence guarded at
-   * [model/service/SkuService.cfc:L147]. This method therefore takes a single
-   * identifier, never a comma-list string and never an array. Splitting stays
-   * with the caller, which uses the CFML list helpers in
-   * `src/lib/cfml/list.ts`.
-   *
-   * Asynchronous because the legacy lookup resolves a persisted row. That is
-   * structural: it reflects where the data lives, and a stub implementation
-   * still honours it so that the contract survives a future real one.
-   *
-   * @param subscriptionTermID - A single subscription-term identifier, already
-   * extracted from the caller's comma-list. Name carried over verbatim from
-   * `getSubscriptionTermID()` at [model/service/ProductService.cfc:L175].
-   * @returns The matching handle, or `undefined` when no term matches. A miss
-   * resolves `undefined` and never a zero value, an empty object or a thrown
-   * error, matching the house convention for absent lookups
-   * (`getSkuBySkuCode` resolves `Sku | undefined`; the SKU currency accessors
-   * return `Money | undefined`) where substituting a default for a missing
-   * value would be behaviourally wrong. There is deliberately no throwing
-   * variant and no overload.
+   * @param subscriptionTermID the identifier to load.
+   * @returns the term, or undefined when no row matches.
    */
   getSubscriptionTerm(subscriptionTermID: string): Promise<SubscriptionTermHandle | undefined>;
 
+  // LEGACY-DEFECT [model/service/SkuService.cfc:L163]: `renewalSubscriptionBenefits` is read without the presence check its two sibling lists receive, so the renewal loop depends on the caller always supplying that key.
+  // Preserved deliberately; do not fix without a product decision.
   /**
-   * Resolve a single subscription benefit by its identifier.
+   * Resolve one subscription benefit by identifier.
    *
-   * ONE METHOD SERVES BOTH LEGACY CALL SITES, because legacy calls this same
-   * lookup in both of its benefit loops:
+   * Called for the benefits of the new SKU [model/service/SkuService.cfc:L161] and again for its
+   * renewal benefits [model/service/SkuService.cfc:L164], with the same absent-row semantics as
+   * {@link SubscriptionTermProvider.getSubscriptionTerm}.
    *
-   *   [model/service/SkuService.cfc:L161] - the `subscriptionBenefits` loop,
-   *   whose list IS key-existence guarded at
-   *   [model/service/SkuService.cfc:L142], feeding
-   *   `thisSku.addSubscriptionBenefit( ... )`.
-   *
-   *   [model/service/SkuService.cfc:L164] - the `renewalSubscriptionBenefits`
-   *   loop, whose list is NOT GUARDED at all
-   *   [model/service/SkuService.cfc:L163-L165]: `listLen` is called on the key
-   *   directly, so a missing key THROWS. Feeding
-   *   `thisSku.addRenewalSubscriptionBenefit( ... )`.
-   *
-   * That missing guard is CALLER-SIDE CONTEXT ONLY. It lives in
-   * `SkuService.createSkus`'s control flow, reproducing it is the service
-   * tier's obligation, and this port deliberately does NOT compensate for it -
-   * no guard, no optional parameter, no nullable input, no fallback and no
-   * "safe" variant. Repairing a caller's behaviour from inside a port would be
-   * a behavioural divergence, and `src/domain/ports/**` owns none.
-   *
-   * As with the term lookup, the caller has already split its comma-list and
-   * passes one identifier at a time; this method never takes a list or an
-   * array. Asynchronous for the same structural reason: the legacy lookup
-   * resolves a persisted row.
-   *
-   * @param subscriptionBenefitID - A single subscription-benefit identifier,
-   * already extracted from whichever of the two comma-lists the caller is
-   * iterating. The port cannot tell the two lists apart, and deliberately does
-   * not try to: which collection the benefit joins is the caller's concern.
-   * @returns The matching handle, or `undefined` when no benefit matches, on
-   * exactly the same terms as {@link SubscriptionTermProvider.getSubscriptionTerm}.
+   * @param subscriptionBenefitID the identifier to load.
+   * @returns the benefit, or undefined when no row matches.
    */
   getSubscriptionBenefit(
     subscriptionBenefitID: string,

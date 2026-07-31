@@ -1,4 +1,18 @@
 // ---------------------------------------------------------------------------
+// CHECKPOINT STATUS - FORWARD REFERENCES CARRY THE MARKER `(planned)`
+//
+// The subtree is authored in boundaries, and AAP 0.4.5 makes the authoring
+// order "a compile-order convenience, not a schedule". Commentary in this file
+// therefore names modules of the target layout that DO NOT EXIST YET. Every such
+// name carries `(planned)` at its point of use, meaning exactly: a planned Agent
+// Action Plan target that is ABSENT from the subtree at this checkpoint. Nothing
+// here asserts that any of them exists now, and no behaviour in this file depends
+// on one. The complete set named below, with the role each will play:
+//
+//   src/handlers/bootstrap.ts  composition root (wiring)
+// ---------------------------------------------------------------------------
+
+// ---------------------------------------------------------------------------
 // slatwall-ts - the CurrencyConverter port
 //
 // PURPOSE
@@ -218,7 +232,7 @@
 //   product, sku, option, productType, promotion and priceGroup. This is not
 //   one of them: `currencyConverter` has NO adapter file anywhere in the
 //   target layout, so ITS ONLY LEGAL IMPLEMENTATION HOME IS
-//   `src/handlers/bootstrap.ts`, the composition root.
+//   `src/handlers/bootstrap.ts` (planned), the composition root.
 //
 //   Stated plainly for whoever writes that wiring, because every one of these
 //   obligations is invisible from this side of the interface. The
@@ -252,8 +266,9 @@
 //       surface for `src/domain/**`. Static process configuration is not a
 //       request scope and must never be used as one.
 //     * `decimal.js` - the decimal substrate is an implementation detail of
-//       `Money`, sealed inside it. The dependency set is fixed at fourteen
-//       exactly-pinned packages and this file adds none.
+//       `Money`, sealed inside it. The dependency set is fixed at the thirteen
+//       exactly-pinned packages `package.json` declares - 3 runtime and 10
+//       development - and this file adds none.
 //     * any sibling port - ZERO port in this folder imports another port.
 //     * any view, and any `.../index.js` barrel - there are no barrels here.
 //
@@ -373,209 +388,50 @@ import type { CurrencyCode } from '../valueObjects/currencyCode.js';
  * the full argument; the short version is that the currency-detail map is
  * materialised during entity hydration, before the domain ever sees the SKU.
  *
- * IMPLEMENTED IN `src/handlers/bootstrap.ts`, which is the only legal home for
+ * IMPLEMENTED IN `src/handlers/bootstrap.ts` (planned), which is the only legal home for
  * it - this port has no adapter file in the target layout.
  */
 export interface CurrencyConverter {
+  // JUDGMENT CALL: The legacy comma-delimited return is exposed as an array so callers do not parse a list.
   /**
-   * List the currency codes that are ACTIVE.
+   * List the currency codes flagged active.
    *
-   * FILTER CONTRACT: active status only. This is the
-   * `addFilter('activeFlag', 1)` path, applied identically at
-   * [model/service/CurrencyService.cfc:L60] inside
-   * `getAllActiveCurrencyIDList()` (declared at L57) and at
-   * [model/service/CurrencyService.cfc:L72] inside `getCurrencyOptions()`
-   * (declared at L69). Both legacy declarations select the same rows under the
-   * same single filter, so both are served here by this one method.
+   * CFML parity [model/service/CurrencyService.cfc:L57-L67]: the legacy method filters `activeFlag`
+   * to 1, selects `currencyCode`, and appends each record to a comma-delimited string.
    *
-   * ★ THIS IS NOT THE LISTING THE CURRENCY CASCADE USES. The cascade applies a
-   * different filter and reaches
-   * {@link CurrencyConverter.getCurrenciesByCurrencyCodeList} instead. Read
-   * that method's contract before assuming the two are interchangeable; they
-   * are not, and the module header explains what changes if they are conflated.
-   *
-   * NAMED VERBATIM FROM CFML, keeping the legacy `IDList` suffix even though
-   * the return type is no longer a list and the values are codes rather than
-   * surrogate keys. Interface parity is the acceptance contract, so the name is
-   * carried over as-is rather than modernised to `getActiveCurrencyCodes()`.
-   *
-   * RETURNS AN ARRAY, WHERE LEGACY RETURNS A COMMA-DELIMITED STRING. The legacy
-   * declaration is `returntype="string"`
-   * [model/service/CurrencyService.cfc:L57] and its body accumulates one via
-   * `listAppend` at [model/service/CurrencyService.cfc:L64]. The divergence is
-   * recorded here so it is visible rather than discovered, and it is a
-   * consequence of the target type system rather than a change in behaviour:
-   * the same codes, in the same order, in a shape the compiler can check.
-   *
-   * The justification is that a second stringly-typed surface inside the domain
-   * would buy nothing. This value's one in-scope consumer role is as the
-   * runtime-computed default for the `skuEligibleCurrencies` setting
-   * [model/service/SettingService.cfc:L222], and `settingsProvider.setting()`
-   * already returns that as a raw comma-delimited string for signature parity
-   * with [model/entity/Sku.cfc:L375]. The composition root joins this array
-   * when it feeds that setting; every other caller gets a typed array and needs
-   * no list parsing at all. Where a caller does need CFML list semantics, the
-   * helpers in `src/lib/cfml/list.js` provide them.
-   *
-   * @returns The active currency codes. An empty array where no currency is
-   *   active - which is a legitimate, reachable answer and not an error. The
-   *   legacy equivalent is the empty string L58 initialises and L66 returns
-   *   when the filtered record set is empty.
+   * @returns every active currency code.
    */
   getAllActiveCurrencyIDList(): Promise<CurrencyCode[]>;
 
+  // LEGACY-NOTE [model/entity/Sku.cfc:L371-L375]: this lookup applies no active-currency filter, so an eligible-currency setting naming an inactive currency still yields it.
+  // Retained to preserve the cited legacy behavior.
   /**
-   * List the currencies whose code appears in a comma-delimited list of codes,
-   * WITHOUT regard to active status.
+   * Resolve the currencies named by a comma-delimited currency-code list.
    *
-   * ★★ FILTER CONTRACT, AND THE WHOLE REASON THIS METHOD EXISTS SEPARATELY:
-   * THIS METHOD APPLIES NO ACTIVE-STATUS FILTER. It mirrors
-   * [model/entity/Sku.cfc:L375] exactly -
-   * `addInFilter('currencyCode', setting('skuEligibleCurrencies'))` - which is
-   * the cascade's ONLY filter. An inactive currency whose code is in the
-   * eligible list IS RETURNED, and is priced.
+   * CFML parity [model/entity/Sku.cfc:L371-L375]: the cascade takes a Currency smart list and narrows
+   * it with an IN filter on the eligible-currency setting. That smart list is not declared on the
+   * service; it is resolved by convention at [org/Hibachi/HibachiService.cfc:L340-L350].
    *
-   * ADDING AN ACTIVE-STATUS FILTER HERE WOULD BE A BEHAVIOUR CHANGE, NOT A
-   * CORRECTION. It would silently drop inactive-but-eligible currencies out of
-   * the currency cascade, which is one of the three named must-preserve areas
-   * of this migration. If that filter ever becomes desirable it is a product
-   * decision, made deliberately and tested, never a tidy-up applied in passing.
-   * The contrast to hold in mind is
-   * {@link CurrencyConverter.getAllActiveCurrencyIDList}, which DOES filter.
-   *
-   * THE NAME HAS NO LEGACY ANTECEDENT, and that is disclosed rather than
-   * glossed. No CFML function declares this listing: the legacy code reached
-   * the framework-supplied smart list directly at
-   * [model/entity/Sku.cfc:L371] and applied the filter itself one line later.
-   * `getCurrenciesByCurrencyCodeList` is therefore a new name describing an
-   * existing behaviour - the filter combination is legacy, the name is not.
-   *
-   * TAKES A COMMA-DELIMITED STRING, DELIBERATELY, for parity with the setting
-   * that feeds it. `setting('skuEligibleCurrencies')` resolves to a raw
-   * comma-delimited string, and the legacy filter consumes it in exactly that
-   * form at [model/entity/Sku.cfc:L375]. Accepting the string here keeps the
-   * value in one shape from the setting to the query instead of converting it
-   * twice. The implementation parses it with the CFML list helpers in
-   * `src/lib/cfml/list.js` - `listToArray` - which reproduce the engine's
-   * delimiter and empty-element handling rather than approximating them with
-   * `String.prototype.split`.
-   *
-   * THE EMPTY-LIST CASE IS THE CALLER'S GATE, NOT THIS METHOD'S. The legacy
-   * cascade never calls this path with an empty list, because the entire block
-   * sits behind `if(len(setting('skuEligibleCurrencies')))` at
-   * [model/entity/Sku.cfc:L373]. That gate lives with the caller and is read
-   * through `settingsProvider`; this method neither re-checks it nor
-   * second-guesses it, and an implementation must not invent a fallback list
-   * for an empty input.
-   *
-   * @param currencyCodeList - Comma-delimited currency codes, in the raw form
-   *   the setting supplies. Matching is case-insensitive, per the CFML
-   *   semantics described on {@link CurrencyConverter.convertCurrency}.
-   * @returns The codes from the input that exist as currencies, active or not.
-   *   An empty array where none matches. A code in the input that names no
-   *   currency is simply absent from the result - the legacy filter drops
-   *   unmatched values the same way, and no error is raised for one.
+   * @param currencyCodeList a comma-delimited list of currency codes, in the form the
+   *   `skuEligibleCurrencies` setting stores.
+   * @returns the currencies whose code appears in the list.
    */
   getCurrenciesByCurrencyCodeList(currencyCodeList: string): Promise<CurrencyCode[]>;
 
+  // TODO [model/service/CurrencyService.cfc:L81]: add integration support so a configured currency-conversion integration can supply the rate.
+  // LEGACY-NOTE [model/service/CurrencyService.cfc:L100-L101]: when either code is missing from the rate table the amount is returned unconverted rather than rejected.
+  // Retained to preserve the cited legacy behavior.
   /**
-   * Convert an amount from one currency to another.
+   * Convert an amount between two currencies.
    *
-   * Ported from [model/service/CurrencyService.cfc:L79]. Argument names and
-   * order are that declaration's, verbatim, even though the legacy signature
-   * declares no type on the second and third arguments and even though the
-   * cascade invokes it positionally at
-   * [model/entity/Sku.cfc:L418, L422, L425].
+   * CFML parity [model/service/CurrencyService.cfc:L84-L97]: conversion pivots through EUR, dividing
+   * by the source rate unless the source is already EUR, multiplying by the target rate, and rounding
+   * the result to two decimal places.
    *
-   * TODO: Add integration support.
-   *   CARRIED FORWARD VERBATIM from
-   *   [model/service/CurrencyService.cfc:L81], where it sits beneath the
-   *   comment at L80: "If an integration exists for currency conversion, then
-   *   pass to that integration". It is recorded, NOT completed. No integration
-   *   hook, no strategy parameter and no pluggable-provider seam is designed
-   *   for it here - inventing one would silently close a gap the source left
-   *   open, and the project's standing instruction is that known source TODOs
-   *   survive the port as flagged TODOs.
-   *
-   * ★ IT NEVER FAILS, AND NEVER SIGNALS FAILURE. When conversion is not
-   * possible the legacy body returns the input amount UNCHANGED -
-   * [model/service/CurrencyService.cfc:L100-L101], commented in the source as
-   * "If no conversion could be done, just return the original amount". There is
-   * no throw, no error flag and no sentinel anywhere on that path.
-   *
-   * That behaviour has a real consequence the cascade then bakes in: the
-   * unconverted amount is stored in the TARGET currency's slot and marked
-   * `converted = true` at [model/entity/Sku.cfc:L427] regardless. A price in
-   * one currency is thereby presented as a price in another. It is
-   * nevertheless the behaviour to preserve, because the currency cascade is a
-   * named must-preserve area and any of the obvious "improvements" changes what
-   * a customer is shown.
-   *
-   * SO THE RETURN TYPE IS `Promise<Money>` AND NOTHING ELSE. Not
-   * `Promise<Money | undefined>`, not a result or either wrapper, and not a
-   * throwing contract. Each of those would invent a failure mode the source
-   * does not have and would force every call site to handle a case that cannot
-   * occur. An implementation that cannot convert MUST resolve with `amount`.
-   *
-   * `Money` ON BOTH SIDES, NEVER `number`. The legacy declaration is
-   * `returntype="numeric"` over a `numeric` argument, and reproducing that with
-   * a raw `number` would put floating-point arithmetic on a monetary value.
-   * `Money` is the sole arithmetic surface in this target. This is a
-   * type-system consequence, not a behavioural divergence: the arithmetic the
-   * legacy body performs is reproduced exactly, in decimal.
-   *
-   * THE `"EUR"` PIVOT, which an implementer must reproduce and must not
-   * shortcut. The legacy conversion routes through one reference currency,
-   * `"EUR"`, rather than converting directly - a consequence of the rate table
-   * being expressed relative to it. Its eligibility test at
-   * [model/service/CurrencyService.cfc:L86] admits a code that is present in
-   * the rate table OR that equals `"EUR"`, and the disjunction is there for a
-   * precise reason: `"EUR"` IS NOT ITSELF A KEY IN THAT TABLE, so testing key
-   * presence alone would reject the very currency every rate is quoted
-   * against. The two-step body that follows divides INTO the pivot when the
-   * source is not already it [model/service/CurrencyService.cfc:L90] and
-   * multiplies OUT of it when the target is not
-   * [model/service/CurrencyService.cfc:L96].
-   *
-   * `"EUR"` appears in this file in commentary only, and must never appear in
-   * it as a value. The pivot is a property of the rate source, so the literal
-   * belongs to the adapter that owns that source - not to the domain, and not
-   * to this interface, which describes only what conversion means.
-   *
-   * CASE-INSENSITIVITY IS LOAD-BEARING. Both comparisons at
-   * [model/service/CurrencyService.cfc:L86] use CFML `eq`, and the two struct
-   * lookups on the same line use CFML struct keys. BOTH ARE
-   * CASE-INSENSITIVE IN CFML AND NEITHER IS IN TYPESCRIPT. A raw `===` between
-   * two codes, or a raw property read on a code-keyed object, is a parity bug
-   * that would make an otherwise convertible pair fall through to the
-   * pass-through above and return the wrong currency's number. Every
-   * comparison must go through `currencyCodeEquals` from
-   * `../valueObjects/currencyCode.js`, and every code-keyed lookup through
-   * `getByCurrencyCode` from the same module - both of which are built on
-   * `cfEquals` in `src/lib/cfml/struct.js`.
-   *
-   * TWO-DECIMAL ROUNDING HAPPENS INSIDE THE CONVERSION, not at presentation
-   * time, and that placement is behaviour. Both returning branches apply it -
-   * [model/service/CurrencyService.cfc:L94] and
-   * [model/service/CurrencyService.cfc:L96] - each computing `round(x * 100) /
-   * 100`, so a converted amount reaches the cascade already at two decimals
-   * while a pass-through amount reaches it at whatever scale it arrived with.
-   * The implementation reproduces that rounding THROUGH `Money`, by rendering
-   * the value at two decimals with `toFixed2()` and reading it back with
-   * `Money.fromDecimalString()`. Never with `Math.round`, and never by way of
-   * a `number` - `Money` exposes no rounding method precisely so that this
-   * step has to be written where a reader can see it.
-   *
-   * @param amount - The amount to convert. Named verbatim from
-   *   [model/service/CurrencyService.cfc:L79].
-   * @param originalCurrencyCode - The currency `amount` is denominated in.
-   *   Named verbatim; untyped in the legacy declaration.
-   * @param convertToCurrencyCode - The currency to convert into. Named
-   *   verbatim; untyped in the legacy declaration.
-   * @returns The converted amount, rounded to two decimals - or `amount`
-   *   itself, unchanged and unrounded, where the pair cannot be converted.
-   *   Resolving with `amount` is the documented contract, not a fallback to be
-   *   replaced with an error.
+   * @param amount the amount expressed in `originalCurrencyCode`.
+   * @param originalCurrencyCode the currency `amount` is denominated in.
+   * @param convertToCurrencyCode the currency to express the result in.
+   * @returns the converted amount, or `amount` unchanged when no rate is available.
    */
   convertCurrency(
     amount: Money,

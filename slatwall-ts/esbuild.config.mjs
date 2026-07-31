@@ -1,5 +1,27 @@
 // esbuild bundler configuration for the AWS Lambda `nodejs20.x` artifacts.
 //
+// WHY THIS FILE IS PRESENT AND MUST NOT BE DEFERRED
+// It is a root manifest of this subtree, enumerated as CREATE in the AAP's own
+// target layout ("esbuild.config.mjs  (CREATE - CJS Lambda bundle, node20
+// target)", AAP 0.3.1) and again in the root-manifest transformation table
+// (AAP 0.4.1). Four things depend on it existing now rather than later:
+//
+//   * AAP 0.4.5 — "The entire refactor is executed in a single phase... There is
+//     no staging, no sequencing across phases, and no partial delivery." A
+//     dependency-safe authoring order exists inside that phase, but it is "a
+//     compile-order convenience, not a schedule", so a manifest cannot be held
+//     back for a later index.
+//   * AAP 0.9.1 — the "Bundle build" gate (`esbuild` produces the Lambda
+//     artifact in CommonJS format) and the "Bundle execution" gate (invoke the
+//     built artifact; the driver's pool factory must resolve) are both recorded
+//     as already PROVEN. Removing this file un-proves both.
+//   * AAP 0.5.2 — the CommonJS-versus-ESM decision was settled by reproducing
+//     the ESM failure directly, and this file is where that recorded remedy
+//     lives. The reasoning is preserved verbatim below.
+//   * `package.json` — the `bundle`, `build` and `package` scripts invoke
+//     `node esbuild.config.mjs`. Deleting it breaks three published scripts and
+//     the composite `verify` chain that AAP 0.9.6's definition of done runs.
+//
 // FORMAT IS CommonJS, DELIBERATELY.
 // Bundling this dependency set to ESM builds cleanly and then fails at runtime:
 //

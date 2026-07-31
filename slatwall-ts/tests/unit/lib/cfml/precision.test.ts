@@ -144,6 +144,12 @@ import {
   subtract,
   toDecimalString,
 } from '../../../../src/lib/cfml/precision.js';
+// The module's two exported TYPES are part of its contract, not incidental
+// annotations, so they are imported by name and asserted directly rather than
+// covered only through the values that happen to satisfy them. `import type` is
+// mandatory here: `consistent-type-imports` is enforced, and a type-only import
+// must not survive into any emitted output.
+import type { PreciseInput, PreciseValue } from '../../../../src/lib/cfml/precision.js';
 
 // ---------------------------------------------------------------------------
 // Failure capture
@@ -637,11 +643,20 @@ describe('input-type discipline', () => {
     // would be forced to render intermediates just to keep computing. A plain
     // number is deliberately NOT a member: a caller holding one for a price will
     // not compile against this module, which is the intended outcome.
-    const produced = divide('12.5', '100');
+    //
+    // Both exported names are ANNOTATED here rather than merely inferred. A
+    // produced value is bound to `PreciseValue`, that same value is then bound to
+    // `PreciseInput` to prove the union genuinely admits it, and a decimal string
+    // is bound to `PreciseInput` for the other member. Had either export been
+    // renamed or narrowed, these annotations would stop compiling - which is the
+    // point of writing them out instead of letting inference hide the contract.
+    const produced: PreciseValue = divide('12.5', '100');
+    const producedAsOperand: PreciseInput = produced;
+    const stringOperand: PreciseInput = '59.97';
 
     // string x string, produced x string, string x produced, produced x produced
-    expect(toDecimalString(multiply('59.97', '0.125'))).toBe('7.49625');
-    expect(toDecimalString(multiply(produced, '59.97'))).toBe('7.49625');
+    expect(toDecimalString(multiply(stringOperand, '0.125'))).toBe('7.49625');
+    expect(toDecimalString(multiply(producedAsOperand, '59.97'))).toBe('7.49625');
     expect(toDecimalString(multiply('59.97', produced))).toBe('7.49625');
     expect(toDecimalString(multiply(produced, multiply('59.97', '1')))).toBe('7.49625');
 
@@ -649,6 +664,47 @@ describe('input-type discipline', () => {
     expect(equals('0.125', produced)).toBe(true);
     expect(compare(produced, '0.125')).toBe(0);
     expect(toDecimalString(produced)).toBe('0.125');
+  });
+
+  it('REFUSES a raw number at the operand type and at every arithmetic entry point', () => {
+    // The positive test above cannot fail if `number` were quietly admitted into
+    // the operand union - a wider union still accepts a string and still accepts a
+    // produced value. Only a NEGATIVE assertion distinguishes the two, so the
+    // refusal is asserted as a compile-time tripwire. The directives ARE the
+    // assertions: if `number` ever became assignable, the compiler would report
+    // each `@ts-expect-error` as unused and this suite would fail to compile,
+    // which is exactly the alarm wanted.
+    //
+    // This is the one property that keeps the whole module honest. An IEEE-754
+    // double cannot represent most decimal fractions exactly, so a `number` for a
+    // price may already be wrong before the call is made; admitting one is
+    // precisely how drift would enter the money path this module exists to
+    // protect. The single sanctioned numeric ingress is the named integer entry
+    // point pinned in the test below, and it is for counts, never for amounts.
+
+    // @ts-expect-error - a raw number is not a member of the operand union.
+    const rawNumberOperand: PreciseInput = 12.5;
+
+    // The value still exists at runtime under the deliberate breach, so what a
+    // breach would actually smuggle in is recorded rather than left to
+    // imagination: an unrounded double, not a decimal.
+    expect(typeof rawNumberOperand).toBe('number');
+
+    // @ts-expect-error - multiply must reject a raw number multiplicand.
+    expect(() => multiply(12.5, '3')).not.toThrow();
+
+    // @ts-expect-error - and a raw number multiplier, so neither position leaks.
+    expect(() => multiply('12.5', 3)).not.toThrow();
+
+    // @ts-expect-error - the additive operations refuse it too, not just multiply.
+    expect(() => add(12.5, '3')).not.toThrow();
+
+    // @ts-expect-error - as do the comparisons, so no back door opens there.
+    expect(() => equals(12.5, '12.5')).not.toThrow();
+
+    // @ts-expect-error - and the rendering boundary, which would otherwise be the
+    // easiest place for a double to slip in unnoticed.
+    expect(toDecimalString(12.5)).toBe('12.5');
   });
 
   it('accepts a safe integer through the one named integer entry point', () => {
@@ -732,6 +788,102 @@ describe('input-type discipline', () => {
     expect(() => multiply('Infinity', '1')).toThrow();
     expect(() => multiply('-Infinity', '1')).toThrow();
     expect(captureFailure(() => multiply('NaN', '1')).name).toBe('PrecisionError');
+  });
+
+  // The finiteness boundary is applied TWICE per operation - once to each
+  // coerced operand, and once to the RESULT - and the two are genuinely
+  // different branches rather than the same check written twice. Everything
+  // above drives the operand half by handing in a non-finite spelling. The
+  // result half only ever fires when FINITE operands combine into a non-finite
+  // value, which the block below drives directly instead of assuming it cannot
+  // happen.
+  //
+  // It can happen, and it was measured rather than reasoned about. This module
+  // pins its own exponent bounds on its private constructor, so a value that
+  // grows past the positive bound is carried to an infinity rather than kept as
+  // a huge finite decimal. The operands used here sit exactly AT that bound:
+  // each is finite on its own, each passes the operand check on its own, and it
+  // is only their product - or their quotient - that overflows.
+  //
+  // JUDGMENT CALL - the operands are exponential-notation string literals, and
+  // NOTHING here renders them. That restriction is load-bearing rather than
+  // stylistic: this module also pushes its exponential-notation thresholds to
+  // the representable extremes so a finite value never renders exponentially,
+  // which means rendering a value at the exponent bound would ask for a plain
+  // numeral with quadrillions of digits. Doing that exhausts the runner - it was
+  // reproduced - so these tests assert the THROW and the operation NAME only,
+  // never a rendered operand. Do not add a `toDecimalString` call to this block.
+  //
+  // The underflow direction is asserted alongside for contrast, because it is
+  // NOT symmetric: a value shrinking past the negative bound is carried to zero,
+  // which is perfectly finite and therefore must not throw.
+  describe('the result boundary, which finite operands can still breach', () => {
+    // At the positive exponent bound: finite on its own.
+    const atUpperExponentBound = '1e9000000000000000';
+
+    // At the negative exponent bound: finite on its own.
+    const atLowerExponentBound = '1e-9000000000000000';
+
+    it('accepts each overflow operand on its own, so the operand check is not what fires', () => {
+      // The control for the two tests below. If either operand were rejected at
+      // the operand boundary, those tests would prove nothing about the result
+      // boundary - they would merely be re-testing the operand branch under a
+      // different spelling.
+      expect(() => multiply(atUpperExponentBound, '1')).not.toThrow();
+      expect(() => multiply(atLowerExponentBound, '1')).not.toThrow();
+      expect(() => absolute(atUpperExponentBound)).not.toThrow();
+    });
+
+    it('throws when a product of finite operands overflows to a non-finite result', () => {
+      expect(() => multiply(atUpperExponentBound, '10')).toThrow();
+
+      const failure = captureFailure(() => multiply(atUpperExponentBound, '10'));
+
+      expect(failure.name).toBe('PrecisionError');
+
+      // The message names the OPERATION, which is what distinguishes a result
+      // breach from an operand breach in a diagnostic - an operand breach is
+      // reported against 'operand', never against 'multiply'.
+      expect(failure.message).toBe(
+        'multiply produced a non-finite decimal (Infinity); a non-finite value must never ' +
+          'reach a monetary quantity.',
+      );
+    });
+
+    it('throws when a quotient of finite operands overflows to a non-finite result', () => {
+      // A second operation, because the result boundary is applied per operation
+      // and one passing case would not show the others are wired to it. Note the
+      // divisor is emphatically NOT zero here - the zero-divisor refusal is a
+      // separate, earlier guard, already pinned above - so this failure can only
+      // come from the result check.
+      expect(() => divide('10', atLowerExponentBound)).toThrow();
+
+      const failure = captureFailure(() => divide('10', atLowerExponentBound));
+
+      expect(failure.name).toBe('PrecisionError');
+      expect(failure.message).toBe(
+        'divide produced a non-finite decimal (Infinity); a non-finite value must never ' +
+          'reach a monetary quantity.',
+      );
+    });
+
+    it('does NOT throw when the result merely underflows, because zero is finite', () => {
+      // The asymmetry, pinned so nobody "tidies" the result check into rejecting
+      // both directions. Underflow yields zero; zero is a finite decimal and a
+      // perfectly ordinary monetary value, so refusing it would invent a failure.
+      expect(() => multiply(atLowerExponentBound, atLowerExponentBound)).not.toThrow();
+      expect(isZero(multiply(atLowerExponentBound, atLowerExponentBound))).toBe(true);
+    });
+
+    it('does NOT throw when addition stays inside the bound', () => {
+      // Doubling a value at the bound raises its leading digits, not its
+      // exponent, so the sum is still finite and still admissible. This keeps the
+      // two overflow tests above honest: they fail because of genuine overflow,
+      // not merely because an operand was large.
+      expect(() => add(atUpperExponentBound, atUpperExponentBound)).not.toThrow();
+      expect(() => subtract(atUpperExponentBound, atUpperExponentBound)).not.toThrow();
+      expect(isZero(subtract(atUpperExponentBound, atUpperExponentBound))).toBe(true);
+    });
   });
 });
 
@@ -859,19 +1011,140 @@ describe('schema fidelity for arbitrary-precision money columns', () => {
     expect(toDecimalString('0.000000000000000001')).toBe('0.000000000000000001');
   });
 
-  it('round-trips a high-precision value through an operation, within the declared bound', () => {
-    // JUDGMENT CALL: the operand below sits INSIDE the module's declared
-    // significant-digit precision, and the claim is deliberately bounded to that.
-    // Construction preserves every digit it is given, but an OPERATION resolves
-    // to the declared precision - so a value carrying more significant digits
-    // than the module declares would be rounded by the operation, not carried.
-    // Overstating this as unlimited precision would be a false claim, so it is
-    // stated as what it is: lossless within a declared, documented bound.
+  it('round-trips a high-precision value through an operation', () => {
+    // A representative persisted value at 19 significant digits. Construction
+    // preserves every digit it is given, and each exact operation carries them
+    // through untouched.
     const stored = '12345678.90123456789';
 
     expect(toDecimalString(add(stored, '0'))).toBe(stored);
     expect(toDecimalString(subtract(stored, '0'))).toBe(stored);
     expect(toDecimalString(multiply(stored, '1'))).toBe(stored);
+  });
+
+  it('carries a MySQL DECIMAL(65,s) operand through an exact operation without truncating it', () => {
+    // The widest operand the schema can hand this module. MySQL's DECIMAL ceiling
+    // is 65 significant digits, so a `big_decimal` column can legitimately store
+    // this, and the identity operations below must return it unchanged.
+    //
+    // This is the assertion that would FAIL under a shared 20-significant-digit
+    // arithmetic cap, and it is stated at the schema's own limit rather than at a
+    // comfortable one so the bound is tested where it actually matters.
+    const widest = `${'9'.repeat(45)}.${'9'.repeat(20)}`;
+
+    expect(widest.replace('.', '')).toHaveLength(65);
+    expect(toDecimalString(add(widest, '0'))).toBe(widest);
+    expect(toDecimalString(subtract(widest, '0'))).toBe(widest);
+    expect(toDecimalString(multiply(widest, '1'))).toBe(widest);
+  });
+
+  it('adds, subtracts and multiplies EXACTLY past twenty significant digits', () => {
+    // The three assertions that distinguish exact arithmetic from capped
+    // arithmetic. Every expectation below is the exact mathematical result, and
+    // every one of them differs from what a shared 20-significant-digit cap
+    // produces - the capped answers are recorded alongside so the difference is
+    // visible rather than implied.
+    //
+    // Multiplication: two 19-digit operands produce a 38-digit product.
+    //   capped -> '1219326311370217952200'  (the tail is DISCARDED)
+    expect(toDecimalString(multiply('12345678901.23456789', '98765432109.87654321'))).toBe(
+      '1219326311370217952237.4638011112635269',
+    );
+
+    // Subtraction: a tiny subtrahend against a large minuend. Under a cap the
+    // subtrahend vanishes completely and the minuend is returned unchanged, which
+    // is the most dangerous shape of all because it looks like a correct answer.
+    //   capped -> '100000000000000000000'
+    expect(toDecimalString(subtract('100000000000000000000', '0.000000001'))).toBe(
+      '99999999999999999999.999999999',
+    );
+
+    // Addition, for symmetry: 21 significant digits in the augend, and the sum
+    // keeps all of them.
+    //   capped -> '100000000000000000000'
+    expect(toDecimalString(add('99999999999999999999.9999999999', '0.0000000001'))).toBe(
+      '100000000000000000000',
+    );
+    expect(toDecimalString(add('12345678901234567890.12345', '0.00001'))).toBe(
+      '12345678901234567890.12346',
+    );
+  });
+
+  it('reaches the deepest in-scope multiplication chain exactly, verified against a BigInt oracle', () => {
+    // The three-factor shape at [model/service/PromotionService.cfc:L995] -
+    // `price x quantity x (amount / 100)` - is the deepest multiplication chain in
+    // the in-scope slice. Driven with the schema's widest operands it produces a
+    // 195-significant-digit intermediate, and that intermediate must be exact:
+    // this chain computes a discount, so a truncated digit is money.
+    //
+    // JUDGMENT CALL - THE EXPECTATION IS COMPUTED BY AN INDEPENDENT ORACLE.
+    // The expected values below are derived with native `BigInt` INTEGER
+    // arithmetic, which is exact by definition and shares no code with the
+    // decimal library under test. Hard-coding a 195-digit literal would prove
+    // nothing about exactness - it would only prove the implementation agrees with
+    // whatever was pasted in - and asserting a digit COUNT alone would not catch a
+    // wrong digit in the middle. `BigInt` is used here for the expectation only,
+    // never as arithmetic on a monetary value, so the single-arithmetic-surface
+    // standard is untouched.
+    //
+    // The operand is (10^65 - 1) / 10^20, i.e. 65 nines with the point 20 from the
+    // right - the widest value a MySQL `DECIMAL(65, s)` column can hold.
+    const nines = 10n ** 65n - 1n;
+    const widest = `${'9'.repeat(45)}.${'9'.repeat(20)}`;
+
+    // Place a decimal point `fractionDigits` from the right of an exact integer.
+    const withPoint = (integer: bigint, fractionDigits: number): string => {
+      const digits = integer.toString();
+      return `${digits.slice(0, digits.length - fractionDigits)}.${digits.slice(digits.length - fractionDigits)}`;
+    };
+
+    // The square: 130 significant digits, and its tail is the sharpest canary in
+    // this suite. (10^65 - 1)^2 = 10^130 - 2x10^65 + 1, so the exact product ends
+    // in ...0000000001 - digits a capped multiply discards outright.
+    const expectedSquare = withPoint(nines * nines, 40);
+    expect(toDecimalString(multiply(widest, widest))).toBe(expectedSquare);
+    expect(expectedSquare.replace('.', '')).toHaveLength(130);
+    expect(expectedSquare.endsWith('0000000001')).toBe(true);
+
+    // The cube: 195 significant digits, the reachable worst case this module's
+    // exact precision is sized against.
+    const expectedCube = withPoint(nines * nines * nines, 60);
+    expect(toDecimalString(multiply(multiply(widest, widest), widest))).toBe(expectedCube);
+    expect(expectedCube.replace('.', '')).toHaveLength(195);
+  });
+
+  it('resolves EVERY quotient at the declared division scale, terminating or not', () => {
+    // Division is the ONE operation in this module that stops at a declared scale,
+    // and these two non-terminating quotients pin that constant.
+    expect(toDecimalString(divide('1', '3'))).toBe('0.33333333333333333333');
+    expect(toDecimalString(divide('2', '3'))).toBe('0.66666666666666666667');
+
+    // STATED EXPLICITLY BECAUSE IT SURPRISES: the declared scale is applied to
+    // every quotient, INCLUDING one that would terminate exactly. Dividing an
+    // 81-significant-digit operand by one returns it resolved to 20 significant
+    // digits, not whole. That is the faithful consequence of declaring a division
+    // scale at all - the library rounds the result of every operation, and
+    // `x / 1` is an operation - and it is asserted here rather than left as a
+    // latent surprise for a caller who assumes division by one is free.
+    //
+    // The INGRESS is nonetheless lossless, which is a different claim and is what
+    // makes this safe: the wide operand arrives intact and is then resolved, so
+    // the leading digits are correct and nothing is corrupted, dropped to zero or
+    // turned into `NaN`.
+    const wide = `1.${'1'.repeat(80)}`;
+    expect(toDecimalString(divide(wide, '1'))).toBe(`1.${'1'.repeat(19)}`);
+
+    // The declared scale applies to the QUOTIENT only. A quotient that re-enters
+    // exact arithmetic keeps exactly the digits division gave it - it is neither
+    // extended nor further truncated - which is what proves the two
+    // configurations are wired to the operations they belong to rather than
+    // leaking into each other.
+    expect(toDecimalString(multiply(divide('1', '3'), '3'))).toBe('0.99999999999999999999');
+
+    // And an exact-homed operand handed to division is resolved at the DIVISION
+    // scale rather than at the exact one. Without `divide` re-homing its operands
+    // this would come back with hundreds of digits.
+    expect(toDecimalString(divide(multiply('1', '1'), '3'))).toBe('0.33333333333333333333');
   });
 
   it('keeps a persisted discount and a recomputed discount comparable by value', () => {

@@ -1,4 +1,22 @@
 // ---------------------------------------------------------------------------
+// CHECKPOINT STATUS - FORWARD REFERENCES CARRY THE MARKER `(planned)`
+//
+// The subtree is authored in boundaries, and AAP 0.4.5 makes the authoring
+// order "a compile-order convenience, not a schedule". Commentary in this file
+// therefore names modules of the target layout that DO NOT EXIST YET. Every such
+// name carries `(planned)` at its point of use, meaning exactly: a planned Agent
+// Action Plan target that is ABSENT from the subtree at this checkpoint. Nothing
+// here asserts that any of them exists now, and no behaviour in this file depends
+// on one. The complete set named below, with the role each will play:
+//
+//   src/domain/entities/product.ts             Product entity
+//   src/domain/entities/promotionQualifier.ts  PromotionQualifier entity
+//   src/domain/entities/promotionReward.ts     PromotionReward entity
+//   tests/traceability/legacyTestMap.ts        structural coverage map
+//   tests/unit/domain/entities/brand.test.ts   brand entity suite
+// ---------------------------------------------------------------------------
+
+// ---------------------------------------------------------------------------
 // slatwall-ts - Brand entity
 //
 // PORT OF model/entity/Brand.cfc (165 lines, confirmed by `wc -l`). That CFC is
@@ -15,9 +33,10 @@
 //   }
 //
 // So `getProducts()` returning an EMPTY ARRAY on a bare construction is not a
-// convenience, it is a pinned legacy contract - and `tests/unit/domain/entities/
-// brand.test.ts` must therefore be labelled LEGACY-EXTENDED (PARITY), never
-// net-new, in `tests/traceability/legacyTestMap.ts`. The full ruling and the
+// convenience, it is a pinned legacy contract - and
+// `tests/unit/domain/entities/brand.test.ts` (planned) must therefore be labelled
+// LEGACY-EXTENDED (PARITY), never net-new, in
+// `tests/traceability/legacyTestMap.ts` (planned). The full ruling and the
 // enumerated obligations for that suite are in the TEST CONTRACT section at the
 // foot of this file. No test file is authored from here.
 //
@@ -72,9 +91,10 @@
 //
 // Also verified absent from model/entity/Brand.cfc by census, and therefore NOT
 // invented here:
-//   * ZERO `getService(` sites. Brand is one of the ten in-scope entities with
-//     none; the 45 sites in the model live in Sku (19), Product (18), ProductType
-//     (6), OptionGroup (1) and RoundingRule (1). So NO collaborator port is
+//   * ZERO `getService(` sites. Brand is one of the THIRTEEN in-scope entities
+//     with none - eighteen in scope, minus the five that do have sites; the 45
+//     sites in the model live in Sku (19), Product (18), ProductType (6),
+//     OptionGroup (1) and RoundingRule (1). So NO collaborator port is
 //     injected, and nothing is imported from `../ports/`.
 //   * ZERO ORM lifecycle hooks - `preInsert`/`preUpdate` census is 0. Only
 //     Category, PriceGroup, ProductType (both hooks each) and PromotionCode
@@ -142,14 +162,14 @@ import type { PromotionReward } from './promotionReward.js';
 // sibling entity modules. The bidirectional helpers at the foot of this class delegate OUTWARD, so
 // the members below are a genuine cross-module requirement and not a preference. Each traces to a
 // verbatim legacy declaration:
-//   * `src/domain/entities/product.ts` MUST expose `setBrand` and `removeBrand`
+//   * `src/domain/entities/product.ts` (planned) MUST expose `setBrand` and `removeBrand`
 //     [model/entity/Product.cfc:L662 and L668 respectively]. Note L668 declares `any brand` - an
 //     OPTIONAL parameter - while L662 declares `required any brand`; passing an argument satisfies
 //     both, and this file always passes one.
-//   * `src/domain/entities/promotionReward.ts` MUST expose `addBrand`, `removeBrand`,
+//   * `src/domain/entities/promotionReward.ts` (planned) MUST expose `addBrand`, `removeBrand`,
 //     `addExcludedBrand` and `removeExcludedBrand` [model/entity/PromotionReward.cfc:L198, L206,
 //     L298, L306], backing the `brands` and `excludedBrands` collections at L80 and L86.
-//   * `src/domain/entities/promotionQualifier.ts` MUST expose the same four names
+//   * `src/domain/entities/promotionQualifier.ts` (planned) MUST expose the same four names
 //     [model/entity/PromotionQualifier.cfc:L140, L148, L240, L248], backing L77 and L83.
 // Those types are imported with `import type` ONLY and are ERASED AT EMIT, so the mutual cycles
 // between these entity modules are safe: an entity class never instantiates a sibling, because
@@ -446,8 +466,8 @@ export class Brand {
    * ★★ THIS FIELD CARRIES THE ONE HARD LEGACY TEST CONTRACT IN THIS FILE. It defaults to `[]` - an
    * empty array, never `undefined` and never `null` - because meta/tests/unit/entity/BrandTest.cfc
    * asserts exactly `assertEquals(variables.entity.getProducts(), [])` on a freshly constructed
-   * entity. `getProducts()` accordingly returns `readonly Product[]` and NOT
-   * `readonly Product[] | undefined`.
+   * entity. `getProducts()` accordingly returns `Product[]` and NOT
+   * `Product[] | undefined`.
    *
    * WHICH EMPTY-COLLECTION SEMANTIC THIS IS. Five distinct ones exist in this migration and they
    * must not be collapsed into one another, because four of them decide an outcome and only this one
@@ -478,7 +498,7 @@ export class Brand {
    * `PriceGroup.appliedOrderItems`, `PromotionCode.orders`, and `physicals` on Sku/Product/
    * ProductType.
    */
-  private readonly products: readonly Product[];
+  private readonly products: Product[];
 
   // --- Related Object Properties (many-to-many - owner) [model/entity/Brand.cfc:L63] ------------
   //
@@ -515,7 +535,7 @@ export class Brand {
    * Owned by [model/entity/PromotionReward.cfc:L80]. Defaults to `[]` - see the note on the
    * defaulting convention below the audit block.
    */
-  private readonly promotionRewards: readonly PromotionReward[];
+  private readonly promotionRewards: PromotionReward[];
 
   /**
    * Inverse side of `SwPromoRewardExclBrand`. [model/entity/Brand.cfc:L67]
@@ -529,7 +549,7 @@ export class Brand {
    * are DISTINCT LINK TABLES sharing one entity type: a brand can be both included by one reward
    * and excluded by another, so these arrays are independent and neither implies the other.
    */
-  private readonly promotionRewardExclusions: readonly PromotionReward[];
+  private readonly promotionRewardExclusions: PromotionReward[];
 
   /**
    * Inverse side of `SwPromoQualBrand`. [model/entity/Brand.cfc:L68]
@@ -541,7 +561,7 @@ export class Brand {
    *
    * Owned by [model/entity/PromotionQualifier.cfc:L77].
    */
-  private readonly promotionQualifiers: readonly PromotionQualifier[];
+  private readonly promotionQualifiers: PromotionQualifier[];
 
   /**
    * Inverse side of `SwPromoQualExclBrand`. [model/entity/Brand.cfc:L69]
@@ -553,7 +573,7 @@ export class Brand {
    *
    * Owned by [model/entity/PromotionQualifier.cfc:L83] `excludedBrands`.
    */
-  private readonly promotionQualifierExclusions: readonly PromotionQualifier[];
+  private readonly promotionQualifierExclusions: PromotionQualifier[];
 
   // LEGACY-NOTE [model/entity/Brand.cfc:L70-L71]: `vendors` AND `physicals` ARE NOT MATERIALIZED,
   // and unlike the audit many-to-ones there is nothing to keep in their place. Verbatim:
@@ -685,11 +705,11 @@ export class Brand {
       readonly urlTitle?: string | undefined;
       readonly brandName?: string | undefined;
       readonly brandWebsite?: string | undefined;
-      readonly products?: readonly Product[] | undefined;
-      readonly promotionRewards?: readonly PromotionReward[] | undefined;
-      readonly promotionRewardExclusions?: readonly PromotionReward[] | undefined;
-      readonly promotionQualifiers?: readonly PromotionQualifier[] | undefined;
-      readonly promotionQualifierExclusions?: readonly PromotionQualifier[] | undefined;
+      readonly products?: Product[] | undefined;
+      readonly promotionRewards?: PromotionReward[] | undefined;
+      readonly promotionRewardExclusions?: PromotionReward[] | undefined;
+      readonly promotionQualifiers?: PromotionQualifier[] | undefined;
+      readonly promotionQualifierExclusions?: PromotionQualifier[] | undefined;
       readonly remoteID?: string | undefined;
       readonly createdDateTime?: Date | undefined;
       readonly createdByAccountID?: string | undefined;
@@ -784,32 +804,81 @@ export class Brand {
   /**
    * [model/entity/Brand.cfc:L61]
    *
-   * ★ RETURNS `readonly Product[]` AND NEVER `undefined`. meta/tests/unit/entity/BrandTest.cfc's
+   * ★ RETURNS `Product[]` AND NEVER `undefined`. meta/tests/unit/entity/BrandTest.cfc's
    * `defaults_are_correct()` asserts this equals `[]` on a bare construction, which makes it the
    * one member of this class with genuine legacy test parity. Widening the return type to include
    * `undefined`, or letting the field go unset, would break that pinned contract.
+   *
+   * THE ONE ASSOCIATION-OWNERSHIP CONTRACT, WHICH ALL FIVE COLLECTIONS ON THIS CLASS ARE ON THE LIVE
+   * SIDE OF. Across every entity in this folder the rule is single and mechanical: an association
+   * accessor hands back the LIVE, mutable array if and only if some entity in the legacy source
+   * mutates that very accessor's result in place - if and only if `arrayAppend(x.getY(), ...)` or
+   * `arrayDeleteAt(x.getY(), ...)` appears somewhere in `model/entity/*.cfc`. Otherwise it hands back
+   * a `readonly` projection. The determination is a census over the source, never a preference.
+   *
+   * `getProducts()` IS LIVE because `Product.setBrand` reaches back through it: `Brand.addProduct`
+   * [model/entity/Brand.cfc:L98-L100] delegates to `arguments.product.setBrand(this)`, and that far
+   * side appends to `arguments.brand.getProducts()`. All four promotion collections are live on the
+   * same evidence - `PromotionReward` appends at [model/entity/PromotionReward.cfc:L203] and
+   * [model/entity/PromotionReward.cfc:L303], and removes at
+   * [model/entity/PromotionReward.cfc:L211-L213] and
+   * [model/entity/PromotionReward.cfc:L311-L313]; `PromotionQualifier` mirrors both pairs exactly.
+   *
+   * An earlier revision typed all five `readonly`. That silently narrowed the contract those far
+   * sides depend on: with a `readonly` array their `arrayAppend` equivalent has nowhere to land, so
+   * `brand.getProducts()` would omit a product whose own `getBrand()` named this brand - two
+   * accessors disagreeing about one link, with no error anywhere. Note that the ARRAY is mutable
+   * while the FIELD stays `readonly`: nothing may rebind these to a different array, because their
+   * identity is what the far sides reach through.
+   *
+   * NOT LIVE HERE, AND NOT PRESENT AT ALL: `vendors`, `physicals` and `attributeValues`
+   * [model/entity/Brand.cfc:L60, L70, L71]. Those three ARE mutated in place by
+   * `Vendor.cfc`, `Physical.cfc` and `AttributeValue.cfc`, but all three far sides are out of scope
+   * and are never ported, so no accessor is authored for them and the live/readonly question does not
+   * arise. Their `add`/`remove` helpers survive as pure delegations only, because the source declares
+   * them on THIS component.
    */
-  getProducts(): readonly Product[] {
+  getProducts(): Product[] {
     return this.products;
   }
 
-  /** [model/entity/Brand.cfc:L66] Rewards that INCLUDE this brand. Empty when unmaterialized. */
-  getPromotionRewards(): readonly PromotionReward[] {
+  /**
+   * [model/entity/Brand.cfc:L66] Rewards that INCLUDE this brand. Empty when unmaterialized.
+   *
+   * LIVE, per the ownership contract on {@link Brand.getProducts}:
+   * [model/entity/PromotionReward.cfc:L203] appends through it and
+   * [model/entity/PromotionReward.cfc:L211-L213] removes through it.
+   */
+  getPromotionRewards(): PromotionReward[] {
     return this.promotionRewards;
   }
 
-  /** [model/entity/Brand.cfc:L67] Rewards that EXCLUDE this brand - a different link table. */
-  getPromotionRewardExclusions(): readonly PromotionReward[] {
+  /**
+   * [model/entity/Brand.cfc:L67] Rewards that EXCLUDE this brand - a different link table.
+   *
+   * LIVE: [model/entity/PromotionReward.cfc:L303] appends and
+   * [model/entity/PromotionReward.cfc:L311-L313] removes through it.
+   */
+  getPromotionRewardExclusions(): PromotionReward[] {
     return this.promotionRewardExclusions;
   }
 
-  /** [model/entity/Brand.cfc:L68] Qualifiers that INCLUDE this brand. */
-  getPromotionQualifiers(): readonly PromotionQualifier[] {
+  /**
+   * [model/entity/Brand.cfc:L68] Qualifiers that INCLUDE this brand.
+   *
+   * LIVE: `PromotionQualifier.addBrand` / `removeBrand` append and remove through it, mirroring the
+   * `PromotionReward` pair exactly.
+   */
+  getPromotionQualifiers(): PromotionQualifier[] {
     return this.promotionQualifiers;
   }
 
-  /** [model/entity/Brand.cfc:L69] Qualifiers that EXCLUDE this brand - a different link table. */
-  getPromotionQualifierExclusions(): readonly PromotionQualifier[] {
+  /**
+   * [model/entity/Brand.cfc:L69] Qualifiers that EXCLUDE this brand - a different link table.
+   *
+   * LIVE: `PromotionQualifier.addExcludedBrand` / `removeExcludedBrand` append and remove through it.
+   */
+  getPromotionQualifierExclusions(): PromotionQualifier[] {
     return this.promotionQualifierExclusions;
   }
 
@@ -860,28 +929,140 @@ export class Brand {
    * against is the `unsavedvalue=""` / `default=""` on the id property at
    * [model/entity/Brand.cfc:L52].
    *
-   * WHY THIS ONE FRAMEWORK MEMBER IS AUTHORED WHEN THE REST OF THE Hibachi SURFACE IS NOT.
-   * model/entity/Brand.cfc never calls `isNew()` itself - the census is zero - and the far-side
-   * callers that do (`if(arguments.brand.isNew() or !hasBrand(arguments.brand))` at
-   * [model/entity/PromotionReward.cfc:L199] and [L299], and the matching PromotionQualifier sites)
-   * are part of the in-memory graph symmetry that is deliberately NOT reproduced, so nothing in the
-   * ported tree needs it for its original purpose. It survives for two other reasons: it is genuine
-   * entity-local state derivable from this class's own id column with no dispatcher, no metadata
-   * scan and no service lookup involved, and the legacy suite asserts it - `defaults_are_correct()`
-   * at [meta/tests/unit/entity/SlatwallEntityTestBase.cfc] tests `isNew()` directly.
+   * WHY THIS FRAMEWORK MEMBER IS AUTHORED. model/entity/Brand.cfc never calls `isNew()` itself - the
+   * census is zero - but three independent things need it:
+   *
+   *   1. THE FAR-SIDE GUARDS GENUINELY CALL IT. `if(arguments.brand.isNew() or
+   *      !hasBrand(arguments.brand))` at [model/entity/PromotionReward.cfc:L199] and [L299], and the
+   *      matching sites at [model/entity/PromotionQualifier.cfc:L141] and [L241], are reproduced
+   *      verbatim by src/domain/entities/promotionReward.ts and
+   *      src/domain/entities/promotionQualifier.ts.
+   *      (AN EARLIER REVISION OF THIS DOC CLAIMED THAT SYMMETRY WAS "deliberately NOT reproduced".
+   *      That was written before those two modules existed and it is now WRONG: the folder's
+   *      association contract requires every helper to reproduce its inverse verbatim, INCLUDING the
+   *      `isNew() or !hasX(this)` guard, which is exactly why the five containment probes below are
+   *      authored too. Corrected rather than left standing, because a stale claim about what is not
+   *      reproduced is an invitation to delete something that is.)
+   *   2. It is genuine entity-local state derivable from this class's own id column, with no
+   *      dispatcher, no metadata scan and no service lookup involved.
+   *   3. The legacy suite asserts it - `defaults_are_correct()` at
+   *      [meta/tests/unit/entity/SlatwallEntityTestBase.cfc] tests `isNew()` directly.
    *
    * Nothing else the dispatcher at [org/Hibachi/HibachiEntity.cfc:L507-L565] can synthesise is
-   * authored: no `hasAny*`, no `hasUnique*` (uniqueness is a database and service-tier concern), no
-   * `get*Options`, `get*SmartList`, `get*Struct`, `get*Count` or `get*AssignedIDList`, and no
-   * `getAttributeValue`. `getPrimaryIDValue()`, `getPrimaryIDPropertyName()`,
-   * `getSimpleRepresentation()`, `validate()` and `hasErrors()` are likewise absent - they are
-   * metadata-driven dynamic dispatch and framework validation, whose responsibilities the plan
-   * redistributes to typed repository queries and service-tier zod schemas. The TEST CONTRACT
-   * section at the foot of this file records which inherited legacy cases that makes portable.
+   * authored BEYOND the five containment probes below: no `hasAny*`, no `hasUnique*` (uniqueness is a
+   * database and service-tier concern), no `get*Options`, `get*SmartList`, `get*Struct`, `get*Count`
+   * or `get*AssignedIDList`, and no `getAttributeValue`. `getPrimaryIDValue()`,
+   * `getPrimaryIDPropertyName()`, `getSimpleRepresentation()`, `validate()` and `hasErrors()` are
+   * likewise absent - they are metadata-driven dynamic dispatch and framework validation, whose
+   * responsibilities the plan redistributes to typed repository queries and service-tier zod schemas.
+   * The TEST CONTRACT section at the foot of this file records which inherited legacy cases that
+   * makes portable.
    */
   isNew(): boolean {
     return this.brandID === '';
   }
+
+  // ============ START: Containment Probes ==============================
+  // FIVE probes, none with a hand-written legacy body: all are synthesised by the dispatcher at
+  // [org/Hibachi/HibachiEntity.cfc:L507-L565], whose CFML semantics are Hibernate's
+  // collection-contains - session identity, i.e. primary key for a persistent row.
+  //
+  // EACH IS AUTHORED BECAUSE AN IN-SCOPE FAR SIDE GENUINELY CALLS IT ACROSS A MODULE BOUNDARY, and
+  // each names its caller. A receiver-qualified scan of every `<receiver>.has<X>(` site in
+  // model/entity/*.cfc finds EIGHT with a `brand` receiver; the three not authored here -
+  // `hasAttributeValue` [AttributeValue.cfc:L169], `hasPhysical` [Physical.cfc:L183] and `hasVendor`
+  // [Vendor.cfc:L177] - are called only by out-of-scope entities whose modules are never ported, so
+  // nothing in the ported tree can reach them. Authoring probes for collections this class does not
+  // even materialize would assert a contract with no counterparty.
+  //
+  // THE PROJECT-WIDE CONTAINMENT RULE: compare by PRIMARY KEY, with a REFERENCE fallback when the
+  // candidate is unsaved. The fallback is not optional - every unsaved row's key is `''`
+  // (`unsavedvalue=""`), so a pure key comparison would report two DIFFERENT unsaved rows as the same
+  // one and the far side's guard would skip a legitimate append.
+  //
+  // THE PARAMETER TYPES ARE THE CONCRETE IN-SCOPE CLASSES, NOT the `*Link` projections used by the
+  // bidirectional helpers above, and the difference is deliberate. A helper needs only the ability to
+  // tell the far side to re-point its FK, so a two-member projection is the precise contract there. A
+  // probe needs the candidate's PRIMARY KEY, and `getProductID()`/`getPromotionRewardID()`/
+  // `getPromotionQualifierID()` are not members of those projections. Widening the projections to
+  // carry a key would make them less precise for the helpers; using the real classes here costs
+  // nothing, because all three are already imported to type the materialized collections.
+
+  /**
+   * Called by `Product.setBrand` [model/entity/Product.cfc:L664]:
+   * `if(isNew() or !arguments.brand.hasProduct( this ))`.
+   */
+  hasProduct(product: Product): boolean {
+    const candidateID: string = product.getProductID();
+    if (candidateID === '') {
+      return this.products.includes(product);
+    }
+    return this.products.some((held: Product) => held.getProductID() === candidateID);
+  }
+
+  /**
+   * Called by `PromotionReward.addBrand` [model/entity/PromotionReward.cfc:L202]:
+   * `if(isNew() or !arguments.brand.hasPromotionReward( this ))`.
+   */
+  hasPromotionReward(promotionReward: PromotionReward): boolean {
+    const candidateID: string = promotionReward.getPromotionRewardID();
+    if (candidateID === '') {
+      return this.promotionRewards.includes(promotionReward);
+    }
+    return this.promotionRewards.some(
+      (held: PromotionReward) => held.getPromotionRewardID() === candidateID,
+    );
+  }
+
+  /**
+   * Called by `PromotionReward.addExcludedBrand` [model/entity/PromotionReward.cfc:L302]:
+   * `if(isNew() or !arguments.brand.hasPromotionRewardExclusion( this ))`.
+   *
+   * A DIFFERENT LINK TABLE from its sibling above - `SwPromoRewardExclBrand` rather than
+   * `SwPromoRewardBrand` - so it probes a different collection. Two probes, not one with a flag.
+   */
+  hasPromotionRewardExclusion(promotionReward: PromotionReward): boolean {
+    const candidateID: string = promotionReward.getPromotionRewardID();
+    if (candidateID === '') {
+      return this.promotionRewardExclusions.includes(promotionReward);
+    }
+    return this.promotionRewardExclusions.some(
+      (held: PromotionReward) => held.getPromotionRewardID() === candidateID,
+    );
+  }
+
+  /**
+   * Called by `PromotionQualifier.addBrand` [model/entity/PromotionQualifier.cfc:L144]:
+   * `if(isNew() or !arguments.brand.hasPromotionQualifier( this ))`.
+   */
+  hasPromotionQualifier(promotionQualifier: PromotionQualifier): boolean {
+    const candidateID: string = promotionQualifier.getPromotionQualifierID();
+    if (candidateID === '') {
+      return this.promotionQualifiers.includes(promotionQualifier);
+    }
+    return this.promotionQualifiers.some(
+      (held: PromotionQualifier) => held.getPromotionQualifierID() === candidateID,
+    );
+  }
+
+  /**
+   * Called by `PromotionQualifier.addExcludedBrand` [model/entity/PromotionQualifier.cfc:L244]:
+   * `if(isNew() or !arguments.brand.hasPromotionQualifierExclusion( this ))`.
+   *
+   * A DIFFERENT LINK TABLE from its sibling above - `SwPromoQualExclBrand` rather than
+   * `SwPromoQualBrand`.
+   */
+  hasPromotionQualifierExclusion(promotionQualifier: PromotionQualifier): boolean {
+    const candidateID: string = promotionQualifier.getPromotionQualifierID();
+    if (candidateID === '') {
+      return this.promotionQualifierExclusions.includes(promotionQualifier);
+    }
+    return this.promotionQualifierExclusions.some(
+      (held: PromotionQualifier) => held.getPromotionQualifierID() === candidateID,
+    );
+  }
+
+  // ============  END: Containment Probes ===============================
 
   // ============= START: Bidirectional Helper Methods ===================
   // [model/entity/Brand.cfc:L87-L155]
@@ -1184,13 +1365,13 @@ export class Brand {
 // ---------------------------------------------------------------------------
 // TEST CONTRACT - LEGACY-EXTENDED (PARITY), NOT NET-NEW.
 //
-// `tests/unit/domain/entities/brand.test.ts` is owed and is authored elsewhere; the test tier is
+// `tests/unit/domain/entities/brand.test.ts` (planned) is owed and is authored elsewhere; the test tier is
 // owned by another agent and `slatwall-ts/tests` holds no entity suite yet. NO test file is created
 // from here.
 //
 // ★ Brand is one of only TWO in-scope entities whose coverage may be labelled PARITY - the other is
 // Product. The remaining sixteen are net-new. That distinction has to be recorded accurately in
-// `tests/traceability/legacyTestMap.ts`, which fails the suite when an in-scope module has no test,
+// `tests/traceability/legacyTestMap.ts` (planned), which fails the suite when an in-scope module has no test,
 // and presenting net-new coverage as parity fails the coverage gate. Regression tests in this
 // project follow the `issue_<ticket#>` convention carried over from meta/tests/unit/IssuesTest.cfc.
 //

@@ -1,5 +1,25 @@
+// ---------------------------------------------------------------------------
+// CHECKPOINT STATUS - FORWARD REFERENCES CARRY THE MARKER `(planned)`
+//
+// The subtree is authored in boundaries, and AAP 0.4.5 makes the authoring
+// order "a compile-order convenience, not a schedule". Commentary in this file
+// therefore names modules of the target layout that DO NOT EXIST YET. Every such
+// name carries `(planned)` at its point of use, meaning exactly: a planned Agent
+// Action Plan target that is ABSENT from the subtree at this checkpoint. Nothing
+// here asserts that any of them exists now, and no behaviour in this file depends
+// on one. The complete set named below, with the role each will play:
+//
+//   src/domain/promotionEngine                       engine type contracts
+//   src/handlers/bootstrap.ts                        composition root (wiring)
+//   src/handlers/productFeedHandler.ts               feed Lambda entrypoint
+//   src/integrations/google/googleFeedRepository.ts  feed query adapter
+//   src/integrations/google/googleFeedService.ts     feed orchestration
+//   src/integrations/google/rssFeedRenderer.ts       RSS 2.0 renderer
+//   tests/unit/integrations/google                   Google adapter unit tier
+// ---------------------------------------------------------------------------
+
 /**
- * slatwall-ts — the product-feed generation contract.
+ * Product-feed generation contract, kept separate from the integration interface.
  *
  * WHAT THIS MODULE IS
  *   The single declared capability behind the Google Merchant Center product
@@ -37,7 +57,7 @@
  *   `generateProductFeed(...)` is one of exactly three budgeted signature
  *   reshapings in the whole plan, and it is attributed to the modules that
  *   actually replace the legacy controller surface: everything under
- *   src/integrations/google/ and src/handlers/productFeedHandler.ts. This port
+ *   src/integrations/google/ and src/handlers/productFeedHandler.ts (planned). This port
  *   merely DECLARES the contract that the reshaping produces. src/domain/ports/
  *   owns zero deliberate divergences, and a fourth reshaping is not available.
  *
@@ -81,7 +101,7 @@
  *   is expressible as a parameter, a property, a boolean toggle, an options
  *   bag, a predicate callback or an override of any kind. A caller cannot
  *   switch a filter off. They are enforced in
- *   src/integrations/google/googleFeedRepository.ts, where the legacy SmartList
+ *   src/integrations/google/googleFeedRepository.ts (planned), where the legacy SmartList
  *   filter chain becomes explicit repository filters.
  *
  * WHY THERE IS NO CRITERIA PARAMETER
@@ -123,7 +143,7 @@
  *   engine, no layout, no view resolution and no client-side asset in the
  *   target.
  *
- *   The legacy view becomes src/integrations/google/rssFeedRenderer.ts, a pure
+ *   The legacy view becomes src/integrations/google/rssFeedRenderer.ts (planned), a pure
  *   string-emitting function with a hand-rolled five-entity XML escaper — no
  *   XML library is added, because the dependency set is closed and a dependency
  *   for one file is unjustified. That renderer preserves the two hardcoded item
@@ -168,7 +188,7 @@
  *   provided. That standard does not apply to this module, because this module
  *   declares interfaces only and contains no query, no query fragment and no
  *   database access of any kind. The obligation TRANSFERS WHOLLY to the module
- *   that does the reading — src/integrations/google/googleFeedRepository.ts for
+ *   that does the reading — src/integrations/google/googleFeedRepository.ts (planned) for
  *   this port, and src/repositories/mysql/ for the six repository ports. It is
  *   recorded here so that the transfer is explicit rather than assumed.
  *
@@ -180,17 +200,28 @@
  *   layout, alongside settingsProvider, currencyConverter, addressZoneEvaluator,
  *   urlTitleGenerator, imageStore and subscriptionTermProvider.
  *
- *   Its only legal implementation home is therefore src/handlers/bootstrap.ts,
- *   the composition root, where it is satisfied by adapting the net-new
- *   orchestration in src/integrations/google/googleFeedService.ts — which in
- *   turn composes src/integrations/google/googleFeedRepository.ts (the
- *   four-filter selection) and src/integrations/google/rssFeedRenderer.ts (the
+ *   Its only legal implementation home is therefore src/handlers/bootstrap.ts (planned),
+ *   the composition root, where it WILL BE satisfied by adapting the net-new
+ *   orchestration in src/integrations/google/googleFeedService.ts (planned) — which in
+ *   turn composes src/integrations/google/googleFeedRepository.ts (planned) (the
+ *   four-filter selection) and src/integrations/google/rssFeedRenderer.ts (planned) (the
  *   pure string-emitting renderer). This is stated so the composition-root
  *   author has unambiguous direction.
  *
- *   It is additionally CONSUMED by the modules under src/integrations/google/
- *   and by the src/handlers/productFeedHandler.ts entrypoint: this port is the
- *   seam between the routed Lambda entrypoint and the feed subsystem.
+ *   It WILL additionally BE CONSUMED by the modules under
+ *   src/integrations/google/ and by the src/handlers/productFeedHandler.ts (planned)
+ *   entrypoint: this port is the seam between the routed Lambda entrypoint and
+ *   the feed subsystem.
+ *
+ *   CHECKPOINT STATUS OF THE FEED PATH, stated once so nothing below is read as
+ *   a capability claim: at this checkpoint the subtree carries THIS CONTRACT,
+ *   src/integrations/integrationInterface.ts and
+ *   src/integrations/google/integration.ts, and NOTHING ELSE of the feed path.
+ *   The composition root, the feed repository, the feed service, the renderer
+ *   and the handler entrypoint are all planned targets that do not exist yet, so
+ *   NO FEED DOCUMENT IS PRODUCED AT THIS CHECKPOINT and no filter is executed.
+ *   Everything stated below is the OBLIGATION this port places on those modules
+ *   when they are authored, never a description of behaviour that runs today.
  *
  *   Six obligations leave this file and are recorded here so none is lost:
  *
@@ -214,10 +245,10 @@
  *        src/integrations/google/integration.ts, not of this port.
  *
  * SIBLING OWNERSHIP — WHAT DOES NOT BELONG HERE
- *   The feed QUERY is src/integrations/google/googleFeedRepository.ts; the
- *   ORCHESTRATION is src/integrations/google/googleFeedService.ts (net-new);
- *   the RENDERING is src/integrations/google/rssFeedRenderer.ts; the ENTRYPOINT
- *   is src/handlers/productFeedHandler.ts; the INTERFACE CONTRACT is
+ *   The feed QUERY is src/integrations/google/googleFeedRepository.ts (planned); the
+ *   ORCHESTRATION is src/integrations/google/googleFeedService.ts (planned) (net-new);
+ *   the RENDERING is src/integrations/google/rssFeedRenderer.ts (planned); the ENTRYPOINT
+ *   is src/handlers/productFeedHandler.ts (planned); the INTERFACE CONTRACT is
  *   src/integrations/integrationInterface.ts together with
  *   src/integrations/google/integration.ts. All six are named in prose only.
  *
@@ -239,7 +270,7 @@
  *   This module has zero import statements. Its one method returns a promise of
  *   a string, and because the criteria set is empty there is no supporting type
  *   to compose, so nothing from src/domain/entities/, src/domain/valueObjects/,
- *   src/domain/views/, src/domain/promotionEngine/ or src/lib/ is needed.
+ *   src/domain/views/, src/domain/promotionEngine/ (planned) or src/lib/ is needed.
  *
  *   The layer boundary makes that more than a coincidence. src/domain/ may
  *   import only from within src/domain/ and from src/lib/; importing
@@ -289,7 +320,7 @@
  *   an empty stub — and none of them touches the Google adapter, the feed
  *   controller, the feed DAO or the feed view. Coverage for this port is
  *   therefore NET-NEW and is presented as such rather than as parity; the
- *   Google adapter's suites live under tests/unit/integrations/google/. No test
+ *   Google adapter's suites live under tests/unit/integrations/google/ (planned). No test
  *   is authored in this file.
  *
  * NO USER RULES WERE PROVIDED
@@ -326,15 +357,11 @@
  *   move it into the interface body: doing so silently deletes it from the
  *   build, and do not duplicate it to compensate.
  */
-// LEGACY-DEFECT [integrationServices/google/model/dao/FeedDAO.cfc:L52-L75]: the feed query is
-// syntactically invalid — a trailing comma in the select list and an INNER JOIN with no ON
-// clause — and it has zero callers anywhere in the repository, because the live path builds
-// its selection with a Hibachi SmartList inside integrationServices/google/controllers/
-// feed.cfc instead. This port therefore declares the contract the LIVE path satisfies and
-// records the DAO as dead, rather than silently authoring a working query and presenting it
-// as a faithful port of code that never ran.
-// Preserved deliberately; do not fix without a product decision.
 
+// LEGACY-DEFECT [integrationServices/google/model/dao/FeedDAO.cfc:L58-L63]: the feed query's select list ends in a trailing comma before `FROM` and its `INNER JOIN` carries no `ON` clause, so the statement cannot execute as written.
+// Preserved deliberately; do not fix without a product decision.
+// LEGACY-NOTE [integrationServices/google/controllers/feed.cfc:L63-L72]: the controller never calls that DAO; it expresses the same filter set through a SKU smart list, and states the quantity bound as `>= 1` where the DAO states `> 0`.
+// Retained to preserve the cited legacy behavior.
 /**
  * The product-feed generation capability.
  *
@@ -346,21 +373,18 @@
  * subsystem API around one legacy action would breach that directive rather
  * than satisfy it.
  *
- * Implemented in src/handlers/bootstrap.ts by adapting
- * src/integrations/google/googleFeedService.ts; consumed by the modules under
- * src/integrations/google/ and by src/handlers/productFeedHandler.ts.
+ * Implemented in src/handlers/bootstrap.ts (planned) by adapting
+ * src/integrations/google/googleFeedService.ts (planned); consumed by the modules under
+ * src/integrations/google/ and by src/handlers/productFeedHandler.ts (planned).
  */
 export interface ProductFeedPort {
   /**
-   * Produce the complete product feed document.
+   * Build the product feed document.
    *
-   * Ported from [integrationServices/google/controllers/feed.cfc:L58], where it
-   * is declared `public void function product(required struct rc)`. The legacy
-   * method returns nothing: it mutates the FW/1 request context by assigning a
-   * Hibachi SmartList of SKUs onto it, and the framework then renders
-   * [integrationServices/google/views/feed/product.cfm], which reads that one
-   * key back. `generateProductFeed` is a deliberate rename of that framework
-   * action name, recorded here so the two surfaces can be diffed.
+   * CFML parity [integrationServices/google/controllers/feed.cfc:L68-L72]: the included SKUs are
+   * fixed rather than chosen by the caller — the SKU is active, its product is active and published,
+   * and the product has quantity available to sell — which is why this takes no arguments. The legacy
+   * controller returns nothing and defers rendering to a view; the document is returned here instead.
    *
    * FOUR SELECTION FILTERS, ALWAYS APPLIED. They are invariants of this
    * contract, not options, and none of them is switchable by a caller:
@@ -373,7 +397,7 @@ export interface ProductFeedPort {
    *                                              [feed.cfc:L72]
    *
    * All four are enforced in
-   * src/integrations/google/googleFeedRepository.ts, which turns the legacy
+   * src/integrations/google/googleFeedRepository.ts (planned), which turns the legacy
    * SmartList filter chain into explicit repository filters.
    *
    * NO PARAMETERS. The legacy action reads nothing back out of the request
@@ -391,7 +415,7 @@ export interface ProductFeedPort {
    * @returns The whole feed as a single RSS 2.0 document string, produced in one
    *   pass, for machine consumption by Google Merchant Center. It is not a user
    *   interface and is never rendered to one. Rendering is owned by
-   *   src/integrations/google/rssFeedRenderer.ts; monetary values inside the
+   *   src/integrations/google/rssFeedRenderer.ts (planned); monetary values inside the
    *   document are presented there through the Money value object, so no
    *   monetary type crosses this boundary.
    */

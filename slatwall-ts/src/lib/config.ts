@@ -144,11 +144,55 @@ const RUNTIME_ENVIRONMENTS = ['development', 'test', 'production'] as const;
 export type RuntimeEnvironment = (typeof RUNTIME_ENVIRONMENTS)[number];
 
 /**
+ * The TLS protocol versions this port is willing to floor at.
+ *
+ * Deliberately only the two current ones. TLS 1.0 and 1.1 are deprecated and are
+ * not offered, so `DB_TLS_MIN_VERSION` cannot be used to weaken the channel below
+ * 1.2 - the same closed-union technique the dialect and environment selectors use,
+ * applied to a security parameter.
+ */
+const TLS_MINIMUM_VERSIONS = ['TLSv1.2', 'TLSv1.3'] as const;
+
+/** One of the two accepted TLS protocol floors. */
+export type TlsMinimumVersion = (typeof TLS_MINIMUM_VERSIONS)[number];
+
+/**
+ * The accepted values of `DB_TLS_MODE`, exactly as
+ * `slatwall-ts/.env.example` documents them.
+ *
+ * Held as a runtime tuple for the same reason as the dialect list: validation
+ * and the text of the failure message are driven by one list and cannot drift
+ * apart.
+ *
+ * There is deliberately no opportunistic value. A mode that negotiates TLS when
+ * it can and continues in plaintext when it cannot is indistinguishable from no
+ * protection, because the party best placed to make the handshake fail is the
+ * on-path actor the transport exists to defeat.
+ */
+const DATABASE_TLS_MODES = ['disabled', 'verify-ca', 'verify-identity'] as const;
+
+/**
+ * How the connection to the MySQL server is protected.
+ *
+ * * `verify-identity` - certificate chain verified against the trusted
+ *   authority AND the certificate's host name matched against `DB_HOST`.
+ * * `verify-ca` - chain verified, host name not checked. Strictly weaker, and
+ *   present only for the structural cases where identity cannot be checked: an
+ *   IP-literal host, or a proxy whose certificate names a different host.
+ * * `disabled` - no TLS. Rejected outright in production; see
+ *   `resolveDatabaseTls`.
+ *
+ * Certificate verification is never disabled in either verifying mode. This
+ * module offers no value that would relax it, and none may be added.
+ */
+export type DatabaseTlsMode = (typeof DATABASE_TLS_MODES)[number];
+
+/**
  * How to reach the MySQL server that holds the existing `Sw*` schema.
  *
- * `password` is deliberately absent from anything this object serializes to;
- * see `toJSON` and the implementing class for how that is guaranteed rather
- * than merely intended.
+ * `password` is deliberately absent from anything this object serializes to, and
+ * `host` and `user` are redacted from it; see `toJSON` and the implementing class
+ * for how each of those is guaranteed rather than merely intended.
  */
 export interface DatabaseConnectionConfig {
   /** Server host name. Required; no default, and never echoed in diagnostics. */
@@ -172,7 +216,11 @@ export interface DatabaseConnectionConfig {
   readonly password: string;
   /**
    * A projection safe to log or serialize: identical to this object except that
-   * the credential is replaced by a redaction marker.
+   * every member documented above as never echoed - the credential, the host and
+   * the account - is replaced by a redaction marker. The port and the schema name
+   * remain visible, because those two are what make a misconfiguration
+   * diagnosable and neither carries a never-echoed promise. See the implementing
+   * class for the three citations that fix which fields fall on which side.
    */
   toJSON(): Readonly<Record<string, string | number>>;
 }
@@ -199,11 +247,72 @@ export interface DatabasePoolConfig {
 }
 
 /**
+ * The resolved transport-security settings for the database connection.
+ *
+ * THREE MEMBERS, FROM TWO INDEPENDENT REVIEWS, AND ALL THREE ARE LOAD-BEARING.
+ * `mode` and `certificateAuthority` state WHETHER the channel is protected and
+ * WHAT it trusts; `minimumVersion` states HOW WEAK the negotiated protocol may
+ * be. Those are orthogonal questions - a `verify-identity` handshake carried over
+ * TLS 1.0 verifies a certificate across a protocol with known weaknesses - so
+ * neither member subsumes the other and both are resolved here.
+ *
+ * The earlier form of this interface carried `enabled: boolean` in place of
+ * `mode`. A boolean cannot express the distinction that matters in practice:
+ * chain verification and host-name verification are separate checks, and the
+ * deployments that legitimately cannot perform the second (an IP-literal host, a
+ * proxy whose certificate names a different host) were previously forced to
+ * choose between full verification they could not satisfy and no TLS at all.
+ * `mode` names that middle position explicitly instead of leaving it to be
+ * reached by turning the flag off, and it is required rather than defaulted, so
+ * the posture is always a decision someone wrote down.
+ *
+ * The absence of a setting is not neutral here: the installed driver resolves an
+ * omitted `ssl` option to `false`
+ * [node_modules/mysql2/lib/connection_config.js:L146-L149], which is plaintext.
+ * Schema continuity is untouched by any of this; no table, column or query
+ * changes.
+ */
+export interface DatabaseTlsConfig {
+  /**
+   * The stated posture. REQUIRED, WITH NO DEFAULT.
+   *
+   * There is no default on purpose. Defaulting to "on" silently downgrades when
+   * the variable is misspelled, and defaulting to "off" is indefensible; making
+   * the value required means a deployment cannot acquire a transport posture by
+   * accident.
+   */
+  readonly mode: DatabaseTlsMode;
+  /**
+   * The authority to trust, as PEM text, or `undefined` to trust the runtime's
+   * built-in public root store.
+   *
+   * Always `undefined` when `mode` is `disabled`, because there is then no
+   * handshake for a trust anchor to participate in.
+   *
+   * Typed `string | undefined` rather than declared optional on purpose:
+   * `exactOptionalPropertyTypes` is on, and an explicitly present `undefined`
+   * states "resolved, and there is none" instead of "possibly not resolved".
+   */
+  readonly certificateAuthority: string | undefined;
+  /**
+   * Lowest acceptable TLS protocol version, defaulting to `TLSv1.2`. Passed to
+   * the driver, which forwards it into the secure context
+   * [node_modules/mysql2/lib/base/connection.js:L389].
+   *
+   * Its type is a closed two-member union, so this cannot floor the channel below
+   * 1.2 whatever the environment says - the floor is enforced by the type, not by
+   * a comparison someone has to remember to write. Ignored when `mode` is
+   * `disabled`, where no protocol is negotiated at all.
+   */
+  readonly minimumVersion: TlsMinimumVersion;
+}
+
+/**
  * The fully resolved, validated and frozen process configuration.
  *
- * The four members mirror the four groups of `slatwall-ts/.env.example` that
- * name this module as their reader, one for one, so that the mapping from the
- * committed contract to the code that consumes it stays auditable.
+ * The members mirror the groups of `slatwall-ts/.env.example` that name this
+ * module as their reader, one for one, so that the mapping from the committed
+ * contract to the code that consumes it stays auditable.
  */
 export interface AppConfig {
   /** Node environment selector. */
@@ -214,6 +323,8 @@ export interface AppConfig {
   readonly dialect: DatabaseDialect;
   /** Connection-pool settings. */
   readonly pool: DatabasePoolConfig;
+  /** Transport-security settings for that connection. */
+  readonly tls: DatabaseTlsConfig;
 }
 
 // --- Defaults ---------------------------------------------------------------
@@ -221,6 +332,9 @@ export interface AppConfig {
 // both are non-secret by nature: the schema name and the registered port. Host,
 // account and credential deliberately have NO default, so a deployment cannot
 // silently start against something other than what was intended.
+
+/** The TLS floor when `DB_TLS_MIN_VERSION` is unset. */
+const DEFAULT_TLS_MINIMUM_VERSION: TlsMinimumVersion = 'TLSv1.2';
 
 /** Verbatim from [config/configApplication.cfm:L2]; the capital S is significant. */
 const DEFAULT_DATABASE_NAME = 'Slatwall';
@@ -267,6 +381,28 @@ const UNSIGNED_INTEGER_PATTERN = /^\d+$/;
  * ever applied to the non-credential variables in the first place.
  */
 const MAX_ECHOED_VALUE_LENGTH = 40;
+
+/**
+ * The opening delimiter every PEM certificate carries.
+ *
+ * Used as a shape check on `DB_TLS_CA`, not as a parse. The runtime's TLS
+ * implementation is the only thing that can truly validate a bundle, and it will
+ * do so at the handshake; the point of checking here is that a value which is
+ * plainly not a certificate - a file path, a base64 blob, a stray comment - is
+ * reported at startup with the variable named, rather than surfacing later as an
+ * opaque handshake failure.
+ */
+const PEM_CERTIFICATE_MARKER = '-----BEGIN CERTIFICATE-----';
+
+/**
+ * Literal two-character `\n` sequences, converted to real newlines in the CA.
+ *
+ * Some deployment tooling cannot carry a multi-line environment value, so the
+ * escaped form is accepted and normalized. Applied ONLY to `DB_TLS_CA`, whose
+ * content is a public certificate; no other variable is rewritten, and the
+ * credential in particular is never transformed at all.
+ */
+const ESCAPED_NEWLINE_PATTERN = /\\n/g;
 
 /** The marker substituted for the credential in every serializable projection. */
 const REDACTED_MARKER = '[REDACTED]';
@@ -577,6 +713,118 @@ function resolveRuntimeEnvironment(
   return canonical;
 }
 
+/**
+ * Resolves `DB_TLS_MODE`, `DB_TLS_MIN_VERSION` and `DB_TLS_CA`, or records why the
+ * process must not start.
+ *
+ * WHY A MODE RATHER THAN A FLAG. The variable this replaced was a boolean, and a
+ * boolean forces two unrelated questions through one answer. Chain verification
+ * and host-name verification are separate checks, and a deployment that cannot
+ * satisfy the second - an IP-literal host, or a proxy whose certificate names a
+ * different host - previously had only one way out of a failing handshake, which
+ * was to turn TLS off entirely. Naming `verify-ca` makes the weaker-but-still-
+ * verified position reachable without abandoning the channel, and it makes the
+ * choice legible in the environment rather than inferable from a failure.
+ *
+ * THERE IS NO DEFAULT AND NO OPPORTUNISTIC MODE. A default of "on" downgrades
+ * silently when the variable is misspelled; a mode that negotiates TLS when it can
+ * and continues in plaintext when it cannot is indistinguishable from no
+ * protection at all, because the party best placed to make the handshake fail is
+ * the on-path actor the transport exists to defeat. An unset variable is therefore
+ * a startup failure, not a fallback.
+ *
+ * THE PROTOCOL FLOOR IS RESOLVED HERE TOO, AND IT IS NOT REDUNDANT WITH THE MODE.
+ * A verified certificate says nothing about the strength of the protocol carrying
+ * it, so `DB_TLS_MIN_VERSION` is read on every verifying path. Its accepted values
+ * are a closed two-member union, which is what makes the floor unfalsifiable: the
+ * type admits no value below TLS 1.2, so there is no comparison for a later edit
+ * to get wrong. It is read even when the mode is `disabled` - one branch below
+ * returns before using it - so that a malformed value is still reported rather
+ * than hidden behind an unrelated setting.
+ *
+ * The CA is read as PEM TEXT, never as a path: this module performs no filesystem
+ * access - it has no imports at all - and the deployed runtime injects environment
+ * variables natively, so a path would have nothing to resolve against. A
+ * certificate authority certificate is public by definition, so it is not treated
+ * as a credential; it is nevertheless never echoed into a failure message, because
+ * reproducing a multi-kilobyte bundle in an error would bury the diagnosis it is
+ * meant to support.
+ */
+function resolveDatabaseTls(
+  source: EnvironmentSource,
+  environment: RuntimeEnvironment | undefined,
+  problems: string[],
+): DatabaseTlsConfig | undefined {
+  const accepted = DATABASE_TLS_MODES.join(', ');
+  const guidance = `Accepted values are ${accepted} (matched without regard to case). verify-identity is recommended; verify-ca omits the host-name check and suits only an IP-literal host or a proxy whose certificate names a different host; disabled is for a loopback development server and is rejected outright when NODE_ENV is production. There is deliberately no default and no opportunistic mode.`;
+
+  const rawMode = readTrimmed(source, 'DB_TLS_MODE');
+  if (rawMode === undefined) {
+    problems.push(`DB_TLS_MODE is required, but was not set (or was blank). ${guidance}`);
+    return undefined;
+  }
+
+  const mode = matchCanonical(DATABASE_TLS_MODES, rawMode);
+  if (mode === undefined) {
+    // Echoed because a transport mode is an enumeration rather than a credential,
+    // and an operator who mistyped it needs to see the typo. The echo is clipped
+    // by `describeReceived` like every other non-credential one.
+    problems.push(
+      `DB_TLS_MODE is not a recognized transport mode; received ${describeReceived(rawMode)}. ${guidance}`,
+    );
+    return undefined;
+  }
+
+  if (mode === 'disabled' && environment === 'production') {
+    problems.push(
+      'DB_TLS_MODE is disabled while NODE_ENV is production, which would send the account, the credential and every statement over an unprotected connection. Set verify-identity, or verify-ca when the host name cannot be checked, and supply the trust anchor through DB_TLS_CA if the authority is not a public root.',
+    );
+    return undefined;
+  }
+
+  const rawMinimumVersion = readTrimmed(source, 'DB_TLS_MIN_VERSION');
+  let minimumVersion: TlsMinimumVersion = DEFAULT_TLS_MINIMUM_VERSION;
+  if (rawMinimumVersion !== undefined) {
+    const canonical = matchCanonical(TLS_MINIMUM_VERSIONS, rawMinimumVersion);
+    if (canonical === undefined) {
+      problems.push(
+        `DB_TLS_MIN_VERSION is not a recognized TLS version; received ${describeReceived(rawMinimumVersion)}. Accepted values are ${TLS_MINIMUM_VERSIONS.join(', ')} (matched without regard to case). TLS 1.0 and 1.1 are deprecated and are deliberately not accepted. Leave it unset to use ${DEFAULT_TLS_MINIMUM_VERSION}.`,
+      );
+      return undefined;
+    }
+    minimumVersion = canonical;
+  }
+
+  const rawCertificateAuthority = readTrimmed(source, 'DB_TLS_CA');
+
+  if (mode === 'disabled') {
+    // Documented in `slatwall-ts/.env.example` as ignored rather than rejected:
+    // there is no handshake for a trust anchor to participate in, and refusing a
+    // leftover value would turn switching a development machine to `disabled` into
+    // a two-variable edit for no security benefit. `minimumVersion` is carried
+    // anyway so the resolved shape has no conditional members.
+    return Object.freeze({ mode, certificateAuthority: undefined, minimumVersion });
+  }
+
+  if (rawCertificateAuthority === undefined) {
+    // Not a problem. An unset anchor means the runtime's built-in public root store
+    // is trusted, which is correct for a managed database whose certificate is
+    // signed by a public authority, and verification remains on either way.
+    return Object.freeze({ mode, certificateAuthority: undefined, minimumVersion });
+  }
+
+  const certificateAuthority = rawCertificateAuthority.replace(ESCAPED_NEWLINE_PATTERN, '\n');
+
+  if (!certificateAuthority.includes(PEM_CERTIFICATE_MARKER)) {
+    problems.push(
+      `DB_TLS_CA does not look like PEM certificate text: no ${PEM_CERTIFICATE_MARKER} delimiter was found. Supply the certificate text itself, not a file path - one or more PEM blocks, optionally with literal \\n sequences in place of newlines. Its value is never echoed here. Leave it blank to trust the runtime's built-in public root store.`,
+    );
+    return undefined;
+  }
+
+  return Object.freeze({ mode, certificateAuthority, minimumVersion });
+}
+
 // --- The connection settings, with a credential that cannot be serialized ---
 
 /**
@@ -632,16 +880,51 @@ class DatabaseConnectionSettings implements DatabaseConnectionConfig {
 
   /**
    * The only serializable projection of these settings, and the reason
-   * `JSON.stringify` of a configuration object is safe to log: the credential is
-   * replaced by a fixed marker that cannot be mistaken for a real value, while
-   * the non-secret members remain visible for diagnosis.
+   * `JSON.stringify` of a configuration object is safe to log: every member this
+   * file promises is never echoed is replaced by a fixed marker that cannot be
+   * mistaken for a real value, while the members that are genuinely useful for
+   * diagnosis remain visible.
+   *
+   * ★ THREE FIELDS ARE REDACTED, NOT ONE, AND THE TWO ADDITIONS ARE NOT A
+   * JUDGEMENT CALL - THEY CLOSE A CONTRADICTION BETWEEN THIS METHOD AND THE
+   * PROMISES MADE ABOUT IT. Redacting only the credential left this projection
+   * disagreeing with three separate statements elsewhere, each of which is a
+   * checkable citation rather than an opinion:
+   *
+   *   * The property documentation directly above `host` and `user` on
+   *     `DatabaseConnectionConfig` says each is "never echoed in diagnostics".
+   *     This method echoed both, so one of the two had to be wrong.
+   *   * `src/lib/logger.ts` independently lists `host` in its never-log key set
+   *     [`CONNECTION_KEYS`], so a caller who logged this projection got a
+   *     redaction marker for a key named `host` from one code path and the real
+   *     hostname from this one - the same field, two answers.
+   *   * `src/repositories/mysql/connection.ts` omits the host from its
+   *     pool-created log line and says in as many words that the account is
+   *     "never passed at all", citing this file's promise as its reason. That
+   *     omission was load-bearing on a promise this method broke.
+   *
+   * WHY `database` AND `port` STAY VISIBLE, which looks like an inconsistency
+   * until the three authorities above are applied mechanically rather than by
+   * feel. Neither is documented as never-echoed on its property above; neither
+   * appears in the logger's never-log key set; and `connection.ts` logs both
+   * DELIBERATELY, in the very line that omits the host. They are also what makes
+   * a misconfiguration diagnosable at all - "connected to the wrong schema" and
+   * "connected to the wrong port" are the two failures this projection exists to
+   * surface. Redacting them would not close a contradiction, it would create a
+   * fresh one with `connection.ts` and blind the diagnostic at the same time.
+   *
+   * They are REDACTED rather than OMITTED, matching the credential's existing
+   * treatment, because a marker proves a deliberate decision was made where a
+   * missing key is indistinguishable from a field nobody remembered to add.
+   * `appConfig.load`'s documented guarantee - redacted, not merely omitted -
+   * therefore stays true of all three.
    */
   toJSON(): Readonly<Record<string, string | number>> {
     return Object.freeze({
-      host: this.host,
+      host: REDACTED_MARKER,
       port: this.port,
       database: this.database,
-      user: this.user,
+      user: REDACTED_MARKER,
       password: REDACTED_MARKER,
     });
   }
@@ -668,6 +951,10 @@ function buildConfiguration(source: EnvironmentSource): AppConfig {
 
   const port = resolveInteger(source, 'DB_PORT', DEFAULT_DATABASE_PORT, 1, MAX_TCP_PORT, problems);
   const database = readTrimmed(source, 'DB_NAME') ?? DEFAULT_DATABASE_NAME;
+
+  // Resolved AFTER the environment, because the production rule inside it reads
+  // the already-validated `environment` rather than re-reading NODE_ENV.
+  const tls = resolveDatabaseTls(source, environment, problems);
 
   // The pool integers are operational knobs. `DB_MAX_IDLE` alone accepts zero,
   // because retaining no idle connection is a legitimate operational choice;
@@ -715,7 +1002,8 @@ function buildConfiguration(source: EnvironmentSource): AppConfig {
     host === undefined ||
     user === undefined ||
     password === undefined ||
-    dialect === undefined
+    dialect === undefined ||
+    tls === undefined
   ) {
     // Unreachable. Each of these resolvers records a problem whenever it returns
     // undefined, and a non-empty problem list has already thrown above. The
@@ -734,6 +1022,7 @@ function buildConfiguration(source: EnvironmentSource): AppConfig {
     ),
     dialect,
     pool: Object.freeze(pool),
+    tls,
   });
 }
 
@@ -793,8 +1082,15 @@ let memoizedConfiguration: AppConfig | undefined;
  *     anything else having loaded correctly. Second, and decisively, the failure
  *     message has to be provably free of credentials; a general-purpose
  *     validator reports the value it received, which is precisely the disclosure
- *     this module must make impossible. The surface is ten variables of three
- *     primitive shapes, so nothing is lost by writing it out.
+ *     this module must make impossible. The surface is fourteen variables of four
+ *     primitive shapes, so nothing is lost by writing it out: five strings
+ *     (`DB_HOST`, `DB_USER`, `DB_PASSWORD`, `DB_NAME`, `DB_TLS_CA`), five
+ *     integers (`DB_PORT`, `DB_CONNECTION_LIMIT`, `DB_CONNECT_TIMEOUT_MS`,
+ *     `DB_IDLE_TIMEOUT_MS`, `DB_MAX_IDLE`) and four closed enumerations
+ *     (`DB_DIALECT`, `NODE_ENV`, `DB_TLS_MODE`, `DB_TLS_MIN_VERSION`). There is
+ *     no boolean in the surface: the transport setting that used to be one is now
+ *     `DB_TLS_MODE`, a required enumeration, because a boolean could not express
+ *     the difference between chain verification and identity verification.
  */
 export const appConfig = Object.freeze({
   /**
@@ -805,8 +1101,10 @@ export const appConfig = Object.freeze({
    *   memoized. Pass an explicit record - which tests do - and the read is
    *   validated fresh and NEVER memoized, so tests are order-independent and
    *   leave no residue in the cache.
-   * @returns The frozen configuration. `JSON.stringify` of it is safe to log:
-   *   the credential is redacted, not merely omitted.
+   * @returns The frozen configuration. `JSON.stringify` of it is safe to log: the
+   *   credential, the host and the account are each redacted rather than merely
+   *   omitted, so the output carries positive evidence of the redaction instead
+   *   of an absence that cannot be told apart from an oversight.
    * @throws An error named `ConfigurationError`, listing every problem found in
    *   one pass, when any required variable is missing or any value is malformed.
    */

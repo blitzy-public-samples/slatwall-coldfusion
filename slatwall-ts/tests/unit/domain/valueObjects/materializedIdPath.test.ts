@@ -1,4 +1,19 @@
 // ---------------------------------------------------------------------------
+// CHECKPOINT STATUS - FORWARD REFERENCES CARRY THE MARKER `(planned)`
+//
+// The subtree is authored in boundaries, and AAP 0.4.5 makes the authoring
+// order "a compile-order convenience, not a schedule". Commentary in this file
+// therefore names modules of the target layout that DO NOT EXIST YET. Every such
+// name carries `(planned)` at its point of use, meaning exactly: a planned Agent
+// Action Plan target that is ABSENT from the subtree at this checkpoint. Nothing
+// here asserts that any of them exists now, and no behaviour in this file depends
+// on one. The complete set named below, with the role each will play:
+//
+//   src/domain/entities/sku.ts           Sku entity
+//   tests/traceability/legacyTestMap.ts  structural coverage map
+// ---------------------------------------------------------------------------
+
+// ---------------------------------------------------------------------------
 // slatwall-ts - unit suite for the comma-delimited materialized ID path
 //
 // SUBJECT
@@ -56,7 +71,7 @@
 //   appears among the test filenames rather than BrandTest.cfc, so the
 //   arrayFind at L64 can never match and nothing is ever removed from the
 //   failing list. Its machine-readable successor,
-//   tests/traceability/legacyTestMap.ts, is a net-new aspiration rather than
+//   tests/traceability/legacyTestMap.ts (planned), is a net-new aspiration rather than
 //   parity; it is not imported here and is not edited here.
 //
 // (b) org/Hibachi/** IS A BOUNDARY TO EXTRACT FROM AND NEVER MODIFY.
@@ -135,11 +150,21 @@ import { describe, expect, it } from 'vitest';
 // sets module and moduleResolution to NodeNext with no `paths`, no `baseUrl`
 // and no allowImportingTsExtensions, so an extensionless specifier does not
 // resolve and a `.ts` specifier does not compile. An upstream folder
-// specification illustrates this import with THREE levels
-// (`../../../src/domain/entities/sku.js`), which resolves to a nonexistent
-// `tests/src/...`; that example is wrong and is not followed. The sibling suite
-// at tests/unit/lib/cfml/list.test.ts independently uses the same four-level
-// form.
+// specification illustrates this import with THREE levels,
+// `../../../src/domain/entities/sku.js` - whose target is (planned) and whose
+// depth is wrong. That specifier resolves to a nonexistent `tests/src/...`, so
+// the example is wrong ON ITS PATH DEPTH and is not followed.
+//
+// Two distinct senses of "does not exist" meet in that sentence and must not be
+// conflated. The three-level specifier names a `tests/src/...` directory that can
+// never exist under any boundary - that is the defect. Its intended target module
+// `src/domain/entities/sku.ts` (planned) is a different thing entirely: a real
+// Agent Action Plan target that is simply ABSENT from the subtree at this
+// checkpoint, exactly as the CHECKPOINT STATUS block at the head of this file
+// records. Only the first is being called out as wrong.
+//
+// The sibling suite at tests/unit/lib/cfml/list.test.ts independently uses the
+// same four-level form.
 import * as materializedIdPathModule from '../../../../src/domain/valueObjects/materializedIdPath.js';
 import type {
   ParentNodeAccessor,
@@ -402,25 +427,38 @@ describe('buildIdPathList: the six properties of the legacy walk', () => {
     expect(idPathContainsId(buildIdPathList(root, readId, readParent), 'root')).toBe(true);
   });
 
-  it('property 5 - carries NO CYCLE GUARD, so every hierarchy here is acyclic', () => {
-    // CFML parity [org/Hibachi/HibachiEntity.cfc:L314-L321]: the legacy loop
-    // carries no visited set and no iteration bound whatsoever. The shipped
-    // module reproduces that deliberately and ships NO bounded-iteration guard,
-    // which was confirmed by reading it in full rather than assumed.
+  it('property 5 - TERMINATES ON THE FIRST ABSENT PARENT, with nothing interposed', () => {
+    // WHAT THIS TEST PROVES, AND WHAT IT DOES NOT. Stated plainly, because the
+    // distinction is easy to blur and the honest scope is narrower than the
+    // property's legacy label suggests.
+    //
+    // NOT PROVEN HERE: that the shipped module carries no cycle guard. No walk
+    // over a well-founded hierarchy can establish that. A module holding a
+    // visited set, or a generous iteration cap, would traverse the chains below
+    // identically and pass every assertion in this block. That absence is
+    // SOURCE-INSPECTION EVIDENCE and is recorded as such: the shipped
+    // `buildIdPathList` was read in full and its loop holds no visited set, no
+    // counter and no bound - its only exit is the parent-absent test - matching
+    // the legacy loop at [org/Hibachi/HibachiEntity.cfc:L314-L321], which
+    // likewise carries neither.
+    //
+    // PROVEN HERE: the property that makes that absence safe for every input a
+    // faithful port can produce - the walk terminates on the FIRST node whose
+    // parent reads absent, visits each ancestor exactly once, and completes for
+    // a well-founded chain of any depth. That IS assertable, and it is asserted
+    // twice: at the shallow depth the rest of this suite uses, and at a depth
+    // that no bounded-iteration cap could accommodate silently.
     //
     // JUDGMENT CALL: no guard is added here, none is requested, and no cyclic
     // hierarchy is constructed - a cycle would not fail this suite, it would
-    // hang it. Adding a guard would also be an unrequested behavioural change
-    // to a value that decides which promotion rewards apply and which
-    // price-group rate wins. Were one ever judged necessary it would have to
-    // THROW rather than truncate, because a silently shortened path changes
-    // money; and it would be a divergence to declare, not an improvement to
-    // slip in.
-    //
-    // What IS assertable is the property that makes the absent guard safe for
-    // every input a faithful port can produce: the walk terminates on the
-    // FIRST node whose parent reads absent, so a well-founded chain always
-    // completes. The node type above makes any other kind unconstructible.
+    // hang it, and `HierarchyNode.parent` is readonly and assignable only from
+    // an already-constructed node, so a cycle is unconstructible rather than
+    // merely discouraged. Adding a guard would also be an unrequested
+    // behavioural change to a value that decides which promotion rewards apply
+    // and which price-group rate wins. Were one ever judged necessary it would
+    // have to THROW rather than truncate, because a silently shortened path
+    // changes money; and it would be a divergence to declare, not an
+    // improvement to slip in.
     const root: HierarchyNode = { id: 'root', parent: null };
     const mid: HierarchyNode = { id: 'mid', parent: root };
     const leaf: HierarchyNode = { id: 'leaf', parent: mid };
@@ -432,19 +470,103 @@ describe('buildIdPathList: the six properties of the legacy walk', () => {
     );
 
     // Three nodes, three iterations, and not one more: the walk visits each
-    // ancestor exactly once and stops. An unbounded revisit would show up here
-    // as a count above three.
+    // ancestor exactly once and stops. A revisit would show up here as a count
+    // above three, and the parent read count matching it shows the parent test
+    // is what ends the walk rather than anything counting alongside it.
     expect(probe.idReadCount()).toBe(3);
+    expect(probe.parentReadCount()).toBe(3);
   });
 
-  it('property 6 - always yields AT LEAST ONE element', () => {
+  it('property 5 - completes a chain far deeper than any cap would allow', () => {
+    // THE STRUCTURAL TRIPWIRE for the guard-absence claim above. The test
+    // immediately preceding this one cannot fail if a bounded-iteration cap were
+    // introduced, because three iterations sit under any plausible bound. This
+    // one is built to fail in exactly that case.
+    //
+    // A cap can only be enforced two ways, and this test defeats both. If it
+    // TRUNCATED, the element count and the first element would both change - the
+    // path would no longer start at the true root, which is precisely the read
+    // that `getBaseProductType()` depends on. If it THREW, the call would not
+    // return at all. Either way this test goes red, which is the alarm wanted:
+    // a cap is a declarable divergence, not a silent hardening.
+    //
+    // Five hundred and twelve levels is chosen to sit comfortably above any cap
+    // a well-meaning contributor would reach for while staying trivially cheap -
+    // the whole walk is 512 identifier reads and 512 parent reads. It is not a
+    // performance assertion and no timing of any kind is claimed here; the
+    // numbers below are counts, not budgets.
+    const CHAIN_DEPTH = 512;
+
+    // Built root-upward so each node's readonly parent is an already-constructed
+    // node. `deepest` ends up holding the leaf of a well-founded chain.
+    let deepest: HierarchyNode = { id: 'n0', parent: null };
+    for (let level = 1; level < CHAIN_DEPTH; level += 1) {
+      deepest = { id: `n${String(level)}`, parent: deepest };
+    }
+
+    const probe = createWalkProbe();
+    const deepPath = buildIdPathList(deepest, probe.readIdCounted, probe.readParentCounted);
+
+    // Every level present, exactly once, in root-first order.
+    expect(listLen(deepPath)).toBe(CHAIN_DEPTH);
+    expect(listGetAt(deepPath, 1)).toBe('n0');
+    expect(listGetAt(deepPath, CHAIN_DEPTH)).toBe(`n${String(CHAIN_DEPTH - 1)}`);
+
+    // One identifier read and one parent read per level, and not one more.
+    expect(probe.idReadCount()).toBe(CHAIN_DEPTH);
+    expect(probe.parentReadCount()).toBe(CHAIN_DEPTH);
+  });
+
+  it('property 6 - ALWAYS COLLECTS THE STARTING NODE, before any parent is tested', () => {
     // CFML parity [org/Hibachi/HibachiEntity.cfc:L314, L321]: it is a do/while,
     // so the body runs once before the condition is ever evaluated. A root with
-    // no parent still produces its own identifier.
+    // no parent still has its own identifier collected.
+    //
+    // THE INVARIANT IS ABOUT THE WALK, NOT ABOUT THE EMITTED LIST, and the two
+    // are not the same claim. "The starting node's identifier is always
+    // collected" holds for every input without exception. "The emitted path
+    // always holds at least one element" does NOT: an identifier that is itself
+    // the empty string is collected and then contributes no element, because
+    // CFML list semantics ignore empty elements. That case is real, reachable,
+    // and asserted in `contributes no element for an EMPTY identifier` further
+    // down this file - go and read the two together. Framing property 6 as the
+    // stronger claim would put this test in direct contradiction with that one.
+    //
+    // So what is pinned here is the precise consequence: ONE iteration minimum,
+    // and therefore at least one element WHENEVER THE IDENTIFIER IS NON-EMPTY.
+    //
+    // JUDGMENT CALL - the shipped module's PROSE over-claims this, and the
+    // over-claim is recorded here rather than edited away, because nothing under
+    // `src/**` is created, renamed or edited in this checkpoint. Four places say
+    // it too strongly: the header property table calls the property "never
+    // empty" and concludes "the result therefore always holds at least one
+    // element"; the `buildIdPathList` docstring summary ends "no cycle guard,
+    // never empty"; an in-body comment calls it "both the 'includes self' and
+    // the 'never empty' property"; and `getRootIdFromIdPath` reasons from
+    // "`buildIdPathList` can never produce an empty path".
+    //
+    // The module's BEHAVIOUR is not affected and needs no change. Its
+    // empty-identifier result is `''`, which is correct for a brand-new entity,
+    // and `getRootIdFromIdPath('')` already answers `''` without throwing - its
+    // own `@returns` documents that fallback, so the code handles the case its
+    // prose says cannot arise. This is a documentation imprecision, not a
+    // defect, and the suite asserts the precise invariant so no reader has to
+    // choose between two conflicting tests.
     const root: HierarchyNode = { id: 'root', parent: null };
+    const probe = createWalkProbe();
 
-    expect(buildIdPathList(root, readId, readParent)).toBe('root');
+    expect(buildIdPathList(root, probe.readIdCounted, probe.readParentCounted)).toBe('root');
+
+    // The body ran once even though there was never a parent to climb to. This
+    // is the do/while, observed rather than asserted from the shape of the
+    // result: a while-loop port would have read the identifier zero times.
+    expect(probe.idReadCount()).toBe(1);
+    expect(probe.parentReadCount()).toBe(1);
+
+    // And the consequence, stated with its condition attached: non-empty
+    // identifier in, at least one element out.
     expect(listLen(buildIdPathList(root, readId, readParent))).toBe(1);
+    expect(listLen(buildIdPathList({ id: 'a', parent: root }, readId, readParent))).toBe(2);
   });
 });
 
@@ -552,12 +674,37 @@ describe('buildIdPathList: identifiers are carried through, never rewritten', ()
     // at meta/tests/unit/entity/SlatwallEntityTestBase.cfc:L66
     // (`assert(!len(variables.entity.getPrimaryIDValue()));`). Pinning what the
     // target does with it beats leaving it undefined.
+    //
+    // READ THIS WITH PROPERTY 6, which is its counterpart rather than its
+    // contradiction. Property 6 pins that the walk ALWAYS COLLECTS the starting
+    // node's identifier - one iteration minimum, unconditionally. This test pins
+    // what happens to that collected identifier when it is the empty string: it
+    // contributes no ELEMENT, so a single-node walk over an empty identifier
+    // emits `''` and an element count of zero. Both are true at once because
+    // "collected" and "emitted as an element" are different steps, and the
+    // property-6 comment carries the same cross-reference in the other
+    // direction. The shipped module's prose calls the property "never empty",
+    // which over-claims exactly this input; the imprecision is recorded at
+    // property 6 and nothing under `src/**` is edited for it.
     const root: HierarchyNode = { id: '', parent: null };
     const leaf: HierarchyNode = { id: 'leaf', parent: root };
 
     expect(buildIdPathList(leaf, readId, readParent)).toBe('leaf');
     expect(buildIdPathList(root, readId, readParent)).toBe('');
     expect(listLen(buildIdPathList(root, readId, readParent))).toBe(0);
+
+    // The walk still ran its body once for the empty-identifier root - the
+    // element vanished at the accumulator, not at the loop - which is what makes
+    // this test and property 6 describe one behaviour rather than two.
+    const probe = createWalkProbe();
+
+    expect(buildIdPathList(root, probe.readIdCounted, probe.readParentCounted)).toBe('');
+    expect(probe.idReadCount()).toBe(1);
+
+    // And the downstream read is total for this value rather than exceptional:
+    // the root extractor answers `''` instead of throwing, which is the
+    // behaviour its own documented fallback promises.
+    expect(getRootIdFromIdPath(buildIdPathList(root, readId, readParent))).toBe('');
   });
 });
 
@@ -897,25 +1044,96 @@ describe('idPathContainsAnyId: match the path against a candidate list', () => {
     expect(idPathContainsAnyId('', '')).toBe(false);
   });
 
-  it('preserves the legacy ORIENTATION: walk the path, search the candidates', () => {
-    // CFML parity [model/service/PromotionService.cfc:L864-L865]: the legacy
-    // loop walks the PATH with a 1-based index bounded by its element count,
-    // and searches the CANDIDATE LIST for each element - not the other way
-    // round. Reproduced exactly, so a reviewer can put the two side by side.
+  it('maps onto the legacy loop shape, and agrees with it element for element', () => {
+    // WHAT THIS TEST CLAIMS, corrected from what its previous name claimed.
     //
-    // The orientation is observable rather than cosmetic, because the two sides
-    // are asymmetric in the presence of duplicates and differing lengths. Here
-    // the path holds three elements and the candidate list one; the match is
-    // found by looking each path element up in the candidate list.
-    expect(idPathContainsAnyId('root,mid,leaf', 'mid')).toBe(true);
+    // The legacy orientation is real and it is cited: at
+    // [model/service/PromotionService.cfc:L864-L865] the loop walks the PATH
+    // with a 1-based index bounded by its element count and searches the
+    // CANDIDATE LIST for each element, not the other way round. The shipped
+    // function reproduces that shape, which a reviewer can confirm by reading
+    // the two side by side.
+    //
+    // BUT NO ASSERTION IN THIS SUITE CAN PROVE THE ORIENTATION, and pretending
+    // otherwise would be the dishonest part. The function answers a single
+    // boolean, and the question it answers - "do these two lists share an
+    // element?" - is SET INTERSECTION, which is symmetric. An implementation
+    // that walked the candidates and searched the path would return the same
+    // boolean for every input, including every input below. Orientation is
+    // therefore a SOURCE MAPPING, established by reading, and the claim is
+    // narrowed here to what is actually assertable: BEHAVIOURAL EQUIVALENCE with
+    // the legacy loop spelled out against the primitives, over inputs chosen so
+    // that a wrong bound or a wrong index base WOULD diverge.
+    //
+    // The inputs are deliberately asymmetric in length and in duplicates,
+    // because those are the only dimensions along which two orientations could
+    // conceivably differ - and the swapped pairs below demonstrate, rather than
+    // assert away, that they do not.
 
-    // The same call spelled out against the primitives, in the same order and
-    // with the same bound, which is what pins the orientation.
+    /**
+     * The legacy loop written out: walk the path by 1-based position, bounded by
+     * its element count, and search the candidate list for each element.
+     *
+     * A pure local closure holding no state, so it cannot leak between tests.
+     * It is the comparison subject, never a substitute implementation.
+     */
+    const legacyLoopSpelledOut = (path: string, candidates: string): boolean => {
+      for (let position = 1; position <= listLen(path); position += 1) {
+        if (listFindNoCase(candidates, listGetAt(path, position)) > 0) {
+          return true;
+        }
+      }
+
+      return false;
+    };
+
+    interface IntersectionCase {
+      readonly path: string;
+      readonly candidates: string;
+      readonly expected: boolean;
+    }
+
+    const cases: readonly IntersectionCase[] = [
+      // Long path, single candidate - the shape every legacy site actually has.
+      { path: 'root,mid,leaf', candidates: 'mid', expected: true },
+      // The SAME question with the two sides swapped. Same answer, which is the
+      // symmetry that makes orientation unassertable through the boolean.
+      { path: 'mid', candidates: 'root,mid,leaf', expected: true },
+      // No overlap at all, both lengths above one.
+      { path: 'root,mid,leaf', candidates: 'alpha,beta', expected: false },
+      // Duplicates on the PATH side only.
+      { path: 'root,root,root', candidates: 'root', expected: true },
+      // The same duplicates moved to the CANDIDATE side.
+      { path: 'root', candidates: 'root,root,root', expected: true },
+      // A match at the LAST position, which is where an off-by-one bound
+      // (`position < listLen(path)`) would drop the only overlapping element.
+      { path: 'a,b,c,d', candidates: 'd,d', expected: true },
+      // Each side empty in turn - the two total cases.
+      { path: '', candidates: 'root', expected: false },
+      { path: 'root', candidates: '', expected: false },
+      // Case folding, which must survive the mapping unchanged.
+      { path: 'ROOT,MID', candidates: 'mid', expected: true },
+    ];
+
+    // Both subjects asserted against the SAME expected column, rather than only
+    // against each other: agreeing with a spelled-out loop proves nothing if the
+    // loop itself is wrong.
+    expect(
+      cases.map(({ path, candidates }) => idPathContainsAnyId(path, candidates)),
+    ).toStrictEqual(cases.map(({ expected }) => expected));
+    expect(
+      cases.map(({ path, candidates }) => legacyLoopSpelledOut(path, candidates)),
+    ).toStrictEqual(cases.map(({ expected }) => expected));
+
+    // And the per-position reads, which pin the 1-BASED index and the
+    // element-count bound directly rather than through an aggregate.
     const path = 'root,mid,leaf';
     const candidates = 'mid';
+
     expect(listLen(path)).toBe(3);
     expect(listFindNoCase(candidates, listGetAt(path, 2)) > 0).toBe(true);
     expect(listFindNoCase(candidates, listGetAt(path, 1)) > 0).toBe(false);
+    expect(listFindNoCase(candidates, listGetAt(path, 3)) > 0).toBe(false);
   });
 
   it('is CASE-INSENSITIVE on both the path side and the candidate side', () => {
@@ -1152,15 +1370,84 @@ describe('the exported surface is closed', () => {
     expect(exportedNames).not.toContain('quoteIdPath');
   });
 
-  it('exports only functions, so no module-scope value is shared between calls', () => {
-    // A stateless value object cannot leak one caller's path into another's.
-    // Anything other than a function here would be a binding capable of
-    // carrying state, which is the shape this assertion rules out.
+  it('closes its export surface to functions only, so no EXPORTED binding can carry state', () => {
+    // SCOPED TO WHAT THE EXPORT SHAPE ACTUALLY GUARANTEES. Every export being a
+    // function rules out a directly reachable stateful binding - an exported
+    // object, array, `Map`, or mutable counter that a caller could read or write.
+    // That is worth pinning, and it is all this assertion establishes.
+    //
+    // IT DOES NOT establish the absence of module-PRIVATE mutable state. A
+    // module-level cache behind a function export would satisfy this shape
+    // exactly, and on a warm Lambda container it would outlive an invocation and
+    // let one request observe another's path - the same hazard that makes four
+    // legacy component-level caches request-scoped in this port. Behavioural
+    // isolation is therefore asserted separately, in the test immediately below
+    // and in `holds no memo: identical calls recompute and still agree`, rather
+    // than inferred from the export shape here.
     const everyExportIsAFunction = Object.values(materializedIdPathModule).every(
       (exported) => typeof exported === 'function',
     );
 
     expect(everyExportIsAFunction).toBe(true);
+  });
+
+  it('keeps two hierarchies isolated when their calls are INTERLEAVED', () => {
+    // The behavioural counterpart to the export-shape assertion above, and the
+    // assertion that would actually catch a private cache. Two unrelated
+    // hierarchies are walked in alternation, and the read side is interleaved
+    // with them, so a cache keyed on nothing - or keyed on the wrong thing -
+    // would surface as one hierarchy's answer appearing in the other's.
+    //
+    // This stands in for the cross-request hazard the port takes seriously: on a
+    // warm container two invocations share a module instance, and the second
+    // walk here plays the part of the second invocation.
+    const rootA: HierarchyNode = { id: 'a-root', parent: null };
+    const leafA: HierarchyNode = { id: 'a-leaf', parent: rootA };
+    const rootB: HierarchyNode = { id: 'b-root', parent: null };
+    const leafB: HierarchyNode = { id: 'b-leaf', parent: rootB };
+
+    const firstA = buildIdPathList(leafA, readId, readParent);
+    const firstB = buildIdPathList(leafB, readId, readParent);
+    const secondA = buildIdPathList(leafA, readId, readParent);
+    const secondB = buildIdPathList(leafB, readId, readParent);
+
+    expect([firstA, firstB, secondA, secondB]).toStrictEqual([
+      'a-root,a-leaf',
+      'b-root,b-leaf',
+      'a-root,a-leaf',
+      'b-root,b-leaf',
+    ]);
+
+    // The read side, interleaved as well: each answer follows its own path and
+    // never the one computed in between.
+    expect(getRootIdFromIdPath(firstA)).toBe('a-root');
+    expect(getRootIdFromIdPath(firstB)).toBe('b-root');
+    expect(idPathContainsId(firstA, 'b-leaf')).toBe(false);
+    expect(idPathContainsId(firstB, 'a-leaf')).toBe(false);
+    expect(idPathContainsAnyId(firstA, 'b-root,b-leaf')).toBe(false);
+    expect(idPathContainsAnyId(firstB, 'a-root,a-leaf')).toBe(false);
+
+    // The pass-through read is interleaved too, with the stored branch and the
+    // computed branch alternating, so neither can be answering from a value the
+    // other left behind.
+    expect(resolveIdPath(firstA, () => firstB)).toBe('a-root,a-leaf');
+    expect(resolveIdPath(null, () => firstB)).toBe('b-root,b-leaf');
+    expect(resolveIdPath(firstB, () => firstA)).toBe('b-root,b-leaf');
+    expect(resolveIdPath(undefined, () => firstA)).toBe('a-root,a-leaf');
+
+    // The sharpest probe available for per-node interning: the SAME node object
+    // is walked twice with an accessor that answers differently each time. A
+    // module caching by node identity would replay the first answer.
+    const shared: HierarchyNode = { id: 'unused-by-this-accessor', parent: null };
+    let generation = 0;
+    const readGenerationalId: PrimaryIdAccessor<HierarchyNode> = () => {
+      generation += 1;
+      return `gen${String(generation)}`;
+    };
+
+    expect(buildIdPathList(shared, readGenerationalId, readParent)).toBe('gen1');
+    expect(buildIdPathList(shared, readGenerationalId, readParent)).toBe('gen2');
+    expect(generation).toBe(2);
   });
 
   it('holds no memo: identical calls recompute and still agree', () => {

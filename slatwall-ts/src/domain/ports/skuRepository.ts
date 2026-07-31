@@ -1,4 +1,21 @@
 // ---------------------------------------------------------------------------
+// CHECKPOINT STATUS - FORWARD REFERENCES CARRY THE MARKER `(planned)`
+//
+// The subtree is authored in boundaries, and AAP 0.4.5 makes the authoring
+// order "a compile-order convenience, not a schedule". Commentary in this file
+// therefore names modules of the target layout that DO NOT EXIST YET. Every such
+// name carries `(planned)` at its point of use, meaning exactly: a planned Agent
+// Action Plan target that is ABSENT from the subtree at this checkpoint. Nothing
+// here asserts that any of them exists now, and no behaviour in this file depends
+// on one. The complete set named below, with the role each will play:
+//
+//   src/handlers/bootstrap.ts                     composition root (wiring)
+//   src/repositories/mysql/mysqlSkuRepository.ts  MySQL SKU adapter
+//   src/services/skuService.ts                    ported SkuService
+//   tests/integration/repositories                repository integration tier
+// ---------------------------------------------------------------------------
+
+// ---------------------------------------------------------------------------
 // slatwall-ts - SKU repository port
 //
 // PURPOSE
@@ -32,7 +49,7 @@
 //            repository, and its guard condition is INVERTED
 //            (SkuDAO.cfc:L222-L226 deletes the cache key only when that key is
 //            absent), so it can never fire. It is an implementation detail of
-//            src/repositories/mysql/mysqlSkuRepository.ts, not a contract.
+//            src/repositories/mysql/mysqlSkuRepository.ts (planned), not a contract.
 //     = 6  ported DAO read methods
 //     + 1  one persistence method (see `saveSku` below)
 //     = 7  METHODS. LOCKED.
@@ -52,7 +69,7 @@
 //   here would invent a capability the legacy system does not have. The
 //   LEGACY-DEFECT marker immediately above the interface carries the full
 //   finding, and the consuming service method is ported as a throwing path in
-//   `src/services/skuService.ts`.
+//   `src/services/skuService.ts` (planned).
 //
 // WHAT SURVIVES THE EMIT, MEASURED RATHER THAN ASSUMED
 //   `tsconfig.build.json` sets `removeComments: false`, so the annotations in
@@ -122,7 +139,10 @@
 //   SKUs for a configured product, which is why it is called out twice.
 //
 // THE OPTION-GROUP `ORDER BY` IS PART OF THE CONTRACT
-//   `getSortedProductSkusID` (SkuDAO.cfc:L172-L220) groups by SKU and orders
+//   `getSortedProductSkusID` (SkuDAO.cfc:L172-L202 - the `<cffunction>` opens at
+//   L172 and closes at L202; L204-L220 is the separate private
+//   `getNextOptionGroupSortOrder` and L222-L226 is `clearNextOptionGroupSortOrder`,
+//   neither of which is part of this method) groups by SKU and orders
 //   by a sum in which each option's sort order is scaled by a power of ten
 //   whose exponent is derived from its option group's sort order. The option
 //   GROUP's sort order therefore sets the place value (the significance) and
@@ -144,7 +164,7 @@
 //   There is no ORM in the target, so associations are MATERIALIZED at the
 //   repository boundary and laziness is NOT simulated. The fetch shape becomes
 //   an explicit, documented decision made at each repository method inside
-//   `src/repositories/mysql/mysqlSkuRepository.ts`, which also owns the
+//   `src/repositories/mysql/mysqlSkuRepository.ts` (planned), which also owns the
 //   row-to-entity factory, port injection into the constructed entities, and
 //   the association materialization itself.
 //
@@ -229,7 +249,7 @@
 //   (L54), `subscriptionService` (L55) and `contentService` (L56). The DI/1
 //   convention scan that resolved them is replaced by constructor injection:
 //   `property name="skuDAO";` becomes a constructor parameter typed to THIS
-//   interface, wired once in `src/handlers/bootstrap.ts`. No runtime scan, no
+//   interface, wired once in `src/handlers/bootstrap.ts` (planned). No runtime scan, no
 //   service locator.
 //
 // SCHEMA CONTINUITY
@@ -259,7 +279,7 @@
 //   is authored separately and none of it lives in this file.
 //
 // WHO IMPLEMENTS THIS PORT
-//   `src/repositories/mysql/mysqlSkuRepository.ts`. `src/handlers/bootstrap.ts`
+//   `src/repositories/mysql/mysqlSkuRepository.ts` (planned). `src/handlers/bootstrap.ts` (planned)
 //   WIRES the port to that adapter; it does not implement it. Five obligations
 //   transfer to the adapter:
 //
@@ -268,7 +288,7 @@
 //     2. The AND-of-EXISTS semantics of SkuDAO.cfc:L107-L128 preserved exactly.
 //        The extracted SQL lives in
 //        `src/repositories/mysql/sql/skusBySelectedOptions.sql.ts`.
-//     3. The option-group ordering of SkuDAO.cfc:L172-L220 preserved verbatim.
+//     3. The option-group ordering of SkuDAO.cfc:L172-L202 preserved verbatim.
 //        The extracted SQL lives in
 //        `src/repositories/mysql/sql/sortedProductSkus.sql.ts`.
 //     4. The row-to-entity factory, port injection and association
@@ -295,51 +315,6 @@
 //   none exists in the source to preserve.
 // ---------------------------------------------------------------------------
 
-// Exactly two imports, both type-only, both siblings inside `src/domain/**`.
-//
-// `src/domain/entities/` is not authored yet, so these two specifiers do not
-// resolve today and `tsc` reports them as unresolved modules. That is EXPECTED
-// AND SANCTIONED: the internal authoring order of this migration is a
-// compile-order convenience, not a schedule, and it carries no milestone. Do
-// NOT "fix" the diagnostic by deleting an import, by declaring a local `Sku` or
-// `Product`, or by relaxing `tsconfig.json`. The specifiers and the exported
-// class names are already fixed - `../entities/sku.js` exports `Sku` and
-// `../entities/product.js` exports `Product` - so authoring them now is what
-// makes the entity sibling land into a contract that already exists.
-//
-// EXACTLY THREE DIAGNOSTICS FOLLOW FROM THAT, AND ALL THREE ARE THE SAME ROOT
-// CAUSE. Two are the expected TS2307 "cannot find module" errors on the lines
-// below. The third is less obvious and is recorded here so nobody mistakes it
-// for a defect in this file or tries to silence it: because `Sku` currently
-// resolves to an ERROR type, TypeScript treats it as `any`, which makes the
-// `| undefined` on `getSkuBySkuCode` look redundant and trips
-// `@typescript-eslint/no-redundant-type-constituents` at that signature. It is
-// an artifact of the missing module, not of the union - and the union is
-// load-bearing, because a missing SKU must surface as `undefined` rather than as
-// a substituted default.
-//
-// This was verified by construction rather than argued: a BYTE-IDENTICAL copy of
-// this file, placed where the full `src/domain/**` ruleset applies and where the
-// two entity modules do resolve, typechecks with zero diagnostics and lints with
-// zero errors. All three diagnostics therefore disappear the moment the entity
-// sibling lands, and nothing in this file needs to change when it does.
-//
-// DO NOT paper over the third one with an `eslint-disable` comment. Beyond the
-// project's standing ban on suppression comments, `eslint.config.mjs` sets
-// `reportUnusedDisableDirectives: 'error'`, so such a directive would become
-// unused - and therefore a NEW lint error - the instant the entity modules
-// appear. Silencing it today would plant a guaranteed future build break in a
-// file whose published names are meant to be stable.
-//
-// Ports may be authored before entities because the dependency is asymmetric.
-// An entity BODY calls port methods, so entities need the full signatures from
-// this folder; a port needs only the type NAME and module path from an entity.
-// This file returns `Sku` and accepts `Product` and never invokes a member of
-// either. The resulting ports-to-entities reference cycle therefore exists
-// purely in the type graph and never at runtime: `import type` is fully erased
-// at emit, these port files declare interfaces only, and the project-wide
-// no-barrel policy means no index module can force eager evaluation of the
-// cycle. Never turn either of these into a value import.
 import type { Sku } from '../entities/sku.js';
 import type { Product } from '../entities/product.js';
 
@@ -354,12 +329,11 @@ import type { Product } from '../entities/product.js';
 // is not inherited from the framework base; and neither org/Hibachi/HibachiDAO.cfc (266 lines) nor
 // model/dao/HibachiDAO.cfc (55 lines) declares onMissingMethod, so there is no dynamic-dispatch
 // fallback that could rescue it. Deliberately NOT declared on this port; the consuming service
-// method is ported as a throwing path in src/services/skuService.ts, not invented. Declaring it
+// method is ported as a throwing path in src/services/skuService.ts (planned), not invented. Declaring it
 // here - or supplying a stock-deletability method under another name, or a stub returning false -
 // would silently repair behaviour and invent a capability the legacy system does not have, and
 // this port is budgeted ZERO deliberate divergences.
 // Preserved deliberately; do not fix without a product decision.
-
 /**
  * The SKU repository port.
  *
@@ -386,299 +360,84 @@ import type { Product } from '../entities/product.js';
  * method under another name, or a stub returning `false` - would silently repair
  * behaviour and invent a capability the legacy system does not have. The
  * consuming service method is ported as a throwing path in
- * `src/services/skuService.ts` instead. The LEGACY-DEFECT marker in the source
+ * `src/services/skuService.ts` (planned) instead. The LEGACY-DEFECT marker in the source
  * immediately above this declaration carries the same finding in the project's
  * uniform marker shape; this paragraph exists so the omission is also visible in
  * the emitted declaration, which is what a consumer of this port reads.
  */
 export interface SkuRepository {
+  // CFML parity [model/dao/SkuDAO.cfc:L53-L98]: the SKU identifier is preferred when both are
+  // supplied, and existence is tested by ten `EXISTS` clauses joined with OR — order items,
+  // inventory, delivery and receiving items, physical counts, both sides of a stock adjustment,
+  // stock holds and vendor order items.
   /**
-   * Whether any transactional record anywhere in the system references the
-   * SKU, or any SKU of the product.
+   * Whether any transaction record references the SKU, or any SKU of the product.
    *
-   * Legacy: `SkuDAO.cfc:L53`, `<cffunction>` TAG syntax with
-   * `returntype="boolean"`. Its two arguments are declared at
-   * `SkuDAO.cfc:L54-L55` with NEITHER `required` NOR a type, so both are
-   * optional here, in the legacy order.
-   *
-   * Verified semantics, all of which the adapter must reproduce:
-   *
-   *  * `skuID` takes precedence. The legacy body tests for the presence of a
-   *    non-null `skuID` first and scopes the count to that single SKU; only
-   *    when that test fails does it fall back to scoping by `productID`
-   *    (`SkuDAO.cfc:L59-L63`, and again at `SkuDAO.cfc:L87-L91` when binding).
-   *  * The reference test is a disjunction over ten separate transactional
-   *    relationships - order items, inventory records, order delivery items,
-   *    physical count items, stock adjustment delivery items, stock adjustment
-   *    items reached through both their source and their destination stock,
-   *    stock holds, stock receiver items, and vendor order items
-   *    (`SkuDAO.cfc:L65-L85`). ANY one of them existing is enough.
-   *  * The legacy body counts matching SKUs and returns `false` only when that
-   *    count is zero (`SkuDAO.cfc:L93-L97`), so the flag answers "is this SKU
-   *    or product entangled in a transaction", not "how many".
-   *
-   * Passing neither argument reaches the `productID` branch with nothing to
-   * bind, which the legacy engine rejects at execution time. Both parameters
-   * stay optional for signature parity, so the adapter must decide that case
-   * explicitly rather than inheriting an accident.
+   * @param skuID SKU to test; takes precedence when both arguments are supplied.
+   * @param productID product whose SKUs are tested when no SKU is supplied.
+   * @returns true when at least one referencing record exists.
    */
   getTransactionExistsFlag(productID?: string, skuID?: string): Promise<boolean>;
 
+  // CFML parity [model/dao/SkuDAO.cfc:L102-L103]: the same value is matched against both the SKU code
+  // and the alternate SKU codes, and the legacy call asks for a unique result rather than a list, so
+  // it is not written to tolerate two matches.
   /**
-   * Resolve a single SKU by its SKU code or by any of its alternate SKU codes.
+   * Load a SKU by its code or one of its alternate codes.
    *
-   * Legacy: `SkuDAO.cfc:L102`, cfscript, a single `ORMExecuteQuery` at
-   * `SkuDAO.cfc:L103`. `skuCode` is `required string` on the DAO and is
-   * therefore required here, even though the service passthrough at
-   * `model/service/SkuService.cfc:L289` declares it optional one layer up.
-   *
-   * Two semantics are load-bearing:
-   *
-   *  * The match is a DISJUNCTION across two columns reached through a left
-   *    join to the alternate-SKU-code association: the primary SKU code OR any
-   *    alternate SKU code. A single bound value is compared against both.
-   *  * The query requests a UNIQUE result (the third argument to
-   *    `ORMExecuteQuery` is `true`), so it yields one entity or null. The port
-   *    models that as an explicit `undefined`, never `0`, never an empty
-   *    object, and never a thrown error baked into the type.
+   * @param skuCode code to match.
+   * @returns the SKU, or undefined when nothing matches.
    */
   getSkuBySkuCode(skuCode: string): Promise<Sku | undefined>;
 
+  // CFML parity [model/dao/SkuDAO.cfc:L106-L128]: one `exists` clause is appended per selected option
+  // and they are joined with AND, so a SKU must carry every option to match — not any of them. This is
+  // the behavior the option-driven SKU resolution depends on and it is preserved exactly.
   /**
-   * SKUs matching ALL of the supplied options.
+   * SKUs carrying all of the selected options.
    *
-   * MUST-PRESERVE BEHAVIOUR. This is the query behind
-   * `ProductService.getProductSkusBySelectedOptions()`
-   * (`model/service/ProductService.cfc:L104`), one of exactly three behaviours
-   * named as must-preserve for this migration.
-   *
-   * Legacy: `SkuDAO.cfc:L107`, cfscript, with the intent stated in the source's
-   * own comment at `SkuDAO.cfc:L106` - it "returns product skus which matches
-   * ALL options (list of optionIDs) that are passed in".
-   *
-   * THE MATCHING SEMANTICS ARE AND-of-EXISTS. A SKU matches only when it
-   * satisfies an EXISTS predicate for EVERY option in `selectedOptions`. The
-   * predicates are CONJUNCTIVE - not disjunctive, and emphatically not "any
-   * of". Treating them as a disjunction returns the wrong SKUs for a configured
-   * product, which is the exact failure this note exists to prevent.
-   *
-   * How the list becomes those predicates, read from the source:
-   *
-   *  * The statement opens over distinct SKUs joined to their options, seeded
-   *    with an always-true predicate (`SkuDAO.cfc:L109-L112`) so that each
-   *    appended conjunct concatenates safely.
-   *  * The loop at `SkuDAO.cfc:L113-L121` walks the comma-delimited list one
-   *    element at a time and appends ONE correlated EXISTS predicate per option
-   *    ID, each carrying its own positional placeholder, with the option ID
-   *    appended to the bind array in list order. That per-element binding is
-   *    the E5 obligation restated at the point it matters: every parsed option
-   *    ID is bound as its own prepared-statement parameter and is NEVER
-   *    interpolated into SQL text.
-   *  * THE COUNT OF SELECTED OPTIONS DOES NOT PARTICIPATE IN THE MATCH. There
-   *    is no cardinality test and no grouped having-clause, so a SKU that
-   *    carries every selected option PLUS additional options still matches.
-   *    The result is "at least these options", not "exactly these options".
-   *  * The inner join to the option association means a SKU with no options at
-   *    all can never match, and the distinct projection collapses the duplicate
-   *    rows that join produces.
-   *
-   * `selectedOptions` is `required string` in legacy and stays a `string` here
-   * for signature parity - it is a comma-delimited list of option IDs, not an
-   * array, and it must not be widened to `string[]`. The implementation splits
-   * it with the CFML list helpers in `../../lib/cfml/list.js`, which this file
-   * deliberately does not import because it declares no behaviour.
-   *
-   * `productID` is declared without `required` in legacy and is therefore
-   * optional here, in the legacy parameter order. Note the asymmetry with the
-   * must-preserve caller: `ProductService.cfc:L104` declares it `required` one
-   * layer up, so the port is the wider contract. When supplied, its predicate
-   * is appended LAST and bound LAST (`SkuDAO.cfc:L123-L126`), and it is gated
-   * on presence ALONE - unlike `searchSkusByProductType`, the legacy body
-   * applies no emptiness test, so an empty string still narrows the query.
+   * @param selectedOptions comma-delimited option identifiers that must all be present.
+   * @param productID optional product to restrict the search to.
+   * @returns matching SKUs.
    */
   getSkusBySelectedOptions(selectedOptions: string, productID?: string): Promise<Sku[]>;
 
+  // CFML parity [model/dao/SkuDAO.cfc:L130-L148]: the term is matched against the SKU code with a
+  // leading and trailing wildcard, and the product-type filter is appended only for a non-blank value.
+  // The legacy statement is raw SQL naming `SlatwallSku`, which is the ORM entity name, while the
+  // entity maps to table `SwSku` [model/entity/Sku.cfc:L49].
   /**
-   * SKU search by SKU-code fragment, optionally narrowed to product types.
+   * Search SKUs by code.
    *
-   * Legacy: `SkuDAO.cfc:L130`, cfscript. BOTH parameters are declared without
-   * `required`, so both are optional here, in the legacy order. Consumed as a
-   * pure passthrough at `model/service/SkuService.cfc:L271-L273`.
-   *
-   * Verified semantics:
-   *
-   *  * `term` drives a contains-match against the SKU code only. The legacy
-   *    body wraps it in wildcards and binds it as a parameter
-   *    (`SkuDAO.cfc:L132-L133`), so the wildcards are part of the bound VALUE
-   *    and the term never reaches the statement text. Omitting `term` leaves
-   *    the legacy body with nothing to interpolate into that value, which the
-   *    engine rejects; the parameter stays optional for parity, so the adapter
-   *    must decide that case explicitly.
-   *  * `productTypeID` is applied only when it is present AND non-blank after
-   *    trimming (`SkuDAO.cfc:L134`) - a real emptiness test, in contrast to
-   *    `getSkusBySelectedOptions`, which tests presence alone.
-   *  * `productTypeID` is a comma-delimited LIST, not a single identifier. The
-   *    legacy body binds it as a multi-value list (`SkuDAO.cfc:L136`) feeding a
-   *    product-type IN-list nested inside a product subquery. It therefore
-   *    stays a `string` here for the same reason `selectedOptions` does, and
-   *    every element of it is bound as its own parameter by the adapter.
-   *
-   * ONE RECORDED DIVERGENCE OF SHAPE, deliberate and visible. The legacy body
-   * does not hydrate entities: it walks the result set and projects an array of
-   * two-key structures holding the SKU's identifier and its code
-   * (`SkuDAO.cfc:L139-L147`), a typeahead shape shaped by an admin autocomplete
-   * rather than by the domain. The port returns `Sku[]` because that is the
-   * signature the interface mapping fixes for this method at both the port and
-   * the service tier, and because no projection type may be invented for a
-   * repository whose every other read returns entities or identifiers.
-   * Hydrating the entity is therefore the adapter's job at the repository
-   * boundary, which is exactly where the fetch-shape decision belongs.
-   *
-   * `searchProductsByProductType` (`model/dao/ProductDAO.cfc:L419`) is the
-   * PRODUCT-shaped sibling of this method and belongs to
-   * `productRepository.ts`. It is not declared here.
+   * @param term substring matched anywhere in the SKU code.
+   * @param productTypeID comma-delimited product types to restrict the search to.
+   * @returns matching SKUs.
    */
   searchSkusByProductType(term?: string, productTypeID?: string): Promise<Sku[]>;
 
+  // CFML parity [model/dao/SkuDAO.cfc:L150-L168]: the eager-fetch join is chosen from the product's
+  // base type — access contents, options or subscription benefits — and all three branches use an
+  // inner join, so a product whose SKUs have none of the fetched children returns nothing when the
+  // flag is set.
   /**
-   * Every SKU of a product, with the eager-load shape chosen by the caller.
+   * Every SKU of a product.
    *
-   * Legacy: `SkuDAO.cfc:L150`, cfscript, declared
-   * `(required any product, required any fetchOptions)`. BOTH stay required
-   * here and in the legacy order, and `fetchOptions` gets NO default value -
-   * legacy declared it required, and a default parameter value would be a
-   * runtime value in a file that emits none. The one-layer-up service wrapper
-   * at `model/service/SkuService.cfc:L220` is where a default lives in legacy,
-   * and that is where it stays.
-   *
-   * `product` replaces the legacy `any` with the concrete entity because the
-   * legacy body reads two things off it: the base product type that selects the
-   * eager-load branch, and the product identifier that scopes the query
-   * (`SkuDAO.cfc:L154-L165`).
-   *
-   * `fetchOptions === true` means the returned SKUs arrive with their
-   * associations ALREADY MATERIALIZED rather than lazily traversable. Which
-   * association depends on the product's base product type, and the legacy body
-   * is explicit about it: merchandise products eagerly fetch the SKU's options
-   * (`SkuDAO.cfc:L156-L157`), which is the in-scope path here; content-access
-   * products fetch access contents (`SkuDAO.cfc:L154-L155`) and subscription
-   * products fetch subscription benefits (`SkuDAO.cfc:L158-L160`), both of
-   * which serve out-of-scope features whose collaborators are the
-   * `subscriptionTermProvider` port and - for content access - no port at all.
-   * `fetchOptions === false` returns the SKUs without that eager fetch.
-   *
-   * This flag IS the fetch-shape decision, surfaced into the signature instead
-   * of buried in a query. It is the whole eager-load vocabulary this port
-   * offers: no `include` parameter and no options bag may be added beside it.
-   *
-   * The legacy body also requests a case-insensitive comparison
-   * (`SkuDAO.cfc:L165`), matching CFML's case-insensitive default. CFML
-   * comparisons are case-insensitive and TypeScript's are not, so the adapter
-   * must carry that intent deliberately rather than inherit it.
+   * @param product product whose SKUs are loaded.
+   * @param fetchOptions when true, eagerly load the children matching the product's base type.
+   * @returns the product's SKUs, unordered.
    */
   getProductSkus(product: Product, fetchOptions: boolean): Promise<Sku[]>;
 
+  // CFML parity [model/dao/SkuDAO.cfc:L172-L202]: ordering is a positional weighting — each option's
+  // sort order scaled by a power of ten derived from its option group's sort order — so option groups
+  // act as digits and the lowest-ordered group is the most significant.
   /**
-   * The identifiers of a product's SKUs, ordered by option-group sort order.
+   * SKU identifiers for a product, ordered by option group then option sort order.
    *
-   * Legacy: `SkuDAO.cfc:L172`, `<cffunction>` TAG syntax wrapping a raw
-   * `<cfquery>` - and that query body, not any paraphrase of it, is the source
-   * of truth. Its single argument is declared
-   * `type="string" required="true"` at `SkuDAO.cfc:L173`.
-   *
-   * TODO [carried forward verbatim from model/dao/SkuDAO.cfc:L172, where the
-   * legacy source comment at SkuDAO.cfc:L177 reads "TODO: test to see if this
-   * query works with DB's other than MSSQL and MySQL"]. The ordering
-   * expression is written twice - once with explicit integer casts for
-   * Microsoft SQL Server and once without (`SkuDAO.cfc:L194-L198`) - and the
-   * legacy author recorded that no other database engine was ever exercised
-   * against it. This TODO is carried forward as an explicitly flagged TODO and
-   * is deliberately NOT resolved and NOT deleted here. It is narrowed rather
-   * than closed: the target supports the MySQL branch ONLY, and the legacy
-   * runtime probe that chose between the branches by inspecting the database
-   * product name (`config/configORM.cfm:L1-L15`) is replaced by explicit
-   * environment configuration in `src/repositories/mysql/dialect.ts`. Closing
-   * this TODO would require exercising a third engine, which is a product
-   * decision and not a port-level one.
-   *
-   * THE ORDERING IS PART OF THE CONTRACT. The legacy query joins SKUs through
-   * their options to those options' option groups, groups by SKU, and orders by
-   * a SUM in which each option's sort order is multiplied by a power of ten
-   * whose exponent is the distance between that option group's sort order and
-   * the next available option-group sort order (`SkuDAO.cfc:L191-L198`). The
-   * effect is a positional, digit-per-option-group ordering: the option GROUP's
-   * sort order sets the place value and the OPTION's sort order is the digit
-   * sitting at it. The implementation must preserve this exactly and must not
-   * substitute a different sort. Contrast
-   * `promotionRepository.getActivePromotionRewards`, whose legacy query has no
-   * ordering clause at all and must not gain one.
-   *
-   * Two consequences of the join shape are worth stating because the ordering
-   * hides them: the joins are inner, so a SKU carrying no options is absent
-   * from the result entirely, and the grouping is what allows one row per SKU
-   * despite one joined row per option.
-   *
-   * THE NAME ENDS IN `ID` BECAUSE THE METHOD RETURNS IDENTIFIERS, NOT
-   * ENTITIES, and the return type says so. Legacy hands back a single-column
-   * result set of SKU identifiers (`SkuDAO.cfc:L178-L201`), and both consumers
-   * immediately flatten it into a plain array of those identifiers
-   * (`model/service/SkuService.cfc:L228-L230` and
-   * `model/service/SkuService.cfc:L256-L258`) before using it as a sort key.
-   * `string[]` is therefore the faithful array-of-identifiers projection of
-   * that result set, and it retires the duplicated flattening loop as a matter
-   * of course. Do NOT "improve" this to return `Sku[]`: interface parity is the
-   * acceptance contract, and the legacy name would then lie about what the
-   * method hands back.
-   *
-   * The place-value exponent comes from a private cache accessor
-   * (`SkuDAO.cfc:L204`) that memoises the highest option-group sort order, and
-   * the legacy query interpolates that number directly into its ordering
-   * expression. The adapter binds it instead, and request-scopes the cache
-   * behind it.
+   * @param productID product whose SKUs are ordered.
+   * @returns SKU identifiers in display order.
    */
   getSortedProductSkusID(productID: string): Promise<string[]>;
 
-  /**
-   * Persist a SKU and return the persisted entity.
-   *
-   * THIS NAME HAS NO LEGACY ANTECEDENT. `SkuDAO.cfc` declares no persistence
-   * function at all, because legacy SKU writes went through framework CRUD
-   * rather than through the DAO: `SkuService.createSkus` builds entities with
-   * the framework's SKU factory (`model/service/SkuService.cfc:L92`,
-   * `L127`, `L154`, `L182` and `L192`) and leaves saving to the inherited
-   * service and DAO base classes. Hibernate is gone, and with it
-   * `super.save()`, the framework DAO's save and the entity-factory call have
-   * no equivalent in a driver-only stack, so SKU persistence has to become an
-   * explicit, named method on this port. It is declared here as the seventh and
-   * final method, and it is deliberately minimal: one entity in, the persisted
-   * entity out.
-   *
-   * Callers. `SkuService.createSkus` (`model/service/SkuService.cfc:L58`) is
-   * the primary one, and the image-upload path
-   * (`model/service/SkuService.cfc:L210`) is the second the plan names as
-   * persisting a mutated SKU.
-   *
-   * A structural execution-model fact about the first of those, stated because
-   * it shapes the SERVICE tier and not this port. `createSkus` drives an
-   * odometer across the FULL CARTESIAN PRODUCT of the product's option groups
-   * (`model/service/SkuService.cfc:L109-L121`, with the combination count
-   * accumulated at `model/service/SkuService.cfc:L85`), so the number of SKUs
-   * it creates is UNBOUNDED BY CONSTRUCTION - it is the product of every option
-   * group's size, with nothing in the legacy code bounding it. Under the CFML
-   * host that ran inside an ambient transaction; Lambda offers no ambient
-   * transaction, so the explicit batch limits, the idempotency on retry and the
-   * documented compensation story that replace it all live at the SERVICE tier,
-   * where the loop lives.
-   *
-   * Consequently NO batch size, limit, timeout, retry count or transaction
-   * parameter appears on this method, and none may be added. This port
-   * describes one durable write of one entity. The paragraph above records
-   * where an execution-model concern is handled; it asserts no target, no
-   * measurement and no numeric bound of any kind, because the legacy system
-   * states none and none may be invented.
-   *
-   * There is deliberately no bulk, `saveAll` or `saveMany` variant, and no
-   * delete: one persistence method, and the count stays at seven.
-   */
   saveSku(sku: Sku): Promise<Sku>;
 }

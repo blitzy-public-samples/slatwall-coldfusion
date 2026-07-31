@@ -193,7 +193,13 @@
 
 import { describe, expect, it } from 'vitest';
 
-import { cfBoolean, cfLen, cfTruthy, isNullish } from '../../../../src/lib/cfml/truthiness.js';
+import {
+  CfmlBooleanConversionError,
+  cfBoolean,
+  cfLen,
+  cfTruthy,
+  isNullish,
+} from '../../../../src/lib/cfml/truthiness.js';
 import type {
   CfBooleanInput,
   CfLenInput,
@@ -252,20 +258,22 @@ describe('src/lib/cfml/truthiness.ts - isNullish', () => {
 describe('src/lib/cfml/truthiness.ts - six distinct states, not three synonyms', () => {
   it('tells undefined, null, empty string, zero, string zero and string false apart', () => {
     // Kept in a single case on purpose, so the contrast cannot drift apart into
-    // separate cases and quietly stop being a contrast. `cfTruthy` answers false
-    // for all six; `isNullish` splits them two-and-four. That split is the entire
-    // reason the two exports are separate, and it is why no single bare `!value`
-    // test can stand in for either of them.
+    // separate cases and quietly stop being a contrast. `isNullish` splits the six
+    // two-and-four; `cfTruthy` RAISES for the two absent ones and answers false for
+    // the four present ones. That split is the entire reason the two exports are
+    // separate, and the raise is what makes it impossible to skip asking - a bare
+    // `!value` test in JavaScript would collapse all six into one answer.
 
     // undefined - absent because it was never set, e.g. a struct key the legacy
-    // code reaches with `structKeyExists` before reading.
+    // code reaches with `structKeyExists` before reading. CFML raises when a null
+    // reaches a boolean context, and so does this.
     expect(isNullish(undefined)).toBe(true);
-    expect(cfTruthy(undefined)).toBe(false);
+    expect(() => cfTruthy(undefined)).toThrow(CfmlBooleanConversionError);
 
     // null - absent explicitly, e.g. a hydrated column that arrived as SQL NULL,
     // or the `javaCast("null", "")` seed above.
     expect(isNullish(null)).toBe(true);
-    expect(cfTruthy(null)).toBe(false);
+    expect(() => cfTruthy(null)).toThrow(CfmlBooleanConversionError);
 
     // '' - PRESENT and empty. This is the state the currency-eligibility gate
     // actually guards against, and it is not an absent state.
@@ -551,12 +559,18 @@ describe('src/lib/cfml/truthiness.ts - cfTruthy decision table', () => {
     expect(cfTruthy(-1)).toBe(true);
   });
 
-  it('reads a value that is not a number as false', () => {
-    // JUDGMENT CALL: CFML has no not-a-number value, so this row preserves no
-    // legacy behaviour and none is claimed for it. False is chosen to agree with
-    // `cfLen` answering 0 for the same input, so the two helpers cannot disagree
-    // about a value neither of them can interpret.
-    expect(cfTruthy(Number.NaN)).toBe(false);
+  it('raises for not-a-number rather than resolving it', () => {
+    // CFML has no not-a-number value, so no legacy behaviour is being preserved
+    // either way - which is precisely why it must not be resolved to one. `NaN` is
+    // what a FAILED NUMERIC PARSE looks like once it has stopped announcing itself,
+    // so answering false would convert an upstream parse failure into a confident
+    // negative.
+    expect(() => cfTruthy(Number.NaN)).toThrow(CfmlBooleanConversionError);
+
+    // `cfLen` still answers 0 for the same input, and the two do NOT disagree: a
+    // count has a spare value for "nothing there" and a boolean does not. The pair
+    // is asserted together so neither is "corrected" into matching the other.
+    expect(cfLen(Number.NaN)).toBe(0);
   });
 
   it('reads either infinity as true, because neither is zero', () => {
@@ -621,16 +635,57 @@ describe('src/lib/cfml/truthiness.ts - cfTruthy decision table', () => {
     expect(cfTruthy('00')).toBe(false);
   });
 
-  it('reads a non-parseable string as false rather than failing', () => {
-    // JUDGMENT CALL: CFML throws a conversion error when a non-empty,
-    // non-boolean, non-numeric string reaches a boolean context. The shipped
-    // module returns false instead, and that divergence is deliberate: these are
-    // coercion helpers on a money-adjacent path, where a throw would turn an
-    // ordinary data-shape variation into a failed request. The consequence is
-    // explicit rather than hidden - a caller that NEEDS the failure has to
-    // validate upstream, because this branch will not signal it.
-    expect(cfTruthy('abc')).toBe(false);
-    expect(cfTruthy('USD')).toBe(false);
+  it('raises for a non-parseable string, as CFML does', () => {
+    // CFML parity: CFML raises a conversion error when a non-empty, non-boolean,
+    // non-numeric string reaches a boolean context, and so does this.
+    //
+    // An earlier revision returned false, reasoning that a throw on a
+    // money-adjacent path turns an ordinary data-shape variation into a failed
+    // request. The premise is right; the conclusion was backwards. A string that
+    // reaches this branch is one CFML itself refused, so answering false does not
+    // preserve legacy behaviour - it invents a behaviour the legacy platform never
+    // had, and returns the NEGATIVE answer for input carrying no boolean meaning.
+    // `'active'`, `'Y'`, `'on'` and a truncated `'tru'` would every one of them
+    // have read as a deliberate off.
+    expect(() => cfTruthy('abc')).toThrow(CfmlBooleanConversionError);
+    expect(() => cfTruthy('USD')).toThrow(CfmlBooleanConversionError);
+    expect(() => cfTruthy('Y')).toThrow(CfmlBooleanConversionError);
+    expect(() => cfTruthy('on')).toThrow(CfmlBooleanConversionError);
+    expect(() => cfTruthy('tru')).toThrow(CfmlBooleanConversionError);
+  });
+
+  it('names the offending value, its type and the reason in the raised error', () => {
+    let caught: unknown;
+    try {
+      cfTruthy('maybe');
+    } catch (error: unknown) {
+      caught = error;
+    }
+
+    expect(caught).toBeInstanceOf(CfmlBooleanConversionError);
+    expect(caught).toBeInstanceOf(Error);
+    expect((caught as Error).name).toBe('CfmlBooleanConversionError');
+    // Quoted, so that '0', '' and ' ' stay visibly distinct from one another and
+    // from the number 0 - the distinction this whole module is about.
+    expect((caught as Error).message).toContain('"maybe"');
+    expect((caught as Error).message).toContain('length 5');
+    expect((caught as Error).message).toContain('true/false/yes/no');
+  });
+
+  it('bounds the value it reproduces in the error message', () => {
+    // These values can arrive from a request, so a pathological one must not
+    // dominate a log line. The untruncated length is reported either way.
+    const long = 'x'.repeat(500);
+    let message = '';
+    try {
+      cfTruthy(long);
+    } catch (error: unknown) {
+      message = error instanceof Error ? error.message : '';
+    }
+
+    expect(message).toContain('...');
+    expect(message).toContain('length 500');
+    expect(message.length).toBeLessThan(400);
   });
 
   it('reads the empty string as false', () => {
@@ -641,15 +696,23 @@ describe('src/lib/cfml/truthiness.ts - cfTruthy decision table', () => {
     expect(cfTruthy('')).toBe(false);
   });
 
-  it('reads an absent value as false', () => {
-    // JUDGMENT CALL: CFML throws a conversion error when a null reaches a boolean
-    // context, and the shipped module never throws, so absent answers false. The
-    // three-state distinction is not lost by this - it is asked for separately.
-    // A caller that must tell absent apart from present-and-false calls
-    // `isNullish` first, which exists for exactly that reason
-    // [model/service/RoundingRuleService.cfc:L90-L91, L170].
-    expect(cfTruthy(null)).toBe(false);
-    expect(cfTruthy(undefined)).toBe(false);
+  it('raises for an absent value, as CFML does', () => {
+    // CFML parity: CFML raises a conversion error when a null reaches a boolean
+    // context. Answering false instead would make an absent value
+    // indistinguishable from a deliberate negative, and on this path the negative
+    // is meaningful - it says a promotion is inactive, a currency list is empty, a
+    // flag is off.
+    //
+    // The three-state distinction is asked for separately, and the raise is what
+    // makes asking mandatory rather than merely advisable: a caller that must tell
+    // absent apart from present-and-false calls `isNullish` first, which exists for
+    // exactly that reason [model/service/RoundingRuleService.cfc:L90-L91, L170].
+    expect(() => cfTruthy(null)).toThrow(CfmlBooleanConversionError);
+    expect(() => cfTruthy(undefined)).toThrow(CfmlBooleanConversionError);
+
+    // The error explains which alternative to reach for.
+    expect(() => cfTruthy(null)).toThrow(/isNullish\(\)/);
+    expect(() => cfTruthy(null)).toThrow(/cfBoolean\(\)/);
   });
 
   it('composes with cfLen into the len()-as-predicate idiom', () => {
@@ -671,16 +734,31 @@ describe('src/lib/cfml/truthiness.ts - cfTruthy decision table', () => {
     expect(cfTruthy(cfLen(0))).toBe(true);
     expect(cfTruthy(0)).toBe(false);
     expect(cfTruthy(cfLen('abc'))).toBe(true);
-    expect(cfTruthy('abc')).toBe(false);
+    expect(() => cfTruthy('abc')).toThrow(CfmlBooleanConversionError);
     expect(cfTruthy(cfLen('   '))).toBe(true);
     expect(cfTruthy('   ')).toBe(false);
+
+    // The composition is ALSO what makes the raise harmless at a ported `len()`
+    // site: `cfLen` hands `cfTruthy` a number, and every number except `NaN`
+    // answers. So `cfTruthy(cfLen(x))` is total for every `x` in `cfLen`'s domain,
+    // including an absent one - which is exactly the shape the ported call sites
+    // write.
+    expect(cfTruthy(cfLen(null))).toBe(false);
+    expect(cfTruthy(cfLen(undefined))).toBe(false);
   });
 
-  it('answers every value in its declared domain without throwing', () => {
-    // The sweep exists to prove totality, not to restate the table: every branch
-    // returns, nothing escapes as an exception, and the declared union is the one
-    // the shipped module actually accepts - typed here by its own exported type so
-    // that narrowing it upstream breaks compilation rather than going unnoticed.
+  it('answers every INTERPRETABLE value in its declared domain, and raises for the rest', () => {
+    // The sweep partitions the declared union rather than proving totality: every
+    // value that carries a boolean meaning answers with a `boolean`, and the three
+    // that carry none raise. The union is typed here by the module's own exported
+    // type, so narrowing it upstream breaks compilation rather than going
+    // unnoticed.
+    const raising: readonly CfTruthyInput[] = [null, undefined, Number.NaN, 'abc'];
+
+    for (const value of raising) {
+      expect(() => cfTruthy(value)).toThrow(CfmlBooleanConversionError);
+    }
+
     const domain: readonly CfTruthyInput[] = [
       0,
       1,
@@ -688,17 +766,14 @@ describe('src/lib/cfml/truthiness.ts - cfTruthy decision table', () => {
       '1',
       'true',
       'false',
-      null,
-      undefined,
       '',
+      '   ',
       'TRUE',
       'False',
       ' 1 ',
-      'abc',
       2,
       -1,
-      0.0,
-      Number.NaN,
+      '0.0',
       true,
       false,
     ];
@@ -708,9 +783,12 @@ describe('src/lib/cfml/truthiness.ts - cfTruthy decision table', () => {
       expect(typeof cfTruthy(value)).toBe('boolean');
     }
 
-    // Every case in the sweep is also covered by an explicit row above, so the
-    // sweep may prove totality but it may never be the only evidence for a row.
-    expect(domain).toHaveLength(19);
+    // Every case in either list is also covered by an explicit row above, so the
+    // sweep may partition the domain but it may never be the only evidence for a
+    // row. The two lists are disjoint and together cover the whole table.
+    expect(domain).toHaveLength(16);
+    expect(raising).toHaveLength(4);
+    expect(domain.filter((value) => raising.includes(value))).toHaveLength(0);
   });
 });
 
@@ -862,13 +940,13 @@ describe('src/lib/cfml/truthiness.ts - cfBoolean as the persisted-flag reader', 
     }
   });
 
-  it('agrees with cfTruthy on every shape, because it delegates rather than restates', () => {
+  it('agrees with cfTruthy on every PRESENT shape, because it delegates rather than restates', () => {
     // The shipped reader delegates its coercion instead of carrying a second copy
     // of the table, and that is the property worth pinning: two copies of one
     // decision table are two things that can drift apart, and a drift between
     // these two would be a disagreement about whether a promotion is active
     // [model/entity/Promotion.cfc:L56].
-    const persistedShapes: readonly CfBooleanInput[] = [
+    const presentShapes: readonly CfBooleanInput[] = [
       '0',
       '1',
       'false',
@@ -878,13 +956,35 @@ describe('src/lib/cfml/truthiness.ts - cfBoolean as the persisted-flag reader', 
       1,
       false,
       true,
-      null,
-      undefined,
     ];
 
-    for (const shape of persistedShapes) {
+    for (const shape of presentShapes) {
       expect(cfBoolean(shape)).toBe(cfTruthy(shape));
     }
+  });
+
+  it('resolves an ABSENT flag to false itself, which is the one behaviour it adds', () => {
+    // The deliberate asymmetry with `cfTruthy`, and the reason both exports exist.
+    // `cfBoolean` knows something `cfTruthy` cannot: its input came from a persisted
+    // flag column whose absence has a documented meaning. Nine `ormtype="boolean"`
+    // properties across five in-scope entities declare no default at all, so SQL
+    // NULL is a legitimate, expected hydration for those columns - not a data fault
+    // - and false is the answer the legacy engine gave a flag it had no value for.
+    //
+    // A general boolean context carries no such warrant, so `cfTruthy` raises. That
+    // is what lets the raise be added without breaking entity hydration.
+    expect(cfBoolean(null)).toBe(false);
+    expect(cfBoolean(undefined)).toBe(false);
+    expect(() => cfTruthy(null)).toThrow(CfmlBooleanConversionError);
+    expect(() => cfTruthy(undefined)).toThrow(CfmlBooleanConversionError);
+  });
+
+  it('still raises for a PRESENT flag value it cannot interpret', () => {
+    // The absent case is resolved because the ORM evidence justifies it; an
+    // unrecognised present value has no such justification. A flag column that
+    // hydrates as 'maybe' is a schema surprise, not a false.
+    expect(() => cfBoolean('maybe')).toThrow(CfmlBooleanConversionError);
+    expect(() => cfBoolean(Number.NaN)).toThrow(CfmlBooleanConversionError);
   });
 });
 

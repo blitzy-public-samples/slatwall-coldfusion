@@ -1,4 +1,21 @@
 // ---------------------------------------------------------------------------
+// CHECKPOINT STATUS - FORWARD REFERENCES CARRY THE MARKER `(planned)`
+//
+// The subtree is authored in boundaries, and AAP 0.4.5 makes the authoring
+// order "a compile-order convenience, not a schedule". Commentary in this file
+// therefore names modules of the target layout that DO NOT EXIST YET. Every such
+// name carries `(planned)` at its point of use, meaning exactly: a planned Agent
+// Action Plan target that is ABSENT from the subtree at this checkpoint. Nothing
+// here asserts that any of them exists now, and no behaviour in this file depends
+// on one. The complete set named below, with the role each will play:
+//
+//   src/domain/entities/promotionQualifier.ts  PromotionQualifier entity
+//   src/domain/entities/promotionReward.ts     PromotionReward entity
+//   src/domain/entities/sku.ts                 Sku entity
+//   tests/unit/domain/entities/option.test.ts  option entity suite
+// ---------------------------------------------------------------------------
+
+// ---------------------------------------------------------------------------
 // slatwall-ts - the SwOption domain entity
 //
 // PROVENANCE
@@ -88,7 +105,8 @@
 //   `Option` has ZERO `getService(` sites. That was counted, not assumed: the
 //   45 sites across the entity folder belong to Sku (19), Product (18),
 //   ProductType (6), OptionGroup (1) and RoundingRule (1), and `Option` is one
-//   of the ten entities with none. Nothing is imported from `../ports/`, no
+//   of the THIRTEEN in-scope entities with none - eighteen in scope, minus those
+//   five. Nothing is imported from `../ports/`, no
 //   port budget is spent, there is no service locator here and there is no
 //   ambient scope - context in this port is always an explicit parameter.
 //
@@ -103,24 +121,36 @@
 //   ruling for this entity to carry inward.
 //
 // THE TWO `Image` ASSOCIATIONS ARE HANDLED DIFFERENTLY FROM EACH OTHER
-//   `Image` is not one of the eighteen in-scope entities, no image entity is
-//   ported, and the image subsystem is modelled as a stub port consumed only by
-//   out-of-scope branches. The two declarations are therefore split:
+//   `Image` is not one of the eighteen in-scope entities and no image entity is
+//   ported, so neither declaration can name an `Image` type. The split turns on
+//   the FIELD TYPE - where the join key physically sits - and not on the far
+//   side's scope, which is common to both:
 //
 //     * L60 `defaultImage` (many-to-one, fkcolumn="defaultImageID") survives as
 //       an INERT PERSISTED COLUMN - `defaultImageID` with an accessor and no
-//       behaviour attached. This is the precedent set by
-//       `Category.cmsCategoryID` and `Category.site`: the column survives so
-//       the schema contract is unbroken.
-//     * L63 `images` (one-to-many, cascade="all-delete-orphan") is NOT
-//       MATERIALIZED and is not authored at all, following the
-//       `PriceGroup.appliedOrderItems` precedent. See the annotation where it
-//       would have sat.
+//       behaviour attached. The key is a scalar on THIS row and there is no
+//       collection to describe, so an opaque id is the whole of it. This is the
+//       precedent set by `Category.cmsCategoryID` and `Category.site`: the
+//       column survives so the schema contract is unbroken.
+//     * L63 `images` (one-to-many, cascade="all-delete-orphan",
+//       fkcolumn="optionID") is MATERIALIZED THROUGH A NARROW STRUCTURAL
+//       PROJECTION - `readonly OptionImageLink[]` - because the key sits on the
+//       far `SwImage` row and points HERE, which makes those rows this option's
+//       own data. See the field and `getImages()`.
 //
-//   "DROPPED" AND "OMITTED" ALWAYS MEAN "not authored in this TypeScript file,
-//   with the reason recorded where it would have gone". Neither ever means a
-//   legacy file was edited or deleted. model/entity/Option.cfc is reference-only
-//   and remains untouched, as does every other file outside `slatwall-ts/`.
+//   An earlier revision authored NO member for `images` and stated the second
+//   rule as "not materialized at all, following the PriceGroup.appliedOrderItems
+//   precedent". That was wrong for the reasons set out on the field, and the
+//   entry above is the correction rather than a restatement. `getImageDirectory()`
+//   [L81-L83] was dropped in the same revision and is likewise now ported; see
+//   the method for why its two out-of-scope INPUTS never justified removing the
+//   method itself.
+//
+//   Where this file still says "DROPPED" or "OMITTED" it always means "not
+//   authored in this TypeScript file, with the reason recorded where it would have
+//   gone". Neither ever means a legacy file was edited or deleted.
+//   model/entity/Option.cfc is reference-only and remains untouched, as does every
+//   other file outside `slatwall-ts/`.
 //
 // NOT PRESENT, AND EACH ABSENCE VERIFIED RATHER THAN ASSUMED
 //   * No ORM lifecycle hook. model/entity/Option.cfc:L155-L157 is an EMPTY
@@ -162,14 +192,19 @@
 //   `LEGACY-NOTE` instead, so the stronger marker keeps its meaning.
 //
 // TEST COVERAGE IS NET-NEW, IN FULL
-//   Coverage belongs at `slatwall-ts/tests/unit/domain/entities/option.test.ts`
+//   Coverage belongs at `slatwall-ts/tests/unit/domain/entities/option.test.ts` (planned)
 //   and ALL of it is net-new: no legacy test under `meta/tests/**` touches this
 //   entity. Only `meta/tests/unit/entity/BrandTest.cfc` and
 //   `meta/tests/unit/entity/ProductTest.cfc` are extended anywhere in this
 //   port, and `meta/tests/functional/admin/entity/ProductTest.cfc` is an empty
 //   stub contributing zero coverage. Nothing here may be presented as parity.
 //   The test tier is authored separately; this file needs no seam for it, since
-//   every method below is synchronous and every one is total.
+//   every method below is SYNCHRONOUS - no `async`, no `Promise`, no port to
+//   stub. It does need two RAISE cases covered: `removeOptionGroup` called with
+//   no argument on an option with no group, and `getImageDirectory` on an option
+//   hydrated without an assets base. An earlier revision of this note said
+//   "every one is total", which stopped being true and is corrected here; the
+//   authoritative list of what can throw is on the class doc comment.
 //
 // NO USER RULES WERE PROVIDED
 //   Stated explicitly rather than assumed: the project rules document contains
@@ -203,15 +238,15 @@ import type { Sku } from './sku.js';
 //     `getOptionCode`, `getOptionName`, `getOptionDescription`, `getSortOrder`, `getRemoteID`,
 //     `getCreatedDateTime` and `getModifiedDateTime` - to resolve its `orderby` argument. All eight
 //     are generated below, and none of them is optional for that reason.
-//   * `src/domain/entities/sku.ts` MUST expose `addOption` and `removeOption`. Those are the
+//   * `src/domain/entities/sku.ts` (planned) MUST expose `addOption` and `removeOption`. Those are the
 //     accessors ColdFusion's ORM generates for the OWNING side of the `SwSkuOption` many-to-many,
 //     declared with `singularname="option"` at [model/entity/Sku.cfc:L76]; `Sku.cfc` hand-writes
 //     neither, which is exactly why they are ORM-generated rather than ported bodies.
-//   * `src/domain/entities/promotionReward.ts` MUST expose `addOption`, `removeOption`,
+//   * `src/domain/entities/promotionReward.ts` (planned) MUST expose `addOption`, `removeOption`,
 //     `addExcludedOption` and `removeExcludedOption` - hand-written at
 //     [model/entity/PromotionReward.cfc:L218, L226, L318, L326] - backing the `options` and
 //     `excludedOptions` collections at [L81] and [L87].
-//   * `src/domain/entities/promotionQualifier.ts` MUST expose the same four names, hand-written at
+//   * `src/domain/entities/promotionQualifier.ts` (planned) MUST expose the same four names, hand-written at
 //     [model/entity/PromotionQualifier.cfc:L160, L168, L260, L268], backing [L78] and [L84].
 //
 // `removeExcludedOption` appears in that contract for both promotion entities even though this file
@@ -231,6 +266,44 @@ import type { Sku } from './sku.js';
 // `optionCode` below for why.
 
 /**
+ * The ANTI-CORRUPTION PROJECTION of one `SwImage` row owned by this option.
+ * [model/entity/Option.cfc:L63]
+ *
+ * MODULE-LOCAL AND UN-EXPORTED. `model/entity/Image.cfc` is out of scope, the
+ * eighteen-file entity budget contains no `image.ts`, and the image subsystem is a
+ * stub port consumed only by out-of-scope branches - so the far side is named
+ * STRUCTURALLY rather than nominally. An `interface` is erased at emit, so the
+ * module's runtime export surface stays at exactly one value (the class), and
+ * keeping it un-exported stops the shape leaking outward as though it were a domain
+ * type in its own right.
+ *
+ * THIS IS THE `*Link` PATTERN ALREADY ESTABLISHED IN THIS FOLDER by
+ * `src/domain/entities/brand.ts`, which names five out-of-scope far sides the same
+ * way, and by `src/domain/entities/category.ts` for its `contents` many-to-many.
+ *
+ * WHY THE SHAPE IS EXACTLY THESE THREE MEMBERS. The one legacy behaviour that
+ * REACHES INTO an image row from an option context is the admin's file handling at
+ * [admin/controllers/main.cfc:L118-L131], which reads `image.getImageFile()` and
+ * joins it onto a directory. `imageID` [model/entity/Image.cfc:L52] is the primary
+ * key and the `fkcolumn="optionID"` join target, so it is what identifies a row;
+ * `imageFile` [model/entity/Image.cfc:L55] is the stored filename; `directory`
+ * [model/entity/Image.cfc:L56] is the per-row column that
+ * {@link Option.getImageDirectory} supplies the default for. Everything else on
+ * `model/entity/Image.cfc` - `imageName`, `imageDescription`, `imageType`,
+ * `product`, `promotion`, the four audit columns - is unreachable from anything in
+ * scope and is therefore NOT declared. The reachable set is the authority for what
+ * may appear here, which makes the shape a derivation rather than a judgement call.
+ */
+interface OptionImageLink {
+  /** The `SwImage.imageID` primary key. [model/entity/Image.cfc:L52] */
+  getImageID(): string;
+  /** The stored filename. [model/entity/Image.cfc:L55] */
+  getImageFile(): string | undefined;
+  /** The per-row directory column. [model/entity/Image.cfc:L56] */
+  getDirectory(): string | undefined;
+}
+
+/**
  * One selectable option - Small, Large, Red, Blue - and the `SwOption` row behind it.
  *
  * A class rather than an interface, because the legacy entity carries behaviour and not merely
@@ -246,10 +319,20 @@ import type { Sku } from './sku.js';
  * entity does. The accessors read already-hydrated fields, and the twelve helpers only call back
  * into the other entity's own API or assign one local field.
  *
- * Every method below is also TOTAL: none of them throws, and none of them can. Contrast
- * `promotionAccount.ts`, whose `setPromotion` is a throwing stub because the legacy body calls a
- * collection accessor that does not resolve. Nothing on this entity reaches a member that the
- * legacy could not resolve, which is a verified property and not an assumption.
+ * EXACTLY TWO MEMBERS BELOW CAN THROW, and both reproduce a source failure rather than adding a
+ * defensive one. An earlier revision of this note claimed "every method below is also TOTAL: none of
+ * them throws, and none of them can"; that became false and is corrected here rather than left to
+ * mislead a reader who trusts it.
+ *
+ *   * {@link Option.removeOptionGroup} raises when called with no argument on an option that has no
+ *     group, reproducing the unguarded null dereference at [model/entity/Option.cfc:L99-L102].
+ *   * {@link Option.getImageDirectory} raises when the assets image base was not materialized,
+ *     because its declared return type is `string` and every substitute value would be a
+ *     plausible-looking WRONG path. See the method.
+ *
+ * Contrast `promotionAccount.ts`, whose `setPromotion` is a throwing stub because the legacy body
+ * calls a collection accessor that does not resolve. Every other member here is total, which remains
+ * a verified property rather than an assumption.
  */
 export class Option {
   // --- Persistent Properties [model/entity/Option.cfc:L51-L56] --------------------------------
@@ -427,31 +510,81 @@ export class Option {
    */
   private readonly defaultImageID: string | undefined;
 
-  // OMITTED [model/entity/Option.cfc:L63]: the `images` one-to-many is NOT MATERIALIZED and is not
-  // authored as a member at all. The declaration was:
-  //
-  //   property name="images" singularname="image" cfc="Image" type="array"
-  //   fieldtype="one-to-many" fkcolumn="optionID" cascade="all-delete-orphan" inverse="true";
-  //
-  // `model/entity/Image.cfc` is out of scope, no image entity is ported, and the eighteen-file
-  // entity budget contains no `image.ts`, so there is no element type for the array. This follows
-  // the `PriceGroup.appliedOrderItems` precedent: a collection whose element type is out of scope is
-  // dropped outright rather than typed loosely. It is omitted ENTIRELY rather than exposed as a
-  // permanently-empty `readonly []`, because an accessor that can only ever return `[]` would state
-  // something false - it would read as "this option has no images" when the truth is "images are not
-  // modelled here" - and `no-unused-private-class-members` would in any case reject a field with no
-  // reader.
-  //
-  // THE `cascade="all-delete-orphan"` OBLIGATION IS NOT LOST, it MOVES. Deleting an Option must
-  // still delete its `SwImage` rows, and with no ORM to honour the mapping that duty transfers to
-  // the MySQL repository sibling, where it is recorded. It is stated here so the transfer is
-  // traceable from the entity a reviewer starts at, and it is NOT actionable in this file: a domain
-  // entity issues no DELETE.
-  //
-  // Note that `defaultImage` (L60) and `images` (L63) are INDEPENDENT declarations over two
-  // different columns, and they receive different treatments for a principled reason: L60's payload
-  // is a scalar FK that survives on its own, while L63's payload is a collection of unported
-  // entities that cannot. Neither ruling implies the other.
+  /**
+   * The materialized `images` one-to-many. [model/entity/Option.cfc:L63]
+   *
+   *   property name="images" singularname="image" cfc="Image" type="array"
+   *   fieldtype="one-to-many" fkcolumn="optionID" cascade="all-delete-orphan" inverse="true";
+   *
+   * ★ A REAL, POPULATABLE ASSOCIATION. An earlier revision authored no member for it and argued that
+   * "a collection whose element type is out of scope is dropped outright rather than typed loosely".
+   * The premise was sound and the conclusion skipped a step, so the correction is recorded here
+   * rather than quietly applied. There was a third option between "typed loosely" and "dropped": a
+   * NARROW STRUCTURAL PROJECTION over the members anything in scope can actually reach. That is
+   * {@link OptionImageLink}, and it is neither loose - it names three specific accessors and no
+   * others - nor an invented entity.
+   *
+   * The earlier note was RIGHT that a permanently-empty `readonly []` would state something false,
+   * reading as "this option has no images" when the truth is "images are not modelled here". The
+   * remedy for that is a collection a repository can genuinely populate, which is what this is; it is
+   * not the removal of the surface altogether. `fkcolumn="optionID"` means the join key sits on the
+   * `SwImage` row and points HERE, so these rows are this option's data even though `Image` is not a
+   * ported entity.
+   *
+   * `readonly`, AND THAT WAS PROVEN RATHER THAN ASSUMED against the ownership contract stated on
+   * {@link Option.getSkus}. L63 declares `images` with `inverse="true"`, so the OWNING side is the
+   * many-to-one at [model/entity/Image.cfc:L63] - `property name="option" cfc="Option"
+   * fieldtype="many-to-one" fkcolumn="optionID"` - and `model/entity/Image.cfc` hand-writes no
+   * `setOption`/`removeOption` pair at all, so those are ORM-GENERATED and a generated setter touches
+   * only its own field. A census of the whole entity tree for `arrayAppend`/`arrayDeleteAt` against
+   * `arguments.option.getImages()` returns ZERO hits, which is the direct evidence. No
+   * `addImage`/`removeImage` is authored either, for the same reason: model/entity/Option.cfc
+   * declares neither, and inventing a pair would widen the surface the legacy published.
+   *
+   * THE `cascade="all-delete-orphan"` OBLIGATION IS NOT LOST, it MOVES - and materializing the
+   * collection does not move it back. Deleting an Option must still delete its `SwImage` rows, and
+   * with no ORM to honour the mapping that duty belongs to the MySQL repository sibling, where it is
+   * recorded. It is stated here so the transfer is traceable from the entity a reviewer starts at,
+   * and it is NOT actionable in this file: a domain entity issues no DELETE.
+   *
+   * Note that `defaultImage` (L60) and `images` (L63) remain INDEPENDENT declarations over two
+   * different columns, and they still receive different treatments for a principled reason: L60's
+   * payload is a scalar FK on THIS row, which survives on its own as an opaque id with no shape to
+   * project, while L63's payload is a set of far rows that a projection can describe. Neither ruling
+   * implies the other.
+   */
+  private readonly images: readonly OptionImageLink[];
+
+  /**
+   * The already-resolved assets image base URL, materialized at the repository boundary.
+   * Backs {@link Option.getImageDirectory}. [model/entity/Option.cfc:L81-L83]
+   *
+   * NOT A SETTINGS KEY, AND THAT IS A HARD CONSTRAINT RATHER THAN A PREFERENCE. The legacy body is
+   * `getURLFromPath(setting('globalAssetsImageFolderPath')) & '/option/'`, and BOTH inner calls are
+   * unavailable to a domain entity in this port:
+   *
+   *   * The `SettingsProvider` port surface is CLOSED at the four keys the transformation plan allots
+   *     it - `globalURLKeyProduct`, `globalURLKeyProductType`, `skuCurrency` and
+   *     `skuEligibleCurrencies` ("only four keys", AAP 0.2.1; "exactly four keys", AAP 0.4.1).
+   *     `globalAssetsImageFolderPath` is not among them and no fifth key may be added.
+   *   * `getURLFromPath()` [org/Hibachi/HibachiObject.cfc:L83-L92] is a framework helper on the
+   *     unported Hibachi base. It replaces `\` with `/` and then strips the expanded web root, i.e.
+   *     it converts an absolute filesystem path into a web-relative URL using RUNTIME knowledge -
+   *     `expandPath('/')` - that a domain entity has no business holding.
+   *
+   * So the WHOLE of `getURLFromPath(setting('globalAssetsImageFolderPath'))` is resolved OUTSIDE the
+   * domain and handed in already in URL form. Both the backslash normalisation and the web-root
+   * stripping have therefore already happened by the time this field holds a value, and this entity
+   * contributes exactly the `& '/option/'` suffix and nothing else. That is the approved
+   * anti-corruption shape: the entity keeps the source's arithmetic and gives up the source's ambient
+   * lookups.
+   *
+   * OPTIONAL, because an unpopulated value is a REAL hydration state rather than an error - a
+   * repository reading `SwOption` for the promotion engine has no reason to resolve an assets path.
+   * What that state must NOT do is silently produce a wrong answer, which is why the accessor raises
+   * instead of defaulting; see {@link Option.getImageDirectory}.
+   */
+  private readonly assetsImageBaseUrl: string | undefined;
 
   // --- Related Object Properties (many-to-many - inverse) [L65-L70] ---------------------------
   //
@@ -461,11 +594,22 @@ export class Option {
   // delegates to the owning side's API instead of splicing a local array, because the local array
   // is not the authority for anything.
   //
-  // Each is an ALREADY-POPULATED `readonly` array, `readonly` in both directions - the reference
-  // cannot be reassigned and the array cannot be mutated through this type. Laziness is not
-  // simulated. An EMPTY array is indistinguishable from "the repository did not fetch the
-  // association", which is an accepted consequence of that rather than an oversight; the fetch shape
-  // is documented at the producing repository method, never here.
+  // Each is an ALREADY-POPULATED array and laziness is not simulated. An EMPTY array is
+  // indistinguishable from "the repository did not fetch the association", which is an accepted
+  // consequence of that rather than an oversight; the fetch shape is documented at the producing
+  // repository method, never here.
+  //
+  // ⚠ THEY ARE NOT ALL `readonly`, AND `inverse="true"` IS NOT WHAT DECIDES IT. An earlier revision
+  // of this note said "each is a `readonly` array, `readonly` in both directions"; that is no longer
+  // true and the reasoning behind it did not hold. Inverse-ness says who owns the LINK TABLE, which
+  // is a persistence question; array mutability is an IN-MEMORY GRAPH question, and the two are
+  // decided by different evidence. The test is the ownership census stated on {@link Option.getSkus}:
+  // an accessor hands back the LIVE array if and only if some entity in `model/entity/*.cfc` mutates
+  // it IN PLACE through that accessor. `promotionRewards`, `promotionRewardExclusions`,
+  // `promotionQualifiers` and `promotionQualifierExclusions` all have such sites - see each accessor
+  // for its verbatim locators - so all four are `PromotionReward[]` / `PromotionQualifier[]`. `skus`
+  // has none, so it stays `readonly Sku[]`. In every case the FIELD remains `readonly`: nothing may
+  // rebind the reference, because the array's IDENTITY is what the far side reaches through.
   //
   // LEGACY-NOTE [model/entity/Option.cfc:L63, L66-L70]: a METADATA INCONSISTENCY, recorded and
   // deliberately NOT "fixed". `type="array"` is declared on L63 (`images`), L68
@@ -474,9 +618,11 @@ export class Option {
   // identically - the ORM infers the array type from `fieldtype="many-to-many"` either way - so this
   // is a cosmetic source wart with no behavioural consequence, and the same pattern recurs on the
   // `attributeValues` declarations elsewhere in the model. Note it is not even systematic here: the
-  // two `*Exclusions` carry the attribute and neither of their non-exclusion twins does. ALL FIVE
-  // collections are therefore modelled uniformly as `readonly T[]`, which is what CFML actually
-  // produced, and no distinction is manufactured from the attribute's presence or absence.
+  // two `*Exclusions` carry the attribute and neither of their non-exclusion twins does. ALL SIX
+  // declarations - the five many-to-manys plus `images` at L63 - are therefore modelled as arrays,
+  // which is what CFML actually produced, and NO DISTINCTION IS MANUFACTURED FROM THE ATTRIBUTE'S
+  // PRESENCE OR ABSENCE. In particular `type="array"` is not evidence of mutability either: `images`
+  // carries the attribute and is `readonly`, `promotionRewards` omits it and is not.
   //
   // INCLUSION AND EXCLUSION ARE INDEPENDENT LINK TABLES, not two states of one relationship. There
   // are four distinct promotion link tables here - `SwPromoRewardOption`, `SwPromoRewardExclOption`,
@@ -508,7 +654,7 @@ export class Option {
    * `SwPromoRewardOption` is owned by [model/entity/PromotionReward.cfc:L81]. Membership here means
    * the reward applies TO order items carrying this option.
    */
-  private readonly promotionRewards: readonly PromotionReward[];
+  private readonly promotionRewards: PromotionReward[];
 
   /**
    * The materialized `promotionRewardExclusions` many-to-many - the EXCLUSION side. [L68]
@@ -523,7 +669,7 @@ export class Option {
    * must NOT apply to order items carrying this option. Same element type, opposite meaning, which
    * is why the two are separate collections and separate helper pairs.
    */
-  private readonly promotionRewardExclusions: readonly PromotionReward[];
+  private readonly promotionRewardExclusions: PromotionReward[];
 
   /**
    * The materialized `promotionQualifiers` many-to-many - the INCLUSION side. [L69]
@@ -537,7 +683,7 @@ export class Option {
    * different question from whether a reward applies, and is why qualifiers and rewards each carry
    * their own pair of tables.
    */
-  private readonly promotionQualifiers: readonly PromotionQualifier[];
+  private readonly promotionQualifiers: PromotionQualifier[];
 
   /**
    * The materialized `promotionQualifierExclusions` many-to-many - the EXCLUSION side. [L70]
@@ -551,7 +697,7 @@ export class Option {
    * `excludedOptions`. Membership here means order items carrying this option must NOT count
    * towards the qualifier.
    */
-  private readonly promotionQualifierExclusions: readonly PromotionQualifier[];
+  private readonly promotionQualifierExclusions: PromotionQualifier[];
 
   // --- Remote Properties [model/entity/Option.cfc:L72-L73] ------------------------------------
 
@@ -639,11 +785,13 @@ export class Option {
     readonly createdByAccountID: string | undefined;
     readonly modifiedDateTime: Date | undefined;
     readonly modifiedByAccountID: string | undefined;
+    readonly images?: readonly OptionImageLink[] | undefined;
+    readonly assetsImageBaseUrl?: string | undefined;
     readonly skus?: readonly Sku[] | undefined;
-    readonly promotionRewards?: readonly PromotionReward[] | undefined;
-    readonly promotionRewardExclusions?: readonly PromotionReward[] | undefined;
-    readonly promotionQualifiers?: readonly PromotionQualifier[] | undefined;
-    readonly promotionQualifierExclusions?: readonly PromotionQualifier[] | undefined;
+    readonly promotionRewards?: PromotionReward[] | undefined;
+    readonly promotionRewardExclusions?: PromotionReward[] | undefined;
+    readonly promotionQualifiers?: PromotionQualifier[] | undefined;
+    readonly promotionQualifierExclusions?: PromotionQualifier[] | undefined;
   }) {
     this.optionID = init.optionID;
     this.optionCode = init.optionCode;
@@ -657,6 +805,18 @@ export class Option {
     this.createdByAccountID = init.createdByAccountID;
     this.modifiedDateTime = init.modifiedDateTime;
     this.modifiedByAccountID = init.modifiedByAccountID;
+
+    // [model/entity/Option.cfc:L63] An unpopulated one-to-many read as an empty array under
+    // Hibernate and never as null, so `[]` is the parity-correct default. Whether a given `[]` means
+    // "this option has no images" or "the repository did not join `SwImage`" is a FETCH-SHAPE
+    // question answered at the producing repository method, never guessed at here.
+    this.images = init.images ?? [];
+
+    // [model/entity/Option.cfc:L81-L83] Left `undefined` when unresolved rather than defaulted to
+    // `''`, because `''` would make `getImageDirectory()` return the plausible-looking but wrong
+    // `'/option/'`. See the field and the accessor.
+    this.assetsImageBaseUrl = init.assetsImageBaseUrl;
+
     this.skus = init.skus ?? [];
     this.promotionRewards = init.promotionRewards ?? [];
     this.promotionRewardExclusions = init.promotionRewardExclusions ?? [];
@@ -749,31 +909,75 @@ export class Option {
   /**
    * The materialized `skus` association. [model/entity/Option.cfc:L66]
    *
-   * `readonly` in both directions, which is what stops a caller mutating this entity's state through
-   * the returned reference. The array is handed back as materialized - this accessor never sorts,
-   * filters or copies, because the legacy generated accessor did none of those either.
+   * THE ONE ASSOCIATION-OWNERSHIP CONTRACT, STATED HERE BECAUSE THIS IS THE FILE'S ONLY `readonly`
+   * COLLECTION. Across every entity in this folder the rule is single and mechanical: an association
+   * accessor hands back the LIVE, mutable array if and only if some entity in the legacy source
+   * mutates that very accessor's result in place - that is, if and only if
+   * `arrayAppend(x.getY(), ...)` or `arrayDeleteAt(x.getY(), ...)` appears somewhere in
+   * `model/entity/*.cfc`. Otherwise it hands back a `readonly` projection. The determination is a
+   * census over the source, never a preference.
+   *
+   * `getSkus()` IS ON THE `readonly` SIDE, AND THAT WAS PROVEN RATHER THAN ASSUMED. `Option.skus`
+   * carries `inverse="true"` [model/entity/Option.cfc:L66], so `Sku` is the owning side of
+   * `SwSkuOption` - [model/entity/Sku.cfc:L76] declares `options` with NO `inverse` attribute. And
+   * `Sku` declares no hand-written `addOption`/`removeOption` at all: those are ORM-GENERATED, and a
+   * generated collection helper appends only to its OWN collection. A census of the whole entity tree
+   * for `arrayAppend`/`arrayDeleteAt` against `arguments.option.getSkus()` returns ZERO hits, which
+   * is the direct evidence. The four promotion collections on this class sit the other way round -
+   * `PromotionReward` and `PromotionQualifier` DO declare hand-written helpers that reach back
+   * through their accessors - so those four are live.
+   *
+   * The array is handed back as materialized: this accessor never sorts, filters or copies, because
+   * the legacy generated accessor did none of those either.
    */
   getSkus(): readonly Sku[] {
     return this.skus;
   }
 
-  /** The materialized `promotionRewards` association - the INCLUSION side. [L67] */
-  getPromotionRewards(): readonly PromotionReward[] {
+  /**
+   * The materialized `promotionRewards` association - the INCLUSION side.
+   * [model/entity/Option.cfc:L67]
+   *
+   * LIVE, per the ownership contract stated on {@link Option.getSkus}:
+   * [model/entity/PromotionReward.cfc:L223] does
+   * `arrayAppend(arguments.option.getPromotionRewards(), this)` and
+   * [model/entity/PromotionReward.cfc:L231-L233] does `arrayFind` then `arrayDeleteAt` on the same
+   * array.
+   */
+  getPromotionRewards(): PromotionReward[] {
     return this.promotionRewards;
   }
 
-  /** The materialized `promotionRewardExclusions` association - the EXCLUSION side. [L68] */
-  getPromotionRewardExclusions(): readonly PromotionReward[] {
+  /**
+   * The materialized `promotionRewardExclusions` association - the EXCLUSION side.
+   * [model/entity/Option.cfc:L68]
+   *
+   * LIVE: [model/entity/PromotionReward.cfc:L323] appends and
+   * [model/entity/PromotionReward.cfc:L331-L333] removes through this accessor.
+   */
+  getPromotionRewardExclusions(): PromotionReward[] {
     return this.promotionRewardExclusions;
   }
 
-  /** The materialized `promotionQualifiers` association - the INCLUSION side. [L69] */
-  getPromotionQualifiers(): readonly PromotionQualifier[] {
+  /**
+   * The materialized `promotionQualifiers` association - the INCLUSION side.
+   * [model/entity/Option.cfc:L69]
+   *
+   * LIVE: `PromotionQualifier.addOption` / `removeOption` append and remove through this accessor,
+   * mirroring the `PromotionReward` pair exactly.
+   */
+  getPromotionQualifiers(): PromotionQualifier[] {
     return this.promotionQualifiers;
   }
 
-  /** The materialized `promotionQualifierExclusions` association - the EXCLUSION side. [L70] */
-  getPromotionQualifierExclusions(): readonly PromotionQualifier[] {
+  /**
+   * The materialized `promotionQualifierExclusions` association - the EXCLUSION side.
+   * [model/entity/Option.cfc:L70]
+   *
+   * LIVE: `PromotionQualifier.addExcludedOption` / `removeExcludedOption` append and remove through
+   * this accessor.
+   */
+  getPromotionQualifierExclusions(): PromotionQualifier[] {
     return this.promotionQualifierExclusions;
   }
 
@@ -802,24 +1006,85 @@ export class Option {
     return this.modifiedByAccountID;
   }
 
-  // OMITTED [model/entity/Option.cfc:L81-L83]: getImageDirectory() returned
-  // getURLFromPath(setting('globalAssetsImageFolderPath')) & '/option/'.
-  // The globalAssetsImageFolderPath setting is out of scope (not one of the seven
-  // SettingsProvider keys) and getURLFromPath() belongs to the non-ported Hibachi base.
-  // Image handling is an out-of-scope stub port; no image path is resolved in the domain.
-  //
-  // Both halves of that reasoning are independently sufficient, and both were verified rather than
-  // asserted. The `SettingsProvider` port surface is CLOSED at seven keys - `skuCurrency`,
-  // `skuEligibleCurrencies`, `globalURLKeyProduct`, `globalURLKeyProductType`,
-  // `productImageDefaultExtension`, `productImageOptionCodeDelimiter` and `productTitleString` - and
-  // `globalAssetsImageFolderPath` is not among them; no eighth key may be added. Independently,
-  // `getURLFromPath()` is a framework helper on the unported Hibachi base, so porting the body would
-  // require porting the base or reimplementing it, and reimplementing an unported framework helper
-  // inside a domain entity is precisely the coupling this port exists to remove.
-  //
-  // This is the only member of `model/entity/Option.cfc` that is omitted rather than ported. It sits
-  // here, at its source position between the property block and the first banner, so a reviewer
-  // diffing this file against the CFC finds the reason exactly where the method used to be.
+  /**
+   * The materialized `images` one-to-many, projected across `SwImage.optionID`.
+   * [model/entity/Option.cfc:L63]
+   *
+   * `accessors=true` on [model/entity/Option.cfc:L49] generated this in CFML, so the name and the
+   * array-returning shape are the source's and not this port's. The ELEMENT type is where the
+   * anti-corruption boundary sits: each row is an {@link OptionImageLink} - the join key, the stored
+   * filename and the per-row directory column - because `model/entity/Image.cfc` is out of scope and
+   * no `image.ts` exists to name.
+   *
+   * `readonly`, and never `undefined`. See the field for the census evidence that nothing in the
+   * entity tree mutates this array in place, for why the surface stops at this one accessor with no
+   * `addImage`/`removeImage` pair, and for where the `cascade="all-delete-orphan"` obligation went.
+   *
+   * AN EMPTY RESULT IS A FETCH-SHAPE STATEMENT, NOT A DOMAIN CLAIM, exactly as for the five
+   * collections below it.
+   */
+  getImages(): readonly OptionImageLink[] {
+    return this.images;
+  }
+
+  /**
+   * The default directory that this option's images live in. [model/entity/Option.cfc:L81-L83]
+   *
+   *   public string function getImageDirectory() {
+   *       return getURLFromPath(setting('globalAssetsImageFolderPath')) & '/option/';
+   *   }
+   *
+   * ★ PORTED, NOT OMITTED. An earlier revision dropped this method on two grounds, each stated as
+   * independently sufficient: that `globalAssetsImageFolderPath` is not one of the four
+   * `SettingsProvider` keys, and that `getURLFromPath()` belongs to the unported Hibachi base. BOTH
+   * PREMISES ARE TRUE AND NEITHER SUPPORTS THE CONCLUSION. They establish that this entity may not
+   * RESOLVE the base itself; they say nothing about whether it may CONCATENATE a suffix onto a base
+   * resolved elsewhere. Removing an entire public method because two of its inputs move outward
+   * inverts the anti-corruption boundary - the point of that boundary is to relocate the ambient
+   * lookups and KEEP the behaviour, and the behaviour here is one string concatenation.
+   *
+   * WHAT THIS ENTITY CONTRIBUTES IS EXACTLY `& '/option/'`. The `assetsImageBaseUrl` field holds the
+   * already-resolved value of `getURLFromPath(setting('globalAssetsImageFolderPath'))`, materialized
+   * at the repository boundary, so no setting is read here and no framework helper is
+   * re-implemented here. See that field for why both inner calls belong outside the domain.
+   *
+   * THE CONCATENATION IS VERBATIM, INCLUDING ITS WART. The source joins an unconditional `'/'` before
+   * `option`, so a base that already ends in a separator produces a DOUBLED one - `.../images//option/`.
+   * That is reproduced rather than tidied: normalising it here would make this port emit a different
+   * path than the CFML application does for the same setting value, and both write into the same
+   * filesystem. A trailing-slash policy, if one is ever wanted, belongs at the boundary that resolves
+   * the base, where it applies to every consumer at once.
+   *
+   * IT RAISES WHEN THE BASE WAS NOT MATERIALIZED, and the choice follows the dividing line this port
+   * applies everywhere: a total function is possible only when the return type has a spare value to
+   * spend. The legacy declares `returntype="string"`, and interface parity is the acceptance
+   * contract, so widening the return to `string | undefined` is not available. Nor is a default: an
+   * absent base would yield `'/option/'`, which is not a marker a caller can detect but a
+   * WELL-FORMED WRONG PATH - and the legacy consumers of this value do file existence checks, file
+   * deletes and file moves against it [admin/controllers/main.cfc:L118-L131]. Returning a wrong
+   * directory to code that deletes files is the one outcome worse than raising, so it raises.
+   *
+   * Note this is NOT the legacy reproducing a source failure - `setting()` always resolved in CFML,
+   * so this branch has no legacy counterpart. It is the port declining to invent an answer for a
+   * state the legacy could not be in, which is why the message names the hydration gap rather than a
+   * source locator.
+   */
+  getImageDirectory(): string {
+    if (this.assetsImageBaseUrl === undefined) {
+      throw new Error(
+        'Option.getImageDirectory was called on an option hydrated without an assets image base ' +
+          'URL. The legacy body at model/entity/Option.cfc:L81-L83 resolved its base through ' +
+          "getURLFromPath(setting('globalAssetsImageFolderPath')), and both of those calls are " +
+          'outside the domain in this port, so the resolved base must be supplied at construction. ' +
+          'No default is substituted because every candidate value would be a well-formed wrong ' +
+          'path rather than a detectable marker.',
+      );
+    }
+
+    // [model/entity/Option.cfc:L82] verbatim: `<base> & '/option/'`. The separator is unconditional
+    // in the source and stays unconditional here - see the doc block on the doubling.
+    return `${this.assetsImageBaseUrl}/option/`;
+  }
 
   // --- Non-Persistent Property Methods [model/entity/Option.cfc:L85-L87] ----------------------
   //
@@ -843,35 +1108,73 @@ export class Option {
   // org/Hibachi/HibachiEntity.cfc:L507-L565 could have synthesised `hasSku`, `hasPromotionReward`,
   // `hasAnySkus`, `getSkusCount`, `getSkusAssignedIDList` and the rest for these five collections,
   // and a census of calls made on an `Option` reference across the legacy tree finds none of them.
-  // Only concretely-called members are generated. `isNew()` is likewise absent: it is called ON an
-  // Option at [model/entity/Option.cfc:L94] by this entity's own `setOptionGroup`, and that call
-  // disappears with the guard it belonged to - see the note on that method.
+  // Only concretely-called members are generated.
+  //
+  // ★ CORRECTION - `isNew()` IS GENERATED, AND THIS NOTE PREVIOUSLY SAID OTHERWISE. The original
+  // text here read "`isNew()` is likewise absent: it is called ON an Option at
+  // [model/entity/Option.cfc:L94] by this entity's own `setOptionGroup`, and that call disappears
+  // with the guard it belonged to". THE PREMISE WAS INCOMPLETE. L94 is not the only call site; a
+  // full census of `option.isNew()` across the legacy tree finds FOUR, none of them in this file:
+  //
+  //   [model/entity/PromotionQualifier.cfc:L161]  if(arguments.option.isNew() or !hasOption(...))
+  //   [model/entity/PromotionQualifier.cfc:L261]  ... or !hasExcludedOption(...)
+  //   [model/entity/PromotionReward.cfc:L219]     if(arguments.option.isNew() or !hasOption(...))
+  //   [model/entity/PromotionReward.cfc:L319]     ... or !hasExcludedOption(...)
+  //
+  // Those two components were not yet ported when this note was written, so their calls could not be
+  // counted. The omission criterion itself - "only concretely-called members are generated" - is
+  // unchanged and is what now REQUIRES the member: `src/domain/entities/promotionQualifier.ts` and
+  // `promotionReward.ts` reproduce all four guards, and each one reads the FAR entity's `isNew()`.
+  //
+  // The disjunct cannot be dropped from those guards instead, because it is load-bearing: it makes
+  // the append UNCONDITIONAL for an unsaved option. Two distinct new options both carry
+  // `optionID === ''`, so the `has*` containment test - which compares primary keys - would report
+  // the second as already present and silently discard it. `isNew()` is what prevents that, and an
+  // option silently missing from a promotion qualifier changes which promotions apply.
+  //
+  // ★ AND NOTE THAT PORTING IT COSTS NOTHING ARCHITECTURALLY. `isNew()` reaches no service locator,
+  // no port and no repository - it is a comparison against the id property's own `unsavedvalue`
+  // [model/entity/Option.cfc:L52] - so this is not the `PromotionCode.isDeletable` situation, where
+  // `src/domain/entities/promotion.ts` had to probe structurally because the inherited member
+  // genuinely could not cross the domain boundary. Nothing is worked around here; the member is
+  // simply generated, as the criterion always required once its call sites existed.
 
   // Option Group (many-to-one) [model/entity/Option.cfc:L91]
 
-  // LEGACY-NOTE [model/entity/Option.cfc:L94-L96, L102-L105]: the CFML bodies also mutated the
-  // owning OptionGroup's options array in place (arrayAppend / arrayFind + arrayDeleteAt) so a
-  // Hibernate flush would cascade correctly. Associations here are materialized at the repository
-  // boundary as readonly arrays with no session and no cascade, so collection state is owned by
-  // src/repositories/mysql/**. Only this Option's own optionGroup field is maintained;
-  // optionGroup.getOptions() reflects the collection as hydrated. The
-  // `isNew() or !optionGroup.hasOption(this)` guard at L94 is therefore vacuous and omitted.
+  // THE TWO METHODS BELOW MAINTAIN BOTH SIDES OF THE LINK, WHICH IS WHAT THE SOURCE DOES.
+  // [model/entity/Option.cfc:L94-L96] appends this option to the owning group's array under a guard,
+  // and [model/entity/Option.cfc:L102-L105] removes it again; the near-side `optionGroup` field is
+  // maintained alongside. Both halves are reproduced, so `optionGroup.getOptions()` and
+  // `option.getOptionGroup()` can never disagree.
   //
-  // This is an ARCHITECTURAL CONSEQUENCE, NOT A DEFECT, which is why it carries the weaker marker:
-  // the legacy code was correct for the runtime it ran in, and the behaviour disappears because the
-  // runtime did, not because anything was wrong. It spends no deliberate-divergence budget.
+  // AN EARLIER REVISION DROPPED BOTH FAR-SIDE OPERATIONS, and the reasoning is recorded rather than
+  // deleted because it is a plausible-sounding trap. It argued that "associations here are
+  // materialized at the repository boundary as readonly arrays with no session and no cascade, so
+  // collection state is owned by src/repositories/mysql/**", that the
+  // `isNew() or !optionGroup.hasOption(this)` guard was therefore "vacuous", and that this was "an
+  // architectural consequence, not a defect". Three things are wrong with it:
   //
-  // Two further consequences, stated so a reviewer does not have to derive them:
+  //   * IT CONFLATES MATERIALIZATION WITH OWNERSHIP. The repository decides WHETHER an association
+  //     was fetched and in what order. It does not thereby become the only party allowed to change
+  //     the fetched array - and it cannot be, because it is not in the call path. `addOption` and
+  //     `setOptionGroup` are pure in-memory, synchronous, port-free domain operations, so there is no
+  //     later boundary at which a deferred reconciliation could run.
+  //   * THE GUARD IS NOT VACUOUS; DROPPING THE APPEND IS WHAT MADE IT LOOK VACUOUS. `isNew() or
+  //     !hasOption(this)` decides whether the append would DUPLICATE an existing member. Remove the
+  //     append and of course the guard has nothing to guard - that is circular, not an observation.
+  //   * IT PRODUCED A SILENT INCONSISTENCY RATHER THAN AVOIDING ONE. With the append gone,
+  //     `OptionGroup.addOption(option)` left the group's `getOptions()` NOT containing an option
+  //     whose own `getOptionGroup()` named that group. Two accessors disagreeing about one link, with
+  //     no error anywhere, is a worse outcome than the shared-array mutation the revision was trying
+  //     to avoid - and the shared array is exactly what Hibernate handed back, so sharing it is the
+  //     faithful behaviour, not a hazard introduced here.
   //
-  //   * `optionGroup.ts` documents the same seam from the other side and explicitly instructs that
-  //     the `readonly` on `getOptions()` must NOT be weakened to restore the in-place mutation.
-  //     Mutating a shared request-scoped array would corrupt every other holder of the same
-  //     instance. Reconciliation belongs at the repository boundary.
-  //   * NO CONTAINMENT TEST IS PERFORMED ANYWHERE IN THIS FILE, so no comparison basis is exercised.
-  //     Were one ever needed, it must compare by PRIMARY KEY (`optionID`) and never by object
-  //     reference or deep equality: Hibernate's `arrayFind` and `hasOption` semantics rest on
-  //     session identity, and primary-key comparison is the faithful equivalent in a session-less
-  //     port.
+  // CONTAINMENT IS BY PRIMARY KEY WITH A REFERENCE FALLBACK FOR AN UNSAVED ROW, decided in
+  // `OptionGroup.hasOption` and in `removeOptionGroup` below, and it is the same basis
+  // `priceGroup.ts`, `promotionCode.ts`, `promotionApplied.ts` and `promotionPeriod.ts` use. CFML's
+  // `arrayFind(array, component)` is reference identity, but under Hibernate reference identity WAS
+  // row identity, so a key comparison reproduces the MEANING of the legacy test where a literal
+  // reference comparison would only reproduce its letter.
 
   /**
    * Points this option at its owning group. [model/entity/Option.cfc:L92-L97]
@@ -889,11 +1192,28 @@ export class Option {
    * The parameter is REQUIRED in the source, so it is a plain required parameter here - contrast
    * {@link Option.removeOptionGroup}, whose legacy argument is deliberately not required.
    *
-   * The L93 assignment is reproduced; the L94-L96 collection append is not, for the reason recorded
-   * in the note above. What remains is the whole of this method's observable effect on THIS object.
+   * BOTH STATEMENTS ARE REPRODUCED, in the source's order: the near-side assignment at L93 runs
+   * FIRST and unconditionally, then the guarded append at L94-L96. The ordering matters because the
+   * guard calls back into the far side, so the field is already set by the time anything else can
+   * observe it.
+   *
+   * THE SHORT-CIRCUIT IS LOAD-BEARING. `isNew() or !hasOption(this)` evaluates `isNew()` first, so
+   * for an unsaved option the far-side membership test is not performed AT ALL - the append simply
+   * happens. `||` reproduces CFML `or` faithfully here because both operands are already booleans.
+   * That ordering is also what makes the append safe for an unsaved row: every unsaved option has an
+   * empty `optionID`, so a key-based membership test could not distinguish them, and the legacy
+   * arranged never to ask.
    */
   setOptionGroup(optionGroup: OptionGroup): void {
+    // [model/entity/Option.cfc:L93] - before the guard, always.
     this.optionGroup = optionGroup;
+
+    // [model/entity/Option.cfc:L94-L96] - the guarded append onto the owning group's LIVE array.
+    // `push` mutates in place, which is required: `arrayAppend` mutated the very array that
+    // `OptionGroup.getOptions()` hands back, and `optionGroup.ts` types it mutable for this reason.
+    if (this.isNew() || !optionGroup.hasOption(this)) {
+      optionGroup.getOptions().push(this);
+    }
   }
 
   /**
@@ -925,26 +1245,31 @@ export class Option {
    * against `undefined` asks it. Writing the weaker test here would also make this file disagree
    * with its own sibling about what the legacy `structKeyExists` idiom means.
    *
-   * WHAT THE RESOLVED GROUP IS USED FOR, now that the splice is gone. In the legacy the fallback
-   * existed to give L102-L105 an array to splice, and it is also what L102 DEREFERENCED. With the
-   * splice unreproduced, exactly one decision still depends on it: whether this call names a link at
-   * all. If neither the caller nor this option names a group, there is no link to break, and the
-   * method returns having changed nothing.
+   * WHAT THE RESOLVED GROUP IS USED FOR: it is the array L102-L105 searches and splices, and it is
+   * what L102 DEREFERENCES. Both are reproduced, so the fallback is load-bearing exactly as it was in
+   * the source rather than reduced to a presence check.
    *
-   * THAT GUARD IS PROVABLY BEHAVIOUR-PRESERVING RATHER THAN A CHANGE, which is why it is a guard and
-   * not a divergence. `resolvedOptionGroup === undefined` can only hold when the argument was omitted
-   * AND `this.optionGroup` was already `undefined`, so the clear it skips would have been a no-op on
-   * a field that is already empty. The legacy did not reach L106 in that case either: L102
-   * dereferenced null and RAISED. The raise itself is deliberately not reproduced, because it was a
-   * consequence of the splice - remove the splice and the dereference goes with it - and because
-   * every method on this entity is total. Returning unchanged is therefore the faithful translation
-   * of "the legacy left this field empty and did no further work".
+   * IT RAISES WHEN THE ARGUMENT IS OMITTED AND NO GROUP IS SET, and that is behaviour preservation
+   * rather than defensiveness. In that state CFML reaches L102 and calls `getOptions()` on a null
+   * value, which is a runtime error there. An earlier revision returned silently instead and argued
+   * that the raise "was a consequence of the splice - remove the splice and the dereference goes with
+   * it - and every method on this entity is total". The premise was the dropped splice, which is now
+   * restored, so the conclusion goes with it: the dereference is back, and so is the raise. Note also
+   * that "every method on this entity is total" was never a reason to suppress a source raise - the
+   * CFML parity helpers themselves raise where the source raises, and three of them were corrected to
+   * do so for precisely this reason. Silently succeeding where the legacy failed invents a success
+   * path the legacy system does not have. The message names the source locator so a runtime failure
+   * is self-documenting, matching `priceGroup.ts`, `promotionCode.ts`, `promotionApplied.ts` and
+   * `promotionPeriod.ts`.
    *
-   * All four input combinations were checked against the legacy and all four agree on the resulting
-   * state of this object: argument or no argument, group set or not set.
+   * THE NEAR-SIDE CLEAR AT L106 IS UNCONDITIONAL, sitting outside the `if(index > 0)` block at
+   * L103-L105. The field is cleared whether or not the far-side element was found, and that placement
+   * is preserved exactly - the clear is not folded into the found branch.
    *
    * @param optionGroup - The group to unlink from. Omit it entirely to fall back to the currently
    *   set group, exactly as the legacy `structKeyExists` branch did.
+   * @throws Error when the argument is omitted and this option has no group set, reproducing the null
+   *   dereference at [model/entity/Option.cfc:L102].
    */
   removeOptionGroup(optionGroup?: OptionGroup): void {
     // [model/entity/Option.cfc:L99-L101]: presence test, then the fallback to the currently-set
@@ -953,20 +1278,176 @@ export class Option {
       optionGroup !== undefined ? optionGroup : this.optionGroup;
 
     if (resolvedOptionGroup === undefined) {
-      // Nothing names a group, so there is no link to break. See the note above for why returning
-      // here is behaviour-identical to the legacy rather than a shortcut.
-      return;
+      throw new Error(
+        'Option.removeOptionGroup was called with no argument on an option that has no ' +
+          'optionGroup. This reproduces the legacy runtime failure at ' +
+          'model/entity/Option.cfc:L99-L102, where the omitted argument defaults to a null group ' +
+          'and getOptions() is then invoked on it before any index guard runs.',
+      );
     }
 
-    // [model/entity/Option.cfc:L102-L106] collapse into this ONE assignment, and the collapse is the
-    // whole architectural consequence recorded above. L102-L105 spliced `this` out of
-    // `resolvedOptionGroup.getOptions()`; L106 then cleared `variables.optionGroup` unconditionally.
-    // In this port the field below is the entirety of how membership is represented on an Option -
-    // the far-side array is a `readonly` projection owned by src/repositories/mysql/** - so clearing
-    // it expresses both statements at once. Expressible as an assignment only because the field is
-    // declared `OptionGroup | undefined` rather than optional; see the field declaration for why.
+    // [model/entity/Option.cfc:L102] ARRAY INDEX BASE CHANGE: CFML `arrayFind` returns a 1-BASED
+    // index, or 0 for "not found", which is why the source guards with `index > 0` at L103.
+    // `Array.prototype.findIndex` returns a 0-BASED index, or -1 for "not found", so the guard MUST
+    // become `!== -1`. Carrying `> 0` across would silently skip element 0 - the first member of the
+    // group, and the one `getOptions('sortOrder')` orders first.
+    //
+    // Containment is BY PRIMARY KEY, matching `OptionGroup.hasOption` and the rest of this folder;
+    // see the note above this method for why a key comparison reproduces the legacy meaning where a
+    // reference comparison would only reproduce its letter. The unsaved-row case falls back to
+    // reference identity, because every unsaved option shares the empty key.
+    const siblingOptions: Option[] = resolvedOptionGroup.getOptions();
+    const index: number = siblingOptions.findIndex((member: Option) => this.isSameRowAs(member));
+
+    // [model/entity/Option.cfc:L103-L105]
+    if (index !== -1) {
+      siblingOptions.splice(index, 1);
+    }
+
+    // [model/entity/Option.cfc:L106] - `structDelete(variables, "optionGroup")`, UNCONDITIONAL and
+    // outside the found-branch above. Expressible as an assignment only because the field is declared
+    // `OptionGroup | undefined` rather than optional; see the field declaration for why.
     this.optionGroup = undefined;
   }
+
+  /**
+   * Whether `candidate` denotes the same `SwOption` row as this instance.
+   *
+   * Private, and it has no legacy counterpart by name: it stands for CFML's `arrayFind(array, this)`
+   * comparison, which was reference identity in the language and row identity under Hibernate's
+   * session. With no session those two come apart, so the comparison is made on the primary key and
+   * falls back to reference identity when either side is unsaved - an unsaved option has an empty
+   * `optionID`, and so does every other unsaved option, so keys cannot separate them.
+   *
+   * Identical in shape to `promotionCode.ts`'s and `promotionApplied.ts`'s helpers of the same name,
+   * deliberately: one containment rule across the folder.
+   */
+  private isSameRowAs(candidate: Option): boolean {
+    const candidateOptionID: string = candidate.getOptionID();
+
+    if (candidateOptionID === '' || this.optionID === '') {
+      return candidate === this;
+    }
+
+    return candidateOptionID === this.optionID;
+  }
+
+  /**
+   * Whether this option has never been persisted.
+   * [org/Hibachi/HibachiEntity.cfc:L571-L576] via [org/Hibachi/HibachiEntity.cfc:L707-L709]
+   *
+   * The framework base defines `isNew()` as `getNewFlag()`, and `getNewFlag()` as
+   * `getPrimaryIDValue() == ""`. The base is not ported, so the one line it contributed is restated
+   * here - identically to `brand.ts`, `category.ts`, `priceGroup.ts`, `promotionApplied.ts`,
+   * `promotionCode.ts` and `promotionPeriod.ts`, all of which compare their own primary key against
+   * the empty string.
+   *
+   * IT IS PORTED BECAUSE IT IS CONCRETELY CALLED, AND THE CENSUS IS FIVE SITES, NOT ONE.
+   * [model/entity/Option.cfc:L94] invokes `isNew()` on this entity inside `setOptionGroup`'s guard,
+   * which is the whole test for whether an inherited member survives into this port. An earlier
+   * revision omitted it, on the grounds that the guard it belonged to had been dropped; the guard is
+   * restored, so the method is too. FOUR FURTHER CALLERS sit outside this file: `option.isNew()` is
+   * the left disjunct of the near-side append guard in `addOption` and `addExcludedOption` on BOTH
+   * model/entity/PromotionQualifier.cfc [L161, L261] and model/entity/PromotionReward.cfc [L219,
+   * L319], and `./promotionQualifier.ts` and `./promotionReward.ts` reproduce all four. Dropping the
+   * disjunct there instead would let a second unsaved option be discarded as a duplicate, because
+   * every unsaved option shares the primary key `''`.
+   *
+   * NOT A TRUTHINESS TEST. `=== ''` exactly, so a whitespace-only or `'0'` id is NOT new - CFML's own
+   * comparison here is against the literal `unsavedvalue`, not against emptiness in general.
+   *
+   * The empty-string comparison is exact rather than approximate: `unsavedvalue=""` and `default=""`
+   * on [model/entity/Option.cfc:L52] are what make an unsaved row's key empty in the first place.
+   */
+  isNew(): boolean {
+    return this.optionID === '';
+  }
+
+  // ============ START: Containment Probes ==============================
+  // FOUR probes, none with a hand-written legacy body: all are synthesised by the dispatcher at
+  // [org/Hibachi/HibachiEntity.cfc:L507-L565], whose CFML semantics are Hibernate's
+  // collection-contains - session identity, i.e. primary key for a persistent row.
+  //
+  // EACH IS AUTHORED BECAUSE AN IN-SCOPE FAR SIDE GENUINELY CALLS IT ACROSS A MODULE BOUNDARY, and
+  // each names its caller. A receiver-qualified scan of every `<receiver>.has<X>(` site in
+  // model/entity/*.cfc finds EXACTLY FOUR with an `option` receiver, and all four are authored - so
+  // unlike `brand.ts`, this entity's probe set is complete rather than filtered.
+  //
+  // ★ NOTE WHAT IS *NOT* IN THAT CENSUS: there is no `option.hasSku(...)` anywhere.
+  // model/entity/Sku.cfc hand-writes NO `addOption`/`removeOption` - the pair is ORM-generated from
+  // the `singularname="option"` declaration at [model/entity/Sku.cfc:L76] - and an ORM-generated
+  // adder performs a one-sided near-side append with no far-side guard, so it never probes this
+  // entity. That is why `getSkus()` above is `readonly` while the four promotion collections are
+  // LIVE, and it is the same reasoning from the other direction.
+  //
+  // THE PROJECT-WIDE CONTAINMENT RULE: compare by PRIMARY KEY, with a REFERENCE fallback when the
+  // candidate is unsaved. The fallback is not optional - every unsaved row's key is `''`
+  // (`unsavedvalue=""`), so a pure key comparison would report two DIFFERENT unsaved rows as the
+  // same one and the far side's guard would skip a legitimate append.
+
+  /**
+   * Called by `PromotionReward.addOption` [model/entity/PromotionReward.cfc:L222]:
+   * `if(isNew() or !arguments.option.hasPromotionReward( this ))`.
+   */
+  hasPromotionReward(promotionReward: PromotionReward): boolean {
+    const candidateID: string = promotionReward.getPromotionRewardID();
+    if (candidateID === '') {
+      return this.promotionRewards.includes(promotionReward);
+    }
+    return this.promotionRewards.some(
+      (held: PromotionReward) => held.getPromotionRewardID() === candidateID,
+    );
+  }
+
+  /**
+   * Called by `PromotionReward.addExcludedOption` [model/entity/PromotionReward.cfc:L322]:
+   * `if(isNew() or !arguments.option.hasPromotionRewardExclusion( this ))`.
+   *
+   * A DIFFERENT LINK TABLE from its sibling above - `SwPromoRewardExclOption` rather than
+   * `SwPromoRewardOption` - so it probes a different collection. Two probes, not one with a flag.
+   */
+  hasPromotionRewardExclusion(promotionReward: PromotionReward): boolean {
+    const candidateID: string = promotionReward.getPromotionRewardID();
+    if (candidateID === '') {
+      return this.promotionRewardExclusions.includes(promotionReward);
+    }
+    return this.promotionRewardExclusions.some(
+      (held: PromotionReward) => held.getPromotionRewardID() === candidateID,
+    );
+  }
+
+  /**
+   * Called by `PromotionQualifier.addOption` [model/entity/PromotionQualifier.cfc:L164]:
+   * `if(isNew() or !arguments.option.hasPromotionQualifier( this ))`.
+   */
+  hasPromotionQualifier(promotionQualifier: PromotionQualifier): boolean {
+    const candidateID: string = promotionQualifier.getPromotionQualifierID();
+    if (candidateID === '') {
+      return this.promotionQualifiers.includes(promotionQualifier);
+    }
+    return this.promotionQualifiers.some(
+      (held: PromotionQualifier) => held.getPromotionQualifierID() === candidateID,
+    );
+  }
+
+  /**
+   * Called by `PromotionQualifier.addExcludedOption` [model/entity/PromotionQualifier.cfc:L264]:
+   * `if(isNew() or !arguments.option.hasPromotionQualifierExclusion( this ))`.
+   *
+   * A DIFFERENT LINK TABLE from its sibling above - `SwPromoQualExclOption` rather than
+   * `SwPromoQualOption`.
+   */
+  hasPromotionQualifierExclusion(promotionQualifier: PromotionQualifier): boolean {
+    const candidateID: string = promotionQualifier.getPromotionQualifierID();
+    if (candidateID === '') {
+      return this.promotionQualifierExclusions.includes(promotionQualifier);
+    }
+    return this.promotionQualifierExclusions.some(
+      (held: PromotionQualifier) => held.getPromotionQualifierID() === candidateID,
+    );
+  }
+
+  // ============  END: Containment Probes ===============================
 
   // Skus (many-to-many - inverse) [model/entity/Option.cfc:L109]
   //

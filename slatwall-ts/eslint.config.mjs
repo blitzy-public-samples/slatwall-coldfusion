@@ -1,4 +1,19 @@
 // ---------------------------------------------------------------------------
+// CHECKPOINT STATUS - FORWARD REFERENCES CARRY THE MARKER `(planned)`
+//
+// The subtree is authored in boundaries, and AAP 0.4.5 makes the authoring
+// order "a compile-order convenience, not a schedule". Commentary in this file
+// therefore names modules of the target layout that DO NOT EXIST YET. Every such
+// name carries `(planned)` at its point of use, meaning exactly: a planned Agent
+// Action Plan target that is ABSENT from the subtree at this checkpoint. Nothing
+// here asserts that any of them exists now, and no behaviour in this file depends
+// on one. The complete set named below, with the role each will play:
+//
+//   src/domain/promotionEngine  engine type contracts
+//   src/handlers/bootstrap.ts   composition root (wiring)
+// ---------------------------------------------------------------------------
+
+// ---------------------------------------------------------------------------
 // slatwall-ts - ESLint flat configuration
 //
 // This file carries the single most important mechanical guarantee in the
@@ -19,12 +34,14 @@
 //        productTypeDAO, dataService, contentService, skuService,
 //        subscriptionService, optionService). In the target every collaborator
 //        is an explicit, compile-checked constructor argument wired once in
-//        `src/handlers/bootstrap.ts`. No runtime scan, no service locator.
+//        `src/handlers/bootstrap.ts` (planned). No runtime scan, no service locator.
 //
 //   T2 - `getService("xService")` locators embedded INSIDE entities. This is
-//        precisely a domain file reaching outward. Verified by grep over the
-//        legacy tree: 204 such call sites across `model/entity/*.cfc`, 18 of
-//        them in `model/entity/Sku.cfc` alone - including
+//        precisely a domain file reaching outward. Re-measured by grep over the
+//        legacy tree, distinguishing occurrences from lines because two calls
+//        can share a line: 205 OCCURRENCES on 204 SOURCE LINES across
+//        `model/entity/*.cfc`, 19 of them in `model/entity/Sku.cfc` alone -
+//        including
 //        [model/entity/Sku.cfc:L258] reaching `promotionService`,
 //        [model/entity/Sku.cfc:L371,L418,L422,L425] reaching `currencyService`
 //        from inside the currency cascade, [model/entity/Sku.cfc:L262,L266,
@@ -41,8 +58,9 @@
 //   20.19+ line, which is the specific reason the runtime baseline is 20.20.2
 //   rather than an earlier 20.x release.
 //
-// NO THIRD-PARTY ESLINT PLUGINS. The dependency set is fixed at fourteen
-// packages, all exactly pinned. Every guarantee below is therefore expressed
+// NO THIRD-PARTY ESLINT PLUGINS. The dependency set is fixed at the thirteen
+// exactly-pinned packages package.json declares - 3 runtime and 10 development,
+// no caret ranges anywhere. Every guarantee below is therefore expressed
 // with ESLint core rules plus the `typescript-eslint` rule sets only - no
 // import-resolution plugin, no Prettier bridge preset, no opinionated rule
 // pack. Where a guarantee would normally need a plugin (layer boundaries, the
@@ -103,7 +121,7 @@ import tseslint from 'typescript-eslint';
  * Everything the domain legitimately depends on is inward or lateral and is
  * therefore absent from this list: `src/domain/ports/**` (the interfaces the
  * outward layers implement), `src/domain/valueObjects/**`,
- * `src/domain/views/**`, `src/domain/promotionEngine/**` and
+ * `src/domain/views/**`, `src/domain/promotionEngine/**` (planned) and
  * `src/lib/**` (config, logger and the `src/lib/cfml/**` semantic-parity
  * helpers that back the Money value object).
  *
@@ -193,10 +211,11 @@ const DOMAIN_LAYER_MESSAGE =
   'Domain layer must not import outward. src/domain/** may not import from ' +
   'src/repositories/**, src/handlers/** or src/integrations/**. Dependency flow is strictly ' +
   'domain-inward and this is a build failure, not a convention. Declare an interface in ' +
-  'src/domain/ports/ and let the outward layer implement it; the composition root in ' +
-  'src/handlers/bootstrap.ts wires the concrete instance. This replaces the legacy ' +
-  'getService("xService") locator calls embedded inside entities (204 such call sites across ' +
-  'model/entity/*.cfc, e.g. model/entity/Sku.cfc:L258 and model/entity/Product.cfc:L519).';
+  'src/domain/ports/ and let the outward layer implement it; the planned composition root at ' +
+  'src/handlers/bootstrap.ts will wire the concrete instance. This replaces the legacy ' +
+  'getService("xService") locator calls embedded inside entities (205 occurrences on 204 source ' +
+  'lines across model/entity/*.cfc, e.g. model/entity/Sku.cfc:L258 and ' +
+  'model/entity/Product.cfc:L519).';
 
 const DOMAIN_PACKAGE_MESSAGE =
   'Domain layer must not depend on the driver, the runtime or environment loading. Keep mysql2 ' +
@@ -373,15 +392,38 @@ const CORE_CORRECTNESS_RULES = {
 // `@ts-expect-error` outside a test that deliberately asserts a type failure.
 // ---------------------------------------------------------------------------
 
-/** Production posture: suppression comments are documented or forbidden. */
+/**
+ * Production posture: EVERY suppression comment is forbidden outright.
+ *
+ * `@ts-expect-error` is banned here rather than merely required to carry a
+ * description, because the type gate quoted above admits exactly one exception
+ * and it is not "a described suppression in production source" - it is "a test
+ * that deliberately asserts a type failure". Allowing a described suppression in
+ * `src/**` would have made the gate conditional on prose, and prose does not
+ * type-check: a ten-character justification is trivially satisfiable and buys
+ * nothing, while the compiler error it silences is exactly the signal this
+ * project cannot afford to lose. Null semantics decide money here
+ * ([model/entity/Sku.cfc:L269-L273] has no `else` and no fallback, so
+ * substituting a value for the absent case would silently sell products for
+ * free), and a suppression comment is the one construct that can hide that class
+ * of mistake from `tsc`.
+ *
+ * `ts-check` stays `false` - permitting `@ts-check` is harmless, since every
+ * `.ts` file is type-checked unconditionally and the directive only ever adds
+ * checking to a JavaScript file. `minimumDescriptionLength` is deliberately
+ * absent: no directive in this object resolves to `'allow-with-description'`
+ * any more, so the option would be dead configuration.
+ *
+ * Handle the absent case explicitly instead of suppressing the diagnostic. The
+ * ONLY relaxation in this file is the test tier below.
+ */
 const BAN_TS_COMMENT_PRODUCTION = [
   'error',
   {
     'ts-check': false,
-    'ts-expect-error': 'allow-with-description',
+    'ts-expect-error': true,
     'ts-ignore': true,
     'ts-nocheck': true,
-    minimumDescriptionLength: 10,
   },
 ];
 

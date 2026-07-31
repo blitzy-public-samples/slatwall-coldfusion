@@ -106,7 +106,15 @@
 //        struct declared as an interface is still accepted.
 //     4. `cfEquals` accepts `string | null | undefined` only. It is strings
 //        only by design and is never extended to numbers, because every
-//        monetary comparison belongs to the `Money` value object.
+//        monetary comparison belongs to the `Money` value object. It is also
+//        the ONE export here that is not total: it raises
+//        `CfmlComparisonError` for a nullish operand, matching CFML, where a
+//        null reaching `eq` raises. The six readers around it stay total
+//        because each returns `T | undefined` or a `boolean` that every struct
+//        can genuinely answer, so absence is expressible IN the return type;
+//        `cfEquals` returns a `boolean` whose `false` already means "different
+//        currencies" and has no spare value left for "unanswerable". Both the
+//        raise and the shape of its message are pinned below.
 //
 //   `CfStruct<T = unknown>` is the module's only exported type; there is no
 //   key-map alias. The module implements NO cache, so no caching behaviour is
@@ -129,6 +137,7 @@
 import { describe, expect, it } from 'vitest';
 
 import {
+  CfmlComparisonError,
   cfEquals,
   structFindKey,
   structGet,
@@ -579,32 +588,110 @@ describe('cfEquals reproduces the case-insensitive CFML eq on currency codes', (
     expect(cfEquals('EUR', skuCurrency)).toBe(false);
   });
 
-  // JUDGMENT CALL: a nullish operand is never equal to anything, INCLUDING
-  // another nullish operand.
-  //   CFML would not answer this question at all - passing a null into `eq`
-  //   raises there - so there is no legacy result to preserve and a decision
-  //   had to be made consistently. Answering `true` for two nullish operands
-  //   would mean "unknown currency equals unknown currency", which reads as a
-  //   MATCH on a currency-selection path: an absent code could match another
-  //   absent code and unlock a price for a currency that was never identified.
-  //   That is the wrong failure direction where money is concerned, so the
-  //   answer is `false`. Throwing was rejected too, because it would turn a
-  //   missing currency code into a server error rather than the absent result
-  //   the legacy contract produces. Note the deliberate asymmetry with strict
-  //   equality that this creates: `cfEquals(undefined, undefined)` is `false`
-  //   where `undefined === undefined` is `true`.
-  it('never reports two nullish operands as equal', () => {
-    expect(cfEquals(null, null)).toBe(false);
-    expect(cfEquals(undefined, undefined)).toBe(false);
-    expect(cfEquals(null, undefined)).toBe(false);
-    expect(cfEquals(undefined, null)).toBe(false);
+  // A NULLISH OPERAND RAISES, WHICH IS THE CFML ANSWER.
+  //   Passing a null into `eq` raises in CFML, so this raises too, and the
+  //   question of what to return instead does not arise.
+  //
+  //   An earlier revision of this suite pinned `false` for every nullish
+  //   combination, reasoning that answering `true` for two absent codes would
+  //   read as a MATCH on a currency-selection path and unlock a price for a
+  //   currency that was never identified. That harm is real, but `false` does
+  //   not avoid it - it relocates it. This function returns `boolean`, and on
+  //   the cascade at [model/entity/Sku.cfc:L385] `false` already MEANS "these
+  //   are different currencies". Answering `false` for "one of these is not a
+  //   currency code at all" is therefore indistinguishable from a definite
+  //   negative: the base-currency step is silently skipped, the SKU ends up with
+  //   no entry for the configured currency, and the fault first becomes visible
+  //   when `getPriceByCurrencyCode` returns `undefined` somewhere else entirely.
+  //   Raising stops at the comparison that could not be made.
+  //
+  //   The asymmetry with strict equality is therefore gone rather than merely
+  //   documented: `cfEquals(undefined, undefined)` does not return `false` where
+  //   `undefined === undefined` is `true` - it refuses the question.
+  it('raises for two nullish operands rather than answering either way', () => {
+    expect(() => cfEquals(null, null)).toThrow(CfmlComparisonError);
+    expect(() => cfEquals(undefined, undefined)).toThrow(CfmlComparisonError);
+    expect(() => cfEquals(null, undefined)).toThrow(CfmlComparisonError);
+    expect(() => cfEquals(undefined, null)).toThrow(CfmlComparisonError);
   });
 
-  it('never reports a nullish operand as equal to a present code', () => {
-    expect(cfEquals(undefined, 'USD')).toBe(false);
-    expect(cfEquals('USD', undefined)).toBe(false);
-    expect(cfEquals(null, 'USD')).toBe(false);
-    expect(cfEquals('USD', null)).toBe(false);
+  it('raises when either operand is nullish beside a present code', () => {
+    expect(() => cfEquals(undefined, 'USD')).toThrow(CfmlComparisonError);
+    expect(() => cfEquals('USD', undefined)).toThrow(CfmlComparisonError);
+    expect(() => cfEquals(null, 'USD')).toThrow(CfmlComparisonError);
+    expect(() => cfEquals('USD', null)).toThrow(CfmlComparisonError);
+  });
+
+  // The message has to say WHICH operand was absent and what survived, because
+  // on the cascade path the surviving operand is the clue to where the missing
+  // one should have come from: if `'USD'` survived, the setting resolved and the
+  // per-currency row did not.
+  it('names the absent operand and reports the surviving one', () => {
+    expect(() => cfEquals(undefined, 'USD')).toThrow(/operand "a"/);
+    expect(() => cfEquals('USD', undefined)).toThrow(/operand "b"/);
+
+    expect(() => cfEquals(undefined, 'USD')).toThrow(/"USD"/);
+    expect(() => cfEquals('EUR', null)).toThrow(/"EUR"/);
+  });
+
+  // `null` and `undefined` arrive from different places - a hydrated SQL NULL
+  // versus an unset property or a missed struct read - so the message keeps them
+  // apart instead of flattening both to "nullish".
+  it('distinguishes null from undefined in the reported operand', () => {
+    expect(() => cfEquals(null, 'USD')).toThrow(/received null as operand/);
+    expect(() => cfEquals(undefined, 'USD')).toThrow(/received undefined as operand/);
+    expect(() => cfEquals('USD', null)).toThrow(/received null as operand/);
+    expect(() => cfEquals('USD', undefined)).toThrow(/received undefined as operand/);
+  });
+
+  // Quoting the surviving operand is what keeps an EMPTY survivor visibly
+  // different from an ABSENT one, which is the very distinction this error
+  // exists to protect: `''` is an ordinary string and compares normally, so an
+  // error naming it must not read as though it too were missing.
+  it('quotes the surviving operand so an empty one is not mistaken for absent', () => {
+    expect(() => cfEquals(null, '')).toThrow(/being ""/);
+    expect(() => cfEquals(null, undefined)).toThrow(/being undefined/);
+    expect(() => cfEquals(undefined, null)).toThrow(/being null/);
+  });
+
+  // A currency code is three characters, so a long survivor is itself evidence
+  // of a different fault - and an unbounded message would put caller-supplied
+  // text of arbitrary length into a log line.
+  it('bounds the surviving operand it reproduces', () => {
+    const overlong = 'C'.repeat(500);
+
+    let message = '';
+    try {
+      cfEquals(null, overlong);
+    } catch (error) {
+      message = error instanceof Error ? error.message : String(error);
+    }
+
+    expect(message).not.toBe('');
+    expect(message.length).toBeLessThan(overlong.length);
+    expect(message).toContain('...');
+  });
+
+  // The error carries its own name so a caller can branch on it after a
+  // structured-clone boundary, and it is a real `Error` so a stack is captured.
+  it('raises a named Error subclass', () => {
+    let caught: unknown;
+    try {
+      cfEquals('USD', undefined);
+    } catch (error) {
+      caught = error;
+    }
+
+    expect(caught).toBeInstanceOf(CfmlComparisonError);
+    expect(caught).toBeInstanceOf(Error);
+    expect((caught as Error).name).toBe('CfmlComparisonError');
+  });
+
+  // The absent operand is checked BEFORE any comparison happens, so a caller
+  // cannot get a `true` out of this function by pairing an absent operand with
+  // anything at all - including a string that folds to the same thing.
+  it('checks the first operand before the second', () => {
+    expect(() => cfEquals(null, undefined)).toThrow(/operand "a"/);
   });
 
   // An empty string is an ordinary CFML string value rather than an absent one,

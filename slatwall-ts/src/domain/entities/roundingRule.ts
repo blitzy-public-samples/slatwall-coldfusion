@@ -1,4 +1,22 @@
 // ---------------------------------------------------------------------------
+// CHECKPOINT STATUS - FORWARD REFERENCES CARRY THE MARKER `(planned)`
+//
+// The subtree is authored in boundaries, and AAP 0.4.5 makes the authoring
+// order "a compile-order convenience, not a schedule". Commentary in this file
+// therefore names modules of the target layout that DO NOT EXIST YET. Every such
+// name carries `(planned)` at its point of use, meaning exactly: a planned Agent
+// Action Plan target that is ABSENT from the subtree at this checkpoint. Nothing
+// here asserts that any of them exists now, and no behaviour in this file depends
+// on one. The complete set named below, with the role each will play:
+//
+//   src/domain/entities/priceGroupRate.ts            PriceGroupRate entity
+//   src/handlers/bootstrap.ts                        composition root (wiring)
+//   src/services/priceGroupService.ts                ported PriceGroupService
+//   src/services/roundingRuleService.ts              ported RoundingRuleService
+//   tests/unit/domain/entities/roundingRule.test.ts  roundingRule entity suite
+// ---------------------------------------------------------------------------
+
+// ---------------------------------------------------------------------------
 // slatwall-ts - RoundingRule: the SwRoundingRule row and its three behaviours
 //
 // WHAT THIS FILE IS
@@ -123,7 +141,7 @@
 //     Worth knowing, and NOT this file's to fix: the other two branches of that
 //     switch - `amountOff` [L330] and `amount` [L333] - DO NOT apply the rounding
 //     rule at all. The asymmetry is a legacy defect owned by
-//     src/services/priceGroupService.ts, where the amount-type strategies live.
+//     src/services/priceGroupService.ts (planned), where the amount-type strategies live.
 //   * `hasExpressionWithListOfNumericValuesOnly` has ZERO code callers. Its only
 //     invocation in the entire legacy tree is the declarative `"method"` above. It
 //     is NOT dead code, and it is authored.
@@ -181,7 +199,7 @@
 // permitting custom code under /integrationServices/ does not extend here.
 //
 // TEST COVERAGE FOR THIS ENTITY IS NET-NEW
-// The suite belongs at tests/unit/domain/entities/roundingRule.test.ts, is OWNED
+// The suite belongs at tests/unit/domain/entities/roundingRule.test.ts (planned), is OWNED
 // BY A DIFFERENT AGENT, and is not authored from here. All of it is NET-NEW and
 // must be labelled net-new rather than presented as parity: no legacy test under
 // meta/tests/** touches RoundingRule. The only legacy suites extended anywhere in
@@ -194,9 +212,11 @@
 // ---------------------------------------------------------------------------
 
 // The two CFML list primitives the declarative validator is built from. Both are
-// used below, so neither trips `noUnusedLocals`. `listGetAt` is 1-BASED and
-// answers `''` for a position out of range; `listLen('')` is 0. Those two
-// properties are what make the 1-based loop port faithfully.
+// used below, so neither trips `noUnusedLocals`. `listGetAt` is 1-BASED and RAISES
+// for a position outside `1..listLen(list)`, exactly as CFML does; `listLen('')` is
+// 0, so an empty expression runs the loop body zero times and never presents an
+// index at all. Those two properties are what make the 1-based loop port
+// faithfully - the bound is what keeps it in range, not any leniency in the helper.
 import { listGetAt, listLen } from '../../lib/cfml/list.js';
 
 // CFML `len()`. Returns a COUNT and never a boolean, which is exactly what the
@@ -352,9 +372,9 @@ export interface RoundingRuleDirectionOption {
  * closed at thirteen interfaces, so there is no fourteenth port to declare. An
  * interface declared at the point of use is therefore the faithful translation: it
  * names precisely the one method the legacy body invokes and nothing more.
- * `src/services/roundingRuleService.ts` satisfies it STRUCTURALLY - TypeScript
+ * `src/services/roundingRuleService.ts` (planned) satisfies it STRUCTURALLY - TypeScript
  * needs no `implements` clause and the service never imports this file to get one -
- * and `src/handlers/bootstrap.ts` wires the concrete instance in.
+ * and `src/handlers/bootstrap.ts` (planned) wires the concrete instance in.
  *
  * The signature mirrors [model/service/RoundingRuleService.cfc:L84-L86] exactly:
  *
@@ -385,8 +405,18 @@ export interface RoundingRuleDirectionOption {
  * resolves the rule through `getRoundingRuleDetailsByID` [L67-L77] and therefore
  * does reach the DAO. It is deliberately NOT part of this interface: this entity
  * already holds its own expression and direction, so it never needs a lookup.
+ *
+ * DELIBERATELY NOT EXPORTED. The port inventory is locked at the thirteen files the
+ * transformation plan enumerates (AAP 0.4.1), and every collaborator contract that is
+ * PUBLISHED from a port or entity module reads as an addition to that inventory
+ * whether or not it occupies a file of its own. This one is a private implementation
+ * detail of `RoundingRule`'s own constructor, so it stays module-local: the only thing
+ * that ever needs to satisfy it does so STRUCTURALLY, without importing the name -
+ * which is exactly the pattern the cross-module link interfaces in
+ * `src/domain/entities/brand.ts` use for their far sides. Do not re-export it, and do
+ * not promote it to a fourteenth port file.
  */
-export interface RoundingRuleValueRounder {
+interface RoundingRuleValueRounder {
   roundValueByRoundingRule(value: Money, rule: RoundingRule): Money;
 }
 
@@ -834,7 +864,7 @@ export class RoundingRule {
    * `left()` slicing, candidate concatenation, the `10 ^ (len(rr)-3)` step and the
    * closest/up/down selection - is entirely
    * [model/service/RoundingRuleService.cfc:L88-L175] and is ported into
-   * src/services/roundingRuleService.ts, along with its measured characterization
+   * src/services/roundingRuleService.ts (planned), along with its measured characterization
    * outputs. This method is a one-line delegation in the source and is a one-line
    * delegation here.
    *
@@ -986,9 +1016,11 @@ export class RoundingRule {
    * Recorded without asserting any repair.
    *
    * THE LOOP IS 1-BASED AND THE BOUND IS RE-EVALUATED, both faithfully. `listGetAt` is
-   * 1-based and answers `''` for a position out of range, so the `i = 1; i <= listLen()`
-   * shape ports directly with no off-by-one adjustment and no index guard. The bound is
-   * recomputed each iteration exactly as CFML recomputes it; that is observationally
+   * 1-based, so the `i = 1; i <= listLen()` shape ports directly with no off-by-one
+   * adjustment. No index guard is needed either, and the reason is the BOUND rather than
+   * any leniency in the helper: `listGetAt` RAISES for a position outside
+   * `1..listLen(list)`, exactly as CFML does, and this loop cannot present one. The bound
+   * is recomputed each iteration exactly as CFML recomputes it; that is observationally
    * identical here because `expression` is a `const`, and it is left as-written rather
    * than hoisted so the port stays a line-for-line correspondence.
    *

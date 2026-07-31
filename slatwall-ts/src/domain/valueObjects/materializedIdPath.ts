@@ -444,26 +444,48 @@ export function resolveIdPath(
  * in-list check over "merchandise" and "subscription" - so root extraction has
  * to be exact.
  *
- * JUDGMENT CALL - expressed as a 1-based positional read, because the CFML
- * first-element helper is not part of the list module's closed five-export
- * surface. That module excludes it on evidence: its four legacy call sites all
- * sit inside the out-of-scope bulk import path and split on an underscore
- * rather than on commas. Under the same overflow rule quoted at
- * `buildIdPathList`, the need is met locally with the positional read the
- * module does export, which is 1-based exactly as CFML is.
+ * JUDGMENT CALL - THIS REPRODUCES CFML `listFirst`, NOT CFML `listGetAt`, AND
+ * THE DIFFERENCE IS THE EMPTY-PATH CASE.
+ * The legacy line is `listFirst(getProductTypeIDPath())`
+ * [model/entity/ProductType.cfc:L112] - `listFirst`, verified verbatim in the
+ * source. The two CFML functions disagree on exactly one input, and it is the one
+ * that can occur here: `listFirst('')` answers `''`, whereas `listGetAt('', 1)`
+ * RAISES an invalid-index error. So emulating the first with the second would
+ * import a raise the legacy platform does not perform at this site.
  *
- * JUDGMENT CALL - relies on the positional read's documented non-throwing
- * contract. It answers `''` for a position outside the list, so an empty
- * stored path yields `''` here instead of an exception. That is the deliberate
- * behaviour: `buildIdPathList` can never produce an empty path, so the only
- * way to arrive with one is a stored empty string, which is exactly the value
- * `resolveIdPath` passes through untouched. Answering `''` keeps the return
- * type honestly `string` and pushes no narrowing burden onto the caller.
+ * `listFirst` is not part of the list module's closed five-export surface. That
+ * module excludes it on evidence: its four legacy call sites all sit inside the
+ * out-of-scope bulk import path and split on an underscore rather than on commas.
+ * Under the overflow rule quoted at `buildIdPathList`, the need is therefore met
+ * LOCALLY and explicitly - the empty case is answered here, and the positional
+ * read is called only for a path that provably has an element. An earlier
+ * revision instead leaned on the positional read answering `''` out of range,
+ * which coupled this function to a softened contract in a module that has since
+ * been corrected to raise as CFML does. Emulating one CFML function by relying on
+ * another being wrong is not parity, so the emulation is now stated outright.
+ *
+ * WHAT `''` MEANS TO THE CALLER, STATED HONESTLY. It means the path held no
+ * element, which is not a valid identifier. `buildIdPathList` can never produce an
+ * empty path, so the only way to arrive with one is a stored empty string, which
+ * is exactly the value `resolveIdPath` passes through untouched. The legacy code
+ * does not guard it either: at L112 the `''` flows into
+ * `getProductType('')`, and the subsequent `.getSystemCode()` fails on the absent
+ * product type. That downstream failure belongs to the resolving caller, which is
+ * where the legacy platform also raises it - it is not moved forward into this
+ * function, because doing so would change WHERE the request fails and this
+ * function's job is to read an element, not to police the path.
  *
  * @param idPath - a comma-delimited, root-first path.
  * @returns the root identifier, or `''` when the path holds no element.
  */
 export function getRootIdFromIdPath(idPath: string): string {
+  // CFML `listFirst('')` is `''`, so the empty path is answered here rather than
+  // handed to the positional read, which raises out of range exactly as CFML's
+  // `listGetAt` does.
+  if (listLen(idPath) === 0) {
+    return '';
+  }
+
   // 1, not 0: the list module's positional read is 1-based, matching CFML.
   return listGetAt(idPath, 1);
 }

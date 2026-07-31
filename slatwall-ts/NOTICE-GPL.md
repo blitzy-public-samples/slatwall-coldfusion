@@ -7,9 +7,20 @@ This notice applies to the `slatwall-ts/` subtree of this repository.
 `slatwall-ts/` is a TypeScript re-expression of business logic derived from **Slatwall 3.1.39** — the
 release recorded in the repository-root `version.txt`. It ports a bounded catalog and
 promotions/pricing slice of the legacy CFML application to the AWS Lambda `nodejs20.x` runtime, and
-continues to read and write the same `Sw*` MySQL tables. Because it reproduces the business logic of
+is built to read and write the same `Sw*` MySQL tables. Because it reproduces the business logic of
 that application rather than merely calling it, the code in this subtree is a work derived from
 Slatwall and is subject to the GNU General Public License.
+
+> **Milestone status.** This subtree is authored in boundaries. At this checkpoint it carries the
+> toolchain and licence files, the CFML semantic-parity helpers, the value objects, the thirteen
+> domain ports, an initial set of domain entities, the MySQL connection pool and dialect resolver,
+> two extracted SQL modules, the Google integration contract and adapter, one service, and the
+> foundation test suites. The Lambda handler entrypoints, the MySQL repository adapters and the
+> product-feed renderer are **planned** targets that are **not present yet**, so no database row is
+> read or written and no feed document is produced at this checkpoint. Nothing about the licence
+> analysis in this notice depends on that: the derivation from Slatwall — and therefore the GPL
+> obligation and the attribution below — already applies in full to every file that exists here, and
+> applies identically to every file still to be added.
 
 The upstream license text carried forward here is the License section of the repository-root
 `readme.md` and, identically, the repository-root `license.txt`.
@@ -52,8 +63,9 @@ License, Version 3, 29 June 2007 already ships with this distribution at the rep
 
 Duplicating those terms inside this subtree would add nothing and would make this notice
 unreviewable. `GNU_V3_Copy.txt` is the operative text; read it there. For information about the
-upstream project, including commercial licensing, `readme.md` directs readers to
-<http://www.getslatwall.com>.
+upstream project, including commercial licensing, `readme.md` directs readers to the historical
+upstream address `www.getslatwall.com`. It is recorded here as historical text rather than as a live
+link: the host no longer resolves in DNS, and no substitute destination is asserted in its place.
 
 ## Combined works
 
@@ -103,11 +115,12 @@ result under terms of your choice.
 Recorded for completeness: the exception's second guideline forbids altering the default display of
 the Slatwall name or logo from any part of the application.
 
-`slatwall-ts/` renders no user interface. It is a headless backend service — Lambda handlers plus one
-machine-readable product-feed renderer. The presentation subsystems `admin/`, `frontend/`, `public/`,
-and `assets/` are outside the scope of this port and are untouched by it. There is accordingly no
-name or logo display inside this subtree for it to alter, and it alters no display elsewhere in the
-application.
+`slatwall-ts/` renders no user interface. It is specified as a headless backend service — Lambda
+handlers plus one machine-readable product-feed renderer, both of which are planned targets not yet
+present at this checkpoint. The presentation subsystems `admin/`, `frontend/`, `public/`, and
+`assets/` are outside the scope of this port and are untouched by it. There is accordingly no name or
+logo display inside this subtree for it to alter — today, when no renderer exists, and equally once
+one does — and it alters no display elsewhere in the application.
 
 ### Redistribution
 

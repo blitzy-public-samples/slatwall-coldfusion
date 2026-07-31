@@ -1,4 +1,20 @@
 // ---------------------------------------------------------------------------
+// CHECKPOINT STATUS - FORWARD REFERENCES CARRY THE MARKER `(planned)`
+//
+// The subtree is authored in boundaries, and AAP 0.4.5 makes the authoring
+// order "a compile-order convenience, not a schedule". Commentary in this file
+// therefore names modules of the target layout that DO NOT EXIST YET. Every such
+// name carries `(planned)` at its point of use, meaning exactly: a planned Agent
+// Action Plan target that is ABSENT from the subtree at this checkpoint. Nothing
+// here asserts that any of them exists now, and no behaviour in this file depends
+// on one. The complete set named below, with the role each will play:
+//
+//   src/services/promotion/promotionApplication.ts       promotion decomposition module
+//   tests/traceability/legacyTestMap.ts                  structural coverage map
+//   tests/unit/domain/entities/promotionApplied.test.ts  promotionApplied entity suite
+// ---------------------------------------------------------------------------
+
+// ---------------------------------------------------------------------------
 // slatwall-ts - PromotionApplied entity
 //
 // PORT OF model/entity/PromotionApplied.cfc (155 lines, confirmed by `wc -l`).
@@ -312,7 +328,7 @@ import type { Promotion } from './promotion.js';
  * no fourth value and no sentinel.
  *
  * The union is exported because a downstream consumer genuinely needs the
- * literal type - `src/services/promotion/promotionApplication.ts` emits these
+ * literal type - `src/services/promotion/promotionApplication.ts` (planned) emits these
  * intents - and this mirrors the single precedent already set by
  * `PriceGroupRateAmountType`. It is the ONLY export in this module besides the
  * class itself.
@@ -325,334 +341,48 @@ import type { Promotion } from './promotion.js';
 export type PromotionAppliedType = 'order' | 'orderItem' | 'orderFulfillment';
 
 /**
- * One `SwPromotionApplied` row: a single discount, applied to one of an order,
- * an order item or an order fulfillment, by one promotion.
+ * The applied-promotion entity.
  *
- * A CLASS RATHER THAN AN INTERFACE, because the legacy entities carry behaviour
- * and not merely data, and because interface parity is the acceptance contract:
- * a reviewer diffs this public surface against the CFC line by line. Method
- * names are therefore the legacy CFML names VERBATIM in camelCase - which is
- * exactly why eslint.config.mjs deliberately enables no `naming-convention`,
- * `camelcase` or `id-match` rule.
- *
- * IT IS THE SIMPLEST BEHAVIOUR-CARRYING ENTITY IN THE FOLDER. The
- * Non-Persistent Property Methods section is empty, the ORM Event Hooks section
- * is empty, and the only hand-written logic in the entire component is the
- * bidirectional helper block. What remains is a carrier plus two array
- * operations.
- *
- * NOTHING HERE IS OPTIONAL-BY-`?:`. Every nullable member is a REQUIRED
- * constructor slot typed `T | undefined`, because `exactOptionalPropertyTypes`
- * is enabled and "absent" and "present-but-undefined" are genuinely different
- * types under it. Requiring the key forces a hydrating repository to state "I
- * looked and found nothing" rather than silently omitting it.
+ * CFML parity [model/entity/PromotionApplied.cfc:L52-L55, L58-L61, L64, L67-L70]: the
+ * persistent columns, the four many-to-one foreign keys, the remote ID and the audit
+ * columns.
  */
 export class PromotionApplied {
-  // --- Persistent Properties [model/entity/PromotionApplied.cfc:L52-L55] -----
-  //
-  // Exactly four, under the `// Persistent Properties` banner at L51.
-
-  /**
-   * Primary key. [model/entity/PromotionApplied.cfc:L52]
-   *
-   *   property name="promotionAppliedID" ormtype="string" length="32"
-   *   fieldtype="id" generator="uuid" unsavedvalue="" default="";
-   *
-   * `string` and never `string | undefined`: `default=""` means the column
-   * always holds a string, possibly the empty one, and that empty string is
-   * load-bearing because it is exactly what `isNew()` keys on. UUID generated,
-   * 32 characters, `unsavedvalue=""`.
-   *
-   * `readonly` with a getter and no setter, matching the legacy id property. It
-   * is also the key every containment predicate on the far side compares - see
-   * `isSameRowAs` and the far-side contract for `hasAppliedPromotion`.
-   *
-   * It has one live legacy read path beyond the accessor: the promotion
-   * use-count HQL counts it, at [model/dao/PromotionDAO.cfc:L141] and
-   * [model/dao/PromotionDAO.cfc:L196], both of which read
-   * `SELECT count(pa.promotionAppliedID) as count FROM SlatwallPromotionApplied pa`.
-   */
   private readonly promotionAppliedID: string;
 
-  /**
-   * The discount recorded by this row. [model/entity/PromotionApplied.cfc:L53]
-   *
-   *   property name="discountAmount" ormtype="big_decimal";
-   *
-   * THIS IS ONE OF EXACTLY FOUR NO-DEFAULT MONEY COLUMNS IN THE ENTIRE IN-SCOPE
-   * SET, alongside `PriceGroupRate.amount` [model/entity/PriceGroupRate.cfc:L54],
-   * `SkuCurrency.price` [model/entity/SkuCurrency.cfc:L53] and
-   * `PromotionReward.amount` [model/entity/PromotionReward.cfc:L61]. Contrast
-   * model/entity/Sku.cfc:L55-L57, where all three monetary columns DO declare
-   * `default="0"`. THE ORM SCHEMA ITSELF ENCODES THE ASYMMETRY, so absence here
-   * is a modelled state and not a missing zero.
-   *
-   * IT MUST NEVER BE COERCED TO `0`, AND NEVER TYPED `number`. `Money |
-   * undefined` is the type, `undefined` means "no discount recorded", and
-   * substituting zero would make an unrecorded discount indistinguishable from a
-   * recorded zero one. The same rule governs the highest-consequence parity
-   * check in the migration - `Sku.getPriceByCurrencyCode()` returning
-   * `Money | undefined` [model/entity/Sku.cfc:L269-L273] - and it is the same
-   * rule for the same reason.
-   *
-   * `Money` and not `number` also because `big_decimal` is arbitrary precision.
-   * Every legacy consumer sums this column through `precisionEvaluate`:
-   * [model/entity/Order.cfc:L369], [model/entity/OrderItem.cfc:L194] and
-   * [model/entity/OrderFulfillment.cfc:L190] each read
-   * `precisionEvaluate('discountAmount + getAppliedPromotions()[i].getDiscountAmount()')`.
-   * IEEE-754 doubles cannot reproduce that without drift.
-   *
-   * NOT `readonly`, because the legacy has live in-place write sites - see
-   * `setDiscountAmount`.
-   *
-   * LEGACY-NOTE [model/entity/PromotionApplied.cfc:L53]: the property carries NO
-   * `hb_formatType=` attribute, so - unlike `PriceGroupRate.amount` with its
-   * `getAmountFormatted()` companion - there is NO formatted-accessor member
-   * anywhere in this component, and none is invented here.
-   */
+  // `Money`, never `number`: the column is `big_decimal`
+  // [model/entity/PromotionApplied.cfc:L53]. Mutable because the engine builds a row and then
+  // assigns the computed discount to it.
   private discountAmount: Money | undefined;
 
-  /**
-   * Which of the three order-side targets this discount was applied to.
-   * [model/entity/PromotionApplied.cfc:L54]
-   *
-   *   property name="appliedType" ormtype="string";
-   *
-   * Typed to the {@link PromotionAppliedType} union rather than to `string`,
-   * because the vocabulary is a real data contract pinned from both the write
-   * and read sides - the evidence is on the union itself.
-   *
-   * `PromotionAppliedType | undefined`: the column declares no default, and the
-   * engine sets it only on the three construction paths, so a row that was
-   * hydrated from a legacy write predating those paths can legitimately have no
-   * value. NOT `readonly`, because `setAppliedType` is a live legacy member.
-   */
   private appliedType: PromotionAppliedType | undefined;
 
-  /**
-   * The 3-character ISO currency code of {@link discountAmount}.
-   * [model/entity/PromotionApplied.cfc:L55]
-   *
-   *   property name="currencyCode" ormtype="string" length="3";
-   *
-   * Typed with the branded `CurrencyCode` from
-   * slatwall-ts/src/domain/valueObjects/currencyCode.ts, which asserts SHAPE
-   * (exactly three characters) and nothing more - it is not a promise that the
-   * currency exists, is active, or is eligible for a SKU. No validation logic is
-   * invented here; the repository brands the row value on the way in, using that
-   * module's own `isCurrencyCode` guard at a hydration boundary or its throwing
-   * `toCurrencyCode` constructor. Casing is stored VERBATIM and compared
-   * case-insensitively, which are two separate rules that module owns.
-   *
-   * THE PROMOTION ENGINE NEVER POPULATES THIS COLUMN. Verified twice and from
-   * two directions: a case-insensitive sweep for `setCurrencyCode` across the
-   * whole of model/service/PromotionService.cfc returns ZERO hits, and none of
-   * the three construction blocks [model/service/PromotionService.cfc:L399-L406,
-   * L445-L452, L528-L536] touches it. A repo-wide sweep finds no reader either -
-   * nothing in model/, admin/ or frontend/ ever reads
-   * `SwPromotionApplied.currencyCode`. THE COLUMN EXISTS FOR SCHEMA CONTINUITY
-   * ONLY, and it is preserved rather than dropped for exactly that reason. Its
-   * verbatim round-tripping is also what
-   * slatwall-ts/src/domain/valueObjects/currencyCode.ts cites as the
-   * justification for not case-folding a branded code.
-   *
-   * `readonly`: no `setCurrencyCode` is authored, because no write site exists.
-   */
   private readonly currencyCode: CurrencyCode | undefined;
 
-  // --- Related Entities [model/entity/PromotionApplied.cfc:L58-L61] ----------
-  //
-  // Four many-to-ones under the `// Related Entities` banner at L57. ONE has an
-  // in-scope far side; THREE point at the out-of-scope order aggregate and
-  // collapse to opaque identifier columns.
-
-  /**
-   * The materialized far side of the `promotion` many-to-one.
-   * [model/entity/PromotionApplied.cfc:L58]
-   *
-   *   property name="promotion" cfc="Promotion" fieldtype="many-to-one"
-   *   fkcolumn="promotionID";
-   *
-   * The ONE in-scope association on this entity. `undefined` when the repository
-   * did not fetch it, and `undefined` again after `removePromotion` has cleared
-   * it. Not `readonly`: `setPromotion` and `removePromotion` both write it.
-   */
   private promotion: Promotion | undefined;
 
-  /**
-   * The `promotionID` foreign-key column.
-   * [model/entity/PromotionApplied.cfc:L58]
-   *
-   * Read from the column rather than derived from the association, so the key is
-   * available even when the repository chose not to materialize `promotion`.
-   * `undefined` on a NULL column.
-   */
   private readonly promotionID: string | undefined;
 
-  // LEGACY-NOTE [org/Hibachi/HibachiEntity.cfc:L528-L531]: none of the four
-  // `get<Assoc>ID` accessors below had a hand-written legacy body. They resolved
-  // through the `get*ID` branch of the onMissingMethod dispatcher into
-  // `getPropertyPrimaryID`, which invokes the ASSOCIATION getter and returns the
-  // far object's primary ID, falling back to the EMPTY STRING when the
-  // association is null. The target reads the foreign-key COLUMN instead and
-  // returns `undefined` on a miss. Two structural reasons, neither stylistic:
-  // three of the four far sides (OrderItem, OrderFulfillment, Order) are out of
-  // scope entirely, so there is no instance to invoke the getter on; and reading
-  // the column makes the key available even when the association was not
-  // materialized, which the legacy proxy-based form could not do. The
-  // `""`-on-miss detail is recorded so it is auditable rather than silently
-  // dropped - it was checked, not overlooked.
-
-  /**
-   * The `orderItemID` foreign-key column, OPAQUE.
-   * [model/entity/PromotionApplied.cfc:L59]
-   *
-   *   property name="orderItem" cfc="OrderItem" fieldtype="many-to-one"
-   *   fkcolumn="orderItemID" hb_cascadeCalculate="true";
-   *
-   * The far side is model/entity/OrderItem.cfc, which is EXPLICITLY OUT OF
-   * SCOPE - the order, checkout and payment pipeline is the plan's largest
-   * exclusion. The many-to-one therefore collapses to an opaque identifier and
-   * no `OrderItem` object is ever constructed. Getter only, no setter; see the
-   * ID-accessor ruling in the DROP block below.
-   *
-   * LEGACY-NOTE [model/entity/PromotionApplied.cfc:L59]:
-   * `hb_cascadeCalculate="true"` is preserved verbatim here as inert metadata
-   * and is NOT PORTED, because the target has no calculation framework to
-   * propagate through. Its legacy meaning is precise:
-   * `updateCalculatedProperties()` at [org/Hibachi/HibachiEntity.cfc:L36-L54]
-   * walks the property list and, for any property carrying a truthy
-   * `hb_cascadeCalculate`, calls `updateCalculatedProperties()` on the FAR
-   * OBJECT - guarded at L49 by `isObject( variables[ name ] )`. Once the foreign
-   * key is a plain string that guard can never pass, so the hint is inert
-   * STRUCTURALLY and not merely by omission. It is doubly inert here because
-   * this entity declares no `calculated*` property for the loop's other branch
-   * to recompute. The only other in-scope carrier of the same hint is
-   * model/entity/Sku.cfc:L65 on `product`.
-   */
   private readonly orderItemID: string | undefined;
 
-  /**
-   * The `orderfulfillmentID` foreign-key column, OPAQUE.
-   * [model/entity/PromotionApplied.cfc:L60]
-   *
-   *   property name="orderFulfillment" cfc="OrderFulfillment"
-   *   fieldtype="many-to-one" fkcolumn="orderfulfillmentID";
-   *
-   * The far side is model/entity/OrderFulfillment.cfc, out of scope. Opaque
-   * identifier, getter only.
-   *
-   * LEGACY-NOTE [model/entity/PromotionApplied.cfc:L60] - CASING WART, PRESERVED
-   * EXACTLY. The DATABASE COLUMN NAME is `orderfulfillmentID` with a LOWERCASE
-   * `f`, while the CFML property is `orderFulfillment` with a capital F. Every
-   * other foreign key on this component matches its property's casing -
-   * `promotionID` (L58), `orderItemID` (L59), `orderID` (L61) - so this one is
-   * the outlier. The distinction is deliberate and must be kept straight in two
-   * places: the TypeScript member here is `orderFulfillmentID` (capital F,
-   * because it is a TypeScript identifier and reads correctly as one), while the
-   * physical column any SQL in `src/repositories/mysql/**` must name is
-   * `orderfulfillmentID` (lowercase f, because that is what the schema holds).
-   * Schema continuity forbids "fixing" the column name: a migration is out of
-   * scope and MySQL identifier case-sensitivity is platform-dependent, so a
-   * silent correction here could break the query on a case-sensitive server.
-   */
   private readonly orderFulfillmentID: string | undefined;
 
-  /**
-   * The `orderID` foreign-key column, OPAQUE.
-   * [model/entity/PromotionApplied.cfc:L61]
-   *
-   *   property name="order" cfc="Order" fieldtype="many-to-one"
-   *   fkcolumn="orderID";
-   *
-   * The far side is model/entity/Order.cfc, out of scope. Opaque identifier,
-   * getter only. This is the key the promotion engine's applied-promotion
-   * intents are keyed by in the target.
-   */
   private readonly orderID: string | undefined;
 
-  // --- Remote properties [model/entity/PromotionApplied.cfc:L64] -------------
-
-  /**
-   * External-system correlation identifier. [model/entity/PromotionApplied.cfc:L64]
-   *
-   *   property name="remoteID" ormtype="string";
-   *
-   * Under the `// Remote properties` banner at L63. Never written by the
-   * promotion engine - a case-insensitive sweep for `setRemoteID` across
-   * model/service/PromotionService.cfc returns zero hits - so it is `readonly`
-   * with a getter and no setter. Present because the column is, and because
-   * model/entity/PromotionAccount.cfc notably does NOT declare one: that is a
-   * real schema difference between the two link entities, not an omission in
-   * either.
-   */
   private readonly remoteID: string | undefined;
 
-  // --- Audit properties [model/entity/PromotionApplied.cfc:L67-L70] ----------
-  //
-  // Four members under the `// Audit properties` banner at L66, and ALL FOUR
-  // carry `hb_populateEnabled="false"` - preserved verbatim here as inert
-  // metadata. In the legacy tree that attribute told the framework's populate
-  // routine to refuse these fields from request data; the framework wrote them
-  // itself. Neither the promotion engine nor this class ever writes them, which
-  // is why all four are `readonly` with getters only.
-  //
-  // The two `Account` many-to-ones collapse to opaque identifier columns for the
-  // same reason as the order-side keys: model/entity/Account.cfc is out of
-  // scope, so no `Account` object is ever constructed.
-
-  /**
-   * [model/entity/PromotionApplied.cfc:L67] `hb_populateEnabled="false"`,
-   * `ormtype="timestamp"`. UTC; `undefined` for a NULL column - never the epoch,
-   * never `0`, never a fresh clock reading.
-   */
   private readonly createdDateTime: Date | undefined;
 
-  /**
-   * The `createdByAccountID` column, opaque.
-   * [model/entity/PromotionApplied.cfc:L68] `hb_populateEnabled="false"`,
-   * `cfc="Account" fieldtype="many-to-one" fkcolumn="createdByAccountID"`.
-   */
   private readonly createdByAccountID: string | undefined;
 
-  /**
-   * [model/entity/PromotionApplied.cfc:L69] `hb_populateEnabled="false"`,
-   * `ormtype="timestamp"`. UTC; `undefined` for a NULL column.
-   */
   private readonly modifiedDateTime: Date | undefined;
 
-  /**
-   * The `modifiedByAccountID` column, opaque.
-   * [model/entity/PromotionApplied.cfc:L70] `hb_populateEnabled="false"`,
-   * `cfc="Account" fieldtype="many-to-one" fkcolumn="modifiedByAccountID"`.
-   */
   private readonly modifiedByAccountID: string | undefined;
 
   /**
-   * Hydrates one `SwPromotionApplied` row, and is also how the promotion engine
-   * builds an applied-promotion intent.
+   * Builds an applied-promotion row.
    *
-   * A single readonly parameter object rather than a positional list, matching
-   * the convention established across this folder and at
-   * [slatwall-ts/src/lib/config.ts:L615]: an inline object type rather than a
-   * second exported interface, because this module exports exactly one class and
-   * one co-located literal type.
-   *
-   * THE CONSTRUCTOR IS THE POPULATION PATH. In the legacy tree the engine built
-   * the row with `this.newPromotionApplied()` followed by four setter calls
-   * [model/service/PromotionService.cfc:L401-L405, L447-L451, L530-L534]; in the
-   * target the promotion pass returns applied-promotion intents instead of
-   * mutating a live ORM graph, so construction carries every column at once.
-   * `setAppliedType`, `setDiscountAmount`, `setPromotion` and `removePromotion`
-   * remain available because each has a verified live legacy call site, but they
-   * are not required to build a complete instance.
-   *
-   * Every nullable slot is REQUIRED and typed `T | undefined`, for the
-   * `exactOptionalPropertyTypes` reason recorded on the class.
-   *
-   * There is no collaborator port parameter, because this entity has zero
-   * `getService(` sites, and no clock parameter, because it performs no date
-   * comparison of any kind.
+   * @param init the row's values; the promotion may be supplied hydrated, by ID, or both.
    */
   constructor(init: {
     readonly promotionAppliedID: string;
@@ -686,221 +416,90 @@ export class PromotionApplied {
     this.modifiedByAccountID = init.modifiedByAccountID;
   }
 
-  // --- Accessors --------------------------------------------------------------------------------
-  //
-  // ColdFusion auto-generated these from the property metadata, so there is no legacy body to port;
-  // the locator on each cites the property declaration it serves. Names are the CFML names
-  // verbatim.
-
-  /** [model/entity/PromotionApplied.cfc:L52] */
   getPromotionAppliedID(): string {
     return this.promotionAppliedID;
   }
 
-  /**
-   * [model/entity/PromotionApplied.cfc:L53]
-   *
-   * `undefined` means NO DISCOUNT RECORDED and MUST NOT be read as zero. Live legacy readers of
-   * this accessor: [model/service/PromotionService.cfc:L385] and
-   * [model/service/PromotionService.cfc:L431], each comparing an existing applied discount against
-   * a newly computed one; and the three aggregate sums at [model/entity/Order.cfc:L369],
-   * [model/entity/OrderItem.cfc:L194] and [model/entity/OrderFulfillment.cfc:L190].
-   */
   getDiscountAmount(): Money | undefined {
     return this.discountAmount;
   }
 
-  /**
-   * Replaces the recorded discount. [model/entity/PromotionApplied.cfc:L53]
-   *
-   * AUTHORED BECAUSE IT IS A REAL LEGACY MEMBER WITH FIVE VERIFIED CALL SITES, not because a
-   * carrier "ought" to have a setter. ColdFusion auto-generates it from the persistent property
-   * metadata, and the engine uses it in two distinct ways:
-   *
-   *   * CONSTRUCTION, three sites - [model/service/PromotionService.cfc:L405],
-   *     [model/service/PromotionService.cfc:L451] and
-   *     [model/service/PromotionService.cfc:L534].
-   *   * IN-PLACE UPDATE OF AN ALREADY-CONSTRUCTED ROW, two sites -
-   *     [model/service/PromotionService.cfc:L389]
-   *     (`orderFulfillment.getAppliedPromotions()[1].setDiscountAmount(discountAmount)`) and
-   *     [model/service/PromotionService.cfc:L435]
-   *     (`arguments.order.getAppliedPromotions()[1].setDiscountAmount(discountAmount)`). Both sit
-   *     inside the "same promotion, better discount" branch, which first tests
-   *     `getAppliedPromotions()[1].getDiscountAmount() < discountAmount` [L385, L431] and then
-   *     confirms the promotion identity matches [L388, L434]. THIS PATH IS WHAT MAKES THE MEMBER
-   *     NON-OPTIONAL: without it the engine could not raise an existing discount in place, and
-   *     promotion discount math is one of the three must-preserve areas.
-   *
-   * It takes `Money` and not `Money | undefined`: no legacy site ever un-sets the discount, so
-   * accepting `undefined` would invent a capability the source does not have. Contrast
-   * `setCurrencyCode` and `setRemoteID`, which are NOT authored at all because they have zero call
-   * sites anywhere in the repository.
-   */
   setDiscountAmount(discountAmount: Money): void {
     this.discountAmount = discountAmount;
   }
 
-  /**
-   * [model/entity/PromotionApplied.cfc:L54]
-   *
-   * `undefined` for a row whose column is NULL. Never defaulted to `'order'` or to any other member
-   * of the union - there is no default in the schema and inventing one would misreport which target
-   * a discount was applied to.
-   */
   getAppliedType(): PromotionAppliedType | undefined {
     return this.appliedType;
   }
 
-  /**
-   * Records which order-side target this discount applies to.
-   * [model/entity/PromotionApplied.cfc:L54]
-   *
-   * AUTHORED BECAUSE IT IS A REAL LEGACY MEMBER WITH THREE VERIFIED CALL SITES, all in the engine
-   * and all passing a string literal: [model/service/PromotionService.cfc:L402] `'orderFulfillment'`,
-   * [model/service/PromotionService.cfc:L448] `'order'`, and
-   * [model/service/PromotionService.cfc:L531] `'orderItem'`. Typing the parameter to
-   * {@link PromotionAppliedType} turns those three literals into the compiler's business: a fourth
-   * value cannot be written without changing the union, which is precisely the point of pinning it.
-   *
-   * There is NO options method here - no `getAppliedTypeOptions()` or equivalent - because the
-   * property carries no `hb_formFieldType="select"` and the component declares none. Inventing one
-   * would add public surface the source never had.
-   */
   setAppliedType(appliedType: PromotionAppliedType): void {
     this.appliedType = appliedType;
   }
 
-  /**
-   * [model/entity/PromotionApplied.cfc:L55]
-   *
-   * Effectively always `undefined` in practice, and that is the correct, faithful answer rather
-   * than a gap: nothing in the legacy tree writes this column - see the field's own annotation for
-   * the two-directional verification. Callers must handle `undefined`; they must not infer a
-   * currency from the setting layer here, because the legacy row genuinely records none.
-   */
   getCurrencyCode(): CurrencyCode | undefined {
     return this.currencyCode;
   }
 
-  /**
-   * The materialized far side of the `promotion` many-to-one.
-   * [model/entity/PromotionApplied.cfc:L58]
-   *
-   * `undefined` when the repository did not fetch it, or after `removePromotion` cleared it. The
-   * legacy reads it at [model/service/PromotionService.cfc:L388] and
-   * [model/service/PromotionService.cfc:L434], both of which then call `.getPromotionID()` on the
-   * result to compare promotion identity.
-   */
   getPromotion(): Promotion | undefined {
     return this.promotion;
   }
 
-  /** The `promotionID` column. [model/entity/PromotionApplied.cfc:L58] */
   getPromotionID(): string | undefined {
     return this.promotionID;
   }
 
-  /** The `orderItemID` column, opaque. [model/entity/PromotionApplied.cfc:L59] */
   getOrderItemID(): string | undefined {
     return this.orderItemID;
   }
 
-  /**
-   * The `orderfulfillmentID` column, opaque. [model/entity/PromotionApplied.cfc:L60]
-   *
-   * The member is `orderFulfillmentID`; the physical column is `orderfulfillmentID` with a
-   * lowercase `f`. See the casing note on the field.
-   */
   getOrderFulfillmentID(): string | undefined {
     return this.orderFulfillmentID;
   }
 
-  /** The `orderID` column, opaque. [model/entity/PromotionApplied.cfc:L61] */
   getOrderID(): string | undefined {
     return this.orderID;
   }
 
-  /** [model/entity/PromotionApplied.cfc:L64] */
   getRemoteID(): string | undefined {
     return this.remoteID;
   }
 
-  /** [model/entity/PromotionApplied.cfc:L67] UTC. `undefined` for a NULL column. */
   getCreatedDateTime(): Date | undefined {
     return this.createdDateTime;
   }
 
-  /** The `createdByAccountID` column, opaque. [model/entity/PromotionApplied.cfc:L68] */
   getCreatedByAccountID(): string | undefined {
     return this.createdByAccountID;
   }
 
-  /** [model/entity/PromotionApplied.cfc:L69] UTC. `undefined` for a NULL column. */
   getModifiedDateTime(): Date | undefined {
     return this.modifiedDateTime;
   }
 
-  /** The `modifiedByAccountID` column, opaque. [model/entity/PromotionApplied.cfc:L70] */
   getModifiedByAccountID(): string | undefined {
     return this.modifiedByAccountID;
   }
 
   /**
-   * Whether this instance has been persisted yet.
+   * CFML parity [org/Hibachi/HibachiEntity.cfc:L571-L576]: newness is the primary ID matching
+   * the empty `unsavedvalue` declared at [model/entity/PromotionApplied.cfc:L52].
    *
-   * Inherited from the framework base in the legacy tree and concretely called at exactly four
-   * sites in this component, one inside each `set*` helper:
-   * [model/entity/PromotionApplied.cfc:L81] in `setPromotion`,
-   * [model/entity/PromotionApplied.cfc:L99] in `setOrderItem`,
-   * [model/entity/PromotionApplied.cfc:L117] in `setOrderFulfillment` and
-   * [model/entity/PromotionApplied.cfc:L135] in `setOrder`. Only the first survives into the
-   * target, because the other three helpers are dropped as out of scope.
-   *
-   * THE EMPTY-STRING TEST IS NOT AN APPROXIMATION OF THE FRAMEWORK - IT IS LITERALLY WHAT THE
-   * FRAMEWORK DOES. `isNew()` at [org/Hibachi/HibachiEntity.cfc:L707-L709] returns `getNewFlag()`,
-   * and `getNewFlag()` at [org/Hibachi/HibachiEntity.cfc:L571-L576] is
-   * `if(getPrimaryIDValue() == "") { return true; } return false;`. The empty string it compares
-   * against is the `unsavedvalue=""` / `default=""` on the id property at
-   * [model/entity/PromotionApplied.cfc:L52].
-   *
-   * `===` and not `==`: ESLint `eqeqeq` is set to `'error', 'always'` precisely because CFML `==`
-   * is loose and case-insensitive while TypeScript's is neither, so every ported comparison is
-   * audited at its site rather than assumed. Both operands are `string` here, so strict equality is
-   * exact.
-   *
-   * This is the ONLY framework member authored on this entity. Nothing else the dispatcher at
-   * [org/Hibachi/HibachiEntity.cfc:L507-L565] can synthesise is concretely called: no `hasAny*`
-   * (there is no collection to test), no `hasUnique*` (there is no validation schema), no
-   * `get*Options`, `get*OptionsSmartList`, `get*SmartList`, `get*Struct`, `get*Count` or
-   * `get*AssignedIDList`, and no `getAttributeValue` - that last one unreachable anyway, since the
-   * L559 guard requires an `attributeValues` property this entity does not declare.
+   * @returns whether this row has no primary ID yet.
    */
   isNew(): boolean {
     return this.promotionAppliedID === '';
   }
 
   /**
-   * Row identity, used by the one containment search on this class.
+   * Identity for collection removal.
    *
-   * PRIMARY-KEY COMPARISON ON `promotionAppliedID`, and this is the answer to the question the
-   * conversion poses: CFML's `arrayFind(array, component)` at
-   * [model/entity/PromotionApplied.cfc:L89] uses REFERENCE IDENTITY, which under Hibernate meant
-   * "the same row", because a session represents one persisted row by exactly one instance. The
-   * project convention across this folder is therefore to compare the primary key - never object
-   * reference alone, and never deep equality, which would wrongly match two distinct rows that
-   * happen to carry the same discount for the same promotion.
+   * CFML parity [model/entity/PromotionApplied.cfc:L89]: the legacy `arrayFind` compares
+   * object references. Matching on the primary ID recognizes two hydrations of the same row as
+   * one, and unsaved rows - which share the empty ID - fall back to reference comparison so
+   * they are never conflated.
    *
-   * THE UNSAVED CASE IS HANDLED EXPLICITLY, and this is a documented judgment call rather than an
-   * oversight. An unsaved row's key is `''` (see `isNew()`), so a naive key comparison would report
-   * two DIFFERENT unsaved applied-promotions as the same row and delete the wrong one - a real
-   * hazard here, because the engine constructs several unsaved instances per order. When either
-   * side is unsaved this falls back to instance identity, which is exactly what the legacy
-   * `arrayFind(collection, this)` compared, since Hibernate has no identity to offer for a row it
-   * has never written. The fallback narrows behaviour towards the source rather than away from it,
-   * and it introduces no new state, no new signature and no new member on the public surface.
-   *
-   * `private`, so it is not part of the public parity surface. It is genuinely used - by
-   * `removePromotion` - so `no-unused-private-class-members` is satisfied.
+   * @param candidate the row to compare against.
+   * @returns whether both refer to the same persisted row, or are the same instance.
    */
   private isSameRowAs(candidate: PromotionApplied): boolean {
     const candidateID: string = candidate.getPromotionAppliedID();
@@ -912,145 +511,33 @@ export class PromotionApplied {
     return candidateID === this.promotionAppliedID;
   }
 
-  // ============ START: Non-Persistent Property Methods =================
-  // [model/entity/PromotionApplied.cfc:L72]
-  //
-  // LEGACY-NOTE [model/entity/PromotionApplied.cfc:L72-L74]: THIS SECTION IS COMPLETELY EMPTY IN
-  // THE SOURCE - L72 opens the banner, L74 closes it, and there is nothing between them. Annotated
-  // rather than omitted so a reader knows it was CHECKED and not overlooked. The consequences are
-  // worth naming, because they are what make this the simplest entity in the folder: ZERO derived
-  // getters, ZERO memoized lazy caches and ZERO `getService(` calls. That last one is why no
-  // collaborator port appears in the constructor, why the ESLint `no-restricted-imports` domain
-  // boundary is satisfied trivially here, and why every method on this class is synchronous.
-  //
-  // It also means none of the three known legacy memo-defect shapes can occur here - the poisoned
-  // memo at [model/entity/Product.cfc:L524-L532], the write-one-key-return-another memo at
-  // [model/entity/Sku.cfc:L512-L522], and the wrong-guard-key memo at
-  // [model/entity/Sku.cfc:L500-L510] - because there is no memo to get wrong.
-  //
-  // ============  END:  Non-Persistent Property Methods =================
-  // [model/entity/PromotionApplied.cfc:L74]
-
-  // ============= START: Bidirectional Helper Methods ===================
-  // [model/entity/PromotionApplied.cfc:L76]
-  //
-  // The legacy block holds FOUR PAIRS and EIGHT METHODS in total, under four inline sub-banners:
-  // `// Promotion (many-to-one)` at L78, `// Order Item (many-to-one)` at L96,
-  // `// Order Fulfillment (many-to-one)` at L114 and `// Order (many-to-one)` at L132. All four
-  // pairs are structurally identical, differing only in the association name.
-  //
-  // ONLY THE PROMOTION PAIR IS AUTHORED HERE. SIX OF THE EIGHT METHODS ARE DROPPED - the largest
-  // drop of any entity in this folder - and the justification is recorded on the DROP block below.
-
-  // LEGACY-NOTE [model/entity/PromotionApplied.cfc:L76-L150] - THE MANDATORY "remove-that-ADDs"
-  // INVERSION CROSS-CHECK. Performed against all four `remove*` helpers and INDEPENDENTLY RE-RUN
-  // against the verbatim source rather than taken on trust. VERDICT: CLEAN - ZERO INVERSIONS.
-  //
-  //   * `removePromotion`         L89 arrayFind / L91 arrayDeleteAt, both on `arguments.promotion`
-  //   * `removeOrderItem`         L107 arrayFind / L109 arrayDeleteAt, both on `arguments.orderItem`
-  //   * `removeOrderFulfillment`  L125 / L127, both on `arguments.orderFulfillment`
-  //   * `removeOrder`             L143 / L145, both on `arguments.order`
-  //
-  // Every one correctly calls `arrayDeleteAt`; NONE calls an `add*`. In every case the search and
-  // the delete address THE SAME OBJECT - there is no `arguments.account` copy-paste leak of the kind
-  // carried by [model/entity/PromotionPeriod.cfc:L110] (reachable, so it throws on the normal path)
-  // or [model/entity/PromotionAccount.cfc:L103] (unreachable, masked by an earlier throw).
-  //
-  // THE CONTRAST THAT MAKES THIS VERDICT MEANINGFUL: [model/entity/Option.cfc:L129-L131] and
-  // [model/entity/Option.cfc:L145-L147] are two GENUINE inversions -
-  // `removePromotionRewardExclusion` and `removePromotionQualifierExclusion` each call
-  // `addExcludedOption( this )` where they should remove - and they are preserved as defects in that
-  // entity. Recording a clean verdict here is what tells a reviewer the check was run rather than
-  // assumed, and it is why this file carries no LEGACY-DEFECT marker on its helpers.
-
-  // LEGACY-NOTE [model/entity/PromotionApplied.cfc:L81] - THE GUARD POLARITY, PRESERVED EXACTLY
-  // BECAUSE IT IS THE OPPOSITE OF ITS SIBLING'S. The append guard is
-  // `if(isNew() or !arguments.promotion.hasAppliedPromotion( this ))`, and the first operand tests
-  // THIS INSTANCE's newness. CFML `or` short-circuits, so when `this` is new the membership test is
-  // NEVER EVALUATED and the append happens unconditionally - which theoretically permits a
-  // duplicate entry in the far-side collection for an unsaved row. Contrast
-  // `PriceGroupRate.addProductType`, whose equivalent guard tests the ARGUMENT's `isNew()` instead.
-  // A real inconsistency in the legacy codebase. REPRODUCED AS WRITTEN AND NOT NORMALISED: the two
-  // polarities are not interchangeable, and "harmonising" them would change which collection ends
-  // up with which members.
-
-  // Promotion (many-to-one) [model/entity/PromotionApplied.cfc:L78]
-
   /**
-   * Bidirectional helper for the `promotion` many-to-one.
-   * [model/entity/PromotionApplied.cfc:L79]
+   * CFML parity [model/entity/PromotionApplied.cfc:L79-L84]: sets the reference and appends to
+   * the promotion's applied collection, guarded so an unsaved row is always appended and a
+   * saved one only when not already present.
    *
-   * A REAL, WORKING HELPER - NOT A THROWING STUB, and that distinction was settled by direct
-   * verification rather than by pattern-matching against its siblings. Both far-side members it
-   * calls genuinely resolve, because [model/entity/Promotion.cfc:L64] declares
-   * `appliedPromotions … singularname="appliedPromotion" cfc="PromotionApplied"
-   * fieldtype="one-to-many" fkcolumn="promotionID" cascade="all" inverse="true"`, and
-   * [model/entity/Promotion.cfc:L158] and [model/entity/Promotion.cfc:L162] declare the explicit
-   * `addAppliedPromotion` / `removeAppliedPromotion` pair that delegates straight back into this
-   * method and its partner. [model/entity/Promotion.cfc:L170-L171] then reads the collection's
-   * length inside `isDeletable()`, so it is unambiguously on a live path.
-   *
-   * THIS IS THE MIRROR IMAGE OF `PromotionAccount.setPromotion`, which throws on every code path
-   * precisely because `Promotion` declares NO `promotionAccounts` collection and both of its
-   * far-side calls fall through the dispatcher to the throw at
-   * [org/Hibachi/HibachiEntity.cfc:L565]. One declared collection is the entire difference between
-   * the two outcomes. Carrying a defect marker here would be actively misleading.
-   *
-   * ORDER OF OPERATIONS IS PRESERVED: the near-side assignment at
-   * [model/entity/PromotionApplied.cfc:L80] runs FIRST, before the guard, exactly as written.
-   *
-   * `promotion: Promotion` and not optional: the legacy signature is
-   * `setPromotion(required any promotion)` [model/entity/PromotionApplied.cfc:L79] - `required`,
-   * unlike its `remove*` partner.
+   * @param promotion the promotion this discount came from.
    */
   setPromotion(promotion: Promotion): void {
-    // [model/entity/PromotionApplied.cfc:L80]
     this.promotion = promotion;
 
-    // [model/entity/PromotionApplied.cfc:L81-L83]. The short-circuit is load-bearing: when this
-    // instance is new the far-side membership test is not evaluated at all. `||` reproduces CFML
-    // `or` faithfully here because both operands are already booleans.
     if (this.isNew() || !promotion.hasAppliedPromotion(this)) {
-      // [model/entity/PromotionApplied.cfc:L82] `arrayAppend` on the LIVE far-side array. `push`
-      // mutates in place, which is required: the legacy appends to the very array that
-      // `Promotion.isDeletable()` [model/entity/Promotion.cfc:L170-L171] measures.
       promotion.getAppliedPromotions().push(this);
     }
   }
 
   /**
-   * Bidirectional helper for the `promotion` many-to-one.
-   * [model/entity/PromotionApplied.cfc:L85]
+   * Unlinks this row from its promotion.
    *
-   * THE PARAMETER IS OPTIONAL, matching the legacy signature exactly: L85 declares
-   * `removePromotion(any promotion)` - NOT `required any promotion`. The four `remove*` helpers on
-   * this component are consistent in that, and the no-argument form is genuinely exercised in
-   * production for the sibling associations: [model/service/PromotionService.cfc:L66] calls
-   * `removeOrderItem()`, [model/service/PromotionService.cfc:L73] and
-   * [model/service/PromotionService.cfc:L393] call `removeOrderFulfillment()`, and
-   * [model/service/PromotionService.cfc:L79] and [model/service/PromotionService.cfc:L439] call
-   * `removeOrder()`, all with no argument. `removePromotion()` has no such call site of its own, but
-   * the defaulting behaviour is reproduced for parity because it is part of the declared surface.
+   * LEGACY-DEFECT [model/entity/PromotionApplied.cfc:L85-L89]: an omitted argument is defaulted from the row's own promotion reference, so calling it with no argument on a row that has none dereferences null and throws at runtime.
+   * Preserved deliberately; do not fix without a product decision.
    *
-   * [model/entity/PromotionApplied.cfc:L86-L88] is the default-to-the-currently-set-value idiom -
-   * `if(!structKeyExists(arguments, "promotion")) { arguments.promotion = variables.promotion; }` -
-   * and its TypeScript form is an optional parameter with a nullish default. Plain, idiomatic
-   * TypeScript: there is deliberately no `variables.` scope object, no `structKeyExists` helper and
-   * no CFML struct emulation, because a transliteration would violate the minimal-change directive,
-   * which scopes the FUNCTIONAL SURFACE and never the code style.
-   *
-   * IT THROWS WHEN THE ARGUMENT IS OMITTED AND NO PROMOTION IS SET, and that is behaviour
-   * preservation rather than defensiveness. With both absent, CFML reaches L89 and dereferences an
-   * undefined value, which is a runtime error there; reproducing it as a throw is faithful, whereas
-   * silently returning or no-opping would invent a success path the legacy system does not have.
-   *
-   * [model/entity/PromotionApplied.cfc:L93]'s `structDelete(variables, "promotion")` sits OUTSIDE
-   * the `if` and therefore runs UNCONDITIONALLY - the near side is cleared whether or not the
-   * far-side element was found. That placement is preserved exactly, and unlike
-   * [model/entity/PromotionPeriod.cfc:L112] this line IS REACHABLE here, because L91 does not throw.
+   * @param promotion the promotion to unlink from; omitted, it defaults to this row's own
+   *   promotion.
+   * @throws Error when no argument is supplied and no promotion is set, reproducing the legacy
+   *   runtime failure.
    */
   removePromotion(promotion?: Promotion): void {
-    // [model/entity/PromotionApplied.cfc:L86-L88]
     const target: Promotion | undefined = promotion ?? this.promotion;
 
     if (target === undefined) {
@@ -1062,128 +549,30 @@ export class PromotionApplied {
       );
     }
 
-    // [model/entity/PromotionApplied.cfc:L89] ARRAY INDEX BASE CHANGE - THE SINGLE MOST COMMON WAY
-    // THIS CONVERSION GOES WRONG. CFML `arrayFind` returns a 1-BASED index, or 0 for "not found",
-    // which is why the source guards with `index > 0` at L90. TypeScript `findIndex` returns a
-    // 0-BASED index, or -1 for "not found", so the guard MUST become `!== -1`. Transcribing `> 0`
-    // onto a `findIndex` result would silently skip element 0 - the first entry in the collection,
-    // and the very one the engine reads as `getAppliedPromotions()[1]` at
-    // [model/service/PromotionService.cfc:L385] and [model/service/PromotionService.cfc:L431].
-    //
-    // SEMANTICS CHOSEN, AND WHY: containment is decided BY PRIMARY KEY through `isSameRowAs`, not by
-    // `indexOf`. CFML's `arrayFind(array, component)` is reference identity, which under Hibernate
-    // meant row identity; `isSameRowAs` reproduces that meaning and falls back to reference identity
-    // for an unsaved row, where no key exists to compare. Plain `indexOf` would be reference-only
-    // and would fail to find a row the repository re-hydrated into a second instance - a situation
-    // Hibernate's session identity made impossible and a driver-only stack does not.
     const appliedPromotions: PromotionApplied[] = target.getAppliedPromotions();
     const index: number = appliedPromotions.findIndex((candidate: PromotionApplied) =>
       this.isSameRowAs(candidate),
     );
 
-    // [model/entity/PromotionApplied.cfc:L90-L92]
     if (index !== -1) {
       appliedPromotions.splice(index, 1);
     }
 
-    // [model/entity/PromotionApplied.cfc:L93] - UNCONDITIONAL, outside the found-branch. The CFML
-    // `structDelete(variables, "promotion")` becomes a plain `= undefined`.
     this.promotion = undefined;
   }
-
-  // LEGACY-NOTE [model/entity/PromotionApplied.cfc:L97, L103, L115, L121, L133, L139]: SIX HELPERS
-  // ARE DELIBERATELY NOT AUTHORED - `setOrderItem` / `removeOrderItem` (L97, L103),
-  // `setOrderFulfillment` / `removeOrderFulfillment` (L115, L121) and `setOrder` / `removeOrder`
-  // (L133, L139). This is the largest drop of any entity in this folder: six of the component's
-  // eight public methods disappear, leaving `setPromotion` / `removePromotion` as the only authored
-  // bidirectional helpers.
-  //
-  // THE JUSTIFICATION IS FORCED, NOT PREFERENTIAL. Each of the three far sides -
-  // model/entity/OrderItem.cfc, model/entity/OrderFulfillment.cfc and model/entity/Order.cfc - is
-  // explicitly out of scope: the order, checkout and payment pipeline is the plan's single largest
-  // exclusion. So `orderItem.hasAppliedPromotion(this)` [L99],
-  // `orderItem.getAppliedPromotions()` [L100, L107, L109],
-  // `orderFulfillment.hasAppliedPromotion(this)` [L117],
-  // `orderFulfillment.getAppliedPromotions()` [L118, L125, L127],
-  // `order.hasAppliedPromotion(this)` [L135] and `order.getAppliedPromotions()` [L136, L143, L145]
-  // have NO in-scope counterpart to call. Authoring them would require either `any` - forbidden
-  // outright, `@typescript-eslint/no-explicit-any` is `'error'` - or inventing three entity modules
-  // outside the locked eighteen-file budget. Neither is available, so the pairs are dropped and the
-  // four foreign keys survive as the inert opaque ID columns declared above.
-  //
-  // "DROPPED" MEANS NOT AUTHORED IN THIS NEW TYPESCRIPT FILE. It is NEVER a deletion from the legacy
-  // component, which is reference-only and remains untouched, and reading it never made it a write
-  // target. Because the AAP mandates this anti-corruption boundary, the drop is not a signature
-  // reshaping, not a visibility change and not a deliberate divergence: it spends no budget of any
-  // kind. The same ruling is applied identically to `PriceGroup.appliedOrderItems` with its dropped
-  // `addAppliedOrderItem` / `removeAppliedOrderItem` pair
-  // [model/entity/PriceGroup.cfc:L128, L131], to `PromotionCode.addAccount` / `removeAccount`, and
-  // to `PromotionAccount.setAccount` / `removeAccount`.
-  //
-  // ID-ACCESSOR RULING: the three order keys and the two audit account keys are private fields,
-  // constructor-assigned, WITH GETTERS ONLY. There is deliberately no `setOrderItemID`, no
-  // `setOrderFulfillmentID`, no `setOrderID`, no `setCreatedByAccountID` and no
-  // `setModifiedByAccountID`. The legacy entity-taking setters are the ones being dropped, so
-  // inventing ID setters in their place would ADD public surface area that never existed in the
-  // source - the opposite of parity. The engine constructs instances directly, and both repository
-  // hydration and intent emission flow through the constructor, so no setter is required.
-  //
-  // THE ANTI-CORRUPTION TENSION, STATED PLAINLY RATHER THAN LEFT IMPLICIT: dropping these six
-  // helpers means the far-side `Order`, `OrderItem` and `OrderFulfillment` collections are NEVER
-  // MAINTAINED FROM THIS SIDE in the target. That is intentional and is the whole point of the
-  // seam - the promotion engine returns applied-promotion intents keyed by opaque
-  // `orderID` / `orderItemID` / `orderFulfillmentID` values and never mutates order persistence.
-  // The out-of-scope aggregate is an INPUT to the in-scope services, never their dependency, and
-  // that inversion is what makes this slice independently deployable. One consequence follows for
-  // free and is worth naming: the legacy engine's teardown loops
-  // [model/service/PromotionService.cfc:L66, L73, L79] and
-  // [model/service/OrderService.cfc:L548, L562, L568], which clear previously applied promotions by
-  // calling the dropped no-argument `remove*` forms, have no equivalent here - in an intent model
-  // there is no prior in-memory graph to tear down.
-
-  // =============  END:  Bidirectional Helper Methods ===================
-  // [model/entity/PromotionApplied.cfc:L150]
-  //
-  // LEGACY-NOTE [model/entity/PromotionApplied.cfc:L149]: the blank separator line immediately
-  // before that closing banner has NO LEADING TAB, while L151 and every other blank separator in
-  // the block carries one. A cosmetic whitespace wart unique to this file. Recorded for
-  // completeness; NOT "fixed", and NOT a defect.
-
-  // =================== START: ORM Event Hooks  =========================
-  // [model/entity/PromotionApplied.cfc:L152]
-  //
-  // LEGACY-NOTE [model/entity/PromotionApplied.cfc:L152-L154]: THIS SECTION IS ALSO COMPLETELY EMPTY
-  // IN THE SOURCE - L152 opens the banner, L154 closes it, nothing between them - so there is NO
-  // `preInsert` and NO `preUpdate` on this entity, and none is invented. Annotated so a reader knows
-  // it was checked. It matches model/entity/PriceGroupRate.cfc L280/L282, which is likewise empty,
-  // and contrasts with the four hook-bearing in-scope entities - Category, PriceGroup, ProductType
-  // and PromotionCode - whose hooks become explicit maintenance invoked by the repository on save.
-  // Nothing of that kind is needed here: this entity maintains no materialized path and derives no
-  // column.
-  //
-  // ===================  END:  ORM Event Hooks  =========================
-  // [model/entity/PromotionApplied.cfc:L154]
-  //
-  // TWO FURTHER BANNER ABSENCES, checked rather than assumed: there is NO "Implecet"/"Implicit"
-  // banner of the kind at model/entity/PriceGroup.cfc L193/L202/L204/L216, and NO Custom Validation
-  // / Custom Formatting banner pair of the kind at model/entity/PriceGroupRate.cfc L260/L278. There
-  // is also no Overridden Methods banner, so no `isDeletable()` and no
-  // `getSimpleRepresentationPropertyName()` on this class - contrast
-  // [model/entity/Promotion.cfc:L170], which does override `isDeletable()` and reads this entity's
-  // collection to do it.
 }
 
 // ---------------------------------------------------------------------------
 // TEST CONTRACT - NET-NEW COVERAGE, NEVER PARITY.
 //
-// `tests/unit/domain/entities/promotionApplied.test.ts` is authored separately;
+// `tests/unit/domain/entities/promotionApplied.test.ts` (planned) is authored separately;
 // that tier is owned elsewhere and NO test file is created from here.
 // `PromotionApplied` has NO legacy test whatsoever - nothing under meta/tests
 // touches it - so its coverage is one of the SIXTEEN NET-NEW entity suites and
 // must be LABELLED NET-NEW. Presenting it as parity fails the coverage gate.
 // Only two of the eighteen in-scope entities extend legacy coverage:
 // meta/tests/unit/entity/BrandTest.cfc and meta/tests/unit/entity/ProductTest.cfc.
-// The suite must also appear in `tests/traceability/legacyTestMap.ts` flagged
+// The suite must also appear in `tests/traceability/legacyTestMap.ts` (planned) flagged
 // net-new, because that map fails the run when an in-scope module has no test -
 // mirroring the structural floor of
 // meta/tests/coverage/EntityCoverageTest.cfc:all_entities_have_test_cases().

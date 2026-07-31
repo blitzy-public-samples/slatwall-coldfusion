@@ -1,4 +1,18 @@
 // ---------------------------------------------------------------------------
+// CHECKPOINT STATUS - FORWARD REFERENCES CARRY THE MARKER `(planned)`
+//
+// The subtree is authored in boundaries, and AAP 0.4.5 makes the authoring
+// order "a compile-order convenience, not a schedule". Commentary in this file
+// therefore names modules of the target layout that DO NOT EXIST YET. Every such
+// name carries `(planned)` at its point of use, meaning exactly: a planned Agent
+// Action Plan target that is ABSENT from the subtree at this checkpoint. Nothing
+// here asserts that any of them exists now, and no behaviour in this file depends
+// on one. The complete set named below, with the role each will play:
+//
+//   src/repositories/mysql/mysqlSkuRepository.ts  MySQL SKU adapter
+// ---------------------------------------------------------------------------
+
+// ---------------------------------------------------------------------------
 // slatwall-ts - extracted SQL: the sorted product-SKU identifier statement
 //
 // WHAT THIS MODULE IS
@@ -14,7 +28,7 @@
 //   of it, is the source of truth and it is reproduced verbatim as an exhibit
 //   immediately above the emitted statement.
 //
-//   The consumer is `src/repositories/mysql/mysqlSkuRepository.ts`, which
+//   The consumer is `src/repositories/mysql/mysqlSkuRepository.ts` (planned), which
 //   implements `getSortedProductSkusID(productID: string): Promise<string[]>`
 //   as declared by `src/domain/ports/skuRepository.ts`. Row handling, the
 //   single-column projection into that array of identifiers, the fetch-shape
@@ -117,28 +131,40 @@
 //   clause, (b) there are exactly two bound parameters and they appear in
 //   emitted-text order, (c) the number of `?` placeholders in the text equals
 //   the number of bound parameters, (d) a non-MySQL dialect is refused rather
-//   than served the MySQL text, and (e) the builder is deterministic and needs
-//   neither a database nor an environment when the dialect is supplied. Every
-//   one of those is reachable with plain inputs.
+//   than served the MySQL text, and (e) the builder is deterministic given the
+//   configured dialect - it opens no connection and executes nothing. The
+//   builder takes exactly the two arguments the legacy method declares, so a
+//   suite that exercises it sets `DB_DIALECT` in the test environment; the
+//   dialect fragment itself is separately reachable through
+//   `optionGroupOdometerPowerFragment` in `../dialect.ts`, which is where the
+//   per-engine assertions belong.
 // ---------------------------------------------------------------------------
 
-import type { DatabaseDialect } from '../dialect.js';
+// The `DatabaseDialect` TYPE is deliberately not imported. The dialect never
+// appears in this module's surface - it is resolved inside the builder and
+// consumed immediately - so naming the type here would be an unused import under
+// `noUnusedLocals`, and re-exposing it would reopen the parameter this builder
+// does not take.
 import { optionGroupOdometerPowerFragment, resolveConfiguredDialect } from '../dialect.js';
 
 /**
- * The exponent of the place-value term, as SQL expression TEXT.
+ * The option-group sort-order COLUMN of the place-value term, as a
+ * dot-qualified identifier.
  *
- * `?` is the next available option-group sort order, bound by the caller;
- * `SwOptionGroup.sortOrder` is an identifier, which cannot be bound at all. The
- * text is held here as a named constant so that the one place a placeholder
- * enters the ordering expression is visible on its own line.
+ * AN IDENTIFIER, NOT AN EXPRESSION. An earlier revision held the whole exponent
+ * here as SQL text - `'? - SwOptionGroup.sortOrder'` - and handed it to the
+ * fragment builder, which admitted arbitrary expression text behind a character
+ * allowlist. The exponent's shape is fixed by the legacy source, so describing it
+ * in SQL at the call site bought nothing and cost a genuine injection surface;
+ * `../dialect.js` now composes the operator and the placeholder itself and this
+ * constant supplies only the column. The emitted text is unchanged.
  *
  * CFML parity [model/dao/SkuDAO.cfc:L197]: the legacy exponent is
- * `#getNextOptionGroupSortOrder()# - SwOptionGroup.sortOrder`. Operand order,
- * the subtraction and the single space either side of the operator are all
- * reproduced; only the interpolation becomes a placeholder.
+ * `#getNextOptionGroupSortOrder()# - SwOptionGroup.sortOrder`. Operand order, the
+ * subtraction and the single space either side of the operator are all reproduced
+ * by the fragment builder; only the interpolation becomes a placeholder.
  */
-const ODOMETER_EXPONENT_EXPRESSION = '? - SwOptionGroup.sortOrder';
+const ODOMETER_SORT_ORDER_COLUMN = 'SwOptionGroup.sortOrder';
 
 /**
  * A statement ready to hand to a prepared-statement call: the text, and the
@@ -162,6 +188,13 @@ interface SortedProductSkusStatement {
    * the order are part of this statement's contract, so `[productID, weight]`
    * is a compile-time fact instead of something a reader has to count. There
    * are exactly two placeholders in the text and exactly two members here.
+   *
+   * Frozen at construction as well as typed `readonly`, because the type alone
+   * is a compile-time claim that erases at emit - and the two elements have
+   * DIFFERENT meanings, so a runtime reorder would bind the option-group weight
+   * to `SwProduct.productID` rather than merely shuffling equivalents. The
+   * executor copies the array before handing it to the driver
+   * [slatwall-ts/src/repositories/mysql/connection.ts:L551].
    */
   readonly params: readonly [string, number];
 }
@@ -198,37 +231,40 @@ interface SortedProductSkusStatement {
  * @param nextOptionGroupSortOrder - The next available option-group sort order,
  *   already resolved, which sets the place value of each odometer digit. Bound
  *   as the SECOND parameter.
- * @param dialect - The resolved dialect. Optional; when omitted it is resolved
- *   from configuration inside the body. Only the MySQL arm is emitted.
  * @returns The statement text and the two values to bind to it, in order.
- * @throws An error named `UnsupportedDialectError` when the dialect is
- *   `MicrosoftSQLServer` or `Oracle10g`. That arm exists in the legacy source
+ * @throws An error named `UnsupportedDialectError` when the configured dialect
+ *   is `MicrosoftSQLServer` or `Oracle10g`. That arm exists in the legacy source
  *   and is therefore reproducible, but it is not implemented by this port, and
  *   emitting the MySQL text under another engine's name would silently change
- *   the ordering. When `dialect` is omitted, resolution can additionally raise
- *   `ConfigurationError` if the environment contract is unsatisfied, or
- *   `UnrecognizedDialectError` for an unknown spelling; neither has a fallback,
- *   which is what preserves the legacy behaviour of failing outright rather than
- *   guessing at a dialect. `SqlFragmentInputError` is structurally unreachable
- *   from here, because the only fragment argument this module passes is the
- *   module-level constant above.
+ *   the ordering. Resolution can also raise `ConfigurationError` when the
+ *   environment contract is unsatisfied, or `UnrecognizedDialectError` for an
+ *   unknown spelling; neither has a fallback, which is what preserves the legacy
+ *   behaviour of failing outright rather than guessing at a dialect.
+ *   `SqlFragmentInputError` is structurally unreachable from here, because the
+ *   only fragment argument this module passes is the module-level constant above.
  */
 export function buildSortedProductSkusStatement(
   productID: string,
   nextOptionGroupSortOrder: number,
-  dialect?: DatabaseDialect,
 ): SortedProductSkusStatement {
-  // JUDGMENT CALL: the dialect is resolved HERE, inside the builder, and never at
-  // module load, so that importing this module resolves no configuration and can
-  // fail for no reason. It is also accepted as an optional argument, which is what
-  // keeps the builder deterministic with plain inputs: the repository test tier
-  // asserts emitted text and bound parameters with no live database, and a checkout
-  // with no `.env` has to run green, whereas `DB_DIALECT` has no default and its
-  // absence is a hard error by design. Supplying the dialect explicitly is the
-  // transformation this port applies to ambient state everywhere else; omitting it
-  // reproduces the legacy reading of `getApplicationValue("databaseType")` at the
-  // query site itself [model/dao/SkuDAO.cfc:L194].
-  const resolvedDialect = dialect ?? resolveConfiguredDialect();
+  // THE BUILDER TAKES EXACTLY TWO ARGUMENTS - `productID` and
+  // `nextOptionGroupSortOrder` - and the dialect is NOT among them. This folder
+  // reshapes no signature, and the dialect was never an argument of the legacy
+  // method either: `model/dao/SkuDAO.cfc:L173` declares `required string
+  // productID` and nothing else, and the engine is read at the query site itself
+  // through `getApplicationValue("databaseType")` [model/dao/SkuDAO.cfc:L194].
+  // Resolving it here rather than accepting it is therefore the faithful shape,
+  // and it also removes the only way a caller could have asked for one engine's
+  // ordering while running against another.
+  //
+  // JUDGMENT CALL: resolution happens HERE, inside the body, and never at module
+  // load, so importing this module reads no configuration and cannot fail for no
+  // reason. `DB_DIALECT` has no default and its absence is a hard error by
+  // design, so a test that exercises this builder configures the environment -
+  // `resolveConfiguredDialect()` is the single owner of that decision and
+  // `optionGroupOdometerPowerFragment` can be exercised on its own for the
+  // fragment-level assertions.
+  const resolvedDialect = resolveConfiguredDialect();
 
   // JUDGMENT CALL: the legacy dialect test at model/dao/SkuDAO.cfc:L194 is `databaseType eq
   // "MicrosoftSQLServer"`, so MySQL falls through to the <cfelse> arm at L197 - the plain, uncast
@@ -243,7 +279,7 @@ export function buildSortedProductSkusStatement(
   // concatenation or a window-function ranking for the power term.
   const odometerPowerTerm = optionGroupOdometerPowerFragment(
     resolvedDialect,
-    ODOMETER_EXPONENT_EXPRESSION,
+    ODOMETER_SORT_ORDER_COLUMN,
   );
 
   // CFML parity [model/dao/SkuDAO.cfc:L179-L180]: the projection is exactly one column,
@@ -316,7 +352,17 @@ ORDER BY
   // aggregate finds no row, belongs to the adapter [model/dao/SkuDAO.cfc:L204-L220] and not to this
   // module, which accepts the resolved integer as an argument; that is what keeps this builder pure and
   // synchronous, and it is why no aggregate and no correlated subquery is emitted to compute it here.
-  const params: readonly [string, number] = [productID, nextOptionGroupSortOrder];
+  // FROZEN, BOTH LEVELS. The tuple TYPE above states the arity and the order, but
+  // `readonly` is erased at emit and a tuple is an ordinary array at runtime: a
+  // caller could otherwise swap the two elements and silently bind the sort-order
+  // weight to `SwProduct.productID`. `Object.freeze` is shallow, so the enclosing
+  // object is frozen separately from the array it points at - freezing only the
+  // outer object would leave the bind values mutable while every type in sight
+  // claimed they were not.
+  const params: readonly [string, number] = Object.freeze([
+    productID,
+    nextOptionGroupSortOrder,
+  ] as const);
 
-  return { sql, params };
+  return Object.freeze({ sql, params });
 }

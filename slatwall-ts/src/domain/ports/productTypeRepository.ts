@@ -1,3 +1,19 @@
+// ---------------------------------------------------------------------------
+// CHECKPOINT STATUS - FORWARD REFERENCES CARRY THE MARKER `(planned)`
+//
+// The subtree is authored in boundaries, and AAP 0.4.5 makes the authoring
+// order "a compile-order convenience, not a schedule". Commentary in this file
+// therefore names modules of the target layout that DO NOT EXIST YET. Every such
+// name carries `(planned)` at its point of use, meaning exactly: a planned Agent
+// Action Plan target that is ABSENT from the subtree at this checkpoint. Nothing
+// here asserts that any of them exists now, and no behaviour in this file depends
+// on one. The complete set named below, with the role each will play:
+//
+//   src/handlers/bootstrap.ts                             composition root (wiring)
+//   src/repositories/mysql/mysqlProductTypeRepository.ts  MySQL product-type adapter
+//   tests/integration/repositories                        repository integration tier
+// ---------------------------------------------------------------------------
+
 /**
  * Product-type repository port - the domain-side persistence and query contract for
  * `ProductType`.
@@ -80,7 +96,7 @@
  * Hibernate lazy collections have no equivalent in a driver-only stack and are deliberately not
  * simulated. Associations are materialized at the repository boundary instead, and the fetch shape
  * is an explicit decision made and commented at each repository method in
- * `src/repositories/mysql/mysqlProductTypeRepository.ts`, which also owns the row-to-entity
+ * `src/repositories/mysql/mysqlProductTypeRepository.ts` (planned), which also owns the row-to-entity
  * factory, port injection and association materialization. Concretely, a `ProductType` handed back
  * by this port must already carry its parent and child linkage and its `productTypeIDPath` value
  * populated to whatever depth its consumers read, because the CFML entity walked those graphs
@@ -156,7 +172,7 @@
  * (B4), so it is carried over verbatim - name, zero parameters and ordering alike.
  *
  * WHO IMPLEMENTS THIS PORT (see the interface doc below for the four transferred obligations)
- * `src/repositories/mysql/mysqlProductTypeRepository.ts`. `src/handlers/bootstrap.ts` wires that
+ * `src/repositories/mysql/mysqlProductTypeRepository.ts` (planned). `src/handlers/bootstrap.ts` (planned) wires that
  * adapter to this interface; it does not implement it.
  *
  * NO USER RULES WERE PROVIDED
@@ -173,101 +189,25 @@
 import type { ProductType } from '../entities/productType.js';
 
 /**
- * One product-type row as the legacy tree read returns it.
- *
- * This is a READ PROJECTION of the row set that `getProductTypeQuery` produces - it is NOT the
- * `ProductType` entity, and it must never be grown into a substitute for one. No method, no
- * mutation, no persistence identity semantics, and no behaviour of any kind: the entity is the
- * only thing that carries behaviour, and a consumer needing behaviour must load the entity through
- * `getProductTypeByProductTypeID`. Every property is `readonly` for that reason.
- *
- * The type name has no legacy antecedent - the CFML declaration is simply
- * `public query function getProductTypeQuery()` [model/dao/ProductTypeDAO.cfc:L52], handing back an
- * untyped query object - and the `TreeRow` suffix is chosen so the name reads as a projection
- * rather than as an entity. Every MEMBER name below, by contrast, is verbatim from the legacy
- * source:
- *
- *   * `isAssigned` and `childCount` are the two aliases the legacy statement's correlated scalar
- *     subqueries introduce [model/dao/ProductTypeDAO.cfc:L55-L60]. Described in prose because this
- *     file contains no SQL: `isAssigned` counts the products assigned to the row's product type,
- *     and `childCount` counts the product types whose parent is the row's product type.
- *   * `productTypeID`, `productTypeName` and `productTypeIDPath` are property names declared at
- *     [model/entity/ProductType.cfc:L52], [model/entity/ProductType.cfc:L57] and
- *     [model/entity/ProductType.cfc:L53].
- *   * `parentProductTypeID` is the physical foreign-key column of the `parentProductType`
- *     association [model/entity/ProductType.cfc:L62] - the very column the `childCount` subquery
- *     correlates on. It is the row's tree edge, so a listing cannot be assembled into a tree
- *     without it.
- *
- * `isAssigned` and `childCount` are COUNTS, so `number` is correct and `Money` would be wrong.
- * Neither is monetary, and no member of this projection is; stated once here so that no later pass
- * "helpfully" wraps either of them in a money type.
- *
- * THE LEGACY `SELECT *` IS NOT LICENCE FOR AN UNTYPED BAG. The statement selects every column of
- * the product-type table, but this projection deliberately declares a precise, explicit, named set
- * of members instead of an index signature or a `Record` of unknowns. Where a column has no
- * evidenced role in a tree-sorted listing it is OMITTED rather than modelled loosely, because an
- * omission is recoverable by a later, evidenced addition whereas an untyped bag defeats every
- * check the strictness profile exists to apply. Omitted on exactly that ground, and listed so the
- * omissions read as decisions: `activeFlag` and `publishedFlag`
- * [model/entity/ProductType.cfc:L54-L55], `urlTitle` [model/entity/ProductType.cfc:L56],
- * `productTypeDescription` [model/entity/ProductType.cfc:L58], `systemCode`
- * [model/entity/ProductType.cfc:L59], `remoteID` [model/entity/ProductType.cfc:L80], the audit
- * columns [model/entity/ProductType.cfc:L83-L86], and every collection and many-to-many
- * association on the entity. None of them is needed to render the tree, and none is invented here.
- *
- * REQUIREDNESS FOLLOWS ONE RULE, APPLIED UNIFORMLY: a member is required only where the legacy
- * declaration or the statement itself guarantees a value. That yields the generated identifier and
- * the two counts as required - a SQL count answers zero rather than nothing, so neither count can
- * be absent - and everything else as optional, because every remaining legacy column is declared
- * without a not-null constraint. Optional members are written `prop?: T` rather than
- * `prop?: T | undefined`: under `exactOptionalPropertyTypes` the bare form says the key may be
- * absent without also asserting that an explicit `undefined` is a distinct legal value, which is
- * the honest reading of a nullable column and matches the co-located projection on the sibling
- * product repository.
+ * One row of the cached product-type listing.
  */
 export interface ProductTypeTreeRow {
-  /**
-   * Generated identifier [model/entity/ProductType.cfc:L52]. Required: the column is the entity's
-   * `fieldtype="id"` with a uuid generator, so a persisted row always carries one.
-   */
   readonly productTypeID: string;
 
-  /**
-   * Number of products assigned to this product type, from the `isAssigned` alias
-   * [model/dao/ProductTypeDAO.cfc:L55-L57]. Name verbatim. Required: it is a count, which answers
-   * zero rather than nothing. A count, so a `number` - not monetary.
-   */
+  // CFML parity [model/dao/ProductTypeDAO.cfc:L54-L61]: both counts are correlated subqueries
+  // selected alongside `SELECT *` — `isAssigned` counts products of this type and `childCount` counts
+  // its immediate child types — so they are counts, not flags, despite the first name.
   readonly isAssigned: number;
 
-  /**
-   * Number of product types whose parent is this product type, from the `childCount` alias
-   * [model/dao/ProductTypeDAO.cfc:L58-L60]. Name verbatim. Required for the same reason as
-   * `isAssigned`, and likewise a plain `number`. A zero here identifies a leaf of the tree.
-   */
   readonly childCount: number;
 
-  /**
-   * Display name [model/entity/ProductType.cfc:L57], and the key the row set is ordered by
-   * ascending [model/dao/ProductTypeDAO.cfc:L62]. Optional because the legacy column is declared
-   * with no not-null constraint - the ordering key is itself nullable in the legacy schema, and
-   * this port invents no substitute value to paper over that.
-   */
+  // These three arrive from the `SELECT *`, so their presence depends on the columns the table
+  // actually has. The CFML ORM mapping does not declare them required, so the target projection
+  // permits undefined for each of them.
   readonly productTypeName?: string;
 
-  /**
-   * Materialized, comma-delimited ancestry path [model/entity/ProductType.cfc:L53], declared
-   * `length="4000"`. Optional because the legacy column is nullable. Walking it is the job of
-   * `../valueObjects/materializedIdPath.js`, never of this projection.
-   */
   readonly productTypeIDPath?: string;
 
-  /**
-   * Identifier of the parent product type - the row's tree edge - being the foreign-key column of
-   * the `parentProductType` association [model/entity/ProductType.cfc:L62]. Optional, and
-   * genuinely so: a root product type has no parent, and its absence here is precisely what
-   * identifies a root.
-   */
   readonly parentProductTypeID?: string;
 }
 
@@ -291,7 +231,7 @@ export interface ProductTypeTreeRow {
  * A method's home is the aggregate it returns, not the argument it filters on. Neither is declared
  * below, and neither may be added.
  *
- * THE IMPLEMENTING ADAPTER IS `src/repositories/mysql/mysqlProductTypeRepository.ts`, and exactly
+ * THE IMPLEMENTING ADAPTER IS `src/repositories/mysql/mysqlProductTypeRepository.ts` (planned), and exactly
  * four obligations transfer to it:
  *
  *   1. Prepared statements exclusively (E5), preserving the injection-safety guarantee that
@@ -308,110 +248,31 @@ export interface ProductTypeTreeRow {
  *      [model/entity/ProductType.cfc:L305-L313] in the legacy source, so the same discipline
  *      applies to any path this adapter writes.
  *
- * `src/handlers/bootstrap.ts` wires that adapter to this interface. Nothing here names a driver, a
+ * `src/handlers/bootstrap.ts` (planned) wires that adapter to this interface. Nothing here names a driver, a
  * pool, a connection, a row packet, a statement or a table.
  */
 export interface ProductTypeRepository {
+  // LEGACY-NOTE [model/dao/ProductTypeDAO.cfc:L51-L64]: the hint and the trailing comment both call this a tree-sorted query, but the statement orders by productTypeName ascending, so rows come back in name order and tree order has to be rebuilt from productTypeIDPath by the caller.
+  // Retained to preserve the cited legacy behavior.
+  // The legacy statement is raw SQL naming `SlatwallProductType`, which is the ORM entity name, while
+  // the entity maps to table `SwProductType` [model/entity/ProductType.cfc:L49].
   /**
-   * Every product type as a tree-sorted row set.
+   * The full product-type listing with per-row product and child counts.
    *
-   * Legacy: `public query function getProductTypeQuery()`
-   * [model/dao/ProductTypeDAO.cfc:L52]. The name is carried over verbatim and the parameter list is
-   * empty exactly as the legacy declaration is (B4) - this method takes no argument, and none may
-   * be added to it.
-   *
-   * The legacy hint calls this a tree-sorted query [model/dao/ProductTypeDAO.cfc:L51], and the
-   * tree-sorted part is the contract: the row set arrives ordered by product-type name ascending
-   * [model/dao/ProductTypeDAO.cfc:L62] and the adapter must preserve that ordering rather than
-   * substitute another. Each row also carries the two counts the legacy statement computes per row
-   * - products assigned to the product type, and product types parented by it - described in prose
-   * on {@link ProductTypeTreeRow} because this file contains no SQL. This port declares no cache,
-   * memo, expiry or invalidation surface, and none may be added.
-   *
-   * The legacy function hands back a raw CFML query object. That has no target equivalent and is
-   * deliberately not imitated: the return is a plain array of read-only rows, never a
-   * query-shaped object and never a map keyed by identifier, so ordering survives in the only
-   * structure that can carry it. The array is `readonly` because a projection is the port's to
-   * produce and not the caller's to rewrite.
-   *
-   * @returns Product-type rows, ordered by product-type name ascending.
+   * @returns every product type, ordered by name.
    */
   getProductTypeQuery(): Promise<readonly ProductTypeTreeRow[]>;
 
-  /**
-   * Load one product type by its identifier.
-   *
-   * NO LEGACY ANTECEDENT (B4). `model/dao/ProductTypeDAO.cfc` declares no such function; the
-   * legacy service tier loaded product types through framework CRUD inherited from
-   * `HibachiService`, which the target does not have (T3). The name follows the convention the
-   * sibling repository ports already use for an identifier-keyed entity read.
-   *
-   * A miss returns `undefined` - explicitly, and never a zero value, an empty object, or an error
-   * baked into the return type. The distinction from the nullable columns on
-   * {@link ProductTypeTreeRow} is deliberate: those model a column that exists and holds no value,
-   * whereas this models no entity at all, and collapsing the two would let a caller mistake an
-   * absent product type for a present one.
-   *
-   * The returned entity must arrive with its parent and child linkage and its `productTypeIDPath`
-   * already populated, per the fetch-shape obligation in this file's header. That is not a
-   * nicety: the price-group cascade climbs the parent chain
-   * [model/service/PriceGroupService.cfc:L57-L100] and the promotion engine walks the path, so an
-   * unpopulated graph changes which rate is selected and therefore what a customer is charged.
-   *
-   * @param productTypeID Identifier of the product type to load.
-   * @returns The materialized product type, or `undefined` when there is none.
-   */
   getProductTypeByProductTypeID(productTypeID: string): Promise<ProductType | undefined>;
 
   /**
-   * Load the product types identified by a materialized ancestry path.
+   * Load every product type named in a materialized identifier path, which is how the promotion
+   * qualifier and reward membership tests walk a type's ancestry.
    *
-   * NO LEGACY ANTECEDENT (B4). Like the identifier-keyed read above, this is work the ORM used to
-   * supply and the repository port must now surface (T3). It exists because
-   * `productTypeIDPath` [model/entity/ProductType.cfc:L53] is genuinely walked in the slice: by the
-   * promotion qualifier and reward membership tests, and by the price-group product-type cascade.
-   *
-   * The parameter is a plain `string`, for parity with the persisted column and for the verified
-   * reason given in this file's header - `../valueObjects/materializedIdPath.js` exports no branded
-   * path type to import, and declaring one here would create a second, incompatible brand.
-   * Interpreting the path - splitting it, extracting its root, testing membership - is that
-   * module's job and is not reimplemented here or on the returned entities. This method's whole
-   * responsibility is to accept a path and answer with the product types it denotes.
-   *
-   * Returns an empty array when the path denotes nothing. An empty result is a legitimate answer
-   * rather than a miss, which is why this method has no `undefined` in its return type while the
-   * single-entity read above does.
-   *
-   * @param productTypeIDPath A comma-delimited, root-first materialized ancestry path.
-   * @returns The matching product types, empty when there are none.
+   * @param productTypeIDPath comma-delimited product type identifiers, root first.
+   * @returns the product types the path names; absent identifiers are simply not returned.
    */
   getProductTypesByProductTypeIDPath(productTypeIDPath: string): Promise<ProductType[]>;
 
-  /**
-   * Persist one product type and answer with the persisted entity.
-   *
-   * NO LEGACY ANTECEDENT (B4) as a DAO function: persistence ran through `super.save()` inside
-   * `saveProductType` [model/service/ProductService.cfc:L294-L311], which is framework CRUD rather
-   * than a declared DAO method. The method name mirrors that service method and the convention the
-   * sibling repository ports use for a save.
-   *
-   * Deliberately minimal - entity in, persisted entity out - because the surrounding steps of the
-   * legacy save belong elsewhere and must not migrate here:
-   *
-   *   * URL-title generation, which the legacy service performs before saving
-   *     [model/service/ProductService.cfc:L297-L300], belongs to the `urlTitleGenerator` port, and
-   *     the setting supplying the product-type URL key resolves through `settingsProvider`.
-   *     Neither port is imported here: no port imports another.
-   *   * Inheriting the parent's products after a successful save
-   *     [model/service/ProductService.cfc:L306-L308] is service-tier orchestration and stays in
-   *     the service.
-   *
-   * The adapter is responsible for maintaining the materialized ancestry path on write, since the
-   * ORM lifecycle hooks that did so in the legacy source have no target equivalent - obligation 4
-   * in this interface's doc comment above.
-   *
-   * @param productType The product type to persist.
-   * @returns The persisted product type.
-   */
   saveProductType(productType: ProductType): Promise<ProductType>;
 }

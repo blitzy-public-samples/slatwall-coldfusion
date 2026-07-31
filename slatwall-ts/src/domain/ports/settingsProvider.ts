@@ -1,9 +1,23 @@
 // ---------------------------------------------------------------------------
+// CHECKPOINT STATUS - FORWARD REFERENCES CARRY THE MARKER `(planned)`
+//
+// The subtree is authored in boundaries, and AAP 0.4.5 makes the authoring
+// order "a compile-order convenience, not a schedule". Commentary in this file
+// therefore names modules of the target layout that DO NOT EXIST YET. Every such
+// name carries `(planned)` at its point of use, meaning exactly: a planned Agent
+// Action Plan target that is ABSENT from the subtree at this checkpoint. Nothing
+// here asserts that any of them exists now, and no behaviour in this file depends
+// on one. The complete set named below, with the role each will play:
+//
+//   src/handlers/bootstrap.ts  composition root (wiring)
+// ---------------------------------------------------------------------------
+
+// ---------------------------------------------------------------------------
 // slatwall-ts - the settings resolver port
 //
 // PURPOSE
 //   One synchronous, injected, string-returning resolver over a CLOSED union of
-//   seven setting keys. The legacy platform reads a setting four different ways;
+//   FOUR setting keys. The legacy platform reads a setting four different ways;
 //   all four collapse into this single flat port. It takes a key and returns a
 //   value, full stop. It is NOT an entity-graph traversal.
 //
@@ -69,7 +83,7 @@
 //   consumes them. `src/repositories/mysql/**` holds adapters for the six
 //   repository ports only, so this port has no adapter file anywhere in the
 //   target layout - it is one of the seven whose only legal implementation home
-//   is the composition root, `src/handlers/bootstrap.ts`. That is also where the
+//   is the composition root, `src/handlers/bootstrap.ts` (planned). That is also where the
 //   legacy default values are supplied. Keeping every default there and out of
 //   the domain is the whole point: it is why `"USD"` lives at
 //   [model/service/SettingService.cfc:L221] and nowhere in
@@ -79,24 +93,50 @@
 //   Every subtree that will consume this port - entities, services,
 //   repositories, handlers, integrations - is empty as this file is written, so
 //   no downstream import error can correct a name chosen here. The interface
-//   name, the method name `setting`, and the seven key strings are published as
+//   name, the method name `setting`, and the four key strings are published as
 //   final. Interface parity is the acceptance contract, so the method keeps its
 //   verbatim CFML name rather than becoming `get`, `getSetting` or `resolve`,
 //   and each key is the legacy key string character for character.
 //
-// THE VOCABULARY IS CLOSED AT SEVEN KEYS
-//   Four are named in the transformation plan - `globalURLKeyProduct` [L178],
-//   `globalURLKeyProductType` [L179], `skuCurrency` [L221] and
-//   `skuEligibleCurrencies` [L222]. Three more are here because in-scope entity
-//   methods genuinely reach for them and would otherwise need a second
-//   resolution path: `productImageDefaultExtension` [L191] and
-//   `productImageOptionCodeDelimiter` [L192], read by
-//   `Sku.generateImageFileName()` [model/entity/Sku.cfc:L135, L138], and
-//   `productTitleString` [L193], read by `Product.getTitle()`
-//   [model/entity/Product.cfc:L542].
+// THE VOCABULARY IS CLOSED AT FOUR KEYS, AND FOUR IS THE WHOLE BUDGET
+//   The transformation plan defines this port's slice of `SettingService` as
+//   EXACTLY four keys - `globalURLKeyProduct` [L178], `globalURLKeyProductType`
+//   [L179], `skuCurrency` [L221] and `skuEligibleCurrencies` [L222] - and names
+//   them twice: once in the scope inventory ("`model/service/SettingService.cfc`
+//   - only four keys", AAP 0.2.1) and once in the port table ("Read-only
+//   accessor for exactly four keys, with the legacy defaults mirrored",
+//   AAP 0.4.1). Four is a budget, not a starting point.
 //
-//   An eighth key is a scope violation. These are deliberately EXCLUDED, each
-//   because its only consumer sits outside this slice:
+//   A FIFTH KEY IS A SCOPE VIOLATION EVEN WHEN AN IN-SCOPE ENTITY READS IT.
+//   Three keys were previously published here on the reasoning that an in-scope
+//   entity method reaches for them and would otherwise need a second resolution
+//   path. That reasoning is rejected: needing a second path is the signal that
+//   the CONSUMER is out of scope, not that the vocabulary should grow. All three
+//   are removed, and each consumer's actual routing is recorded with it:
+//     productImageDefaultExtension    [model/service/SettingService.cfc:L191]
+//     productImageOptionCodeDelimiter [model/service/SettingService.cfc:L192]
+//                                     Read only by `Sku.generateImageFileName()`
+//                                     [model/entity/Sku.cfc:L131-L139], which is
+//                                     image-file-name composition and nothing
+//                                     else - one read per image-bearing option at
+//                                     L135 and one extension read at L138. Every
+//                                     image concern in this slice is served by the
+//                                     `imageStore` stub port (AAP 0.4.1), so a
+//                                     generated file name is resolved there and
+//                                     the entity resolves it from no setting.
+//     productTitleString              [model/service/SettingService.cfc:L193]
+//                                     Read only by `Product.getTitle()`
+//                                     [model/entity/Product.cfc:L542], whose body
+//                                     is a single delegation to
+//                                     `hibachiUtilityService.replaceStringTemplate()`.
+//                                     `hibachiUtilityService` is a Hibachi
+//                                     artifact that AAP 0.5.3/0.6.2 record as
+//                                     deliberately NOT ported, so the template it
+//                                     expands has no consumer in the target and
+//                                     the key has nothing to serve.
+//
+//   These are deliberately EXCLUDED for the same reason, each because its only
+//   consumer sits outside this slice:
 //     skuAllowBackorderFlag         [model/service/SettingService.cfc:L219]
 //                                   reached only from the out-of-scope
 //                                   inventory branch at
@@ -156,7 +196,8 @@
 /**
  * The closed vocabulary of settings this slice may resolve.
  *
- * Seven members, in the order they are declared in
+ * FOUR members - the exact four the transformation plan allots this port
+ * (AAP 0.2.1, AAP 0.4.1) - in the order they are declared in
  * `model/service/SettingService.cfc`. A string outside this union is a compile
  * error by design: the legacy engine would have thrown at runtime instead, since
  * `getSettingDetails()` raises "You have asked for a setting with an invalid
@@ -198,47 +239,6 @@ export type SettingKey =
    * is in scope.
    */
   | 'globalURLKeyProductType'
-  /**
-   * File extension appended to a generated SKU image file name.
-   *
-   * `productImageDefaultExtension = {fieldType="text",defaultValue="jpg"}`
-   * [model/service/SettingService.cfc:L191] - default `"jpg"`.
-   *
-   * Read by `Sku.generateImageFileName()` [model/entity/Sku.cfc:L138], where it
-   * is interpolated as the suffix after the product code and the option string.
-   * Note the surface: a SKU resolves it through its associated product,
-   * `getProduct().setting(...)`, which is legacy surface (d) above. The value is
-   * a bare extension with no leading dot - the dot is written by the call site.
-   */
-  | 'productImageDefaultExtension'
-  /**
-   * Separator placed before each image-bearing option code in that file name.
-   *
-   * `productImageOptionCodeDelimiter = {fieldType="select", defaultValue="-"}`
-   * [model/service/SettingService.cfc:L192] - default `"-"`.
-   *
-   * Read by `Sku.generateImageFileName()` [model/entity/Sku.cfc:L135], once per
-   * option whose option group carries `getImageGroupFlag()`, again through
-   * `getProduct().setting(...)`. It is a single delimiter character, not a list.
-   */
-  | 'productImageOptionCodeDelimiter'
-  /**
-   * Template from which a product's display title is composed.
-   *
-   * `productTitleString = {fieldType="text", defaultValue="${brand.brandName} ${productName}"}`
-   * [model/service/SettingService.cfc:L193] - default
-   * `"${brand.brandName} ${productName}"`.
-   *
-   * Read by `Product.getTitle()` [model/entity/Product.cfc:L542] and handed
-   * straight to `hibachiUtilityService.replaceStringTemplate(template=..., object=this)`.
-   *
-   * The `${...}` placeholders belong to the VALUE, not to this port's contract.
-   * This port returns the template UNEXPANDED, exactly as legacy `setting()`
-   * does; substituting property values against a product is the consumer's
-   * work. Do not interpolate here, and do not mistake the value for a finished
-   * label.
-   */
-  | 'productTitleString'
   /**
    * The base currency a SKU's own price columns are denominated in.
    *
@@ -283,7 +283,7 @@ export type SettingKey =
    * THE DEFAULT IS RUNTIME-COMPUTED, NOT A LITERAL:
    * `getCurrencyService().getAllActiveCurrencyIDList()` is a live data lookup,
    * which sits awkwardly against a synchronous resolver. The resolution is
-   * one-sided and binding: THE COMPOSITION ROOT, `src/handlers/bootstrap.ts`,
+   * one-sided and binding: THE COMPOSITION ROOT, `src/handlers/bootstrap.ts` (planned),
    * MUST RESOLVE THIS DEFAULT EAGERLY - before the provider instance is handed
    * to the domain layer - so that `setting()` can stay synchronous. That is the
    * same "materialize at the boundary" discipline the SKU currency-detail map
@@ -309,7 +309,7 @@ export type SettingKey =
  *
  * IMPLEMENTED IN THE COMPOSITION ROOT. There is no adapter file for this port
  * anywhere in the target layout - `src/repositories/mysql/**` implements the six
- * repository ports only - so `src/handlers/bootstrap.ts` constructs the instance
+ * repository ports only - so `src/handlers/bootstrap.ts` (planned) constructs the instance
  * and supplies the legacy defaults, then hands the finished provider inward.
  *
  * THE COMPOSITION ROOT MUST RESOLVE EVERY RUNTIME-COMPUTED DEFAULT EAGERLY,
@@ -378,7 +378,7 @@ export interface SettingsProvider {
    * or `resolve`, and the argument keeps the legacy name `settingName`
    * [model/entity/HibachiEntity.cfc:L129].
    *
-   * @param settingName - One of the seven keys in {@link SettingKey}. A key
+   * @param settingName - One of the four keys in {@link SettingKey}. A key
    *   outside that union is rejected at compile time; the legacy engine deferred
    *   the equivalent rejection to a runtime throw
    *   [model/service/SettingService.cfc:L513].

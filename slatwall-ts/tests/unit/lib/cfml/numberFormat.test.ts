@@ -617,6 +617,33 @@ describe('DecimalString: the branded type and its validating constructor', () =>
     expect(toDecimalString('0.00')).toBe('0.00');
   });
 
+  it('accepts the LEADING-DOT form, and brands it without rewriting it', () => {
+    // The documented accepted set includes a numeral with no integer digit at
+    // all, and that member has to be asserted separately: a validator narrowed
+    // to require a leading digit would still satisfy every other case in this
+    // block, so nothing above distinguishes the two.
+    //
+    // The form is not hypothetical - it is the shape the slice's own rounding
+    // expressions take. `.99` and the multi-option `.95,.99` are the
+    // characterization inputs whose measured outputs this port is pinned to, and
+    // `RoundingRule.roundingRuleExpression` carries no format constraint at all,
+    // so a leading-dot expression reaches the algorithm exactly as written.
+    //
+    // Two properties, not one. It VALIDATES, and it is returned VERBATIM: no
+    // integer zero is inserted, so the brand does not quietly normalise its
+    // input. That distinction matters downstream, because the rounding algorithm
+    // is a string algorithm - it measures and slices the numeral - so a helpfully
+    // inserted `0` would change a prefix length and with it the money.
+    const brandedLeadingDot: DecimalString = toDecimalString('.99');
+
+    expect(brandedLeadingDot).toBe('.99');
+    expect(toDecimalString('-.99')).toBe('-.99');
+
+    // Contrast, so the acceptance is not mistaken for blanket tolerance of a
+    // missing digit on either side: a TRAILING bare dot is still rejected.
+    expect(() => toDecimalString('.')).toThrow(CfmlNumberFormatError);
+  });
+
   // The rejections are what make the brand mean something. Each raises the
   // module's typed error rather than a bare `Error`, so a malformed candidate
   // can be told apart from any other failure and nothing `NaN`-bearing can
@@ -692,6 +719,259 @@ describe('DecimalString: the branded type and its validating constructor', () =>
 
     expect(presented).toBe('12.35');
     expect(stringified).toBe('11.3');
+  });
+});
+
+// ---------------------------------------------------------------------------
+// The rejection path, driven through EVERY entry point a price can flow through
+// ---------------------------------------------------------------------------
+//
+// WHY THIS BLOCK EXISTS, and why the rejections above are not sufficient on
+// their own. This module has TWO independent input gates, not one:
+//
+//   * `toDecimalString` validates a candidate against `PLAIN_DECIMAL_NUMERAL`,
+//     a pattern declared in this module.
+//   * the private input normaliser validates by CONSTRUCTING a decimal and then
+//     testing finiteness, and it is what `numberFormat`, `cfNumberToString`,
+//     `cfNumericEquals`, `cfNumericGreaterThan` and `cfNumericLessThan` all run
+//     their arguments through.
+//
+// Those two gates DISAGREE, and the disagreement is measured rather than
+// supposed - see the tolerance test at the end of this block, where `'1e5'`,
+// `'12.'`, `'+12.5'` and `'0x1A'` are rejected by the first gate and accepted by
+// the second. So an assertion that `toDecimalString('NaN')` throws says nothing
+// whatsoever about whether `numberFormat('NaN')` throws: different gate,
+// different rule.
+//
+// That matters because the module's stated guarantee is that nothing
+// `NaN`-bearing can ever reach a price, and a price does not reach this module
+// through `toDecimalString`. It reaches it through the two formatters - the
+// verified legacy call sites are [model/service/PromotionService.cfc:L1017],
+// [model/service/PriceGroupService.cfc:L339] and
+// [model/service/RoundingRuleService.cfc:L89] - and through the three
+// comparison predicates that `roundValue` uses to pick between candidates
+// [model/service/RoundingRuleService.cfc:L100, L124, L128, L134, L138, L145,
+// L149, L156, L160]. Every one of those five is asserted below, and each
+// two-argument predicate is asserted in BOTH operand positions, because a
+// normaliser wired into only the first argument would still satisfy a
+// first-argument-only test.
+//
+// The two rejection branches are also told apart rather than lumped together.
+// Malformed input throws from inside the decimal library, and that throw is
+// WRAPPED with the original kept as `cause`. A non-finite spelling parses
+// cleanly and is rejected by the explicit finiteness test afterwards, so it
+// carries NO cause. Asserting only `CfmlNumberFormatError` would let those two
+// paths be collapsed into one; asserting the presence and absence of `cause`
+// keeps both reachable and distinguishable.
+describe('the rejection path, exercised through every consumer of the private normaliser', () => {
+  /**
+   * What one consumer did with one rejected candidate.
+   *
+   * `causeIsDefined` is the discriminator between the two rejection branches,
+   * and `echoesTheCandidate` records that the message names the offending
+   * argument - which is by definition a failed numeric candidate, never a
+   * configuration value, connection detail or credential.
+   */
+  interface CapturedRejection {
+    readonly candidate: string;
+    readonly name: string;
+    readonly causeIsDefined: boolean;
+    readonly echoesTheCandidate: boolean;
+  }
+
+  /**
+   * Invokes a consumer with a candidate it is expected to refuse, and reports
+   * what came back.
+   *
+   * JUDGMENT CALL: this returns a SENTINEL row instead of throwing when the
+   * consumer returns normally. The tests below compare whole tables, so a
+   * consumer that silently accepts a malformed value shows up in the diff by
+   * name and candidate rather than aborting the run at the first offender -
+   * which is what makes a table assertion worth writing instead of eight
+   * separate `toThrow` calls.
+   *
+   * Like every other helper in this file it is a pure local arrow function
+   * holding no state, so it cannot leak anything between tests. That is the
+   * same request-scoping discipline that makes four legacy component-level
+   * caches request-scoped in this port.
+   */
+  const captureRejection = (candidate: string, attempt: () => unknown): CapturedRejection => {
+    try {
+      attempt();
+    } catch (thrown) {
+      if (thrown instanceof Error) {
+        return {
+          candidate,
+          name: thrown.name,
+          causeIsDefined: thrown.cause !== undefined,
+          echoesTheCandidate: thrown.message.includes(JSON.stringify(candidate)),
+        };
+      }
+
+      return {
+        candidate,
+        name: 'NotAnError',
+        causeIsDefined: false,
+        echoesTheCandidate: false,
+      };
+    }
+
+    return {
+      candidate,
+      name: '(returned normally - the candidate was ACCEPTED)',
+      causeIsDefined: false,
+      echoesTheCandidate: false,
+    };
+  };
+
+  /** One entry point, named exactly as it will read in a failure diff. */
+  interface NormaliserConsumer {
+    readonly label: string;
+    readonly invoke: (candidate: string) => unknown;
+  }
+
+  // All five exports that run their arguments through the private normaliser,
+  // with each two-argument predicate listed once per operand position. The
+  // partner operand is the well-formed `'0'`, so the only thing that can make a
+  // row throw is the candidate itself.
+  const CONSUMERS: readonly NormaliserConsumer[] = [
+    { label: 'numberFormat', invoke: (candidate) => numberFormat(candidate) },
+    { label: 'cfNumberToString', invoke: (candidate) => cfNumberToString(candidate) },
+    {
+      label: 'cfNumericEquals (first operand)',
+      invoke: (candidate) => cfNumericEquals(candidate, '0'),
+    },
+    {
+      label: 'cfNumericEquals (second operand)',
+      invoke: (candidate) => cfNumericEquals('0', candidate),
+    },
+    {
+      label: 'cfNumericGreaterThan (first operand)',
+      invoke: (candidate) => cfNumericGreaterThan(candidate, '0'),
+    },
+    {
+      label: 'cfNumericGreaterThan (second operand)',
+      invoke: (candidate) => cfNumericGreaterThan('0', candidate),
+    },
+    {
+      label: 'cfNumericLessThan (first operand)',
+      invoke: (candidate) => cfNumericLessThan(candidate, '0'),
+    },
+    {
+      label: 'cfNumericLessThan (second operand)',
+      invoke: (candidate) => cfNumericLessThan('0', candidate),
+    },
+  ];
+
+  // The five malformed spellings the module's own documentation names as the
+  // ones the decimal library itself throws on. Each therefore takes the WRAPPED
+  // branch and arrives carrying a cause.
+  const MALFORMED_CANDIDATES: readonly string[] = ['abc', '', '1.2.3', '1,000', ' 12.5 '];
+
+  // The three non-finite spellings the library ACCEPTS - `new Decimal('NaN')`
+  // and `new Decimal('Infinity')` both succeed - so these reach the explicit
+  // finiteness test instead, and arrive with no cause. This is the gap that
+  // would otherwise put `'NaN'` straight into a price.
+  const NON_FINITE_CANDIDATES: readonly string[] = ['NaN', 'Infinity', '-Infinity'];
+
+  for (const consumer of CONSUMERS) {
+    it(`refuses every malformed candidate through ${consumer.label}, keeping the library cause`, () => {
+      const observed = MALFORMED_CANDIDATES.map((candidate) =>
+        captureRejection(candidate, () => consumer.invoke(candidate)),
+      );
+
+      expect(observed).toEqual(
+        MALFORMED_CANDIDATES.map((candidate) => ({
+          candidate,
+          name: 'CfmlNumberFormatError',
+          causeIsDefined: true,
+          echoesTheCandidate: true,
+        })),
+      );
+    });
+
+    it(`refuses every non-finite candidate through ${consumer.label}, with no cause to wrap`, () => {
+      const observed = NON_FINITE_CANDIDATES.map((candidate) =>
+        captureRejection(candidate, () => consumer.invoke(candidate)),
+      );
+
+      expect(observed).toEqual(
+        NON_FINITE_CANDIDATES.map((candidate) => ({
+          candidate,
+          name: 'CfmlNumberFormatError',
+          causeIsDefined: false,
+          echoesTheCandidate: true,
+        })),
+      );
+    });
+  }
+
+  // The positive control. Without it, every rejection test above would still
+  // pass against a consumer that had been broken into refusing EVERYTHING, and
+  // the block would be asserting nothing about the rejection path specifically.
+  it('still accepts a well-formed candidate through each of those same consumers', () => {
+    expect(numberFormat('12.5')).toBe('12.50');
+    expect(cfNumberToString('12.50')).toBe('12.5');
+    expect(cfNumericEquals('12.5', '12.50')).toBe(true);
+    expect(cfNumericEquals('12.50', '12.5')).toBe(true);
+    expect(cfNumericGreaterThan('12.5', '0')).toBe(true);
+    expect(cfNumericGreaterThan('0', '12.5')).toBe(false);
+    expect(cfNumericLessThan('0', '12.5')).toBe(true);
+    expect(cfNumericLessThan('12.5', '0')).toBe(false);
+  });
+
+  // The measured disagreement between the two gates, which is what makes this
+  // whole block necessary rather than redundant.
+  //
+  // JUDGMENT CALL: these four forms are asserted as ACCEPTED, not as malformed.
+  // It is tempting to fold them into the rejection tables on the reasoning that
+  // they are not plain decimal numerals - and that would be wrong, because they
+  // measurably do not throw. Input tolerance and brand strictness are
+  // deliberately different things in this module, and the honest assertion is
+  // the measured one. `'0x1A'` in particular is a real surprise worth pinning:
+  // the decimal library reads hexadecimal, so a stray hex-looking string
+  // normalises to 26 rather than being refused.
+  //
+  // None of this is a latent money hazard, and the reason is worth stating so
+  // the tolerance is not "fixed" by mistake: every accepted form here is FINITE
+  // and its value is exactly what the numeral says, and both formatters brand
+  // their OUTPUT through `toDecimalString`, so whatever they return is a plain
+  // decimal numeral regardless of how the input was spelled.
+  it('is more tolerant of INPUT than the brand constructor is of a candidate', () => {
+    // A trailing bare dot: refused as a brand, normalised as input.
+    expect(() => toDecimalString('12.')).toThrow(CfmlNumberFormatError);
+    expect(numberFormat('12.')).toBe('12.00');
+    expect(cfNumberToString('12.')).toBe('12');
+
+    // Exponential notation: refused as a brand, normalised as input.
+    expect(() => toDecimalString('1e5')).toThrow(CfmlNumberFormatError);
+    expect(numberFormat('1e5')).toBe('100000.00');
+    expect(cfNumberToString('1e5')).toBe('100000');
+    expect(cfNumericEquals('1e5', '100000')).toBe(true);
+
+    // An explicit leading plus: refused as a brand, normalised as input.
+    expect(() => toDecimalString('+12.5')).toThrow(CfmlNumberFormatError);
+    expect(numberFormat('+12.5')).toBe('12.50');
+    expect(cfNumberToString('+12.5')).toBe('12.5');
+
+    // Hexadecimal: refused as a brand, and READ as a number by the library.
+    expect(() => toDecimalString('0x1A')).toThrow(CfmlNumberFormatError);
+    expect(numberFormat('0x1A')).toBe('26.00');
+    expect(cfNumberToString('0x1A')).toBe('26');
+
+    // The leading-dot form is the one member of this group that BOTH gates
+    // accept, and the two disagree only on presentation: the brand keeps the
+    // numeral verbatim while the formatters supply the integer zero.
+    expect(toDecimalString('.99')).toBe('.99');
+    expect(numberFormat('.99')).toBe('0.99');
+    expect(cfNumberToString('.99')).toBe('0.99');
+    expect(cfNumericLessThan('.99', '1')).toBe(true);
+
+    // And the tolerance stops exactly where finiteness does. `'Infinity'` is a
+    // spelling the library accepts and this module refuses, at BOTH gates.
+    expect(() => toDecimalString('Infinity')).toThrow(CfmlNumberFormatError);
+    expect(() => numberFormat('Infinity')).toThrow(CfmlNumberFormatError);
+    expect(() => cfNumberToString('Infinity')).toThrow(CfmlNumberFormatError);
   });
 });
 

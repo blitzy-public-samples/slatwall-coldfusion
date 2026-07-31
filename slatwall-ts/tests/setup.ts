@@ -1,15 +1,57 @@
+/**
+ * Test bootstrap, loaded by the runner before any suite.
+ *
+ * It pins the process to UTC and proves the pin took effect, loads a local `.env` when one is
+ * present, resolves the flag that gates database-backed suites, and restores mocks and timers between
+ * tests.
+ */
+
+// ---------------------------------------------------------------------------
+// CHECKPOINT STATUS - FORWARD REFERENCES CARRY THE MARKER `(planned)`
+//
+// The subtree is authored in boundaries, and AAP 0.4.5 makes the authoring
+// order "a compile-order convenience, not a schedule". Commentary in this file
+// therefore names modules of the target layout that DO NOT EXIST YET. Every such
+// name carries `(planned)` at its point of use, meaning exactly: a planned Agent
+// Action Plan target that is ABSENT from the subtree at this checkpoint. Nothing
+// here asserts that any of them exists now, and no behaviour in this file depends
+// on one. The complete set named below, with the role each will play:
+//
+//   src/handlers/bootstrap.ts                   composition root (wiring)
+//   tests/fixtures                              fixture tier
+//   tests/integration/repositories              repository integration tier
+//   tests/traceability/legacyTestMap.ts         structural coverage map
+//   tests/unit/domain/entities/brand.test.ts    brand entity suite
+//   tests/unit/domain/entities/product.test.ts  product entity suite
+// ---------------------------------------------------------------------------
+
 // ---------------------------------------------------------------------------
 // slatwall-ts - the single registered Vitest setup file
 //
-// WHAT THIS FILE IS
-//   The one and only setup module for the entire test suite of the strict-mode
-//   TypeScript port of the Slatwall 3.1.39 catalog + promotions/pricing slice.
-//   `vitest.config.ts:L229` wires it in as `setupFiles: ['./tests/setup.ts']`
-//   with exactly one entry, so this path and this filename are a contract
-//   rather than a convention: never renamed, never relocated, never split into
-//   several setup modules, and never joined by a second entry.
+// BRANCH COVERAGE CLASSIFICATION - THREE BRANCHES ARE INSPECTION-ONLY
 //
-//   Its whole job is to make every suite deterministic and self-contained:
+// A normal run drives this module's default path end to end, so it is
+// continuously exercised. Three branches are not, and none of them MAY be
+// covered by a suite: this file declares no `describe` and no `it` by contract,
+// and covering them from elsewhere would mean re-importing this module mid-run,
+// which re-executes the environment mutation and re-registers the global
+// per-test hook - the exact leak the tier exists to prevent. Each is therefore
+// verified by running a documented probe and reading the outcome.
+//
+//   1. The UTC failure diagnostic (the `throw` in R1).
+//      Probe `TZ=America/Chicago npm test` -> the suite PASSES and the guard does
+//      not fire, which is correct: R1 assigns `process.env.TZ` before any date is
+//      constructed, so a non-UTC shell is corrected rather than rejected. The
+//      branch is reachable only on a runtime that ignores that assignment.
+//   2. The flag literal table (the accepted-value lists in R3).
+//      Probe: one run per literal, plus one with the variable unset -> every
+//      enabling and disabling literal, the empty value, a mixed-case value with
+//      surrounding whitespace, and the unset case all resolve as documented, so
+//      trimming and case-folding are confirmed.
+//   3. The unrecognised-value rejection (the `throw` at the end of R3).
+//      Probe `TEST_LIVE_DATABASE=maybe npm test` -> the run stops before any test
+//      executes, naming the flag, both accepted-value lists and why it stops,
+//      without echoing the offending value.
 //
 //     R1  pin the process to UTC, and then PROVE the process is UTC
 //     R2  load a local `.env` if one happens to exist - best-effort, and never
@@ -22,8 +64,8 @@
 //   tier is owned elsewhere, and duplicating one here would create a second
 //   source of truth for it:
 //
-//     fixtures, factories, test data   tests/fixtures/*.ts
-//     the structural coverage floor    tests/traceability/legacyTestMap.ts
+//     fixtures, factories, test data   tests/fixtures/*.ts (planned)
+//     the structural coverage floor    tests/traceability/legacyTestMap.ts (planned)
 //     emitted SQL and bound values     tests/integration/repositories/*.test.ts
 //     behavioural gates                tests/unit/**/*.test.ts
 //
@@ -78,7 +120,7 @@
 //   one of the twenty preserved business-logic defects - so its absence here is
 //   a decision rather than an oversight, and it correctly carries no
 //   preserved-defect marker. The literal fixture values on L54-L59 are
-//   likewise out of scope for this file; they belong to tests/fixtures/.
+//   likewise out of scope for this file; they belong to tests/fixtures/ (planned).
 //
 //   Negative reference - meta/tests/unit/SlatwallUnitTestBase.cfc:L49-L73, the
 //   anti-pattern this file is the exact inverse of. It extends the vendored
@@ -106,7 +148,8 @@
 //   before every test. The equivalent here is per-test construction inside each
 //   suite plus the runner's per-file isolation - never a shared mutable subject
 //   parked in this module. The four shared cases at L51-L67 themselves belong
-//   to tests/unit/domain/entities/brand.test.ts and product.test.ts.
+//   to tests/unit/domain/entities/brand.test.ts (planned) and
+//   tests/unit/domain/entities/product.test.ts (planned).
 //
 // THE EMPTY-ENVIRONMENT GUARANTEE
 //   The entire suite passes with a completely empty environment. No test may
@@ -125,97 +168,23 @@
 import { config } from 'dotenv';
 import { afterEach, vi } from 'vitest';
 
-// ---------------------------------------------------------------------------
-// R1 - UTC, enforced and then verified
-// ---------------------------------------------------------------------------
-
-/*
- * Pin the process timezone before this module does anything else.
- *
- * WHY THE PORT NEEDS AN EXPLICIT POLICY AT ALL
- *   Legacy date behaviour depended on the CFML server's timezone.
- *   `PromotionPeriod.isCurrent()` [model/entity/PromotionPeriod.cfc:L78-L81]
- *   reads the ambient clock at L79 and compares start inclusively (`<=`) with
- *   end exclusively (`>`), with no date-validity guard;
- *   `isExpired()` [L83-L85] does guard, and reads the ambient clock AGAIN,
- *   independently. Sale-price expiration comparisons behave the same way. The
- *   target's answer is to widen `isCurrent(now: Date)` with an explicit
- *   instant - the single sanctioned entity-layer widening - so that a suite
- *   states the moment it is testing instead of inheriting one.
- *
- *   Two rules follow for every suite, and they are not optional:
- *     * pass an explicit `now` rather than reading the ambient clock, and
- *     * write every date literal in explicit UTC ISO-8601 form, e.g.
- *       '2024-06-01T00:00:00.000Z' - never a locale-dependent string such as
- *       'June 1, 2024', whose parse is implementation-defined.
- *   This assignment is the safety net under those rules, not a substitute for
- *   them.
- *
- * ON ORDERING, precisely
- *   ECMAScript evaluates a module's `import` declarations before any statement
- *   in its body, so 'dotenv' and 'vitest' are unavoidably initialised first and
- *   no statement in this file can literally run before them. "First" here
- *   therefore means the first EXECUTABLE statement of this module, which is
- *   what this is. That is sufficient, for three specific reasons rather than by
- *   assumption:
- *
- *     1. Neither imported module captures a timezone at import time, and Node
- *        20 honours a change to `process.env.TZ` made after start-up: the
- *        assignment triggers a date-configuration change notification, so the
- *        cached zone is dropped rather than kept.
- *     2. Vitest evaluates its setup files BEFORE the test module they serve, so
- *        every `Date` any suite constructs is created after this line.
- *     3. It precedes the `.env` load below, and that ordering is load-bearing
- *        rather than cosmetic: the loader is deliberately non-overriding, so a
- *        stray `TZ=` line in a developer's local `.env` cannot displace UTC.
- *
- *   Placing this statement textually above the imports was considered and
- *   rejected: it would still not execute first, so it would only look
- *   authoritative without being so.
- */
+// This must stay the first executable statement, so the check below measures a process that has
+// already been pinned.
 process.env.TZ = 'UTC';
 
-/*
- * Two instants, deliberately - one in January and one in July.
- *
- * A single winter probe is not enough. `getTimezoneOffset()` is evaluated for
- * the instant it is called on, so a zone that observes summer time while
- * sitting at UTC+00:00 in winter - Europe/London and Atlantic/Canary are the
- * obvious cases - would satisfy a January-only check and then silently shift
- * the local reading of every summer date. Probing both ends of the year closes
- * that gap.
- *
- * `getHours()` is checked alongside the offset because the offset alone proves
- * only the arithmetic; the hour proves that the local calendar reading a suite
- * would actually assert on lands where UTC says it should.
- */
 const UTC_WINTER_INSTANT = new Date('2024-01-01T00:00:00.000Z');
 const UTC_SUMMER_INSTANT = new Date('2024-07-01T00:00:00.000Z');
 
+// JUDGMENT CALL: A process that is not effectively UTC stops the run rather than continuing, because every date-sensitive assertion would then pass or fail by machine.
+// Both a winter and a summer instant are measured, so a zone that is only incidentally at zero offset
+// in one half of the year is still rejected. No credential or database value is printed; the UTC guard
+// may report TZ.
 if (
   UTC_WINTER_INSTANT.getTimezoneOffset() !== 0 ||
   UTC_SUMMER_INSTANT.getTimezoneOffset() !== 0 ||
   UTC_WINTER_INSTANT.getHours() !== 0 ||
   UTC_SUMMER_INSTANT.getHours() !== 0
 ) {
-  /*
-   * A correctness guard, and the only failure this file can raise that is not
-   * caused by a malformed variable. Running outside UTC would make every
-   * date-sensitive assertion in the suite pass or fail by accident depending on
-   * the machine, which is worse than a red run: it is a green run that means
-   * nothing.
-   *
-   * WHEN THIS ACTUALLY FIRES, stated plainly so nobody misreads it as a check
-   * on the launching shell. A non-UTC `TZ` in the shell, container or job
-   * definition is CORRECTED by the assignment above, because Node 20 honours
-   * the change - verified directly: a process started as America/Chicago
-   * reports a 360-minute offset before the assignment and 0 after it. So this
-   * branch is reached only where the assignment does not take effect, i.e. a
-   * runtime that ignores it or an environment object detached from the
-   * date-configuration layer. It is a guard against a broken runtime, not
-   * against an operator's shell, and it is worth keeping precisely because that
-   * failure would otherwise be silent.
-   */
   throw new Error(
     'slatwall-ts test setup: this process is not effectively UTC, so every date-sensitive ' +
       'assertion in the suite would pass or fail by accident depending on the machine.\n' +
@@ -233,95 +202,25 @@ if (
   );
 }
 
-// ---------------------------------------------------------------------------
-// R2 - a local `.env`, loaded best-effort and never fatally
-// ---------------------------------------------------------------------------
-
-/*
- * `dotenv` is pinned at 17.4.2 as a devDependency (package.json:L36) precisely
- * because it is a development-time and test-time concern only: the AWS Lambda
- * `nodejs20.x` runtime injects environment variables natively, so this code
- * path never executes in a deployed run. Loading is unambiguously this file's
- * job - `.env.example:L22-L24` records the single test-only key as consumed by
- * `tests/setup.ts`, `src/lib/config.ts:L58-L59` records the same exclusion from
- * the other side, and `vitest.config.ts:L91-L99` states that the runner config
- * deliberately does not reference the loader either.
- *
- * Four properties of this call are chosen, not incidental:
- *
- *   * `quiet: true` suppresses the informational banner that dotenv 17.x prints
- *     otherwise, so a normal run stays clean. A missing `.env` is the NORMAL
- *     case in a fresh checkout and must not look like a problem.
- *   * `override` is deliberately not passed, so it stays at its default of
- *     false and a value already present in the real environment always wins.
- *     That is what makes the UTC pin above unassailable and what keeps values
- *     supplied by an automated environment authoritative over a stale local
- *     file.
- *   * The return value is deliberately ignored. `config()` reports a missing
- *     file by RETURNING an error property rather than throwing, and that is a
- *     normal outcome here, so inspecting it could only lead to reporting a
- *     non-problem.
- *   * Neither the parsed result nor any variable value is read, printed or
- *     serialised. At most this file names a variable.
- */
+// A local `.env` is optional: its absence is not a failure, and Lambda supplies environment variables
+// directly, so this load has no production counterpart.
 try {
   config({ quiet: true });
-} catch {
-  /*
-   * Deliberately swallowed, and deliberately silent. This is the complete and
-   * intended behaviour, not a deferred one.
-   *
-   * This is not dead code, and that was established by experiment rather than
-   * assumed. Ordinary file trouble does NOT reach here: a missing `.env`, and
-   * even a `.env` path that is a directory, are REPORTED through the returned
-   * error property (ENOENT and EISDIR respectively). What does reach here is
-   * the loader's own validation - a malformed `DOTENV_KEY` alongside a vault
-   * file raises INVALID_DOTENV_KEY as a thrown error, confirmed directly - and
-   * without this guard that input would abort the entire suite over a load that
-   * is optional by contract. The suite is required to pass with a completely
-   * empty environment, so a failed OPTIONAL load must never be a failure.
-   *
-   * Nothing is logged either. The only diagnostic available at this point is
-   * the environment itself, and this file never prints environment content.
-   * The binding is omitted (`catch` with no parameter) so no unused error
-   * variable is introduced.
-   */
-}
+} catch {}
 
-// ---------------------------------------------------------------------------
-// R3 - the one test-only flag, normalised into this file's single export
-// ---------------------------------------------------------------------------
-
-/**
- * Name of the only environment variable this file interprets.
- *
- * Held as a constant so the lookup below and the diagnostic message share one
- * source of truth. Taken verbatim from `.env.example:L214`, the sole entry in
- * that file's fifth group ("Test-only", L199-L214), which records at L202-L203
- * that it is read only by `tests/setup.ts` and by nothing under `src/**`.
- */
+// The flag that enables suites needing a reachable database. It is the only test-only key in the
+// committed environment contract.
 const LIVE_DATABASE_FLAG_NAME = 'TEST_LIVE_DATABASE';
 
-/**
- * Values that ENABLE the flag. Compared case-insensitively, after trimming.
- */
 const FLAG_ENABLED_LITERALS: readonly string[] = ['true', '1', 'yes'];
 
-/**
- * Values that DISABLE the flag.
- *
- * The empty string is a member on purpose: `TEST_LIVE_DATABASE=` in a `.env`
- * file is a perfectly ordinary way to write "off", and so is a value that is
- * nothing but whitespace once trimmed. An absent variable is handled separately
- * below, because absence is not a value.
- */
 const FLAG_DISABLED_LITERALS: readonly string[] = ['false', '0', 'no', ''];
 
 /**
- * Resolve the test-only live-database flag into a boolean.
+ * Interpret the live-database flag.
  *
- * OPTIONAL, WITH A DOCUMENTED DEFAULT OF DISABLED. Absent means disabled, which
- * is what lets a fresh checkout with no `.env` at all run green.
+ * An unrecognized value raises rather than defaulting to disabled, so a typo cannot silently skip the
+ * suites it was set to enable while the run still reports success.
  *
  * That is deliberately UNLIKE production configuration, and the two must not be
  * conflated. The legacy host chose its ORM dialect with a three-branch
@@ -339,7 +238,7 @@ const FLAG_DISABLED_LITERALS: readonly string[] = ['false', '0', 'no', ''];
  * be a green run that proves less than it appears to.
  *
  * WHAT THE FLAG IS FOR, stated plainly so it is not misread as an invitation:
- * the six suites under `tests/integration/repositories/` must not require a
+ * the suites under `tests/integration/repositories/` must not require a
  * live MySQL server at all. They assert generated SQL text and bound parameters
  * against a recording test double substituted for the pool or executor, which
  * is exactly what `vitest.config.ts:L190-L194` and `.env.example:L205-L209`
@@ -379,76 +278,12 @@ function resolveLiveDatabaseTestsEnabled(raw: string | undefined): boolean {
   );
 }
 
-/**
- * Whether suites that would need a real MySQL server may run.
- *
- * The ONLY export of this module, and an immutable binding computed once at
- * setup time from the environment. A suite that genuinely needs a live server
- * imports this and skips itself when it is `false`; it never reaches for a
- * connection detail of its own.
- *
- * `false` in every default checkout, because the variable is absent or `false`
- * there. The integration tier does not consult it at all - that tier needs no
- * server.
- */
 export const liveDatabaseTestsEnabled: boolean = resolveLiveDatabaseTestsEnabled(
   process.env[LIVE_DATABASE_FLAG_NAME],
 );
 
-// ---------------------------------------------------------------------------
-// R4 - per-test hygiene: nothing survives a test that should not
-// ---------------------------------------------------------------------------
-
-/*
- * WHY THIS HOOK EXISTS AT ALL
- *   State that outlives its test is the failure mode this port was designed
- *   against. Four legacy component-level caches become request-scoped here
- *   rather than module-scoped, because module-level state survives between
- *   unrelated invocations on a warm Lambda container:
- *
- *     [model/dao/SkuDAO.cfc:L204-L220]  a next-sort-order value seeded from
- *       `SELECT max(SwOptionGroup.sortOrder) as max FROM SwOptionGroup` and
- *       then never cleared, because the clearing method at L222-L226 guards
- *       its own removal with an inverted existence test and so can never fire.
- *     [model/service/RoundingRuleService.cfc:L67-L77]  a rounding-rule detail
- *       memo, which becomes request-scoped.
- *     [model/service/PromotionService.cfc:L1007, L1009]  a discount accumulator
- *       assigned without `var` on both lines, leaking into component scope.
- *       This is deliberate divergence (a): it is made function-local, because
- *       shared mutable state persisting across warm invocations could leak one
- *       customer's discount into another's order.
- *     every entity memo, including the currency-details, live-price and
- *       brand-name caches.
- *
- *   A test tier that let spies or a fake clock cross a test boundary would mask
- *   exactly that class of bug.
- *
- * WHAT IS AND IS NOT ALREADY COVERED BY CONFIGURATION - stated honestly
- *   `vitest.config.ts:L287-L290` already sets `clearMocks`, `restoreMocks`,
- *   `unstubEnvs` and `unstubGlobals`, so the restore half below is
- *   belt-and-braces and is kept as an explicit, local statement of intent. The
- *   timer half is NOT covered by any configuration option, which is the hook's
- *   real justification: a suite that opts into a fake clock must not be able to
- *   leak it into the next test.
- *
- *   No fake timer is installed here. Timer control is a per-suite decision;
- *   this only guarantees the clock is real again once a test ends.
- *
- * NO MUTABLE MODULE STATE IN THIS FILE
- *   There is no cache, no counter, no shared subject and no registry here. The
- *   sole export is an immutable binding computed once, and the three constants
- *   above it are immutable too. Per-test subjects are constructed inside each
- *   suite, exactly as the legacy harness re-created its subject before every
- *   test [meta/tests/unit/entity/SlatwallEntityTestBase.cfc:L51-L67].
- *
- * PER-FILE ISOLATION MUST STAY ON
- *   `vitest.config.ts:L251` sets `isolate: true`, giving every test file a
- *   fresh module registry. It must never be switched off, and no suite may rely
- *   on state surviving between test files. The assertion that makes deliberate
- *   divergence (a) meaningful is a suite proving that a second, independent
- *   invocation does not observe the first invocation's memo. This file enables
- *   that assertion by keeping isolation intact; it does not implement it.
- */
+// Mock and timer hygiene: spies are restored and the clock is returned to real time after each test,
+// so neither can leak into the next one.
 afterEach(() => {
   vi.restoreAllMocks();
   vi.useRealTimers();
@@ -475,12 +310,13 @@ afterEach(() => {
 //     boundary stops `src/domain/**` from importing outward, and the test tier
 //     must not become a back door around it. A setup file reaching into
 //     adapters would be exactly such a back door - and would also drag the
-//     composition root in `src/handlers/bootstrap.ts` into every unit test.
+//     composition root in `src/handlers/bootstrap.ts` (planned) into every unit test.
 //   * No process-level unhandled-rejection or uncaught-exception handler is
 //     installed. Vitest reports both itself, and a hand-rolled handler risks
 //     swallowing that reporting.
 //   * No schema or data hook of any kind. Schema continuity is binding: this
-//     service reads and writes the EXISTING `Sw*` tables unchanged, with no
-//     migration, rename, new table or column change, and there is no
-//     schema-management tooling in the dependency set to perform one with.
+//     service is built to read and write the EXISTING `Sw*` tables unchanged,
+//     with no migration, rename, new table or column change, and there is no
+//     schema-management tooling in the dependency set to perform one with. No
+//     suite in the tier this file serves touches a database at all.
 // ---------------------------------------------------------------------------

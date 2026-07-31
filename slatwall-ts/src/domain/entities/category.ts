@@ -1,4 +1,18 @@
 // ---------------------------------------------------------------------------
+// CHECKPOINT STATUS - FORWARD REFERENCES CARRY THE MARKER `(planned)`
+//
+// The subtree is authored in boundaries, and AAP 0.4.5 makes the authoring
+// order "a compile-order convenience, not a schedule". Commentary in this file
+// therefore names modules of the target layout that DO NOT EXIST YET. Every such
+// name carries `(planned)` at its point of use, meaning exactly: a planned Agent
+// Action Plan target that is ABSENT from the subtree at this checkpoint. Nothing
+// here asserts that any of them exists now, and no behaviour in this file depends
+// on one. The complete set named below, with the role each will play:
+//
+//   tests/unit/domain/entities/category.test.ts  category entity suite
+// ---------------------------------------------------------------------------
+
+// ---------------------------------------------------------------------------
 // slatwall-ts - the Category entity
 //
 // A 1:1 logic extraction of model/entity/Category.cfc (137 lines), which is the
@@ -54,14 +68,25 @@
 //
 // SCHEMA CONTINUITY - THREE OUT-OF-SCOPE SURFACES, TWO DIFFERENT TREATMENTS
 // This is the entity the plan names when it explains schema continuity, so the
-// distinction is drawn precisely. The governing rule: an out-of-scope
-// MANY-TO-ONE survives as an inert foreign-key ID column, whereas an
-// out-of-scope COLLECTION is not materialized at all.
+// distinction is drawn precisely. The governing rule turns on the FIELD TYPE, and
+// on neither the far side's scope nor convenience:
+//   * an out-of-scope MANY-TO-ONE survives as an INERT FOREIGN-KEY ID COLUMN,
+//     because the column lives on this entity's own row and a `Content`-shaped
+//     object would be needed to say anything more about it;
+//   * an out-of-scope COLLECTION is MATERIALIZED THROUGH A NARROW STRUCTURAL
+//     PROJECTION over its join key, because the association itself is this
+//     entity's data even when the far entity is not in scope.
 //
 //   cmsCategoryID [L59]  KEPT as an inert persisted column. See the field.
 //   site          [L62]  COLLAPSED to an inert `siteID`. See the field.
-//   contents      [L70]  NOT MATERIALIZED. See the annotation where it would
-//                        otherwise have been declared.
+//   contents      [L70]  MATERIALIZED as `readonly ContentCategoryLink[]`, the
+//                        anti-corruption projection over `inversejoincolumn`
+//                        `contentID`. See the field and `getContents()`.
+//
+// An earlier revision stated the second rule as "an out-of-scope COLLECTION is not
+// materialized at all" and authored no member for `contents`. That was wrong for
+// the reasons set out on the field, and the entry above is the correction rather
+// than a restatement.
 //
 // No column is dropped, renamed or migrated by this port, and no migration is
 // authored. Table `SwCategory` and entity name `SlatwallCategory` are unchanged.
@@ -110,7 +135,8 @@
 // NO COLLABORATOR, NO SERVICE LOCATOR, NO AMBIENT SCOPE
 // Category has ZERO `getService(` sites. The verified census finds 45 across
 // only five entities - Sku 19, Product 18, ProductType 6, OptionGroup 1,
-// RoundingRule 1 - and Category is one of the ten with none. So no port is
+// RoundingRule 1 - so Category is one of the THIRTEEN in-scope entities with
+// none, eighteen in scope minus those five. So no port is
 // injected, nothing is imported from ../ports/, and no ambient request scope is
 // consulted: context travels as an explicit parameter in this port, never as
 // ambient state. This entity needs no context parameter at all, because it
@@ -153,7 +179,7 @@
 // BrandTest.cfc and meta/tests/unit/entity/ProductTest.cfc - and
 // meta/tests/functional/admin/entity/ProductTest.cfc is an empty stub
 // contributing nothing. Coverage for this class therefore belongs at
-// tests/unit/domain/entities/category.test.ts, is authored separately, and must
+// tests/unit/domain/entities/category.test.ts (planned), is authored separately, and must
 // be labelled NET-NEW and never presented as parity. Nothing here needs a seam
 // for it: every member is synchronous and total, no member touches a clock, an
 // environment or a collaborator, and the two path-maintenance methods are
@@ -198,8 +224,21 @@ import type { Product } from './product.js';
  * It is `readonly` throughout and deliberately carries no methods: a snapshot
  * is evidence, never a second entity. This is a type-only declaration and is
  * erased at emit, so the module still exports exactly one runtime value.
+ *
+ * DECLARED AS A TYPE ALIAS, NOT AN INTERFACE, AND THE DIFFERENCE IS LOAD-BEARING.
+ * The uniform lifecycle contract every hook-bearing entity now publishes is
+ * `preUpdate(oldData?: Readonly<Record<string, unknown>>)`, so that a repository
+ * can drive the hook on ANY of them without entity-specific knowledge. An
+ * `interface` is NOT assignable to an index-signature type - TypeScript reports
+ * "Index signature for type 'string' is missing" - whereas a type alias receives
+ * an IMPLICIT index signature and therefore is. Verified by compiling both forms
+ * against the project's strict profile. Keeping this declaration as an alias is
+ * consequently what lets the shape stay precisely typed AND flow into the shared
+ * contract: a category repository holds a `CategoryPreUpdateSnapshot`, gets
+ * per-column checking while it populates one, and hands it straight to
+ * `preUpdate` with no cast and no widening at the call site.
  */
-export interface CategoryPreUpdateSnapshot {
+export type CategoryPreUpdateSnapshot = {
   /** [model/entity/Category.cfc:L52] */
   readonly categoryID: string | undefined;
   /** [model/entity/Category.cfc:L53] */
@@ -226,6 +265,50 @@ export interface CategoryPreUpdateSnapshot {
   readonly modifiedDateTime: Date | undefined;
   /** The `modifiedByAccountID` column [model/entity/Category.cfc:L79], opaque. */
   readonly modifiedByAccountID: string | undefined;
+};
+
+/**
+ * The ANTI-CORRUPTION PROJECTION of one `SwContent` row, as reached across the
+ * `SwContentCategory` link table. [model/entity/Category.cfc:L70]
+ *
+ * MODULE-LOCAL AND UN-EXPORTED, DELIBERATELY. `model/entity/Content.cfc` is a
+ * Mura CMS entity: out of scope, not one of the eighteen the plan enumerates, and
+ * no `content.ts` may be created. So the far side is named STRUCTURALLY rather
+ * than nominally. Keeping the declaration un-exported keeps the module's runtime
+ * export surface at exactly one value (the class) and prevents the shape leaking
+ * outward as though it were a domain type in its own right - an `interface` is
+ * erased at emit, so it costs nothing at runtime.
+ *
+ * THIS IS THE `*Link` PATTERN ALREADY ESTABLISHED IN THIS FOLDER, by
+ * `src/domain/entities/brand.ts`, which names five out-of-scope far sides the same
+ * way (`ProductBrandLink`, `PromotionRewardBrandLink`, `PromotionQualifierBrandLink`,
+ * `VendorBrandLink`, `PhysicalBrandLink`). It is applied here for the same reason
+ * and with the same discipline.
+ *
+ * WHY THE SHAPE IS EXACTLY ONE MEMBER, AND NOT MORE. The projection carries the
+ * `inversejoincolumn` that [model/entity/Category.cfc:L70] itself names -
+ * `contentID` - and nothing else. `model/entity/Content.cfc:L52` declares that
+ * column as `ormtype="string" length="32" fieldtype="id" generator="uuid"`, so the
+ * member is a plain non-optional string. Every further member would be surface
+ * this port INVENTED for an out-of-scope entity: `title` [Content.cfc:L55],
+ * `contentIDPath` [L53] and `activeFlag` [L54] all exist in the source, and none
+ * of them is reachable from anything in scope, so none is declared. The link table
+ * metadata is the authority for what may appear here, which makes the shape a
+ * derivation rather than a judgement call.
+ *
+ * WHAT IT MAKES OBSERVABLE, which is the point. `arrayLen(getContents())` and
+ * membership-by-id are exactly the two things the legacy generated accessor
+ * supported and the only two an ID-keyed link row needs to support. A repository
+ * that has joined `SwContentCategory` can hand real rows in; one that has not
+ * hands in nothing and says so at its own fetch-shape note.
+ */
+interface ContentCategoryLink {
+  /**
+   * The `SwContent.contentID` primary key.
+   * [model/entity/Content.cfc:L52], reached through
+   * `inversejoincolumn="contentID"` on [model/entity/Category.cfc:L70].
+   */
+  getContentID(): string;
 }
 
 /**
@@ -408,7 +491,7 @@ export class Category {
    * rather than approximated here. An entity that quietly deleted rows would be
    * a far worse outcome than one that plainly does not.
    */
-  private readonly childCategories: readonly Category[];
+  private readonly childCategories: Category[];
 
   // --- Related object properties (many-to-many, inverse) [L68-L70] ------------------------------
 
@@ -416,9 +499,18 @@ export class Category {
   // rather than propagated. `type="array"` is declared on `childCategories` (L66) and on `contents`
   // (L70) but is OMITTED on `products` (L69), even though all three are collections. This is
   // cosmetic in CFML, which infers the array shape for a one-to-many and a many-to-many regardless.
-  // Every collection on this class is therefore modelled the same way, as a `readonly T[]`, and the
-  // inconsistency is recorded here so a reader comparing the metadata does not conclude that
-  // `products` was meant to be something other than a collection.
+  // All three are therefore modelled as arrays here and the inconsistency is recorded so a reader
+  // comparing the metadata does not conclude that `products` was meant to be something other than a
+  // collection.
+  //
+  // ⚠ "MODELLED THE SAME WAY" MEANS ARRAY-SHAPED, NOT IDENTICALLY TYPED, and the distinction is
+  // load-bearing. An earlier revision of this note claimed all three were `readonly T[]`; that is no
+  // longer true and was never the right test. MUTABILITY IS DECIDED BY THE OWNERSHIP CENSUS stated on
+  // {@link Category.getChildCategories}, one association at a time: `childCategories` is `Category[]`
+  // because [model/entity/Category.cfc:L104] and [model/entity/Category.cfc:L111-L113] mutate it in
+  // place through the accessor, whereas `products` and `contents` are `readonly` because the same
+  // census over the whole entity tree returns zero such sites for either. `type="array"` in the
+  // metadata says nothing about mutability and is not evidence either way.
 
   /**
    * [model/entity/Category.cfc:L69]
@@ -443,34 +535,65 @@ export class Category {
    */
   private readonly products: readonly Product[];
 
-  // ★ `contents` [model/entity/Category.cfc:L70] IS DELIBERATELY NOT DECLARED. Verbatim source:
-  //
-  //     property name="contents" singularname="content" cfc="Content" type="array"
-  //              fieldtype="many-to-many" linktable="SwContentCategory" fkcolumn="categoryID"
-  //              inversejoincolumn="contentID" inverse="true";
-  //
-  // `Content` is a Mura CMS entity: out of scope, not one of the eighteen, and no content.ts may be
-  // created. This is the SECOND of the two treatments named in the header - an out-of-scope
-  // COLLECTION is not materialized, whereas an out-of-scope MANY-TO-ONE (`site`, above) survives as
-  // an inert ID. No member is authored for it, so there is no `getContents()`, and no `addContent` /
-  // `removeContent` either - the source declares neither, and neither may be invented. It follows
-  // the precedent of `PriceGroup.appliedOrderItems` [model/entity/PriceGroup.cfc:L62] and
-  // `Option.images` [model/entity/Option.cfc:L63].
-  //
-  // "NOT MATERIALIZED" MEANS "NOT AUTHORED IN THIS NEW TYPESCRIPT FILE, AND ANNOTATED HERE SO THE
-  // OMISSION IS AUDITABLE". It is NEVER a deletion from the legacy tree: model/entity/Category.cfc
-  // is reference-only and remains completely untouched, the `SwContentCategory` link table is not
-  // dropped, and no migration is authored. The CFML monolith keeps running exactly as it did.
-  //
-  // ONE BEHAVIOURAL CONSEQUENCE, STATED PLAINLY. Where a delete-context `maxCollection:0`
-  // validation rule references a collection the domain deliberately does not materialize, that rule
-  // TRIVIALLY PASSES in TypeScript where it would have BLOCKED the delete in CFML. For Category
-  // specifically that consequence is VACUOUS: there is no model/validation/Category.json at all, so
-  // no such rule exists here and nothing changes. The consequence is nonetheless real for the
-  // entities that DO carry one - `PriceGroup.appliedOrderItems`, `PromotionCode.orders`, and
-  // `physicals` on Sku, Product, Brand and ProductType - and it is recorded here because this is the
-  // file where the two treatments are defined. Delete-context enforcement itself belongs to the
-  // service and repository tiers, never to an entity.
+  /**
+   * The materialized `contents` many-to-many. [model/entity/Category.cfc:L70]
+   *
+   *   property name="contents" singularname="content" cfc="Content" type="array"
+   *            fieldtype="many-to-many" linktable="SwContentCategory" fkcolumn="categoryID"
+   *            inversejoincolumn="contentID" inverse="true";
+   *
+   * ★ THIS IS A REAL, POPULATABLE ASSOCIATION, NOT A PERMANENTLY-EMPTY ONE. An
+   * earlier revision declared no member for it at all and argued that an
+   * out-of-scope COLLECTION is simply "not materialized". That reasoning does not
+   * hold, and the correction is recorded here rather than quietly applied.
+   *
+   *   * THE OUT-OF-SCOPE ENTITY IS THE FAR SIDE, NOT THE ASSOCIATION. What is out
+   *     of scope is `model/entity/Content.cfc` - its behaviour, its service, its
+   *     CMS semantics. `SwContentCategory` is a link table on THIS entity's own
+   *     `categoryID`, and the rows in it are Category's data. Declining to declare
+   *     the collection did not keep an out-of-scope module out; it removed a
+   *     surface the legacy component genuinely publishes.
+   *   * SUPPRESSING IT MADE THE CLASS ASSERT SOMETHING FALSE. `accessors="true"`
+   *     on [model/entity/Category.cfc:L49] generates `getContents()`, and callers
+   *     can and do read `arrayLen()` off it. A class with no member at all cannot
+   *     answer that question; a class returning a permanently-empty array answers
+   *     it WRONGLY, saying "this category is on no content" when the truth is
+   *     "nobody asked the database". Neither is parity.
+   *   * THE APPROVED MECHANISM ALREADY EXISTED. The plan's anti-corruption
+   *     boundary is precisely how an in-scope entity holds a reference to an
+   *     out-of-scope one: a narrow structural projection over the join key. See
+   *     {@link ContentCategoryLink}, and the five equivalents in
+   *     `src/domain/entities/brand.ts`.
+   *
+   * `readonly`, AND THAT WAS PROVEN RATHER THAN ASSUMED against the ownership
+   * contract stated on {@link Category.getChildCategories}. L70 declares `contents`
+   * with `inverse="true"`, so `Content` is the OWNING side of `SwContentCategory` -
+   * [model/entity/Content.cfc:L71] declares `categories` with NO `inverse`
+   * attribute. Neither component authors a hand-written helper for its half:
+   * `addContent`/`removeContent` are absent from model/entity/Category.cfc and
+   * `addCategory`/`removeCategory` are absent from model/entity/Content.cfc, so
+   * both pairs are ORM-GENERATED and a generated helper appends only to its OWN
+   * collection. A census of the entire entity tree for `arrayAppend`/`arrayDeleteAt`
+   * against `arguments.category.getContents()` returns ZERO hits, which is the
+   * direct evidence. No `addContent`/`removeContent` is authored here for the same
+   * reason none is authored for `products`: the source declares neither, and
+   * inventing a pair would widen the surface.
+   *
+   * SCHEMA CONTINUITY IS UNAFFECTED IN EITHER DIRECTION. model/entity/Category.cfc
+   * is reference-only and remains completely untouched, `SwContentCategory` is
+   * neither dropped nor altered nor migrated, and the CFML monolith keeps running
+   * exactly as it did.
+   *
+   * ONE VALIDATION NOTE, KEPT BECAUSE IT IS STILL TRUE OF OTHER ENTITIES. Where a
+   * delete-context `maxCollection:0` rule references a collection the domain does
+   * not materialize, the rule trivially passes in TypeScript where it would have
+   * BLOCKED the delete in CFML. For Category the point is VACUOUS twice over:
+   * there is no model/validation/Category.json at all, and this collection is no
+   * longer unmaterialized. It remains real for `physicals` on
+   * Sku/Product/Brand/ProductType. Delete-context enforcement itself belongs to
+   * the service and repository tiers, never to an entity.
+   */
+  private readonly contents: readonly ContentCategoryLink[];
 
   // --- Remote properties [model/entity/Category.cfc:L72-L73] ------------------------------------
 
@@ -556,8 +679,9 @@ export class Category {
     readonly cmsCategoryID: string | undefined;
     readonly siteID: string | undefined;
     readonly parentCategory: Category | undefined;
-    readonly childCategories: readonly Category[] | undefined;
+    readonly childCategories: Category[] | undefined;
     readonly products: readonly Product[] | undefined;
+    readonly contents: readonly ContentCategoryLink[] | undefined;
     readonly remoteID: string | undefined;
     readonly createdDateTime: Date | undefined;
     readonly createdByAccountID: string | undefined;
@@ -590,6 +714,7 @@ export class Category {
     // the boundary: the decision is explicit and recorded where it is made.
     this.childCategories = init.childCategories ?? [];
     this.products = init.products ?? [];
+    this.contents = init.contents ?? [];
 
     this.remoteID = init.remoteID;
     this.createdDateTime = init.createdDateTime;
@@ -641,8 +766,8 @@ export class Category {
    * Therefore NO lazy-compute fallback is added here. Doing so would import
    * PriceGroup's behaviour into an entity that never had it, and would silently
    * populate a column the legacy would have left NULL. This returns exactly what
-   * hydration or `applyPreInsertCategoryIDPath` / `applyPreUpdateCategoryIDPath`
-   * put there, and `undefined` when nothing has.
+   * hydration or the two lifecycle hooks - `preInsert()` / `preUpdate(oldData?)`
+   * - put there, and `undefined` when nothing has.
    */
   getCategoryIDPath(): string | undefined {
     return this.categoryIDPath;
@@ -719,26 +844,75 @@ export class Category {
    * The materialized `childCategories` one-to-many.
    * [model/entity/Category.cfc:L66]
    *
-   * `readonly` and never `undefined` - see the constructor note on collections.
-   * The array is not defensively copied: it is already typed `readonly`, so the
-   * compiler rejects mutation through this reference, and copying on every read
-   * would be a silent behavioural change from the legacy, which handed back the
-   * live collection.
+   * THE ONE ASSOCIATION-OWNERSHIP CONTRACT. Across every entity in this folder the rule is single and
+   * mechanical: an association accessor hands back the LIVE, mutable array if and only if some entity
+   * in the legacy source mutates that very accessor's result in place - that is, if and only if
+   * `arrayAppend(x.getY(), ...)` or `arrayDeleteAt(x.getY(), ...)` appears somewhere in
+   * `model/entity/*.cfc`. Otherwise it hands back a `readonly` projection. The determination is a
+   * census over the source, never a preference, so any accessor in the folder can be checked against
+   * it independently.
+   *
+   * THIS ACCESSOR IS ON THE LIVE SIDE, by two sites in this very file's source:
+   * [model/entity/Category.cfc:L104] `arrayAppend(arguments.parentCategory.getChildCategories(),
+   * this)` and [model/entity/Category.cfc:L111-L113] `arrayFind` followed by `arrayDeleteAt` on the
+   * same array. The hierarchy is self-referential, so the mutating far side IS a `Category` - which
+   * makes this the one association in the folder whose live requirement is visible without leaving the
+   * file.
+   *
+   * An earlier revision typed it `readonly` and argued that "copying on every read would be a silent
+   * behavioural change from the legacy, which handed back the live collection". The observation was
+   * right and the conclusion did not follow: refusing to copy preserves the array's IDENTITY, but
+   * `readonly` then withholds the only thing that identity was for. Both halves of the legacy
+   * behaviour are now reproduced instead of one.
+   *
+   * Never `undefined` - see the constructor note on collections. Not defensively copied, for the
+   * reason above.
    */
-  getChildCategories(): readonly Category[] {
+  getChildCategories(): Category[] {
     return this.childCategories;
   }
 
   /**
    * The materialized `products` many-to-many. [model/entity/Category.cfc:L69]
    *
-   * `readonly` and never `undefined`, on the same terms as
-   * {@link Category.getChildCategories}. This is the whole of the products
-   * surface on this class: the source authors no `addProduct` / `removeProduct`
-   * pair, and none is invented.
+   * `readonly`, AND THAT WAS PROVEN RATHER THAN ASSUMED against the contract stated on
+   * {@link Category.getChildCategories}. [model/entity/Category.cfc:L69] declares `products` with
+   * `inverse="true"`, so `Product` is the owning side of `SwProductCategory` -
+   * [model/entity/Product.cfc:L80] declares `categories` with NO `inverse` attribute. And `Product`
+   * declares no hand-written `addCategory`/`removeCategory` at all: those are ORM-GENERATED, and a
+   * generated collection helper appends only to its OWN collection. A census of the entire entity tree
+   * for `arrayAppend`/`arrayDeleteAt` against `arguments.category.getProducts()` returns ZERO hits,
+   * which is the direct evidence.
+   *
+   * Never `undefined`. This is the whole of the products surface on this class: the source authors no
+   * `addProduct` / `removeProduct` pair, and none is invented.
    */
   getProducts(): readonly Product[] {
     return this.products;
+  }
+
+  /**
+   * The materialized `contents` many-to-many, projected across the
+   * `SwContentCategory` link table. [model/entity/Category.cfc:L70]
+   *
+   * `accessors="true"` on [model/entity/Category.cfc:L49] generated this in CFML,
+   * so the name and the array-returning shape are the source's, not this port's.
+   * The ELEMENT type is where the anti-corruption boundary sits: each row is a
+   * {@link ContentCategoryLink} - the join key and nothing more - because
+   * `model/entity/Content.cfc` is out of scope and no `content.ts` exists to name.
+   *
+   * `readonly`, and never `undefined`. See the field for the census evidence that
+   * nothing in the entity tree mutates this array in place, and for why the surface
+   * stops at this one accessor with no `addContent`/`removeContent` pair.
+   *
+   * AN EMPTY RESULT IS A FETCH-SHAPE STATEMENT, NOT A DOMAIN CLAIM, exactly as for
+   * every other collection on this class. Whether `[]` means "this category is on
+   * no content" or "the repository did not join `SwContentCategory`" is answered at
+   * the producing repository method, which is required to document it. That is the
+   * whole reason associations are materialized at the boundary.
+   */
+  getContents(): readonly ContentCategoryLink[] {
+    return this.contents;
   }
 
   /** [model/entity/Category.cfc:L73] "Only used when integrated with a remote system". */
@@ -821,32 +995,45 @@ export class Category {
   // All four are `void` and SYNCHRONOUS, matching `public void function` in the source. None touches
   // a repository, a port, a clock or the network.
 
-  // LEGACY-NOTE [model/entity/Category.cfc:L103-L105] and [model/entity/Category.cfc:L111-L113]: THE
-  // IN-MEMORY GRAPH SYMMETRY IS DELIBERATELY NOT REPRODUCED. This is an architectural consequence of
-  // the target's shape, NOT a source defect, so it carries no LEGACY-DEFECT marker and spends no
-  // budget against any register.
+  // THE IN-MEMORY GRAPH SYMMETRY IS REPRODUCED IN FULL.
+  // [model/entity/Category.cfc:L103-L105] appends this category to its parent's `childCategories`
+  // array under a guard, and [model/entity/Category.cfc:L111-L113] removes it again; the near-side
+  // `parentCategory` field is maintained alongside on both paths. All of it is ported, so
+  // `parent.getChildCategories()` and `child.getParentCategory()` can never disagree.
   //
-  // The two legacy many-to-one bodies mutate the OTHER side's collection as well as their own field:
-  // L104 does `arrayAppend(arguments.parentCategory.getChildCategories(), this)` and L111-L113 do
-  // `arrayFind` followed by `arrayDeleteAt` on that same array. Both relied on Hibernate handing back
-  // a LIVE, MUTABLE session-managed collection whose in-memory state the ORM would later reconcile
-  // and cascade to the database.
-  //
-  // In the target there is no session, no proxy, no cascade and no reconciliation. Associations are
-  // materialized at the repository boundary as `readonly` arrays, and persistence is an explicit
-  // repository `save`, so `src/repositories/mysql/**` OWNS COLLECTION STATE - not this entity. An
+  // AN EARLIER REVISION DROPPED BOTH FAR-SIDE OPERATIONS, and the reasoning is kept here rather than
+  // deleted because it is a plausible-sounding trap that also appeared in `option.ts` and
+  // `skuCurrency.ts`. It argued that "there is no session, no proxy, no cascade and no
+  // reconciliation", that "associations are materialized at the repository boundary as `readonly`
+  // arrays" so "`src/repositories/mysql/**` OWNS COLLECTION STATE - not this entity", and that "an
   // entity that spliced a local array would produce an in-memory graph that agreed with nothing and
-  // that no `save` would ever read, which is strictly worse than not doing it: it would look correct
-  // while changing nothing.
+  // that no `save` would ever read". Three things are wrong with it:
   //
-  // One clean consequence follows and is worth naming: the `isNew() or
-  // !arguments.parentCategory.hasChildCategory( this )` guard at L103 existed ONLY to decide whether
-  // that append would duplicate an entry. With the append gone the guard has nothing left to guard,
-  // so it goes with it - which is also why no `hasChildCategory` member is authored on this class.
-  // Should a containment test ever be genuinely needed here, it must compare by PRIMARY KEY
-  // (`categoryID`) against `getChildCategories()`, never by object reference and never by deep
-  // equality: Hibernate's `arrayFind` and `hasChildCategory` semantics rested on session identity,
-  // and primary-key comparison is the faithful equivalent in a session-less port.
+  //   * IT CONFLATES MATERIALIZATION WITH OWNERSHIP. The repository decides WHETHER an association was
+  //     fetched and in what order. That does not make it the only party permitted to change the
+  //     fetched array, and it cannot be, because it is not in the call path: `addChildCategory` and
+  //     `setParentCategory` are pure in-memory, synchronous, port-free operations with no save and no
+  //     later boundary at which a deferred reconciliation could run.
+  //   * "NO SAVE WOULD EVER READ IT" IS AN ARGUMENT ABOUT PERSISTENCE, NOT ABOUT THE GRAPH. The
+  //     hierarchy's own persisted state is `parentCategoryID` on the child row - which is what
+  //     `preUpdate` recomputes `categoryIDPath` from - so a repository save has never needed to read
+  //     the parent's array. The array is the IN-MEMORY view of the same link, and callers read it
+  //     within the request. Declining to maintain it does not make persistence more correct; it makes
+  //     the in-memory view wrong.
+  //   * IT PRODUCED A SILENT INCONSISTENCY RATHER THAN AVOIDING ONE. With the append gone,
+  //     `parent.addChildCategory(child)` left `parent.getChildCategories()` NOT containing a child
+  //     whose own `getParentCategory()` returned that parent. Two accessors disagreeing about one
+  //     link, with no error anywhere, is precisely the "graph that agreed with nothing" the revision
+  //     set out to prevent - reached by the opposite route.
+  //
+  // The `isNew() or !arguments.parentCategory.hasChildCategory( this )` guard at L103 is therefore
+  // ported too, together with the `hasChildCategory` member it calls. The earlier revision removed
+  // both on the grounds that "with the append gone the guard has nothing left to guard" - which is
+  // circular rather than observational, since the append was removed in the same edit.
+  //
+  // CONTAINMENT IS BY PRIMARY KEY WITH A REFERENCE FALLBACK FOR AN UNSAVED ROW, which is the folder's
+  // one containment rule and is also what the earlier revision predicted would be needed "should a
+  // containment test ever be genuinely needed here". It is needed, and that is what it uses.
 
   // Child Categories (one-to-many) [model/entity/Category.cfc:L92]
 
@@ -855,10 +1042,12 @@ export class Category {
    * [model/entity/Category.cfc:L93]
    *
    * A PURE DELEGATION, reproduced exactly: the legacy body is the single
-   * statement `arguments.childCategory.setParentCategory( this )` at L94. The
-   * array work is deliberately NOT reimplemented here - the one-to-many side
-   * defers wholly to the many-to-one side, which is what makes this pair the
-   * correct pattern.
+   * statement `arguments.childCategory.setParentCategory( this )` at L94. No
+   * array work is reimplemented HERE because there is none to reimplement - the
+   * one-to-many side defers wholly to the many-to-one side, which is what makes
+   * this pair the correct pattern. The append itself does happen, inside
+   * {@link Category.setParentCategory}, reaching back through
+   * {@link Category.getChildCategories}.
    *
    * The parameter is `required` in the source, so it is a plain required
    * parameter here, and it is typed `Category` because the association is
@@ -893,11 +1082,17 @@ export class Category {
    * Bidirectional helper for the `parentCategory` many-to-one.
    * [model/entity/Category.cfc:L101]
    *
-   * Assigns the local field, which is [model/entity/Category.cfc:L102] and the
-   * whole of this method's surviving effect. The far-side append at L104 and the
-   * guard at L103 that gated it are not reproduced - see the LEGACY-NOTE above
-   * for why, and note that this method is consequently TOTAL: it cannot throw,
-   * where the legacy would have thrown had it been handed a null parent.
+   * BOTH STATEMENTS ARE REPRODUCED, in the source's order: the near-side assignment at
+   * [model/entity/Category.cfc:L102] runs FIRST and unconditionally, then the guarded far-side append
+   * at [model/entity/Category.cfc:L103-L105]. The ordering matters because the guard calls back into
+   * the parent, so the field is already set by the time anything else can observe it.
+   *
+   * THE SHORT-CIRCUIT IS LOAD-BEARING. `isNew() or !hasChildCategory(this)` evaluates `isNew()` first,
+   * so for an unsaved category the parent's membership test is not performed AT ALL and the append
+   * simply happens. `||` reproduces CFML `or` faithfully here because both operands are already
+   * booleans. That ordering is also what makes the append safe for an unsaved row: every unsaved
+   * category has an empty `categoryID`, so a key-based membership test could not tell them apart, and
+   * the legacy arranged never to ask.
    *
    * The parameter is `required` in the source, so it is a plain required
    * parameter here - deliberately NOT optional, which is the one asymmetry
@@ -907,10 +1102,68 @@ export class Category {
    * defaults its argument - is the third occurrence of one pattern in the folder,
    * matching `Option.setOptionGroup` / `removeOptionGroup`
    * [model/entity/Option.cfc:L92-L107] and `SkuCurrency.setSku` / `removeSku`
-   * [model/entity/SkuCurrency.cfc:L89-L104].
+   * [model/entity/SkuCurrency.cfc:L89-L104]. All three now reproduce both sides of the link.
    */
   setParentCategory(parentCategory: Category): void {
+    // [model/entity/Category.cfc:L102] - before the guard, always.
     this.parentCategory = parentCategory;
+
+    // [model/entity/Category.cfc:L103-L105] - the guarded append onto the parent's LIVE array. `push`
+    // mutates in place, which is required: `arrayAppend` mutated the very array that
+    // `getChildCategories()` hands back, which is why that accessor is typed mutable.
+    if (this.isNew() || !parentCategory.hasChildCategory(this)) {
+      parentCategory.getChildCategories().push(this);
+    }
+  }
+
+  /**
+   * Whether `childCategory` is already a member of this category's materialized children.
+   *
+   * GENERATED BECAUSE IT IS CONCRETELY CALLED, which is the whole test for whether a dynamic-dispatch
+   * member survives into this port. The verified call site is
+   * [model/entity/Category.cfc:L103] - `if(isNew() or !arguments.parentCategory.hasChildCategory(
+   * this ))` - inside this file's own `setParentCategory`. Without it that guard cannot be ported.
+   *
+   * It has no hand-written legacy body: it is the accessor ColdFusion's ORM generates for a collection
+   * property carrying `singularname="childCategory"` [model/entity/Category.cfc:L66], and it tests
+   * membership of the collection. An earlier revision omitted it, because the guard that calls it had
+   * been dropped; the guard is restored, so the method is too.
+   *
+   * MEMBERSHIP IS BY PRIMARY KEY, WITH A REFERENCE FALLBACK FOR AN UNSAVED ROW - the single
+   * containment rule this folder uses, shared with `optionGroup.ts`, `priceGroup.ts`,
+   * `promotionCode.ts`, `promotionApplied.ts` and `promotionPeriod.ts`. CFML's
+   * `arrayFind(array, component)` is reference identity, but under Hibernate reference identity WAS
+   * row identity, because a session returned one instance per row. A driver-only stack has no session,
+   * so the two come apart and a literal reference comparison would reproduce the legacy's letter while
+   * losing its meaning: `hasChildCategory` would answer `false` for a row the array already holds, and
+   * L103's guard would then append a DUPLICATE.
+   *
+   * The fallback is not a courtesy. An unsaved `Category` has `categoryID === ''`, and so does every
+   * other unsaved category, so keys alone would report all of them as the same member; only object
+   * identity separates two unsaved rows.
+   */
+  hasChildCategory(childCategory: Category): boolean {
+    const candidateCategoryID: string = childCategory.getCategoryID();
+
+    if (candidateCategoryID === '' || this.childCategoriesContainUnsavedRow()) {
+      return this.childCategories.some(
+        (child) => child === childCategory || child.getCategoryID() === candidateCategoryID,
+      );
+    }
+
+    return this.childCategories.some((child) => child.getCategoryID() === candidateCategoryID);
+  }
+
+  /**
+   * Whether this category's materialized children include at least one row that has never been
+   * persisted.
+   *
+   * Private, and it exists only to keep {@link Category.hasChildCategory} readable. It has no legacy
+   * counterpart: CFML needed no such test because `arrayFind` compared references and was therefore
+   * already correct for unsaved rows.
+   */
+  private childCategoriesContainUnsavedRow(): boolean {
+    return this.childCategories.some((child) => child.getCategoryID() === '');
   }
 
   /**
@@ -931,28 +1184,82 @@ export class Category {
    * plain assignment of `undefined` to a field declared `Category | undefined` -
    * see that field for why the declaration could not be an optional `?:` one.
    *
-   * BOTH BRANCHES CLEAR THE FIELD UNCONDITIONALLY, because the legacy does: the
-   * `structDelete` at L115 sits outside every conditional and runs on every path.
+   * THE CLEAR AT L115 IS UNCONDITIONAL, because the legacy's `structDelete` sits outside every
+   * conditional and runs on every path - including the path where the far-side search found nothing.
+   * That placement is preserved exactly: the clear is not folded into the found branch.
+   *
+   * IT RAISES WHEN THE ARGUMENT IS OMITTED AND NO PARENT IS SET, and that is behaviour preservation
+   * rather than defensiveness. In that state CFML reaches [model/entity/Category.cfc:L111] and calls
+   * `getChildCategories()` on a null value, which is a runtime error there. Reproducing it as a throw
+   * is faithful; returning silently would invent a success path the legacy system does not have. The
+   * message names the source locator, matching `priceGroup.ts`, `option.ts`, `promotionCode.ts`,
+   * `promotionApplied.ts` and `promotionPeriod.ts`.
+   *
    * One legacy asymmetry worth recording while it is visible: the method never
    * verifies that an explicitly-supplied argument actually IS this category's
    * current parent, so `a.removeParentCategory(b)` clears `a`'s parent even when
-   * its parent was `c`. That is reproduced, not corrected.
+   * its parent was `c` - and it searches `b`'s children rather than `c`'s, so the stale link from `c`
+   * survives. That is reproduced, not corrected.
+   *
+   * @throws Error when the argument is omitted and this category has no parent set, reproducing the
+   *   null dereference at [model/entity/Category.cfc:L111].
    */
   removeParentCategory(parentCategory?: Category): void {
-    if (parentCategory !== undefined) {
-      // An explicit far side was supplied. In the legacy this selected WHOSE
-      // `childCategories` array L111-L113 searched and spliced. That array work is not reproduced,
-      // so an explicitly-passed parent reaches no further than this branch - and the clear at L115
-      // then runs exactly as it does on the other path.
-      this.parentCategory = undefined;
-      return;
+    // [model/entity/Category.cfc:L108-L110]: presence test, then the fallback to the currently-set
+    // parent. `!== undefined` and never a truthiness test - see the note on this method.
+    const resolvedParentCategory: Category | undefined =
+      parentCategory !== undefined ? parentCategory : this.parentCategory;
+
+    if (resolvedParentCategory === undefined) {
+      throw new Error(
+        'Category.removeParentCategory was called with no argument on a category that has no ' +
+          'parentCategory. This reproduces the legacy runtime failure at ' +
+          'model/entity/Category.cfc:L108-L111, where the omitted argument defaults to a null ' +
+          'parent and getChildCategories() is then invoked on it before any index guard runs.',
+      );
     }
 
-    // [model/entity/Category.cfc:L109]: the argument was omitted, so CFML defaulted it from
-    // `variables.parentCategory` - the very field L115 goes on to delete. With the far-side array
-    // work gone, that default resolves to the field that is about to be cleared regardless, which is
-    // why the two paths converge on the identical single statement.
+    // [model/entity/Category.cfc:L111] ARRAY INDEX BASE CHANGE: CFML `arrayFind` returns a 1-BASED
+    // index, or 0 for "not found", which is why the source guards with `index > 0` at L112.
+    // `Array.prototype.findIndex` returns a 0-BASED index, or -1 for "not found", so the guard MUST
+    // become `!== -1`. Carrying `> 0` across would silently skip element 0 - the first child.
+    //
+    // Containment is BY PRIMARY KEY with a reference fallback for an unsaved row, exactly as in
+    // `hasChildCategory` above; see that method for why a key comparison reproduces the legacy meaning
+    // where a reference comparison would only reproduce its letter.
+    const siblingCategories: Category[] = resolvedParentCategory.getChildCategories();
+    const index: number = siblingCategories.findIndex((child: Category) => this.isSameRowAs(child));
+
+    // [model/entity/Category.cfc:L112-L114]
+    if (index !== -1) {
+      siblingCategories.splice(index, 1);
+    }
+
+    // [model/entity/Category.cfc:L115] - `structDelete(variables, "parentCategory")`, UNCONDITIONAL
+    // and outside the found-branch above.
     this.parentCategory = undefined;
+  }
+
+  /**
+   * Whether `candidate` denotes the same `SwCategory` row as this instance.
+   *
+   * Private, with no legacy counterpart by name: it stands for CFML's `arrayFind(array, this)`
+   * comparison, which was reference identity in the language and row identity under Hibernate's
+   * session. With no session those come apart, so the comparison is made on the primary key and falls
+   * back to reference identity when either side is unsaved - an unsaved category has an empty
+   * `categoryID`, and so does every other unsaved category.
+   *
+   * Identical in shape to the helpers of the same name on `option.ts`, `promotionCode.ts` and
+   * `promotionApplied.ts`, deliberately: one containment rule across the folder.
+   */
+  private isSameRowAs(candidate: Category): boolean {
+    const candidateCategoryID: string = candidate.getCategoryID();
+
+    if (candidateCategoryID === '' || this.categoryID === '') {
+      return candidate === this;
+    }
+
+    return candidateCategoryID === this.categoryID;
   }
 
   // =============  END:  Bidirectional Helper Methods ===================
@@ -1045,6 +1352,28 @@ export class Category {
    * Rebuilds `categoryIDPath` from the `parentCategory` chain and assigns it
    * through the same generated setter the legacy body calls at L128.
    *
+   * ONE LIFECYCLE CONTRACT, SHARED BY EVERY HOOK-BEARING ENTITY IN THIS FOLDER:
+   *
+   *   preInsert(): void
+   *   preUpdate(oldData?: Readonly<Record<string, unknown>>): void
+   *
+   * `category.ts`, `priceGroup.ts` and `promotionCode.ts` all publish exactly
+   * that pair of names and shapes - `promotionCode.ts` declaring only
+   * `preInsert`, because [model/entity/PromotionCode.cfc:L179] is its only hook
+   * and no `preUpdate` may be invented for it. The names are the LEGACY public
+   * names verbatim, so a reviewer diffing this class against the CFC finds them
+   * where they expect.
+   *
+   * An earlier revision named these `applyPreInsertCategoryIDPath()` and
+   * `applyPreUpdateCategoryIDPath()`, while `priceGroup.ts` used the legacy names
+   * and `promotionCode.ts` used a third shape that took the generated code as a
+   * REQUIRED PARAMETER. Three shapes meant a repository could not drive the hook
+   * generically: it needed a hard-coded, undocumented method name per entity, and
+   * for one of them it had to know to supply a value. The entity-specific names
+   * also described the IMPLEMENTATION - what the hook happens to maintain today -
+   * rather than the lifecycle POSITION, which is what a caller schedules against
+   * and the only thing that is stable.
+   *
    * THE PATH COMPUTATION IS DELEGATED, never hand-rolled here. The legacy calls
    * the framework helper `buildIDPathList( "parentCategory" )`, whose string
    * argument matches `hb_parentPropertyName` on the component declaration at
@@ -1061,7 +1390,7 @@ export class Category {
    * [org/Hibachi/HibachiEntity.cfc:L308-L324], including the deliberate ABSENCE
    * of any cycle guard.
    */
-  applyPreInsertCategoryIDPath(): void {
+  preInsert(): void {
     // ★ ORDERING MARKER - [model/entity/Category.cfc:L127] `super.preInsert();` STOOD HERE, BEFORE
     // the assignment below. The base-class work it performed - the persistability check that throws,
     // the `createdDateTime` / `modifiedDateTime` stamping and the `createdByAccount` /
@@ -1098,16 +1427,25 @@ export class Category {
    *   legacy parameter is not declared `required`, and it accepts `undefined` for
    *   the case where the repository has no prior snapshot to hand over.
    *
+   *   TYPED AS THE SHARED CONTRACT SHAPE, `Readonly<Record<string, unknown>>`, so
+   *   that this method is callable identically to `PriceGroup.preUpdate` and a
+   *   repository needs no per-entity signature knowledge. That costs nothing in
+   *   precision at the call site: {@link CategoryPreUpdateSnapshot} still models
+   *   the row column-for-column, it is declared as a type alias precisely so it
+   *   carries an implicit index signature, and it is therefore assignable here
+   *   with no cast - the category repository gets full per-column checking while
+   *   it POPULATES the snapshot, and hands it over unchanged. `unknown` rather
+   *   than `any` for the value type, so any future reader must narrow first.
+   *
    *   THE PARAMETER IS DELIBERATELY NOT READ, because the legacy body does not
    *   read it either: L132-L133 forwards it to `super.preUpdate()` and then
    *   rebuilds the path unconditionally, so no branch of the ported behaviour can
    *   depend on it. It is retained for interface parity, and for the repository to
    *   pass through to the audit work that replaces the `super` call - which is
    *   exactly why `noUnusedParameters` is deliberately left unset in
-   *   tsconfig.json. It is fully typed as {@link CategoryPreUpdateSnapshot} and
-   *   never `any`.
+   *   tsconfig.json.
    */
-  applyPreUpdateCategoryIDPath(oldData?: CategoryPreUpdateSnapshot): void {
+  preUpdate(oldData?: Readonly<Record<string, unknown>>): void {
     // ★ ORDERING MARKER - [model/entity/Category.cfc:L132]
     // `super.preUpdate(argumentcollection=arguments);` STOOD HERE, BEFORE the assignment below,
     // forwarding `oldData` on. The base-class work - the persistability check that throws, the

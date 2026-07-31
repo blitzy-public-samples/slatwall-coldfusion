@@ -1,4 +1,18 @@
 // ---------------------------------------------------------------------------
+// CHECKPOINT STATUS - FORWARD REFERENCES CARRY THE MARKER `(planned)`
+//
+// The subtree is authored in boundaries, and AAP 0.4.5 makes the authoring
+// order "a compile-order convenience, not a schedule". Commentary in this file
+// therefore names modules of the target layout that DO NOT EXIST YET. Every such
+// name carries `(planned)` at its point of use, meaning exactly: a planned Agent
+// Action Plan target that is ABSENT from the subtree at this checkpoint. Nothing
+// here asserts that any of them exists now, and no behaviour in this file depends
+// on one. The complete set named below, with the role each will play:
+//
+//   src/handlers/bootstrap.ts  composition root (wiring)
+// ---------------------------------------------------------------------------
+
+// ---------------------------------------------------------------------------
 // slatwall-ts - address-zone membership port
 //
 // PURPOSE
@@ -188,7 +202,7 @@
 //   Six of the thirteen ports are implemented under src/repositories/mysql/**.
 //   This is NOT one of them: it has no adapter file anywhere in the target
 //   layout, so its only implementation home is the composition root at
-//   src/handlers/bootstrap.ts, which wires the single concrete instance.
+//   src/handlers/bootstrap.ts (planned), which wires the single concrete instance.
 //
 //   Two obligations fall on that implementation, both drawn from the legacy
 //   body: compare all four fields case-insensitively, and accept the zone's
@@ -225,36 +239,10 @@
 // ---------------------------------------------------------------------------
 
 /**
- * The address being tested for zone membership.
+ * The address fields a zone test reads.
  *
- * An anti-corruption PROJECTION of the out-of-scope `SlatwallAddress` entity
- * [model/entity/Address.cfc:L49, table `SwAddress`]. It is not a domain entity
- * and not a substitute for one: it carries only the four fields the membership
- * algorithm reads, and it must NOT be grown. An address field that some other
- * feature needs belongs to that feature, not to this contract.
- *
- * All four columns are declared `ormtype="string"` with no not-null constraint
- * [model/entity/Address.cfc:L59-L62], so every one of them is genuinely
- * absent-capable in the existing schema. That is precisely why the legacy
- * comparisons are guarded at all.
- *
- * ABSENCE HERE MEANS "THIS ADDRESS HAS NO SUCH VALUE" - it does not mean
- * "matches anything". An absent field cannot satisfy a zone location that
- * specifies a value for it; see {@link AddressZoneEvaluator.isAddressInZone}.
- *
- * Each field is optional AND nullable, and both halves of that are deliberate:
- *
- *   - OPTIONAL, written `field?: string | null` and pointedly not
- *     `field?: string | null | undefined`, keeps faith with
- *     `exactOptionalPropertyTypes`: an absent key is legal, while explicitly
- *     passing `undefined` for a present key is a compile error. `undefined` is
- *     not a distinct legal value here, because absence already carries that
- *     meaning, so it is not added to the union.
- *   - NULLABLE because `null` genuinely is a distinct legal state: these are
- *     nullable MySQL columns, the driver yields `null` for an unset one, and
- *     `null` is the exact state the legacy `isNull()` guard tests. Excluding it
- *     would leave the rule that both `null` and absence count as "no value"
- *     describing something the type system had already ruled out.
+ * The CFML ORM mapping does not declare these values required
+ * [model/entity/Address.cfc:L59-L62], so the target projection permits undefined.
  */
 export interface AddressProjection {
   readonly postalCode?: string | null;
@@ -263,32 +251,14 @@ export interface AddressProjection {
   readonly countryCode?: string | null;
 }
 
+// JUDGMENT CALL: Zone locations are typed separately from the address under test even though legacy maps both onto Address.
 /**
- * One location entry of an address zone: a set of CONSTRAINTS an address is
- * tested against.
+ * One location entry of a zone, whose set fields are the criteria an address must match.
  *
- * An anti-corruption projection, deliberately minimal, and not to be grown
- * into an entity substitute.
- *
- * Structurally this is identical to {@link AddressProjection}, and that is not
- * an oversight - it is what the legacy schema says. `AddressZone` declares its
- * locations at [model/entity/AddressZone.cfc:L61] as
- * `cfc="Address" fieldtype="many-to-many" linktable="SwAddressZoneLocation"`,
- * so `SwAddressZoneLocation` is a link table and each location IS an
- * `SwAddress` row. There is no `AddressZoneLocation` entity to project.
- *
- * The two shapes are nevertheless kept as separate declarations because they
- * play opposite roles, and a field's ABSENCE means something different in each:
- *
- *   - absent on {@link AddressProjection} - the address has no such value, and
- *     therefore cannot satisfy a constraint on that field;
- *   - absent HERE - NO CONSTRAINT on that field. The legacy guard skips it, so
- *     the field is simply not considered when matching.
- *
- * Optionality and nullability follow {@link AddressProjection} for the same
- * reasons, with one addition specific to this side of the comparison: `null`
- * carries the same "no constraint" meaning that absence does, because the
- * legacy test is `!isNull(...)` and treats the two alike.
+ * A field left unset matches every address: the legacy test only narrows on a field the location
+ * actually carries [model/service/AddressService.cfc:L63-L74]. The CFML mapping declares zone
+ * locations as a many-to-many onto Address [model/entity/AddressZone.cfc:L61] and does not declare
+ * any of these values required, so the target projection permits undefined.
  */
 export interface AddressZoneLocationProjection {
   readonly postalCode?: string | null;
@@ -298,27 +268,7 @@ export interface AddressZoneLocationProjection {
 }
 
 /**
- * The address zone an address is tested against.
- *
- * An anti-corruption projection of the out-of-scope `SlatwallAddressZone`
- * entity [model/entity/AddressZone.cfc:L49, table `SwAddressZone`]. It carries
- * only the collection the membership algorithm walks - not the zone's
- * identifier, its name, its audit columns, or its associations to shipping
- * methods, shipping-method rates, tax-category rates and promotion qualifiers.
- * Do not grow it to add them.
- *
- * The property is named for the legacy accessor it replaces,
- * `getAddressZoneLocations()` [model/service/AddressService.cfc:L60-L61].
- *
- * It is REQUIRED, and it is READ-ONLY at both levels.
- *
- *   - REQUIRED because the algorithm always walks it, and an absent collection
- *     is not a state the legacy code can represent. A zone with no locations is
- *     expressed as an empty array, which is a meaningful value with a specific
- *     and restrictive outcome - see
- *     {@link AddressZoneEvaluator.isAddressInZone}.
- *   - READ-ONLY, in the array and in every element, because this is an input
- *     the domain reads and must never reorder, extend or otherwise mutate.
+ * The zone under test, as its ordered list of locations.
  */
 export interface AddressZoneProjection {
   readonly addressZoneLocations: readonly AddressZoneLocationProjection[];
@@ -336,67 +286,24 @@ export interface AddressZoneProjection {
  *
  * This contract replaces the legacy DI/1 collaborator declared at
  * [model/service/PromotionService.cfc:L53]. It has no adapter file in the
- * target layout, so the composition root at src/handlers/bootstrap.ts is its
+ * target layout, so the composition root at src/handlers/bootstrap.ts (planned) is its
  * only implementation home.
  */
 export interface AddressZoneEvaluator {
+  // LEGACY-NOTE [model/service/AddressService.cfc:L63-L74]: only the zone-location value is null-guarded; the address value it is compared against is read without a guard.
+  // Retained to preserve the cited legacy behavior.
   /**
-   * Report whether `address` falls inside `addressZone`.
+   * Report whether an address falls inside a zone.
    *
-   * Ported from [model/service/AddressService.cfc:L57-L82]. The method name and
-   * both parameter names are carried over verbatim from that declaration, and
-   * the parameter order is fixed by the positional call at
-   * [model/service/PromotionService.cfc:L684].
+   * CFML parity [model/service/AddressService.cfc:L60-L81]: each location is tested on postal code,
+   * city, state code and country code; the first location whose set fields all match wins and the loop
+   * stops [model/service/AddressService.cfc:L75-L78], and a zone with no matching location — including
+   * a zone with no locations at all — is not entered. Comparison folds case, because the legacy `!=`
+   * operator compares strings without regard to case.
    *
-   * MATCHING RULES, exactly as the legacy body applies them:
-   *
-   *   1. Four fields are compared, in this source order: `postalCode`, `city`,
-   *      `stateCode`, `countryCode` [L63, L66, L69, L72].
-   *   2. A location matches when EVERY field that location actually specifies
-   *      matches the address. A field the location leaves absent - `null` or
-   *      missing - is NOT a constraint and is skipped.
-   *   3. The address is in the zone when AT LEAST ONE location matches.
-   *   4. The walk stops at the first matching location [L77]. Later locations
-   *      are not examined. This is legacy behavior being preserved, and it is
-   *      documented as behavior for that reason alone.
-   *
-   * BEHAVIOR-CRITICAL - AN EMPTY LOCATION COLLECTION MEANS NOT IN ZONE.
-   * `addressInZone` is initialized to false [L58] and is only ever flipped
-   * inside the loop body [L76], so an {@link AddressZoneProjection} whose
-   * `addressZoneLocations` array is empty returns `false`. That is RESTRICTIVE,
-   * not permissive: an empty collection does not mean "unconstrained" and does
-   * not mean "everything matches". Implementing it permissively would silently
-   * apply shipping promotions to addresses the legacy system excludes, changing
-   * what customers are charged. This is intended behavior to preserve, not a
-   * defect to repair.
-   *
-   * THE ABSENCE GUARD IS ASYMMETRIC. `!isNull(...)` wraps the LOCATION side
-   * only [L63, L66, L69, L72]; the address side is never guarded. So an absent
-   * LOCATION field imposes no constraint, whereas an absent ADDRESS field
-   * cannot satisfy a location field that does specify a value - that comparison
-   * fails and the location is rejected. Treating an absent address field as a
-   * wildcard would widen every zone.
-   *
-   * COMPARISONS MUST BE CASE-INSENSITIVE. CFML `!=` on strings ignores case and
-   * TypeScript `!==` does not, so an implementation that compares strictly
-   * changes behavior. Both absence tests must also follow CFML `isNull`
-   * semantics, treating `null` and `undefined` alike. The sanctioned helpers
-   * are `cfEquals` in src/lib/cfml/struct.ts and `isNullish` / `cfLen` in
-   * src/lib/cfml/truthiness.ts; this module names them as direction for the
-   * implementer without importing them.
-   *
-   * SYNCHRONOUS BY RULING. The return type is `boolean`, never
-   * `Promise<boolean>`, and the method is not `async`: the legacy body performs
-   * no DAO call, no ORM query and no HTTP call. The caller must supply
-   * `addressZone` with its locations already materialized, because this
-   * contract performs no fetch. The result is always a definite boolean and is
-   * never `undefined`.
-   *
-   * @param address - the address under test, as a read-only projection.
-   * @param addressZone - the zone to test against, carrying its already
-   *   materialized locations.
-   * @returns `true` when at least one zone location matches the address;
-   *   `false` otherwise, including when the zone has no locations.
+   * @param address the address to test.
+   * @param addressZone the zone to test it against.
+   * @returns true when some location of the zone matches on every field it sets.
    */
   isAddressInZone(address: AddressProjection, addressZone: AddressZoneProjection): boolean;
 }

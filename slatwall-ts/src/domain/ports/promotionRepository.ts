@@ -1,3 +1,25 @@
+// ---------------------------------------------------------------------------
+// CHECKPOINT STATUS - FORWARD REFERENCES CARRY THE MARKER `(planned)`
+//
+// The subtree is authored in boundaries, and AAP 0.4.5 makes the authoring
+// order "a compile-order convenience, not a schedule". Commentary in this file
+// therefore names modules of the target layout that DO NOT EXIST YET. Every such
+// name carries `(planned)` at its point of use, meaning exactly: a planned Agent
+// Action Plan target that is ABSENT from the subtree at this checkpoint. Nothing
+// here asserts that any of them exists now, and no behaviour in this file depends
+// on one. The complete set named below, with the role each will play:
+//
+//   src/domain/entities/sku.ts                                   Sku entity
+//   src/handlers/bootstrap.ts                                    composition root (wiring)
+//   src/repositories/mysql/mysqlPromotionRepository.ts           MySQL promotion adapter
+//   src/repositories/mysql/sql/promotionUseCounts.sql.ts         extracted SQL module
+//   src/repositories/mysql/sql/salePricePromotionRewards.sql.ts  extracted SQL module
+//   src/services/promotion                                       promotion decomposition folder
+//   src/services/promotionService.ts                             ported PromotionService facade
+//   src/services/roundingRuleService.ts                          ported RoundingRuleService
+//   tests/integration/repositories                               repository integration tier
+// ---------------------------------------------------------------------------
+
 /**
  * Promotion repository port - the domain-side read contract for the promotion subsystem, plus the
  * one rounding-rule lookup that has nowhere else to live.
@@ -29,9 +51,9 @@
  * ports/entities relationship - entities take port interfaces as constructor parameters while
  * ports return entity types - exists solely in the type graph and never at runtime. There is no
  * barrel file to force eager evaluation of that cycle, and none may be created. This port is the
- * sharpest live instance of that cycle in the folder: `Product` takes `SalePriceResolver`, declared
- * in THIS file, as an injected constructor parameter, while this file imports four entity types.
- * `import type` on both sides is exactly what makes it safe.
+ * sharpest live instance of that cycle in the folder: this file imports four entity types, while
+ * `Product` is constructed with a narrow sale-price collaborator whose only method is declared on
+ * the service surface this port feeds. `import type` on both sides is exactly what makes it safe.
  *
  * THE METHOD COUNT IS SEVEN, AND HERE IS THE ARITHMETIC
  *
@@ -93,7 +115,7 @@
  * in-engine post-processing, so the rewrite - the three steps becoming common
  * table expressions that reduce to the minimum sale price per SKU and join back to recover the
  * winning row's attributes - belongs to
- * `src/repositories/mysql/sql/salePricePromotionRewards.sql.ts` and NOT to this file. That module
+ * `src/repositories/mysql/sql/salePricePromotionRewards.sql.ts` (planned) and NOT to this file. That module
  * is named here in prose only; importing it would breach the layer boundary. This port declares
  * only the shape of the rows that come back.
  *
@@ -124,27 +146,28 @@
  * applied-promotion intents keyed by opaque `orderItemID` / `orderFulfillmentID` / `orderID`,
  * because the `Order` aggregate is explicitly out of scope. That inversion is the anti-corruption
  * seam that makes this slice independently deployable, it is one of exactly three budgeted
- * signature reshapings, it is spent by `src/services/promotionService.ts` rather than here, and it
+ * signature reshapings, it is spent by `src/services/promotionService.ts` (planned) rather than here, and it
  * is the whole reason no `PromotionApplied` persistence appears on this contract.
  *
  * `model/entity/PromotionAccount.cfc` is inert in this slice - no service references it and
  * `PromotionService` never touches it - so it gets no method here either.
  *
- * THE SECOND EXPORTED INTERFACE, AND WHY IT LIVES IN THIS FILE `SalePriceResolver` is the narrow
- * collaborator that the `Product` entity takes as a constructor parameter, replacing the
- * service-locator call at [model/entity/Product.cfc:L519] (T2). It is co-located here rather than
- * given its own module because the port count is locked at thirteen and no new file may be created.
- * It is not a fourteenth port; it is a supporting interface of this one, and the "one primary
- * exported unit plus its directly supporting co-located types" standard is satisfied on that
- * reading. Its single method is the only member of `PromotionService`'s public surface that an
- * ENTITY reaches for, which is what makes the narrow interface honest rather than convenient.
+ * THIS FILE EXPORTS EXACTLY ONE INTERFACE PLUS ITS TWO READ PROJECTIONS. The narrow sale-price
+ * collaborator that the `Product` entity takes as a constructor parameter - replacing the
+ * service-locator call at [model/entity/Product.cfc:L519] under T2 - was previously co-located here
+ * and exported, on the reasoning that the port count is locked at thirteen so no new file was
+ * available. That reasoning is withdrawn: the locked inventory counts EXPORTED CONTRACTS, not
+ * files, so co-locating a collaborator interface did not keep it out of the budget. It is declared
+ * module-locally inside `src/domain/entities/product.ts` instead, and the relocation note further
+ * down records where it went and who satisfies it. Its single method remains the only member of
+ * `PromotionService`'s public surface that an ENTITY reaches for.
  *
  * FETCH SHAPE, AND WHY LAZINESS IS NOT SIMULATED (T3)
  * `ORMExecuteQuery`, the tag-syntax queries, `super.save()`, `super.delete()` and Hibernate's lazy
  * collections all collapse into the methods below. Hibernate lazy loading has no equivalent in a
  * driver-only stack and is deliberately not simulated: associations are materialized at the
  * repository boundary instead, and the fetch shape is an explicit decision made and commented at
- * each repository method in `src/repositories/mysql/mysqlPromotionRepository.ts`, which also owns
+ * each repository method in `src/repositories/mysql/mysqlPromotionRepository.ts` (planned), which also owns
  * the row-to-entity factory, port injection and association materialization.
  *
  * Concretely, and this is the part that decides whether the engine works: a `PromotionReward`
@@ -223,7 +246,7 @@
  *   * Rounding ARITHMETIC. `roundValue` [model/service/RoundingRuleService.cfc:L88],
  *     `roundValueByRoundingRule` [model/service/RoundingRuleService.cfc:L84] and
  *     `roundValueByRoundingRuleID` [model/service/RoundingRuleService.cfc:L79] are service methods
- *     in `src/services/roundingRuleService.ts`. This port supplies only the rule ROW. There is no
+ *     in `src/services/roundingRuleService.ts` (planned). This port supplies only the rule ROW. There is no
  *     rounding expression, no rounding direction and no direction switch on this contract.
  *   * Any cache, memo, expiry or invalidation surface. `RoundingRuleService` memoises rule details
  *     in a component-level struct [model/service/RoundingRuleService.cfc:L53, L67-L77], and on a
@@ -256,7 +279,7 @@
  * Nothing else in this file is marked, and the omissions are deliberate. The broken sale-price
  * locator at [model/entity/Sku.cfc:L258] - `getPriceByPromotion` calling a
  * `calculateSkuPriceBasedOnPromotion` that does not exist - is ported as a throwing stub in
- * `src/domain/entities/sku.ts`; it gets no method on this port, no substitute under any other name,
+ * `src/domain/entities/sku.ts` (planned); it gets no method on this port, no substitute under any other name,
  * and no marker here. The poisoned brand-name memo [model/entity/Product.cfc:L524-L532] belongs to
  * the same entities sibling. The over-use stripping loop that indexes by a leaked variable
  * [model/service/PromotionService.cfc:L468-L521], the never-read qualified-fulfillments key
@@ -272,7 +295,7 @@
  * carry-forward is the return/exchange no-op at [model/service/PromotionService.cfc:L542-L544],
  * whose comment body at L543 reads `TODO [issue #1766]`. It is ported still doing nothing, with
  * that `issue #1766` reference intact rather than silently completed, and it is owned by
- * `src/services/promotion/**`.
+ * `src/services/promotion/**` (planned).
  *
  * NAMING - INTERFACE PARITY IS THE ACCEPTANCE CONTRACT Legacy CFML method and parameter names are
  * carried over verbatim in camelCase so that a reviewer can diff the two surfaces method by method.
@@ -339,7 +362,7 @@
  * `tests/integration/repositories/*.test.ts`, which another agent owns; no test is authored here.
  *
  * WHO IMPLEMENTS THIS PORT
- * `src/repositories/mysql/mysqlPromotionRepository.ts`, one of exactly six MySQL adapters - the
+ * `src/repositories/mysql/mysqlPromotionRepository.ts` (planned), one of exactly six MySQL adapters - the
  * others being the product, SKU, option, product-type and price-group repositories. Seven
  * obligations transfer to it with this contract:
  *
@@ -350,10 +373,10 @@
  *      adapter MUST NOT add an ordering.
  *   3. The three in-engine post-processing steps become common table expressions that reduce to the
  *      minimum sale price per SKU and join back to recover the winning row, in
- *      `src/repositories/mysql/sql/salePricePromotionRewards.sql.ts`, with the two formulations
+ *      `src/repositories/mysql/sql/salePricePromotionRewards.sql.ts` (planned), with the two formulations
  *      documented inline side by side so a reviewer can compare them - and with no tiebreaker
  *      introduced.
- *   4. The four use-count queries live in `src/repositories/mysql/sql/promotionUseCounts.sql.ts`
+ *   4. The four use-count queries live in `src/repositories/mysql/sql/promotionUseCounts.sql.ts` (planned)
  *      and reproduce the duplicated start-date tests exactly.
  *   5. The dialect branch [model/dao/PromotionDAO.cfc:L482-L488] becomes a dialect-parameterized
  *      fragment, MySQL branch only, through `src/repositories/mysql/dialect.ts`.
@@ -365,9 +388,9 @@
  *      the reward and rate reads over issuing a separate round trip, and request-scope any
  *      rule-detail memo, because module-level state outlives an invocation on a warm container.
  *
- * `src/handlers/bootstrap.ts` WIRES this port to that adapter; it does not implement it.
+ * `src/handlers/bootstrap.ts` (planned) WIRES this port to that adapter; it does not implement it.
  * `SalePriceResolver`, by contrast, has no adapter file in the locked layout: it is satisfied in
- * `src/handlers/bootstrap.ts` by adapting the ported `src/services/promotionService.ts` surface,
+ * `src/handlers/bootstrap.ts` (planned) by adapting the ported `src/services/promotionService.ts` (planned) surface,
  * and it is injected into the `Product` entity from there. That is stated explicitly so the
  * composition-root agent has unambiguous direction and does not go looking for a missing file.
  *
@@ -397,8 +420,8 @@
  *
  * The asymmetry that justifies publishing ports before entities: an entity body actually CALLS port
  * methods - the locator site at [model/entity/Product.cfc:L519] is exactly such a call, and
- * `Product` will invoke `SalePriceResolver.getSalePriceDetailsForProductSkus` through the port
- * declared below - whereas a port needs only a type name and a module path from an entity. This
+ * `Product` will invoke `getSalePriceDetailsForProductSkus` through its injected collaborator -
+ * whereas a port needs only a type name and a module path from an entity. This
  * file returns `PromotionReward`, `RoundingRule`, `PromotionPeriod` and `PromotionCode` values and
  * never invokes a member of any of them.
  *
@@ -572,7 +595,8 @@ export interface SalePricePromotionRewardRow {
 }
 
 /**
- * One SKU's sale-price detail, as `SalePriceResolver` returns it keyed by SKU identifier.
+ * One SKU's sale-price detail, keyed by SKU identifier in the record that
+ * `getSalePriceDetailsForProductSkus` resolves to.
  *
  * This is a READ PROJECTION of service output - it is NOT an entity, and it must not grow behaviour
  * or gain persistence identity. Every property is `readonly` and there is no index signature. Like
@@ -636,7 +660,7 @@ export interface SalePriceDetail {
    * [model/service/PromotionService.cfc:L1026]; otherwise the unadjusted winning price. Required,
    * and monetary, so `Money`.
    *
-   * The rounding itself happens in `src/services/roundingRuleService.ts`, whose ported algorithm is
+   * The rounding itself happens in `src/services/roundingRuleService.ts` (planned), whose ported algorithm is
    * decimal-STRING manipulation rather than numeric rounding and whose measured legacy outputs are
    * pinned by characterization tests. This member is the RESULT of that step, so it must never be
    * recomputed by a consumer, and no rounding expression or direction is exposed alongside it.
@@ -670,7 +694,7 @@ export interface SalePriceDetail {
  * override, and no cache or invalidation surface. Each of those exclusions is justified in the
  * header, and each is a decision rather than an omission.
  *
- * The implementing adapter is `src/repositories/mysql/mysqlPromotionRepository.ts`; the composition
+ * The implementing adapter is `src/repositories/mysql/mysqlPromotionRepository.ts` (planned); the composition
  * root wires it. Nothing here names a driver, a connection, a statement or a table.
  */
 export interface PromotionRepository {
@@ -750,7 +774,7 @@ export interface PromotionRepository {
   // date therefore binds a null upper bound, and a period with an end date but no start date never
   // applies its upper bound at all. This widens or narrows the counted window and so changes
   // use-limit enforcement, which is a named must-preserve behaviour. The defect lives in the SQL
-  // and is reproduced in src/repositories/mysql/sql/promotionUseCounts.sql.ts; it is NOT worked
+  // and is reproduced in src/repositories/mysql/sql/promotionUseCounts.sql.ts (planned); it is NOT worked
   // around here by passing an end date, adding a date-range parameter, or exposing a window
   // override.
   // Preserved deliberately; do not fix without a product decision.
@@ -877,7 +901,7 @@ export interface PromotionRepository {
    * lines - a preliminary query, a six-branch union, then three chained in-engine post-processing
    * steps [model/dao/PromotionDAO.cfc:L544-L559, L561-L569, L571-L588] - and Node has no equivalent
    * of that in-engine post-processing. The rewrite into common table expressions belongs to
-   * `src/repositories/mysql/sql/salePricePromotionRewards.sql.ts`, named in prose only. What this
+   * `src/repositories/mysql/sql/salePricePromotionRewards.sql.ts` (planned), named in prose only. What this
    * signature fixes is the SHAPE of what comes back: an array of the row projection above, never a
    * query object, never a loose record, never a tuple and never a driver row type.
    *
@@ -897,8 +921,8 @@ export interface PromotionRepository {
    * @param productID Optional product identifier narrowing the result set. Omit it for every
    *   product. The legacy body binds it per branch as a bound parameter, and the adapter must do
    *   the same rather than interpolate it.
-   * @returns The winning rows, unrounded. Applying the rounding rule is the service tier's step -
-   *   see `SalePriceResolver` below.
+   * @returns The winning rows, unrounded. Applying the rounding rule is the service tier's step, in
+   *   `getSalePriceDetailsForProductSkus` [model/service/PromotionService.cfc:L1024-L1028].
    */
   getSalePricePromotionRewardsQuery(productID?: string): Promise<SalePricePromotionRewardRow[]>;
 
@@ -915,7 +939,7 @@ export interface PromotionRepository {
    * hold - see the header. No rounding-rule save or delete accompanies it, and no rounding
    * arithmetic: `roundValue` [model/service/RoundingRuleService.cfc:L88] and its two wrappers
    * [model/service/RoundingRuleService.cfc:L79, L84] are service methods in
-   * `src/services/roundingRuleService.ts`, and this method supplies only the rule.
+   * `src/services/roundingRuleService.ts` (planned), and this method supplies only the rule.
    *
    * Returns `undefined` when no rule carries that identifier. The legacy query simply yields zero
    * rows and the caller then reads columns off an empty result
@@ -950,80 +974,32 @@ export interface PromotionRepository {
   getRoundingRuleQuery(roundingRuleID: string): Promise<RoundingRule | undefined>;
 }
 
-/**
- * The narrow sale-price collaborator that the `Product` entity depends on.
- *
- * WHY THIS INTERFACE EXISTS AT ALL. `model/entity/Product.cfc` resolves sale prices by reaching
- * outward through the framework service locator:
- *
- *     // Legacy [model/entity/Product.cfc:L519]:
- *     //   getService("promotionService")
- *     //     .getSalePriceDetailsForProductSkus(productID=getProductID())
- *     // Target:
- *     //   this.salePriceResolver.getSalePriceDetailsForProductSkus(this.productID)
- *
- * That is transformation rule T2 - a locator call inside an entity becomes a constructor-injected
- * port - and this is the port it becomes. The legacy call is memoised on the entity
- * [model/entity/Product.cfc:L517-L521], and that memo becomes instance-scoped with request-scoped
- * instances; nothing about it belongs on this interface.
- *
- * WHY IT IS CO-LOCATED IN THIS FILE RATHER THAN GIVEN ITS OWN MODULE. The port count is locked at
- * thirteen and no new file may be created, so a fourteenth module is not available. It is not a
- * fourteenth port: it is a supporting interface of `PromotionRepository`, sharing that port's
- * subject matter and one of its co-located projections, and the "one primary exported unit plus its
- * directly supporting co-located types" standard is satisfied on that reading. Placing it here also
- * keeps the pair honest - the resolver's output is the rounding-rule-adjusted form of the rows
- * method 6 returns, so the two contracts are only meaningful together.
- *
- * EXACTLY ONE METHOD, AND DELIBERATELY NOT MORE. The `Product` entity reaches `promotionService`
- * for this and nothing else. In particular there is no sale-price-by-SKU accessor here even though
- * the entity has one [model/entity/Product.cfc:L182-L187], because that accessor is a pure lookup
- * into the returned record and belongs on the entity; and there is no price-by-promotion method
- * under any name, because the sibling locator at [model/entity/Sku.cfc:L258] calls a
- * `calculateSkuPriceBasedOnPromotion` that DOES NOT EXIST anywhere in the source. That one throws
- * at runtime today, it is ported as a throwing stub in `src/domain/entities/sku.ts`, and giving it
- * a working method here under any name would silently repair behaviour the plan requires be
- * preserved.
- *
- * WHO SATISFIES IT. Uniquely among the interfaces in this folder, `SalePriceResolver` has NO
- * adapter file in the locked layout. It is satisfied in `src/handlers/bootstrap.ts` by adapting the
- * ported `src/services/promotionService.ts` surface - which is where
- * `getSalePriceDetailsForProductSkus` itself lives [model/service/PromotionService.cfc:L1022] - and
- * injected into the `Product` entity from there. The composition root is therefore both the wiring
- * point and the implementation point for this one interface, and no file is missing.
- */
-export interface SalePriceResolver {
-  /**
-   * Sale-price details for every SKU of one product, keyed by SKU identifier.
-   *
-   * Legacy: `public struct function getSalePriceDetailsForProductSkus(required string productID)`
-   * [model/service/PromotionService.cfc:L1022]. The method name and the parameter name are
-   * verbatim. The `struct` return becomes a record of a NAMED interface rather than a loose untyped
-   * map, because the legacy structure's key set is known exactly: the legacy body converts the
-   * sale-price query into a structure of structures keyed by SKU identifier
-   * [model/service/PromotionService.cfc:L1023].
-   *
-   * The value type is `SalePriceDetail`, which differs from the raw row in exactly one respect: its
-   * sale price has had the rounding rule applied where the row carried a rounding-rule identifier
-   * [model/service/PromotionService.cfc:L1024-L1028]. A consumer must therefore never re-round it.
-   *
-   * ABSENCE IS AT THE LOOKUP, NOT IN THE MEMBERS. A SKU with no qualifying sale-price reward simply
-   * has no key in this record, and under the strict index profile a lookup yields nothing for it.
-   * The legacy intermediate accessor substituted an EMPTY STRUCTURE for that case
-   * [model/entity/Product.cfc:L182-L187], which is why three legacy consumers guard with
-   * key-existence tests [model/entity/Sku.cfc:L547, L554, L561]; the substitute is deliberately not
-   * reproduced, because explicit absence at the lookup is both honest and checkable.
-   *
-   * TIES SURFACE HERE AS A COLLISION, AND THAT TOO IS LEGACY BEHAVIOUR. Because the underlying
-   * reduction does not disambiguate two rewards that produce the same minimum, the same SKU
-   * identifier can appear on more than one row, and keying by it means the last row processed wins.
-   * The legacy conversion behaves identically. No tiebreaker is introduced to make the outcome
-   * deterministic.
-   *
-   * @param productID Identifier of the product whose SKUs are resolved; required in the legacy
-   *   signature.
-   * @returns Sale-price details keyed by SKU identifier. Empty when the product has no qualifying
-   *   sale-price reward.
-   */
-  getSalePriceDetailsForProductSkus(productID: string): Promise<Record<string, SalePriceDetail>>;
-}
+// ---------------------------------------------------------------------------
+// RELOCATED, NOT DROPPED: the narrow sale-price collaborator that the `Product`
+// entity depends on used to be PUBLISHED from this file as
+// `export interface SalePriceResolver`, carrying the single method
+// `getSalePriceDetailsForProductSkus(productID: string)` and replacing the
+// service-locator call at [model/entity/Product.cfc:L519] under transformation
+// rule T2.
+//
+// It is no longer declared here. The port inventory is locked at the THIRTEEN files
+// the transformation plan enumerates (AAP 0.4.1), and an interface EXPORTED from a
+// port module reads as an addition to that inventory whether or not it occupies a
+// file of its own - co-location does not make an exported contract invisible to the
+// budget. The contract now lives module-locally and un-exported inside
+// `src/domain/entities/product.ts`, the single module that constructs with it.
+// Nothing else changes: it still has no adapter file, and `src/handlers/bootstrap.ts`
+// still satisfies it STRUCTURALLY by adapting the ported
+// `src/services/promotionService.ts` surface - which is where
+// `getSalePriceDetailsForProductSkus` itself lives
+// [model/service/PromotionService.cfc:L1022] - and injecting the result into the
+// `Product` entity. Structural satisfaction needs no exported name to import.
+//
+// `SalePriceDetail` above STAYS EXPORTED and is unaffected. It is a read projection
+// named directly in the ported signature
+// `getSalePriceDetailsForProductSkus(productID: string): Promise<Record<string,
+// SalePriceDetail>>` (AAP 0.4.2), so it is part of this slice's sanctioned published
+// vocabulary rather than an extra collaborator port, and both
+// `src/services/promotionService.ts` and `src/domain/entities/product.ts` import it
+// from here.
+// ---------------------------------------------------------------------------

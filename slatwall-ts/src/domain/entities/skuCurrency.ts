@@ -1,4 +1,20 @@
 // ---------------------------------------------------------------------------
+// CHECKPOINT STATUS - FORWARD REFERENCES CARRY THE MARKER `(planned)`
+//
+// The subtree is authored in boundaries, and AAP 0.4.5 makes the authoring
+// order "a compile-order convenience, not a schedule". Commentary in this file
+// therefore names modules of the target layout that DO NOT EXIST YET. Every such
+// name carries `(planned)` at its point of use, meaning exactly: a planned Agent
+// Action Plan target that is ABSENT from the subtree at this checkpoint. Nothing
+// here asserts that any of them exists now, and no behaviour in this file depends
+// on one. The complete set named below, with the role each will play:
+//
+//   src/domain/entities/sku.ts                      Sku entity
+//   tests/traceability/legacyTestMap.ts             structural coverage map
+//   tests/unit/domain/entities/skuCurrency.test.ts  skuCurrency entity suite
+// ---------------------------------------------------------------------------
+
+// ---------------------------------------------------------------------------
 // slatwall-ts - SkuCurrency entity
 //
 // PORT OF model/entity/SkuCurrency.cfc (131 lines, confirmed by `wc -l`).
@@ -143,7 +159,8 @@
 //   * NO PORT IS INJECTED, because there is nothing to inject. This entity has
 //     ZERO `getService(` sites - the census found 45 across only five entities
 //     (Sku 19, Product 18, ProductType 6, OptionGroup 1, RoundingRule 1) and
-//     this is one of the ten with none. Nothing from `../ports/` is imported,
+//     this is one of the THIRTEEN in-scope entities with none, eighteen in scope
+//     minus those five. Nothing from `../ports/` is imported,
 //     no service locator survives, and no ambient scope is read.
 //   * NO CFML PARITY HELPER IS IMPORTED. This entity declares ZERO boolean
 //     properties, so `cfBoolean()` has nothing to convert, and it performs no
@@ -201,7 +218,7 @@
 // meta/tests/unit/entity/ProductTest.cfc - and
 // meta/tests/functional/admin/entity/ProductTest.cfc is an empty stub
 // contributing zero coverage. The suite owed at
-// tests/unit/domain/entities/skuCurrency.test.ts is authored SEPARATELY, by the
+// tests/unit/domain/entities/skuCurrency.test.ts (planned) is authored SEPARATELY, by the
 // owner of the test tier, and is not created from here. The contract it has to
 // pin is enumerated at the foot of this file.
 // ---------------------------------------------------------------------------
@@ -228,12 +245,69 @@ import type { Sku } from './sku.js';
 //   3. A VALUE IMPORT BETWEEN ENTITY MODULES MUST NEVER BE INTRODUCED, in either direction.
 //      That is the one change that would turn this benign type cycle into a real one.
 //
-// This module's ONLY requirement on `./sku.js` is a single member: `getSkuCode(): string`,
-// which is guaranteed by [model/entity/Sku.cfc:L54] (`property name="skuCode" ormtype="string"
-// unique="true" length="50"`) together with `accessors=true` on Sku.cfc:L49. Nothing else about
-// `Sku` is depended upon here - notably NOT `getSkuCurrencies()` and NOT `hasSkuCurrency()`, for
-// the reason given in the LEGACY-NOTE on `setSku` below. The deliberately narrow coupling is
-// what lets these two files be authored independently.
+// CANONICAL FAR-SIDE CONTRACT REQUIRED OF `./sku.js`. `sku.ts` is authored separately, so the three
+// members this module depends on are stated here as CANONICAL and must not be renamed or reshaped
+// later. All three are read straight off the verbatim legacy source.
+//
+//   1. `getSkuCode(): string` - guaranteed by [model/entity/Sku.cfc:L54] (`property name="skuCode"
+//      ormtype="string" unique="true" length="50"`) together with `accessors=true` on
+//      [model/entity/Sku.cfc:L49]. Consumed by `getSimpleRepresentation()`.
+//   2. `getSkuCurrencies(): SkuCurrency[]` MUST RETURN THE LIVE ARRAY REFERENCE, NOT A COPY, and the
+//      return type must be the MUTABLE `SkuCurrency[]` rather than `readonly SkuCurrency[]` so the
+//      contract is visible in the type and not only in prose. [model/entity/SkuCurrency.cfc:L92]
+//      `arrayAppend` and [model/entity/SkuCurrency.cfc:L101] `arrayDeleteAt` both mutate it IN PLACE.
+//      A defensive copy would silently break bidirectional synchronization: the append would land on a
+//      throwaway array and the two sides would drift apart with no error anywhere. This is not a
+//      preference - it is the folder-wide ownership contract, whose rule is that an accessor is live
+//      exactly when the source mutates that accessor's result in place. [model/entity/Sku.cfc:L72]
+//      declares the collection `type="array" cascade="all-delete-orphan" inverse="true"`, which is
+//      precisely why `SkuCurrency` owns the write and reaches back through here.
+//   3. `hasSkuCurrency(skuCurrency: SkuCurrency): boolean` MUST BE A PRIMARY-KEY COMPARISON ON
+//      `skuCurrencyID`, falling back to reference identity when either side is unsaved - never object
+//      identity as its only basis, never deep equality. It returns `false` on an empty array. It has
+//      no hand-written legacy body: it is the accessor ColdFusion's ORM generates for a collection
+//      carrying `singularname="skuCurrency"`, whose CFML semantics are Hibernate's implicit
+//      collection-contains, i.e. session identity / PK. The unsaved-row caveat documented on
+//      `isSameRowAs` below applies equally there.
+//
+// Nothing else about `Sku` is depended upon here. The deliberately narrow coupling is what lets these
+// two files be authored independently.
+//
+// A MEASURED, TEMPORARY CONSEQUENCE - AND IT WAS MEASURED RATHER THAN PREDICTED, so it is not
+// mistaken for a new problem. Until `./sku.js` exists, `import type { Sku }` resolves to an `error`
+// type, so every expression that touches it trips the `no-unsafe-*` rules. This file carries NINETEEN
+// such reports, of which NINE sit on the three far-side call sites required above -
+// `sku.hasSkuCurrency(this)` and `sku.getSkuCurrencies().push(this)` in `setSku`, and
+// `resolvedSku.getSkuCurrencies()` in `removeSku`.
+//
+// THE CLAIM "THEY DISAPPEAR WHEN `sku.ts` EXISTS" WAS VERIFIED EMPIRICALLY, not asserted. A throwaway
+// `sku.ts` exposing only the canonical far-side contract published below - `getSkuCode()`,
+// `getSkuCurrencies()` and `hasSkuCurrency()` - was placed in this folder, the linter was re-run, and
+// the file was removed again. Result, with NO edit to this file:
+//
+//   src/domain/entities/skuCurrency.ts   19 -> 0     (all nineteen, including the nine above)
+//   src/domain/entities/option.ts        20 -> 16    (its own `./sku.js` type-only import)
+//   src/domain/ports/skuRepository.ts     2 -> 0
+//   whole tree                          148 -> 124
+//
+// So every one of the nineteen is a report ABOUT THE MISSING MODULE and none is about this code. The
+// nine are not avoidable either: the restored far-side maintenance IS the fix, and no formulation of it
+// can avoid naming the far side. The count is discharged by authoring `sku.ts`, which is required
+// independently, and the end state for the whole tree is ZERO.
+//
+// The alternatives were all worse and each was considered and rejected:
+//
+//   * A CAST to silence the reports. Rejected outright - `as unknown as` is exactly the escape hatch
+//     the strict profile exists to forbid, and it would defeat the check permanently rather than
+//     temporarily.
+//   * NARROWING `getSku()` TO A MODULE-LOCAL STRUCTURAL INTERFACE, the way `brand.ts` types its helper
+//     parameters as `ProductBrandLink` and friends. That pattern is correct THERE because `Brand`
+//     delegates to a far side it never stores, so nothing constrains the parameter to be wider. Here
+//     the far side is STORED in a field and handed back by a public accessor, so a structural view
+//     would narrow the declared return type of `getSku()` - and interface parity, not tidiness, is
+//     this port's acceptance contract.
+//   * DROPPING THE FAR-SIDE MAINTENANCE, which is what an earlier revision did and what the note on
+//     `setSku` below rebuts at length.
 
 /**
  * One `SwSkuCurrency` row: a per-currency price override for a single SKU.
@@ -728,39 +802,47 @@ export class SkuCurrency {
   //                arrayDeleteAt(arguments.sku.getSkuCurrencies(), index);
   //            }
   //
-  // WHY IT IS NOT REPRODUCED. In CFML those two blocks exist to keep a LIVE Hibernate object
-  // graph consistent within a session, so that a subsequent `save()` cascades the right rows.
-  // This target has no Hibernate session, no cascade and no dirty-checking: associations are
-  // MATERIALIZED AT THE REPOSITORY BOUNDARY as readonly arrays, and persistence is an EXPLICIT
-  // repository `save`. Pushing into a materialized array would mutate a query result that nothing
-  // will ever flush - it would look like it worked and change no row. Reproducing the mechanism
-  // without the machinery underneath it would therefore be strictly worse than omitting it: it
-  // would imply a persistence guarantee that does not exist.
+  // BOTH ARE REPRODUCED, so `sku.getSkuCurrencies()` and `skuCurrency.getSku()` can never disagree.
+  // `Sku.getSkuCurrencies()` must therefore hand back the LIVE array - that requirement is restated in
+  // the canonical far-side contract at the foot of this file, because `sku.ts` is authored separately.
   //
-  // WHAT FOLLOWS FROM IT, stated so nothing reads as an accidental omission:
-  //   * THE L91 GUARD DISAPPEARS WITH THE APPEND IT PROTECTED. `isNew() or
-  //     !arguments.sku.hasSkuCurrency( this )` exists solely to avoid double-appending, so with
-  //     no append there is nothing to guard. (The source writes `hasSkuCurrency( this )` with
-  //     spaces inside the parens - a cosmetic wart, recorded and not reproduced.)
-  //   * THERE IS CONSEQUENTLY NO `isNew()` ON THIS CLASS. Its only call site in this component
-  //     was that guard. Sibling entities such as src/domain/entities/promotionCode.ts DO port
-  //     `isNew()`, because their pairs genuinely still use it; adding an uncalled copy here would
-  //     be dead code. The `unsavedvalue=""` / `default=""` metadata it keys on is nevertheless
-  //     preserved on `skuCurrencyID` above, so nothing is lost from the schema contract.
-  //   * THERE IS CONSEQUENTLY NO CONTAINMENT TEST AND NO `isSameRowAs` HELPER, because `arrayFind`
-  //     is not reproduced. Should one ever be needed here, the project convention is to compare
-  //     by PRIMARY KEY (`skuCurrencyID`) - never by object reference and never by deep equality -
-  //     because CFML's `arrayFind(collection, this)` resolved through Hibernate's session
-  //     identity, where one persisted row is one instance per session.
-  //   * THIS CLASS DEPENDS ON NEITHER `Sku.getSkuCurrencies()` NOR `Sku.hasSkuCurrency()`. That
-  //     is what reduces its whole requirement on the sibling module to `getSkuCode()`.
-  //   * `Sku.skuCurrencies` at [model/entity/Sku.cfc:L72] is declared `type="array"
-  //     cascade="all-delete-orphan" inverse="true"`. The UNHONOURED `all-delete-orphan`
-  //     obligation belongs to `src/repositories/mysql/**`, which owns collection state and
-  //     orphan deletion, and it is recorded there rather than here.
+  // AN EARLIER REVISION DROPPED BOTH, and the reasoning is kept rather than deleted because the same
+  // trap appeared in `option.ts` and `category.ts` and is worth naming once per site. It argued that
+  // "this target has no Hibernate session, no cascade and no dirty-checking", that associations are
+  // "MATERIALIZED AT THE REPOSITORY BOUNDARY as readonly arrays", and that "pushing into a materialized
+  // array would mutate a query result that nothing will ever flush - it would look like it worked and
+  // change no row". Three things are wrong with it:
   //
-  // NOTHING ABOUT THE NEAR SIDE IS WEAKENED BY ANY OF THIS. Both methods still do to `this`
-  // exactly what the legacy did, including the ordering detail called out on `removeSku`.
+  //   * IT CONFLATES MATERIALIZATION WITH OWNERSHIP. The repository decides WHETHER this association
+  //     was fetched and in what order; it does not thereby become the only party allowed to change the
+  //     fetched array, and it cannot be, because it is not in the call path. `setSku` and `removeSku`
+  //     are pure in-memory, synchronous, port-free operations with no save and no later boundary at
+  //     which a deferred reconciliation could run.
+  //   * "CHANGES NO ROW" IS AN ARGUMENT ABOUT PERSISTENCE, NOT ABOUT THE GRAPH. The link's persisted
+  //     state is `skuID` on THIS row [model/entity/SkuCurrency.cfc:L59], which `setSku` maintains and a
+  //     repository save genuinely reads. The far-side array is the IN-MEMORY view of the same link, and
+  //     `Sku.getCurrencyDetails()` reads it within the request to build its per-currency price map.
+  //     Declining to maintain it does not make persistence more correct; it makes that read wrong.
+  //   * IT PRODUCED A SILENT INCONSISTENCY RATHER THAN AVOIDING ONE. With the append gone,
+  //     `skuCurrency.setSku(sku)` left `sku.getSkuCurrencies()` NOT containing a row whose own
+  //     `getSku()` returned that sku - two accessors disagreeing about one link, with no error
+  //     anywhere. On this particular association that is not academic: an override missing from the
+  //     currency map is exactly the state [model/entity/Sku.cfc:L399-L414] cannot distinguish from
+  //     "there is no override", so the cascade would silently fall through to step 3 and CONVERT a
+  //     price that was meant to be read verbatim.
+  //
+  // The L91 guard is ported too, together with the `isNew()` it calls and the `isSameRowAs` the
+  // `arrayFind` needs. The earlier revision removed all three on the grounds that each had no
+  // remaining call site - which was true only because the same edit had removed their callers. (The
+  // source writes `hasSkuCurrency( this )` with spaces inside the parens: a cosmetic wart, recorded and
+  // not reproduced.)
+  //
+  // `Sku.skuCurrencies` at [model/entity/Sku.cfc:L72] is declared `type="array"
+  // cascade="all-delete-orphan" inverse="true"`. The UNHONOURED `all-delete-orphan` obligation belongs
+  // to `src/repositories/mysql/**`, which owns orphan deletion, and is recorded there rather than here.
+  //
+  // NOTHING ABOUT THE NEAR SIDE IS WEAKENED BY ANY OF THIS. Both methods still do to `this` exactly
+  // what the legacy did, including the ordering detail called out on `removeSku`.
 
   /**
    * Bidirectional helper for the `sku` many-to-one. [model/entity/SkuCurrency.cfc:L89]
@@ -768,15 +850,70 @@ export class SkuCurrency {
    * The parameter is REQUIRED, matching the legacy signature exactly: L89 declares
    * `required any sku`.
    *
-   * Reproduces the near-side assignment at [model/entity/SkuCurrency.cfc:L90]. The far-side
-   * append at L92 and the guard at L91 are deliberately absent - see the LEGACY-NOTE above.
+   * BOTH STATEMENTS ARE REPRODUCED, in the source's order: the near-side assignment at
+   * [model/entity/SkuCurrency.cfc:L90] runs FIRST and unconditionally, then the guarded far-side
+   * append at [model/entity/SkuCurrency.cfc:L91-L93]. The ordering matters because the guard calls back
+   * into the sku, so the field is already set by the time anything else can observe it.
+   *
+   * THE SHORT-CIRCUIT IS LOAD-BEARING. `isNew() or !arguments.sku.hasSkuCurrency( this )` evaluates
+   * `isNew()` first, so for an unsaved row the far-side membership test is not performed AT ALL and the
+   * append simply happens. `||` reproduces CFML `or` faithfully here because both operands are already
+   * booleans. That ordering is also what makes the append safe for an unsaved row: every unsaved
+   * SkuCurrency has an empty `skuCurrencyID`, so a key-based membership test could not tell them apart,
+   * and the legacy arranged never to ask.
    *
    * Returns `void`, as the legacy `public void function` does. SYNCHRONOUS: nothing here reaches
    * a port or a repository, and the async boundary in this port is decided per method.
    */
   setSku(sku: Sku): void {
-    // [model/entity/SkuCurrency.cfc:L90]
+    // [model/entity/SkuCurrency.cfc:L90] - before the guard, always.
     this.sku = sku;
+
+    // [model/entity/SkuCurrency.cfc:L91-L93] - the guarded append onto the sku's LIVE array. `push`
+    // mutates in place, which is required: `arrayAppend` mutated the very array that
+    // `Sku.getSkuCurrencies()` hands back.
+    if (this.isNew() || !sku.hasSkuCurrency(this)) {
+      sku.getSkuCurrencies().push(this);
+    }
+  }
+
+  /**
+   * Whether this row has never been persisted.
+   * [org/Hibachi/HibachiEntity.cfc:L571-L576] via [org/Hibachi/HibachiEntity.cfc:L707-L709]
+   *
+   * The framework base defines `isNew()` as `getNewFlag()`, and `getNewFlag()` as
+   * `getPrimaryIDValue() == ""`. The base is not ported, so the one line it contributed is restated
+   * here - identically to `brand.ts`, `category.ts`, `option.ts`, `priceGroup.ts`,
+   * `promotionApplied.ts`, `promotionCode.ts` and `promotionPeriod.ts`.
+   *
+   * IT IS PORTED BECAUSE IT IS CONCRETELY CALLED, at [model/entity/SkuCurrency.cfc:L91] inside
+   * `setSku`'s guard. The empty-string comparison is exact rather than approximate: `unsavedvalue=""`
+   * and `default=""` on [model/entity/SkuCurrency.cfc:L52] are what make an unsaved row's key empty.
+   */
+  isNew(): boolean {
+    return this.skuCurrencyID === '';
+  }
+
+  /**
+   * Whether `candidate` denotes the same `SwSkuCurrency` row as this instance.
+   *
+   * Private, with no legacy counterpart by name: it stands for CFML's `arrayFind(array, this)` at
+   * [model/entity/SkuCurrency.cfc:L99], which was reference identity in the language and row identity
+   * under Hibernate's session. With no session those come apart, so the comparison is made on the
+   * primary key and falls back to reference identity when either side is unsaved - an unsaved row has
+   * an empty `skuCurrencyID`, and so does every other unsaved row.
+   *
+   * Identical in shape to the helpers of the same name on `option.ts`, `category.ts`,
+   * `promotionCode.ts` and `promotionApplied.ts`, deliberately: one containment rule across the folder.
+   */
+  private isSameRowAs(candidate: SkuCurrency): boolean {
+    const candidateSkuCurrencyID: string = candidate.getSkuCurrencyID();
+
+    if (candidateSkuCurrencyID === '' || this.skuCurrencyID === '') {
+      return candidate === this;
+    }
+
+    return candidateSkuCurrencyID === this.skuCurrencyID;
   }
 
   /**
@@ -794,6 +931,11 @@ export class SkuCurrency {
    * agree for every object, but the correct predicate is written anyway - `eqeqeq` is set to
    * `'error', 'always'` precisely so every ported comparison is audited at its site rather than
    * assumed.
+   *
+   * ★ THE FAR-SIDE REMOVAL IS REPRODUCED, so `resolvedSku` is consumed by the search as well as by
+   * the guard - exactly as in the source, where the defaulting step at L96-L98 exists to give L99 an
+   * array to search. See the note above this pair for why an earlier revision dropped it and why that
+   * was wrong.
    *
    * ★ THE NEAR-SIDE CLEAR ALWAYS RUNS, AND THE ORDERING IS PRESERVED EXACTLY.
    * `structDelete(variables, "sku")` at [model/entity/SkuCurrency.cfc:L103] sits OUTSIDE the
@@ -835,10 +977,24 @@ export class SkuCurrency {
       );
     }
 
-    // [model/entity/SkuCurrency.cfc:L99-L102] - the far-side `arrayFind`/`arrayDeleteAt` over
-    // `resolvedSku.getSkuCurrencies()` is deliberately NOT reproduced; see the LEGACY-NOTE above.
-    // `resolvedSku` is therefore consumed only by the guard, which is exactly the extent to which
-    // the legacy's defaulting step still has observable meaning in this target.
+    // [model/entity/SkuCurrency.cfc:L99] ARRAY INDEX BASE CHANGE: CFML `arrayFind` returns a 1-BASED
+    // index, or 0 for "not found", which is why the source guards with `index > 0` at L100.
+    // `Array.prototype.findIndex` returns a 0-BASED index, or -1 for "not found", so the guard MUST
+    // become `!== -1`. Carrying `> 0` across would silently skip element 0 - the first currency row on
+    // the sku, and the very one [model/entity/Sku.cfc:L399-L414] would then fail to see.
+    //
+    // Containment is BY PRIMARY KEY with a reference fallback for an unsaved row, per `isSameRowAs`;
+    // see the note on that method for why a key comparison reproduces the legacy meaning where a
+    // reference comparison would only reproduce its letter.
+    const skuCurrencies: SkuCurrency[] = resolvedSku.getSkuCurrencies();
+    const index: number = skuCurrencies.findIndex((candidate: SkuCurrency) =>
+      this.isSameRowAs(candidate),
+    );
+
+    // [model/entity/SkuCurrency.cfc:L100-L102]
+    if (index !== -1) {
+      skuCurrencies.splice(index, 1);
+    }
 
     // [model/entity/SkuCurrency.cfc:L103] - UNCONDITIONAL, outside the `if(index > 0)` block at
     // L100-L102. The legacy clears the near side whether or not the far-side removal found
@@ -886,8 +1042,15 @@ export class SkuCurrency {
    * fetches nothing, and it is not `async` because it reaches no port.
    */
   getSimpleRepresentation(): string {
-    // [model/entity/SkuCurrency.cfc:L119] - `getSku().getSkuCode()`, guarded.
-    const skuCode: string = this.sku === undefined ? '' : this.sku.getSkuCode();
+    // [model/entity/SkuCurrency.cfc:L119] - `getSku().getSkuCode()`, guarded on BOTH levels.
+    //
+    // The second `?? ''` covers a materialized SKU whose own `skuCode` column is null. That column is
+    // `unique="true" length="50"` at [model/entity/Sku.cfc:L54] with NO `notnull`, so
+    // `Sku.getSkuCode()` is `string | undefined` - and CFML concatenating a null-backed accessor into a
+    // string raises. The same three reasons recorded above for guarding the absent SKU apply verbatim to
+    // the absent CODE: a display helper is the wrong thing to fail a request on, and a label is not a
+    // price. A caller that must tell the two holes apart asks `getSku()` and then `getSkuCode()`.
+    const skuCode: string = this.sku === undefined ? '' : (this.sku.getSkuCode() ?? '');
 
     // [model/entity/SkuCurrency.cfc:L119] - the separator is EXACTLY one space, one hyphen, one
     // space, reproduced byte for byte from `& " - " &`. (The source line also carries a trailing
@@ -963,11 +1126,11 @@ export class SkuCurrency {
 
 // TEST CONTRACT - NET-NEW COVERAGE, NEVER PARITY.
 //
-// `tests/unit/domain/entities/skuCurrency.test.ts` is authored SEPARATELY; the test tier is owned
+// `tests/unit/domain/entities/skuCurrency.test.ts` (planned) is authored SEPARATELY; the test tier is owned
 // elsewhere and no test file is created from here. `SkuCurrency` has NO legacy test whatsoever, so
 // its coverage is one of the sixteen net-new entity suites and must be LABELLED net-new -
 // presenting it as parity fails the coverage gate. It must also appear in
-// `tests/traceability/legacyTestMap.ts`, flagged net-new, because that map fails the suite when an
+// `tests/traceability/legacyTestMap.ts` (planned), flagged net-new, because that map fails the suite when an
 // in-scope module has no test. Regression tests in this project follow the `issue_<ticket#>`
 // convention carried over from meta/tests/unit/IssuesTest.cfc; no ticket applies to this entity.
 //
@@ -987,12 +1150,18 @@ export class SkuCurrency {
 //      cases `getSku()` is `undefined` afterwards.
 //   6. `removeSku()` THROWS when called with no argument while no sku is set, reproducing
 //      [model/entity/SkuCurrency.cfc:L97].
-//   7. `removeSku()` does NOT mutate any collection on the far-side `Sku` - pass a stub whose
-//      collection is observable and assert it is untouched. This pins the architectural ruling.
+//   7. ★ BOTH HELPERS MAINTAIN THE FAR SIDE. `setSku()` appends `this` to the stub sku's
+//      `getSkuCurrencies()` array exactly once, does NOT append a second time for a row already
+//      present by primary key, and DOES append unconditionally when `isNew()` is true.
+//      `removeSku()` splices `this` out of that same array, leaves the array untouched when the row
+//      is absent, and clears the near side EITHER WAY - proving the unconditional placement of
+//      [model/entity/SkuCurrency.cfc:L103]. Element 0 must be covered specifically, since a
+//      `> 0` guard transcribed from CFML's 1-based `arrayFind` would skip it.
 //   8. `getSimpleRepresentation()` returns `<skuCode> - <currencyCode>` with the separator EXACTLY
 //      one space, one hyphen, one space; and returns ` - <currencyCode>` when the sku is not
 //      materialized, rather than throwing.
-//   9. The class exposes EXACTLY THREE behavioural methods. Assert there is no `isNew`, no
-//      `getSkuID`, no `setCurrencyCode`, no `getFormattedValue` and no `getCurrency` member.
+//   9. `isNew()` is `true` for an empty primary key and `false` for a populated one. Assert there is
+//      no `getSkuID`, no `setCurrencyCode`, no `getFormattedValue` and no `getCurrency` member -
+//      `isNew()` IS present, because [model/entity/SkuCurrency.cfc:L91] calls it.
 //  10. Audit accessors return opaque strings or `undefined`, and no `Account` object is ever
 //      constructed.

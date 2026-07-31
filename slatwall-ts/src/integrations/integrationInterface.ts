@@ -138,7 +138,8 @@
 // ---------------------------------------------------------------------------
 // WHY THIS MODULE IMPORTS NOTHING
 //   Zero imports, of any kind - no first-party module, no third-party package
-//   from the closed set of fourteen pinned dependencies, and no Node built-in.
+//   from the closed set of thirteen exactly-pinned dependencies `package.json`
+//   declares (3 runtime and 10 development), and no Node built-in.
 //   A contract that named a concrete collaborator would stop being a contract,
 //   and the two supporting types below exist precisely so that an implementor
 //   needs nothing else. There is no transport concept here, no authentication
@@ -190,184 +191,49 @@
 // ---------------------------------------------------------------------------
 
 /**
- * The documented integration-type vocabulary, expressed as a union.
+ * The integration contract an adapter satisfies.
  *
- * The legacy member is a plain `returntype="string"`
- * [integrationServices/IntegrationInterface.cfc:L63]; the permitted values exist
- * only as prose in its doc comment
- * [integrationServices/IntegrationInterface.cfc:L68-L71]. Making them a type is
- * the point of this declaration - a mistyped integration type stops being a
- * runtime surprise and becomes a compile error.
+ * Mirrors the five members of the legacy `<cfinterface>`
+ * [integrationServices/IntegrationInterface.cfc:L50-L89]. An implementation that declines a member
+ * inherits a default from the base component [integrationServices/BaseIntegration.cfc:L51-L73],
+ * which is why an adapter can satisfy this contract while declaring fewer methods.
+ */
+
+// JUDGMENT CALL: A single type is modelled rather than a list, because every in-scope implementation returns one value.
+/**
+ * The integration types the legacy contract recognizes.
  *
- * The four values, with the source's own descriptions carried over faithfully.
- * The spelling "ect." at [integrationServices/IntegrationInterface.cfc:L70] is
- * the source's, quoted rather than corrected:
- *
- * - `shipping` - "When set this integration will be able to be used by shipping
- *   methods / rates"
- * - `payment` - "When set this integration will be able to be used by payment
- *   methods"
- * - `fw1` - "When set then this integration can have custom views, ect."
- * - `custom` - "This is defined when all you want to do is hook into events, but
- *   no views or anything else."
- *
- * The set is closed at exactly these four members, and two specific additions
- * are ruled out rather than merely unmentioned:
- *
- * - No `productFeed`. There is no feed type in the source vocabulary, even
- *   though the one in-scope adapter is a product feed; that mismatch is
- *   documented in this module's header and is resolved by declaring feed
- *   generation as a separate capability, never by extending this union.
- * - No empty string. `getIntegrationTypes()` returns `""` on the base component
- *   [integrationServices/BaseIntegration.cfc:L59-L61], but that is a
- *   placeholder for "an adapter that has not answered yet", not a fifth
- *   vocabulary value - the concrete adapter always overrides it
- *   [integrationServices/google/Integration.cfc:L55-L57]. Admitting `''` here
- *   would make every implementor's exhaustive handling of this union
- *   permanently incomplete in order to model a value the vocabulary never had.
+ * The vocabulary is documented at [integrationServices/IntegrationInterface.cfc:L68-L71]: `shipping`
+ * for shipping methods and rates, `payment` for payment methods, `fw1` for an integration that
+ * contributes views, and `custom` for one that only hooks events. There is no product-feed type.
  */
 export type IntegrationType = 'shipping' | 'payment' | 'fw1' | 'custom';
 
 /**
- * One entry in the map returned by {@link IntegrationInterface.getSettings}.
+ * One setting an integration contributes.
  *
- * The legacy return is an untyped CFML `struct`
- * [integrationServices/IntegrationInterface.cfc:L75], so the only evidence
- * anywhere in the legacy source of what a setting definition actually contains
- * is a single literal:
- *
- *     { productGoogleProductType = {fieldType="select"} }
- *
- * from [integrationServices/google/Integration.cfc:L67-L71]. That literal
- * populates exactly one key, `fieldType`, and nothing else. This interface
- * therefore declares exactly one property. No `label`, `defaultValue`,
- * `required`, `options`, `sortOrder` or `validation` field is invented, however
- * natural such a field would look: every one of them would be a requirement
- * this migration made up, and a reviewer diffing this type against the source
- * would have no line to check it against.
- *
- * `fieldType` is typed `string` rather than the one-member union `'select'`,
- * which is the wider of the two honest options and is chosen deliberately.
- * `'select'` is the only value ever OBSERVED, but it is observed in a single
- * literal belonging to a single adapter, and this interface is the generic
- * contract that every Slatwall integration implements - only the Google adapter
- * is in scope, yet the contract is not Google-specific. Narrowing a generic
- * contract to one adapter's one observed value would encode a coincidence as a
- * constraint, and would reject a conforming adapter for declaring a field type
- * the legacy engine accepted. The narrow value is documented above instead,
- * which keeps the evidence visible without hard-coding it.
+ * `fieldType` is the only key the in-scope adapter sets
+ * [integrationServices/google/Integration.cfc:L69]; the legacy definitions are open structs whose
+ * other keys are read by the admin, which is outside this slice.
  */
 export interface SettingDefinition {
-  /**
-   * The kind of form control this setting is rendered as.
-   *
-   * The sole observed value is `'select'`
-   * [integrationServices/google/Integration.cfc:L67-L71]. It is required, not
-   * optional, because it is the only key the legacy literal contains - a
-   * setting definition with no field type has no counterpart in the source.
-   */
   fieldType: string;
 }
 
-/**
- * The contract every Slatwall integration adapter implements.
- *
- * A direct port of the `<cfinterface>` at
- * [integrationServices/IntegrationInterface.cfc:L50-L89]. The five members below
- * are the complete contract, in the source's own declaration order, under the
- * source's own names. Defaults for all five are supplied by the base component
- * [integrationServices/BaseIntegration.cfc:L49-L74], which also supplies a sixth
- * zero-argument default, `getAdminNavbarHTML()`
- * [integrationServices/BaseIntegration.cfc:L71-L73], that the `<cfinterface>`
- * never declares and that is consequently not a member here - see this module's
- * header for the reasoning.
- */
 export interface IntegrationInterface {
-  /**
-   * Initialises the adapter and returns it.
-   *
-   * Ported from [integrationServices/IntegrationInterface.cfc:L52-L54], whose
-   * declaration is `returntype="any"` with an empty body and no documentation.
-   * The return is typed as the polymorphic `this` rather than as the interface,
-   * because both known bodies return the instance itself
-   * [integrationServices/BaseIntegration.cfc:L51-L53],
-   * [integrationServices/google/Integration.cfc:L51-L53]. `this` preserves the
-   * caller's concrete type through the call, so an adapter's own members stay
-   * reachable on the result - which the CFML `any` allowed by having no type
-   * discipline at all, and which returning the interface type would silently
-   * take away.
-   */
   init(): this;
 
-  /**
-   * The adapter's human-readable name.
-   *
-   * Ported from [integrationServices/IntegrationInterface.cfc:L56-L61], whose
-   * documentation reads: "This method should return a String with the display
-   * name that you would like for the integration to have". A direct map of
-   * `returntype="string"`; the base default is "Not Defined"
-   * [integrationServices/BaseIntegration.cfc:L55-L57].
-   */
   getDisplayName(): string;
 
-  /**
-   * The integration type this adapter registers as.
-   *
-   * Ported from [integrationServices/IntegrationInterface.cfc:L63-L73]. See
-   * {@link IntegrationType} for the four permitted values and the source's
-   * description of each.
-   *
-   * A DELIBERATE NARROWING, recorded because silence would read as an oversight.
-   * The source documents the return as "a comma seperated list of the
-   * integration types that it supports"
-   * [integrationServices/IntegrationInterface.cfc:L65] - the spelling
-   * "seperated" is the source's, quoted rather than corrected - so a CFML
-   * implementor could in principle have answered with several types in one
-   * string. The target types a SINGLE union member instead of a delimited
-   * string or an array, for two reasons. First, a delimited string moves the
-   * vocabulary back out of the type system and into a parser, which is exactly
-   * what this port is removing. Second, the multi-value case has no instance to
-   * preserve: the only in-scope implementor returns the single value "fw1"
-   * [integrationServices/google/Integration.cfc:L55-L57], so no information is
-   * lost in practice. Should a future adapter genuinely need to register as more
-   * than one type, that is a change to this contract - a decision to take
-   * openly, not something to leave a loophole for here.
-   */
   getIntegrationTypes(): IntegrationType;
 
-  /**
-   * The adapter's setting definitions, keyed by setting name.
-   *
-   * Ported from [integrationServices/IntegrationInterface.cfc:L75-L80], whose
-   * `returntype="struct"` is what the target follows. Its doc comment describes
-   * something else entirely, which is the copy-paste error recorded in this
-   * module's header; the declared type, the base default `return {};`
-   * [integrationServices/BaseIntegration.cfc:L63-L65] and the sole in-scope
-   * implementor [integrationServices/google/Integration.cfc:L63-L65] all agree
-   * that a struct is meant.
-   *
-   * The CFML struct becomes a dictionary keyed by arbitrary setting name whose
-   * VALUE type is named - {@link SettingDefinition} - which is the distinction
-   * that matters: the keys are genuinely open, so an interface with fixed
-   * property names would be wrong, but the values are not untyped and must never
-   * be weakened to `unknown` or to a bare object type. Both known bodies return
-   * an empty map, and an empty map is a legitimate answer here rather than a
-   * missing one, so the return is not optional.
-   */
+  // LEGACY-DEFECT [integrationServices/IntegrationInterface.cfc:L76-L79]: the documentation for this member describes returning true when a default view file exists, which contradicts the declared struct return.
+  // Preserved deliberately; do not fix without a product decision.
   getSettings(): Record<string, SettingDefinition>;
 
-  /**
-   * The adapter's event-handler identifiers.
-   *
-   * Ported from [integrationServices/IntegrationInterface.cfc:L82-L87], whose
-   * `returntype="array"` is what the target follows - its doc comment describes
-   * a coldspring xml string instead, which is the second contradiction recorded
-   * in this module's header, and the base default `return [];`
-   * [integrationServices/BaseIntegration.cfc:L67-L69] settles it in favour of
-   * the array. The element type is `string`, because the framework resolved
-   * handlers by name; nothing in the legacy source ever puts a non-string in
-   * this array. The sole in-scope implementor does not override the member at
-   * all, so it answers with the inherited empty array.
-   */
+  // LEGACY-DEFECT [integrationServices/IntegrationInterface.cfc:L82]: this is the only member declared without an `access` attribute, so it is not stated to be public as its siblings are.
+  // Preserved deliberately; do not fix without a product decision.
+  // LEGACY-DEFECT [integrationServices/IntegrationInterface.cfc:L82-L87]: its documentation describes returning ColdSpring XML, which contradicts the declared array return.
+  // Preserved deliberately; do not fix without a product decision.
   getEventHandlers(): string[];
 }

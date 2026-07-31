@@ -172,20 +172,31 @@ import {
 import type { CurrencyCode } from '../../../../src/domain/valueObjects/currencyCode.js';
 import * as currencyCodeModule from '../../../../src/domain/valueObjects/currencyCode.js';
 
-// JUDGMENT CALL: `structKeyExists` is the ONE symbol imported from outside the
-//   module under test, and the import is demanded by a shipped signature
-//   rather than convenient. `getByCurrencyCode` documents that it answers only
-//   the VALUE question and that a caller needing the PRESENCE answer asks
+// JUDGMENT CALL: exactly TWO symbols are imported from outside the module under
+//   test, and each is demanded by a shipped signature rather than convenient.
+//
+//   `structKeyExists` - `getByCurrencyCode` documents that it answers only the
+//   VALUE question and that a caller needing the PRESENCE answer asks
 //   `structKeyExists` directly, because this module deliberately does not
 //   re-export it. Pinning "present but holding undefined" therefore requires
 //   the presence oracle: without it the assertion cannot distinguish an absent
-//   key from a present one, which is the whole distinction being pinned. The
-//   general semantics of that helper are owned by
+//   key from a present one, which is the whole distinction being pinned.
+//
+//   `CfmlComparisonError` - `currencyCodeEquals` delegates to `cfEquals` and
+//   raises whatever it raises, so the error TYPE is part of this function's
+//   published contract and cannot be asserted from inside this module alone.
+//   Matching on the class rather than on message text is deliberate: a message
+//   assertion would pass for any incidental `TypeError` thrown on the way in,
+//   which is precisely the confusion this finding removed. The message shape is
+//   additionally pinned, but only after the class has been established.
+//
+//   The general semantics of both helpers are owned by
 //   tests/unit/lib/cfml/struct.test.ts and are not restated here; this suite
-//   asserts only the pairing. src/lib/cfml/** is inward of src/domain/**, so
-//   the layer boundary is respected: no handler, repository, integration,
-//   integration-test or traceability module is imported anywhere in this file.
-import { structKeyExists } from '../../../../src/lib/cfml/struct.js';
+//   asserts only what the delegation guarantees. src/lib/cfml/** is inward of
+//   src/domain/**, so the layer boundary is respected: no handler, repository,
+//   integration, integration-test or traceability module is imported anywhere in
+//   this file.
+import { CfmlComparisonError, structKeyExists } from '../../../../src/lib/cfml/struct.js';
 
 // Neutral, deliberately unreal three-character codes. Every subject in this
 // file is one of these.
@@ -584,46 +595,79 @@ describe('equality is case-insensitive, reproducing the CFML eq operator', () =>
   });
 });
 
-describe('a nullish operand is never equal to anything, including another nullish', () => {
-  // The asymmetry with `===` is intended rather than incidental. Reading "no
-  // currency code" as equal to "no currency code" would present as a MATCH on a
-  // currency-selection path and let a price be attributed to a currency that was
-  // never identified. On a money path that is the wrong direction to fail in.
-  // CFML cannot answer the question at all - passing a null into `eq` raises
-  // there - so no legacy result is being discarded, only a gap closed.
-  it('reports two undefined operands as unequal where === reports them equal', () => {
+describe('a nullish operand refuses the comparison rather than answering it', () => {
+  // CFML raises when a null reaches `eq`, so the delegated `cfEquals` raises and
+  // this function raises with it. There is no legacy result being discarded.
+  //
+  // An earlier revision of this describe block pinned `false` for every nullish
+  // combination, reasoning that reading "no currency code" as equal to "no
+  // currency code" would present as a MATCH on a currency-selection path and let
+  // a price be attributed to a currency that was never identified. That harm is
+  // real, but `false` relocates it rather than removing it: this function returns
+  // `boolean`, and on the cascade at [model/entity/Sku.cfc:L385] `false` already
+  // MEANS "these are different currencies". Answering `false` for "one of these
+  // is not a currency code at all" is therefore indistinguishable from a definite
+  // negative - the base-currency step is silently skipped, the SKU carries no
+  // entry for the configured currency, and the fault surfaces later as an
+  // `undefined` out of `getPriceByCurrencyCode`, which is exactly the §0.6.3
+  // outcome reached the long way round. Raising stops at the comparison that
+  // could not be made.
+  it('raises for two undefined operands where === would report them equal', () => {
     const storedCode: string | undefined = undefined;
     const configuredCode: string | undefined = undefined;
 
-    expect(currencyCodeEquals(storedCode, configuredCode)).toBe(false);
+    expect(() => currencyCodeEquals(storedCode, configuredCode)).toThrow(CfmlComparisonError);
     expect(storedCode === configuredCode).toBe(true);
   });
 
-  it('reports two null operands as unequal where === reports them equal', () => {
+  it('raises for two null operands where === would report them equal', () => {
     const storedCode: string | null = null;
     const configuredCode: string | null = null;
 
-    expect(currencyCodeEquals(storedCode, configuredCode)).toBe(false);
+    expect(() => currencyCodeEquals(storedCode, configuredCode)).toThrow(CfmlComparisonError);
     expect(storedCode === configuredCode).toBe(true);
   });
 
-  it('reports a null against an undefined as unequal', () => {
-    expect(currencyCodeEquals(null, undefined)).toBe(false);
-    expect(currencyCodeEquals(undefined, null)).toBe(false);
+  it('raises for a null against an undefined', () => {
+    expect(() => currencyCodeEquals(null, undefined)).toThrow(CfmlComparisonError);
+    expect(() => currencyCodeEquals(undefined, null)).toThrow(CfmlComparisonError);
   });
 
   it.each([
-    ['undefined on the left', undefined],
-    ['null on the left', null],
-  ])('reports %s against a real code as unequal', (_label, absent) => {
-    expect(currencyCodeEquals(absent, NEUTRAL_CODE)).toBe(false);
-    expect(currencyCodeEquals(NEUTRAL_CODE, absent)).toBe(false);
+    ['undefined', undefined],
+    ['null', null],
+  ])('raises for %s on either side of a real code', (_label, absent) => {
+    expect(() => currencyCodeEquals(absent, NEUTRAL_CODE)).toThrow(CfmlComparisonError);
+    expect(() => currencyCodeEquals(NEUTRAL_CODE, absent)).toThrow(CfmlComparisonError);
   });
 
-  it('does not treat an empty string as absent - it is an ordinary CFML value', () => {
-    expect(currencyCodeEquals('', undefined)).toBe(false);
-    expect(currencyCodeEquals('', null)).toBe(false);
+  // The raise is not swallowed or re-wrapped on the way through this module: the
+  // delegated error reaches the caller intact, naming which operand was absent
+  // and reporting the surviving one, because on the cascade path the survivor is
+  // the clue to where the missing code should have come from.
+  it('propagates the delegated error intact, naming the absent operand', () => {
+    expect(() => currencyCodeEquals(undefined, NEUTRAL_CODE)).toThrow(/operand "a"/);
+    expect(() => currencyCodeEquals(NEUTRAL_CODE, undefined)).toThrow(/operand "b"/);
+    expect(() => currencyCodeEquals(null, NEUTRAL_CODE)).toThrow(/received null as operand/);
+    expect(() => currencyCodeEquals(undefined, NEUTRAL_CODE)).toThrow(
+      /received undefined as operand/,
+    );
+    expect(() => currencyCodeEquals(undefined, NEUTRAL_CODE)).toThrow(
+      new RegExp(`"${NEUTRAL_CODE}"`),
+    );
+  });
+
+  // An empty string is NOT absent - it is an ordinary CFML string value - so it
+  // compares normally and never raises. That is the same line `cfTruthy` draws
+  // between `''` and null, and it is what keeps the raise narrowly about absence.
+  it('does not treat an empty string as absent - it compares, and never raises', () => {
+    expect(() => currencyCodeEquals('', '')).not.toThrow();
     expect(currencyCodeEquals('', '')).toBe(true);
+    expect(currencyCodeEquals('', NEUTRAL_CODE)).toBe(false);
+
+    // Empty on one side, genuinely absent on the other: the absence still wins.
+    expect(() => currencyCodeEquals('', undefined)).toThrow(CfmlComparisonError);
+    expect(() => currencyCodeEquals('', null)).toThrow(CfmlComparisonError);
   });
 });
 

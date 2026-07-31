@@ -162,9 +162,22 @@
 //
 //   Every export is pure and synchronous. Nothing here mutates its input, and
 //   in particular reading never writes: structGet does not create the key it
-//   failed to find. Nothing here throws either, because a throw would turn a
-//   missing price into a server error rather than into the `undefined` that
-//   the legacy contract produces.
+//   failed to find.
+//
+//   SIX OF THE SEVEN EXPORTS ARE TOTAL; `cfEquals` RAISES FOR A NULLISH OPERAND.
+//   The dividing line is whether the function's return type has a value to spare
+//   for "not answerable":
+//     * The readers - `structGet`, `structGetPath`, `structFindKey` - return
+//       `T | undefined`, so absence is expressible IN the return type. A missing
+//       price comes back as `undefined`, which is what the legacy contract
+//       produces, and no throw is needed to say it.
+//     * `structKeyExists` and `structKeyList` answer a question every struct can
+//       answer.
+//     * `cfEquals` returns `boolean`, and BOTH of its answers are meaningful on a
+//       currency-selection path - `false` means "these are different currencies".
+//       There is no spare value left to mean "one of these is not a currency code
+//       at all", so a nullish operand is reported out of band. CFML raises for a
+//       null in `eq` too, so this is parity rather than a new strictness.
 //
 // NO USER RULES WERE PROVIDED
 //   (1) No user-specified rules were provided for this project. (2) That
@@ -233,6 +246,81 @@
  * is exactly what the legacy two-check accessors do.
  */
 export type CfStruct<T = unknown> = Readonly<Record<string, T>>;
+
+// ---------------------------------------------------------------------------
+// The one failure this module can report
+// ---------------------------------------------------------------------------
+
+/**
+ * Raised when a case-insensitive comparison is asked of an absent operand.
+ *
+ * Only {@link cfEquals} raises it, and only for `null` or `undefined`. The reason
+ * that one export is not total, while the six readers around it are, is set out in
+ * the module header: a reader can express absence through its `T | undefined`
+ * return type, whereas a `boolean` comparison has no spare value - `false` already
+ * means "different currencies" on the cascade path at
+ * [model/entity/Sku.cfc:L385].
+ *
+ * EXPORTED DELIBERATELY, so a caller can distinguish "the codes differ" from "one
+ * of the codes was never resolved". Nothing in this module catches it.
+ *
+ * The message names WHICH operand was absent and what the other one was, because
+ * on a currency path the surviving operand is usually the clue to where the
+ * missing one should have come from. The surviving operand is length-bounded; a
+ * currency code is three characters, so anything long here is itself a symptom.
+ */
+export class CfmlComparisonError extends Error {
+  /**
+   * @param operandName - `'a'` or `'b'`: which argument was absent.
+   * @param absentValue - the absent value, distinguishing `null` from `undefined`.
+   * @param otherValue - the other operand, reported to aid diagnosis.
+   */
+  public constructor(
+    operandName: 'a' | 'b',
+    absentValue: null | undefined,
+    otherValue: string | null | undefined,
+  ) {
+    super(
+      `cfEquals received ${absentValue === null ? 'null' : 'undefined'} as operand ` +
+        `"${operandName}", with the other operand being ${describeOtherOperand(otherValue)}. ` +
+        'CFML raises when a null reaches eq, and answering false here would be ' +
+        'indistinguishable from the two values genuinely differing.',
+    );
+    this.name = 'CfmlComparisonError';
+  }
+}
+
+/**
+ * Renders the surviving operand of a failed comparison.
+ *
+ * Quoted, so an empty string is visibly different from an absent one - the very
+ * distinction this error exists to protect. Truncated because a value this long is
+ * already evidence of a different fault.
+ */
+function describeOtherOperand(value: string | null | undefined): string {
+  if (value === null) {
+    return 'null';
+  }
+
+  if (value === undefined) {
+    return 'undefined';
+  }
+
+  const shown =
+    value.length > MAX_REPORTED_OPERAND_LENGTH
+      ? `${value.slice(0, MAX_REPORTED_OPERAND_LENGTH)}...`
+      : value;
+
+  return `"${shown}"`;
+}
+
+/**
+ * How much of a surviving operand an error message reproduces.
+ *
+ * A currency code is three characters and a setting key is short, so this is
+ * generous for every legitimate value and still bounded.
+ */
+const MAX_REPORTED_OPERAND_LENGTH = 48;
 
 /**
  * Folds a key to its comparison form.
@@ -570,32 +658,50 @@ export function structGetPath<TInner extends object>(
  * on a price would slip in. This module moves values around without ever
  * computing on them.
  *
- * JUDGMENT CALL: a nullish operand always compares `false` - both nullish
- * included.
- *   CFML would not answer this question at all. Passing a null into `eq` raises
- *   an error there, so there is no legacy result to preserve and a decision has
- *   to be made. Two options were available and one had to be picked
- *   consistently. Returning `true` for two nullish operands would treat
- *   "no currency code" as equal to "no currency code", which reads as a match on
- *   a currency-selection path and would let an entry be written for a currency
- *   that was never identified - the wrong failure direction on a money path.
- *   Throwing was rejected outright, because no export in this module throws: a
- *   throw here would turn a missing currency code into a server error rather
- *   than into the absent result the legacy contract produces. So a nullish
- *   operand is never equal to anything, including another nullish operand, and
- *   a caller that needs to detect "both absent" tests for absence explicitly.
- *   Note the asymmetry with strict equality this creates by design:
- *   `cfEquals(undefined, undefined)` is `false` where `undefined === undefined`
- *   is `true`.
+ * A NULLISH OPERAND RAISES, WHICH IS CFML PARITY. Passing a null into `eq` raises
+ * an error in CFML, so this raises too.
  *
- * Empty strings are NOT nullish and are compared normally, so two empty strings
- * are equal - matching CFML, where an empty string is a perfectly ordinary
- * string value. Surrounding whitespace is significant here for the same reason it
- * is significant in key matching: only case is folded, never whitespace.
+ * An earlier revision answered `false` for a nullish operand, on the reasoning
+ * that no export in this module throws and that a missing currency code should
+ * become an absent result rather than a server error. Both halves need correcting:
+ *
+ *   * THERE IS NO "ABSENT RESULT" TO PRODUCE. This function's return type is
+ *     `boolean`, and on a currency-selection path `false` is a MEANINGFUL answer -
+ *     it says "these are different currencies". So returning it for "one of these
+ *     is not a currency code at all" does not express absence, it expresses a
+ *     definite negative. The caller cannot tell the two apart, which is the exact
+ *     failure the old comment was trying to avoid and did not.
+ *   * THE RIGHT FAILURE DIRECTION IS TO STOP. The old note correctly identified
+ *     that answering `true` for two nullish operands would let a currency entry be
+ *     written for a currency that was never identified. Answering `false` avoids
+ *     that particular harm but hides the cause: the cascade at
+ *     [model/entity/Sku.cfc:L385] silently skips its base-currency step and the
+ *     SKU ends up with no price for the configured currency, at which point
+ *     `getPriceByCurrencyCode` returns `undefined` and the fault surfaces far from
+ *     where it began. Raising here surfaces it at the comparison that could not be
+ *     made.
+ *
+ * The asymmetry with strict equality is therefore gone rather than merely
+ * documented: `cfEquals(undefined, undefined)` no longer returns `false` where
+ * `undefined === undefined` is `true` - it raises, because the question is not
+ * answerable. A caller that needs to detect "both absent" tests for absence
+ * explicitly, exactly as before.
+ *
+ * EMPTY STRINGS ARE NOT AFFECTED. `''` is not nullish, and two empty strings are
+ * equal - matching CFML, where an empty string is a perfectly ordinary string
+ * value. That is the same distinction `cfTruthy` draws between `''` and null.
+ * Surrounding whitespace is significant here for the same reason it is significant
+ * in key matching: only case is folded, never whitespace.
+ *
+ * @throws {CfmlComparisonError} if either operand is `null` or `undefined`.
  */
 export function cfEquals(a: string | null | undefined, b: string | null | undefined): boolean {
-  if (a === null || a === undefined || b === null || b === undefined) {
-    return false;
+  if (a === null || a === undefined) {
+    throw new CfmlComparisonError('a', a, b);
+  }
+
+  if (b === null || b === undefined) {
+    throw new CfmlComparisonError('b', b, a);
   }
 
   return foldKey(a) === foldKey(b);

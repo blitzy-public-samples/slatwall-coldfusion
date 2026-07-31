@@ -1,3 +1,17 @@
+// ---------------------------------------------------------------------------
+// CHECKPOINT STATUS - FORWARD REFERENCES CARRY THE MARKER `(planned)`
+//
+// The subtree is authored in boundaries, and AAP 0.4.5 makes the authoring
+// order "a compile-order convenience, not a schedule". Commentary in this file
+// therefore names modules of the target layout that DO NOT EXIST YET. Every such
+// name carries `(planned)` at its point of use, meaning exactly: a planned Agent
+// Action Plan target that is ABSENT from the subtree at this checkpoint. Nothing
+// here asserts that any of them exists now, and no behaviour in this file depends
+// on one. The complete set named below, with the role each will play:
+//
+//   src/handlers/bootstrap.ts  composition root (wiring)
+// ---------------------------------------------------------------------------
+
 /**
  * Image persistence port - the narrow STUB port that stands in for the legacy CFML
  * `imageService` collaborator.
@@ -62,8 +76,9 @@
  *   Two prohibitions are worth stating because they would RESOLVE if attempted, which is
  *   precisely why they are called out. First, no Node built-in - not `node:fs`, `node:path`,
  *   `node:buffer` or `node:stream` - because a port declares a CAPABILITY and never an I/O
- *   mechanism. Second, no storage client and no cloud SDK: the dependency set is closed at
- *   fourteen exactly-pinned packages, none of which is an image library or a storage client,
+ *   mechanism. Second, no storage client and no cloud SDK: the dependency set is closed at the
+ *   thirteen exactly-pinned packages `package.json` declares - 3 runtime and 10 development -
+ *   none of which is an image library or a storage client,
  *   and reaching for one from the domain would invert the very dependency this port
  *   straightens. Nor does this file read `src/lib/config.ts`: a store's own configuration is
  *   the implementation's business, supplied where the implementation is constructed.
@@ -91,12 +106,17 @@
  *   directly [model/entity/Sku.cfc:L221-L227]. Nothing reachable from an in-scope path needs a
  *   read, serve, URL-resolution, list, move or copy member, so this interface has exactly two.
  *
- *   Image-related SETTINGS are not this port's concern either. `productImageDefaultExtension`
- *   (default `jpg`) [model/service/SettingService.cfc:L191] and
- *   `productImageOptionCodeDelimiter` (default `-`) [model/service/SettingService.cfc:L192]
- *   resolve through `settingsProvider` and are consumed at the ENTITY tier, where the file name
- *   is composed: [model/entity/Sku.cfc:L138] and [model/entity/Sku.cfc:L135] respectively,
- *   inside `generateImageFileName()`. They must not appear here, and they do not.
+ *   Image-related SETTINGS are not this port's concern either, and they are not
+ *   `settingsProvider`'s concern. `productImageDefaultExtension` (default `jpg`)
+ *   [model/service/SettingService.cfc:L191] and `productImageOptionCodeDelimiter` (default `-`)
+ *   [model/service/SettingService.cfc:L192] are read at exactly two sites, both inside
+ *   `Sku.generateImageFileName()` [model/entity/Sku.cfc:L138] and [model/entity/Sku.cfc:L135],
+ *   which composes an image FILE NAME and does nothing else. Neither key is one of the four the
+ *   transformation plan allots the settings port ("only four keys", AAP 0.2.1; "exactly four
+ *   keys", AAP 0.4.1), so neither is declared on `SettingKey`. Image-file-name composition is an
+ *   image concern and therefore belongs behind THIS port; it does not become a settings concern
+ *   by being spelled with a `setting()` call in the legacy source. No key appears here, no key
+ *   appears on the settings port, and no fifth settings key may be added to make either compile.
  *
  * SCHEMA CONTINUITY
  *   This port touches no table at all. It moves and removes files; it reads and writes no row,
@@ -132,7 +152,7 @@
  *   `src/repositories/mysql/**` implements six of the thirteen ports - the product, SKU,
  *   option, product-type, promotion and price-group repositories. This is not one of them, and
  *   the target layout defines no adapter file for it anywhere, so its ONLY legal implementation
- *   home is the composition root, `src/handlers/bootstrap.ts`. Two obligations attach there:
+ *   home is the composition root, `src/handlers/bootstrap.ts` (planned). Two obligations attach there:
  *
  *     1. The chosen stub behaviour MUST be documented explicitly at the composition root. A
  *        caller must never be able to mistake stub output for a real successful write.
@@ -258,7 +278,7 @@ export interface ImageUploadResultProjection {
  * image store, so nothing else is declared - adding a third member would grow the surface
  * past what the legacy call sites prove is needed.
  *
- * The implementation wired in at `src/handlers/bootstrap.ts` is a documented stub. That does
+ * The implementation wired in at `src/handlers/bootstrap.ts` (planned) is a documented stub. That does
  * not make this interface provisional: it is the real contract, and a later decision to back
  * it with a genuine store changes only the implementation, never these signatures.
  */

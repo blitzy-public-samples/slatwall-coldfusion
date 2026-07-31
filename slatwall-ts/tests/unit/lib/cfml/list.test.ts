@@ -1,4 +1,18 @@
 // ---------------------------------------------------------------------------
+// CHECKPOINT STATUS - FORWARD REFERENCES CARRY THE MARKER `(planned)`
+//
+// The subtree is authored in boundaries, and AAP 0.4.5 makes the authoring
+// order "a compile-order convenience, not a schedule". Commentary in this file
+// therefore names modules of the target layout that DO NOT EXIST YET. Every such
+// name carries `(planned)` at its point of use, meaning exactly: a planned Agent
+// Action Plan target that is ABSENT from the subtree at this checkpoint. Nothing
+// here asserts that any of them exists now, and no behaviour in this file depends
+// on one. The complete set named below, with the role each will play:
+//
+//   tests/unit/domain/entities  entity unit-test tier
+// ---------------------------------------------------------------------------
+
+// ---------------------------------------------------------------------------
 // slatwall-ts - unit suite for the CFML comma-list primitives
 //
 // WHAT THIS PINS
@@ -114,6 +128,7 @@
 
 import { describe, it, expect } from 'vitest';
 import {
+  CfmlListIndexError,
   listLen,
   listGetAt,
   listAppend,
@@ -240,35 +255,93 @@ describe('listGetAt', () => {
     expect(listGetAt('.95,.99', 1)).toBe('.95');
   });
 
-  // JUDGMENT CALL - AN OUT-OF-RANGE POSITION RETURNS `''` INSTEAD OF THROWING,
-  // and this is a MANDATED, DELIBERATE DIVERGENCE from CFML, which throws for
-  // `position < 1` and for `position > listLen(list)`.
+  // AN OUT-OF-RANGE POSITION RAISES, WHICH IS CFML PARITY RATHER THAN A
+  // DIVERGENCE. CFML throws for `position < 1` and for
+  // `position > listLen(list)`, and so does this port.
   //
-  // Why the divergence is safe: EVERY in-scope legacy call site is bounded by
-  // an `i <= listLen(...)` guard, so a faithful port cannot produce an
-  // out-of-range position at all. The bounded loops are
-  // [model/service/RoundingRuleService.cfc:L93-L94],
+  // An earlier revision returned `''` here, justified on the grounds that every
+  // in-scope legacy call site is bounded by an `i <= listLen(...)` guard - those
+  // loops are [model/service/RoundingRuleService.cfc:L93-L94],
   // [model/entity/RoundingRule.cfc:L79-L80],
   // [model/service/SkuService.cfc:L73/L74, L153/L158, L160/L161, L163/L164,
   // L186/L187, L191/L196] and
   // [model/service/PromotionService.cfc:L864/L865, L899/L900, L934/L935,
-  // L965/L966]. The divergence is therefore unobservable from ported code.
+  // L965/L966] - so the branch is unreachable from a faithful port.
   //
-  // Why `''` rather than `undefined`: `''` is the value CFML itself yields for
-  // an element that is present but empty, so the return type stays honestly
-  // `string` instead of widening and pushing a narrowing burden onto every
-  // bounded call site.
-  it('returns an empty string for an out-of-range position rather than throwing', () => {
-    expect(listGetAt('a,b,c', 0)).toBe('');
-    expect(listGetAt('a,b,c', 4)).toBe('');
-    expect(listGetAt('', 1)).toBe('');
+  // The boundedness is real; the CONCLUSION drawn from it was wrong. `''` is a
+  // legitimate element value in CFML - it is exactly what an empty element yields
+  // - so returning it for a bad index makes "you indexed past the end"
+  // indistinguishable from "that element is empty", and guarantees an indexing
+  // defect is silent. And because correct code cannot reach the branch, raising
+  // costs ported code nothing and can only ever fire on a genuine bug. Two of the
+  // loops above walk the product-type path that decides promotion qualifier and
+  // reward membership, so a silently-empty element there is a wrong membership
+  // decision, which is wrong money.
+  it('raises for an out-of-range position, as CFML does', () => {
+    expect(() => listGetAt('a,b,c', 0)).toThrow(CfmlListIndexError);
+    expect(() => listGetAt('a,b,c', 4)).toThrow(CfmlListIndexError);
+    expect(() => listGetAt('a,b,c', -1)).toThrow(CfmlListIndexError);
+    expect(() => listGetAt('', 1)).toThrow(CfmlListIndexError);
+    // An empty list has length 0, so NO position is valid in it.
+    expect(() => listGetAt(',,', 1)).toThrow(CfmlListIndexError);
   });
 
-  // JUDGMENT CALL - the shipped guard also routes a non-integer position down
-  // the same path, so the contract is total rather than partial. No in-scope
-  // call site can produce one, because every loop counter above is an integer.
-  it('routes a non-integer position down the same non-throwing path', () => {
-    expect(listGetAt('a,b,c', 1.5)).toBe('');
+  it('raises for a non-integer, NaN or infinite position rather than truncating it', () => {
+    // Truncating `1.5` to `1` would invent an intent the caller never expressed,
+    // and `NaN` is how a failed numeric parse arrives - silently reading element 1
+    // for it would hide the parse failure at the point it could still be caught.
+    expect(() => listGetAt('a,b,c', 1.5)).toThrow(CfmlListIndexError);
+    expect(() => listGetAt('a,b,c', Number.NaN)).toThrow(CfmlListIndexError);
+    expect(() => listGetAt('a,b,c', Number.POSITIVE_INFINITY)).toThrow(CfmlListIndexError);
+    expect(() => listGetAt('a,b,c', Number.NEGATIVE_INFINITY)).toThrow(CfmlListIndexError);
+  });
+
+  it('reports the position, the length and the list in the raised error', () => {
+    // The lists indexed here are structural identifier paths, so diagnosing a
+    // fault without seeing the list is guesswork.
+    let caught: unknown;
+    try {
+      listGetAt('a,b,c', 9);
+    } catch (error: unknown) {
+      caught = error;
+    }
+
+    expect(caught).toBeInstanceOf(CfmlListIndexError);
+    expect(caught).toBeInstanceOf(Error);
+    expect((caught as Error).name).toBe('CfmlListIndexError');
+    expect((caught as Error).message).toContain('9');
+    expect((caught as Error).message).toContain('1..3');
+    expect((caught as Error).message).toContain('a,b,c');
+  });
+
+  it('bounds the list it reproduces in the error message', () => {
+    // A pathological value must not dominate a log line, and the untruncated
+    // character count is reported either way.
+    const long = Array.from({ length: 400 }, (_, index) => `id${String(index)}`).join(',');
+    let message = '';
+    try {
+      listGetAt(long, 0);
+    } catch (error: unknown) {
+      message = error instanceof Error ? error.message : '';
+    }
+
+    expect(message).toContain('...');
+    expect(message).toContain(String(long.length));
+    expect(message.length).toBeLessThan(500);
+  });
+
+  it('still returns an empty string for an element that is genuinely empty', () => {
+    // The distinction the raise exists to preserve. A quoted empty element is a
+    // real, in-range element whose value is `''`, and it must still come back as
+    // `''` rather than raising - only the INDEX is validated, never the value.
+    //
+    // Note this module's element model: unquoted empty runs contribute no element
+    // at all, which is why `'a,,b'` has length 2. So the in-range empty value is
+    // reached through a delimiter set that does not split on the character
+    // holding it.
+    expect(listGetAt('a,,b', 2)).toBe('b');
+    expect(listLen('a,,b')).toBe(2);
+    expect(listGetAt('a b', 1, ',')).toBe('a b');
   });
 
   // CFML parity [model/service/ProductService.cfc:L87, L89, L91]: the result
@@ -321,6 +394,162 @@ describe('listGetAt', () => {
   // coverage of the shipped optional argument, not in-scope call-site parity.
   it('accepts a non-default delimiter (capability coverage, not call-site parity)', () => {
     expect(listGetAt('a|b', 2, '|')).toBe('b');
+  });
+});
+
+// ---------------------------------------------------------------------------
+// WHY THIS SUITE EXISTS AS ITS OWN GROUP
+//
+//   `listGetAt` does NOT delegate to the module's shared splitter. It runs a
+//   scan that terminates as soon as the requested element is complete and
+//   allocates no intermediate array, because the legacy idiom it serves is a
+//   `for(i=1; i<=listLen(list); i++)` loop: delegating made an n-element list
+//   allocate n arrays of n strings, and the lists are not all internal - the
+//   selected-option list behind `getProductSkusBySelectedOptions`
+//   [model/service/ProductService.cfc:L104] arrives from a caller, which makes
+//   its length attacker-influenced.
+//
+//   The consequence is a DUPLICATED CONTRACT: element boundaries are now
+//   implemented twice, once in the splitter that `listLen` and `listToArray`
+//   share and once in the scan. Two implementations of one rule drift silently,
+//   and the drift would be invisible at the call sites because `listLen` bounds
+//   the very loops that drive `listGetAt` - an off-by-one between them would
+//   drop or duplicate an element of a product-type path that decides promotion
+//   qualifier and reward membership [model/service/PromotionService.cfc:L865,
+//   L935].
+//
+//   These tests therefore assert AGREEMENT between the two implementations
+//   directly, rather than asserting each against hand-written expectations and
+//   hoping the expectations were written consistently. They are net-new: no
+//   legacy test under meta/tests/** exercises the list primitives at all.
+// ---------------------------------------------------------------------------
+describe('the listGetAt scan agrees with the shared splitter', () => {
+  // The corpus is chosen to hit every boundary rule the splitter documents, and
+  // is walked exhaustively rather than sampled. Two positions PAST the end are
+  // included on purpose: the scan answers an over-large position by falling off
+  // the end of the list rather than by a length check, so the first position
+  // past the end is the one most likely to differ, and the second confirms it
+  // is not an isolated off-by-one.
+  const corpus: readonly string[] = [
+    '',
+    ',',
+    ',,',
+    'a',
+    'a,',
+    ',a',
+    ',a,',
+    'a,b',
+    'a,,b',
+    'a,,,b',
+    ',,a,,b,,',
+    'a,b,c',
+    'a, b ,c',
+    ' , , ',
+    'a,b,c,d,e,f,g,h',
+  ];
+
+  it('returns the same element as listToArray for every position in the corpus', () => {
+    for (const list of corpus) {
+      const elements = listToArray(list);
+
+      // The count contract first: `listLen` is the loop bound that `listGetAt`
+      // is driven by, so if these two disagree nothing below is meaningful.
+      expect(listLen(list)).toBe(elements.length);
+
+      for (let position = 1; position <= elements.length; position += 1) {
+        expect(listGetAt(list, position)).toBe(elements[position - 1]);
+      }
+
+      // Out of range, both directions. CFML raises for an index outside the list
+      // rather than answering the empty string, and the scan reports the count it
+      // reached - so these are throws, not empty strings.
+      expect(() => listGetAt(list, 0)).toThrow(CfmlListIndexError);
+      expect(() => listGetAt(list, elements.length + 1)).toThrow(CfmlListIndexError);
+      expect(() => listGetAt(list, elements.length + 2)).toThrow(CfmlListIndexError);
+    }
+  });
+
+  // The specific boundary the scan is most likely to get wrong: a run of
+  // consecutive delimiters must contribute NO element, so the element after the
+  // run keeps the position it would have had with a single delimiter. Asserted
+  // explicitly as well as through the corpus, because this is the rule that
+  // makes `'a,,b'` two predicates rather than three in
+  // [model/dao/SkuDAO.cfc:L113-L119].
+  it('collapses a run of delimiters without consuming a position', () => {
+    expect(listGetAt('a,,b', 2)).toBe('b');
+    expect(listGetAt('a,,,,b', 2)).toBe('b');
+    expect(listGetAt(',,,a', 1)).toBe('a');
+    expect(listGetAt('a,,,', 1)).toBe('a');
+    // `'a,,,'` holds ONE element, so position 2 is outside the list and raises.
+    expect(() => listGetAt('a,,,', 2)).toThrow(CfmlListIndexError);
+  });
+
+  // A NON-EMPTY TRAILING RUN IS AN ELEMENT, and it is the one the scan reaches
+  // after the loop rather than inside it, so it takes a different code path
+  // from every other element and needs its own assertion.
+  it('returns a trailing element that no delimiter follows', () => {
+    expect(listGetAt('a,b', 2)).toBe('b');
+    expect(listGetAt('a,b,', 2)).toBe('b');
+    expect(listGetAt('a,,b', 2)).toBe('b');
+    expect(listGetAt('a', 1)).toBe('a');
+  });
+
+  // `delimiters` is a SET OF CODE POINTS, never a delimiting string and never a
+  // pattern. The scan builds its own `Set` instead of reusing the splitter's, so
+  // the three ways that could go wrong are pinned here against the splitter's
+  // answer rather than against a literal.
+  it('treats a multi-character delimiter argument as a set of separators', () => {
+    const list = 'a-b_c';
+
+    expect(listToArray(list, '-_')).toEqual(['a', 'b', 'c']);
+    expect(listGetAt(list, 1, '-_')).toBe('a');
+    expect(listGetAt(list, 2, '-_')).toBe('b');
+    expect(listGetAt(list, 3, '-_')).toBe('c');
+
+    // Not a delimiting STRING: `'-_'` does not have to appear contiguously.
+    expect(listGetAt('a-_b', 2, '-_')).toBe('b');
+  });
+
+  it('treats a regex metacharacter delimiter as a literal character', () => {
+    // If either implementation built a regular expression from the argument,
+    // `'.'` would match every character and both answers would collapse.
+    expect(listToArray('a.b', '.')).toEqual(['a', 'b']);
+    expect(listGetAt('a.b', 2, '.')).toBe('b');
+    expect(listGetAt('a|b', 2, '|')).toBe('b');
+    expect(listGetAt('a$b', 2, '$')).toBe('b');
+  });
+
+  it('keeps a surrogate pair indivisible in both the list and the delimiter set', () => {
+    // Iterating a string yields whole code points, so an astral character is
+    // one member of the delimiter set and one indivisible run of content. A
+    // UTF-16 code-unit loop would split it and emit lone surrogates.
+    const astral = '\u{1F600}';
+
+    expect(listGetAt(`a${astral}b`, 2, astral)).toBe('b');
+    expect(listToArray(`a${astral}b`, astral)).toEqual(['a', 'b']);
+    expect(listGetAt(`${astral},x`, 1)).toBe(astral);
+    expect(listLen(`${astral},x`)).toBe(2);
+  });
+
+  // THE RESOURCE PROPERTY THE SCAN EXISTS FOR, asserted as behaviour rather
+  // than as a timing. A long list read at position 1 must not walk or
+  // materialize the rest of it; the observable proxy is that the answer is
+  // correct and identical to the splitter's while the whole bounded walk over a
+  // list far larger than any legitimate one completes without exhausting
+  // memory. A wall-clock threshold is deliberately NOT asserted - it would be
+  // flaky on a shared runner - so the ceiling below is generous and only fails
+  // on a re-introduced quadratic allocation.
+  it('answers an early position on a long list without materializing it', () => {
+    const elementCount = 20000;
+    const longList = Array.from({ length: elementCount }, (_, index) => `e${String(index)}`).join(
+      ',',
+    );
+
+    expect(listGetAt(longList, 1)).toBe('e0');
+    expect(listGetAt(longList, 2)).toBe('e1');
+    expect(listGetAt(longList, elementCount)).toBe(`e${String(elementCount - 1)}`);
+    expect(() => listGetAt(longList, elementCount + 1)).toThrow(CfmlListIndexError);
+    expect(listLen(longList)).toBe(elementCount);
   });
 });
 
@@ -687,6 +916,96 @@ describe('listFindNoCase', () => {
     expect(listFindNoCase('a,,b', 'b')).toBe(2);
     expect(listFindNoCase('a,,b', 'a')).toBe(1);
     expect(listLen('a,,b')).toBe(2);
+  });
+
+  // JUDGMENT CALL - DELIMITER HONESTY, as for `listLen`, `listGetAt` and
+  // `listToArray` above: this is CAPABILITY COVERAGE of the shipped third
+  // argument, not in-scope call-site parity. Every verified in-scope call site
+  // of this function uses the TWO-ARGUMENT default-comma form -
+  // [model/service/PromotionService.cfc:L200, L714, L774, L794, L865, L935,
+  // L966], [model/service/ProductService.cfc:L144] and
+  // [model/entity/Product.cfc:L440, L442, L451].
+  //
+  // It is still coverage this function specifically needs rather than coverage
+  // its siblings can stand in for. The delimiter argument reaches the shared
+  // splitter, but the RESULT this function derives from that split is a
+  // position, so a delimiter defect shows up here as a wrong NUMBER - and a
+  // wrong number is the input to CFML's list-delete-at built-in at
+  // [model/service/PromotionService.cfc:L774]. A sibling suite asserting the
+  // same delimiter through `listToArray` proves the split; it does not prove
+  // this function forwards its own third argument at all.
+  //
+  // Which is the sharpest point here: the default-comma contrast on the first
+  // line is what makes this test able to fail. A signature that accepted the
+  // argument and dropped it - forwarding the default instead - would satisfy
+  // every other assertion in this block, because every other assertion uses a
+  // comma list.
+  it('honours a non-default delimiter (capability coverage, not call-site parity)', () => {
+    // Not forwarded, and the pipe list is one element under the default comma,
+    // so the whole search answers absent.
+    expect(listFindNoCase('a|b|c', 'b')).toBe(0);
+    expect(listFindNoCase('a|b|c', 'a|b|c')).toBe(1);
+
+    // Forwarded: three elements, positions 1 through 3.
+    expect(listFindNoCase('a|b|c', 'a', '|')).toBe(1);
+    expect(listFindNoCase('a|b|c', 'b', '|')).toBe(2);
+    expect(listFindNoCase('a|b|c', 'c', '|')).toBe(3);
+    expect(listLen('a|b|c', '|')).toBe(3);
+
+    // The case fold and the empty-element skip both continue to hold under a
+    // custom delimiter, so the third argument changes only where elements
+    // divide and nothing else about the search.
+    expect(listFindNoCase('MERCHANDISE|subscription', 'merchandise', '|')).toBe(1);
+    expect(listFindNoCase('a||b', 'b', '|')).toBe(2);
+  });
+
+  // JUDGMENT CALL - THE THIRD ARGUMENT IS A SET OF LITERAL CHARACTERS, NOT A
+  // MULTI-CHARACTER SEPARATOR AND NOT A PATTERN. `'|;'` means "a pipe OR a
+  // semicolon", never the two-character sequence `|;`. That is CFML's rule, and
+  // it is worth an assertion of its own because the two readings are easy to
+  // confuse and disagree on ordinary input: under a sequence reading `'a|b'`
+  // holds no separator at all and collapses to a single element, so the search
+  // below would answer 0 instead of 2.
+  //
+  // The regex-metacharacter hazard is pinned on the `listToArray` side, where a
+  // full stop is the sharper probe. It is cross-referenced rather than repeated
+  // here; this case owns the multi-character-set reading.
+  it('reads the delimiter as a SET of characters, not as a two-character separator', () => {
+    // Either character divides, on its own.
+    expect(listFindNoCase('a|b;c', 'a', '|;')).toBe(1);
+    expect(listFindNoCase('a|b;c', 'B', '|;')).toBe(2);
+    expect(listFindNoCase('a|b;c', 'C', '|;')).toBe(3);
+    expect(listLen('a|b;c', '|;')).toBe(3);
+
+    // Each alone, which is what a sequence reading would fail.
+    expect(listFindNoCase('a|b', 'b', '|;')).toBe(2);
+    expect(listFindNoCase('a;b', 'b', '|;')).toBe(2);
+
+    // Adjacent members of the set are two delimiters in a row, so they produce
+    // an empty run that is skipped rather than an element positioned between
+    // them.
+    expect(listFindNoCase('a|;b', 'b', '|;')).toBe(2);
+    expect(listToArray('a|;b', '|;')).toStrictEqual(['a', 'b']);
+  });
+
+  // The degenerate member of the set reading, asserted because it follows from
+  // that reading rather than from a separate branch: an EMPTY delimiter string
+  // contributes no characters, so nothing divides and a non-empty list is ONE
+  // element. It is not a synonym for the default comma, and it is not an error.
+  //
+  // The practical consequence for a caller is stated as an assertion rather
+  // than left to inference: passing an empty delimiter turns a membership test
+  // into a whole-string equality test. `'a'` is no longer found in `'a,b'`,
+  // while the entire `'a,b'` is - still case-insensitively, and still absent
+  // from an empty list.
+  it('treats an empty delimiter as no delimiter, making a non-empty list one element', () => {
+    expect(listFindNoCase('a,b', 'a', '')).toBe(0);
+    expect(listFindNoCase('a,b', 'a,b', '')).toBe(1);
+    expect(listFindNoCase('a,b', 'A,B', '')).toBe(1);
+    expect(listFindNoCase('', 'x', '')).toBe(0);
+
+    expect(listLen('a,b', '')).toBe(1);
+    expect(listToArray('a,b', '')).toStrictEqual(['a,b']);
   });
 });
 

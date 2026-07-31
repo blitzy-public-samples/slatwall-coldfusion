@@ -1,161 +1,71 @@
-// ---------------------------------------------------------------------------
-// slatwall-ts - production emit configuration
+// Emit configuration, used by `npm run compile` (`tsc -p tsconfig.build.json`).
 //
-// This is the EMIT config for the strict-mode TypeScript port of the Slatwall
-// 3.1.39 catalog + promotions/pricing slice, targeting the AWS Lambda
-// `nodejs20.x` runtime. It exists for exactly one reason: to compile `src/**`
-// and nothing else, so that no test, fixture or tooling module can ever reach
-// a production artifact.
+// It compiles `src/**` and nothing else, so no test, fixture or tooling module
+// can reach a production artifact. Everything about how code is CHECKED is
+// inherited from ./tsconfig.json and deliberately not restated, so the emit and
+// the typecheck gate cannot drift apart.
 //
-// Consumer:
-//   * `npm run compile` -> `tsc -p tsconfig.build.json`
-//
-// Division of labour between the two configs. BOTH behaviours are required:
-//
-//   tsconfig.json        the TYPECHECK gate. Spans src/**, tests/** and
-//                        vitest.config.ts, and never emits (`noEmit: true`).
-//                        Owns the strictness profile.
-//   tsconfig.build.json  the EMIT gate (this file). Narrows the program to
-//                        src/** and flips `noEmit`. Owns nothing else.
-//
-// Do NOT "simplify" the two into one. Widening this file's `include` would let
-// test code into the emitted output; narrowing the base config's `include`
-// would stop the typecheck gate from covering the test tier.
-//
-// Everything about HOW code is checked is inherited from `./tsconfig.json` and
-// is deliberately not restated below: target ES2022, module and
-// moduleResolution NodeNext, strict, noUncheckedIndexedAccess,
-// exactOptionalPropertyTypes, noImplicitOverride, noUnusedLocals,
-// skipLibCheck: false, plus declaration, declarationMap and sourceMap. That
-// profile compiles cleanly against the real dependency set (decimal.js 10.6.0,
-// mysql2 3.23.1, zod 4.4.3), so it is known-achievable rather than
-// aspirational. Exactly one config owns it, which is what keeps the emitted
-// output and the typecheck gate from drifting apart. If a file fails to
-// compile, fix the file - never weaken either config.
-// ---------------------------------------------------------------------------
+// Do not merge the two configs: widening `include` here would let test code into
+// the emitted output, and narrowing the base config's `include` would stop the
+// typecheck gate from covering the test tier.
 {
   "extends": "./tsconfig.json",
 
-  // Four overrides, and only four. Everything else is inherited.
   "compilerOptions": {
-    // The base config sets `noEmit: true` because it is purely a checker.
-    // This is the one place in the project where tsc may write files.
+    // The base config is a checker only; this is the one place tsc may write.
     "noEmit": false,
 
-    // `build/`, NOT `dist/`. This is load-bearing rather than a preference:
-    // esbuild.config.mjs resolves its output to `<subtree>/dist` and calls
-    // `rmSync(outDir, { recursive: true, force: true })` at the start of every
-    // run. Emitting declarations into `dist/` would mean that `npm run bundle`
-    // recursively deletes them. The two outputs therefore stay in separate
-    // sibling directories:
-    //
-    //   build/  tsc     -> .js + .d.ts + .d.ts.map + .js.map (library surface)
+    // `build/`, not `dist/`, and that is load-bearing: esbuild.config.mjs
+    // recursively removes `<subtree>/dist` at the start of every run, so
+    // declarations emitted there would be deleted by `npm run bundle`.
+    //   build/  tsc     -> .js + .d.ts + maps
     //   dist/   esbuild -> bundled .cjs (+ .zip) Lambda artifacts
-    //
-    // Both are ignored by the subtree .gitignore, and `npm run clean` removes
-    // exactly ['dist', 'build', 'coverage'], so neither is ever committed.
     "outDir": "build",
 
-    // Anchors the emitted tree at `src/`, so `src/domain/entities/sku.ts`
-    // becomes `build/domain/entities/sku.js` rather than
-    // `build/src/domain/entities/sku.js`. It also makes it a compile error for
+    // Anchors the emitted tree at `src/`, so `src/domain/entities/skuCurrency.ts`
+    // becomes `build/domain/entities/skuCurrency.js` rather than
+    // `build/src/domain/entities/skuCurrency.js`. The example names a module
+    // that exists at this checkpoint deliberately: every path cited in this
+    // config resolves today, so none of them can be mistaken for a claim about
+    // a planned module. It also makes it a compile error for
     // an input to sit outside `src/`, which is a second and independent guard
     // on the `include` narrowing below.
     "rootDir": "src",
 
-    // Comments are part of the deliverable, so they survive into the emit.
-    // This port reproduces legacy defects rather than repairing them, and each
-    // one is annotated in place with the uniform marker
-    //   // LEGACY-DEFECT [<path>:<locator>]: <description>.
-    //   // Preserved deliberately; do not fix without a product decision.
-    // alongside carried-forward legacy TODOs such as the issue #1766 no-op at
-    // [model/service/PromotionService.cfc:L542-L544]. Those annotations are
-    // the audit trail for "behaviour preserved, not silently fixed"; stripping
-    // them from the emitted output would throw it away. The compiler default
-    // is already `false`, but the base config never emits, so this is the only
-    // config in which the option has any effect - hence it is stated
-    // explicitly here instead of being left implicit.
+    // Comments are part of the deliverable: this port reproduces legacy defects
+    // rather than repairing them, and the preserved-defect annotations and
+    // carried-forward source TODOs are the audit trail for that. The compiler
+    // default is already false, but the base config never emits, so this is the
+    // only config where the option has an effect.
     "removeComments": false
   },
 
-  // Application sources only. This single line is the substantive difference
-  // from the base config, and the reason this file exists.
-  //
-  // The honest scope of the guarantee: `include` is what actually keeps the
-  // test tier out of the program. `exclude` below only subtracts from
-  // `include` - it does NOT stop a file that an included module IMPORTS from
-  // being pulled in. Nothing under `src/**` imports from `tests/**`, and that
-  // is what makes the two mechanisms airtight together.
+  // Application sources only - the substantive difference from the base config.
+  // `include` is what keeps the test tier out of the program; `exclude` only
+  // subtracts from `include` and would not stop an imported file from being
+  // pulled in. Nothing under `src/**` imports from `tests/**`.
   "include": ["src/**/*.ts"],
 
   "exclude": [
-    // Dependencies are never program inputs.
     "node_modules",
 
-    // Generated output: the esbuild bundle, this config's own emit, and
-    // coverage reports. Naming `build` stops a second run from compiling the
+    // Generated output. Naming `build` stops a second run from compiling the
     // output of the first.
     "dist",
     "build",
     "coverage",
 
-    // THE POINT OF THIS FILE. No test module, fixture, golden order view or
-    // traceability map may reach a production artifact; `tests/**` is covered
-    // by the base config's typecheck gate instead. The `*.test.ts` and
-    // `*.spec.ts` patterns are belt-and-braces against a colocated test file.
+    // The point of this file: no test module or fixture may reach a production
+    // artifact. The `*.test.ts` / `*.spec.ts` patterns guard a colocated file.
     "tests/**",
     "**/*.test.ts",
     "**/*.spec.ts",
 
-    // Tooling configuration, never shipped. `vitest.config.ts` in particular
-    // imports `vitest/config`, so compiling it would drag the test runner into
-    // the production program. The two `.mjs` files could not be inputs anyway
-    // (`allowJs` is off), but they are named so the intent is explicit.
+    // Tooling, never shipped. Compiling vitest.config.ts would drag the test
+    // runner into the production program; the two `.mjs` files could not be
+    // inputs anyway with `allowJs` off, and are named to make that explicit.
     "vitest.config.ts",
     "eslint.config.mjs",
     "esbuild.config.mjs"
   ]
-
-  // -------------------------------------------------------------------------
-  // Deliberately NOT set here, each for a reason specific to this port:
-  //
-  //   * `module` / `moduleResolution` - inherited as NodeNext and left alone.
-  //     The Lambda ARTIFACT is CommonJS, but that is an esbuild output
-  //     decision, already made and already solved: bundling this dependency
-  //     set to ESM builds cleanly and then fails at runtime with
-  //     `Dynamic require of "node:buffer"`, raised through
-  //     mysql2 -> sql-escaper, whose CommonJS chain uses dynamic `require()`.
-  //     esbuild.config.mjs therefore emits `format: 'cjs'` with a `.cjs`
-  //     extension. Overriding `module` to "CommonJS" here would NOT help - it
-  //     would change how the source is checked and resolved while leaving the
-  //     bundle untouched. The source stays modern; only the bundle differs.
-  //
-  //   * `declaration`, `declarationMap`, `sourceMap` - all three are already
-  //     true in the base config. Restating them would give one decision two
-  //     homes, and therefore two places to drift.
-  //
-  //   * `declarationDir` - declarations belong beside their `.js` inside
-  //     `outDir`, which is what a consumer of `build/` expects.
-  //
-  //   * `paths` / `baseUrl` - an alias would let a module sidestep the ESLint
-  //     `no-restricted-imports` layer boundary that stops `src/domain/**` from
-  //     importing `src/repositories/**`, `src/handlers/**` or
-  //     `src/integrations/**`, and it would not survive bundling. Imports stay
-  //     explicit relative specifiers with the extensions NodeNext requires.
-  //
-  //   * `composite` / `incremental` / `references` - a single-package subtree
-  //     needs no project graph, and both options write `*.tsbuildinfo` build
-  //     state that would then have to be ignored somewhere.
-  //
-  //   * `allowJs` - there is no JavaScript source here; the `.mjs` files at
-  //     the subtree root are tooling, not compiled input.
-  //
-  //   * Any relaxation whatsoever of the inherited strictness profile.
-  //     `strict`, `noUncheckedIndexedAccess`, `exactOptionalPropertyTypes`,
-  //     `noImplicitOverride`, `noUnusedLocals` and `skipLibCheck: false` are
-  //     load-bearing. Null semantics especially so: an unknown currency must
-  //     yield `undefined` from `Sku.getPriceByCurrencyCode()`
-  //     [model/entity/Sku.cfc:L269-L273], and substituting 0 there would
-  //     silently sell products for free.
-  // -------------------------------------------------------------------------
 }

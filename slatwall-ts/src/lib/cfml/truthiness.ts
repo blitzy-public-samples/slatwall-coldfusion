@@ -29,15 +29,33 @@
 //   same discipline. There is no `index.ts` in this folder and there must never
 //   be one.
 //
-// EVERY FUNCTION IS TOTAL
-//   No export throws, and no export is async. These are coercion helpers on a
-//   money-adjacent path, where a throw would turn an ordinary data-shape
-//   variation into a failed request. Every branch returns a value, and where
-//   CFML itself would have thrown, the returned value is documented as a
-//   judgment call at the branch that makes it. There is no module-scope mutable
-//   state: the only module-level bindings are frozen lookup tables, so nothing
-//   here can carry state between two unrelated invocations that happen to share
-//   a warm container.
+// WHERE CFML RAISES, THIS MODULE RAISES
+//   No export is async, and three of the four are total: `isNullish` and `cfLen`
+//   answer every input, and `cfBoolean` resolves the one absent case its ORM
+//   evidence justifies. `cfTruthy` RAISES for a value with no boolean meaning -
+//   null, `NaN`, a non-empty non-boolean non-numeric string, or a shape outside
+//   its declared union - which is exactly where CFML's own boolean coercion raises
+//   a conversion error.
+//
+//   An earlier revision made every export total, reasoning that these are
+//   coercion helpers on a money-adjacent path where a throw would turn an ordinary
+//   data-shape variation into a failed request. The premise was right and the
+//   conclusion was backwards. On a money-adjacent path, BOTH boolean answers are
+//   load-bearing: `false` says a promotion is inactive, a currency list is empty, a
+//   flag is off. There is no spare value left to mean "this input carried no
+//   boolean meaning", so resolving an uninterpretable value to `false` does not
+//   avoid the failure - it converts a diagnosable fault into a plausible-looking
+//   negative that ships wrong prices. Raising is what keeps the two apart, and it
+//   is what CFML did.
+//
+//   `cfLen` stays total precisely because it has the spare value: it returns a
+//   COUNT, and `0` is both the natural answer for absence and unmistakable for
+//   anything else. The asymmetry between the two is deliberate and is documented
+//   on the error class.
+//
+//   There is no module-scope mutable state: the only module-level bindings are
+//   frozen lookup tables and two numeric constants, so nothing here can carry
+//   state between two unrelated invocations that happen to share a warm container.
 //
 // LEGACY PROVENANCE
 //   Every locator below was re-read from the legacy tree while authoring this
@@ -97,7 +115,8 @@
 //
 //   (e) CFML'S `0`-MEANS-ABSENT CONVENTION. `listFindNoCase()` returns a 1-based
 //       index, or 0 when the value is absent, and the slice uses that return
-//       DIRECTLY as a boolean at sixteen sites:
+//       DIRECTLY as a boolean at SEVENTEEN sites - nine plus three plus four
+//       plus one, which is the sum of the four locator groups that follow:
 //       [model/service/PromotionService.cfc:L61, L200, L542, L714, L794, L865,
 //       L900, L935, L966], [model/entity/Product.cfc:L440, L442, L451],
 //       [model/entity/Sku.cfc:L294, L299, L306, L309], and negated at
@@ -139,9 +158,10 @@
 //   `meta/tests/unit/entity/ProductTest.cfc`, and
 //   `meta/tests/functional/admin/entity/ProductTest.cfc` is an empty stub
 //   contributing zero coverage. That test tier is authored separately from this
-//   file. Nothing here needs a seam for it: every function is pure, synchronous
-//   and total, so each branch is reachable by a plain call with no fixture, no
-//   mock, no clock and no environment.
+//   file. Nothing here needs a seam for it: every function is pure and
+//   synchronous, so each branch - the answering ones and the raising ones alike -
+//   is reachable by a plain call with no fixture, no mock, no clock and no
+//   environment.
 //
 // HAND-OFF NOTE for whoever ports `services/skuService.ts`
 //   [model/service/SkuService.cfc:L163] loops
@@ -226,6 +246,99 @@ const CFML_NUMERIC_PATTERN = /^[+-]?(?:\d+\.?\d*|\.\d+)(?:[eE][+-]?\d+)?$/;
  */
 const EXPONENTIAL_NOTATION_PATTERN = /^(-?)(\d+)(?:\.(\d+))?[eE]([+-]?\d+)$/;
 
+// ---------------------------------------------------------------------------
+// The one failure this module can report
+// ---------------------------------------------------------------------------
+
+/**
+ * Raised when a value cannot be converted to a boolean, exactly where CFML's own
+ * boolean coercion raises a conversion error.
+ *
+ * WHICH EXPORTS CAN RAISE, AND WHICH REMAIN TOTAL.
+ *   * `isNullish` - TOTAL. It asks a question every value can answer.
+ *   * `cfLen` - TOTAL. It returns a COUNT, and `0` is the unambiguous answer for
+ *     an absent value; there is no valid length that `0` could be confused with.
+ *   * `cfBoolean` - TOTAL FOR AN ABSENT FLAG, and raises otherwise. An undefaulted
+ *     `ormtype="boolean"` column can legitimately hydrate as SQL NULL, and false
+ *     is the answer the legacy engine gave a flag it had no value for, so that one
+ *     case is resolved rather than raised. Everything else delegates here.
+ *   * `cfTruthy` - RAISES for a value with no boolean meaning: null, `NaN`, a
+ *     non-empty non-boolean non-numeric string, and any shape outside the declared
+ *     union.
+ *
+ * WHY `cfTruthy` IS THE ONE THAT RAISES. Its answer is a `boolean`, and both of
+ * its answers are MEANINGFUL - `false` states that a promotion is inactive, that a
+ * currency list is empty, that a flag is off. There is no spare value left over to
+ * mean "this input carried no boolean meaning", so an uninterpretable input has to
+ * be reported out of band or it is silently rendered as a deliberate negative.
+ * Contrast `cfLen`, where `0` is both the natural answer for absence and
+ * unmistakable, which is why that function stays total.
+ *
+ * EXPORTED DELIBERATELY. A caller reading a value of uncertain provenance - a
+ * request payload, a driver column - may reasonably want to distinguish "this was
+ * not a boolean" from any other failure, and a named type is better than matching
+ * on a message. Nothing in this module catches it.
+ *
+ * The message names the rejected value, its runtime type and the specific reason,
+ * because "cannot convert to boolean" without the offending value is not a
+ * diagnosis. The rendered value is length-bounded so a pathological string cannot
+ * dominate a log line.
+ */
+export class CfmlBooleanConversionError extends Error {
+  /**
+   * @param value - the value that could not be interpreted as a boolean.
+   * @param reason - why it could not be, in terms of CFML's own semantics.
+   */
+  public constructor(value: unknown, reason: string) {
+    super(`cfTruthy cannot convert ${describeRejectedValue(value)} to a boolean: ${reason}`);
+    this.name = 'CfmlBooleanConversionError';
+  }
+}
+
+/**
+ * Renders a rejected value for an error message: its runtime type, and its
+ * content when the content is safe and useful to show.
+ *
+ * A string is quoted so that `'0'`, `''` and `' '` are visibly different from one
+ * another and from the number `0`; that distinction is the whole subject of this
+ * module, and an unquoted rendering would erase it at the exact moment a reader
+ * needs it. It is truncated because these values can arrive from a request.
+ */
+function describeRejectedValue(value: unknown): string {
+  if (value === null) {
+    return 'null';
+  }
+
+  if (value === undefined) {
+    return 'undefined';
+  }
+
+  if (typeof value === 'string') {
+    const shown =
+      value.length > MAX_REPORTED_VALUE_LENGTH
+        ? `${value.slice(0, MAX_REPORTED_VALUE_LENGTH)}...`
+        : value;
+
+    return `the string "${shown}" (length ${String(value.length)})`;
+  }
+
+  if (typeof value === 'number' || typeof value === 'boolean' || typeof value === 'bigint') {
+    return `the ${typeof value} ${String(value)}`;
+  }
+
+  // Anything else is off-union at runtime. Its type is reported; its contents are
+  // NOT, because an arbitrary object may carry data that does not belong in a log.
+  return `a value of type ${typeof value}`;
+}
+
+/**
+ * How much of a rejected string an error message reproduces.
+ *
+ * Long enough to recognise a realistic flag value or a truncated boolean literal,
+ * short enough that a request-supplied string cannot dominate a log line.
+ */
+const MAX_REPORTED_VALUE_LENGTH = 64;
+
 /**
  * The CFML `isNull()` equivalent: is this value absent?
  *
@@ -244,8 +357,11 @@ const EXPONENTIAL_NOTATION_PATTERN = /^(-?)(\d+)(?:\.(\d+))?[eE]([+-]?\d+)$/;
  *
  * Use this wherever the legacy code asked `isNull()` or `!isNull()` and the
  * three-state distinction matters: absent, versus present-and-false, versus
- * present-and-true. {@link cfTruthy} collapses absent into false by design, so
- * it is the wrong tool for that question.
+ * present-and-true. {@link cfTruthy} RAISES for an absent value rather than
+ * answering it, so this is the function that must be asked first when absence is a
+ * state the caller has to handle - and asking it is now enforced by the raise
+ * instead of merely recommended. The one exception is a persisted flag column,
+ * whose documented absence is resolved by {@link cfBoolean} itself.
  *
  * The parameter is `unknown` rather than a union because `isNull()` in CFML is
  * askable of anything, and narrowing the input here would force a cast at the
@@ -415,8 +531,8 @@ export function cfLen(value: CfLenInput): number {
  * | ---------------------------------------- | ------ | -------------------------------- |
  * | `true`                                   | true   | CFML boolean, unchanged          |
  * | `false`                                  | false  | CFML boolean, unchanged          |
- * | `null`, `undefined`                      | false  | judgment call - CFML would throw |
- * | `NaN`                                    | false  | judgment call - no CFML analogue |
+ * | `null`, `undefined`                      | RAISES | CFML parity - CFML throws        |
+ * | `NaN`                                    | RAISES | no CFML analogue; a parse fault  |
  * | `0`                                      | false  | `listFindNoCase` absent          |
  * | `1`                                      | true   | `listFindNoCase` 1-based hit     |
  * | any other finite non-zero number         | true   | non-zero is true in CFML         |
@@ -426,34 +542,74 @@ export function cfLen(value: CfLenInput): number {
  * | `'false'`, `'no'`, `'0'` (any casing)    | false  | CFML boolean literals            |
  * | other numeric string, e.g. `'2'`, `'-1'` | true   | numeric coercion, non-zero       |
  * | other numeric string, e.g. `'0.0'`       | false  | numeric coercion, zero           |
- * | any other non-empty string               | false  | judgment call - CFML would throw |
+ * | any other non-empty string               | RAISES | CFML parity - CFML throws        |
+ * | any shape outside the input union        | RAISES | unanticipated runtime shape      |
+ *
+ * THE THREE RAISING ROWS ARE THE THREE CFML ITSELF REFUSES, plus the off-union
+ * case. Every row that ANSWERS is a row with a grounding in legacy behaviour; no
+ * row answers on the strength of a judgment call about what would be convenient.
+ * `Infinity` is the single remaining exception and it is marked as such - it cannot
+ * arise from CFML, and non-zero is the only defensible reading.
+ *
+ * NOTE THAT `''` DOES NOT RAISE. It is falsy, and that is the one branch of this
+ * table with direct, unambiguous legacy grounding - the currency-eligibility gate
+ * `if(len(setting('skuEligibleCurrencies')))` at [model/entity/Sku.cfc:L373]. The
+ * empty string is a PRESENT value with a defined meaning here, which is precisely
+ * what distinguishes it from null.
  *
  * Strings are trimmed and lower-cased before the table is consulted, because
  * CFML's boolean coercion is case-insensitive and tolerates surrounding
  * whitespace. `' 1 '` and `'TRUE'` therefore answer true, exactly as they would
- * in the legacy engine.
+ * in the legacy engine. Whitespace-only input trims to `''` and is falsy rather
+ * than raising, which matches how `readTrimmed()` in `src/lib/config.ts` treats
+ * absent, empty and whitespace-only as one state.
+ *
+ * @throws {CfmlBooleanConversionError} for an absent value, `NaN`, a non-empty
+ *   non-boolean non-numeric string, or a shape outside the declared union.
  */
 export function cfTruthy(value: CfTruthyInput): boolean {
   if (typeof value === 'boolean') {
     return value;
   }
 
-  // JUDGMENT CALL: CFML throws a conversion error when a null reaches a boolean
-  // context, and this module never throws, so an absent value answers false.
-  // That is a real divergence and is called out rather than absorbed. It is safe
-  // to make because the three-state distinction is not lost - it is simply asked
-  // for separately: a caller that must tell absent apart from present-and-false
-  // calls `isNullish()` first, which exists for precisely this reason
-  // [model/service/RoundingRuleService.cfc:L90-L91, L170].
+  // CFML PARITY: a null reaching a boolean context is a conversion error, and this
+  // function raises rather than answering false. An earlier revision answered
+  // false, on the reasoning that a total function keeps a data-shape variation
+  // from becoming a failed request and that a caller needing the distinction can
+  // ask `isNullish()` first. The second half of that is true and remains true; the
+  // first half had it backwards. `false` is a MEANINGFUL ANSWER here, not a
+  // neutral one - it is the answer that says "this promotion is not active", "this
+  // currency list is empty", "this flag is off" - so substituting it for "I do not
+  // know" makes an absent value indistinguishable from a deliberate negative, and
+  // the caller that forgot to ask `isNullish()` gets a plausible-looking answer
+  // instead of a diagnosis.
+  //
+  // The persisted-flag case, which genuinely does want false for SQL NULL, is NOT
+  // affected: that boundary lives in `cfBoolean`, which resolves an absent flag to
+  // false ITSELF - with the ORM-default evidence to justify it - before delegating
+  // the rest of the table here. So the two needs are separated rather than
+  // conflated, and each is documented where it applies.
   if (value === null || value === undefined) {
-    return false;
+    throw new CfmlBooleanConversionError(
+      value,
+      'CFML raises a conversion error when a null reaches a boolean context. Call isNullish() ' +
+        'first if absence is a state this caller must handle, or cfBoolean() if this is a ' +
+        'persisted flag whose column may hydrate as SQL NULL.',
+    );
   }
 
   if (typeof value === 'number') {
-    // JUDGMENT CALL: CFML has no NaN, so this is a decision and not a ported
-    // behaviour. `NaN` answers false, matching `cfLen(NaN)` returning 0.
+    // CFML has no NaN, so no legacy behaviour is being ported here either way -
+    // which is exactly why it must not be resolved to a value. `NaN` is what a
+    // FAILED NUMERIC PARSE looks like once it has stopped announcing itself, so
+    // answering false for it would convert an upstream parse failure into a
+    // confident negative. It raises.
     if (Number.isNaN(value)) {
-      return false;
+      throw new CfmlBooleanConversionError(
+        value,
+        'NaN has no CFML counterpart and is how a failed numeric parse arrives; resolving it to ' +
+          'a boolean would hide that failure.',
+      );
     }
 
     // CFML parity [model/service/PromotionService.cfc:L61, L200, L542, L714, L794,
@@ -488,12 +644,22 @@ export function cfTruthy(value: CfTruthyInput): boolean {
     // CFML accepts `yes` and `no` as boolean literals alongside `true` and
     // `false`, so both pairs are honoured here for CFML-semantic completeness.
     // Flagged deliberately: NO in-scope persisted default uses `yes` or `no`.
-    // Verified by counting the boolean-default literals across all eighteen
-    // in-scope entities - `default="0"` appears 7 times, `default="1"` twice and
-    // `default="false"` twice, while `default="true"`, `default="yes"` and
-    // `default="no"` appear zero times. The `yes`/`no` branch therefore has no
-    // in-scope call site, and no locator is cited for it because there is none to
-    // cite.
+    // Verified by counting the defaults across all eighteen in-scope entities,
+    // and counted per ORM TYPE rather than per literal, because those are not
+    // the same population. `default="0"` occurs SEVEN times in total but only
+    // TWO of them are `ormtype="boolean"` - [model/entity/Sku.cfc:L59]
+    // `userDefinedPriceFlag` and [model/entity/OptionGroup.cfc:L57]
+    // `imageGroupFlag`. The other five are `big_decimal` MONEY columns
+    // ([model/entity/Sku.cfc:L55, L56, L57] and
+    // [model/entity/SkuCurrency.cfc:L54, L55]), which belong to `Money` and are
+    // no business of this module. `default="1"` occurs twice and both ARE boolean
+    // ([model/entity/Sku.cfc:L53], [model/entity/Promotion.cfc:L56]);
+    // `default="false"` occurs twice and both ARE boolean
+    // ([model/entity/Product.cfc:L58], [model/entity/PriceGroupRate.cfc:L53]);
+    // and `default="true"`, `default="yes"` and `default="no"` occur zero times.
+    // The boolean-default population is therefore SIX sites over THREE literals.
+    // The `yes`/`no` branch has no in-scope call site, and no locator is cited
+    // for it because there is none to cite.
     if (CFML_TRUE_LITERALS.has(normalized)) {
       return true;
     }
@@ -510,25 +676,41 @@ export function cfTruthy(value: CfTruthyInput): boolean {
       return Number(normalized) !== 0;
     }
 
-    // JUDGMENT CALL: CFML throws a conversion error on a non-empty, non-boolean,
-    // non-numeric string in a boolean context. This module returns false instead,
-    // because a total function is what keeps a data-shape variation from becoming
-    // a failed request. The consequence is explicit: a caller that NEEDS the
-    // failure must validate upstream, before the value reaches here - this branch
-    // will not signal it.
-    return false;
+    // CFML PARITY: a non-empty, non-boolean, non-numeric string in a boolean
+    // context is a conversion error, and this raises. An earlier revision returned
+    // false. The reason that was wrong is the same as for null, and sharper here: a
+    // string that reached this branch is one CFML itself would have refused, so
+    // answering false does not preserve legacy behaviour - it INVENTS a behaviour
+    // the legacy platform never had, and hands back the negative answer for input
+    // that carries no boolean meaning at all. `'active'`, `'Y'`, `'on'` and a
+    // truncated `'tru'` would all have read as false, each of them looking exactly
+    // like a deliberate off.
+    throw new CfmlBooleanConversionError(
+      value,
+      'CFML raises a conversion error for a non-empty string that is neither a boolean literal ' +
+        "(true/false/yes/no) nor numeric. Note that '' is NOT rejected - it is falsy, per the " +
+        'currency-eligibility gate at [model/entity/Sku.cfc:L373].',
+    );
   }
 
-  // JUDGMENT CALL: unreachable through the declared input type, and present for
-  // the same reason as the closing branch of `cfLen` - TypeScript's guarantee
-  // stops at the compile boundary, and a value read back from the database driver
-  // at runtime has been checked by nothing. Before this branch existed, any shape
-  // outside the union reached `value.trim()` and threw `value.trim is not a
-  // function`, which is exactly the outcome the no-throw rule exists to prevent:
-  // one unexpected column shape turning a promotion-active check into a failed
-  // request. False is the fail-closed answer, consistent with how an absent value
-  // is treated above.
-  return false;
+  // Unreachable through the declared input type, and present for the same reason
+  // as the closing branch of `cfLen` - TypeScript's guarantee stops at the compile
+  // boundary, and a value read back from the database driver at runtime has been
+  // checked by nothing.
+  //
+  // IT RAISES RATHER THAN FAILING CLOSED. Before this branch existed, an off-union
+  // shape reached `value.trim()` and threw `value.trim is not a function` - an
+  // opaque message naming neither the value nor the caller. Replacing that with
+  // `false` was one fix; replacing it with a NAMED, DESCRIBED error is the better
+  // one, because it keeps the diagnosis while removing the opacity. A shape this
+  // function cannot interpret is a schema or driver surprise, and a promotion-active
+  // check that quietly reads false off an unrecognised column shape is worse than
+  // one that stops: the first ships wrong prices, the second gets fixed.
+  throw new CfmlBooleanConversionError(
+    value,
+    'the value is outside the declared input union, which means a runtime shape - most likely a ' +
+      'database column - that neither the type system nor this table anticipated.',
+  );
 }
 
 /**
@@ -538,8 +720,10 @@ export function cfTruthy(value: CfTruthyInput): boolean {
  * `imageGroupFlag` and their siblings use.
  *
  * WHY THE INPUT UNION IS THIS WIDE - it is evidence, not defensiveness. The
- * in-scope entities carry four different literal conventions for the same
- * concept, all three of these read verbatim from the source:
+ * in-scope entities carry THREE different literal conventions for the same
+ * concept - `"0"`, `"1"` and `"false"` - and there is no fourth: `default="true"`,
+ * `default="yes"` and `default="no"` occur zero times across all eighteen. One
+ * declaration per convention, each read verbatim from the source:
  *
  *   [model/entity/OptionGroup.cfc:L57]
  *     property name="imageGroupFlag" ormtype="boolean" default="0";
@@ -562,12 +746,37 @@ export function cfTruthy(value: CfTruthyInput): boolean {
  * false, which is the same answer the legacy engine gave a flag it had no value
  * for.
  *
- * The coercion itself is delegated to {@link cfTruthy} rather than restated,
- * because two copies of one decision table are two things that can disagree, and
- * a disagreement between them would be a disagreement about whether a promotion
- * is active. This function exists as its own export for the input domain it
- * documents, not for a second behaviour.
+ * THE ABSENT CASE IS RESOLVED HERE, AND IT IS THE ONE BEHAVIOUR THIS FUNCTION
+ * ADDS. An absent flag reads as false, which is the same answer the legacy engine
+ * gave a flag it had no value for, and the justification is the ORM evidence above
+ * rather than convenience: nine `ormtype="boolean"` properties across five
+ * in-scope entities declare no default at all, so SQL NULL is a legitimate,
+ * expected hydration for those columns and not a data fault.
+ *
+ * That is deliberately NOT true of {@link cfTruthy}, which RAISES for an absent
+ * value. The asymmetry is the point. This function knows something `cfTruthy`
+ * cannot: that its input came from a persisted flag column whose absence has a
+ * documented meaning. A general boolean context has no such warrant, so resolving
+ * null to false there would make an absent value indistinguishable from a
+ * deliberate off. Keeping the resolution HERE, where the evidence is, is what lets
+ * `cfTruthy` raise without breaking entity hydration.
+ *
+ * Everything else is delegated to {@link cfTruthy} rather than restated, because
+ * two copies of one decision table are two things that can disagree, and a
+ * disagreement between them would be a disagreement about whether a promotion is
+ * active. So an unrecognised NON-absent value still raises: a flag column that
+ * hydrates as `'maybe'` is a schema surprise, not a false.
+ *
+ * @throws {CfmlBooleanConversionError} if the value is present but carries no
+ *   boolean meaning.
  */
 export function cfBoolean(value: CfBooleanInput): boolean {
+  // The persisted-flag boundary. See the note above: nine undefaulted
+  // `ormtype="boolean"` columns make SQL NULL an expected value here, so it is
+  // resolved rather than raised - unlike in a general boolean context.
+  if (isNullish(value)) {
+    return false;
+  }
+
   return cfTruthy(value);
 }

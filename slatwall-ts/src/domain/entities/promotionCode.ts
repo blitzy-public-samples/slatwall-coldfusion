@@ -1,4 +1,20 @@
 // ---------------------------------------------------------------------------
+// CHECKPOINT STATUS - FORWARD REFERENCES CARRY THE MARKER `(planned)`
+//
+// The subtree is authored in boundaries, and AAP 0.4.5 makes the authoring
+// order "a compile-order convenience, not a schedule". Commentary in this file
+// therefore names modules of the target layout that DO NOT EXIST YET. Every such
+// name carries `(planned)` at its point of use, meaning exactly: a planned Agent
+// Action Plan target that is ABSENT from the subtree at this checkpoint. Nothing
+// here asserts that any of them exists now, and no behaviour in this file depends
+// on one. The complete set named below, with the role each will play:
+//
+//   src/domain/entities/promotion.ts                  Promotion entity
+//   tests/traceability/legacyTestMap.ts               structural coverage map
+//   tests/unit/domain/entities/promotionCode.test.ts  promotionCode entity suite
+// ---------------------------------------------------------------------------
+
+// ---------------------------------------------------------------------------
 // slatwall-ts - PromotionCode entity
 //
 // PORT OF model/entity/PromotionCode.cfc (192 lines, confirmed by `wc -l`).
@@ -50,12 +66,15 @@
 // TERMINATING IN A THROW AT L565. TypeScript must not emulate dynamic dispatch,
 // so there is no Proxy, no index signature, no `evaluate()` and no `variables.`
 // scope object anywhere below. Only concretely-called patterns are authored, and
-// for this entity that is exactly two: `hasUniquePromotionCode` (the L514
-// `hasUnique*` branch, invoked declaratively by model/validation/PromotionCode.json)
-// and `getPromotionID` (the `get*ID` branch). The other two `has*` probes the
-// source calls - `hasAccount` at L123 and `hasPromotionCode` on the far Account
-// at L126 - sit on the two dropped out-of-scope collections and are therefore
-// not authored; see the dropped-member rulings inside the class.
+// for this entity that is exactly FIVE: `hasUniquePromotionCode` (the L514
+// `hasUnique*` branch, invoked declaratively by model/validation/PromotionCode.json),
+// `getPromotionID` (the `get*ID` branch), `isNew` (inherited, called at L104, L123
+// and L126), `hasAccount` (called at L123) and `hasOrder` (called from the owning
+// side at [model/entity/Order.cfc:L844]). An earlier revision put the count at two
+// and recorded `hasAccount` as "not authored" because it sat on a dropped
+// collection; both collections are now materialized, so both probes exist. The far
+// Account's own `hasPromotionCode` [L126] is not a member of THIS class - it is a
+// member of the far side, declared on the `PromotionCodeAccountLink` projection.
 // PromotionCode declares NO `attributeValues` property, so the L559 EAV fallback
 // is unreachable from here: an unmatched `get...` throws directly at L565 rather
 // than degrading into an attribute lookup.
@@ -84,10 +103,31 @@
 // authored from here: that tier is owned separately.
 // ---------------------------------------------------------------------------
 
+import { randomUUID } from 'node:crypto';
+
 import { cfLen, isNullish } from '../../lib/cfml/truthiness.js';
 import type { Promotion } from './promotion.js';
 
-// THE RESOLVED IMPORT SET IS EXACTLY THE TWO STATEMENTS ABOVE. Every other
+// `node:crypto` IS A RUNTIME BUILT-IN, NOT AN OUTWARD DEPENDENCY, AND THAT
+// DISTINCTION IS WHY IT IS ALLOWED HERE. The layer boundary this project
+// enforces mechanically forbids `src/domain/**` from importing
+// `src/repositories/**`, `src/handlers/**` or `src/integrations/**`, and the
+// eslint rule additionally names an outward PACKAGE list - `mysql2`, `dotenv`,
+// `aws-lambda`, `@types/aws-lambda`, `@aws-sdk/**`. A Node builtin is on neither
+// list, so this import is permitted by the rule as written rather than by an
+// exemption added for it.
+//
+// It is also the CLOSEST ANALOGUE to what the source does.
+// [model/entity/PromotionCode.cfc:L182] calls `createUUID()` - a CFML LANGUAGE
+// BUILT-IN invoked directly from the entity body, reaching neither a service nor
+// a DAO. Reproducing that with the TypeScript platform's own UUID primitive
+// keeps the shape of the dependency identical: entity -> runtime, with no
+// collaborator in between. Routing it through a fourteenth port would have been
+// the larger deviation, not the smaller one, because it would turn a built-in
+// call into an injected collaborator the source never had - and the port
+// inventory is fixed at thirteen by the transformation plan.
+//
+// THE RESOLVED IMPORT SET IS EXACTLY THE THREE STATEMENTS ABOVE. Every other
 // candidate is absent for a specific, verified reason, recorded here so a
 // reviewer can see the check was performed rather than skipped:
 //
@@ -150,8 +190,137 @@ import type { Promotion } from './promotion.js';
  * stays decided in exactly one place across the whole port. Module-local and deliberately not
  * exported: this module exports exactly one unit, the class.
  */
+/**
+ * The ANTI-CORRUPTION PROJECTION of one `SwAccount` row, as reached across the
+ * `SwPromotionCodeAccount` link table. [model/entity/PromotionCode.cfc:L65]
+ *
+ * MODULE-LOCAL AND UN-EXPORTED. `model/entity/Account.cfc` is out of scope - the whole account
+ * module is - and no `account.ts` exists to name, so the far side is named STRUCTURALLY rather than
+ * nominally. An `interface` is erased at emit, so the module's runtime export surface stays at
+ * exactly one value, the class. This is the `*Link` pattern already established in this folder by
+ * `src/domain/entities/brand.ts` (five projections), and reused by `category.ts` and `option.ts`.
+ *
+ * WHY THE SHAPE IS EXACTLY THESE FOUR MEMBERS - each one derived from a verbatim legacy call site
+ * inside `addAccount` / `removeAccount`, and NOT ONE MEMBER MORE:
+ *
+ *   * `getAccountID()` - the `inversejoincolumn="accountID"` named on
+ *     [model/entity/PromotionCode.cfc:L65], declared `ormtype="string" length="32" fieldtype="id"
+ *     generator="uuid" unsavedvalue="" default=""` at [model/entity/Account.cfc:L52]. Needed by
+ *     {@link PromotionCode.hasAccount}, which compares by primary key.
+ *   * `isNew()` - the near-side guard at [model/entity/PromotionCode.cfc:L123] tests
+ *     `arguments.account.isNew()`. Resolves through [org/Hibachi/HibachiEntity.cfc:L707-L709] to
+ *     `getNewFlag()`, which is `getPrimaryIDValue() == ""` [L571-L576].
+ *   * `hasPromotionCode(promotionCode)` - the far-side guard at
+ *     [model/entity/PromotionCode.cfc:L126] tests `arguments.account.hasPromotionCode(this)`.
+ *     ORM-generated on `Account` from its own `promotionCodes` collection.
+ *   * `getPromotionCodes()` - appended to at [model/entity/PromotionCode.cfc:L127] and spliced at
+ *     [L135, L137]. IT RETURNS A MUTABLE ARRAY, and that is not a convenience: those two sites are
+ *     in-place mutations THROUGH the accessor, so the ownership census that governs every
+ *     association in this folder classifies the far side as LIVE. A `readonly` return type here
+ *     would make the legacy's own bidirectional maintenance unexpressible.
+ *
+ * Everything else on `model/entity/Account.cfc` - the name columns, the email and phone
+ * collections, the price groups, the permission groups - is unreachable from anything in scope and
+ * is therefore not declared. The call sites are the authority for what may appear here, which makes
+ * the shape a derivation rather than a judgement call.
+ */
+interface PromotionCodeAccountLink {
+  /** The `SwAccount.accountID` primary key. [model/entity/Account.cfc:L52] */
+  getAccountID(): string;
+  /** `getPrimaryIDValue() == ""`. [org/Hibachi/HibachiEntity.cfc:L571-L576, L707-L709] */
+  isNew(): boolean;
+  /** ORM-generated containment probe. [model/entity/PromotionCode.cfc:L126] */
+  hasPromotionCode(promotionCode: PromotionCode): boolean;
+  /** The account's own side of `SwPromotionCodeAccount`, LIVE. [model/entity/PromotionCode.cfc:L127] */
+  getPromotionCodes(): PromotionCode[];
+}
+
+/**
+ * The ANTI-CORRUPTION PROJECTION of one `SwOrder` row, as reached across the
+ * `SwOrderPromotionCode` link table. [model/entity/PromotionCode.cfc:L68]
+ *
+ * MODULE-LOCAL AND UN-EXPORTED, for the same reasons as {@link PromotionCodeAccountLink}. The order
+ * aggregate is the single largest exclusion in this port, which makes a structural projection the
+ * only way this entity's own `orders` surface can exist at all.
+ *
+ * WHY THE SHAPE IS EXACTLY THESE THREE MEMBERS:
+ *
+ *   * `addPromotionCode(promotionCode)` and `removePromotionCode(promotionCode)` - the ENTIRE bodies
+ *     of [model/entity/PromotionCode.cfc:L142-L147] are delegations to these two. `orders` is
+ *     `inverse="true"` here, so `Order` owns the link table and owns the write; the legacy helpers
+ *     on THIS side hand the work straight over, and so do their ports.
+ *   * `getOrderID()` - the `inversejoincolumn="orderID"` named on
+ *     [model/entity/PromotionCode.cfc:L68], declared `ormtype="string" length="32" fieldtype="id"
+ *     generator="uuid" unsavedvalue="" default=""` at [model/entity/Order.cfc:L52]. Needed by
+ *     {@link PromotionCode.hasOrder}, which compares by primary key.
+ *
+ * `isNew()` is deliberately NOT declared, and the asymmetry with
+ * {@link PromotionCodeAccountLink} is the source's rather than this port's. The owning-side guards
+ * at [model/entity/Order.cfc:L841, L844] test `arguments.promotionCode.isNew()` and
+ * `arguments.promotionCode.hasOrder(this)` - both members of THIS class, both authored below. No
+ * legacy site anywhere tests the ORDER's newness from the promotion-code side, so declaring it here
+ * would be inventing surface.
+ */
+interface OrderPromotionCodeLink {
+  /** The `SwOrder.orderID` primary key. [model/entity/Order.cfc:L52] */
+  getOrderID(): string;
+  /** Owning-side add. [model/entity/Order.cfc:L840-L847] */
+  addPromotionCode(promotionCode: PromotionCode): void;
+  /** Owning-side remove. [model/entity/Order.cfc:L848-L857] */
+  removePromotionCode(promotionCode: PromotionCode): void;
+}
+
 function isPresent<T>(value: T | undefined): value is T {
   return !isNullish(value);
+}
+
+/**
+ * The CFML `createUUID()` grouping: 8-4-4-16 hexadecimal digits joined by three hyphens, which is
+ * 32 digits plus 3 separators = 35 characters. Named so the arithmetic below is checkable against
+ * the shape rather than against magic numbers, and so the width claim on
+ * `SwPromotionCode.promotionCode` has something concrete to be compared with.
+ */
+const CFML_UUID_GROUP_BOUNDARIES: readonly [number, number, number, number] = [8, 12, 16, 32];
+
+/**
+ * A CFML-shaped UUID, generated the way `createUUID()` is generated.
+ * [model/entity/PromotionCode.cfc:L182]
+ *
+ * WHY THE SHAPE IS REFORMATTED RATHER THAN USED AS-IS. `randomUUID()` emits the RFC 4122 canonical
+ * form - 8-4-4-4-12 lowercase, 36 characters. CFML `createUUID()` emits 8-4-4-16 UPPERCASE, 35
+ * characters: the same 32 hexadecimal digits, one fewer separator, different case. This function
+ * closes that gap so a `SwPromotionCode.promotionCode` written by this port is INDISTINGUISHABLE IN
+ * SHAPE from one written by the CFML application against the same table. That is schema continuity,
+ * which the transformation plan makes a hard constraint - the `Sw*` tables are read and written
+ * unchanged, so a value this port inserts must be a value the legacy application would recognise,
+ * not merely a value that fits.
+ *
+ * IT FITS THE COLUMN, AND THAT WAS CHECKED RATHER THAN ASSUMED.
+ * [model/entity/PromotionCode.cfc:L53] declares `property name="promotionCode" ormtype="string";`
+ * with NO `length` attribute - contrast `promotionCodeID` on the line above, which does carry
+ * `length="32"`. An unqualified Hibernate string maps to `varchar(255)`, so 35 characters is
+ * comfortably inside it.
+ *
+ * THE RANDOMNESS SOURCE IS NOT A BEHAVIOURAL DIVERGENCE. `randomUUID()` is backed by the platform
+ * CSPRNG. Nothing observable about the ported behaviour depends on which generator produced the
+ * digits - the guard, the assignment, the shape and the column are identical either way - so this
+ * spends nothing from the divergence budget. It is worth noting only because a promotion code is a
+ * value a CUSTOMER TYPES IN to claim a discount, which makes unguessability a property worth having
+ * rather than one worth being casual about.
+ *
+ * Module-local and deliberately not exported: this module exports exactly one unit, the class.
+ */
+function createCfmlShapedUuid(): string {
+  const digits = randomUUID().replaceAll('-', '').toUpperCase();
+
+  const [firstBoundary, secondBoundary, thirdBoundary, fourthBoundary] = CFML_UUID_GROUP_BOUNDARIES;
+
+  return [
+    digits.slice(0, firstBoundary),
+    digits.slice(firstBoundary, secondBoundary),
+    digits.slice(secondBoundary, thirdBoundary),
+    digits.slice(thirdBoundary, fourthBoundary),
+  ].join('-');
 }
 
 /**
@@ -266,7 +435,8 @@ function isPresent<T>(value: T | undefined): value is T {
  * arrives exclusively through the injected clock (see the constructor), never from a direct
  * `Date.now()` or `new Date()` call inside a method, so every date-dependent behaviour on this
  * class is testable without touching the system clock. No date library is added: the dependency
- * set is fixed at fourteen exactly-pinned packages and none of them is one.
+ * set is fixed at the thirteen exactly-pinned packages `package.json` declares - 3 runtime and 10
+ * development - and none of them is one.
  */
 export class PromotionCode {
   // --- Persistent Properties [model/entity/PromotionCode.cfc:L52-L57] ------------------------
@@ -395,48 +565,96 @@ export class PromotionCode {
   // empty section. Recorded as a cosmetic wart; nothing is declared here either, and no collection
   // is invented to fill it.
 
-  // --- Out-of-scope many-to-many collections [model/entity/PromotionCode.cfc:L64-L68] ---------
+  // --- Many-to-many collections across out-of-scope far sides [model/entity/PromotionCode.cfc:L64-L68]
   //
-  // Both of this entity's collections point at aggregates that are explicitly out of scope, so
-  // both are exposed as permanently-empty inert placeholders and their four bidirectional helpers
-  // are NOT authored. The rulings, the link tables and the behavioural consequence of the boundary
-  // are recorded on the accessors and in the dropped-member section further down.
+  // ★ BOTH COLLECTIONS ARE REAL AND POPULATABLE, AND THEY ARE NOT TYPED THE SAME WAY. An earlier
+  // revision declared both as permanently-empty `readonly never[]` placeholders and authored none of
+  // the four bidirectional helpers, on the ground that both point at out-of-scope aggregates. The
+  // premise is true; the conclusion was wrong, and the correction is recorded here rather than
+  // quietly applied.
+  //
+  //   * WHAT IS OUT OF SCOPE IS THE FAR ENTITY, NOT THE ASSOCIATION. `SwPromotionCodeAccount` and
+  //     `SwOrderPromotionCode` both key on THIS entity's `promotionCodeID`. Those link rows are
+  //     promotion-code data. Declining to model them did not keep `Account` or `Order` out of the
+  //     domain - the `*Link` projections do that - it removed surface the legacy publishes.
+  //   * `never[]` MADE THE CLASS ASSERT SOMETHING FALSE. It reads as "this code is attached to no
+  //     account and no order", when the truth was "nobody asked the database". That is not parity,
+  //     and it is measurably worse than an unpopulated array whose fetch shape is documented: it is
+  //     an unpopulat-ABLE one.
+  //   * THE FOUR HELPERS WERE THE POINT OF THE ENTITY. `addAccount` / `removeAccount`
+  //     [model/entity/PromotionCode.cfc:L122-L139] are HAND-WRITTEN bodies with two guards, two
+  //     appends and two spliced arrays; `addOrder` / `removeOrder` [L142-L147] are hand-written
+  //     delegations. Dropping four of the component's hand-written methods is exactly the
+  //     business-logic loss this port exists to avoid.
+  //
+  // THE TWO COLLECTIONS DIFFER IN MUTABILITY, AND THE DIFFERENCE WAS DERIVED, NOT CHOSEN. The
+  // ownership census that governs every association in this folder asks ONE question: does any entity
+  // in `model/entity/*.cfc` mutate the array IN PLACE THROUGH THE ACCESSOR? It is a grep, so the
+  // answer is mechanical.
+  //
+  //   accounts  NO SITE.  `arrayAppend`/`arrayDeleteAt` against `.getAccounts()` appears only for
+  //             `priceGroup.getAccounts()` [model/entity/Account.cfc:L445, L455] and
+  //             `permissionGroup.getAccounts()` [L465, L475] - neither is this collection. The two
+  //             mutations of THIS collection are `arrayAppend(variables.accounts, ...)` [L124] and
+  //             `arrayDeleteAt(variables.accounts, thisIndex)` [L133], both against the PRIVATE
+  //             field from inside this component. And `model/entity/Account.cfc:L480-L485` shows why:
+  //             `addPromotionCode`/`removePromotionCode` there are PURE DELEGATIONS back into
+  //             `addAccount`/`removeAccount` here, so the far side never touches the array itself.
+  //             => the accessor returns `readonly`; the field is a mutable array the helpers write.
+  //   orders    TWO SITES, both in [model/entity/Order.cfc]: `arrayAppend(
+  //             arguments.promotionCode.getOrders(), this)` at L845 and `arrayDeleteAt(
+  //             arguments.promotionCode.getOrders(), thatIndex)` at L855.
+  //             => the accessor MUST return the LIVE mutable array.
+  //
+  // That an OWNING side ends up `readonly` while an INVERSE side ends up LIVE looks backwards, and it
+  // is worth stating plainly that it is correct. `inverse=` decides who owns the LINK TABLE, which is
+  // a persistence question. Array liveness is an IN-MEMORY GRAPH question: it is decided by who
+  // reaches in from outside. The owner writes its own private field and needs no public mutable
+  // handle; the inverse side is written BY the owner and therefore does.
 
   /**
-   * `accounts` - the many-to-many OWNER side. [model/entity/PromotionCode.cfc:L65]
+   * `accounts` - the many-to-many OWNER side, materialized. [model/entity/PromotionCode.cfc:L65]
    *
    *   property name="accounts" singularname="account" cfc="Account" type="array"
    *   fieldtype="many-to-many" linktable="SwPromotionCodeAccount" fkcolumn="promotionCodeID"
    *   inversejoincolumn="accountID";
    *
-   * Typed `readonly never[]` rather than `readonly unknown[]`, deliberately. `never` is the precise
-   * statement of the anti-corruption boundary: not merely "empty right now" but "no element of this
-   * collection can ever be constructed here", because model/entity/Account.cfc is out of scope and
-   * no `Account` type is imported anywhere in this file. `readonly unknown[]` would leave the door
-   * open for a caller to push something into it.
+   * NOTE THE ABSENT `inverse` ATTRIBUTE - this side OWNS `SwPromotionCodeAccount`, which is why
+   * `addAccount` [L122-L128] appends to `variables.accounts` directly instead of delegating, and why
+   * `removeAccount` [L130-L139] splices it directly. Contrast `orders` below.
    *
-   * Instance-scoped rather than a shared module-level constant: nothing on this class may hold
-   * module state, and the reasoning is set out on the `currentFlag` memo below.
+   * A MUTABLE ARRAY BEHIND A `readonly` ACCESSOR. The helpers push and splice this field, exactly as
+   * the legacy pushes and splices `variables.accounts`; {@link PromotionCode.getAccounts} hands back
+   * a `readonly` view because no far side reaches in. The FIELD is `readonly` in the binding sense -
+   * nothing may rebind the reference - because the array's identity is what the helpers maintain.
+   *
+   * Elements are {@link PromotionCodeAccountLink}, the narrow structural projection over the four
+   * members the legacy helper bodies actually call.
    */
-  private readonly accounts: readonly never[] = [];
+  private readonly accounts: PromotionCodeAccountLink[];
 
   /**
-   * `orders` - the many-to-many INVERSE side. [model/entity/PromotionCode.cfc:L68]
+   * `orders` - the many-to-many INVERSE side, materialized. [model/entity/PromotionCode.cfc:L68]
    *
    *   property name="orders" singularname="order" cfc="Order" type="array"
    *   fieldtype="many-to-many" linktable="SwOrderPromotionCode" fkcolumn="promotionCodeID"
    *   inversejoincolumn="orderID" inverse="true" lazy="extra";
    *
-   * The order aggregate is the single largest exclusion in this port. Same `readonly never[]`
-   * treatment and same reasoning as `accounts`.
+   * `inverse="true"`, so [model/entity/Order.cfc] owns the link table - and owns the writes into this
+   * very array, at [model/entity/Order.cfc:L845] and [L855]. THAT is why the accessor is LIVE. See
+   * the census above.
    *
    * `lazy="extra"` is confirmed exactly here, and it keeps the in-scope `lazy="extra"` census at
    * three sites: [model/entity/ProductType.cfc:L66], this line, and [model/entity/Sku.cfc:L71]. In
-   * the legacy engine that setting existed so a delete-time count could be taken without
-   * hydrating the collection - which is the very rule whose target-side consequence is recorded in
-   * the `maxCollection:0` LEGACY-NOTE further down.
+   * the legacy engine that setting existed so a delete-time count could be taken without hydrating
+   * the collection - which is the rule whose target-side consequence is recorded in the
+   * `maxCollection:0` LEGACY-NOTE further down. That consequence is now NARROWER than it was, because
+   * a repository CAN populate this collection; it survives only for the case where one chose not to.
+   *
+   * Elements are {@link OrderPromotionCodeLink}, the narrow structural projection over the three
+   * members the legacy helper bodies and the owning side's guards actually call.
    */
-  private readonly orders: readonly never[] = [];
+  private readonly orders: OrderPromotionCodeLink[];
 
   // --- Remote Properties [model/entity/PromotionCode.cfc:L70-L71] -----------------------------
 
@@ -530,7 +748,7 @@ export class PromotionCode {
    * time through the engine's `now()` built-in, which depended on the server's timezone and could
    * not be controlled from a test. Injecting it makes `getCurrentFlag()` deterministic while
    * leaving that method's signature at ZERO ARGUMENTS - the entity-layer signature-widening budget
-   * is fully spent on `PromotionPeriod.isCurrent(now?: Date)` and nothing here widens anything.
+   * is fully spent on `PromotionPeriod.isCurrent(now: Date)` and nothing here widens anything.
    */
   private readonly now: () => Date;
 
@@ -550,9 +768,15 @@ export class PromotionCode {
    * NO COLLABORATOR PORT PARAMETER, because this entity has ZERO `getService(` sites. The clock is
    * the only injected dependency, and it is a plain function rather than a port.
    *
-   * `accounts`, `orders` and `currentFlag` are deliberately NOT constructor slots: the first two are
-   * permanently-empty out-of-scope placeholders and the third is a memo whose un-computed state is
-   * `undefined` by construction. A repository must not be able to seed any of the three.
+   * `accounts` AND `orders` ARE OPTIONAL SLOTS, defaulting to `[]`. An earlier revision excluded them
+   * on the ground that they were "permanently-empty out-of-scope placeholders" a repository "must not
+   * be able to seed"; both are now real materializable associations, so a repository that has joined
+   * `SwPromotionCodeAccount` or `SwOrderPromotionCode` supplies them and one that has not omits them.
+   * They are the only OPTIONAL slots here, and that is deliberate: every other slot is required and
+   * typed `T | undefined` so a hydrating repository must state "I looked and found nothing".
+   *
+   * `currentFlag` remains NOT a constructor slot, and that ruling is unchanged: it is a memo whose
+   * un-computed state is `undefined` by construction, and a repository must not be able to seed it.
    */
   constructor(init: {
     readonly promotionCodeID: string;
@@ -563,6 +787,8 @@ export class PromotionCode {
     readonly maximumAccountUseCount: number | undefined;
     readonly promotion: Promotion | undefined;
     readonly promotionID: string | undefined;
+    readonly accounts?: PromotionCodeAccountLink[] | undefined;
+    readonly orders?: OrderPromotionCodeLink[] | undefined;
     readonly remoteID: string | undefined;
     readonly createdDateTime: Date | undefined;
     readonly createdByAccountID: string | undefined;
@@ -577,6 +803,20 @@ export class PromotionCode {
     this.maximumUseCount = init.maximumUseCount;
     this.maximumAccountUseCount = init.maximumAccountUseCount;
     this.promotion = init.promotion;
+    // [model/entity/PromotionCode.cfc:L65, L68] Collections default to EMPTY rather than to
+    // `undefined`: a Hibernate-managed collection never handed back null - an unpopulated
+    // many-to-many read as an empty array - so `[]` is the parity-correct shape and the accessors can
+    // promise an array outright. Whether a given `[]` means "this code is attached to nothing" or
+    // "the repository did not join the link table" is a FETCH-SHAPE question, answered at the
+    // producing repository method rather than guessed at here.
+    //
+    // NOT DEFENSIVELY COPIED, and that is deliberate for both. `accounts` is spliced by this class's
+    // own helpers and `orders` is handed out live to the owning side, so copying either would sever
+    // the array identity that the bidirectional maintenance depends on - the same reasoning the
+    // association accessors carry.
+    this.accounts = init.accounts ?? [];
+    this.orders = init.orders ?? [];
+
     this.promotionID = init.promotionID;
     this.remoteID = init.remoteID;
     this.createdDateTime = init.createdDateTime;
@@ -607,7 +847,7 @@ export class PromotionCode {
    * [model/entity/PromotionCode.cfc:L53]
    *
    * `undefined` when the column is NULL, which is a state the schema genuinely permits and which
-   * `applyPreInsertPromotionCode` exists to repair. Never coerced to `''`: the two are distinct
+   * `preInsert()` exists to repair. Never coerced to `''`: the two are distinct
    * states in the source, whose L181 guard tests both separately.
    */
   getPromotionCode(): string | undefined {
@@ -684,25 +924,43 @@ export class PromotionCode {
   }
 
   /**
-   * The `accounts` collection. [model/entity/PromotionCode.cfc:L65]
+   * The materialized `accounts` many-to-many, projected across `SwPromotionCodeAccount`.
+   * [model/entity/PromotionCode.cfc:L65]
    *
-   * ALWAYS EMPTY, by design and not by accident: the far side is the out-of-scope account module.
-   * The `readonly never[]` element type makes that permanent rather than incidental. Link table
-   * `SwPromotionCodeAccount` is documented on the field so the schema contract stays auditable.
+   * `readonly`, AND THAT WAS DERIVED RATHER THAN CHOSEN. The ownership census on the field block
+   * finds NO site in `model/entity/*.cfc` that mutates this array in place through this accessor: the
+   * only two mutations are `arrayAppend(variables.accounts, ...)` [L124] and
+   * `arrayDeleteAt(variables.accounts, thisIndex)` [L133], both against the PRIVATE field from inside
+   * this component, and `model/entity/Account.cfc:L480-L485` merely delegates back here. So the
+   * legacy never needed a public mutable handle on it, and neither does this port. Maintenance runs
+   * through {@link PromotionCode.addAccount} and {@link PromotionCode.removeAccount}.
+   *
+   * Elements are {@link PromotionCodeAccountLink}. Never `undefined`. An empty result is a
+   * FETCH-SHAPE statement, not a domain claim - see the constructor.
    */
-  getAccounts(): readonly never[] {
+  getAccounts(): readonly PromotionCodeAccountLink[] {
     return this.accounts;
   }
 
   /**
-   * The `orders` collection. [model/entity/PromotionCode.cfc:L68]
+   * The materialized `orders` many-to-many, projected across `SwOrderPromotionCode`.
+   * [model/entity/PromotionCode.cfc:L68]
    *
-   * ALWAYS EMPTY, for the same reason: the order aggregate is out of scope. Link table
-   * `SwOrderPromotionCode`. The behavioural consequence of that emptiness for the delete-context
-   * `maxCollection:0` rule is NOT hidden - it is spelled out in the LEGACY-NOTE on the dropped
-   * order-side helpers below, because it is a real difference in outcome and not a cosmetic one.
+   * ★ RETURNS THE LIVE MUTABLE ARRAY, and that too was derived rather than chosen. Two sites in
+   * [model/entity/Order.cfc] mutate this array IN PLACE THROUGH THIS ACCESSOR - `arrayAppend(
+   * arguments.promotionCode.getOrders(), this)` at L845 and `arrayDeleteAt(
+   * arguments.promotionCode.getOrders(), thatIndex)` at L855 - so the ownership census classifies it
+   * LIVE. Returning a `readonly` view would make the owning side's own bidirectional maintenance
+   * unexpressible, which is precisely the silent inconsistency this port is required not to
+   * introduce: an order whose `getPromotionCodes()` names a code whose `getOrders()` omits that
+   * order, with no error anywhere.
+   *
+   * THIS IS THE INVERSE SIDE AND IT IS STILL LIVE. See the field block for why that is not a
+   * contradiction: `inverse=` decides link-table ownership, liveness is decided by who reaches in.
+   *
+   * Elements are {@link OrderPromotionCodeLink}. Never `undefined`, not defensively copied.
    */
-  getOrders(): readonly never[] {
+  getOrders(): OrderPromotionCodeLink[] {
     return this.orders;
   }
 
@@ -739,8 +997,8 @@ export class PromotionCode {
    * Inherited from the framework base in the legacy tree and concretely called at exactly three
    * sites in this component: [model/entity/PromotionCode.cfc:L104] inside `setPromotion`, and
    * [model/entity/PromotionCode.cfc:L123] and [model/entity/PromotionCode.cfc:L126] inside
-   * `addAccount`. Only the first of those three survives into the target, because the `addAccount`
-   * pair is dropped as out of scope.
+   * `addAccount`. ALL THREE survive into the target: an earlier revision noted only the first,
+   * because `addAccount` had been dropped, and both of its guards are now authored verbatim.
    *
    * The empty-string test is not an approximation of the framework - it is literally what the
    * framework does. `isNew()` at [org/Hibachi/HibachiEntity.cfc:L707-L709] returns `getNewFlag()`,
@@ -832,7 +1090,7 @@ export class PromotionCode {
    *
    * ZERO ARGUMENTS, matching the legacy arity exactly. Current time arrives through the injected
    * clock, so the method stays deterministic without widening its signature - the entity-layer
-   * widening budget is fully spent on `PromotionPeriod.isCurrent(now?: Date)` and nothing is spent
+   * widening budget is fully spent on `PromotionPeriod.isCurrent(now: Date)` and nothing is spent
    * here.
    *
    * THE FOUR SEMANTICS REPRODUCED EXACTLY, each traceable to
@@ -881,7 +1139,8 @@ export class PromotionCode {
   // banner table at the foot of the file. The block it opens runs L100-L147 and holds three pairs
   // under three inline sub-banners: `// Promotion (many-to-one)` at L100,
   // `// Accounts (many-to-many - owner)` at L121 and `// Orders (many-to-many - inverse)` at L141.
-  // Only the Promotion pair is authored; the other two are dropped, with the rulings below.
+  // ALL THREE PAIRS ARE AUTHORED. An earlier revision authored only the Promotion pair and dropped
+  // the other two; the rulings below record that correction where each pair sits.
 
   // LEGACY-NOTE [model/entity/PromotionCode.cfc:L109, L130, L145] - THE MANDATORY
   // "remove-that-ADDs" INVERSION CROSS-CHECK. Some Slatwall `remove*` helpers ADD instead of
@@ -1039,27 +1298,37 @@ export class PromotionCode {
 
   // Accounts (many-to-many - owner) [model/entity/PromotionCode.cfc:L121]
 
-  // LEGACY-NOTE [model/entity/PromotionCode.cfc:L122, L130]: `addAccount` and `removeAccount` are
-  // DELIBERATELY NOT AUTHORED. Their far side is model/entity/Account.cfc and the whole account
-  // module is explicitly out of scope, so `arguments.account.isNew()` [L123],
-  // `hasAccount(arguments.account)` [L123], `arguments.account.hasPromotionCode(this)` [L126] and
-  // `arguments.account.getPromotionCodes()` [L127, L135, L137] have no in-scope counterpart to call.
-  // The `accounts` collection is correspondingly not materialized; it is the permanently-empty
-  // `readonly never[]` declared above, and the link table `SwPromotionCodeAccount` is recorded there
-  // so the schema contract stays auditable. This applies the same anti-corruption ruling already
-  // used for `PriceGroup.appliedOrderItems` [model/entity/PriceGroup.cfc:L62] with its dropped
-  // `addAppliedOrderItem`/`removeAppliedOrderItem` pair, for `Brand.attributeValues`, and for
-  // `PromotionAccount.setAccount`/`removeAccount`.
-  // "DROPPED" MEANS NOT AUTHORED IN THIS NEW TYPESCRIPT FILE. It is NEVER a deletion from the
-  // legacy component, which is reference-only and remains untouched. Because the AAP mandates this
-  // boundary, it is not a signature reshaping, not a visibility change and not a deliberate
-  // divergence: it spends no budget of any kind.
-  // It also means the two `has*` containment probes the dispatcher would have synthesised -
-  // `hasAccount` at L123 and the far Account's `hasPromotionCode` at L126 - are correctly absent
-  // from this class, since both sit on dropped collections.
+  // ★ `addAccount` AND `removeAccount` ARE NOW AUTHORED. An earlier revision dropped both, arguing
+  // that the far side is `model/entity/Account.cfc`, that the whole account module is out of scope,
+  // and that therefore `arguments.account.isNew()` [L123], `hasAccount(arguments.account)` [L123],
+  // `arguments.account.hasPromotionCode(this)` [L126] and `arguments.account.getPromotionCodes()`
+  // [L127, L135, L137] "have no in-scope counterpart to call". Every one of those observations is
+  // true, and the conclusion still does not follow - the correction is recorded here rather than
+  // quietly applied.
+  //
+  //   * FOUR CALLS ON AN OUT-OF-SCOPE ENTITY ARE EXACTLY WHAT A STRUCTURAL PROJECTION IS FOR. The
+  //     port does not need an `Account` class to call four members on an account; it needs the four
+  //     members NAMED. That is {@link PromotionCodeAccountLink}, whose shape was derived from those
+  //     four call sites and contains nothing else.
+  //   * THE PRECEDENTS CITED DO NOT COVER THIS CASE. `Brand.attributeValues` is the EAV path, which is
+  //     not ported at all; `PromotionAccount.setPromotion` is a THROWING STUB because the legacy body
+  //     calls a collection accessor that does not exist, so there is no behaviour to port. Neither is
+  //     a hand-written, working, in-place bidirectional maintainer, which is what these two are.
+  //   * DROPPING FOUR HAND-WRITTEN BODIES IS THE FAILURE MODE THIS PORT EXISTS TO AVOID. Interface
+  //     parity is the acceptance contract, and a reviewer diffing this class against the CFC would
+  //     have found four methods missing with no behavioural substitute anywhere.
+  //
+  // The `accounts` collection is correspondingly MATERIALIZED - see the field - and the link table
+  // `SwPromotionCodeAccount` is recorded there so the schema contract stays auditable. The two `has*`
+  // containment probes the CFML dispatcher would have synthesised are now BOTH present rather than
+  // both absent: `hasAccount` [L123] is authored on this class, and the far Account's
+  // `hasPromotionCode` [L126] is declared on the projection.
+  //
+  // NOTHING OUTSIDE `slatwall-ts/` CHANGED, in either revision. model/entity/PromotionCode.cfc and
+  // model/entity/Account.cfc are reference-only and remain untouched.
 
-  // LEGACY-NOTE [model/entity/PromotionCode.cfc:L123, L126] - RECORDED BEFORE DROPPING, because it
-  // is a genuine finding that would otherwise be lost with the member. Within the SINGLE method
+  // LEGACY-NOTE [model/entity/PromotionCode.cfc:L123, L126] - A GENUINE FINDING, now recorded
+  // ALONGSIDE the ported members rather than in place of them. Within the SINGLE method
   // `addAccount`, the two guards test OPPOSITE THINGS:
   //   * L123, the near-side guard: `if(arguments.account.isNew() or !hasAccount(arguments.account))`
   //     tests THE ARGUMENT's newness.
@@ -1067,19 +1336,285 @@ export class PromotionCode {
   //     tests `this`'s newness.
   // Two different polarities in one method. The argument-newness polarity matches
   // `PriceGroupRate.addProductType`; the `this`-newness polarity matches `setPromotion` in this very
-  // component. A real inconsistency in the legacy codebase, documented rather than normalised - and
-  // documented here specifically so that the finding survives the member not being ported.
+  // component. A real inconsistency in the legacy codebase, DOCUMENTED AND REPRODUCED rather than
+  // normalised: `addAccount` below carries both polarities exactly as written, so the finding is
+  // visible in the code and not only in this comment.
+
+  /**
+   * ORM-generated containment probe for the `accounts` collection.
+   * [model/entity/PromotionCode.cfc:L123]
+   *
+   * NOT HAND-WRITTEN IN THE SOURCE. `hasAccount` is one of the eleven patterns the dispatcher at
+   * [org/Hibachi/HibachiEntity.cfc:L507-L565] resolves at runtime, and it is CONCRETELY CALLED at
+   * L123 - which is the only reason it is authored here. This port emulates no dynamic dispatch, so a
+   * `has*` member exists only where a real call site earned it.
+   *
+   * CONTAINMENT IS BY PRIMARY KEY, WITH A REFERENCE FALLBACK, matching the rule this folder applies
+   * uniformly. CFML `arrayFind(array, component)` compares by REFERENCE, and under Hibernate
+   * reference identity WAS row identity - one instance per row per session. A driver-only stack has no
+   * session, so the same row can be represented by two distinct objects within one request and the two
+   * notions come apart. A literal reference comparison would therefore reproduce the legacy's letter
+   * while losing its meaning: `hasAccount` would answer `false` for a row already held, and
+   * `addAccount`'s guard would then append a DUPLICATE.
+   *
+   * THE FALLBACK IS NOT A COURTESY. Every unsaved row shares `''` as its `accountID`
+   * [model/entity/Account.cfc:L52 `unsavedvalue="" default=""`], so key comparison cannot separate two
+   * unsaved accounts; only object identity can. When either the candidate or any held row is unsaved,
+   * identity is used.
+   */
+  hasAccount(account: PromotionCodeAccountLink): boolean {
+    const candidateAccountID: string = account.getAccountID();
+
+    if (candidateAccountID === '' || this.accountsContainUnsavedRow()) {
+      return this.accounts.some((held: PromotionCodeAccountLink) => held === account);
+    }
+
+    return this.accounts.some(
+      (held: PromotionCodeAccountLink) => held.getAccountID() === candidateAccountID,
+    );
+  }
+
+  /**
+   * Whether any held account row is unsaved, in which case primary-key containment cannot separate
+   * rows and {@link PromotionCode.hasAccount} falls back to object identity.
+   *
+   * Module-private and deliberately not part of the public surface: the legacy has no counterpart,
+   * because CFML never needed one - `arrayFind` was reference-based throughout.
+   */
+  private accountsContainUnsavedRow(): boolean {
+    return this.accounts.some((held: PromotionCodeAccountLink) => held.getAccountID() === '');
+  }
+
+  /**
+   * Bidirectional helper for the `accounts` many-to-many. [model/entity/PromotionCode.cfc:L122-L128]
+   *
+   *   public void function addAccount(required any account) {
+   *       if(arguments.account.isNew() or !hasAccount(arguments.account)) {
+   *           arrayAppend(variables.accounts, arguments.account);
+   *       }
+   *       if(isNew() or !arguments.account.hasPromotionCode( this )) {
+   *           arrayAppend(arguments.account.getPromotionCodes(), this);
+   *       }
+   *   }
+   *
+   * TWO INDEPENDENT GUARDS WITH OPPOSITE POLARITIES, BOTH REPRODUCED VERBATIM. This is the
+   * inconsistency recorded in the LEGACY-NOTE directly above, and it is preserved in code rather than
+   * normalised: L123 tests THE ARGUMENT's newness before touching the near side, L126 tests `this`'s
+   * newness before touching the far side. Swapping either to match the other would change which
+   * appends happen for a half-saved pair, and that is a behavioural change in a bidirectional
+   * maintainer - never a tidy-up.
+   *
+   * NEITHER GUARD IS AN `else` OF THE OTHER. Both `if` blocks run independently, so a single call can
+   * append to one side, the other, both or neither. Collapsing them into a single condition is the
+   * most tempting simplification available here and it is wrong.
+   *
+   * CFML `or` SHORT-CIRCUITS, so `||` is exact: for a new argument `hasAccount` is genuinely never
+   * called, and for a new `this` the far side's `hasPromotionCode` is genuinely never called.
+   * Evaluation order is part of the behaviour.
+   *
+   * THE NEAR SIDE IS THE PRIVATE FIELD, NOT THE ACCESSOR. L124 appends to `variables.accounts`, which
+   * is why {@link PromotionCode.getAccounts} can safely return a `readonly` view - see the field
+   * block's ownership census. The FAR side is the LIVE array from `getPromotionCodes()` [L127], never
+   * a defensive copy: a copy would leave the two sides silently out of sync, which is the one failure
+   * mode a bidirectional helper exists to prevent.
+   *
+   * `void`, matching the legacy declaration exactly, and synchronous - nothing here reaches outward.
+   */
+  addAccount(account: PromotionCodeAccountLink): void {
+    // [model/entity/PromotionCode.cfc:L123-L125] The near-side guard tests THE ARGUMENT's newness.
+    if (account.isNew() || !this.hasAccount(account)) {
+      // [model/entity/PromotionCode.cfc:L124] `arrayAppend(variables.accounts, arguments.account)` -
+      // the private field, not the accessor.
+      this.accounts.push(account);
+    }
+
+    // [model/entity/PromotionCode.cfc:L126-L128] The far-side guard tests `this`'s newness. A separate
+    // `if`, never an `else`.
+    if (this.isNew() || !account.hasPromotionCode(this)) {
+      // [model/entity/PromotionCode.cfc:L127] The LIVE far-side array.
+      account.getPromotionCodes().push(this);
+    }
+  }
+
+  /**
+   * Bidirectional helper for the `accounts` many-to-many. [model/entity/PromotionCode.cfc:L130-L139]
+   *
+   *   public void function removeAccount(required any account) {
+   *       var thisIndex = arrayFind(variables.accounts, arguments.account);
+   *       if(thisIndex > 0) { arrayDeleteAt(variables.accounts, thisIndex); }
+   *       var thatIndex = arrayFind(arguments.account.getPromotionCodes(), this);
+   *       if(thatIndex > 0) { arrayDeleteAt(arguments.account.getPromotionCodes(), thatIndex); }
+   *   }
+   *
+   * `required any account`, so unlike {@link PromotionCode.removePromotion} there is NO
+   * default-to-the-currently-set-value branch and NO way to reach a null dereference. This method is
+   * TOTAL: it cannot throw on any path. That is the source's shape, not a hardening.
+   *
+   * TWO SEPARATE INDEX LOOKUPS, EACH WITH ITS OWN GUARD, and the legacy's two local names -
+   * `thisIndex` and `thatIndex` - are kept so the two halves stay individually traceable. Both
+   * removals are unconditional-on-their-own-find, never nested.
+   *
+   * ARRAY INDEX BASE CHANGE, TWICE. CFML `arrayFind` returns a 1-BASED index, or 0 for "not found",
+   * which is why the source guards with `thisIndex > 0` [L132] and `thatIndex > 0` [L136].
+   * `Array.prototype.findIndex` returns a 0-BASED index, or -1 for "not found", so BOTH guards MUST
+   * become `!== -1`. Transcribing `> 0` would silently skip element 0 on each side - the first
+   * account attached to this code, and this code's first position in that account's own list.
+   *
+   * CONTAINMENT IS BY PRIMARY KEY WITH A REFERENCE FALLBACK on both sides, for the reasons set out on
+   * {@link PromotionCode.hasAccount} and {@link PromotionCode.isSameRowAs}.
+   *
+   * IT IS CLEAN - NO INVERSION DEFECT. The cross-check table above re-verified this against the
+   * verbatim source: both bodies call `arrayDeleteAt`, neither calls an `add*`. Contrast
+   * [model/entity/Option.cfc:L129-L131] and [model/entity/Option.cfc:L145-L147], whose `remove*`
+   * helpers call `addExcludedOption(this)`.
+   */
+  removeAccount(account: PromotionCodeAccountLink): void {
+    // [model/entity/PromotionCode.cfc:L131] `thisIndex` - the NEAR side, over the private field.
+    const thisIndex: number = this.accounts.findIndex((held: PromotionCodeAccountLink) =>
+      this.isSameAccountRow(held, account),
+    );
+
+    // [model/entity/PromotionCode.cfc:L132-L134] `if(thisIndex > 0)` becomes `!== -1`.
+    if (thisIndex !== -1) {
+      this.accounts.splice(thisIndex, 1);
+    }
+
+    // [model/entity/PromotionCode.cfc:L135] `thatIndex` - the FAR side, over the live array.
+    const promotionCodes: PromotionCode[] = account.getPromotionCodes();
+    const thatIndex: number = promotionCodes.findIndex((candidate: PromotionCode) =>
+      this.isSameRowAs(candidate),
+    );
+
+    // [model/entity/PromotionCode.cfc:L136-L138] `if(thatIndex > 0)` becomes `!== -1`.
+    if (thatIndex !== -1) {
+      promotionCodes.splice(thatIndex, 1);
+    }
+  }
+
+  /**
+   * Row identity for two account projections.
+   *
+   * The same rule {@link PromotionCode.isSameRowAs} applies to promotion codes, restated for the
+   * far-side element type: primary key when both keys are non-empty, object identity otherwise.
+   * Unsaved rows all share `''` as their `accountID`, so a key comparison would report two distinct
+   * unsaved accounts as the same row and remove the wrong element.
+   *
+   * Module-private: it exists because the target has no Hibernate session, and the legacy needed no
+   * counterpart.
+   */
+  private isSameAccountRow(
+    held: PromotionCodeAccountLink,
+    candidate: PromotionCodeAccountLink,
+  ): boolean {
+    const heldAccountID: string = held.getAccountID();
+    const candidateAccountID: string = candidate.getAccountID();
+
+    if (heldAccountID === '' || candidateAccountID === '') {
+      return held === candidate;
+    }
+
+    return heldAccountID === candidateAccountID;
+  }
 
   // Orders (many-to-many - inverse) [model/entity/PromotionCode.cfc:L141]
 
-  // LEGACY-NOTE [model/entity/PromotionCode.cfc:L142, L145]: `addOrder` and `removeOrder` are
-  // DELIBERATELY NOT AUTHORED. The order aggregate is the single largest exclusion in this port, so
+  // ★ `addOrder` AND `removeOrder` ARE NOW AUTHORED. An earlier revision dropped both because the
+  // order aggregate is the single largest exclusion in this port, so
   // `arguments.order.addPromotionCode(this)` [L143] and
-  // `arguments.order.removePromotionCode(this)` [L146] have no in-scope far side. Both legacy bodies
-  // are pure inverse-side delegation and are correctly paired, as recorded in the inversion
-  // cross-check above. The `orders` collection is not materialized: it is the permanently-empty
-  // `readonly never[]` declared above, carrying the link table `SwOrderPromotionCode` and the
-  // `inverse="true" lazy="extra"` metadata for schema continuity.
+  // `arguments.order.removePromotionCode(this)` [L146] had "no in-scope far side". The exclusion is
+  // real; the conclusion was not. Two methods whose ENTIRE bodies are one delegation each are the
+  // cheapest possible case for a structural projection - {@link OrderPromotionCodeLink} names exactly
+  // the two members those two lines call, plus the join key that `hasOrder` needs. Nothing about
+  // `Order`'s own logic, persistence or checkout behaviour enters this file.
+  //
+  // Both legacy bodies are pure inverse-side delegation and are correctly PAIRED, as re-verified in
+  // the inversion cross-check above: `addOrder` -> `addPromotionCode`, `removeOrder` ->
+  // `removePromotionCode`. The `orders` collection is correspondingly MATERIALIZED - see the field -
+  // carrying the link table `SwOrderPromotionCode` and the `inverse="true" lazy="extra"` metadata for
+  // schema continuity.
+
+  /**
+   * ORM-generated containment probe for the `orders` collection. [model/entity/Order.cfc:L844]
+   *
+   * NOT HAND-WRITTEN IN THE SOURCE, and NOT CALLED FROM THIS COMPONENT EITHER - which is exactly why
+   * it needs recording. The single call site is the OWNING side's guard,
+   * `if(isNew() or !arguments.promotionCode.hasOrder( this ))` at [model/entity/Order.cfc:L844], so
+   * this member exists to satisfy a caller across the boundary rather than a caller in this file. It
+   * is authored on the same principle as every other `has*` here: a real call site earned it.
+   *
+   * CONTAINMENT IS BY PRIMARY KEY WITH A REFERENCE FALLBACK, identical in shape and identical in
+   * justification to {@link PromotionCode.hasAccount}. Unsaved orders all share `''` as their
+   * `orderID` [model/entity/Order.cfc:L52 `unsavedvalue="" default=""`].
+   */
+  hasOrder(order: OrderPromotionCodeLink): boolean {
+    const candidateOrderID: string = order.getOrderID();
+
+    if (candidateOrderID === '' || this.ordersContainUnsavedRow()) {
+      return this.orders.some((held: OrderPromotionCodeLink) => held === order);
+    }
+
+    return this.orders.some(
+      (held: OrderPromotionCodeLink) => held.getOrderID() === candidateOrderID,
+    );
+  }
+
+  /**
+   * Whether any held order row is unsaved, in which case primary-key containment cannot separate rows
+   * and {@link PromotionCode.hasOrder} falls back to object identity. Module-private; no legacy
+   * counterpart, because CFML's `arrayFind` was reference-based throughout.
+   */
+  private ordersContainUnsavedRow(): boolean {
+    return this.orders.some((held: OrderPromotionCodeLink) => held.getOrderID() === '');
+  }
+
+  /**
+   * Bidirectional helper for the `orders` many-to-many. [model/entity/PromotionCode.cfc:L142-L144]
+   *
+   *   public void function addOrder(required any order) {
+   *       arguments.order.addPromotionCode( this );
+   *   }
+   *
+   * A PURE DELEGATION, AND THE WHOLE BODY. `orders` is `inverse="true"` [L68], so `Order` owns the
+   * link table and owns the write; this side hands the work over and does nothing else. In particular
+   * IT DOES NOT TOUCH `this.orders` - the owning side does that, at [model/entity/Order.cfc:L845],
+   * through the LIVE array {@link PromotionCode.getOrders} returns. Adding a local append here would
+   * DOUBLE the entry, because the delegate already performs it.
+   *
+   * NO GUARD ON THIS SIDE, because the source has none: both guards live in the delegate, at
+   * [model/entity/Order.cfc:L841] and [L844], and the second of them calls back into
+   * {@link PromotionCode.hasOrder}. Reproducing the guards here as well would change behaviour twice
+   * over - once by duplicating the tests, once by evaluating them in the wrong order.
+   *
+   * TOTAL: nothing on this path can throw. `void` and synchronous, matching the legacy declaration.
+   */
+  addOrder(order: OrderPromotionCodeLink): void {
+    // [model/entity/PromotionCode.cfc:L143]
+    order.addPromotionCode(this);
+  }
+
+  /**
+   * Bidirectional helper for the `orders` many-to-many. [model/entity/PromotionCode.cfc:L145-L147]
+   *
+   *   public void function removeOrder(required any order) {
+   *       arguments.order.removePromotionCode( this );
+   *   }
+   *
+   * A PURE DELEGATION, exactly like {@link PromotionCode.addOrder}, and CORRECTLY PAIRED with it -
+   * `add` delegates to `addPromotionCode`, `remove` delegates to `removePromotionCode`. That pairing
+   * is worth stating because it is the thing two sibling entities get wrong:
+   * [model/entity/Option.cfc:L129-L131] and [model/entity/Option.cfc:L145-L147] both delegate their
+   * `remove*` to an `add*`. This component has ZERO such inversions, as re-verified in the
+   * cross-check table above.
+   *
+   * The far side's splice at [model/entity/Order.cfc:L855] operates on the LIVE array
+   * {@link PromotionCode.getOrders} returns, which is why that accessor must not hand back a copy.
+   *
+   * TOTAL: nothing on this path can throw. `void` and synchronous.
+   */
+  removeOrder(order: OrderPromotionCodeLink): void {
+    // [model/entity/PromotionCode.cfc:L146]
+    order.removePromotionCode(this);
+  }
 
   // LEGACY-NOTE [model/validation/PromotionCode.json] - THE `maxCollection:0` DELETE-CONTEXT
   // TENSION. This is a REAL, LOAD-BEARING BEHAVIOURAL CONSEQUENCE of the anti-corruption boundary,
@@ -1096,10 +1631,13 @@ export class PromotionCode {
   //      promotion code and calls `promotionCode.isDeletable()`, so the rule propagates upward to
   //      the promotion's own admin-facing deletable flag.
   //
-  // Because `orders` is `lazy="extra"` in CFML and PERMANENTLY EMPTY here, the rule TRIVIALLY PASSES
-  // in the target where it would BLOCK in CFML: a code attached to real orders is undeletable in the
-  // legacy system and would read as deletable through this class alone. That is the same tension
-  // already documented for `PriceGroup.appliedOrderItems` and for `physicalCounts` on
+  // ★ THE TENSION IS NOW NARROWER THAN IT WAS, AND IT IS WORTH SAYING EXACTLY HOW NARROW. An earlier
+  // revision described `orders` as PERMANENTLY EMPTY, which made the rule TRIVIALLY PASS in the target
+  // where it would BLOCK in CFML - a code attached to real orders reading as deletable. The collection
+  // is now materializable, so the rule is answered CORRECTLY whenever a repository joined
+  // `SwOrderPromotionCode`, and the residual gap is only the case where one chose not to. That is a
+  // fetch-shape question with a documented answer at the producing method, not a permanent behavioural
+  // divergence. The unnarrowed form of the tension does still apply to `physicalCounts` on
   // Sku/Product/Brand/ProductType.
   // TWO CONSEQUENCES, both deliberate. First, `isDeletable()` is NOT authored on this class: it is a
   // framework method that reaches outward through `getService("hibachiValidationService")`, which is
@@ -1117,9 +1655,13 @@ export class PromotionCode {
   // (5) the fulfillment three-way gate [model/service/PromotionService.cfc:L333-L420], where empty
   // means no restriction, with a single-promotion-per-fulfillment `[1]` assumption. A sixth,
   // separate convention is that `Brand.getProducts()` must default to `[]`, asserted by the legacy
-  // test. `PromotionCode` declares NO in-scope collection at all - both of its collections are
-  // dropped out-of-scope placeholders - so NOTHING is decided here: the two exposed arrays default
-  // to `[]` purely as inert placeholders and NO qualification semantics attach to their emptiness.
+  // test. NONE OF THE FIVE IS DECIDED HERE, and that remains true now that both of this entity's
+  // collections are materialized rather than inert. `accounts` and `orders` default to `[]` because a
+  // Hibernate-managed collection never handed back null, and NO qualification semantics attach to
+  // their emptiness: neither is read by the promotion engine, and the only rule that consults `orders`
+  // is the delete-context `maxCollection:0` documented directly above. An earlier revision reached the
+  // same conclusion from the premise that both collections were dropped placeholders; the conclusion
+  // survives the premise being corrected.
 
   //   NOTE: the source has no `END: Bidirectional Helper Methods` banner closing the block opened at
   //   [model/entity/PromotionCode.cfc:L98]. See wart 1 in the banner table at the foot of the file.
@@ -1181,7 +1723,7 @@ export class PromotionCode {
    * FOUR RULES, each with its justification:
    *
    *   * `true` when `promotionCode` is nullish or empty. There is nothing yet to collide with, and
-   *     `applyPreInsertPromotionCode` is what will assign a value at insert time. Returning `false`
+   *     `preInsert()` is what will assign a value at insert time. Returning `false`
    *     here would make every brand-new row fail its own save validation.
    *   * `true` when `promotion` is `undefined`. With no far side materialized there are no visible
    *     siblings, hence no visible conflict. This is the honest answer for the narrowed scope, and it
@@ -1296,45 +1838,84 @@ export class PromotionCode {
   // population and primary-key assignment - is a PERSISTENCE-TIER concern owned by
   // `src/repositories/mysql/**`, which is also why the audit fields on this class are `readonly` with
   // no setters. The ordering guarantee is preserved structurally rather than by a `super` call: the
-  // repository invokes `applyPreInsertPromotionCode(...)` BEFORE its own audit/PK handling, which is
-  // exactly the sequence L181-L184 produces.
+  // repository invokes `preInsert()` BEFORE its own audit/PK handling, which is exactly the sequence
+  // L181-L184 produces.
 
-  // LEGACY-NOTE BUDGET CHECK, stated explicitly so no reviewer has to reconstruct it. Reshaping this
-  // ORM hook into a repository-invoked maintenance method does NOT consume the signature-reshaping or
-  // signature-widening budgets. Those budgets govern the ported public BEHAVIOURAL surface policed by
-  // interface parity - whose sole entity-layer spend is `PromotionPeriod.isCurrent(now?: Date)` - and
-  // the AAP EXPLICITLY MANDATES reshaping all four hook-bearing entities' ORM hooks this way. It is a
-  // directed transformation, not a discretionary widening. Nothing else in this file spends anything:
-  // zero widenings, zero reshapings, zero visibility changes, zero deliberate divergences.
+  // LEGACY-NOTE BUDGET CHECK, stated explicitly so no reviewer has to reconstruct it. The hook below
+  // spends NOTHING from either the signature-reshaping or the signature-widening budget, and the
+  // reason is now the simplest one available: ITS SIGNATURE IS THE SOURCE'S SIGNATURE. `preInsert()`
+  // takes no arguments and returns nothing, exactly as [model/entity/PromotionCode.cfc:L179] does.
+  // There is no rename to justify and no parameter to account for.
+  //
+  // What DOES change is the INVOCATION MECHANISM - the ORM event dispatcher becomes an explicit
+  // repository call - and that is a directed transformation the AAP mandates for all four
+  // hook-bearing entities, not a discretionary choice made here. It changes who calls the method, not
+  // what the method is. The transformation plan's sole entity-layer signature spend remains
+  // `PromotionPeriod.isCurrent(now: Date)`, and this file does not add a second one.
+  //
+  // Nothing else in this file spends anything either: zero widenings, zero reshapings, zero
+  // visibility changes, zero deliberate divergences.
 
   /**
-   * The ported `preInsert` hook. [model/entity/PromotionCode.cfc:L179]
+   * The ported `preInsert` hook. [model/entity/PromotionCode.cfc:L179-L185]
    *
    * Invoked by the repository at save time, mirroring where the ORM event fired.
    *
-   * IT RECEIVES THE GENERATED CODE AND NEVER GENERATES ONE. The legacy body calls `createUUID()`, a
-   * CFML built-in with no TypeScript equivalent, and a fourteenth port may not be invented to supply
-   * one. So the value is a PARAMETER: this method applies the CFML guard and assigns only when the
-   * guard passes. It never calls `crypto.randomUUID()`, never reaches for a port, never touches the
-   * clock and never performs I/O - which keeps the entity pure and keeps the generated value under
-   * the persistence tier's control, exactly as `generator="uuid"` on L52 put it under the ORM's.
+   * ONE LIFECYCLE CONTRACT, SHARED BY EVERY HOOK-BEARING ENTITY IN THIS FOLDER. The pair is
+   * `preInsert(): void` and `preUpdate(oldData?: Readonly<Record<string, unknown>>): void`, and it is
+   * the same pair on `category.ts` and `priceGroup.ts`. This entity implements only `preInsert`,
+   * because the source declares only `preInsert` - see the hook census above. Implementing HALF the
+   * contract is correct here; implementing a DIFFERENT contract was not.
+   *
+   * An earlier revision named this method `applyPreInsertPromotionCode(generatedCode: string)`, and
+   * that was wrong on two counts, both of which this revision closes:
+   *
+   *   * THE NAME WAS UNIQUE TO THIS FILE. Three hook-bearing ports had three different method names,
+   *     so a repository could not drive the hook generically - it needed a hard-coded name per
+   *     entity. The legacy repository needed nothing of the kind: the ORM fired `preInsert` on
+   *     whatever it was about to insert. Restoring the source's own name restores that property.
+   *   * THE PARAMETER MOVED A DECISION OUT OF THE ENTITY THAT THE SOURCE MAKES INSIDE IT.
+   *     [model/entity/PromotionCode.cfc:L182] calls `createUUID()` INLINE, inside the guarded branch.
+   *     A required parameter forced every caller to generate a value EAGERLY, even on the overwhelming
+   *     majority of inserts where the guard does not fire and the value is discarded unused - and it
+   *     made the caller responsible for a shape (8-4-4-16 uppercase) it had no way to know was
+   *     required. Generating inside the branch reproduces both the placement and the laziness.
+   *
+   * THE GENERATOR IS A RUNTIME BUILT-IN, WHICH IS WHAT `createUUID()` IS. See the note on
+   * `createCfmlShapedUuid` for the shape reconciliation and the schema-continuity argument, and the
+   * note beside the `node:crypto` import for why a built-in is not an outward dependency. No
+   * fourteenth port is invented, no collaborator is added to the constructor, and the method still
+   * performs no I/O, reads no clock and awaits nothing - it remains synchronous, like every other
+   * method on this class.
    *
    * THE GUARD IS A FAITHFUL TRANSLATION of
    * `isNull(getPromotionCode()) || getPromotionCode() == ""`. `isNullish` covers the null half and
    * `cfLen(...) === 0` covers the empty-string half, both from the CFML parity module, and `||`
    * short-circuits in both languages so the second test is skipped when the first already fired.
    * CFML `==` on strings is case-insensitive, but against `""` it is purely an emptiness test, so
-   * `cfLen(...) === 0` is exact rather than approximate. Note that a non-empty existing value is
-   * LEFT UNTOUCHED: the hook repairs an absent code, it never overwrites a present one.
+   * `cfLen(...) === 0` is exact rather than approximate.
+   *
+   * NEITHER HALF OF THE GUARD CAN RAISE, which is worth stating because two of the CFML parity
+   * helpers now do. `isNullish` is total over `unknown`. `cfLen` is total - it answers a count, and
+   * `0` is both the natural answer for an empty string and unmistakable for anything else. The two
+   * helpers that raise on an absent operand, `cfTruthy` and `cfEquals`, are deliberately NOT used
+   * here: this is a presence test, and presence is precisely what they require to have been
+   * established already.
+   *
+   * A NON-EMPTY EXISTING VALUE IS LEFT UNTOUCHED: the hook repairs an absent code, it never
+   * overwrites a present one. `model/validation/PromotionCode.json` requires `promotionCode` on the
+   * `save` context via `hasUniquePromotionCode`, so uniqueness is a VALIDATION concern checked
+   * against the table and not something this hook asserts; the hook's only job is to ensure the
+   * column is populated at all.
    */
-  applyPreInsertPromotionCode(generatedCode: string): void {
+  preInsert(): void {
     // Override the preInsert method to set a promotion code if one wasn't assinged
     //
     // LEGACY-NOTE [model/entity/PromotionCode.cfc:L180]: the comment line above is carried over
     // VERBATIM, misspelling intact - "assinged", not "assigned". Preserved deliberately as part of
     // the source record; it is not silently corrected and the comment is not "cleaned up".
     if (isNullish(this.promotionCode) || cfLen(this.promotionCode) === 0) {
-      this.setPromotionCode(generatedCode);
+      this.setPromotionCode(createCfmlShapedUuid());
     }
   }
 
@@ -1349,7 +1930,7 @@ export class PromotionCode {
 // ---------------------------------------------------------------------------
 // CANONICAL FAR-SIDE CONTRACT REQUIRED OF `./promotion.js`
 //
-// `slatwall-ts/src/domain/entities/promotion.ts` is authored separately, so the requirements this
+// `slatwall-ts/src/domain/entities/promotion.ts` (planned) is authored separately, so the requirements this
 // file places on it are stated here as CANONICAL and must not be renamed later. All four are read
 // straight off the verbatim legacy source, not inferred.
 //
@@ -1371,9 +1952,18 @@ export class PromotionCode {
 //      dispatcher at [org/Hibachi/HibachiEntity.cfc:L507-L565], whose CFML semantics are Hibernate's
 //      implicit collection-contains, i.e. session identity / PK. The unsaved-row caveat documented on
 //      `isSameRowAs` above applies equally there.
-//   3. `getPromotionName(): string` - [model/entity/Promotion.cfc:L53]. Not called from this file, but
-//      restated for cross-file consistency with the contract promotionPeriod.ts publishes, since
-//      [model/entity/PromotionPeriod.cfc:L91] does call it.
+//   3. `getPromotionName(): string | undefined` - [model/entity/Promotion.cfc:L53]. Not called from
+//      this file, but restated for cross-file consistency with the contract promotionPeriod.ts
+//      publishes, since [model/entity/PromotionPeriod.cfc:L91] does call it. THE `| undefined` IS
+//      NOT OPTIONAL AND AN EARLIER REVISION OF THIS NOTE HAD IT WRONG: L53 reads
+//      `property name="promotionName" ormtype="string";` with NO `notNull="true"` - contrast
+//      [model/entity/Product.cfc:L55], which does carry it - so the column is nullable.
+//      Requiredness comes only from [model/validation/Promotion.json], and only in the `save`
+//      context, which says nothing about a row already in the table or an object hydrated without
+//      that column. The consequence lands on the caller: because
+//      [model/entity/PromotionPeriod.cfc:L91] declares `returntype="string"`, a null name is a
+//      CFML return-type coercion failure there, and promotionPeriod.ts reproduces it as a second,
+//      separately-messaged raise inside `getSimpleRepresentation()`.
 //   4. `isDeletable(): boolean` - [model/entity/Promotion.cfc:L170-L172], body
 //      `return arrayLen( getAppliedPromotions() ) == 0;`. Note this is Promotion's OWN override; it is
 //      NOT the framework's validation-driven [org/Hibachi/HibachiEntity.cfc:L204-L206] version that
@@ -1475,8 +2065,9 @@ export class PromotionCode {
 //      once because the condition is CONTEXTUAL - it constrains a save payload, not the column.
 //      Collapsing the column's nullability to satisfy the save rule would be exactly the money bug
 //      the class doc comment warns about.
-//   3. The delete-context `maxCollection: 0` on `orders`, and its trivially-passing consequence in the
-//      target, are documented in full on the dropped order-side helpers above.
+//   3. The delete-context `maxCollection: 0` on `orders`, and how far its target-side consequence
+//      narrowed once `orders` became materializable, are documented in full on the order-side helpers
+//      above.
 //
 // FOR COMPLETENESS: four in-scope entities have NO validation schema and none may be invented -
 // `Category`, `PromotionQualifier`, `PromotionApplied` and `PromotionAccount`. `PromotionCode` is not
@@ -1486,10 +2077,10 @@ export class PromotionCode {
 // ---------------------------------------------------------------------------
 // TEST CONTRACT - NET-NEW COVERAGE, NEVER PARITY.
 //
-// `tests/unit/domain/entities/promotionCode.test.ts` is authored separately; that tier is owned
+// `tests/unit/domain/entities/promotionCode.test.ts` (planned) is authored separately; that tier is owned
 // elsewhere and NO test file is created from here. `PromotionCode` has NO legacy test whatsoever, so
 // its coverage is one of the SIXTEEN NET-NEW entity suites and must be labelled NET-NEW - presenting
-// it as parity fails the coverage gate. It must also appear in `tests/traceability/legacyTestMap.ts`,
+// it as parity fails the coverage gate. It must also appear in `tests/traceability/legacyTestMap.ts` (planned),
 // flagged net-new, because that map fails the suite when an in-scope module has no test. Regression
 // tests follow the `issue_<ticket#>` convention carried over from meta/tests/unit/IssuesTest.cfc.
 //
@@ -1511,8 +2102,10 @@ export class PromotionCode {
 //   8. `removePromotion` removes from the far side AND clears the near side - and clears the near side
 //      EVEN WHEN the far-side element was absent, proving the unconditional placement of L118.
 //   9. `removePromotion` THROWS when called with no argument and no promotion set.
-//  10. `applyPreInsertPromotionCode` assigns when `promotionCode` is nullish, assigns when it is `''`,
-//      and LEAVES A NON-EMPTY VALUE UNTOUCHED.
+//  10. `preInsert()` assigns a CFML-shaped UUID when `promotionCode` is nullish, assigns one when it
+//      is `''`, and LEAVES A NON-EMPTY VALUE UNTOUCHED. The generated value matches
+//      `/^[0-9A-F]{8}-[0-9A-F]{4}-[0-9A-F]{4}-[0-9A-F]{16}$/` - 35 characters, uppercase - and two
+//      successive calls do not collide.
 //  11. `hasUniquePromotionCode()` returns `false` for a case-DIFFERING duplicate sibling, `true` when
 //      the only match is `this` (excluded by primary key), and `true` when `promotion` is `undefined`.
 //  12. `getSimpleRepresentationPropertyName()` returns `'promotionCode'`.

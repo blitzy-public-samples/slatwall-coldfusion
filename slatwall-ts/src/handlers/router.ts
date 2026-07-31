@@ -1,32 +1,69 @@
 // ---------------------------------------------------------------------------
+// CHECKPOINT STATUS - FORWARD REFERENCES CARRY THE MARKER `(planned)`
+//
+// The subtree is authored in boundaries, and AAP 0.4.5 makes the authoring
+// order "a compile-order convenience, not a schedule". Commentary in this file
+// therefore names modules of the target layout that DO NOT EXIST YET. Every such
+// name carries `(planned)` at its point of use, meaning exactly: a planned Agent
+// Action Plan target that is ABSENT from the subtree at this checkpoint. Nothing
+// here asserts that any of them exists now, and no behaviour in this file depends
+// on one. The complete set named below, with the role each will play:
+//
+//   src/handlers/bootstrap.ts                    composition root (wiring)
+//   src/handlers/catalogQueryHandler.ts          catalog query entrypoint
+//   src/handlers/priceResolutionHandler.ts       price resolution entrypoint
+//   src/handlers/productFeedHandler.ts           feed Lambda entrypoint
+//   src/handlers/promotionApplicationHandler.ts  promotion apply entrypoint
+//   src/handlers/skuResolutionHandler.ts         SKU resolution entrypoint
+// ---------------------------------------------------------------------------
+
+// ---------------------------------------------------------------------------
 // slatwall-ts - the explicit route table for the primary (Lambda) adapters
 //
 // PURPOSE
 //   Resolve an incoming request onto exactly one of the five bounded
-//   capabilities this service exposes, and do nothing else. The entire URL
-//   surface is declared once, declaratively, in `ROUTE_TABLE` below, so that a
-//   reviewer can read the whole surface in one place instead of reconstructing
-//   it from five separate handlers.
+//   capabilities the finished service will expose, and do nothing else. The
+//   entire URL surface is declared once, declaratively, in `ROUTE_TABLE` below,
+//   so that a reviewer can read the whole surface in one place instead of
+//   reconstructing it from five separate handlers.
 //
 //   This module owns RESOLUTION. A handler owns INVOCATION. That split is what
-//   keeps the dependency direction one-way: the five capability handlers import
-//   this module, and this module imports NONE of them. Importing a handler here
-//   would create an import cycle across all five bundle entry points and defeat
-//   single-artifact-per-capability bundling.
+//   keeps the dependency direction one-way: the five capability handlers will
+//   import this module, and this module imports NONE of them. Importing a
+//   handler here would create an import cycle across all five bundle entry
+//   points and defeat single-artifact-per-capability bundling.
+//
+// WHAT `ROUTE_TABLE` IS AT THIS CHECKPOINT: DECLARATIVE ROUTE METADATA.
+//   `ROUTE_TABLE` is a frozen data structure and `resolveRoute` is a pure
+//   function over it. Neither invokes anything, and NO capability is reachable
+//   over HTTP at this checkpoint, because NO Lambda `handler` is exported
+//   anywhere in the subtree yet: `src/handlers/` holds exactly this module and
+//   `./errorMapper.ts`. Each of the five rows below therefore declares the
+//   method, path and action that a PLANNED handler module will answer - it is a
+//   route DECLARATION, not a live endpoint, and nothing in this file claims
+//   otherwise. What the table does guarantee today is complete and checkable on
+//   its own terms: exactly five capabilities, exactly one route each, no
+//   overlap, and a compile error if that ever stops holding.
 //
 // ENTRY-POINT STATUS: NO.
-//   A SHARED INTERNAL of `src/handlers/`, alongside `bootstrap.ts` and
-//   `errorMapper.ts`. It deliberately exports NO Lambda `handler`. The five
-//   deployable entry points are exactly `catalogQueryHandler.ts`,
-//   `skuResolutionHandler.ts`, `promotionApplicationHandler.ts`,
-//   `priceResolutionHandler.ts` and `productFeedHandler.ts`, and every one of
-//   them consults THIS one shared table - which is precisely how five
-//   independently deployable bundles are held to a single agreed URL surface
-//   with no overlap between them. `esbuild.config.mjs` enumerates its candidate
-//   entry points by file name and therefore also emits a bundle for this
-//   module; that artifact carries no `handler` export and is consequently not
-//   deployable, which is the intended outcome rather than something to "fix" in
-//   the bundler configuration.
+//   A SHARED INTERNAL of `src/handlers/`, alongside `./errorMapper.ts`, which is
+//   present, and `src/handlers/bootstrap.ts` (planned). It deliberately exports NO Lambda
+//   `handler`. The five deployable entry points, none of which exists yet, are
+//   exactly:
+//
+//     src/handlers/catalogQueryHandler.ts          - (planned), ABSENT
+//     src/handlers/skuResolutionHandler.ts         - (planned), ABSENT
+//     src/handlers/promotionApplicationHandler.ts  - (planned), ABSENT
+//     src/handlers/priceResolutionHandler.ts       - (planned), ABSENT
+//     src/handlers/productFeedHandler.ts           - (planned), ABSENT
+//
+//   Every one of them WILL consult THIS one shared table - which is precisely
+//   how five independently deployable bundles are held to a single agreed URL
+//   surface with no overlap between them. `esbuild.config.mjs` enumerates its
+//   candidate entry points by file name and therefore also emits a bundle for
+//   this module; that artifact carries no `handler` export and is consequently
+//   not deployable, which is the intended outcome rather than something to
+//   "fix" in the bundler configuration.
 //
 // PROVENANCE: REFERENCE - BEHAVIOUR ONLY. NO CODE IS COPIED.
 //   The plan's handler transformation table records this row as
@@ -191,18 +228,21 @@ import type { ErrorMappingContext } from './errorMapper.js';
 import { routeNotFoundResponse } from './errorMapper.js';
 
 /**
- * The five bounded capabilities this service exposes, and no sixth.
+ * The five bounded capabilities the finished service will expose, and no sixth.
  *
  * The set is fixed by the plan's own resolution of handler granularity: "one
  * handler module per bounded capability - catalog query, SKU resolution,
  * promotion application, price resolution, product feed - sharing a common
- * bootstrap". Each member names the handler module that owns it:
+ * bootstrap". Each member names the handler module that WILL own it. Every one
+ * of those five modules is a planned target that is ABSENT from the subtree at
+ * this checkpoint, so the arrows below record an intended ownership rather than
+ * an existing import:
  *
- *   `catalogQuery`          -> `catalogQueryHandler.ts`
- *   `skuResolution`         -> `skuResolutionHandler.ts`
- *   `promotionApplication`  -> `promotionApplicationHandler.ts`
- *   `priceResolution`       -> `priceResolutionHandler.ts`
- *   `productFeed`           -> `productFeedHandler.ts`
+ *   `catalogQuery`          -> `src/handlers/catalogQueryHandler.ts` (planned)
+ *   `skuResolution`         -> `src/handlers/skuResolutionHandler.ts` (planned)
+ *   `promotionApplication`  -> `src/handlers/promotionApplicationHandler.ts` (planned)
+ *   `priceResolution`       -> `src/handlers/priceResolutionHandler.ts` (planned)
+ *   `productFeed`           -> `src/handlers/productFeedHandler.ts` (planned)
  *
  * A string-literal union rather than the TypeScript enumeration construct. A
  * union is erased on emit, so nothing here survives into the Lambda bundle as a
@@ -405,6 +445,17 @@ const PATH_DELIMITER = '/';
 /**
  * The complete route table, keyed by capability.
  *
+ * DECLARATIVE ROUTE METADATA, NOT A LIVE ENDPOINT SET. Every row below declares
+ * the method, path and action name that a PLANNED handler module will answer.
+ * None of those five handler modules exists at this checkpoint and no Lambda
+ * `handler` is exported anywhere in the subtree, so no row is reachable over
+ * HTTP yet; the per-row prose likewise describes the surface each capability
+ * WILL expose, and the ported services it names are themselves planned targets
+ * absent from the subtree. Both facts are set out in full in the CHECKPOINT
+ * STATUS and ENTRY-POINT STATUS sections of the module header. What this table
+ * guarantees TODAY is exactly what `resolveRoute` can be shown to do over it:
+ * five capabilities, one route each, no overlap, resolution or a clean miss.
+ *
  * `Readonly<Record<RoutedCapability, RouteDescriptor>>` is the type that carries
  * the guarantee: every capability has exactly one route, and a key that is not a
  * capability cannot be added. Because the key set is closed, an index into this
@@ -541,8 +592,11 @@ function canonicalizeRoutePath(path: string): string {
  * concern and belongs in the helpers, and an unfolded label preserves what was
  * really received.
  *
- * This value reaches the LOG only. `./errorMapper.js` writes the route it is
- * given to its structured log line and never echoes it into a response body,
+ * This value reaches the LOG only, and is sanitized on the way. `./errorMapper.js`
+ * character-filters and length-bounds the route it is given before writing it to
+ * its structured log line, because a path is caller-authored and is a natural
+ * carrier for a token or a signed parameter; it never echoes the route into a
+ * response body,
  * which is what keeps a caller-supplied path from being reflected back.
  */
 function describeRequestedRoute(method: string, canonicalPath: string): string {
@@ -696,9 +750,27 @@ function lookupRoute(request: RouteRequest): RouteLookup {
  * does not answer - produce the same unmatched result. See the module header for
  * why a method mismatch is not a distinguishable outcome.
  *
- * Never throws. Canonicalization is total over any string, the two comparisons
- * are total, and the not-found path is delegated to a function that is itself
- * documented never to throw.
+ * Never throws, and the reason is worth stating precisely rather than as a
+ * blanket claim, because one of the helpers involved CAN raise:
+ *
+ *   * Canonicalization is total over any string - `listToArray` and `listAppend`
+ *     are both total, and the result is a template literal, so it is a string on
+ *     every path.
+ *   * `structKeyList` and `structGet` are total; the closed key set is walked and
+ *     an absent read is answered as `undefined`, which is handled explicitly.
+ *   * `listFindNoCase` is total - it answers a position, and `0` for absent.
+ *   * `cfEquals` is NOT total: it raises `CfmlComparisonError` for a `null` or
+ *     `undefined` operand, matching CFML, where a null reaching `eq` raises. It
+ *     cannot raise HERE, and that is a property of the operands rather than of
+ *     the helper. The left operand is `route.path` off a frozen `ROUTE_TABLE`
+ *     literal whose rows declare `path` as a definite `string`; the right is the
+ *     canonicalization result, which is a template literal. Neither can be
+ *     nullish, so the raising branch is unreachable from this function. It is
+ *     deliberately not guarded against: a guard would have to invent a result
+ *     for a state that cannot occur, and inventing `false` there is exactly the
+ *     silent-negative failure the raise was introduced to remove.
+ *   * The not-found path is delegated to a function that is itself documented
+ *     never to throw.
  *
  * @param request - the method and path to resolve. Case-insensitive in both.
  * @param context - correlation identifier, and optionally a logger, for the

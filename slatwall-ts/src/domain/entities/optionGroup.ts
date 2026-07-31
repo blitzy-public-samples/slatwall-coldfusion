@@ -1,4 +1,18 @@
 // ---------------------------------------------------------------------------
+// CHECKPOINT STATUS - FORWARD REFERENCES CARRY THE MARKER `(planned)`
+//
+// The subtree is authored in boundaries, and AAP 0.4.5 makes the authoring
+// order "a compile-order convenience, not a schedule". Commentary in this file
+// therefore names modules of the target layout that DO NOT EXIST YET. Every such
+// name carries `(planned)` at its point of use, meaning exactly: a planned Agent
+// Action Plan target that is ABSENT from the subtree at this checkpoint. Nothing
+// here asserts that any of them exists now, and no behaviour in this file depends
+// on one. The complete set named below, with the role each will play:
+//
+//   tests/unit/domain/entities/optionGroup.test.ts  optionGroup entity suite
+// ---------------------------------------------------------------------------
+
+// ---------------------------------------------------------------------------
 // slatwall-ts - the SwOptionGroup domain entity
 //
 // PROVENANCE
@@ -26,7 +40,8 @@
 //
 //   They are recorded as documentation rather than as exported constants for
 //   one reason: this module's runtime export surface is fixed at exactly two
-//   units - the `OptionGroup` class and the shared `ENTITY_CODE_PATTERN` - and
+//   units - the `OptionGroup` class and the shared `ENTITY_CODE_PATTERN`, plus
+//   the type aliases that belong to the class and are erased at emit - and
 //   an `hb_*` attribute needs no runtime representation to stay auditable.
 //   JavaRB is not ported and no i18n runtime is introduced, so an `hb_*`
 //   identifier is a string of documentation and nothing more. Note the service
@@ -102,35 +117,39 @@
 //     is the only domain module permitted to import it.
 //   * No smart list. See the OMITTED annotation where L81-L83 would have gone.
 //
-// THIS ENTITY HAS NO LEGACY DEFECT TO PRESERVE
-//   No numbered entry in the port's legacy-defect register lands in
-//   model/entity/OptionGroup.cfc, so the two-line `LEGACY-DEFECT` marker
-//   appears nowhere in this file - deliberately, and not by oversight. Its
-//   bidirectional helpers are in fact the CORRECT reference pattern: contrast
-//   model/entity/Option.cfc:L129-L131 and L145-L147, where two `remove*`
-//   methods erroneously call `addExcludedOption(this)`. Those are preserved
-//   defects owned by `option.ts`, not by this file. Verified observations that
-//   are NOT register defects are marked `LEGACY-NOTE` instead, so the stronger
-//   marker keeps its meaning.
+// THE ONE PRESERVED DEFECT LIVES IN THE SORT THIS ENTITY REACHES
+//   model/entity/OptionGroup.cfc names no numbered entry in the port's
+//   legacy-defect register, and its own bidirectional helpers are in fact the
+//   CORRECT reference pattern: contrast model/entity/Option.cfc:L129-L131 and
+//   L145-L147, where two `remove*` methods erroneously call
+//   `addExcludedOption(this)`. Those are preserved defects owned by `option.ts`.
 //
-//   FOR ANYONE AUDITING BY GREP: the marker token does appear in this file's
-//   prose, and NOT ONCE as an annotation. The discriminator is quoting rather
-//   than counting, so it stays true as the surrounding prose evolves: EVERY
-//   mention in this file sits inside backticks, because each one is prose ABOUT
-//   the convention. A genuine annotation is a bare, unbackticked two-line
-//   comment. Grep the token with no backtick immediately before it and this
-//   file yields nothing.
+//   What this file DOES carry is the observable behaviour of the sort
+//   `getOptions` delegates to, model/service/HibachiUtilityService.cfc's
+//   `sortObjectArray` at L514-L531. That utility is framework code this port
+//   does not ship as a module, but its results are returned straight out of a
+//   public entity method, so its behaviour IS part of the contract and is
+//   reproduced rather than improved: random tie-breaking, a case-insensitive
+//   struct-key collision that can silently drop an element, key text taken from
+//   the first insertion, and a `numeric` mode that orders by the random tail and
+//   raises on a non-numeric composed key. Exactly ONE genuine two-line
+//   `LEGACY-DEFECT` annotation appears in this file, on the colliding-key
+//   overwrite; every other verified observation is marked `LEGACY-NOTE`, so the
+//   stronger marker keeps its meaning.
 //
 // TEST COVERAGE IS NET-NEW
 //   Coverage belongs at
-//   `slatwall-ts/tests/unit/domain/entities/optionGroup.test.ts` and ALL of it
+//   `slatwall-ts/tests/unit/domain/entities/optionGroup.test.ts` (planned) and ALL of it
 //   is net-new: no legacy test under `meta/tests/**` touches this entity. Only
 //   `meta/tests/unit/entity/BrandTest.cfc` and
 //   `meta/tests/unit/entity/ProductTest.cfc` are extended anywhere in this
 //   port, and `meta/tests/functional/admin/entity/ProductTest.cfc` is an empty
 //   stub contributing zero coverage. Nothing here may be presented as parity.
-//   The test tier is authored separately; this file needs no seam for it, since
-//   every method below is synchronous and every one is total.
+//   Every method below is synchronous, and the ONE seam the suite needs is
+//   already here: the tie-breaking random source is injected through the
+//   constructor, so the reproduced non-determinism, the reproduced key-collision
+//   element loss and the two reproduced failure contracts are all
+//   characterizable with plain inputs and no clock, database or environment.
 //
 // NO USER RULES WERE PROVIDED
 //   Stated explicitly rather than assumed: the project rules document contains
@@ -141,6 +160,7 @@
 //   resolve, because every tension in this port is specification-internal.
 // ---------------------------------------------------------------------------
 
+import { cfNumberToString } from '../../lib/cfml/numberFormat.js';
 import { cfBoolean } from '../../lib/cfml/truthiness.js';
 import type { CfBooleanInput } from '../../lib/cfml/truthiness.js';
 import type { Option } from './option.js';
@@ -272,15 +292,20 @@ const SORTABLE_OPTION_PROPERTY_NAMES = [
 type SortableOptionProperty = (typeof SORTABLE_OPTION_PROPERTY_NAMES)[number];
 
 /**
- * Membership test backing the narrowing in `sortOptionsByProperty`.
+ * Lookup backing the resolution in `sortOptionsByProperty`, keyed by FOLDED name.
  *
- * Typed `ReadonlySet<string>` rather than `ReadonlySet<SortableOptionProperty>`
- * on purpose: `Set<T>.has` accepts only `T`, so the narrower element type would
- * make it impossible to ASK the question about an arbitrary string, which is
- * the only question this set exists to answer. Frozen membership, no mutation,
- * so nothing here carries state between two invocations sharing a container.
+ * CFML METHOD NAMES ARE CASE-INSENSITIVE, so the legacy
+ * `evaluate("obj.get#orderby#()")` at
+ * [model/service/HibachiUtilityService.cfc:L523] resolved `getoptionname()`,
+ * `getOptionName()` and `GETOPTIONNAME()` to the one generated accessor. The
+ * lookup therefore folds with `toLowerCase()` - never `toLocaleLowerCase()`,
+ * for the reason `src/lib/cfml/` documents - and hands back the CANONICAL
+ * property name so the exhaustive switch in `readOptionSortKey` keeps its
+ * narrow type. Frozen membership, no mutation, so nothing here carries state
+ * between two invocations sharing a container.
  */
-const SORTABLE_OPTION_PROPERTIES: ReadonlySet<string> = new Set(SORTABLE_OPTION_PROPERTY_NAMES);
+const SORTABLE_OPTION_PROPERTIES_BY_FOLDED_NAME: ReadonlyMap<string, SortableOptionProperty> =
+  new Map(SORTABLE_OPTION_PROPERTY_NAMES.map((name) => [name.toLowerCase(), name]));
 
 /**
  * A value read off an `Option` for the purpose of ordering.
@@ -293,13 +318,17 @@ const SORTABLE_OPTION_PROPERTIES: ReadonlySet<string> = new Set(SORTABLE_OPTION_
 type OptionSortKey = string | number | Date | undefined;
 
 /**
- * Narrows an arbitrary `orderby` string to a property this module can read.
+ * Resolves an arbitrary `orderby` string to the property this module can read.
  *
- * A type predicate rather than a cast: `as` would assert the narrowing without
- * checking it, and the whole point here is that the check happens.
+ * Returns the canonical property name, or `undefined` when the string names no
+ * accessor at all. A resolver rather than a type predicate, because the caller
+ * needs the CANONICAL spelling to hand to `readOptionSortKey`: a predicate would
+ * narrow the caller's own (possibly differently-cased) string, which is not a
+ * key of the exhaustive switch. The return type is the map's VALUE type, derived
+ * from `SORTABLE_OPTION_PROPERTY_NAMES`, so the two cannot drift.
  */
-function isSortableOptionProperty(name: string): name is SortableOptionProperty {
-  return SORTABLE_OPTION_PROPERTIES.has(name);
+function resolveSortableOptionProperty(name: string): SortableOptionProperty | undefined {
+  return SORTABLE_OPTION_PROPERTIES_BY_FOLDED_NAME.get(name.toLowerCase());
 }
 
 /**
@@ -345,22 +374,35 @@ function readOptionSortKey(option: Option, property: SortableOptionProperty): Op
 }
 
 /**
- * Renders a sort key as the text a text comparison orders.
+ * Renders a sort key exactly as CFML string concatenation would render it, so
+ * that the composed struct key below is the one the legacy engine built.
  *
- * Absent becomes the empty string, which sorts before every non-empty value
- * ascending. That is a judgment call and it is made here rather than left to
- * chance: the legacy expression at
- * [model/service/HibachiUtilityService.cfc:L523] concatenated the accessor
- * result into a string, and CFML renders a null there as the empty string too,
- * so an absent value sorting first is the closer of the two available answers.
+ * The legacy expression at [model/service/HibachiUtilityService.cfc:L523] is
+ * `evaluate("arguments.objects[i].get#property#() & '.' & rn")`, so the accessor
+ * result reaches the key through CFML's implicit number/date-to-string
+ * conversion, never through a comparator. Three conversions matter:
  *
- * A `Date` renders as its ISO-8601 form, chosen because ISO-8601 is the one
- * common rendering whose lexicographic order equals chronological order - so a
- * text sort over timestamps still comes out in time order. An INVALID date
- * renders as the empty string rather than raising: `toISOString()` throws
- * `RangeError` on a NaN time value, and every function in this module is total.
+ *   * A NUMBER renders through `cfNumberToString`, which reproduces CFML's
+ *     trailing-zero dropping - the same mechanism that corrupts
+ *     `RoundingRuleService.roundValue` for values whose cents end in zero. It
+ *     matters here for the identical reason: `sortOrder` 10 renders `"10"`, not
+ *     `"10.0"`, and that string is what gets ordered.
+ *   * A NULL renders as the empty string. CFML concatenation of a null accessor
+ *     result yields `''` rather than raising, so `getOptions('remoteID')` over
+ *     rows with a NULL `remoteID` composes keys of the form `".57"` - which is
+ *     precisely how the legacy numeric mode ends up sorting by the random suffix
+ *     alone.
+ *   * A DATE renders ISO-8601. This is the ONE conversion this port chooses
+ *     rather than inherits: CFML's date-to-string form is engine-specific
+ *     (Lucee emits `{ts '...'}`, Adobe ColdFusion a locale-formatted string), so
+ *     no single rendering can claim byte parity. ISO-8601 is chosen because its
+ *     lexicographic order equals chronological order, which is the property the
+ *     legacy text sort had on whichever form its engine produced. An invalid
+ *     date renders as the empty string rather than raising, because
+ *     `toISOString()` throws `RangeError` on a NaN time value and this function
+ *     must be total.
  */
-function optionSortKeyAsText(value: OptionSortKey): string {
+function optionSortKeyAsCfmlString(value: OptionSortKey): string {
   if (value === undefined) {
     return '';
   }
@@ -370,189 +412,334 @@ function optionSortKeyAsText(value: OptionSortKey): string {
   }
 
   if (typeof value === 'number') {
-    return Number.isNaN(value) ? '' : String(value);
+    return Number.isNaN(value) ? '' : cfNumberToString(String(value));
   }
 
   return Number.isNaN(value.getTime()) ? '' : value.toISOString();
 }
 
 /**
- * Renders a sort key as the number a numeric comparison orders, or `undefined`
- * when it has no numeric reading.
+ * The tie-breaking random source the legacy sort used.
  *
- * A `Date` reads as its epoch milliseconds, which orders chronologically. A
- * string reads through `Number` after trimming, and anything that does not parse
- * - including the empty string, which `Number('')` would otherwise turn into 0
- * - reads as `undefined` so that "no numeric value" never masquerades as zero.
- * `NaN` is likewise collapsed to `undefined`, because NaN is unordered against
- * everything and would make the comparator inconsistent.
+ * [model/service/HibachiUtilityService.cfc:L521] draws `randRange(1,100)` once
+ * per element and concatenates it onto the struct key, so it participates in the
+ * ordering and it decides ties. Reproducing the algorithm means reproducing that
+ * draw, and a defect this port PRESERVES depends on it (see
+ * `sortOptionsByLegacyStructKey`).
+ *
+ * It is a named type so a hydrating repository can supply a deterministic
+ * generator and pin the otherwise non-deterministic behaviour in a
+ * characterization test. The `getOptions` PUBLIC SIGNATURE is untouched by this
+ * - the source is injected through the constructor, the same way this folder
+ * injects a clock or a collaborator port, because interface parity at the method
+ * boundary is the acceptance contract and the entity-layer widening budget is
+ * fully spent.
+ *
+ * @returns An integer in the inclusive range 1..100, matching `randRange(1,100)`.
  */
-function optionSortKeyAsNumber(value: OptionSortKey): number | undefined {
-  if (value === undefined) {
-    return undefined;
-  }
+export type OptionSortTieBreaker = () => number;
 
-  if (typeof value === 'number') {
-    return Number.isNaN(value) ? undefined : value;
-  }
-
-  if (typeof value === 'string') {
-    const trimmed = value.trim();
-
-    if (trimmed === '') {
-      return undefined;
-    }
-
-    const parsed = Number(trimmed);
-
-    return Number.isNaN(parsed) ? undefined : parsed;
-  }
-
-  const epochMilliseconds = value.getTime();
-
-  return Number.isNaN(epochMilliseconds) ? undefined : epochMilliseconds;
+/**
+ * The default tie breaker: `randRange(1,100)`.
+ *
+ * `Math.random` is the faithful analogue of CFML's default `randRange`
+ * algorithm, which is likewise a non-cryptographic pseudo-random generator. No
+ * security decision is taken with this value - it exists only to reproduce the
+ * legacy tie-break and its key-collision behaviour - so a CSPRNG would add a
+ * dependency on `node:crypto` inside a domain entity to buy nothing.
+ */
+function randRangeOneToOneHundred(): number {
+  return Math.floor(Math.random() * 100) + 1;
 }
 
 /**
- * Orders two sort keys ascending, returning the usual negative / zero /
- * positive.
+ * Composes one legacy struct key: the rendered accessor value, a literal `.`,
+ * and the tie-breaking random number.
  *
- * TEXT COMPARISON IS DELIBERATELY NOT `localeCompare`. CFML's `arraySort`
- * delegates to Java string comparison, which orders by UTF-16 code unit and is
- * locale-independent; `localeCompare` applies locale collation instead, and its
- * result would then depend on the locale the Lambda container happens to boot
- * with. `<` and `>` on strings are code-unit comparisons, so they are the
- * faithful primitive here.
- *
- * A NUMERIC comparison places an unreadable value before every readable one, on
- * the same reasoning as the empty-string rendering in `optionSortKeyAsText`:
- * absent sorts first ascending. Two unreadable values compare equal, which
- * keeps the comparator consistent and therefore keeps the sort stable across
- * them.
+ * Verbatim from [model/service/HibachiUtilityService.cfc:L523], whose key format
+ * the source comment at L518-L520 documents as `{VALUE}.{RAND NUMBER}`.
  */
-function compareOptionSortKeys(
-  left: OptionSortKey,
-  right: OptionSortKey,
+function composeLegacySortKey(valueText: string, tieBreak: number): string {
+  return `${valueText}.${String(tieBreak)}`;
+}
+
+/**
+ * Orders the composed struct keys, exactly as
+ * `arraySort(keyArray, sorttype, direction)`
+ * [model/service/HibachiUtilityService.cfc:L526] orders them.
+ *
+ * THE WHOLE COMPOSED KEY IS THE SORT INPUT, not the underlying value: the random
+ * suffix is inside the string being compared, which is what makes the legacy
+ * ordering of equal values non-deterministic and, under `numeric`, what makes an
+ * integer value sort by its random tail.
+ *
+ * `'text'` IS CASE-SENSITIVE AND `'textnocase'` IS NOT. CFML `arraySort`
+ * distinguishes the two, and `'text'` is the default declared at
+ * [model/entity/OptionGroup.cfc:L73], so a caller that omits `sortType` gets the
+ * case-SENSITIVE ordering. `<` and `>` on strings compare by UTF-16 code unit,
+ * which is what CFML's underlying Java string comparison does;
+ * `String.prototype.localeCompare` is deliberately NOT used, because it applies
+ * locale collation and its result would then depend on the locale the Lambda
+ * container happens to boot with.
+ *
+ * THE NUMERIC MODE READS EVERY KEY BEFORE IT ORDERS ANY OF THEM, and that is a
+ * deliberate structural choice rather than an optimisation. `arraySort` with sort
+ * type `numeric` requires the whole array to be numeric, so its refusal does not
+ * depend on which pairs a comparison algorithm happens to visit - a
+ * single-element array of a non-numeric key fails there, and it fails here.
+ * Validating inside a comparator instead would make the refusal depend on
+ * `Array.prototype.sort`'s internals, which is not a contract anything should
+ * rest on.
+ *
+ * Keys are unique by construction - they are the keys of a struct - so no tie of
+ * the comparator's own ever has to be broken.
+ */
+function sortLegacySortKeys(
+  keyArray: readonly string[],
   sortType: OptionSortType,
-): number {
+  direction: OptionSortDirection,
+): readonly string[] {
+  const directionMultiplier = direction === 'desc' ? -1 : 1;
+
   if (sortType === 'numeric') {
-    const leftNumber = optionSortKeyAsNumber(left);
-    const rightNumber = optionSortKeyAsNumber(right);
+    const numericKeys = keyArray.map((key) => ({
+      key,
+      numericValue: legacyNumericKeyValue(key),
+    }));
 
-    if (leftNumber === undefined) {
-      return rightNumber === undefined ? 0 : -1;
-    }
+    numericKeys.sort((left, right) => {
+      if (left.numericValue < right.numericValue) {
+        return -directionMultiplier;
+      }
 
-    if (rightNumber === undefined) {
-      return 1;
-    }
+      return left.numericValue > right.numericValue ? directionMultiplier : 0;
+    });
 
-    if (leftNumber < rightNumber) {
-      return -1;
-    }
-
-    return leftNumber > rightNumber ? 1 : 0;
+    return numericKeys.map((entry) => entry.key);
   }
 
-  // DOCUMENTED DIVERGENCE - 'text' IS CASE-INSENSITIVE HERE.
-  //
-  // Both `'text'` and `'textnocase'` compare case-insensitively in this port.
-  // That is a knowing divergence from CFML, recorded rather than absorbed:
-  // `arraySort` at [model/service/HibachiUtilityService.cfc:L526] treats
-  // `'text'` as CASE-SENSITIVE and reserves `'textnocase'` for the insensitive
-  // form, so a legacy caller relying on the default would have got a
-  // case-sensitive ordering. Case-insensitive is specified for this port
-  // because CFML comparison is case-insensitive nearly everywhere else and a
-  // case-sensitive default is a trap for callers.
-  //
-  // The divergence has NO observable effect on any existing call path, and that
-  // was verified rather than hoped: a repository-wide search for `getOptions(`
-  // with any argument returns exactly one hit, the declaration itself at
-  // [model/entity/OptionGroup.cfc:L73]. Every real call site in the legacy tree
-  // uses the no-argument form and therefore never reaches this comparison.
-  // Should a case-sensitive ordering ever be required, splitting the two sort
-  // types apart here is a one-line change confined to this function.
-  const leftText = optionSortKeyAsText(left).toLowerCase();
-  const rightText = optionSortKeyAsText(right).toLowerCase();
+  const foldCase = sortType === 'textnocase';
 
-  if (leftText < rightText) {
-    return -1;
-  }
+  return [...keyArray].sort((left, right) => {
+    const leftText = foldCase ? left.toLowerCase() : left;
+    const rightText = foldCase ? right.toLowerCase() : right;
 
-  return leftText > rightText ? 1 : 0;
+    if (leftText < rightText) {
+      return -directionMultiplier;
+    }
+
+    return leftText > rightText ? directionMultiplier : 0;
+  });
 }
 
 /**
- * The explicit in-memory sort that replaces the legacy utility service call.
+ * Reads a composed key as the number a `numeric` sort orders it by, raising when
+ * it has no numeric reading.
+ *
+ * REPRODUCES A REAL FAILURE RATHER THAN PAPERING OVER IT. CFML `arraySort` with
+ * sort type `numeric` raises when an element is not numeric, and the composed key
+ * makes that reachable in two ordinary situations, both of them consequences of
+ * the key format at [model/service/HibachiUtilityService.cfc:L523]:
+ *
+ *   * A TEXT value - `getOptions('optionName', 'numeric')` composes
+ *     `"Large.42"`, which is not a number.
+ *   * A value that ALREADY CONTAINS A DECIMAL POINT - the random suffix turns it
+ *     into a second one, so `"1.5"` composes `"1.5.42"`.
+ *
+ * `parseFloat` is not used: it would silently accept the `"1.5.42"` prefix as
+ * 1.5 and read `"Large.42"` as NaN, inventing an ordering the legacy engine
+ * never produced. `Number` over the whole string is the faithful test, and it
+ * also matches CFML's `isNumeric` on the two shapes that MUST keep working: an
+ * empty value composes `".42"`, which CFML and `Number` agree is 0.42, and an
+ * integer value composes `"7.42"`.
+ */
+function legacyNumericKeyValue(key: string): number {
+  const numericValue = Number(key);
+
+  if (Number.isNaN(numericValue)) {
+    // LEGACY-NOTE [model/service/HibachiUtilityService.cfc:L526]: arraySort with sorttype="numeric"
+    // raises on a non-numeric element; reproduced rather than degraded to a text or NaN ordering.
+    throw new Error(
+      `OptionGroup.getOptions cannot apply a numeric sort: the composed sort key "${key}" is not ` +
+        'numeric. The legacy sort composed each key as "<value>.<randRange(1,100)>" ' +
+        '[model/service/HibachiUtilityService.cfc:L523] and then called ' +
+        'arraySort(keyArray,"numeric") [model/service/HibachiUtilityService.cfc:L526], which ' +
+        'raises for a non-numeric element - so a text-valued property, or a value that already ' +
+        'contains a decimal point, fails here exactly as it failed there. Sort by "text" or ' +
+        '"textnocase" instead.',
+    );
+  }
+
+  return numericValue;
+}
+
+/**
+ * The legacy sort, reproduced: struct-key composition, key sort, array rebuild.
  *
  * Legacy [model/entity/OptionGroup.cfc:L77]:
- * `getService("hibachiUtilityService").sortObjectArray(...)` - replaced by an
- * explicit in-memory sort per the folder ruling (no 14th port;
- * hibachiUtilityService is not ported).
+ * `getService("hibachiUtilityService").sortObjectArray(variables.Options,
+ * arguments.orderby, arguments.sortType, arguments.direction)`. The utility is
+ * framework code that is not ported as a module - there is no 14th port and
+ * `hibachiUtilityService` is not a collaborator here - but its OBSERVABLE
+ * BEHAVIOUR is part of what `getOptions` returns, so the algorithm is reproduced
+ * in place rather than replaced by a better one. Verified verbatim,
+ * [model/service/HibachiUtilityService.cfc:L514-L531]:
  *
- * LEGACY-NOTE [model/service/HibachiUtilityService.cfc:L514-L531]: the utility
- * being replaced is not merely re-expressed, and the difference is worth
- * stating because it is visible in results. Its algorithm keyed a struct by the
- * string `"<accessor value>.<randRange(1,100)>"`, sorted the KEYS, then rebuilt
- * the array. Three consequences follow from that, none of which is reproduced:
+ *   public array function sortObjectArray(required array objects, required string orderby,
+ *       string sorttype="text", string direction = "asc") {
+ *       var property = arguments.orderby;
+ *       var sortedStruct = {};
+ *       var sortedArray = [];
+ *       for (var i=1; i <= arrayLen(arguments.objects); i++) {
+ *               // Each key in the struct is in the format of
+ *               // {VALUE}.{RAND NUMBER} This is important otherwise any objects
+ *               // with the same value would be lost.
+ *               var rn = randRange(1,100);
+ *               var sortedStruct[ evaluate("arguments.objects[i].get#property#() & '.' & rn") ] = objects[i];
+ *       }
+ *       var keyArray = structKeyArray(sortedStruct);
+ *       arraySort(keyArray,arguments.sorttype,arguments.direction);
+ *       for(var i=1; i<=arrayLen(keyArray);i++) {
+ *           arrayAppend(sortedArray, sortedStruct[keyArray[i]]);
+ *       }
+ *       return sortedArray;
+ *   }
  *
- *   1. Ties resolved by a random suffix, so equal values came back in a
- *      NON-DETERMINISTIC order between two calls on identical data.
- *   2. Two elements sharing a value AND a random number collided on the same
- *      struct key, and the second assignment overwrote the first - so the
- *      returned array could be SHORTER than the input, silently losing an
- *      element. The source comment at L519-L521 shows the random suffix was
- *      added to avoid exactly that, with only 100 values to draw from.
- *   3. Under `numeric` the random suffix became a fractional part of the key,
- *      so integers were ordered by their random tails, and a value that already
- *      contained a decimal point produced a non-numeric key.
+ * FOUR OBSERVABLE PROPERTIES ARE REPRODUCED, NOT REPAIRED. Each one is visible
+ * in the array a caller receives, which is why none of them is treated as an
+ * internal detail of unported framework code:
  *
- * This replacement sorts a copy with a consistent comparator, so it is stable -
- * `Array.prototype.sort` has been required to be stable since ES2019 - it is
- * deterministic, and it always returns exactly as many elements as it received.
- * That is a deliberate improvement over the framework utility rather than a
- * preserved defect, and it is legitimate here for a specific reason:
- * `HibachiUtilityService` is framework code this port REPLACES rather than
- * ports, so its internals are not part of the behaviour contract. Nothing in
- * the legacy-defect register names it, which is why no `LEGACY-DEFECT` marker
- * is used.
+ *   1. TIES ARE BROKEN RANDOMLY. The random suffix sits inside the sorted key, so
+ *      two options with equal values come back in a non-deterministic order
+ *      between two calls on identical data.
+ *   2. AN ELEMENT CAN BE LOST. Two options sharing a rendered value AND a drawn
+ *      random number collide on one struct key; the later assignment overwrites
+ *      the earlier, so the returned array is SHORTER than the input. The source
+ *      comment at L518-L520 shows the suffix was introduced to make this
+ *      unlikely, with only 100 values to draw from - it does not make it
+ *      impossible. CFML struct keys are also CASE-INSENSITIVE, so `"Red.7"` and
+ *      `"red.7"` are the same key and collide too.
+ *   3. THE KEY TEXT COMES FROM THE FIRST INSERTION. Assigning to an existing
+ *      struct key replaces the value and leaves the key as first spelled, so
+ *      after a case-insensitive collision the ordering uses the earlier
+ *      spelling while the surviving element is the later one.
+ *   4. `numeric` ORDERS BY THE RANDOM TAIL. The suffix becomes the fractional
+ *      part of the key, so integer values are ordered by their random tails, and
+ *      a value that already contains a decimal point produces a non-numeric key
+ *      and raises (see `legacyNumericKeyValue`).
  *
- * SORTS A COPY, NEVER IN PLACE. `Array.prototype.sort` mutates its receiver, so
- * the materialized association is spread into a new array first. Mutating it
- * would corrupt every other holder of the same request-scoped instance, and the
- * association is `readonly` precisely to make that impossible.
+ * A `Map` keyed by the UPPERCASED key text reproduces CFML's case-insensitive
+ * struct-key semantics: lookup ignores case, the stored `keyText` is the first
+ * spelling seen, and the stored `option` is the last written. The key ORDER of
+ * the map is irrelevant, because the keys are sorted before the array is
+ * rebuilt - which also means CFML's unordered `structKeyArray` introduces no
+ * difference here.
+ *
+ * NEVER SORTS IN PLACE. The keys are sorted, not the association; the returned
+ * array is freshly built, exactly as the legacy `sortedArray` is. The
+ * materialized association is `readonly` so that this cannot regress into
+ * mutating shared request-scoped state.
+ */
+function sortOptionsByLegacyStructKey(
+  options: readonly Option[],
+  property: SortableOptionProperty,
+  sortType: OptionSortType,
+  direction: OptionSortDirection,
+  tieBreaker: OptionSortTieBreaker,
+): Option[] {
+  const sortedStruct = new Map<string, { readonly keyText: string; option: Option }>();
+
+  // CFML parity [model/service/HibachiUtilityService.cfc:L517-L524]: one pass over the input in
+  // order, one `randRange(1,100)` draw per element, one struct assignment per element.
+  for (const option of options) {
+    const keyText = composeLegacySortKey(
+      optionSortKeyAsCfmlString(readOptionSortKey(option, property)),
+      tieBreaker(),
+    );
+    const structKey = keyText.toUpperCase();
+    const existing = sortedStruct.get(structKey);
+
+    if (existing === undefined) {
+      sortedStruct.set(structKey, { keyText, option });
+    } else {
+      // LEGACY-DEFECT [model/service/HibachiUtilityService.cfc:L523]: a colliding key overwrites the
+      // earlier element, so the returned array is shorter than the input. Preserved deliberately; do
+      // not fix without a product decision.
+      existing.option = option;
+    }
+  }
+
+  // CFML parity [model/service/HibachiUtilityService.cfc:L525-L526]: the KEYS are sorted, and the
+  // sort type and direction apply to the composed keys rather than to the underlying values.
+  const keyArray = sortLegacySortKeys(
+    [...sortedStruct.values()].map((entry) => entry.keyText),
+    sortType,
+    direction,
+  );
+
+  // CFML parity [model/service/HibachiUtilityService.cfc:L527-L529]: the array is rebuilt by walking
+  // the sorted keys and appending each struct member, which is why the result can be shorter than
+  // the input but never longer and never re-ordered by anything other than the keys.
+  const sortedArray: Option[] = [];
+
+  for (const key of keyArray) {
+    const entry = sortedStruct.get(key.toUpperCase());
+
+    if (entry !== undefined) {
+      sortedArray.push(entry.option);
+    }
+  }
+
+  return sortedArray;
+}
+
+/**
+ * Resolves the `orderby` argument to a readable property, then sorts.
+ *
+ * AN UNSUPPORTED `orderby` RAISES, because that is what the legacy did. The
+ * accessor was resolved dynamically through `evaluate()`
+ * [model/service/HibachiUtilityService.cfc:L523], so an `orderby` naming no
+ * accessor threw at runtime - it did not degrade to an unsorted array, and this
+ * port does not either. Returning the association unsorted would answer a
+ * question the caller did not ask and would hide a programming error at exactly
+ * the layer that can still name it. The error is a deterministic domain error
+ * carrying the offending name and the supported set, which is strictly more
+ * useful than CFML's `evaluate` failure while failing on the same inputs.
+ *
+ * This is also why `getOptions('')` throws rather than behaving like the
+ * no-argument call: the empty string IS an argument, so the legacy took the sort
+ * branch with it and `evaluate("....get()")` failed there too.
  */
 function sortOptionsByProperty(
   options: readonly Option[],
   orderby: string,
   sortType: OptionSortType,
   direction: OptionSortDirection,
-): readonly Option[] {
-  if (!isSortableOptionProperty(orderby)) {
-    // JUDGMENT CALL, and the legacy behaviour here is stated accurately rather
-    // than flattered: CFML resolved the accessor through `evaluate()`
-    // [model/service/HibachiUtilityService.cfc:L523], so an `orderby` naming no
-    // accessor RAISED at runtime - it did not degrade. This port returns the
-    // association unsorted instead, which is the specified behaviour and which
-    // matches the total-function discipline the rest of this subtree holds:
-    // every helper in `src/lib/cfml/` returns a value on every branch, because
-    // on a money-adjacent path a throw turns an ordinary data-shape variation
-    // into a failed request. A caller that NEEDS the failure must validate
-    // `orderby` upstream; this branch will not signal it.
-    return options;
+  tieBreaker: OptionSortTieBreaker,
+): Option[] {
+  const property: SortableOptionProperty | undefined = resolveSortableOptionProperty(orderby);
+
+  if (property === undefined) {
+    // LEGACY-NOTE [model/service/HibachiUtilityService.cfc:L523]: evaluate() raised for an accessor
+    // that does not exist; the failure contract is reproduced instead of degrading to unsorted data.
+    //
+    // The message OPENS with the legacy terminal sentence from
+    // [org/Hibachi/HibachiEntity.cfc:L565] verbatim - grammatical error included - because
+    // `src/handlers/errorMapper.ts` recognises that anchored template and classifies the failure by
+    // it. The diagnostic detail follows in parentheses; the caller's spelling is interpolated exactly
+    // as it appeared in the evaluated source text, and the supported set is listed because the match
+    // is case-insensitive and the reader needs the canonical spellings.
+    throw new Error(
+      `You have called a method get${orderby}() which does not exists in the Option entity. ` +
+        `(OptionGroup.getOptions cannot order by "${orderby}": Option declares no such sortable ` +
+        `property. The legacy sort resolved the accessor dynamically with evaluate() ` +
+        `[model/service/HibachiUtilityService.cfc:L523] and raised when it did not exist. ` +
+        'Supported properties, matched case-insensitively as CFML matches method names: ' +
+        `${SORTABLE_OPTION_PROPERTY_NAMES.join(', ')}.)`,
+    );
   }
 
-  const directionMultiplier = direction === 'desc' ? -1 : 1;
-
-  return [...options].sort(
-    (left, right) =>
-      directionMultiplier *
-      compareOptionSortKeys(
-        readOptionSortKey(left, orderby),
-        readOptionSortKey(right, orderby),
-        sortType,
-      ),
-  );
+  return sortOptionsByLegacyStructKey(options, property, sortType, direction, tieBreaker);
 }
 
 /**
@@ -569,6 +756,11 @@ function sortOptionsByProperty(
  * becomes async if and only if it reaches a port or a repository - and nothing on this entity does.
  * `getOptions` traverses an already-materialized association and performs pure comparison, and the
  * two bidirectional helpers only call back into the other entity's own API.
+ *
+ * `getOptions` is the one method that can THROW, and both throws are reproductions rather than
+ * additions: an `orderby` naming no accessor raised through `evaluate()`
+ * [model/service/HibachiUtilityService.cfc:L523], and `arraySort(...,"numeric")` raised on a
+ * non-numeric element [model/service/HibachiUtilityService.cfc:L526]. Nothing else here is partial.
  */
 export class OptionGroup {
   // --- Persistent Properties [model/entity/OptionGroup.cfc:L52-L58] ---------------------------
@@ -732,7 +924,25 @@ export class OptionGroup {
    * the `delete` context [model/validation/OptionGroup.json:L5], which blocks deleting a group that
    * still has options - enforced at the service tier, not here.
    */
-  private readonly options: readonly Option[];
+  private readonly options: Option[];
+
+  // --- Injected collaborator ------------------------------------------------------------------
+
+  /**
+   * The tie-breaking random source the reproduced legacy sort draws from.
+   *
+   * NOT A PERSISTENT PROPERTY and not part of the schema. It stands in for
+   * `randRange(1,100)` at [model/service/HibachiUtilityService.cfc:L521], which is ambient in CFML
+   * and must therefore become explicit here, exactly as ambient request scope becomes an explicit
+   * context parameter and an ambient clock becomes an explicit `now`. Injecting it is what makes the
+   * preserved non-determinism and the preserved key-collision element loss characterizable instead
+   * of untestable, and it does so WITHOUT touching `getOptions`'s public signature - interface
+   * parity at the method boundary is the acceptance contract.
+   *
+   * `undefined` means "use `randRange(1,100)`", which is the legacy behaviour, so a repository that
+   * states nothing gets the legacy sort.
+   */
+  private readonly optionSortTieBreaker: OptionSortTieBreaker;
 
   /**
    * Hydrates one `SwOptionGroup` row.
@@ -745,12 +955,15 @@ export class OptionGroup {
    * `exactOptionalPropertyTypes` is enabled, so "absent" and "present-but-undefined" are genuinely
    * different types, and requiring the key forces a hydrating repository to state "I looked and
    * found nothing" instead of silently omitting it. `options` is required on the same terms: a
-   * repository must pass `[]` deliberately rather than leave the association unstated.
+   * repository must pass `[]` deliberately rather than leave the association unstated, and
+   * `optionSortTieBreaker` on the same terms again - passing `undefined` is the deliberate statement
+   * "use the legacy random source".
    *
-   * There is no collaborator port parameter, because the single legacy `getService(` site is
-   * replaced by an in-file sort, and no clock parameter, because this entity performs no date
-   * comparison of any kind - contrast `promotionPeriod.ts`, whose `isCurrent` takes an explicit
-   * `now` so the UTC policy is visible and the method is deterministically testable.
+   * There is no repository or service port parameter, because the single legacy `getService(` site
+   * is `hibachiUtilityService`, framework code this port does not treat as a collaborator, and no
+   * clock parameter, because this entity performs no date comparison of any kind - contrast
+   * `promotionPeriod.ts`, whose `isCurrent` takes an explicit `now` so the UTC policy is visible and
+   * the method is deterministically testable.
    */
   constructor(init: {
     readonly optionGroupID: string;
@@ -765,7 +978,8 @@ export class OptionGroup {
     readonly createdByAccountID: string | undefined;
     readonly modifiedDateTime: Date | undefined;
     readonly modifiedByAccountID: string | undefined;
-    readonly options: readonly Option[];
+    readonly options: Option[];
+    readonly optionSortTieBreaker: OptionSortTieBreaker | undefined;
   }) {
     this.optionGroupID = init.optionGroupID;
     this.optionGroupName = init.optionGroupName;
@@ -780,6 +994,7 @@ export class OptionGroup {
     this.modifiedDateTime = init.modifiedDateTime;
     this.modifiedByAccountID = init.modifiedByAccountID;
     this.options = init.options;
+    this.optionSortTieBreaker = init.optionSortTieBreaker ?? randRangeOneToOneHundred;
   }
 
   // --- Accessors --------------------------------------------------------------------------------
@@ -904,32 +1119,42 @@ export class OptionGroup {
    * caller passed nothing". This port therefore tests `orderby !== undefined`. Writing
    * `if (orderby)` - or `if (orderby.length)`, or any other truthiness test - would send the EMPTY
    * STRING down the wrong branch, because `getOptions('')` passes an argument and must take the sort
-   * branch, where it resolves to no sortable property and degrades to the unsorted array. It must
-   * not silently behave like the no-argument call.
+   * branch, where the legacy `evaluate("....get() & '.' & rn")` raised. It must not silently behave
+   * like the no-argument call.
    *
    * THE DEFAULTS ARE LOAD-BEARING and are reproduced with the exact legacy literals: `sortType`
-   * defaults to `'text'` and `direction` to `'asc'`, both declared at
-   * [model/entity/OptionGroup.cfc:L73].
+   * defaults to `'text'` - which is CASE-SENSITIVE, as CFML `arraySort`'s `'text'` is - and
+   * `direction` to `'asc'`, both declared at [model/entity/OptionGroup.cfc:L73].
+   *
+   * THE SORT BRANCH REPRODUCES THE LEGACY UTILITY, INCLUDING ITS DEFECTS: random tie-breaking, a
+   * key collision that can drop an element, and a `numeric` mode that orders by the random tail. See
+   * `sortOptionsByLegacyStructKey` for the full enumeration and the reasoning.
    *
    * SYNCHRONOUS. The body traverses an already-materialized association and performs pure
    * comparison; it reaches no port and no repository.
    *
-   * Returns `readonly Option[]` in both branches. The no-argument branch hands back the materialized
-   * association itself, so the `readonly` is what stops a caller mutating this entity's state
-   * through the returned reference; the sort branch hands back a fresh array, and typing both alike
-   * means a caller never has to know which branch produced its value.
+   * Returns `Option[]` in both branches. The no-argument branch hands back the materialized
+   * association ITSELF - live and mutable in content, which the folder's association/ownership
+   * contract requires because the far side reaches back through it: [model/entity/Option.cfc:L95]
+   * does `arrayAppend(arguments.optionGroup.getOptions(), this)` and L102-L105 does `arrayFind` then
+   * `arrayDeleteAt` on the same array. The sort branch hands back a FRESH array, so ordering never
+   * disturbs the association, and typing both alike means a caller never has to know which branch
+   * produced its value.
    *
    * @param orderby - An `Option` property name to order by. Omit it entirely to get the association
-   *   as materialized. Any string that does not name a sortable property yields the association
-   *   unsorted; see `sortOptionsByProperty` for why that degrades rather than throws.
-   * @param sortType - `'text'` (the legacy default), `'textnocase'` or `'numeric'`.
+   *   as materialized.
+   * @param sortType - `'text'` (the legacy default, case-sensitive), `'textnocase'` or `'numeric'`.
    * @param direction - `'asc'` (the legacy default) or `'desc'`.
+   * @throws When `orderby` names no sortable `Option` property, reproducing the legacy `evaluate()`
+   *   failure at [model/service/HibachiUtilityService.cfc:L523] rather than degrading to unsorted
+   *   data, and when a `'numeric'` sort meets a composed key that is not numeric, reproducing
+   *   `arraySort`'s own failure at [model/service/HibachiUtilityService.cfc:L526].
    */
   getOptions(
     orderby?: string,
     sortType: OptionSortType = 'text',
     direction: OptionSortDirection = 'asc',
-  ): readonly Option[] {
+  ): Option[] {
     if (orderby === undefined) {
       // LEGACY-NOTE [model/entity/OptionGroup.cfc:L75]: the source reads `variables.Options` with a
       // capital `O`, while the property itself is declared `options` at L70. CFML identifiers are
@@ -940,7 +1165,13 @@ export class OptionGroup {
       return this.options;
     }
 
-    return sortOptionsByProperty(this.options, orderby, sortType, direction);
+    return sortOptionsByProperty(
+      this.options,
+      orderby,
+      sortType,
+      direction,
+      this.optionSortTieBreaker,
+    );
   }
 
   // OMITTED [model/entity/OptionGroup.cfc:L81-L83]: getOptionsSmartList() returned
@@ -988,15 +1219,16 @@ export class OptionGroup {
   // `variables.optionGroup` when it is absent, so its TypeScript parameter is optional - this file
   // always passes `this`, so it is compatible either way.
   //
-  // HAND-OFF NOTE for whoever authors `option.ts`. The legacy far side reaches back through this
-  // entity's collection and MUTATES it: [model/entity/Option.cfc:L95] does
-  // `arrayAppend(arguments.optionGroup.getOptions(), this)` and L102-L105 does
-  // `arrayFind` then `arrayDeleteAt` on the same array. Those worked because CFML handed back the
-  // live Hibernate collection by reference. In this port `getOptions()` returns `readonly Option[]`
-  // and the repository owns materialization, so that in-place mutation is intentionally not
-  // available. Do NOT weaken the `readonly` here to restore it: mutating a shared request-scoped
-  // array would corrupt every other holder of the same instance. Reconcile the collection at the
-  // repository boundary instead.
+  // NOTE ON THE FAR SIDE in `option.ts`. The legacy far side reaches back through this entity's
+  // collection and MUTATES it: [model/entity/Option.cfc:L95] does
+  // `arrayAppend(arguments.optionGroup.getOptions(), this)` and L102-L105 does `arrayFind` then
+  // `arrayDeleteAt` on the same array. Those worked because CFML handed back the live Hibernate
+  // collection by reference, and this port reproduces that: `getOptions()` with no argument returns
+  // the LIVE `Option[]`, so `option.ts` ports `setOptionGroup`/`removeOptionGroup` faithfully by
+  // pushing into and splicing out of it. The array is therefore mutable IN CONTENT and must stay so;
+  // what it is not is REASSIGNABLE, which is what the `private readonly` field declaration pins. The
+  // sorted branch deliberately hands back a fresh array so ordering can never disturb the
+  // association.
 
   /**
    * Whether `option` is already a member of this group's materialized options.
@@ -1022,16 +1254,47 @@ export class OptionGroup {
    * accessor ColdFusion's ORM generates for a collection property carrying `singularname="option"`
    * [model/entity/OptionGroup.cfc:L70], and it tests membership of the collection.
    *
-   * Membership is by REFERENCE IDENTITY, via `Array.prototype.includes`. That matches the legacy
-   * semantics: the paired `removeOptionGroup` locates the same element with
-   * `arrayFind(arguments.optionGroup.getOptions(), this)` [model/entity/Option.cfc:L102], which is
-   * also identity-based. It is meaningful because entity instances are request-scoped and the
-   * repository yields one instance per row within a request; it deliberately does NOT fall back to
-   * comparing `optionID`, because two distinct instances of the same row are a hydration concern for
-   * the repository to resolve, not something this entity should paper over.
+   * MEMBERSHIP IS BY PRIMARY KEY, WITH A REFERENCE FALLBACK FOR AN UNSAVED ROW, which is the one
+   * containment rule this folder uses everywhere - `priceGroup.ts`, `promotionCode.ts`,
+   * `promotionApplied.ts` and `promotionPeriod.ts` all decide containment the same way, and
+   * `option.ts` states the rule at its own `removeOptionGroup`. The legacy
+   * `arrayFind(collection, component)` is reference identity in CFML, but under Hibernate reference
+   * identity WAS row identity: a session returned one instance per row, so the two were the same
+   * test. A driver-only stack has no session, so the two come apart, and reproducing the letter of
+   * the legacy test would stop reproducing its meaning. Nothing in this port guarantees one instance
+   * per row, `getOptions()` may legitimately hold options materialized by a different query than the
+   * argument came from, and a `hasOption` that answers `false` for a row it already contains makes
+   * [model/entity/Option.cfc:L94]'s guard append a DUPLICATE.
+   *
+   * THE FALLBACK IS NOT A COURTESY. An unsaved `Option` has `optionID === ''`, and so does every
+   * other unsaved option, so a key comparison would report all of them as the same member. When
+   * either side is unsaved the test therefore falls back to reference identity, which is the only
+   * thing that distinguishes two unsaved rows.
    */
   hasOption(option: Option): boolean {
-    return this.options.includes(option);
+    const candidateOptionID: string = option.getOptionID();
+
+    // An empty primary key on EITHER side means at least one of the two rows has never been
+    // persisted, so keys cannot separate them and only object identity can.
+    if (candidateOptionID === '' || this.optionsContainUnsavedRow()) {
+      return this.options.some(
+        (member) => member === option || member.getOptionID() === candidateOptionID,
+      );
+    }
+
+    return this.options.some((member) => member.getOptionID() === candidateOptionID);
+  }
+
+  /**
+   * Whether this group's materialized options include at least one row that has never been
+   * persisted.
+   *
+   * Private, and it exists only to keep {@link OptionGroup.hasOption} readable. It carries no legacy
+   * counterpart: CFML needed no such test because `arrayFind` compared references and was therefore
+   * already correct for unsaved rows.
+   */
+  private optionsContainUnsavedRow(): boolean {
+    return this.options.some((member) => member.getOptionID() === '');
   }
 
   /**

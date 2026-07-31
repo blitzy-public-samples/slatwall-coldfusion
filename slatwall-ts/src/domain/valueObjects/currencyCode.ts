@@ -1,4 +1,18 @@
 // ---------------------------------------------------------------------------
+// CHECKPOINT STATUS - FORWARD REFERENCES CARRY THE MARKER `(planned)`
+//
+// The subtree is authored in boundaries, and AAP 0.4.5 makes the authoring
+// order "a compile-order convenience, not a schedule". Commentary in this file
+// therefore names modules of the target layout that DO NOT EXIST YET. Every such
+// name carries `(planned)` at its point of use, meaning exactly: a planned Agent
+// Action Plan target that is ABSENT from the subtree at this checkpoint. Nothing
+// here asserts that any of them exists now, and no behaviour in this file depends
+// on one. The complete set named below, with the role each will play:
+//
+//   src/domain/entities/sku.ts  Sku entity
+// ---------------------------------------------------------------------------
+
+// ---------------------------------------------------------------------------
 // slatwall-ts - the CurrencyCode value object
 //
 // PURPOSE
@@ -152,14 +166,17 @@
 //   neither `entities/`, `views/`, `promotionEngine/` nor `ports/`.
 //
 //   `isNullish` from the truthiness helper is NOT imported, and the omission
-//   is deliberate rather than an oversight. Every nullish question this module
-//   asks is already answered inside a helper it does call: `cfEquals`
-//   documents any nullish operand as unequal, and the `typeof value ===
-//   'string'` test in {@link isCurrencyCode} excludes `null` and `undefined`
-//   by construction while also narrowing the type, which a `boolean`-returning
-//   predicate cannot do. `truthiness.ts` makes the same call for the same
-//   reason inside its own `cfLen`. An import retained for appearance's sake
-//   would be an unused local, and `noUnusedLocals` correctly rejects it.
+//   is deliberate rather than an oversight. Neither export needs a local
+//   nullish test: `cfEquals` RAISES `CfmlComparisonError` for a nullish
+//   operand - matching CFML, where a null reaching `eq` raises - so
+//   {@link currencyCodeEquals} delegates that decision wholesale rather than
+//   pre-empting it with a guard that would have to invent a return value; and
+//   the `typeof value === 'string'` test in {@link isCurrencyCode} excludes
+//   `null` and `undefined` by construction while also narrowing the type,
+//   which a `boolean`-returning predicate cannot do. `truthiness.ts` makes the
+//   same call for the same reason inside its own `cfLen`. An import retained
+//   for appearance's sake would be an unused local, and `noUnusedLocals`
+//   correctly rejects it.
 //
 // NO USER RULES WERE PROVIDED
 //   (1) No user-specified rules were provided for this project. (2) That
@@ -450,16 +467,32 @@ export function isCurrencyCode(value: unknown): value is CurrencyCode {
  * compared normally, an empty string being an ordinary value in CFML. A second
  * implementation of a case fold is a second place for it to drift.
  *
- * A NULLISH OPERAND IS NEVER EQUAL TO ANYTHING, INCLUDING ANOTHER NULLISH
- * OPERAND, and that rule is not incidental. `cfEquals(undefined, undefined)`
- * is `false` where `undefined === undefined` is `true`, and the asymmetry is
- * intended: treating "no currency code" as equal to "no currency code" reads
- * as a match on a currency-selection path, and would let a price be attributed
- * to a currency that was never identified. On a money path that is the wrong
- * direction to fail in. CFML cannot answer the question at all - passing a
- * null into `eq` raises an error there - so there is no legacy result being
- * discarded, only a gap being closed deliberately. A caller that needs to
- * detect "both absent" tests for absence explicitly.
+ * A NULLISH OPERAND RAISES, AND THAT IS THE CFML ANSWER RATHER THAN A POLICY
+ * CHOSEN HERE. Passing a null into `eq` raises in CFML, so the delegated
+ * `cfEquals` raises `CfmlComparisonError` and this function raises with it.
+ *
+ * An earlier revision of this comment claimed a nullish operand was "never equal
+ * to anything, including another nullish operand", on the reasoning that reading
+ * "no currency code" as equal to "no currency code" would present as a match and
+ * let a price be attributed to a currency that was never identified. The harm
+ * identified there is real; the remedy was not. This function returns `boolean`,
+ * and on the cascade at [model/entity/Sku.cfc:L385] `false` already MEANS "these
+ * are different currencies" - so answering `false` for "one of these is not a
+ * currency code at all" is indistinguishable from a definite negative. The
+ * consequence is that the base-currency step is silently skipped, the SKU carries
+ * no entry for the configured currency, and the fault first becomes visible when
+ * `getPriceByCurrencyCode` returns `undefined` somewhere else entirely - which is
+ * precisely the outcome §0.6.3 warns about, reached the long way round. Raising
+ * stops at the comparison that could not be made.
+ *
+ * The asymmetry with strict equality is therefore gone rather than inverted:
+ * `currencyCodeEquals(undefined, undefined)` does not answer `false` where
+ * `undefined === undefined` is `true` - it refuses the question. A caller that
+ * needs to detect "both absent" tests for absence explicitly, before comparing.
+ *
+ * EMPTY STRINGS ARE UNAFFECTED. `''` is not nullish; it is an ordinary CFML
+ * string value, so two empty codes compare equal and an empty code compares
+ * unequal to a real one. Only genuinely absent operands raise.
  *
  * Both parameters accept a plain `string`, not just a {@link CurrencyCode}.
  * That is required rather than lax: at [model/entity/Sku.cfc:L385] one operand
@@ -467,6 +500,11 @@ export function isCurrencyCode(value: unknown): value is CurrencyCode {
  * the settingsProvider port publishes the sku-currency setting as a `string`.
  * Demanding a branded operand would force a throwing construction into a
  * comparison, which is not what the legacy line does.
+ *
+ * @throws {CfmlComparisonError} if either operand is `null` or `undefined`. The
+ *   error names which operand was absent and reports the surviving one, because
+ *   on this path the survivor is the clue to where the missing code should have
+ *   come from.
  */
 export function currencyCodeEquals(
   a: string | null | undefined,
@@ -557,7 +595,7 @@ export function getByCurrencyCode<TEntry>(
 //
 //   1. The currency-details map that {@link getByCurrencyCode} is shaped for
 //      is built by `getCurrencyDetails()` at [model/entity/Sku.cfc:L367-L433],
-//      which belongs to `src/domain/entities/sku.ts`. Two properties of that
+//      which belongs to `src/domain/entities/sku.ts` (planned). Two properties of that
 //      cascade are the entity's to preserve, not this module's: the
 //      eligibility gate at [model/entity/Sku.cfc:L373], where an empty
 //      `skuEligibleCurrencies` setting leaves the map `{}` so that every

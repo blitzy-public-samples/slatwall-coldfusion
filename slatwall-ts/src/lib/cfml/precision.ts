@@ -1,4 +1,19 @@
 // ---------------------------------------------------------------------------
+// CHECKPOINT STATUS - FORWARD REFERENCES CARRY THE MARKER `(planned)`
+//
+// The subtree is authored in boundaries, and AAP 0.4.5 makes the authoring
+// order "a compile-order convenience, not a schedule". Commentary in this file
+// therefore names modules of the target layout that DO NOT EXIST YET. Every such
+// name carries `(planned)` at its point of use, meaning exactly: a planned Agent
+// Action Plan target that is ABSENT from the subtree at this checkpoint. Nothing
+// here asserts that any of them exists now, and no behaviour in this file depends
+// on one. The complete set named below, with the role each will play:
+//
+//   src/services/promotion/rewardUsageLedger.ts  promotion decomposition module
+//   src/services/roundingRuleService.ts          ported RoundingRuleService
+// ---------------------------------------------------------------------------
+
+// ---------------------------------------------------------------------------
 // slatwall-ts - CFML `precisionEvaluate()` parity: precise decimal arithmetic
 //
 // WHAT THIS FILE IS
@@ -30,12 +45,26 @@
 // It is a correctness requirement. No non-functional requirement of any kind is
 // asserted anywhere in this module, because none exists in the source.
 //
-// ABSOLUTE CONSTRAINT 1 - SOLE `decimal.js` IMPORTER BESIDES `money.ts`
-// This module and `src/domain/valueObjects/money.ts` are the only two modules
-// in the entire `slatwall-ts` subtree permitted to import `decimal.js` directly.
-// Every other module reaches decimal arithmetic through `Money`. There is
-// exactly one third-party import below and no first-party import at all: `lib`
-// sits at the base of the dependency flow and imports from no sibling folder.
+// ABSOLUTE CONSTRAINT 1 - THE PERMITTED `decimal.js` IMPORTER SET, EXACTLY TWO
+// This module and `src/lib/cfml/numberFormat.ts` are the ONLY two modules in the
+// entire `slatwall-ts` subtree permitted to import `decimal.js` directly, and
+// they are also the only two that DO - verified by direct search: those hold the
+// only two `import { Decimal } from 'decimal.js';` STATEMENTS anywhere under
+// `src/` (a plain text search also matches this very sentence and its
+// counterpart in `money.ts`, so count import statements, not string
+// occurrences). This file owns ARITHMETIC; `numberFormat.ts` owns
+// STRINGIFICATION and presentation, which is why the permission is split across
+// exactly those two concerns.
+//
+// `src/domain/valueObjects/money.ts` IS NOT ONE OF THEM. It imports neither
+// `Decimal` nor `decimal.js`: it is the domain-facing SURFACE and composes these
+// two `lib/cfml` substrates instead, holding its own state as a plain decimal
+// STRING. Every module beyond the three reaches decimal arithmetic through
+// `Money` and nothing else.
+//
+// There is exactly one third-party import below and no first-party import at
+// all: `lib` sits at the base of the dependency flow and imports from no sibling
+// folder.
 //
 // ABSOLUTE CONSTRAINT 2 - NO `Decimal` RE-EXPORT, AND NO `number` FOR MONEY
 //   * `Decimal` is never re-exported. `PreciseValue` exports the TYPE, which is
@@ -117,7 +146,7 @@
 //   * The unguarded division at [model/service/PromotionService.cfc:L299] has
 //     no zero check on its divisor in the legacy source. `divide` below throws
 //     on a zero divisor; whether the CALL SITE needs a guard is a hand-off note
-//     for `src/services/promotion/rewardUsageLedger.ts`, which owns that
+//     for `src/services/promotion/rewardUsageLedger.ts` (planned), which owns that
 //     decision. No guard, no `0` fallback and no `NaN` return is added here -
 //     returning `0` would silently invent money.
 //   * `numberFormat(discountAmount, "0.00")`
@@ -185,23 +214,149 @@ import { Decimal } from 'decimal.js';
 // The configured arithmetic constructor
 // ---------------------------------------------------------------------------
 
-/**
- * Number of significant digits every operation in this module is resolved to.
- *
- * JUDGMENT CALL: declared explicitly rather than inherited from the library's
- * ambient default. The legacy engine's internal `precisionEvaluate` scale is not
- * knowable from the source, so the value this port uses must be DECLARED, not
- * silently assumed. 20 significant digits is chosen because it matches the
- * library's own documented default, so nothing about existing behaviour changes
- * by declaring it - and because it comfortably exceeds anything a currency
- * amount needs while still bounding a non-terminating quotient. It matters
- * because division can be non-terminating: `1 / 3` has no exact decimal
- * representation, and something has to decide where it stops.
- */
-const ARITHMETIC_PRECISION = 20;
+// ---------------------------------------------------------------------------
+// WHY THERE ARE TWO CONFIGURATIONS BELOW AND NOT ONE
+//
+// The pinned library rounds the RESULT of `plus`, `minus`, `times` and
+// `dividedBy` to the configured number of significant digits. A single shared
+// configuration therefore forces one number to serve two irreconcilable jobs:
+//
+//   * Addition, subtraction and multiplication are EXACT operations. Their
+//     results are bounded by the operands - a product has at most the sum of its
+//     operands' significant digits - so capping them does not "bound" anything,
+//     it DISCARDS digits that were exactly computable. Measured against the
+//     pinned library at a shared cap of 20 significant digits:
+//         12345678901.23456789 x 98765432109.87654321
+//           capped   -> 1219326311370217952200
+//           exact    -> 1219326311370217952237.4638011112635269
+//         100000000000000000000 - 0.000000001
+//           capped   -> 100000000000000000000      (the subtrahend VANISHES)
+//           exact    -> 99999999999999999999.999999999
+//     Both capped answers are silently wrong money. Legacy money lives in
+//     `big_decimal` columns, whose MySQL ceiling is DECIMAL(65, s) - so a single
+//     persisted operand can legitimately carry 65 significant digits, and a
+//     20-digit cap truncates it on the first multiply. A cap on an exact
+//     operation is a defect, not a policy.
+//   * Division CANNOT terminate in general - `1 / 3` has no exact decimal
+//     representation - so it MUST stop somewhere, and where it stops has to be a
+//     declared decision rather than an inherited default.
+//
+// So the cap is applied to division ONLY, and the exact operations are given
+// headroom they can never reach. Splitting the configuration is the only way to
+// satisfy both requirements at once; no single number can.
+//
+// WHY THE EXACT CONFIGURATION IS NOT SET TO THE LIBRARY MAXIMUM
+// The obvious "just remove the cap" move is to request the library's documented
+// maximum precision. That was tried and it is NOT viable: at 1e9 significant
+// digits a single `1 / 3` aborts the Node process outright with a V8 fatal
+// allocation error ("Fatal JavaScript invalid size error", crbug.com/1201626),
+// because the library eagerly materialises the full quotient. "Maximum
+// precision" is therefore a trap, and the exact configuration below is a
+// large-but-BOUNDED value chosen against the worst case this port can actually
+// reach. Recorded here so nobody re-tries it.
+// ---------------------------------------------------------------------------
 
 /**
- * The configured constructor every operation in this module routes through.
+ * Significant digits for the operations that are EXACT: add, subtract, multiply,
+ * magnitude, comparison, and the render boundary.
+ *
+ * JUDGMENT CALL: 1000, which is headroom rather than a cap. It is not a limit
+ * this port can reach, and the arithmetic here is therefore exact in practice.
+ * The reasoning is arithmetic, not a round number chosen for looks:
+ *
+ *   * The widest operand the schema can hand this module is a MySQL
+ *     `DECIMAL(65, s)` value, i.e. 65 significant digits.
+ *   * A product carries at most the SUM of its operands' significant digits, so
+ *     two such operands multiply to at most 130 digits, and the deepest
+ *     multiplication chain in the in-scope slice - the three-factor
+ *     `price x quantity x (amount / 100)` at
+ *     [model/service/PromotionService.cfc:L995] - reaches at most 195. Measured
+ *     against the pinned library with three 65-digit operands: 130 digits after
+ *     the first multiply, 195 after the second. Exactly as predicted.
+ *   * Addition and subtraction cannot exceed the wider operand's digit count by
+ *     more than the scale difference, which is bounded by the same 65.
+ *
+ * 1000 is therefore more than five times the reachable worst case, which leaves
+ * room for the arithmetic to change shape without silently starting to round. It
+ * is also cheap: 20,000 realistic money chains (`19.99 x 3 - 7.49625`) complete
+ * in ~34 ms at this setting, measured on the pinned library, because the library
+ * allocates against the digits actually present rather than against the
+ * configured ceiling.
+ *
+ * DO NOT LOWER THIS TO BOUND A QUOTIENT. Division has its own configuration
+ * below and does not consult this one.
+ */
+const EXACT_ARITHMETIC_PRECISION = 1000;
+
+/**
+ * Significant digits at which a NON-TERMINATING QUOTIENT is resolved.
+ *
+ * JUDGMENT CALL: declared explicitly rather than inherited from the library's
+ * ambient default, and applied to division ALONE. The legacy engine's internal
+ * `precisionEvaluate` scale is not knowable from the source - the legacy runtime
+ * was never stood up (AAP 0.10.3) - so the value this port uses must be
+ * DECLARED, not silently assumed. 20 significant digits is chosen because it
+ * matches the library's own documented default, so the quotients this port
+ * produces are unchanged from the pinned library's out-of-the-box behaviour, and
+ * because it comfortably exceeds anything a currency amount needs while still
+ * bounding a quotient that would otherwise never end.
+ *
+ * The two quotients that pin this constant, both verified against the pinned
+ * library: `1 / 3` resolves to `0.33333333333333333333` and `2 / 3` to
+ * `0.66666666666666666667`. Changing this constant changes both, so it is a
+ * behavioural decision and not a tuning knob.
+ */
+const DIVISION_PRECISION = 20;
+
+/**
+ * Shared configuration for both constructors below - everything except the
+ * significant-digit count, which is the one property they differ on.
+ *
+ * Stating these seven properties in one place is what guarantees the two
+ * constructors cannot drift apart on rounding mode, notation thresholds or
+ * exponent bounds. The library copies any UNSPECIFIED property from the parent
+ * constructor at clone time, so naming every property is what makes each clone
+ * independent of whatever ambient state the parent happens to be in; spreading
+ * one frozen object into both is what makes them identical apart from precision.
+ */
+const SHARED_ARITHMETIC_CONFIG = Object.freeze({
+  // JUDGMENT CALL: half-up rounding, declared explicitly for the same reason as
+  // the precision constants above - the legacy engine's internal rounding mode
+  // is not knowable from the source, so it is stated rather than inherited.
+  // Half-up is the library's documented default, so declaring it changes nothing
+  // about existing behaviour, and it is the mode a reader of a money path
+  // expects. It is reachable ONLY through division now that the exact operations
+  // have headroom they cannot exhaust. Rounding to a SCALE is a different
+  // concern entirely and is not done here: that belongs to `numberFormat.ts` and
+  // to `Money`.
+  rounding: Decimal.ROUND_HALF_UP,
+
+  // Exponential-notation thresholds pushed to the representable extremes so
+  // that no finite value this module can hold ever renders in exponential form,
+  // even through an incidental string conversion. `toDecimalString` guarantees
+  // plain notation by construction on its own (see its definition); these two
+  // settings are the second, independent guarantee. The library's defaults would
+  // render, for example, 1e21 and 1e-9 exponentially. Verified to still hold at
+  // the raised exact precision: `1e21` renders as
+  // `1000000000000000000000` and `1e-9` as `0.000000001`.
+  toExpNeg: -9e15,
+  toExpPos: 9e15,
+
+  // Exponent bounds, stated explicitly so neither clone inherits them.
+  minE: -9e15,
+  maxE: 9e15,
+
+  // No cryptographic value source is used: this module generates no random
+  // values, and none is needed to reproduce the legacy arithmetic.
+  crypto: false,
+
+  // Stated only so that no property is inherited from the parent. This module
+  // exposes no remainder operation, so the setting is never exercised.
+  modulo: Decimal.ROUND_DOWN,
+});
+
+/**
+ * The constructor every EXACT operation in this module routes through.
  *
  * JUDGMENT CALL: a locally configured clone held in a FROZEN module-scope
  * `const`, never the library's global configuration mutator. Two reasons, and
@@ -221,52 +376,51 @@ const ARITHMETIC_PRECISION = 20;
  * arithmetic normally, and an attempt to reconfigure it through its own mutator
  * throws a `TypeError` ("Cannot assign to read only property 'precision'")
  * because this module is strict-mode ESM. The configuration therefore cannot be
- * changed after this line, by this module or any other.
- *
- * All eight configurable properties are stated explicitly. The library copies
- * any UNSPECIFIED property from the parent constructor at clone time, so naming
- * all eight is what makes this clone independent of whatever ambient state the
- * parent happens to be in.
+ * changed after this line, by this module or any other. Re-verified at the
+ * raised precision.
  *
  * The type annotation is deliberately the constructor type and NOT
  * `Readonly<...>`: a mapped type discards construct signatures, and annotating
  * it that way fails with TS2351 ("has no construct signatures"). Verified.
  */
-const PreciseArithmetic: Decimal.Constructor = Object.freeze(
+const ExactArithmetic: Decimal.Constructor = Object.freeze(
   Decimal.clone({
-    // Significant digits for operations that cannot terminate exactly.
-    precision: ARITHMETIC_PRECISION,
+    ...SHARED_ARITHMETIC_CONFIG,
+    precision: EXACT_ARITHMETIC_PRECISION,
+  }),
+);
 
-    // JUDGMENT CALL: half-up rounding, declared explicitly for the same reason
-    // as the precision above - the legacy engine's internal rounding mode is not
-    // knowable from the source, so it is stated rather than inherited. Half-up
-    // is the library's documented default, so declaring it changes nothing about
-    // existing behaviour, and it is the mode a reader of a money path expects.
-    // Rounding to a SCALE is a different concern entirely and is not done here:
-    // that belongs to `numberFormat.ts` and to `Money`.
-    rounding: Decimal.ROUND_HALF_UP,
-
-    // Exponential-notation thresholds pushed to the representable extremes so
-    // that no finite value this module can hold ever renders in exponential
-    // form, even through an incidental string conversion. `toDecimalString`
-    // guarantees plain notation by construction on its own (see its
-    // definition); these two settings are the second, independent guarantee.
-    // The library's defaults would render, for example, 1e21 and 1e-9
-    // exponentially.
-    toExpNeg: -9e15,
-    toExpPos: 9e15,
-
-    // Exponent bounds, stated explicitly so the clone does not inherit them.
-    minE: -9e15,
-    maxE: 9e15,
-
-    // No cryptographic value source is used: this module generates no random
-    // values, and none is needed to reproduce the legacy arithmetic.
-    crypto: false,
-
-    // Stated only so that no property is inherited from the parent. This module
-    // exposes no remainder operation, so the setting is never exercised.
-    modulo: Decimal.ROUND_DOWN,
+/**
+ * The constructor `divide` - and ONLY `divide` - routes through.
+ *
+ * Held separately, frozen, and configured identically to the exact constructor
+ * above apart from its significant-digit count, for the reasons set out in the
+ * block comment at the top of this section.
+ *
+ * WHY DIVISION RE-HOMES ITS OPERANDS RATHER THAN JUST CALLING `dividedBy`.
+ * In the pinned library an instance carries its own constructor, and an
+ * operation is resolved at the LEFT operand's precision. A value produced by an
+ * exact operation is therefore homed on the 1000-digit constructor, and dividing
+ * it directly would resolve the quotient to 1000 significant digits instead of
+ * the declared 20 - measured, `1 / 3` comes back as a 1002-character string that
+ * way. `divide` consequently coerces both operands through `toDivisible` below
+ * so the declared division scale is the one that actually applies.
+ *
+ * Re-homing is LOSSLESS, which is what makes this safe: the library's constructor
+ * does NOT round its input to the configured precision, it only rounds the
+ * results of operations. Verified against the pinned library in both directions -
+ * an 81-significant-digit value re-homed onto the 20-digit constructor still
+ * reports 81 significant digits, and re-homing it back onto the exact
+ * constructor still reports 81. So routing an operand through this constructor
+ * cannot truncate it on the way in; it is the quotient that is resolved at the
+ * declared scale - including a quotient that would have terminated exactly, such
+ * as division by one. See `toDivisible` for that measured consequence stated in
+ * full.
+ */
+const DivisionArithmetic: Decimal.Constructor = Object.freeze(
+  Decimal.clone({
+    ...SHARED_ARITHMETIC_CONFIG,
+    precision: DIVISION_PRECISION,
   }),
 );
 
@@ -368,7 +522,8 @@ function assertFinite(value: Decimal, context: string): PreciseValue {
 }
 
 /**
- * Coerces an operand into a decimal governed by THIS module's configuration.
+ * Coerces an operand into a decimal governed by this module's EXACT
+ * configuration.
  *
  * Two things happen here, and both matter.
  *
@@ -378,16 +533,50 @@ function assertFinite(value: Decimal, context: string): PreciseValue {
  * malformed amount must fail loudly rather than resolve to zero or to `NaN`.
  *
  * Second, an operand that is already a precise value is re-homed onto the frozen
- * configured constructor. That is not redundant. Re-homing was verified against
- * the pinned library to copy every digit with no rounding, while re-pointing the
+ * exact constructor. That is not redundant. Re-homing was verified against the
+ * pinned library to copy every digit with no rounding, while re-pointing the
  * value at this module's configuration - so this module's declared precision and
  * rounding govern every subsequent operation regardless of which constructor
  * produced the operand. Without it, a value built elsewhere under a different
- * configuration would silently impose that configuration on a money
- * calculation.
+ * configuration would silently impose that configuration on a money calculation,
+ * and in particular a quotient homed on the 20-digit division constructor would
+ * drag that cap into a subsequent exact multiply.
+ *
+ * Every operation in this module routes through here EXCEPT `divide`, which
+ * routes through `toDivisible` below.
  */
 function toPrecise(input: PreciseInput): PreciseValue {
-  return assertFinite(new PreciseArithmetic(input), 'operand');
+  return assertFinite(new ExactArithmetic(input), 'operand');
+}
+
+/**
+ * Coerces an operand into a decimal governed by the DIVISION configuration.
+ *
+ * Used by `divide` alone, for the reason documented on `DivisionArithmetic`: an
+ * operation is resolved at the left operand's precision, so a value homed on the
+ * exact constructor would resolve a non-terminating quotient to 1000 significant
+ * digits rather than to the declared division scale.
+ *
+ * Loses nothing ON THE WAY IN. Re-homing copies every digit without rounding -
+ * verified against the pinned library - so an operand with more significant
+ * digits than the division scale arrives intact, and it is the QUOTIENT that is
+ * subsequently resolved at that scale.
+ *
+ * BE PRECISE ABOUT WHAT THAT DOES AND DOES NOT PROMISE. It does NOT mean a wide
+ * operand survives division unchanged. The library rounds the result of EVERY
+ * operation, and `x / 1` is an operation, so dividing an 81-significant-digit
+ * operand by one returns it resolved to the declared 20 - measured, not assumed.
+ * That is the faithful consequence of declaring a division scale at all, and it
+ * is pinned by an assertion in the precision suite so it cannot surprise a
+ * reader later. What the lossless ingress buys is that the leading digits are
+ * CORRECT: a wide operand is resolved, never corrupted, zeroed or turned into
+ * `NaN` on the way in.
+ *
+ * Malformed and non-finite input is rejected on exactly the same terms as
+ * `toPrecise`.
+ */
+function toDivisible(input: PreciseInput): PreciseValue {
+  return assertFinite(new DivisionArithmetic(input), 'operand');
 }
 
 // ---------------------------------------------------------------------------
@@ -426,8 +615,10 @@ export function fromInteger(value: number): PreciseValue {
   }
 
   // A safe integer is finite and exactly representable by definition, so the
-  // finiteness boundary is already satisfied at this point.
-  return new PreciseArithmetic(value);
+  // finiteness boundary is already satisfied at this point. Homed on the exact
+  // constructor: an integer quantity is an operand of exact arithmetic, and
+  // `divide` re-homes whatever it is handed anyway.
+  return new ExactArithmetic(value);
 }
 
 // ---------------------------------------------------------------------------
@@ -516,7 +707,7 @@ export function subtract(minuend: PreciseInput, subtrahend: PreciseInput): Preci
  *   rounding search. Its downward counterpart on L101,
  *   `var lowerValue = inputValue - rrPower;`, is served by `subtract`.
  *
- * Offering this operation is what keeps `src/services/roundingRuleService.ts`
+ * Offering this operation is what keeps `src/services/roundingRuleService.ts` (planned)
  * from reaching for floating-point addition on a money value simply because no
  * precise addition existed.
  */
@@ -552,22 +743,30 @@ export function add(augend: PreciseInput, addend: PreciseInput): PreciseValue {
  * No guard, no `0` fallback and no `NaN` return is added here. Returning `0`
  * would silently invent money. Whether the CALL SITE at L299 needs a guard, and
  * what that guard should do, is a hand-off note for
- * `src/services/promotion/rewardUsageLedger.ts`, which owns that decision.
+ * `src/services/promotion/rewardUsageLedger.ts` (planned), which owns that decision.
  *
- * JUDGMENT CALL - NON-TERMINATING DIVISION IS RESOLVED AT A DECLARED SCALE.
+ * JUDGMENT CALL - NON-TERMINATING DIVISION IS RESOLVED AT A DECLARED SCALE, AND
+ * DIVISION IS THE ONLY OPERATION IN THIS MODULE THAT IS.
  * `1 / 3` has no exact decimal representation, so division must stop somewhere.
- * It stops at the explicitly declared `ARITHMETIC_PRECISION` significant digits
- * with the explicitly declared half-up rounding of the frozen constructor above,
- * rather than at whatever the library's ambient configuration happens to be. The
- * legacy engine's internal scale is not knowable from the source, so this port
- * declares its own instead of guessing silently: `1 / 3` resolves to
+ * It stops at the explicitly declared `DIVISION_PRECISION` significant digits
+ * with the explicitly declared half-up rounding, both carried by the dedicated
+ * frozen `DivisionArithmetic` constructor above, rather than at whatever the
+ * library's ambient configuration happens to be. Note the deliberate asymmetry
+ * with every other operation here: add, subtract, multiply, magnitude and
+ * comparison are EXACT and are homed on a constructor whose headroom they cannot
+ * exhaust, so no scale decision applies to them at all. Both operands are
+ * re-homed through `toDivisible` precisely so that this scale, and not the exact
+ * one, governs the quotient.
+ *
+ * The legacy engine's internal scale is not knowable from the source, so this
+ * port declares its own instead of guessing silently: `1 / 3` resolves to
  * `0.33333333333333333333` and `2 / 3` to `0.66666666666666666667`, both
  * verified against the pinned library. Division does not throw for a
  * non-terminating quotient.
  */
 export function divide(dividend: PreciseInput, divisor: PreciseInput): PreciseValue {
-  const numerator = toPrecise(dividend);
-  const denominator = toPrecise(divisor);
+  const numerator = toDivisible(dividend);
+  const denominator = toDivisible(divisor);
 
   if (denominator.isZero()) {
     throw new PrecisionError(
@@ -589,7 +788,7 @@ export function divide(dividend: PreciseInput, divisor: PreciseInput): PreciseVa
  *   and the identical pair for `valueOptionTwoDelta` - a subtraction followed by
  *   a manual sign flip when the result is negative.
  *
- * Provided so that `src/services/roundingRuleService.ts` compares candidate
+ * Provided so that `src/services/roundingRuleService.ts` (planned) compares candidate
  * deltas by magnitude without hand-rolling that sign flip. The negative
  * intermediates are real, not hypothetical: the rounding search legitimately
  * produces them.

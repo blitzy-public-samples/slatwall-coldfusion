@@ -1,4 +1,19 @@
 // ---------------------------------------------------------------------------
+// CHECKPOINT STATUS - FORWARD REFERENCES CARRY THE MARKER `(planned)`
+//
+// The subtree is authored in boundaries, and AAP 0.4.5 makes the authoring
+// order "a compile-order convenience, not a schedule". Commentary in this file
+// therefore names modules of the target layout that DO NOT EXIST YET. Every such
+// name carries `(planned)` at its point of use, meaning exactly: a planned Agent
+// Action Plan target that is ABSENT from the subtree at this checkpoint. Nothing
+// here asserts that any of them exists now, and no behaviour in this file depends
+// on one. The complete set named below, with the role each will play:
+//
+//   src/services/promotion/rewardUsageLedger.ts  promotion decomposition module
+//   src/services/roundingRuleService.ts          ported RoundingRuleService
+// ---------------------------------------------------------------------------
+
+// ---------------------------------------------------------------------------
 // slatwall-ts - unit suite pinning `src/domain/valueObjects/money.ts`
 //
 // WHAT THIS SUITE PINS
@@ -62,7 +77,7 @@
 //    out as a RESIDUAL, `originalAmount - roundedFinalAmount`. So nobody should
 //    mistake `Money` for a rounding-policy holder: it holds no rounding rule,
 //    exposes no rounding operation, and the rounding algorithm itself lives in
-//    `src/services/roundingRuleService.ts`. What `Money` contributes to that
+//    `src/services/roundingRuleService.ts` (planned). What `Money` contributes to that
 //    path is the subtraction on both lines and nothing more.
 //
 // 2. CFML'S DECLARED-NUMERIC / RETURNS-STRING DUALITY IS NOT PAPERED OVER.
@@ -391,18 +406,24 @@ describe('the verified reference calculation', () => {
     expect(extended.minus(discount).equals(Money.fromDecimalString('52.47375'))).toBe(true);
   });
 
-  it('exposes no full-precision accessor for the value it holds', () => {
-    // JUDGMENT CALL: the shipped module publishes NO full-precision
-    // decimal-string accessor - the closed surface is the four operations, the
-    // four comparisons and `toFixed2()`. The full-scale value is therefore
-    // asserted the only way the contract allows, BY VALUE against another
-    // `Money`, which the block above does. This test records the absence so a
-    // reader does not go looking for an accessor that was never shipped.
+  it('exposes the full-scale value through exactly one named accessor', () => {
+    // The full-precision egress is `toDecimalString()`, and it is the ONE way the
+    // held value leaves this class unrounded. It exists because the `big_decimal`
+    // columns enumerated in the construction note below store every digit and the
+    // `Sw*` schema is preserved unchanged (AAP 0.8.1) - persisting through
+    // `toFixed2()` would write '52.47' for this value and lose three digits.
+    //
+    // The library's own scale-imposing and precision-imposing renderers stay
+    // absent: this class publishes a decimal-string egress, not a formatting
+    // surface, and a caller that wants two decimals asks `toFixed2()` by name.
     const net = Money.fromDecimalString('52.47375');
 
-    expect('toDecimalString' in net).toBe(false);
+    expect(net.toDecimalString()).toBe('52.47375');
+    expect(net.toFixed2()).toBe('52.47');
     expect('toFixed' in net).toBe(false);
     expect('toPrecision' in net).toBe(false);
+    expect('toSignificantDigits' in net).toBe(false);
+    expect('toDecimalPlaces' in net).toBe(false);
   });
 });
 
@@ -973,7 +994,7 @@ describe('equals', () => {
 // (12.3456/0.99 -> 10.99, 12.30/.99 -> 12.99, 7.42/9.99 -> 9.99, 2.30/0.99 ->
 // 0.99, 12.3456/0.00 -> 10.00 and the rest) are deliberately NOT duplicated
 // here. They are the acceptance gate for the rounding algorithm, which lives in
-// `src/services/roundingRuleService.ts` over the `src/lib/cfml` substrate, and
+// `src/services/roundingRuleService.ts` (planned) over the `src/lib/cfml` substrate, and
 // restating them in this folder would claim coverage this file does not own.
 // `Money` holds no rounding expression, no rounding direction and no rounding
 // rule.
@@ -1071,6 +1092,163 @@ describe('toFixed2', () => {
 });
 
 // ---------------------------------------------------------------------------
+// PERSISTENCE, WHICH IS NOT PRESENTATION
+//
+// The distinction this block exists to protect: `toFixed2` ROUNDS to two decimals
+// because it reproduces CFML's `"0.00"` mask, and `toDecimalString` imposes NO
+// scale because the columns it feeds are declared `big_decimal`. Four such
+// columns are read and written through `Money`:
+//   * `SwPromotionApplied.discountAmount` [model/entity/PromotionApplied.cfc:L53]
+//   * `SwPriceGroupRate.amount`           [model/entity/PriceGroupRate.cfc:L54]
+//   * `SwSkuCurrency.price` and its list/renewal siblings
+//     [model/entity/SkuCurrency.cfc:L53]
+// The `Sw*` schema is preserved unchanged (AAP 0.8.1, schema continuity), and a
+// `big_decimal` column is by definition one that declines to round on the
+// caller's behalf. So persisting through the presentation method would NARROW the
+// schema - writing '52.47' where the computed value is 52.47375 - which is why
+// the two are separate members and why the tripwire above counts ten and not
+// nine.
+// ---------------------------------------------------------------------------
+
+describe('toDecimalString', () => {
+  it('persists every digit the value carries, where presentation would round', () => {
+    // The reference calculation's net amount. This single pair of assertions is
+    // the whole point of the method existing.
+    const net = Money.fromDecimalString('52.47375');
+
+    expect(net.toDecimalString()).toBe('52.47375');
+    expect(net.toFixed2()).toBe('52.47');
+    expect(net.toDecimalString()).not.toBe(net.toFixed2());
+  });
+
+  it('round-trips through construction, value-stably', () => {
+    // The property that makes a database round trip safe: whatever this method
+    // emits, `fromDecimalString` accepts, and the reconstructed value is EQUAL to
+    // the original. Stated as value stability rather than character stability
+    // because the numeral is canonicalised - see the next two cases.
+    for (const stored of ['52.47375', '0', '0.00', '19.90', '-0.58', '7.49625', '1234.5', '.42']) {
+      const original = Money.fromDecimalString(stored);
+      const reloaded = Money.fromDecimalString(original.toDecimalString());
+
+      expect(reloaded.equals(original)).toBe(true);
+      // And serialising the reloaded value is idempotent: a second trip through
+      // the database cannot drift.
+      expect(reloaded.toDecimalString()).toBe(original.toDecimalString());
+    }
+  });
+
+  it('emits the same numeral for any two values that compare equal', () => {
+    // The value-object guarantee this method is canonicalised to keep. If these
+    // diverged, persistence would record a distinction that `equals` denies, and
+    // two rows holding the same amount could differ character by character.
+    const spelledWithTrailingZero = Money.fromDecimalString('19.90');
+    const computed = Money.fromDecimalString('19.90').times(1);
+    const spelledShort = Money.fromDecimalString('19.9');
+
+    expect(spelledWithTrailingZero.equals(computed)).toBe(true);
+    expect(spelledWithTrailingZero.equals(spelledShort)).toBe(true);
+    expect(spelledWithTrailingZero.toDecimalString()).toBe(computed.toDecimalString());
+    expect(spelledWithTrailingZero.toDecimalString()).toBe(spelledShort.toDecimalString());
+    expect(spelledWithTrailingZero.toDecimalString()).toBe('19.9');
+
+    // Zero, at three different spellings.
+    expect(Money.fromDecimalString('0.00').toDecimalString()).toBe('0');
+    expect(Money.fromDecimalString('-0').toDecimalString()).toBe('0');
+    expect(Money.zero.toDecimalString()).toBe('0');
+  });
+
+  it('does not depend on how the value was spelled on the way in', () => {
+    // The leading-dot form is accepted at construction, so the stored numeral can
+    // legitimately be '.42'. Canonicalisation is what stops that spelling reaching
+    // a column and breaking the integer-digit guarantee.
+    expect(Money.fromDecimalString('.42').toDecimalString()).toBe('0.42');
+    expect(Money.fromDecimalString('-.99').toDecimalString()).toBe('-0.99');
+    expect(Money.fromDecimalString('.42').toDecimalString()).toBe(
+      Money.fromDecimalString('0.42').toDecimalString(),
+    );
+  });
+
+  it('carries a MySQL DECIMAL(65,s) value without loss', () => {
+    // The widest operand the schema can hold - 65 significant digits. This is the
+    // assertion that fails if arithmetic or serialization is capped.
+    const widest = `${'9'.repeat(45)}.${'9'.repeat(20)}`;
+
+    expect(widest.replace('.', '')).toHaveLength(65);
+    expect(Money.fromDecimalString(widest).toDecimalString()).toBe(widest);
+  });
+
+  it('preserves a computed sub-cent result through an arithmetic chain', () => {
+    // The chain from the header, persisted at each step rather than presented.
+    const extended = Money.fromDecimalString('19.99').times(3);
+    const discount = extended.times(Money.fromDecimalString('12.5').dividedBy(100));
+
+    expect(extended.toDecimalString()).toBe('59.97');
+    expect(discount.toDecimalString()).toBe('7.49625');
+    expect(extended.minus(discount).toDecimalString()).toBe('52.47375');
+  });
+
+  it('never emits exponential notation, at either magnitude extreme', () => {
+    const large = Money.fromDecimalString('1000000000000000000000').toDecimalString();
+    const small = Money.fromDecimalString('0.000000001').toDecimalString();
+
+    expect(large).toBe('1000000000000000000000');
+    expect(large).not.toContain('e');
+    expect(large).not.toContain('E');
+    expect(small).toBe('0.000000001');
+    expect(small).not.toContain('e');
+    expect(small).not.toContain('E');
+  });
+
+  it('never emits a thousands separator and always emits an integer digit', () => {
+    expect(Money.fromDecimalString('1234.5').toDecimalString()).toBe('1234.5');
+    expect(Money.fromDecimalString('1234.5').toDecimalString()).not.toContain(',');
+    // The same leading-digit guarantee presentation makes, held here by
+    // canonicalisation rather than by the mask.
+    expect(Money.fromDecimalString('.42').toDecimalString().startsWith('.')).toBe(false);
+    expect(Money.fromDecimalString('-.99').toDecimalString().startsWith('-.')).toBe(false);
+  });
+
+  it('preserves a leading minus with no accounting notation', () => {
+    const persisted = Money.fromDecimalString('-0.58').toDecimalString();
+
+    expect(persisted).toBe('-0.58');
+    expect(persisted.startsWith('-')).toBe(true);
+    expect(persisted).not.toContain('(');
+  });
+
+  it('imposes no scale of its own, in either direction', () => {
+    // Canonicalisation is NOT rounding and NOT padding. It normalises the numeral
+    // to the value's natural scale and stops there: a sub-cent result keeps all
+    // five of its decimals, and a whole amount is not padded out to two.
+    expect(Money.fromDecimalString('52.47375').toDecimalString()).toBe('52.47375');
+    expect(Money.fromDecimalString('0.000000000000000001').toDecimalString()).toBe(
+      '0.000000000000000001',
+    );
+    expect(Money.fromDecimalString('12').toDecimalString()).toBe('12');
+    // Contrast presentation, which pads and rounds precisely because it is a mask.
+    expect(Money.fromDecimalString('12').toFixed2()).toBe('12.00');
+    expect(Money.fromDecimalString('52.47375').toFixed2()).toBe('52.47');
+  });
+
+  it('returns a string and never a number', () => {
+    const persisted = Money.fromDecimalString('19.99').toDecimalString();
+
+    expect(typeof persisted).toBe('string');
+    expect(typeof persisted).not.toBe('number');
+  });
+
+  it('is not reachable by implicit coercion', () => {
+    // Persistence must be an explicitly named call, exactly like presentation.
+    // None of the three coercion hooks is declared, so a stray template literal,
+    // a stray `+` or a stray `JSON.stringify` cannot quietly produce a monetary
+    // numeral that looks authoritative.
+    expect(Object.prototype.hasOwnProperty.call(Money.prototype, 'toString')).toBe(false);
+    expect(Object.prototype.hasOwnProperty.call(Money.prototype, 'valueOf')).toBe(false);
+    expect(Object.prototype.hasOwnProperty.call(Money.prototype, 'toJSON')).toBe(false);
+  });
+});
+
+// ---------------------------------------------------------------------------
 // THE OPERATION SURFACE IS CLOSED
 //
 // Asserting what is ABSENT is part of the contract, not defensive garnish. The
@@ -1082,9 +1260,19 @@ describe('toFixed2', () => {
 // ---------------------------------------------------------------------------
 
 describe('the closed operation surface', () => {
-  it('publishes exactly the nine instance members that trace to a legacy site', () => {
+  it('publishes exactly the ten instance members that trace to a legacy site', () => {
     // This is the tripwire: widening the surface is a product decision, and it
     // should fail here first rather than pass silently.
+    //
+    // Ten members, not nine. Seven arithmetic and comparison operations, plus TWO
+    // DISTINCT EGRESS METHODS which are not interchangeable: `toFixed2` presents
+    // (and therefore rounds to two decimals, reproducing
+    // [model/service/PromotionService.cfc:L1017]), while `toDecimalString`
+    // persists (and therefore imposes no scale, because the `big_decimal` columns
+    // at [model/entity/PromotionApplied.cfc:L53] and
+    // [model/entity/PriceGroupRate.cfc:L54] store every digit and the `Sw*` schema
+    // is preserved unchanged). Collapsing the two would silently round money on
+    // the way to the database.
     const published = Object.getOwnPropertyNames(Money.prototype)
       .filter((name) => name !== 'constructor')
       .sort();
@@ -1098,6 +1286,7 @@ describe('the closed operation surface', () => {
       'minus',
       'plus',
       'times',
+      'toDecimalString',
       'toFixed2',
     ]);
   });
@@ -1144,7 +1333,7 @@ describe('the closed operation surface', () => {
   });
 
   it('offers no rounding, allocation or distribution policy', () => {
-    // A rounding POLICY belongs to `src/services/roundingRuleService.ts`, which
+    // A rounding POLICY belongs to `src/services/roundingRuleService.ts` (planned), which
     // owns the algorithm and its rounding expression; and an allocation policy
     // has no legacy call site at all in this slice.
     const price = Money.fromDecimalString('19.99');
@@ -1494,6 +1683,47 @@ describe('encapsulation', () => {
     expect(Object.isFrozen(constructed)).toBe(true);
     expect(typeof Money).toBe('function');
   });
+
+  it('cannot be SUBCLASSED, which is the half of finality nothing else asserts', () => {
+    // The private constructor and class finality are two DIFFERENT guarantees,
+    // and the test above establishes only the first. A class can perfectly well
+    // hide its constructor from direct `new` while still being extensible - it
+    // is the private constructor's effect on the `extends` clause specifically
+    // that closes subclassing, and only an assertion on `extends` can show it.
+    //
+    // Finality is what the rest of this block's guarantees rest on. A subclass
+    // could declare a mutable field of its own, which the base constructor's
+    // freeze would never reach; it could add an operation outside the closed
+    // arithmetic surface, so that money arithmetic no longer all passed through
+    // one place; and it could override a method, so that a value typed `Money`
+    // no longer behaved like one. Every one of those is exactly the hazard this
+    // value object exists to remove, so the closure is asserted rather than
+    // asserted about.
+    //
+    // THE DIRECTIVE IS THE ASSERTION. If the constructor were ever widened to
+    // public or protected, `extends Money` would start compiling, the compiler
+    // would report this directive as unused, and the suite would fail to
+    // compile - which is the alarm wanted.
+
+    // @ts-expect-error - `extends Money` must not compile: the constructor is
+    // private, so the class cannot be used as a base.
+    class DerivedMoney extends Money {}
+
+    // The class MUST be referenced below, and this is load-bearing rather than
+    // tidiness. Under `noUnusedLocals` an unreferenced class would raise a
+    // SECOND diagnostic on the same line, which would keep the directive above
+    // satisfied even after the finality guarantee had been lost - silently
+    // disarming the tripwire. Referencing it leaves the `extends` error as the
+    // only error the directive can be suppressing.
+    expect(typeof DerivedMoney).toBe('function');
+
+    // JUDGMENT CALL: `private` is erased at runtime, so this records honestly
+    // what a deliberate breach produces - a real subclass whose prototype chain
+    // formed and which inherited the static factory. The guarantee is genuinely
+    // compile-time only, which is precisely why it needs a compile-time
+    // assertion; there is no runtime check that could stand in for it.
+    expect(typeof DerivedMoney.fromDecimalString).toBe('function');
+  });
 });
 
 // ---------------------------------------------------------------------------
@@ -1574,7 +1804,7 @@ describe('the operand rule for a non-monetary integer count', () => {
     //   silently invent money, and returning undefined would push a null check
     //   onto every caller of every operation. Whether the CALL SITE at L299 wants
     //   a guard, and what that guard should do, is owned by
-    //   `src/services/promotion/rewardUsageLedger.ts` - not by this surface and
+    //   `src/services/promotion/rewardUsageLedger.ts` (planned) - not by this surface and
     //   not by this suite.
     const discountAmount = Money.fromDecimalString('7.50');
 

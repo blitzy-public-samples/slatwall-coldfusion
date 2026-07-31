@@ -1,4 +1,19 @@
 // ---------------------------------------------------------------------------
+// CHECKPOINT STATUS - FORWARD REFERENCES CARRY THE MARKER `(planned)`
+//
+// The subtree is authored in boundaries, and AAP 0.4.5 makes the authoring
+// order "a compile-order convenience, not a schedule". Commentary in this file
+// therefore names modules of the target layout that DO NOT EXIST YET. Every such
+// name carries `(planned)` at its point of use, meaning exactly: a planned Agent
+// Action Plan target that is ABSENT from the subtree at this checkpoint. Nothing
+// here asserts that any of them exists now, and no behaviour in this file depends
+// on one. The complete set named below, with the role each will play:
+//
+//   src/handlers/bootstrap.ts       composition root (wiring)
+//   tests/integration/repositories  repository integration tier
+// ---------------------------------------------------------------------------
+
+// ---------------------------------------------------------------------------
 // slatwall-ts - the MySQL connection pool and the injectable query executor
 //
 // WHAT THIS MODULE IS
@@ -56,15 +71,28 @@
 //   `slatwall-ts/.env.example`. It is not a literal anywhere in this file.
 //
 // THE OWNERSHIP SPLIT - THREE MODULES, NO OVERLAP
-//   * `src/lib/config.ts` READS AND VALIDATES the environment. It is the only
-//     module in this port that touches `process.env`, and it owns the three keys
-//     this file replaces: `datasource`, `datasourceUsername`, `datasourcePassword`
-//     (DB_NAME, DB_USER, DB_PASSWORD) plus the host, port and pool variables the
-//     driver needs. This file reads nothing from the environment directly.
+//   * `src/lib/config.ts` READS AND VALIDATES THE DATABASE AND RUNTIME KEYS. It
+//     owns the three this file replaces - `datasource`, `datasourceUsername`,
+//     `datasourcePassword` (DB_NAME, DB_USER, DB_PASSWORD) - plus DB_HOST,
+//     DB_PORT, DB_DIALECT and the four pool variables DB_CONNECTION_LIMIT,
+//     DB_MAX_IDLE, DB_IDLE_TIMEOUT_MS and DB_CONNECT_TIMEOUT_MS: ten keys, read
+//     once through a single `process.env` access and memoized. This file reads
+//     nothing from the environment directly.
 //   * `src/repositories/mysql/dialect.ts` OWNS `databaseType` (DB_DIALECT). The
 //     dialect is never re-derived here; it is imported, and used for exactly one
 //     purpose - refusing to build a MySQL pool for a non-MySQL dialect.
 //   * THIS FILE turns those validated values into a pool and an executor.
+//
+//   THE ENVIRONMENT AS A WHOLE IS NOT OWNED BY ONE MODULE, and this file does not
+//   claim it is. `config.ts` is authoritative for the DATABASE AND RUNTIME keys
+//   above and nothing wider. Two other owners exist, stated so no reader
+//   generalizes the sentence above into a subtree-wide monopoly:
+//     - `src/lib/logger.ts` reads LOG_LEVEL independently, on its own, because a
+//       logger that had to wait for validated database configuration could not
+//       report a configuration failure;
+//     - `tests/setup.ts` owns the TEST-ONLY environment state - it assigns TZ and
+//       reads TEST_LIVE_DATABASE - which never exists in a deployed bundle.
+//   None of the three overlaps: no key is read by more than one of them.
 //
 //   `slatwallRootURL`, published from the FW/1 base URL at [Application.cfc:L75],
 //   is a routing artifact replaced by API Gateway plus `src/handlers/router.ts`
@@ -135,7 +163,8 @@
 // ---------------------------------------------------------------------------
 
 import { createPool } from 'mysql2/promise';
-import type { Pool, PoolOptions, ResultSetHeader, RowDataPacket } from 'mysql2/promise';
+import type { Pool, PoolOptions, ResultSetHeader, RowDataPacket, SslOptions } from 'mysql2/promise';
+import type { DatabaseTlsConfig } from '../../lib/config.js';
 import { appConfig } from '../../lib/config.js';
 import { logger } from '../../lib/logger.js';
 import { assertMySqlDialect, resolveConfiguredDialect } from './dialect.js';
@@ -220,7 +249,7 @@ export interface SqlMutationResult {
  * `tests/integration/repositories/` verify statement shape and binding against no
  * database at all. Nothing there needs to imitate a pool or a connection. Second,
  * it keeps the one sanctioned module-scope pool from leaking into six files; the
- * single wiring point is the composition root at `src/handlers/bootstrap.ts`,
+ * single wiring point is the composition root at `src/handlers/bootstrap.ts` (planned),
  * which is what replaces DI/1's runtime convention scan under transformation rule
  * T1.
  *
@@ -293,6 +322,28 @@ export interface PreparedStatementExecutor {
 // the same reason, and `src/lib/logger.ts` enforces it independently on the
 // context object.
 
+/**
+ * The largest `IN`-list placeholder count this port will render.
+ *
+ * NOT AN INVENTED LIMIT - it is the MySQL client/server protocol's own ceiling.
+ * `COM_STMT_PREPARE_OK` reports the placeholder count of a prepared statement in
+ * a two-byte little-endian field, so a statement cannot carry more than 65535
+ * placeholders no matter what the client sends. Asking for more has exactly one
+ * possible outcome at the server, which is a refusal; the only question is whether
+ * this process allocates and joins a multi-megabyte string first.
+ *
+ * That question is the finding. `count` used to be admitted on
+ * `Number.isSafeInteger(count) && count >= 1` alone, which admits 2^53 - 1: the
+ * `new Array(count).fill('?').join(', ')` below would then attempt roughly three
+ * bytes per element and abort the container on memory rather than on a bad request.
+ * Every list that reaches here originates in a caller-supplied comma-list - the
+ * seven named in the contract block above - so the count is attacker-influenced,
+ * which makes the allocation the cheapest denial-of-service in the port. Refusing
+ * ABOVE the protocol ceiling costs one comparison and cannot reject any request
+ * the server would have accepted.
+ */
+const MAX_PLACEHOLDER_COUNT = 65535;
+
 /** A caller asked for a placeholder list that cannot be rendered. */
 class SqlPlaceholderCountError extends Error {
   /** The rejected count, kept for programmatic inspection. */
@@ -301,11 +352,14 @@ class SqlPlaceholderCountError extends Error {
   constructor(count: number) {
     super(
       [
-        `An IN-list placeholder count must be a positive safe integer; received ${String(count)}.`,
+        `An IN-list placeholder count must be a safe integer from 1 to ${String(MAX_PLACEHOLDER_COUNT)};`,
+        `received ${String(count)}.`,
         'MySQL cannot parse IN (), so a zero-length list must be short-circuited by the caller',
         'rather than rendered: an empty list means the predicate contributes nothing. The legacy',
         'code branches the same way at model/dao/PromotionDAO.cfc:L121, :L125 and',
         'model/dao/ProductDAO.cfc:L65.',
+        'The upper bound is the two-byte placeholder count of COM_STMT_PREPARE_OK, so a larger',
+        'statement could not be prepared by the server in any case.',
       ].join(' '),
     );
     this.name = 'SqlPlaceholderCountError';
@@ -313,7 +367,20 @@ class SqlPlaceholderCountError extends Error {
   }
 }
 
-/** A caller passed something that cannot be bound to a `?` placeholder. */
+/**
+ * A caller passed something that cannot be bound to a `?` placeholder.
+ *
+ * THE STATEMENT IS DELIBERATELY NOT CARRIED. An earlier revision of this class
+ * embedded a bounded preview of the SQL to help locate the call site, and that
+ * was a disclosure defect rather than a convenience. This error is raised on the
+ * request path, so it can reach the generic error mapper and from there a log
+ * stream; statement text names tables and columns of the live `Sw*` schema, and a
+ * driver-adjacent failure is exactly the sort an unauthenticated caller can
+ * provoke. The position and the type of the offending parameter locate the fault
+ * on their own - the parameter index identifies which bind is wrong, and the
+ * type names the mistake - while the correlation identifier on the mapped
+ * response joins the caller's response to the full context.
+ */
 class SqlParameterError extends Error {
   /** Zero-based position of the offending parameter within the array. */
   readonly parameterIndex: number;
@@ -321,10 +388,7 @@ class SqlParameterError extends Error {
   /** The offending value's JavaScript type or constructor name. Never its value. */
   readonly receivedType: string;
 
-  /** A bounded preview of the statement, for locating the call site. */
-  readonly statementPreview: string;
-
-  constructor(parameterIndex: number, receivedType: string, statementPreview: string) {
+  constructor(parameterIndex: number, receivedType: string) {
     super(
       [
         `Parameter at index ${String(parameterIndex)} is not bindable: received ${receivedType}.`,
@@ -335,13 +399,11 @@ class SqlParameterError extends Error {
         'through a floating-point number.',
         'Do not pass an array: a prepared statement does not expand IN (?), so build the',
         'placeholders with sqlPlaceholderList and bind one parameter per element.',
-        `Statement: ${statementPreview}`,
       ].join(' '),
     );
     this.name = 'SqlParameterError';
     this.parameterIndex = parameterIndex;
     this.receivedType = receivedType;
-    this.statementPreview = statementPreview;
   }
 }
 
@@ -412,15 +474,20 @@ class SqlParameterError extends Error {
  * count and parameter count gets introduced.
  *
  * @param count - How many values will be bound, which must equal the length of
- *   the array passed to `execute`. Must be a positive safe integer.
+ *   the array passed to `execute`. Must be a safe integer from 1 to
+ *   `MAX_PLACEHOLDER_COUNT`.
  * @returns The comma-separated placeholder body, WITHOUT the surrounding
  *   parentheses, so the caller keeps the parentheses visible in its own SQL.
- * @throws An error named `SqlPlaceholderCountError` when `count` is not a
- *   positive safe integer - including zero, which would render the unparseable
- *   `IN ()` and must instead be short-circuited by the caller.
+ * @throws An error named `SqlPlaceholderCountError` when `count` is not a safe
+ *   integer in range - including zero, which would render the unparseable
+ *   `IN ()` and must instead be short-circuited by the caller, and including any
+ *   count above the protocol's own placeholder ceiling.
  */
 export function sqlPlaceholderList(count: number): string {
-  if (!Number.isSafeInteger(count) || count < 1) {
+  // The range check precedes the allocation deliberately: rejecting AFTER
+  // `new Array(count)` would already have committed the memory this guard exists
+  // to refuse.
+  if (!Number.isSafeInteger(count) || count < 1 || count > MAX_PLACEHOLDER_COUNT) {
     throw new SqlPlaceholderCountError(count);
   }
 
@@ -429,28 +496,8 @@ export function sqlPlaceholderList(count: number): string {
 
 // --- Parameter admission -----------------------------------------------------
 
-/** How much of a statement appears in a failure message. */
-const STATEMENT_PREVIEW_LIMIT = 160;
-
 /** Reused for a call that binds nothing, so no array is allocated per call. */
 const NO_PARAMETERS: readonly unknown[] = Object.freeze([]);
-
-/**
- * A single-line, length-bounded rendering of a statement, for a failure message.
- *
- * Safe to include: statement text in this port is always a literal owned by a
- * repository or by a module under `src/repositories/mysql/sql/`, never anything a
- * request supplied. It is bounded because the sale-price statement at
- * [model/dao/PromotionDAO.cfc:L298-L591] is a six-branch UNION and would
- * otherwise bury the diagnosis it is meant to support.
- */
-function previewStatement(sql: string): string {
-  const singleLine = sql.replace(/\s+/g, ' ').trim();
-
-  return singleLine.length > STATEMENT_PREVIEW_LIMIT
-    ? `${singleLine.slice(0, STATEMENT_PREVIEW_LIMIT)}...`
-    : singleLine;
-}
 
 /**
  * Names the type of a rejected parameter without revealing the value itself.
@@ -547,13 +594,17 @@ function isSqlParameter(value: unknown): value is SqlParameter {
  * is a fresh mutable copy: the driver's parameter type is a mutable array, and
  * copying keeps the caller's `readonly` array genuinely read-only instead of
  * asserting the difference away.
+ *
+ * The statement is deliberately NOT a parameter. It is not needed to diagnose an
+ * unbindable value - the index and the type do that - and taking it would invite
+ * the disclosure defect that `SqlParameterError` documents.
  */
-function toBoundParameters(sql: string, params: readonly unknown[]): SqlParameter[] {
+function toBoundParameters(params: readonly unknown[]): SqlParameter[] {
   const bound: SqlParameter[] = [];
 
   for (const [index, value] of params.entries()) {
     if (!isSqlParameter(value)) {
-      throw new SqlParameterError(index, describeRejectedType(value), previewStatement(sql));
+      throw new SqlParameterError(index, describeRejectedType(value));
     }
 
     bound.push(value);
@@ -609,10 +660,91 @@ const POOL_CREATION_SITE =
 const POOL_TIMEZONE = 'Z';
 
 /**
+ * Turns the resolved transport posture into the driver's `ssl` options, or
+ * `undefined` when transport is deliberately off.
+ *
+ * WHY THIS EXISTS AT ALL. Without it the driver opens a plaintext socket, so the
+ * MySQL handshake carries the account and its credential, and every statement
+ * and every row travels unprotected. The MySQL protocol authenticates the CLIENT
+ * to the server; nothing authenticates the SERVER to this client and nothing
+ * protects the session unless TLS does it. The legacy host had no such gap to
+ * inherit, because it never opened its own connection - it named a datasource
+ * ALIAS at [config/configApplication.cfm:L2] and the ColdFusion administrator
+ * owned the transport. Replacing that registry with a driver is what makes this
+ * this file's responsibility; `src/lib/config.ts` explains the same seam from the
+ * configuration side.
+ *
+ * THE MAPPING IS ONTO THE DRIVER'S OWN DOCUMENTED OPTIONS, not onto a
+ * hand-rolled TLS callback:
+ *
+ *   verify-identity  { rejectUnauthorized: true, verifyIdentity: true }
+ *   verify-ca        { rejectUnauthorized: true, verifyIdentity: false }
+ *   disabled         no `ssl` key at all
+ *
+ * `rejectUnauthorized` makes the driver request the server certificate and
+ * refuse a chain that does not verify against the trust anchor;
+ * `verifyIdentity` additionally requires the certificate to name the host being
+ * connected to. Note that the driver omits the TLS server name when the host is
+ * an IP literal, which is exactly why `verify-ca` remains available: forcing
+ * identity verification in that case would leave an operator with no option but
+ * `disabled`, which is far worse than a verified chain without a host-name check.
+ *
+ * JUDGMENT CALL: `rejectUnauthorized` IS A LITERAL `true` IN BOTH ARMS AND IS
+ * NEVER READ FROM CONFIGURATION. There is no variable for it, no override, and
+ * no arm that sets it to false - a connection that encrypts without verifying is
+ * defeated by any on-path actor able to present a certificate of its own, which
+ * makes it strictly worse than the honest `disabled` mode it would be mistaken
+ * for. `slatwall-ts/.env.example` records the same prohibition under
+ * DELIBERATELY ABSENT. Do not add one.
+ *
+ * The trust anchor is optional: absent means the runtime's built-in public root
+ * store, which is correct for a managed database signed by a public authority.
+ * Verification is on either way - the anchor selects WHOM to trust, never
+ * WHETHER to.
+ *
+ * THE PROTOCOL FLOOR COMES FROM THE RESOLVED POSTURE, NOT FROM A CONSTANT HERE.
+ * An earlier form of this function pinned `minVersion` to a literal in this file,
+ * on the argument that a floor should not be configurable. The floor is not
+ * weakened by reading it from configuration, because the type that carries it
+ * admits only `TLSv1.2` and `TLSv1.3` - `src/lib/config.ts` enforces the bound
+ * with a closed union, so no environment value can select anything lower. What
+ * reading it buys is the ability to RAISE the floor to 1.3 for a deployment whose
+ * server supports it, which a literal made impossible.
+ *
+ * NOTHING ELSE ABOUT THE SECURE CONTEXT IS CONFIGURED. No `ciphers` override,
+ * because hand-narrowing the suite list is how a deployment ends up weaker than
+ * the platform default; and no `cert`/`key`, because client-certificate
+ * authentication is not part of the legacy datasource contract
+ * [config/configApplication.cfm:L1-L2] and adding it would invent one.
+ *
+ * @param tls - The resolved posture from `src/lib/config.ts`, already validated
+ *   and already refused if it named `disabled` in production.
+ * @returns The driver's `ssl` options, or `undefined` for `disabled`.
+ */
+function buildTlsOptions(tls: DatabaseTlsConfig): SslOptions | undefined {
+  if (tls.mode === 'disabled') {
+    return undefined;
+  }
+
+  const verification: SslOptions = {
+    rejectUnauthorized: true,
+    verifyIdentity: tls.mode === 'verify-identity',
+    minVersion: tls.minimumVersion,
+  };
+
+  return tls.certificateAuthority === undefined
+    ? verification
+    : { ...verification, ca: tls.certificateAuthority };
+}
+
+/**
  * Builds the driver options from validated configuration.
  *
- * Every value comes from `src/lib/config.ts`, which is the only module in this
- * port that reads `process.env`. Nothing here has a fallback: a missing or
+ * Every value comes from `src/lib/config.ts`, the owner of the database and
+ * runtime keys and the only module this file consults for them - see the
+ * ownership split in the module header, which also names the two other
+ * environment owners (`src/lib/logger.ts` for LOG_LEVEL, `tests/setup.ts` for
+ * TZ and TEST_LIVE_DATABASE). Nothing here has a fallback: a missing or
  * malformed value has already failed the process by the time this runs.
  *
  * PROPERTIES ARE READ ONE BY ONE, NOT SPREAD, AND THAT IS DELIBERATE. The
@@ -666,8 +798,6 @@ const POOL_TIMEZONE = 'Z';
  *     [model/dao/PromotionDAO.cfc:L141], [model/dao/PromotionDAO.cfc:L196],
  *     [model/dao/PromotionDAO.cfc:L257] and [model/dao/PromotionDAO.cfc:L278]
  *     return values a JavaScript number represents exactly.
- *   * `ssl` - not set, because `slatwall-ts/.env.example` declares no variable
- *     for it and inventing one would break the contract that file defines.
  *   * `dateStrings` - not set. `POOL_TIMEZONE` already makes the conversion
  *     policy explicit, and returning raw strings instead would push date parsing
  *     into six repositories.
@@ -680,9 +810,10 @@ const POOL_TIMEZONE = 'Z';
  *     is no startup health check here either.
  */
 function buildPoolOptions(): PoolOptions {
-  const { database, pool } = appConfig.load();
+  const { database, pool, tls } = appConfig.load();
+  const ssl = buildTlsOptions(tls);
 
-  return {
+  const options: PoolOptions = {
     host: database.host,
     port: database.port,
     database: database.database,
@@ -694,6 +825,13 @@ function buildPoolOptions(): PoolOptions {
     idleTimeout: pool.idleTimeout,
     timezone: POOL_TIMEZONE,
   };
+
+  // The key is ADDED only when transport is on, rather than being present with an
+  // `undefined` value. `exactOptionalPropertyTypes` is on, so an explicit
+  // `ssl: undefined` would not type-check against the driver's optional member,
+  // and the driver's own contract is "absent means plaintext"
+  // [node_modules/mysql2/lib/connection_config.js:L146-L149].
+  return ssl === undefined ? options : { ...options, ssl };
 }
 
 // --- The pool - one per container, and exactly one `createPool` call site -----
@@ -763,21 +901,25 @@ export function getConnectionPool(): Pool {
   const dialect = resolveConfiguredDialect();
   assertMySqlDialect(dialect, POOL_CREATION_SITE);
 
-  const options = buildPoolOptions();
-  memoizedPool = createPool(options);
+  memoizedPool = createPool(buildPoolOptions());
 
-  // Exactly four fields, and the omissions are the point. The host is left out
-  // even though it is not secret: `src/lib/config.ts` documents it as never
-  // echoed in diagnostics, and `src/lib/logger.ts` independently redacts the key
-  // `host`, so passing it would emit a redaction marker and nothing more. The
-  // account, the credential, the settings object and any composed connection
-  // string are never passed at all.
-  logger.info('MySQL connection pool created', {
-    port: options.port,
-    database: options.database,
-    dialect,
-    connectionLimit: options.connectionLimit,
-  });
+  // NO CONTEXT, AND THE ABSENCE IS THE POINT. An earlier revision passed the
+  // port, the database name, the dialect and the connection limit, and that was a
+  // disclosure defect rather than a diagnostic: every one of those values is
+  // derived from the deployment environment, they name the topology of a live
+  // datasource, and this line lands on stdout where a log stream is a far broader
+  // audience than the operator who set the variables. A database name and a port
+  // together are reconnaissance; a pool ceiling is capacity intelligence; the
+  // dialect could only ever read `MySQL` here because `assertMySqlDialect` above
+  // has already refused everything else, so it carried no information at all.
+  //
+  // What remains is the only fact this line was ever needed for: a pool was
+  // constructed in this container, exactly once. An operator who needs to know
+  // WHICH datasource reads the environment they configured; nothing about that
+  // configuration is echoed back out. This matches the position `src/lib/config.ts`
+  // already takes on the host and the position `src/lib/logger.ts` enforces
+  // independently by redacting connection-shaped keys.
+  logger.info('MySQL connection pool created');
 
   return memoizedPool;
 }
@@ -809,7 +951,7 @@ export function createPoolExecutor(pool: Pool): PreparedStatementExecutor {
       // The driver's row type is named here and nowhere else in the port. Its
       // `any`-valued index signature stops at this return: the annotation above
       // is `readonly SqlRow[]`, so every column leaves this file as `unknown`.
-      const [rows] = await pool.execute<RowDataPacket[]>(sql, toBoundParameters(sql, params));
+      const [rows] = await pool.execute<RowDataPacket[]>(sql, toBoundParameters(params));
 
       return rows;
     },
@@ -818,7 +960,7 @@ export function createPoolExecutor(pool: Pool): PreparedStatementExecutor {
       sql: string,
       params: readonly unknown[] = NO_PARAMETERS,
     ): Promise<SqlMutationResult> {
-      const [header] = await pool.execute<ResultSetHeader>(sql, toBoundParameters(sql, params));
+      const [header] = await pool.execute<ResultSetHeader>(sql, toBoundParameters(params));
 
       return Object.freeze({
         affectedRows: header.affectedRows,
@@ -831,7 +973,7 @@ export function createPoolExecutor(pool: Pool): PreparedStatementExecutor {
 /**
  * The executor the composition root wires into every repository.
  *
- * This is the single line `src/handlers/bootstrap.ts` needs, and it is the only
+ * This is the single line `src/handlers/bootstrap.ts` (planned) needs, and it is the only
  * place production code should turn a pool into an executor. A repository must
  * never call it: repositories receive an executor as a constructor argument, and
  * calling this from inside one would reintroduce the service-locator pattern that

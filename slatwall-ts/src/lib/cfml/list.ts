@@ -1,4 +1,19 @@
 // ---------------------------------------------------------------------------
+// CHECKPOINT STATUS - FORWARD REFERENCES CARRY THE MARKER `(planned)`
+//
+// The subtree is authored in boundaries, and AAP 0.4.5 makes the authoring
+// order "a compile-order convenience, not a schedule". Commentary in this file
+// therefore names modules of the target layout that DO NOT EXIST YET. Every such
+// name carries `(planned)` at its point of use, meaning exactly: a planned Agent
+// Action Plan target that is ABSENT from the subtree at this checkpoint. Nothing
+// here asserts that any of them exists now, and no behaviour in this file depends
+// on one. The complete set named below, with the role each will play:
+//
+//   src/domain/entities/sku.ts                        Sku entity
+//   src/services/promotion/qualifierQualification.ts  promotion decomposition module
+// ---------------------------------------------------------------------------
+
+// ---------------------------------------------------------------------------
 // slatwall-ts - CFML comma-list primitives
 //
 // PURPOSE
@@ -132,7 +147,7 @@
 //   fulfillment ID that is absent from the list; the code gets away with it
 //   because the ID was appended at [model/service/PromotionService.cfc:L756].
 //   `ListDeleteAt` is not one of the five exports, so under the overflow rule
-//   it belongs inside src/services/promotion/qualifierQualification.ts with a
+//   it belongs inside src/services/promotion/qualifierQualification.ts (planned) with a
 //   documented annotation. Stated here only so it is not lost; not fixed and
 //   not implemented here.
 // ---------------------------------------------------------------------------
@@ -214,6 +229,68 @@ function splitOnDelimiters(list: string, delimiters: string): string[] {
   return elements;
 }
 
+// ---------------------------------------------------------------------------
+// The one failure this module can report
+// ---------------------------------------------------------------------------
+
+/**
+ * Raised when a list is indexed outside `1..listLen(list)`.
+ *
+ * FOUR OF THE FIVE EXPORTS ARE STILL TOTAL. `listLen`, `listAppend`,
+ * `listToArray` and `listFindNoCase` cannot fail: every input maps to a defined
+ * answer, and `listFindNoCase` reports absence with `0` because that is what CFML
+ * itself returns and `0` is not a valid 1-based position, so it is unambiguous.
+ * `listGetAt` is the sole exception, because it is the only export whose natural
+ * "nothing there" answer - the empty string - is ALSO a perfectly valid element
+ * value. That collision is what forces a raise rather than a sentinel, and it is
+ * why this class is declared for one function rather than for the module.
+ *
+ * EXPORTED DELIBERATELY, unlike the substrate error in `precision.ts`. A caller
+ * walking a materialized ID path may legitimately want to distinguish a bad index
+ * from any other failure - the promotion membership walks at
+ * [model/service/PromotionService.cfc:L865] and
+ * [model/service/PromotionService.cfc:L935] are the realistic case - and giving
+ * them a named type to catch is better than asking them to match on a message.
+ * Nothing in this module catches it; it propagates to the caller unchanged.
+ *
+ * The message names the offending position, the list length and the list itself.
+ * The list is included because these lists are structural identifiers - comma
+ * lists of `optionGroupID`s and `productTypeID`s - and diagnosing an index fault
+ * without seeing the list is guesswork. It is bounded to keep a pathological
+ * value out of a log line; the untruncated length is always reported.
+ */
+export class CfmlListIndexError extends Error {
+  /**
+   * @param list - the list that was indexed.
+   * @param position - the rejected 1-based position.
+   * @param length - the number of non-empty elements the list actually has.
+   */
+  public constructor(list: string, position: number, length: number) {
+    const shown =
+      list.length > MAX_REPORTED_LIST_LENGTH
+        ? `${list.slice(0, MAX_REPORTED_LIST_LENGTH)}...`
+        : list;
+
+    super(
+      `listGetAt received the position ${String(position)}, which is not an integer in ` +
+        `1..${String(length)}; the list has ${String(length)} element(s) and ` +
+        `${String(list.length)} character(s): "${shown}". CFML raises for an invalid list index, ` +
+        'and returning the empty string here would be indistinguishable from an element that is ' +
+        'genuinely empty.',
+    );
+    this.name = 'CfmlListIndexError';
+  }
+}
+
+/**
+ * How much of an offending list the error message reproduces.
+ *
+ * Long enough to identify a realistic comma list of 32-character UUID
+ * identifiers - four of them, with their delimiters - and short enough that a
+ * pathological value cannot dominate a log line.
+ */
+const MAX_REPORTED_LIST_LENGTH = 132;
+
 /**
  * Count the elements of a CFML list.
  *
@@ -225,24 +302,67 @@ function splitOnDelimiters(list: string, delimiters: string): string[] {
  *
  * Note `i=1` and `i<=listLen(...)`. `listLen` returns a COUNT, and that count
  * is simultaneously the upper bound of a 1-based loop - which is why
- * `listGetAt` below is 1-based rather than 0-based. Thirteen further 1-based
- * `listLen`/`listGetAt` loop pairs follow the same shape, at
- * [model/entity/RoundingRule.cfc:L79-L80],
- * [model/service/SkuService.cfc:L73-L74, L153/L158, L160-L161, L163-L164,
- * L186-L187, L191/L196] and
- * [model/service/PromotionService.cfc:L864-L865, L899-L900, L934-L935,
- * L965-L966] - the last four walking `getProductTypeIDPath()`, a hierarchical
- * materialized path stored as a comma-delimited string.
+ * `listGetAt` below is 1-based rather than 0-based. THIRTEEN FURTHER in-scope
+ * `listLen`/`listGetAt` pairings follow the anchor, making FOURTEEN in total -
+ * the number the `listGetAt` notes below also quote. Every one is enumerated
+ * here, because a count that does not match its own list is not a census.
+ *
+ * TWELVE of the thirteen repeat the anchor's shape exactly - a 1-based counter
+ * bounded by `listLen`, indexed by `listGetAt`:
+ *
+ *     [model/entity/RoundingRule.cfc:L79-L80]
+ *     [model/service/SkuService.cfc:L73-L74, L153/L158, L160-L161, L163-L164,
+ *                                   L186-L187, L191/L196]
+ *     [model/service/PromotionService.cfc:L864-L865, L899-L900, L934-L935,
+ *                                         L965-L966]
+ *     [model/dao/SkuDAO.cfc:L113-L114]
+ *
+ * The four `PromotionService` sites walk `getProductTypeIDPath()`, a
+ * hierarchical materialized path stored as a comma-delimited string. The
+ * `SkuDAO` site is `getSkusBySelectedOptions`, where each iteration appends one
+ * `and exists (...)` clause to the HQL - the AND-of-EXISTS matching that the
+ * plan names as must-preserve behaviour - so 1-based indexing is load-bearing
+ * there rather than incidental. That source spells the accessor `listGetat`;
+ * CFML is case-insensitive on function names, so the spelling is reported as
+ * found rather than tidied.
+ *
+ * The THIRTEENTH is a VARIANT, listed separately so this census cannot be read
+ * as claiming one uniform shape:
+ *
+ *     [model/service/ProductService.cfc:L86-L91]  private buildSkuCombinations
+ *
+ * There `listLen` appears twice - once as a bare control-flow gate at L86,
+ * `if(listlen(keys))`, and once as an equality bound at L88,
+ * `arguments.position eq listlen(keys)` - while `listGetAt(keys, position)`
+ * selects a STRUCT KEY rather than a loop element, and the loop counter is
+ * bounded by `arrayLen` of the array found at that key. The same two primitives
+ * and the same 1-based convention, composed differently.
  *
  * CFML parity - `listLen('')` IS 0, AND THAT IS LOAD-BEARING, not an edge case.
- * Five in-scope sites use `listLen` directly as a control-flow predicate,
- * relying on CFML's "0 is false":
+ * TWELVE in-scope sites use `listLen` directly as a control-flow predicate,
+ * relying on CFML's "0 is false". Counted by direct search across the in-scope
+ * entities, services and DAOs, and enumerated in full rather than sampled:
  *
  *     [model/service/SkuService.cfc:L142]  !listLen(data.subscriptionBenefits)
  *     [model/service/SkuService.cfc:L147]  !listLen(data.subscriptionTerms)
  *     [model/service/SkuService.cfc:L175]  !listLen(data.accessContents)
+ *     [model/service/ProductService.cfc:L86]  if(listlen(keys))
+ *     [model/entity/PriceGroupRate.cfc:L120]  if(ListLen(productsList))
+ *     [model/entity/PriceGroupRate.cfc:L123]  if(ListLen(productTypesList))
+ *     [model/entity/PriceGroupRate.cfc:L126]  if(ListLen(SkusList))
  *     [model/entity/PriceGroupRate.cfc:L131]  if(listLen(including))
+ *     [model/entity/PriceGroupRate.cfc:L146]  if(ListLen(excludedProductsList))
+ *     [model/entity/PriceGroupRate.cfc:L149]  if(ListLen(excludedproductTypesList))
+ *     [model/entity/PriceGroupRate.cfc:L152]  if(ListLen(excludedSkusList))
  *     [model/entity/PriceGroupRate.cfc:L157]  if(listLen(excluding))
+ *
+ * All eight `PriceGroupRate` sites sit inside `getAppliesTo()`. The six at
+ * L120-L126 and L146-L152 gate the appending of a locally built DISPLAY STRING
+ * rather than of list-shaped domain data, which is the distinction that had
+ * previously left them out of this count; every one still depends on
+ * `listLen('')` being 0. One further use is a comparison rather than a bare
+ * predicate and is deliberately not counted here:
+ * [model/service/ProductService.cfc:L88] `arguments.position eq listlen(keys)`.
  *
  * The consequence that matters most is at the anchor: an empty
  * `roundingRuleExpression` makes `listLen` return 0, so the loop body at
@@ -283,42 +403,129 @@ export function listLen(list: string, delimiters: string = DEFAULT_DELIMITER): n
  * position)]` - so it must be the element string itself, unmodified and
  * untrimmed.
  *
- * JUDGMENT CALL - out-of-range positions return `''` instead of throwing.
- * CFML throws for `position < 1` and for `position > listLen(list)`. This
- * module returns the empty string, for three reasons. First, no export here
- * throws, which keeps these primitives usable inside expression positions
- * without defensive wrapping. Second, the divergence is unreachable from
- * ported code: every in-scope call site is bounded by an
- * `i<=listLen(...)` guard, so a position outside the range cannot be produced
- * by a faithful port. Third, `''` is the value CFML itself yields for an
- * element that is present but empty, so the return type stays honestly
- * `string` rather than widening to `string | undefined` and pushing a
- * narrowing burden onto fourteen call sites. Non-integer, `NaN` and infinite
- * positions take the same path, so the contract is total.
+ * AN OUT-OF-RANGE OR NON-INTEGER POSITION THROWS, EXACTLY AS CFML DOES.
+ * CFML raises for `position < 1` and for `position > listLen(list)`, and this
+ * module raises too. An earlier revision returned `''` instead, on the reasoning
+ * that no export here throws and that every in-scope call site is bounded by an
+ * `i<=listLen(...)` guard so the case is unreachable. Both halves of that
+ * reasoning were wrong in the way that matters:
+ *
+ *   * `''` IS AN INDISTINGUISHABLE VALID ANSWER. CFML yields `''` for an element
+ *     that is genuinely present but empty, so returning `''` for a bad position
+ *     collapses "you asked past the end" into "the element is empty". Those are
+ *     different facts, and the second is a legitimate list value. A caller cannot
+ *     tell them apart, so an indexing bug is guaranteed to be silent.
+ *   * "UNREACHABLE" IS A CLAIM ABOUT TODAY'S CALLERS, NOT A CONTRACT. Every
+ *     in-scope loop is bounded today, so a faithful port cannot reach this branch
+ *     - which means throwing costs nothing in ported code and can only fire on a
+ *     genuine defect. A safety net that is never touched by correct code is
+ *     precisely the one worth having; softening it only helps INCORRECT code, by
+ *     letting it continue.
+ *
+ * The stakes make this concrete rather than academic. Two of the fourteen legacy
+ * loop pairs walk the product-type path that decides promotion qualifier and
+ * reward membership [model/service/PromotionService.cfc:L865, L935], and the
+ * anchor loop at [model/service/RoundingRuleService.cfc:L94] feeds the rounding
+ * search. An off-by-one that quietly yields `''` there produces a wrong
+ * membership decision or a wrong rounding candidate - which is wrong money -
+ * whereas a raise stops the request.
+ *
+ * A NON-INTEGER POSITION IS REJECTED RATHER THAN TRUNCATED. `1.5`, `NaN` and
+ * both infinities all raise. Truncating toward an integer would be inventing an
+ * intent the caller did not express, and `NaN` in particular is how a failed
+ * numeric parse arrives; silently reading element 1 for it would hide the parse
+ * failure.
+ *
+ * THE RETURN TYPE STAYS `string`, WHICH IS THE POINT. Raising is what preserves
+ * it: the alternative to throwing is not `''` but `string | undefined`, which
+ * would push a narrowing burden onto all fourteen call sites for a case none of
+ * them can reach. So the contract is total in the useful sense - a successful
+ * call always yields a `string`, and there is no absent case to narrow.
+ *
+ * IT DOES NOT SPLIT THE WHOLE LIST, AND THAT IS A RESOURCE DECISION RATHER THAN
+ * a micro-optimization. An earlier revision delegated to `splitOnDelimiters` and
+ * then indexed the result, so every call materialized an array holding EVERY
+ * element of the list - all of them - to return one. Because the legacy idiom
+ * this function exists to serve is a `for(i=1; i<=listLen(list); i++)` loop, the
+ * cost compounded: an n-element list produced n arrays of n strings, so the
+ * allocation was quadratic in the list length even though the answer to each call
+ * needed only a prefix. Several of those lists arrive from a caller - the
+ * selected-option list behind `getProductSkusBySelectedOptions` is the clearest
+ * case - which makes the length attacker-influenced and the allocation the
+ * cheapest way to exhaust a Lambda's memory.
+ *
+ * The scan below terminates as soon as the requested element is complete and
+ * allocates NO intermediate array at all: one delimiter set, and one accumulating
+ * element string that is discarded at each boundary until the wanted one is
+ * reached.
+ *
+ * Both boundary rules `splitOnDelimiters` documents are reproduced here in full,
+ * because this function no longer delegates to it: consecutive delimiters collapse
+ * so an empty run contributes no element, and `delimiters` is a SET OF CODE POINTS
+ * rather than a delimiting string or a pattern. The two implementations must stay
+ * in agreement - `listLen` bounds the loops that drive this function - so the
+ * shared behaviour is pinned by a dedicated group of tests rather than by
+ * proximity.
  *
  * @param list - the raw CFML list.
  * @param position - the 1-based position of the wanted element.
  * @param delimiters - the set of separator characters. Defaults to a comma.
- * @returns the element at `position`, or `''` if `position` is out of range.
+ * @returns the element at `position`. Always a `string`.
+ * @throws {CfmlListIndexError} if `position` is not an integer in
+ *   `1..listLen(list)`.
  */
 export function listGetAt(
   list: string,
   position: number,
   delimiters: string = DEFAULT_DELIMITER,
 ): string {
-  const elements = splitOnDelimiters(list, delimiters);
-
-  if (!Number.isInteger(position) || position < 1 || position > elements.length) {
-    return '';
+  // Checked before the scan starts, so an unusable position costs nothing. The
+  // upper bound cannot be checked here - it is the element COUNT, which is only
+  // known once the list has been walked - so an over-large position is detected by
+  // the scan falling off the end below, which raises with the true count in hand.
+  if (!Number.isInteger(position) || position < 1) {
+    throw new CfmlListIndexError(list, position, listLen(list, delimiters));
   }
 
-  // `noUncheckedIndexedAccess` types this read as `string | undefined` even
-  // behind the bounds check above, and a non-null assertion is banned in
-  // src/**, so the absent case is narrowed explicitly. It is unreachable given
-  // the guard; handling it costs one comparison and keeps the return `string`.
-  const element = elements[position - 1];
+  // The `Set` constructor consumes the string iterator, so its members are whole
+  // code points. That is what makes "a set of single characters" literal in the
+  // code and keeps a surrogate pair indivisible - the same reasoning
+  // `splitOnDelimiters` records, and the reason no regular expression is built
+  // from the caller's delimiter here either.
+  const delimiterSet = new Set<string>(delimiters);
+  let completed = 0;
+  let element = '';
 
-  return element === undefined ? '' : element;
+  for (const character of list) {
+    if (!delimiterSet.has(character)) {
+      element += character;
+      continue;
+    }
+
+    // An empty run between two delimiters contributes no element, which is what
+    // makes `listGetAt('a,,b', 2)` return `'b'` rather than `''`.
+    if (element === '') {
+      continue;
+    }
+
+    completed += 1;
+    if (completed === position) {
+      return element;
+    }
+
+    element = '';
+  }
+
+  // A non-empty trailing run is the last element, numbered one past the last
+  // completed one. When `position` is beyond that, nothing matched: CFML raises
+  // for an index outside the list rather than answering the empty string, so the
+  // count reached by the scan is reported instead of a value that could pass for
+  // a real element.
+  if (element !== '' && completed + 1 === position) {
+    return element;
+  }
+
+  throw new CfmlListIndexError(list, position, element === '' ? completed : completed + 1);
 }
 
 /**

@@ -1,4 +1,23 @@
 // ---------------------------------------------------------------------------
+// CHECKPOINT STATUS - FORWARD REFERENCES CARRY THE MARKER `(planned)`
+//
+// The subtree is authored in boundaries, and AAP 0.4.5 makes the authoring
+// order "a compile-order convenience, not a schedule". Commentary in this file
+// therefore names modules of the target layout that DO NOT EXIST YET. Every such
+// name carries `(planned)` at its point of use, meaning exactly: a planned Agent
+// Action Plan target that is ABSENT from the subtree at this checkpoint. Nothing
+// here asserts that any of them exists now, and no behaviour in this file depends
+// on one. The complete set named below, with the role each will play:
+//
+//   src/handlers/bootstrap.ts                                         composition root (wiring)
+//   src/repositories/mysql/mysqlPriceGroupRepository.ts               MySQL price-group adapter
+//   src/repositories/mysql/sql/accountSubscriptionPriceGroups.sql.ts  extracted SQL module
+//   src/services/priceGroupService.ts                                 ported PriceGroupService
+//   src/services/roundingRuleService.ts                               ported RoundingRuleService
+//   tests/integration/repositories                                    repository integration tier
+// ---------------------------------------------------------------------------
+
+// ---------------------------------------------------------------------------
 // slatwall-ts - price group repository port
 //
 // PURPOSE
@@ -83,7 +102,7 @@
 //       knob.
 //
 //   Neither the extracted statement module
-//   (`src/repositories/mysql/sql/accountSubscriptionPriceGroups.sql.ts`) nor the
+//   (`src/repositories/mysql/sql/accountSubscriptionPriceGroups.sql.ts` (planned)) nor the
 //   dialect resolver (`src/repositories/mysql/dialect.ts`) is imported here;
 //   both are named in prose only, and importing either would be a build
 //   failure. The dialect resolver is what replaces the legacy runtime probe -
@@ -164,7 +183,7 @@
 //   followed: the orchestrator that used to own both services is not ported.
 //
 //   NO SIBLING PORT HAS RECORDED THIS REQUIREMENT. This file is where it
-//   becomes explicit and non-optional. `src/handlers/bootstrap.ts` orders the
+//   becomes explicit and non-optional. `src/handlers/bootstrap.ts` (planned) orders the
 //   two passes explicitly in the composition root, and a test asserts that
 //   ordering - reversing the two changes the computed discount, which is what
 //   makes the assertion meaningful rather than decorative.
@@ -199,7 +218,7 @@
 //   not one, including this one. The inversion is described above in prose and
 //   nothing here imports `../views/orderView.js` or declares an order shape.
 //   There is likewise no `updateOrderAmountsWithPriceGroups` method on this
-//   port: that is a SERVICE method on `src/services/priceGroupService.ts`, not a
+//   port: that is a SERVICE method on `src/services/priceGroupService.ts` (planned), not a
 //   repository method, and its reshaping to return intents is spent there.
 //
 // NO AMBIENT STATE - AND THE EXPLICIT CONTEXT PARAMETER IT FORCES
@@ -215,9 +234,10 @@
 //   Transformation rule T6 eliminates ambient state: `getHibachiScope()` and
 //   `getSlatwallScope()` both vanish, and the legacy naming divergence
 //   disappears with them. The replacement is an EXPLICIT CONTEXT PARAMETER
-//   passed down the call chain, which is why `SkuPriceGroupResolver.
-//   calculateSkuPriceBasedOnCurrentAccount` below takes a
-//   `CurrentAccountContext` rather than reading one.
+//   passed down the call chain, which is why the ported
+//   `calculateSkuPriceBasedOnCurrentAccount` TAKES a `CurrentAccountContext`
+//   rather than reading one - on the price-group service and on the narrow
+//   collaborator the `Sku` entity is constructed with alike.
 //
 //   `src/lib/config.ts` IS STATIC PROCESS CONFIGURATION AND MUST NEVER BE USED
 //   AS A REQUEST SCOPE. It is also not on the legal import surface for
@@ -233,17 +253,24 @@
 //   cross-request state hazard, and it is the only lens through which any of it
 //   should be read.
 //
-// WHY TWO COLLABORATOR TYPES ARE CO-LOCATED IN THIS FILE
-//   `CurrentAccountContext` and `SkuPriceGroupResolver` live here rather than in
-//   modules of their own BECAUSE THE PORT COUNT IS LOCKED AT 13 AND NO NEW FILE
-//   MAY BE CREATED. They are not a fourteenth and fifteenth port. They are
-//   directly supporting types of this one - the context the resolver takes and
-//   the resolver the price-group cascade exposes to the `Sku` entity - so the
-//   project's one-exported-unit-per-file standard is satisfied on the reading it
-//   actually states: one primary exported unit plus its directly supporting
-//   co-located types. Nothing is placed in `../entities/` or `../valueObjects/`
-//   to accommodate them, and no `accountContext.ts` or `subscriptionPriceGroup.
-//   ts` is created.
+// WHY ONE SUPPORTING TYPE IS CO-LOCATED IN THIS FILE, AND WHY IT IS THE ONLY ONE
+//   `CurrentAccountContext` lives here rather than in a module of its own BECAUSE
+//   THE PORT COUNT IS LOCKED AT 13 AND NO NEW FILE MAY BE CREATED. It is not a
+//   fourteenth port. It is a directly supporting type of this one, named in the
+//   ported signature `calculateSkuPriceBasedOnCurrentAccount(sku: Sku, context:
+//   CurrentAccountContext)` (AAP 0.4.2), so the project's
+//   one-exported-unit-per-file standard is satisfied on the reading it actually
+//   states: one primary exported unit plus its directly supporting co-located
+//   types. Nothing is placed in `../entities/` or `../valueObjects/` to
+//   accommodate it, and no `accountContext.ts` is created.
+//
+//   THAT ARGUMENT DOES NOT EXTEND TO A COLLABORATOR CONTRACT, AND THE FILE NO
+//   LONGER PRETENDS IT DOES. A narrow price-group resolver for the `Sku` entity
+//   was previously exported from here on the same co-location reasoning; it has
+//   been removed, because an interface EXPORTED from a port module reads as an
+//   addition to the locked inventory whether or not it occupies a file of its
+//   own. It now lives module-locally and un-exported inside
+//   `src/domain/entities/sku.ts`. See the relocation note further down.
 //
 // MUST-PRESERVE: THIS PORT SITS DIRECTLY ON THE PRICE-GROUP CASCADE
 //   The price-group and currency resolution cascade is one of exactly three
@@ -257,7 +284,7 @@
 //   Characterization tests elsewhere pin that cascade INCLUDING its two
 //   documented asymmetries, so a "corrected" implementation fails the gate
 //   rather than passing it. Both asymmetries are service-tier behaviour owned by
-//   `src/services/priceGroupService.ts` and neither is encoded on this port: the
+//   `src/services/priceGroupService.ts` (planned) and neither is encoded on this port: the
 //   parent recursion calls the PRODUCT variant rather than the SKU variant
 //   (`model/service/PriceGroupService.cfc:L174`), and only the `percentageOff`
 //   branch applies the rounding rule while `amountOff` and `amount` skip it
@@ -272,7 +299,7 @@
 //   BOUNDARY, and laziness is NOT simulated: there is no proxy, no thunk, no
 //   deferred getter and no lazy wrapper anywhere in the target. The consequence
 //   is that fetch shape becomes an explicit, documented decision made at each
-//   repository method in `src/repositories/mysql/mysqlPriceGroupRepository.ts`,
+//   repository method in `src/repositories/mysql/mysqlPriceGroupRepository.ts` (planned),
 //   which also owns the row-to-entity factory, port injection and the
 //   association materialization itself.
 //
@@ -309,8 +336,9 @@
 // THE ASYNC RULING
 //   A method is asynchronous if and only if its legacy body reached the DAO or
 //   the ORM. All six methods on `PriceGroupRepository` return promises, because
-//   every one of them crosses the data store by definition. On
-//   `SkuPriceGroupResolver` the ruling splits the two methods:
+//   every one of them crosses the data store by definition. On the narrow
+//   price-group collaborator that `src/domain/entities/sku.ts` declares
+//   module-locally, the same ruling splits the two methods:
 //   `calculateSkuPriceBasedOnPriceGroup` is SYNCHRONOUS because its legacy body
 //   (`model/service/PriceGroupService.cfc:L301`) is pure over already-
 //   materialized associations, while `calculateSkuPriceBasedOnCurrentAccount` is
@@ -381,14 +409,14 @@
 // WHO IMPLEMENTS THIS PORT
 //   `src/repositories/mysql/**` implements exactly six of the thirteen ports,
 //   and this is one of the six: ITS ADAPTER IS
-//   `src/repositories/mysql/mysqlPriceGroupRepository.ts`. Six obligations
+//   `src/repositories/mysql/mysqlPriceGroupRepository.ts` (planned). Six obligations
 //   transfer to that file:
 //
 //     1. PREPARED STATEMENTS EXCLUSIVELY, with `accountID` bound rather than
 //        interpolated, per the transfer statement above.
 //     2. THE SUBSCRIPTION REACH-THROUGH IS REPRODUCED AS-IS AND READ-ONLY,
 //        with its dialect-specific row limiting parameterized in
-//        `src/repositories/mysql/sql/accountSubscriptionPriceGroups.sql.ts` and
+//        `src/repositories/mysql/sql/accountSubscriptionPriceGroups.sql.ts` (planned) and
 //        `src/repositories/mysql/dialect.ts`, MySQL branch only. No
 //        subscription write, ever.
 //     3. THE `<cfquery>` BODY AT `model/dao/PriceGroupDAO.cfc:L52-L100` IS THE
@@ -409,14 +437,14 @@
 //        legacy component memoised becomes request-scoped, for the
 //        cross-request correctness reason given above.
 //
-//   `src/handlers/bootstrap.ts` WIRES this port to that adapter; it does not
+//   `src/handlers/bootstrap.ts` (planned) WIRES this port to that adapter; it does not
 //   implement it. The two co-located types have no adapter file in the locked
 //   layout, and that is deliberate: `SkuPriceGroupResolver` is satisfied in
-//   `src/handlers/bootstrap.ts` by adapting the ported
-//   `src/services/priceGroupService.ts` surface, and injected into the `Sku`
+//   `src/handlers/bootstrap.ts` (planned) by adapting the ported
+//   `src/services/priceGroupService.ts` (planned) surface, and injected into the `Sku`
 //   entity from there; and `CurrentAccountContext` is CONSTRUCTED PER REQUEST AT
 //   THE HANDLER BOUNDARY - never read from module scope, and never from
-//   `src/lib/config.ts`. `src/handlers/bootstrap.ts` is also where the
+//   `src/lib/config.ts`. `src/handlers/bootstrap.ts` (planned) is also where the
 //   execution-ordering constraint above is enforced.
 //
 // WHAT BELONGS TO A SIBLING AND IS THEREFORE ABSENT HERE
@@ -428,7 +456,7 @@
 //       appears here.
 //     * the ROUNDING-RULE ROW is supplied by `promotionRepository`, which hosts
 //       that lookup; the rounding ARITHMETIC belongs to
-//       `src/services/roundingRuleService.ts`. There is no
+//       `src/services/roundingRuleService.ts` (planned). There is no
 //       `roundingRuleRepository` port and no rounding arithmetic here.
 //     * CURRENCY CONVERSION belongs to the `currencyConverter` port.
 //     * SETTINGS belong to the `settingsProvider` port, through which the
@@ -441,7 +469,7 @@
 //       loop over a child collection snapshot that is never re-read
 //       (`model/service/PriceGroupService.cfc:L461-L470`, preserved at the
 //       service tier with a bounded-iteration guard) are all owned by
-//       `src/services/priceGroupService.ts`. This port adds no guard, no bound,
+//       `src/services/priceGroupService.ts` (planned). This port adds no guard, no bound,
 //       no cursor and no re-read parameter to compensate for any of them.
 //     * the misspelled `subsciptionUsageBenefit` argument name
 //       (`model/entity/PriceGroup.cfc:L168`) is preserved-with-a-comment in the
@@ -460,14 +488,16 @@
 
 // Ports and entities reference each other at the TYPE level and must never do
 // so at the value level. Entities take port interfaces as constructor
-// parameters - `Sku` is constructed with the `SkuPriceGroupResolver` declared
-// in THIS file, which is what replaces the `getService("priceGroupService")`
-// locator at `model/entity/Sku.cfc:L437` - while this file imports the entity
-// types it returns and accepts. That asymmetry is what justifies authoring
-// ports before entities: an entity body needs the full method SIGNATURES from a
-// port, whereas a port needs only the type NAME and module path from an entity.
-// This file returns `PriceGroup` and `PriceGroupRate`, accepts `Sku`, and never
-// invokes a member of any of them.
+// parameters, while a port imports the entity types it returns and accepts.
+// That asymmetry is what justifies authoring ports before entities: an entity
+// body needs the full method SIGNATURES from a port, whereas a port needs only
+// the type NAME and module path from an entity. This file returns `PriceGroup`
+// and `PriceGroupRate` and never invokes a member of either. It no longer
+// imports `Sku` or `Money` at all: the only declaration that needed them was
+// the narrow price-group collaborator that has moved into
+// `src/domain/entities/sku.ts` - which is also where the replacement for the
+// `getService("priceGroupService")` locator at `model/entity/Sku.cfc:L437` now
+// lives.
 //
 // Because `import type` is fully erased at emit, because these port files
 // declare interfaces only, and because the project-wide no-barrel policy means
@@ -485,8 +515,6 @@
 // relaxing `tsconfig.json`.
 import type { PriceGroup } from '../entities/priceGroup.js';
 import type { PriceGroupRate } from '../entities/priceGroupRate.js';
-import type { Sku } from '../entities/sku.js';
-import type { Money } from '../valueObjects/money.js';
 
 /**
  * The explicit request context that replaces CFML's ambient request scope for
@@ -518,7 +546,7 @@ import type { Money } from '../valueObjects/money.js';
  * re-create precisely the ambient-scope coupling T6 exists to remove.
  *
  * It is CONSTRUCTED PER REQUEST AT THE HANDLER BOUNDARY in
- * `src/handlers/bootstrap.ts` and passed down the call chain. It is never read
+ * `src/handlers/bootstrap.ts` (planned) and passed down the call chain. It is never read
  * from module scope and never assembled from `src/lib/config.ts`, which is
  * static process configuration and is not a request scope.
  *
@@ -572,7 +600,7 @@ export interface CurrentAccountContext {
  * ASSOCIATIONS ARRIVE MATERIALIZED. Laziness is not simulated anywhere in the
  * target, so the fetch shape of every method below is an explicit decision
  * documented at the corresponding method of
- * `src/repositories/mysql/mysqlPriceGroupRepository.ts`. The header records
+ * `src/repositories/mysql/mysqlPriceGroupRepository.ts` (planned). The header records
  * exactly which associations the five-level cascade walks and therefore requires
  * to be present. There is deliberately no eager-load, fetch or include options
  * parameter for a caller to tune.
@@ -753,7 +781,7 @@ export interface PriceGroupRepository {
    * The sibling-rate reconciliation, the global-flag exclusivity rule and the
    * include and exclude clearing that the legacy service performs at
    * `model/service/PriceGroupService.cfc:L407-L444` are all SERVICE-tier
-   * behaviour owned by `src/services/priceGroupService.ts`. None of it is
+   * behaviour owned by `src/services/priceGroupService.ts` (planned). None of it is
    * declared here, and this method must not be widened to absorb any of it.
    */
   savePriceGroupRate(priceGroupRate: PriceGroupRate): Promise<PriceGroupRate>;
@@ -774,7 +802,7 @@ export interface PriceGroupRepository {
    * `while(arrayLen(...) != 0)` over that SNAPSHOT (L465-L467) without ever
    * re-reading it, which can fail to terminate. That behaviour is preserved at
    * the service tier with a bounded-iteration guard and an annotation, and it is
-   * `src/services/priceGroupService.ts`'s to carry. NO guard, bound, cursor,
+   * for `src/services/priceGroupService.ts` (planned) to carry. NO guard, bound, cursor,
    * iteration limit or re-read parameter is added to this port to compensate -
    * doing so would move service behaviour into the data layer and quietly change
    * what the guard means.
@@ -782,118 +810,28 @@ export interface PriceGroupRepository {
   deletePriceGroup(priceGroup: PriceGroup): Promise<boolean>;
 }
 
-/**
- * The narrow price-group collaborator the `Sku` entity is constructed with.
- *
- * WHY IT EXISTS. `model/entity/Sku.cfc` reaches outward to the price group
- * service through a runtime SERVICE LOCATOR at two sites: `getPriceByPriceGroup`
- * at `model/entity/Sku.cfc:L261`, whose `getService("priceGroupService")` call
- * is on L262, and `getCurrentAccountPrice()` at L435-L440, whose locator is on
- * L437. Transformation rule T2 converts both into ONE CONSTRUCTOR-INJECTED PORT
- * on the entity, which is this interface. The locator, and with it the runtime
- * lookup by string name, disappears.
- *
- * EXACTLY TWO METHODS, matching those two call sites and nothing else. No third
- * method may be added - notably not the rate lookup behind
- * `Sku.getAppliedPriceGroupRateByPriceGroup` (`model/entity/Sku.cfc:L265`),
- * which is not part of this contract.
- *
- * THE INTERFACE NAME HAS NO LEGACY ANTECEDENT. There is no CFML component,
- * interface or argument called anything like it: the legacy code had no name for
- * this collaborator at all, because the locator resolved the whole service by
- * string at each call site and no narrowed contract ever existed to be named.
- * The name is therefore new and is recorded as new. Its two METHOD names, by
- * contrast, are verbatim legacy names - see each method below.
- *
- * Both method names are VERBATIM from the legacy source, as are both parameter
- * names, because interface parity is the acceptance contract. Both return
- * `Money` and never a plain number: `Money` is the sole arithmetic surface in
- * the target, and it is what closes the legacy inconsistency in which
- * `precisionEvaluate` guarded some of the price-group arithmetic
- * (`model/service/PriceGroupService.cfc:L323` and L331) while the presentation
- * step and other branches did not.
- *
- * The interface is deliberately NARROW. It is not the ported price group
- * service, and it exposes none of that service's other eleven public methods -
- * an entity should be able to resolve a price and nothing more. It is satisfied
- * in `src/handlers/bootstrap.ts` by adapting the ported
- * `src/services/priceGroupService.ts` surface, and injected into the `Sku`
- * entity from there; it has no adapter file of its own in the locked layout.
- *
- * It is co-located in this file rather than given a module of its own because
- * the port folder is LOCKED AT 13 files and no new file may be created. It is
- * not a fifteenth port; it is a directly supporting type of the port above,
- * consuming the `CurrentAccountContext` declared alongside it and the same
- * entity types this file already imports.
- */
-export interface SkuPriceGroupResolver {
-  /**
-   * The SKU's price under a specific price group.
-   *
-   * Legacy: `model/service/PriceGroupService.cfc:L301`, declared
-   * `public numeric function calculateSkuPriceBasedOnPriceGroup(required any
-   * sku, required any priceGroup)`. Name and both parameter names are verbatim.
-   *
-   * SYNCHRONOUS, per the async ruling: the legacy body reaches no data store. It
-   * resolves the applicable rate through the cascade (L304) and either applies
-   * that rate or passes the SKU's own price straight through when no rate
-   * applies (L307-L312), and every step of that is pure over associations the
-   * repository has already materialized.
-   *
-   * Returns `Money`, never a number. The legacy declaration says `numeric` while
-   * the body's final statement is a two-decimal presentation format
-   * (`model/service/PriceGroupService.cfc:L339`) that actually yields a string;
-   * CFML coerces between the two silently and the target does not, so the
-   * monetary value object is the honest type for both the input side and the
-   * result.
-   *
-   * The cascade this delegates to carries two documented asymmetries, both owned
-   * and preserved by `src/services/priceGroupService.ts` and neither expressible
-   * on this signature: the parent recursion calls the product variant rather
-   * than the SKU variant (`model/service/PriceGroupService.cfc:L174`), and only
-   * the percentage-off branch applies the rounding rule (L316-L340). No cascade
-   * level, strategy name, amount type or rounding flag is encoded here.
-   */
-  calculateSkuPriceBasedOnPriceGroup(sku: Sku, priceGroup: PriceGroup): Money;
-
-  /**
-   * The SKU's price for the account making the current request.
-   *
-   * Legacy: `model/service/PriceGroupService.cfc:L262`, declared
-   * `public numeric function calculateSkuPriceBasedOnCurrentAccount(required any
-   * sku)`. Name and the `sku` parameter name are verbatim.
-   *
-   * ASYNCHRONOUS, per the async ruling: the logged-in branch delegates to the
-   * account path (`model/service/PriceGroupService.cfc:L264`), which reaches
-   * `getAccountSubscriptionPriceGroups` on the port above and therefore crosses
-   * the data store.
-   *
-   * THE SECOND PARAMETER IS THE ELIMINATION OF AMBIENT STATE, NOT A BUDGETED
-   * SIGNATURE WIDENING. The legacy body is seven lines and contains BOTH of the
-   * codebase's request-scope accessors - `getSlatwallScope()` at
-   * `model/service/PriceGroupService.cfc:L263` and `getHibachiScope()` at L264 -
-   * which both resolve to the same ambient per-request scope. Transformation
-   * rule T6 removes ambient state and replaces it with an explicit context
-   * parameter passed down the call chain; this signature is where that
-   * replacement lands, and the legacy divergence between the two accessor names
-   * disappears with it. A reviewer should read this parameter as the mandated T6
-   * transformation, which the migration plan requires outright, and NOT as a
-   * discretionary widening drawn against the plan's budget of entity-layer
-   * signature widenings - that budget is spent elsewhere and none of it is spent
-   * here.
-   *
-   * When the context carries no account identifier the resolution must behave as
-   * the legacy `else` branch does at `model/service/PriceGroupService.cfc:L266`
-   * and yield the SKU's own price, attempting no price-group resolution at all.
-   *
-   * The context is constructed per request at the handler boundary. It is never
-   * read from module scope and never assembled from `src/lib/config.ts`, which
-   * is static process configuration and is not a request scope. Reproducing the
-   * legacy ambient scope as module-level state would be unsafe on a warm
-   * container, where such state survives between unrelated invocations and one
-   * customer's account could reach another customer's pricing.
-   *
-   * Returns `Money`, never a number, for the same reason as the method above.
-   */
-  calculateSkuPriceBasedOnCurrentAccount(sku: Sku, context: CurrentAccountContext): Promise<Money>;
-}
+// ---------------------------------------------------------------------------
+// RELOCATED, NOT DROPPED: the narrow price-group collaborator the `Sku` entity is
+// constructed with used to be PUBLISHED from this file as
+// `export interface SkuPriceGroupResolver`, covering the two service-locator sites
+// [model/entity/Sku.cfc:L262] (`getPriceByPriceGroup`) and [model/entity/Sku.cfc:L437]
+// (`getCurrentAccountPrice`) that transformation rule T2 converts into constructor
+// injection.
+//
+// It is no longer declared here. The port inventory is locked at the THIRTEEN files
+// the transformation plan enumerates (AAP 0.4.1), and a collaborator contract exported
+// from a port module reads as an addition to that inventory whether or not it occupies
+// a file of its own - co-location does not make an exported interface invisible to the
+// budget. The contract now lives module-locally, un-exported, inside
+// `src/domain/entities/sku.ts`, which is the single module that constructs with it; the
+// composition root satisfies it STRUCTURALLY by adapting the ported
+// `src/services/priceGroupService.ts` surface, exactly as before, and needs no name to
+// import in order to do so.
+//
+// `CurrentAccountContext` above STAYS EXPORTED and is not affected: the transformation
+// plan names it directly in the ported signature
+// `calculateSkuPriceBasedOnCurrentAccount(sku: Sku, context: CurrentAccountContext)`
+// (AAP 0.4.2), so it is a sanctioned part of this slice's published vocabulary rather
+// than an extra collaborator port, and both `src/services/priceGroupService.ts` and
+// `src/domain/entities/sku.ts` import it from here.
+// ---------------------------------------------------------------------------

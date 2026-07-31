@@ -1,4 +1,20 @@
 // ---------------------------------------------------------------------------
+// CHECKPOINT STATUS - FORWARD REFERENCES CARRY THE MARKER `(planned)`
+//
+// The subtree is authored in boundaries, and AAP 0.4.5 makes the authoring
+// order "a compile-order convenience, not a schedule". Commentary in this file
+// therefore names modules of the target layout that DO NOT EXIST YET. Every such
+// name carries `(planned)` at its point of use, meaning exactly: a planned Agent
+// Action Plan target that is ABSENT from the subtree at this checkpoint. Nothing
+// here asserts that any of them exists now, and no behaviour in this file depends
+// on one. The complete set named below, with the role each will play:
+//
+//   src/domain/entities/promotion.ts                     Promotion entity
+//   tests/traceability/legacyTestMap.ts                  structural coverage map
+//   tests/unit/domain/entities/promotionAccount.test.ts  promotionAccount entity suite
+// ---------------------------------------------------------------------------
+
+// ---------------------------------------------------------------------------
 // slatwall-ts - PromotionAccount entity
 //
 // PORT OF model/entity/PromotionAccount.cfc (126 lines, confirmed by `wc -l`).
@@ -105,7 +121,7 @@
 import type { Promotion } from './promotion.js';
 
 // LEGACY-NOTE [model/entity/PromotionAccount.cfc:L92-L93] - FAR-SIDE ANTI-CONTRACT, DO NOT "FIX":
-// `slatwall-ts/src/domain/entities/promotion.ts` MUST NOT gain a `promotionAccounts` collection,
+// `slatwall-ts/src/domain/entities/promotion.ts` (planned) MUST NOT gain a `promotionAccounts` collection,
 // MUST NOT expose `getPromotionAccounts()`, and MUST NOT expose `hasPromotionAccount()`.
 // model/entity/Promotion.cfc declares exactly three collections - L62 `promotionPeriods`, L63
 // `promotionCodes`, L64 `appliedPromotions` - and none of them is `promotionAccounts`. That was
@@ -122,6 +138,47 @@ import type { Promotion } from './promotion.js';
 // declare `addAppliedPromotion`/`removeAppliedPromotion`. The two contracts are exact opposites
 // and both are correct. If promotion.ts nonetheless exposes the forbidden members by the time
 // this file is reviewed, they still must not be called from here: the stubs stay throwing.
+
+/**
+ * Build the framework's terminal missing-method message, BYTE FOR BYTE.
+ *
+ * THIS TEMPLATE IS AN OBSERVABLE ERROR CONTRACT, NOT A DIAGNOSTIC STRING. The legacy statement is
+ * identical at two locators - [org/Hibachi/HibachiEntity.cfc:L565] and
+ * [org/Hibachi/HibachiService.cfc:L280] - and reads:
+ *
+ *   throw('You have called a method #arguments.missingMethodName#() which does
+ *          not exists in the #getClassName()# entity.');
+ *
+ * Three details are load-bearing and must never be "corrected":
+ *
+ *   * "does not exists" is grammatically wrong in the source. Reproduced verbatim.
+ *   * the trailing " entity." is present even for the service-tier copy, so the two tiers are
+ *     byte-identical and one recognizer covers both.
+ *   * `getClassName()` is `listLast(getClassFullname(), ".")` [org/Hibachi/HibachiObject.cfc:L136],
+ *     so the class slot carries the BARE component name - `Promotion`, never
+ *     `Slatwall.model.entity.Promotion` and never the `entityname="SlatwallPromotion"` value.
+ *
+ * WHY THE MESSAGE AND NOT A BESPOKE EXPLANATION. `src/handlers/errorMapper.ts` recognizes this
+ * exact shape with an ANCHORED pattern and maps it to its own dedicated category, preserving the
+ * message verbatim in the response body because it is a behavioural contract a caller can observe.
+ * A message that explains the defect in prose instead cannot match that pattern, so the recognizer
+ * silently falls through to the generic arm and the contract is lost - which is precisely the
+ * regression this helper exists to prevent. Nothing is lost by shortening the throw: every piece
+ * of the prose that used to sit in the payload is preserved in the LEGACY-DEFECT markers and the
+ * JSDoc immediately above each call site, where a maintainer reads it and a log stream does not
+ * have to carry it.
+ *
+ * A module-private helper rather than a shared module, deliberately. `src/lib/` is closed at the
+ * files the plan enumerates, and one exported unit per file is the standing rule, so the template
+ * lives once per file that needs it rather than becoming a new cross-cutting dependency of the
+ * domain layer.
+ *
+ * @param methodName The dead call target, without parentheses - they are added here.
+ * @param className  The bare component name of the entity the call was made ON.
+ */
+function hibachiMissingMethodMessage(methodName: string, className: string): string {
+  return `You have called a method ${methodName}() which does not exists in the ${className} entity.`;
+}
 
 /**
  * The `SwPromotionAccount` link row, associating a promotion with an account over an optional
@@ -476,6 +533,17 @@ export class PromotionAccount {
    * The parameter is retained for interface parity even though the method cannot use it for
    * anything beyond the L91 assignment - which is exactly why tsconfig.json deliberately leaves
    * `noUnusedParameters` unset.
+   *
+   * WHICH message is thrown depends on `isNew()`, and that branch is not cosmetic - it is which
+   * dead call target the legacy actually reaches, and it is observable. CFML's `or` short-circuits:
+   *
+   *   * `isNew()` TRUE  -> the second operand at L92 is NEVER EVALUATED, control enters the body,
+   *     and the `getPromotionAccounts()` call at L93 is the one that throws.
+   *   * `isNew()` FALSE -> the second operand IS evaluated, and `hasPromotionAccount()` at L92
+   *     throws before the body is ever entered.
+   *
+   * Both name a method on the `Promotion` class, because both are called ON the argument. Neither
+   * path can succeed, so this method has no non-throwing outcome either way.
    */
   setPromotion(promotion: Promotion): void {
     // [model/entity/PromotionAccount.cfc:L91]: the assignment runs FIRST and succeeds. The legacy
@@ -483,14 +551,16 @@ export class PromotionAccount {
     // reproduced here rather than tidied into a guard-first shape.
     this.promotion = promotion;
 
-    throw new Error(
-      'PromotionAccount.setPromotion is inoperable in Slatwall 3.1.39: ' +
-        'model/entity/Promotion.cfc declares no `promotionAccounts` collection, so ' +
-        'hasPromotionAccount() at model/entity/PromotionAccount.cfc:L92 and ' +
-        'getPromotionAccounts() at model/entity/PromotionAccount.cfc:L93 both throw at ' +
-        'org/Hibachi/HibachiEntity.cfc:L565. Every code path throws. See ' +
-        'model/entity/PromotionAccount.cfc:L90-L95.',
-    );
+    // [model/entity/PromotionAccount.cfc:L92]: `if(isNew() or !arguments.promotion
+    // .hasPromotionAccount( this ))`. The near-side `isNew()` decides which of the two dead call
+    // targets is reached, exactly as CFML's short-circuiting `or` decides it.
+    if (this.isNew()) {
+      // [model/entity/PromotionAccount.cfc:L93]: `arrayAppend(arguments.promotion
+      // .getPromotionAccounts(), this)`.
+      throw new Error(hibachiMissingMethodMessage('getPromotionAccounts', 'Promotion'));
+    }
+
+    throw new Error(hibachiMissingMethodMessage('hasPromotionAccount', 'Promotion'));
   }
 
   // LEGACY-DEFECT [model/entity/PromotionAccount.cfc:L101]: `removePromotion` THROWS EVERY SINGLE
@@ -519,8 +589,20 @@ export class PromotionAccount {
    * [model/entity/PromotionAccount.cfc:L97]
    *
    * A throwing stub, for the two stacked reasons recorded in the markers above. It throws whether
-   * it is called with an explicit argument or with none: the argument-defaulting step runs first
-   * and succeeds, and the unconditional dereference at L101 throws immediately afterwards.
+   * it is called with an explicit argument or with none - but WHICH failure it reproduces depends
+   * on whether a target resolves at all, and the two are genuinely different errors in CFML:
+   *
+   *   * NO target resolves - called with no argument while `variables.promotion` has never been
+   *     set, or has already been `structDelete`-d. CFML fails on the DEFAULT READ itself at
+   *     [model/entity/PromotionAccount.cfc:L99] with "Element PROMOTION is undefined in
+   *     VARIABLES.", before any method is called on anything. That is an undefined-variable error
+   *     and NOT a missing-method contract, so it deliberately does NOT carry the framework's
+   *     terminal message - conflating the two would let the error mapper publish a contract that
+   *     the legacy never emitted on this path. The same distinction is drawn identically in
+   *     `skuCurrency.ts` (`removeSku`) and `promotionPeriod.ts` (`removePromotion`).
+   *   * A target DOES resolve - the default read succeeds, or an argument was supplied, and the
+   *     unconditional call at [model/entity/PromotionAccount.cfc:L101] then reaches the framework's
+   *     terminal throw. That IS the contract, and it is emitted byte for byte.
    *
    * `void` and not `never`, for the same parity reason as `setPromotion`.
    */
@@ -533,20 +615,23 @@ export class PromotionAccount {
     // minimal-change directive, which scopes the functional surface and never the code style.
     const target: Promotion | undefined = promotion ?? this.promotion;
 
-    // Reported so a runtime failure is self-documenting. It changes nothing about the outcome:
-    // L101 dereferences whatever this resolved to, unconditionally, and throws either way.
-    const resolvedTarget: string = target === undefined ? 'unset' : 'present';
+    if (target === undefined) {
+      throw new Error(
+        'PromotionAccount.removePromotion was called with no argument while no promotion is set. ' +
+          'model/entity/PromotionAccount.cfc:L98-L100 defaults the argument from ' +
+          'variables.promotion, and CFML raises "Element PROMOTION is undefined in VARIABLES." on ' +
+          'that read. Reproduced rather than silently absorbed, and deliberately NOT the ' +
+          'missing-method contract message - no method has been called on anything yet.',
+      );
+    }
 
-    throw new Error(
-      'PromotionAccount.removePromotion is inoperable in Slatwall 3.1.39: ' +
-        'model/entity/PromotionAccount.cfc:L101 calls getPromotionAccounts() on the resolved ' +
-        'promotion unconditionally, and model/entity/Promotion.cfc declares no ' +
-        '`promotionAccounts` collection, so the call throws at ' +
-        'org/Hibachi/HibachiEntity.cfc:L565. The resolved target was ' +
-        `${resolvedTarget}; the outcome is identical either way. A second, unreachable defect ` +
-        'sits behind it at model/entity/PromotionAccount.cfc:L103, which dereferences the ' +
-        'undeclared `arguments.account`. See model/entity/PromotionAccount.cfc:L97-L106.',
-    );
+    // [model/entity/PromotionAccount.cfc:L101]: `arrayFind(arguments.promotion
+    // .getPromotionAccounts(), this)`. Unconditional, before any index guard, so this is where the
+    // method always ends once a target resolved. Two consequences of that, both preserved: the
+    // `structDelete(variables, "promotion")` at L105 NEVER runs, so the legacy never clears the
+    // field it set; and the second, independent `arguments.account` leak at L103 stays UNREACHABLE,
+    // masked by this throw exactly as it is masked in the legacy.
+    throw new Error(hibachiMissingMethodMessage('getPromotionAccounts', 'Promotion'));
   }
 
   //   =============  END:  Bidirectional Helper Methods ===================
@@ -580,11 +665,11 @@ export class PromotionAccount {
 
 // TEST CONTRACT - NET-NEW COVERAGE, NEVER PARITY.
 //
-// `tests/unit/domain/entities/promotionAccount.test.ts` is authored separately; the test tier is
+// `tests/unit/domain/entities/promotionAccount.test.ts` (planned) is authored separately; the test tier is
 // owned elsewhere and no test file is created from here. `PromotionAccount` has NO legacy test
 // whatsoever, so its coverage is one of the sixteen net-new entity suites and must be labelled as
 // such - presenting it as parity fails the coverage gate. It must also appear in
-// `tests/traceability/legacyTestMap.ts`, flagged net-new, because that map fails the suite when an
+// `tests/traceability/legacyTestMap.ts` (planned), flagged net-new, because that map fails the suite when an
 // in-scope module has no test. Regression tests in this project follow the `issue_<ticket#>`
 // convention carried over from meta/tests/unit/IssuesTest.cfc.
 //
