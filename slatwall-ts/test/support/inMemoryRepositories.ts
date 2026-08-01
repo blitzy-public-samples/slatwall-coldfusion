@@ -97,6 +97,7 @@ import type { PhysicalTableName, SqlExecutor } from '../../src/adapters/mysql/Qu
  */
 import { prepareBoundedRead, settleBoundedRead } from '../../src/adapters/mysql/QueryRunner';
 import type {
+  PerItemSource,
   TransactionalSqlExecutor,
   TransactionScope,
 } from '../../src/adapters/mysql/UnitOfWork';
@@ -4128,12 +4129,24 @@ export interface UnitOfWorkTestSupport {
     work: (graph: TGraph) => Promise<TResult>,
     reportErrors: (result: TResult) => boolean,
   ): Promise<TResult>;
+  /**
+   * Mirrors `UnitOfWork.runPerItem`, INCLUDING the width of its item source.
+   *
+   * ⚠️ THE SOURCE IS `PerItemSource`, NOT `readonly TItem[]`, AND THE DIFFERENCE IS NOT COSMETIC. A
+   * caller may legitimately feed a LAZY source — `MySqlProductRepository.importFromFile` hands its row
+   * loop an `AsyncIterable` so it never holds the whole catalogue file — and TypeScript's method
+   * parameters are BIVARIANT, so a double declaring only the array arm still typechecks everywhere the
+   * real boundary is expected and then fails at run time with `items is not iterable`. Declaring the
+   * production union is what makes the compile-time check mean something. The array arm is retained
+   * inside the union, so every existing caller keeps its exact shape and its read-only guarantee.
+   */
   runPerItem<TItem, TResult>(
-    items: readonly TItem[],
+    items: PerItemSource<TItem>,
     work: (item: TItem, scope: TransactionScope) => Promise<TResult>,
   ): Promise<TResult[]>;
+  /** Mirrors `UnitOfWork.runPerItemWithoutResults`, with the same source width as `runPerItem`. */
   runPerItemWithoutResults<TItem>(
-    items: readonly TItem[],
+    items: PerItemSource<TItem>,
     work: (item: TItem, scope: TransactionScope) => Promise<void>,
   ): Promise<void>;
   runWithoutTransaction<T>(work: (executor: TransactionalSqlExecutor) => Promise<T>): Promise<T>;
@@ -4313,22 +4326,39 @@ export function createUnitOfWorkDouble(options: UnitOfWorkDoubleOptions = {}): U
    * settled before the next begins.
    */
   const runEachItem = async <TItem, TResult>(
-    items: readonly TItem[],
+    items: PerItemSource<TItem>,
     work: (item: TItem, scope: TransactionScope) => Promise<TResult>,
     collect: ((result: TResult) => void) | undefined,
   ): Promise<void> => {
-    if (items.length === 0) {
-      return;
-    }
-    const acquisition = transactionsStarted + 1;
-    note('acquire', acquisition);
+    /*
+     * ⚠️ THE CHECKOUT IS ON DEMAND, AND AN EMPTY SOURCE STILL BORROWS NOTHING — but that property is now
+     * STRUCTURAL rather than a length test, exactly as `UnitOfWork.runEachItem` makes it. An earlier
+     * revision returned early on `items.length === 0`, which a LAZY source cannot answer without being
+     * consumed: reading `.length` off an `AsyncIterable` yields `undefined`, the guard silently fell
+     * through, and the synchronous `for..of` below then threw `items is not iterable`. So the double was
+     * unusable for the one member that actually feeds a lazy source, `importFromFile`'s row loop.
+     * Deriving the acquire from the FIRST item instead reproduces production's behaviour for both arms.
+     */
+    let acquisition: number | undefined;
+
     try {
       /*
-       * M3. A sequential `for..of` with an `await` inside, never `Promise.all`: one transaction per item,
-       * each committed before the next begins, and an exception from item N leaves items 1..N-1 committed
-       * while items N+1.. never start.
+       * M3. A sequential `for await` with an `await` inside, never `Promise.all`: one transaction per
+       * item, each committed before the next begins, and an exception from item N leaves items 1..N-1
+       * committed while items N+1.. never start.
+       *
+       * `for await` consumes a materialised array and a lazy source through ONE statement, so the two
+       * arms cannot drift into two loops with two sets of settlement semantics — which is precisely how
+       * `UnitOfWork.runEachItem` is written. A synchronous iterable yields synchronously here, so the
+       * array arm gains no concurrency and no extra tick of observable delay.
        */
-      for (const item of items) {
+      for await (const item of items) {
+        // The first item pays for the checkout; every later item reuses it. See the note above.
+        if (acquisition === undefined) {
+          acquisition = transactionsStarted + 1;
+          note('acquire', acquisition);
+        }
+
         const result = await runSettled(
           (scope) => work(item, scope),
           () => false,
@@ -4338,7 +4368,10 @@ export function createUnitOfWorkDouble(options: UnitOfWorkDoubleOptions = {}): U
         }
       }
     } finally {
-      note('release', acquisition);
+      // Released only when a connection was actually obtained, for the same reason.
+      if (acquisition !== undefined) {
+        note('release', acquisition);
+      }
     }
   };
 
@@ -4378,7 +4411,7 @@ export function createUnitOfWorkDouble(options: UnitOfWorkDoubleOptions = {}): U
     },
 
     runPerItem: async <TItem, TResult>(
-      items: readonly TItem[],
+      items: PerItemSource<TItem>,
       work: (item: TItem, scope: TransactionScope) => Promise<TResult>,
     ): Promise<TResult[]> => {
       const results: TResult[] = [];
@@ -4388,7 +4421,7 @@ export function createUnitOfWorkDouble(options: UnitOfWorkDoubleOptions = {}): U
       return results;
     },
     runPerItemWithoutResults: async <TItem>(
-      items: readonly TItem[],
+      items: PerItemSource<TItem>,
       work: (item: TItem, scope: TransactionScope) => Promise<void>,
     ): Promise<void> => {
       await runEachItem(items, work, undefined);

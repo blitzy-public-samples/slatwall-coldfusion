@@ -391,37 +391,29 @@ const CHILD_COUNT_ALIAS = 'childCount' satisfies keyof ProductTypeTreeRow;
  */
 const SELF_REFERENCE_ALIAS = 'spt';
 
-/**
- * The alias the pre-aggregated assigned-product counts are joined under.
+/* ================================================================================================
+ * ⚠️ THREE DERIVED-TABLE CONSTANTS STOOD HERE AND HAVE BEEN REMOVED WITH THE REWRITE THEY SERVED.
+ * ================================================================================================
+ * They were `ASSIGNED_COUNT_SOURCE_ALIAS`, `CHILD_COUNT_SOURCE_ALIAS` and `DERIVED_COUNT_COLUMN`, and
+ * they named the two pre-aggregated derived tables and the count column inside them that an earlier
+ * revision of {@link composeProductTypeTreeStatement} joined onto the outer query. That revision
+ * replaced the legacy's two CORRELATED SCALAR SUBQUERIES with `GROUP BY` pre-aggregations plus two
+ * `LEFT JOIN`s and two `COALESCE` wrappers.
  *
- * The legacy had no such alias, because it had no such join: `model/dao/ProductTypeDAO.cfc:L55-L57`
- * is a correlated scalar subquery evaluated once per outer row. See
- * {@link composeProductTypeTreeStatement} for why the pre-aggregated form is the same answer, and for
- * the multiplicity proof that makes it the same SHAPE too.
+ * IT WAS A FORBIDDEN REWRITE, EVEN THOUGH IT COMPUTED THE SAME NUMBERS. AAP §0.4.1.7 specifies this
+ * file as "the tree-sorted query with its `isAssigned` and `childCount` SUBSELECTS"; AAP §0.8.2
+ * Guideline 4 forbids optimising beyond what the migration requires; and AAP §0.3.3.1 has already
+ * settled the identical question for the sibling statement in `./MySqlSkuRepository.ts`, keeping N
+ * correlated `EXISTS` clauses "rather than an `IN` list or a `GROUP BY … HAVING COUNT` rewrite".
+ * Moving the evaluation point from once-per-outer-row to once-per-statement is a PERFORMANCE change,
+ * which is the one category of change this port is not licensed to make. `./rowMappers.ts` had also
+ * gone on documenting the legacy as "two correlated count sub-selects" throughout, so the folder
+ * disagreed with itself.
  *
- * Like the three aliases above it names no column and no table, so it does not pass through the
- * schema whitelist. It is a fixed literal authored here and never derived from caller input — there is
- * no caller input.
- */
-const ASSIGNED_COUNT_SOURCE_ALIAS = 'assignedProductCounts';
-
-/**
- * The alias the pre-aggregated immediate-child counts are joined under. Introduced for the same reason
- * as {@link ASSIGNED_COUNT_SOURCE_ALIAS}, and likewise a fixed literal rather than an identifier.
- */
-const CHILD_COUNT_SOURCE_ALIAS = 'childProductTypeCounts';
-
-/**
- * The column each pre-aggregation projects its count under, inside its own derived table.
- *
- * Deliberately NOT the same literal as {@link IS_ASSIGNED_ALIAS} or {@link CHILD_COUNT_ALIAS}. Reusing
- * either would be legal — a derived table's column names are scoped to that derived table — and it
- * would make the outer projection read as though it were passing a value straight through when it is
- * in fact wrapping it in `COALESCE`. One neutral name for both derived tables keeps the two
- * pre-aggregations symmetrical and keeps the outer aliases meaning exactly what the port's field names
- * mean.
- */
-const DERIVED_COUNT_COLUMN = 'matchCount';
+ * The three constants have no reader now and are deleted rather than left in place, because an unread
+ * constant naming a structure the statement no longer has is exactly the kind of stale signal a
+ * reviewer would try to reconcile. Nothing outside this module ever referenced them.
+ * ============================================================================================== */
 
 /* ================================================================================================
  * THE STATEMENT
@@ -440,48 +432,51 @@ const DERIVED_COUNT_COLUMN = 'matchCount';
  *     The row mapper hydrates by column name, so it reads whatever the wildcard supplies; a mapper
  *     that required an enumerated list would have coupled the two.
  *
- *     ⚠️ IT IS NOW QUALIFIED — `SELECT SwProductType.*` — AND THE QUALIFICATION IS MANDATORY RATHER
- *     THAN TIDINESS. The legacy wildcard sat over a single `FROM`, so bare `*` could only ever resolve
- *     to the product-type table's own columns. Two derived tables are now joined, so a bare `*` would
- *     additionally project their grouping keys and their count columns: the row mapper would receive a
- *     second `productTypeID` and a `matchCount` it does not declare. Qualifying the wildcard restores
- *     the legacy projection EXACTLY — every column of the product-type table, and nothing else.
- *   - BOTH DERIVED COLUMNS ARE PRE-AGGREGATED ONCE AND JOINED, WHERE THE LEGACY EVALUATED A
- *     CORRELATED SCALAR SUBQUERY PER OUTER ROW. This is the one structural change in the statement,
- *     and it is worth being precise about which rewrite is forbidden and which is not, because an
- *     earlier revision of this comment conflated them:
+ *     ⚠️ IT IS QUALIFIED — `SELECT SwProductType.*` — AND THE QUALIFICATION CHANGES NOTHING. The
+ *     outer `FROM` names exactly one table, so bare `*` and `SwProductType.*` expand to precisely the
+ *     same column set: the product-type table's own columns, and nothing else. Neither correlated
+ *     subquery contributes a column to the outer projection, because a scalar subquery in a select
+ *     list yields one VALUE under its alias rather than a table to expand. The qualified form is kept
+ *     purely so that every table identifier the statement emits is one the schema whitelist approved
+ *     and a reader can see it approved; the projection is the legacy projection either way.
+ *   - BOTH DERIVED COLUMNS ARE CORRELATED SCALAR SUBQUERIES, EXACTLY AS THE LEGACY WRITES THEM, AND
+ *     THIS IS THE ONE PLACE THE STATEMENT'S STRUCTURE COULD HAVE DRIFTED WITHOUT ANY SYMPTOM. Each is
+ *     evaluated once per outer row, against the outer row's own identifier:
  *
- *       FORBIDDEN, and still forbidden: joining the base tables directly and aggregating in the outer
- *       query — `LEFT JOIN SwProduct ON ... GROUP BY SwProductType.productTypeID`. That fans the
- *       product-type row out once per product before grouping, and once two such joins are present
- *       their fan-outs multiply, so each count is inflated by the other's cardinality. It changes both
- *       row multiplicity and the values, and AAP §0.8.2 Guideline 4 rules it out.
+ *       `isAssigned`  — `model/dao/ProductTypeDAO.cfc:L55-L57`, correlated on
+ *                       `SwProduct.productTypeID = SwProductType.productTypeID`
+ *       `childCount`  — `model/dao/ProductTypeDAO.cfc:L58-L60`, correlated on
+ *                       `spt.parentProductTypeID = SwProductType.productTypeID`, where `spt` is the
+ *                       legacy's own alias for the self-reference
  *
- *       WHAT IS DONE INSTEAD: each count is aggregated inside its OWN derived table, grouped by the
- *       key it correlates on, and the derived table is then `LEFT JOIN`ed on that key. A `GROUP BY`
- *       yields at most one row per distinct key, so each join matches at most one row and the outer
- *       result holds EXACTLY ONE ROW PER PRODUCT TYPE — the same multiplicity the legacy statement
- *       has, for the same reason a scalar subquery has it. There is no fan-out to multiply, and the
- *       two pre-aggregations cannot interfere with each other because neither is visible to the other.
+ *     ⛔ THE PRE-AGGREGATED REWRITE IS FORBIDDEN AND WAS REVERTED. An earlier revision replaced both
+ *     subqueries with `GROUP BY` derived tables, two `LEFT JOIN`s and two `COALESCE` wrappers. It
+ *     computed the same numbers — a `GROUP BY` yields at most one row per key, so multiplicity was
+ *     preserved too — and it was still wrong, for reasons that have nothing to do with the answer:
+ *     AAP §0.4.1.7 specifies "its `isAssigned` and `childCount` SUBSELECTS"; AAP §0.8.2 Guideline 4
+ *     forbids optimising beyond what the migration requires; and AAP §0.3.3.1 settled the identical
+ *     question for the sibling statement in `./MySqlSkuRepository.ts` by keeping N correlated `EXISTS`
+ *     clauses "rather than an `IN` list or a `GROUP BY … HAVING COUNT` rewrite". Moving the evaluation
+ *     point from once-per-outer-row to once-per-statement is a PERFORMANCE change, which is the single
+ *     category of change this port has no licence to make. The removal note above the alias constants
+ *     records what went with it.
  *
- *     THE VALUES ARE IDENTICAL ON EVERY INPUT, which is checkable rather than asserted. For a product
- *     type `X`: the legacy assigned count is `count(SwProduct.productID)` over the products whose
- *     `productTypeID = X`; the derived table's row for key `X` is `count(SwProduct.productID)` over
- *     exactly that same set. When no product carries `X` the legacy scalar subquery returns 0 while
- *     the join matches no row and yields `NULL`, which is why `COALESCE(..., 0)` is REQUIRED and not
- *     defensive garnish — the row mapper reads both counts as required numbers and would refuse a
- *     null. Products whose `productTypeID` is null form a null-keyed group that the equi-join can
- *     never match, which is the same outcome the legacy predicate has, since nothing equals null. The
- *     child count reasons identically through `parentProductTypeID`, where the null-keyed group is the
- *     set of root product types. Both aliases are preserved exactly, and `isAssigned` remains the
- *     count-not-flag misnomer the file header records.
+ *     ⛔ ALSO FORBIDDEN, AND NEVER PRESENT: joining the base tables directly and aggregating in the
+ *     outer query — `LEFT JOIN SwProduct ON … GROUP BY SwProductType.productTypeID`. That fans the
+ *     product-type row out once per product before grouping, and with two such joins the fan-outs
+ *     multiply, so each count is inflated by the other's cardinality. It changes the values as well as
+ *     the row multiplicity.
+ *
+ *     NO `COALESCE` IS NEEDED, AND ADDING ONE WOULD BE NOISE. A `count(...)` aggregate over a
+ *     correlated subquery returns 0 when the predicate matches nothing and can never be NULL, so the
+ *     row mapper's requirement that both counts arrive as numbers is satisfied by the aggregate
+ *     itself. Both aliases are preserved exactly, and `isAssigned` remains the count-not-flag misnomer
+ *     the file header records.
  *   - THE ORDERING IS THE SINGLE LEGACY SORT TERM, AND IS LEFT UNQUALIFIED. See FALSEHOOD #2 in the
  *     file header for why the term itself must not be "improved". It stays unqualified because it is
- *     still unambiguous: each derived table projects only its grouping key and its count, so
- *     `productTypeName` is contributed by exactly one visible source. A reviewer comparing this line
- *     against `model/dao/ProductTypeDAO.cfc:L62` therefore sees no difference at all, which is the
- *     point. Were a derived projection ever widened to expose that name, MySQL would refuse the
- *     statement outright rather than order by the wrong column — a loud failure, not a silent one.
+ *     unambiguous: the outer query has exactly one table in scope, so `productTypeName` can only be
+ *     that table's column. A reviewer comparing this line against `model/dao/ProductTypeDAO.cfc:L62`
+ *     therefore sees no difference at all, which is the point.
  *
  * Called once at module evaluation. If the schema whitelist ever stopped recognising one of these
  * seven identifiers the module would fail to load, loudly, at the earliest possible moment — which is
@@ -514,41 +509,35 @@ function composeProductTypeTreeStatement(): string {
   const productProductTypeId = assertColumnName(productTable, 'productTypeID');
 
   /*
-   * `model/dao/ProductTypeDAO.cfc:L55-L57`, pre-aggregated. The counted column, the grouped column and
-   * the correlation key are all the legacy's; only the evaluation point moved, from once per outer row
-   * to once per statement. The grouping key is projected because the join needs it — it is the same
-   * column the legacy predicate compared against.
+   * `model/dao/ProductTypeDAO.cfc:L55-L57` — the assigned-product count, as a CORRELATED SCALAR
+   * SUBQUERY. The counted column, the scanned table and the correlation predicate are all the legacy's,
+   * with only the two table names translated to their physical form per the D22 annotation. The
+   * predicate reaches OUT to the outer query's product-type identifier, which is what makes it
+   * correlated and what makes it evaluate once per outer row.
    */
-  const assignedProductCounts =
-    `(SELECT ${productTable}.${productProductTypeId},\n` +
-    `          count(${productTable}.${productId}) as ${DERIVED_COUNT_COLUMN}\n` +
-    `     FROM ${productTable}\n` +
-    `    GROUP BY ${productTable}.${productProductTypeId}) ${ASSIGNED_COUNT_SOURCE_ALIAS}`;
+  const assignedProductCount =
+    `(SELECT count(${productTable}.${productId})\n` +
+    `      FROM ${productTable}\n` +
+    `     WHERE ${productTable}.${productProductTypeId} =` +
+    ` ${productTypeTable}.${productTypeId})`;
 
   /*
-   * `model/dao/ProductTypeDAO.cfc:L58-L60`, pre-aggregated the same way. The legacy self-reference
-   * alias is carried into the derived table, where it still names the same second reference to the
-   * product-type table that it named in the correlated form.
+   * `model/dao/ProductTypeDAO.cfc:L58-L60` — the immediate-child count, likewise correlated. The
+   * legacy's own self-reference alias is carried verbatim, and the predicate compares the aliased
+   * inner reference's parent key against the outer row's identifier. One generation only: nothing here
+   * walks the hierarchy transitively.
    */
-  const childProductTypeCounts =
-    `(SELECT ${SELF_REFERENCE_ALIAS}.${parentProductTypeId},\n` +
-    `          count(${SELF_REFERENCE_ALIAS}.${productTypeId}) as ${DERIVED_COUNT_COLUMN}\n` +
-    `     FROM ${productTypeTable} ${SELF_REFERENCE_ALIAS}\n` +
-    `    GROUP BY ${SELF_REFERENCE_ALIAS}.${parentProductTypeId}) ${CHILD_COUNT_SOURCE_ALIAS}`;
+  const childProductTypeCount =
+    `(SELECT count(${SELF_REFERENCE_ALIAS}.${productTypeId})\n` +
+    `      FROM ${productTypeTable} ${SELF_REFERENCE_ALIAS}\n` +
+    `     WHERE ${SELF_REFERENCE_ALIAS}.${parentProductTypeId} =` +
+    ` ${productTypeTable}.${productTypeId})`;
 
   return (
     `SELECT ${productTypeTable}.*,\n` +
-    `  COALESCE(${ASSIGNED_COUNT_SOURCE_ALIAS}.${DERIVED_COUNT_COLUMN}, 0)` +
-    ` as ${IS_ASSIGNED_ALIAS},\n` +
-    `  COALESCE(${CHILD_COUNT_SOURCE_ALIAS}.${DERIVED_COUNT_COLUMN}, 0)` +
-    ` as ${CHILD_COUNT_ALIAS}\n` +
+    `  ${assignedProductCount} as ${IS_ASSIGNED_ALIAS},\n` +
+    `  ${childProductTypeCount} as ${CHILD_COUNT_ALIAS}\n` +
     `FROM ${productTypeTable}\n` +
-    `LEFT JOIN ${assignedProductCounts}\n` +
-    `  ON ${ASSIGNED_COUNT_SOURCE_ALIAS}.${productProductTypeId} =` +
-    ` ${productTypeTable}.${productTypeId}\n` +
-    `LEFT JOIN ${childProductTypeCounts}\n` +
-    `  ON ${CHILD_COUNT_SOURCE_ALIAS}.${parentProductTypeId} =` +
-    ` ${productTypeTable}.${productTypeId}\n` +
     `ORDER BY ${productTypeName} ASC`
   );
 }
