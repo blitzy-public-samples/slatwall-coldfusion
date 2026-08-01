@@ -1,1512 +1,2112 @@
-/**
- * ProductFeedBuilder — the Google merchant product feed serializer.
+/*
+ * =====================================================================================================
+ * NET-NEW — `src/integrations/google/ProductFeedBuilder.ts`
+ * =====================================================================================================
  *
- * COVERAGE PROVENANCE: **NET-NEW**, and said so plainly (AAP §0.6.5, §0.8.3.7).
- * ---------------------------------------------------------------------------
- * This suite extends NO legacy coverage, and no parity of coverage is claimed or implied. The
- * legacy repository contains no feed test of any kind: `meta/tests/` holds nothing for
- * `integrationServices/google/views/feed/product.cfm`, for its controller, or for its DAO. AAP
- * §0.4.1.12 names this exact path — `slatwall-ts/test/integrations/ProductFeedBuilder.test.ts` —
- * and labels it NET-NEW, with the mandate "asserts every field mapping and both conditional
- * branches". That mandate is discharged here by the FULL-DOCUMENT assertions in section 2 and the
- * branch assertions in section 3.
+ * PROVENANCE, STATED PLAINLY AND WITHOUT SOFTENING.
  *
- * MXUnit and CFSelenium are not vendored, so the legacy suite cannot be executed in this
- * environment at all. Nothing below was verified by running a legacy test and diffing output; every
- * parity claim rests on the cited source locator instead.
+ * This suite is NET-NEW in its entirety. There is NO legacy Google feed test of any kind: the legacy
+ * suite under `meta/tests/` contains no feed test, no `integrationServices` test, and no serializer
+ * test, so there is nothing here to replicate and nothing to claim parity with. Every case title
+ * therefore carries a visible `[NET-NEW]` prefix rather than relying on a suite-level label.
  *
- * WHAT SECTIONS 1 AND 4 THROUGH 7 ARE FOR, AND WHAT THEY USED TO BE FOR
- * --------------------------------------------------------------------
- * ⛔ THEY WERE THE REMEDIATION COVERAGE FOR SECURITY FINDING SEC-06, AND THE REMEDIATION IS
- * WITHDRAWN. The builder declared it as DECISION G-1 (a validated, configured host authority),
- * DECISION G-2 (URL paths may not introduce an authority or break out of an element) and DECISION G-3
- * (every dynamic text node escaped at its emission site). All three are behaviour changes:
- * `integrationServices/google/views/feed/product.cfm` escapes exactly SIX fields with
- * `htmlEditFormat` — `g:id` (:L17), `title` (:L18), `description` (:L19), `g:product_type` (:L21),
- * `g:brand` (:L32) and `g:item_group_id` (:L39) — leaves TEN substitutions raw, and validates nothing
- * anywhere. AAP §0.8.2 guideline 4 forbids enhancement beyond what the migration requires, and D18
- * (AAP §0.6.7.7) is the SOLE declared behaviour-hardening exception — a precedent only for a
- * divergence that removes a flaw class WITHOUT changing an outcome.
+ * TRACEABILITY IS DOCUMENTARY, NEVER EMPIRICAL. The legacy expectations pinned below were established by
+ * reading legacy source line by line, not by running the legacy application and diffing its output:
  *
- * These sections are therefore now WITHDRAWAL REGRESSIONS: they pin the raw emission and the
- * unvalidated append so that no future revision can reinstate a gate without a failing test. Section 4
- * is unchanged in substance and keeps its original purpose — the six legacy-escaped fields must stay
- * byte-identical — which is the one part of the original remediation that was always parity rather
- * than hardening. The residual CWE-91 exposure is FLAGGED at every raw emission site and in the
- * builder's WITHDRAWN RAW-SINK VALIDATION note (S8), not closed.
+ *   - MXUnit and CFSelenium are NOT vendored in this repository. `meta/tests/readme.txt:L4-L5` states
+ *     that the tests require MXUnit installed with a mapping inside CFIDE, and the `functional` folder
+ *     additionally requires CFSelenium with its own CFIDE mapping. Neither mapping exists here, so the
+ *     legacy suite cannot be collected, let alone executed.
+ *   - `meta/docker/slatwall-local-dev/` DOES NOT EXIST. The repository's `meta/` directory contains only
+ *     the test material under `meta/tests/` and the editor material under `meta/eclipse/`. There is no
+ *     Dockerfile, no Compose file, no Lucee version pin and no MySQL runtime pin anywhere that would
+ *     make the CFML application reproducible in this environment.
+ *   - The CFML runtime was therefore NOT reproduced, NO runtime behavioural comparison was performed,
+ *     and NO legacy feed XML was captured for diffing. Any statement below about what the legacy view
+ *     emitted is a reading of the template, carried with its locator so it can be checked.
  *
- * The builder needs no database, no network, no live paginated query, no process environment, no
- * request scope and no file system, so every collaborator below is a plain object. That testability
- * is the reason the module takes three narrow interfaces rather than reaching for services.
+ * WHAT THIS SUITE IS. A static logic-extraction test. Every assertion is grounded in a named source
+ * locator, chiefly the legacy view `integrationServices/google/views/feed/product.cfm`, which is the
+ * SOLE field-map authority for the feed. `integrationServices/google/controllers/feed.cfc` supplies
+ * documentary input-shape context only. `integrationServices/google/Integration.cfc` is a faithful stub
+ * carrying no feed logic. `integrationServices/google/model/dao/FeedDAO.cfc` is orphaned, broken dead
+ * code and is not a source of behaviour.
+ *
+ * SCOPE. `ProductFeedBuilder`'s public serialization surface, and nothing else. This file does not test
+ * `IntegrationContract`, `BaseIntegration`, `GoogleIntegration`, `ProductFeedQuery`, any handler, any
+ * router, any repository, any service, or any port implementation. It is a SERIALIZER test: the legacy
+ * `.cfm` emits RSS 2.0 XML for machine consumption by a merchant feed processor, so there is no user
+ * interface, no component library, no design token, no DOM and no browser API anywhere in it.
+ * =====================================================================================================
  */
 
-import { Product } from '../../src/domain/product/Product';
-import { ProductType } from '../../src/domain/product/ProductType';
-import { Brand } from '../../src/domain/product/Brand';
-import { Sku } from '../../src/domain/sku/Sku';
-import { DataIntegrityError, DomainError } from '../../src/errors/DomainError';
-import { ProductFeedBuilder } from '../../src/integrations/google/ProductFeedBuilder';
-import type {
-  ProductFeedImage,
-  ProductFeedRecord,
-  ProductFeedRenderContext,
-} from '../../src/integrations/google/ProductFeedBuilder';
+// No user-specified rules were provided for this project; the nine enterprise
+// standards of AAP §0.7.3 govern instead, and the bar is not lowered.
+
+import { readFileSync } from 'node:fs';
+import { join } from 'node:path';
+
 import {
-  mapProductRow,
-  mapSkuRow,
-  readProductDefaultSkuId,
-} from '../../src/adapters/mysql/rowMappers';
-import { toImageWebPath } from '../../src/ports/ImagePathPort';
-import type {
-  ImagePathPort,
-  ImageWebPath,
-  ResizedImagePathRequest,
-} from '../../src/ports/ImagePathPort';
-import type { PricingPort, SalePriceDetailsBySkuId } from '../../src/ports/PricingPort';
+  ProductFeedBuilder,
+  type ProductFeedImage,
+  type ProductFeedRecord,
+  type ProductFeedRenderContext,
+} from '../../src/integrations/google/ProductFeedBuilder';
+import type { SettingResolutionContext } from '../../src/ports/SettingResolverPort';
+import type { ResizedImagePathRequest } from '../../src/ports/ImagePathPort';
+import type { SalePriceDetailsBySkuId } from '../../src/ports/PricingPort';
+import type { Sku } from '../../src/domain/sku/Sku';
+import type { Product } from '../../src/domain/product/Product';
+import type { ProductType } from '../../src/domain/product/ProductType';
+import type { Brand } from '../../src/domain/product/Brand';
 import { toExactDecimal } from '../../src/util/formatting';
-import type {
-  SettingName,
-  SettingResolverPort,
-  SettingValue,
-} from '../../src/ports/SettingResolverPort';
+import { MERCHANDISE_PRODUCT_TYPE, MERCHANDISE_PRODUCT_TYPE_ID } from '../fixtures/productTypes';
+import { createTestMerchandiseProductData } from '../fixtures/testProduct';
+import {
+  buildBrand,
+  buildProduct,
+  buildProductType,
+  buildSalePriceDetails,
+  buildSku,
+  createImagePathDouble,
+  createPricingDouble,
+  createSettingResolverDouble,
+  createSmartListQueryDouble,
+  type ImagePathDouble,
+  type PricingDouble,
+  type SettingResolverDouble,
+  type SettingSeed,
+  type SmartListQueryDouble,
+} from '../support/inMemoryRepositories';
 
-/* ================================================================================================
- * FIXTURES — 32-character identifiers, per IR-6
- * ============================================================================================= */
-
-const SKU_ID = 'aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa1';
-const PRODUCT_ID = 'bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb2';
-const PRODUCT_TYPE_ID = 'ccccccccccccccccccccccccccccccc3';
-
-/**
- * The four setting keys the feed path reads, with values chosen so that every one of them is
- * visible in the rendered document and none of them is empty.
- */
-const DEFAULT_SETTINGS: Readonly<Record<string, string>> = Object.freeze({
-  globalURLKeyProduct: 'product',
-  imageMissingImagePath: '/missing.png',
-  skuShippingWeight: '5',
-  skuShippingWeightUnitCode: 'lb',
-});
-
-function makeSettings(overrides: Readonly<Record<string, string>> = {}): SettingResolverPort {
-  return {
-    setting: (settingName: SettingName): SettingValue =>
-      overrides[settingName] ?? DEFAULT_SETTINGS[settingName] ?? '',
-  };
-}
-
-/**
- * @param resized maps the request's `imagePath` to the resolved resized path. Identity by default,
- *   which is the realistic shape: the adapter returns the same composed path when no resize
- *   argument is supplied, and `product.cfm:L23` and `:L24` supply none.
- */
-function makeImagePaths(
-  resized: (imagePath: string) => string = (imagePath) => imagePath,
-): ImagePathPort {
-  return {
-    getImagePath: (imageFile: string): Promise<ImageWebPath> =>
-      Promise.resolve(toImageWebPath(`/product/default/${imageFile}`)),
-    getResizedImagePath: (request: ResizedImagePathRequest): Promise<ImageWebPath> =>
-      Promise.resolve(toImageWebPath(resized(request.imagePath))),
-    getImageExistsFlag: (): Promise<boolean> => Promise.resolve(true),
-    saveImageFile: (): Promise<boolean> => Promise.resolve(true),
-  };
-}
-
-function makePricing(details: SalePriceDetailsBySkuId = {}): PricingPort {
-  return {
-    getSalePriceDetailsForProductSkus: (): Promise<SalePriceDetailsBySkuId> =>
-      Promise.resolve(details),
-  };
-}
-
-interface Fixture {
-  readonly sku: Sku;
-  readonly product: Product;
-  readonly productType: ProductType;
-}
-
-function makeFixture(): Fixture {
-  const productType = new ProductType();
-  productType.productTypeID = PRODUCT_TYPE_ID;
-  productType.productTypeName = 'Merchandise';
-  productType.productTypeDescription = 'Type level description';
-
-  const product = new Product();
-  product.productID = PRODUCT_ID;
-  product.calculatedTitle = 'Nike Air Jorden';
-  product.productDescription = 'Product level description';
-  product.productCode = 'NIKE-AIR';
-  product.urlTitle = 'nike-air-jorden';
-  product.price = toExactDecimal(100);
-  product.productType = productType;
-
-  const sku = new Sku();
-  sku.skuID = SKU_ID;
-  sku.skuCode = 'SKU-001';
-  sku.price = toExactDecimal(100);
-  sku.imageFile = 'nike.jpg';
-  sku.product = product;
-
-  return { sku, product, productType };
-}
-
-function record(sku: Sku, productImages: readonly ProductFeedImage[] = []): ProductFeedRecord {
-  return { sku, productImages };
-}
-
-/**
- * @param host handed to the render context AS GIVEN. It is not validated, not branded and not
- *   normalised: the grammar check and the `allowedHosts` membership gate that used to stand between a
- *   caller and this value are both withdrawn — see SECTION 1.
- * @param utcHourOffset emitted unmodified, per {@link ProductFeedRenderContext.utcHourOffset}.
- */
-function makeContext(host = 'store.example.com', utcHourOffset = '5'): ProductFeedRenderContext {
-  return {
-    host,
-    /* ⚠️ A TRUE INSTANT, CONSTRUCTED IN UTC ON PURPOSE — and it did not always read this way.
-     *
-     * It was `new Date(2026, 6, 31, 13, 45, 9)` — a value whose LOCAL components were 13:45:09 —
-     * because the builder then rendered the timestamp from local accessors and merely appended the
-     * offset label. Finding F15 established that as a defect: on a UTC host (which is what a Lambda
-     * container is) a context offset of `5` produced UTC components labelled `-5`, i.e. a timestamp
-     * five hours wrong, and the emitted document changed with the HOST's timezone configuration
-     * rather than with anything a caller asked for. `renderTime` is documented as "the render
-     * instant", and the builder now computes the wall clock FOR the supplied offset from it.
-     *
-     * Two consequences follow, and both are improvements this suite keeps rather than concessions:
-     * the instant is written with `Date.UTC` so no case here depends on the host's zone, and the
-     * expected components below are the instant SHIFTED by the offset the label reports — which is
-     * the invariant the legacy had for free, because `now()` and `getTimeZoneInfo().utcHourOffset`
-     * both came from one engine's one zone (`product.cfm:L30`). */
-    renderTime: new Date(Date.UTC(2026, 6, 31, 13, 45, 9)),
-    utcHourOffset,
-  };
-}
-
-function makeBuilder(
-  settings: SettingResolverPort = makeSettings(),
-  pricing: PricingPort = makePricing(),
-  imagePaths: ImagePathPort = makeImagePaths(),
-): ProductFeedBuilder {
-  return new ProductFeedBuilder(imagePaths, pricing, settings);
-}
-
-/**
- * Captures whatever a render threw, so a message can be asserted on directly.
+/*
+ * -----------------------------------------------------------------------------------------------------
+ * DOCUMENTARY FINDINGS — recorded here with locators, deliberately NOT turned into extra test scope.
+ * -----------------------------------------------------------------------------------------------------
  *
- * The same idiom `test/services/BrandService.test.ts` and `test/services/SkuService.test.ts` use:
- * `expect.objectContaining` would force an `any`-typed matcher through the assertion, whereas
- * narrowing an `unknown` after `toBeInstanceOf` keeps the check typed.
+ * D11 — OBSERVED, NOT CORRECTED. `integrationServices/google/Integration.cfc:L49` declares
+ * `displayname="USA epay"` on the component while `getDisplayName()` at
+ * `integrationServices/google/Integration.cfc:L59-L60` returns `Google`. It is a copy/paste artifact
+ * from the payment adapter the file was cloned from. The METHOD supplies the effective display name, so
+ * the artifact is inert. This suite does not test `GoogleIntegration` and corrects neither file.
+ *
+ * D12 — DOCUMENTED DEAD CODE. `integrationServices/google/model/dao/FeedDAO.cfc:L52-L74` has zero
+ * callers repository-wide, an unscoped `rs` result variable, a trailing comma after
+ * `SwProduct.calculatedTitle,`, an `INNER JOIN SwProduct` with no `ON` clause, no datasource, and a
+ * `<cfcomponent>` that extends nothing. It could never have executed successfully. It is not ported,
+ * not tested, not repaired, not deleted, and is never treated as a source of behaviour here.
+ *
+ * LEGACY ROUTE — BUILDER ONLY. The carried route `?slatAction=google:feed.product` is documented by
+ * `integrationServices/google/views/main/default.cfm:L49-L51` and in
+ * `src/integrations/google/README.md`. This suite asserts the BUILDER, not routing. The target router
+ * lives under `src/handlers/**` and no `test/handlers/` target was authorized for the feed.
+ *
+ * EMPTY INHERITED CONTROLLER. `integrationServices/google/controllers/main.cfc:L49-L52` is an empty
+ * inherited controller with no method bodies. It has no TypeScript counterpart and no test counterpart.
+ *
+ * UPSTREAM RECORD SELECTION — COMMENTARY, NOT ASSERTED HERE. The legacy view received its records from
+ * `rc.skuSmartList.getRecords()` (`integrationServices/google/views/feed/product.cfm:L8,L16`), and the
+ * controller composed that SmartList at `integrationServices/google/controllers/feed.cfc:L63-L72`:
+ *   - `L64` joins SlatwallSku to `product`; `L65` joins SlatwallProduct to `defaultSku`; `L66` joins
+ *     SlatwallProduct to `brand` with join type LEFT. Brand is the ONLY left join, which is precisely
+ *     why `product.getBrand()` can be null and why the conditional brand element below exists.
+ *   - `L68-L70` filter `activeFlag = 1`, `product.activeFlag = 1` and `product.publishedFlag = 1`.
+ *   - `L72` ranges `product.calculatedQATS` at `'1^'`, which
+ *     `org/Hibachi/HibachiSmartList.cfc:L632-L646` establishes as an inclusive lower bound of 1 with an
+ *     open upper bound — the availability gate.
+ *   - `org/Hibachi/HibachiSmartList.cfc:L212` declares
+ *     `joinRelatedProperty(parentEntityName, relatedProperty, joinType, fetch, isAttribute)`, so the
+ *     ENTITY NAME comes first in every one of those three join calls.
+ * Those joins, filters and ranges belong to `ProductFeedQuery` and are NOT asserted here.
+ * `ProductFeedQuery` is neither imported nor instantiated by this file. What this suite does prove is
+ * that records originate BEHIND the SmartList port boundary and are serialized in the order the port
+ * returned them.
+ *
+ * Also recorded without wiring or testing:
+ *   - `integrationServices/google/controllers/feed.cfc:L51` declares a fifth injection,
+ *     `productService`, which `product(rc)` never uses. It is a dead injection and is not injected here.
+ *   - `integrationServices/google/controllers/feed.cfc:L54-L56` sets `this.publicMethods="product"`,
+ *     making the feed action fully public and unauthenticated.
+ *   - `integrationServices/google/controllers/feed.cfc:L60` disables the layout for the response.
+ *   - `integrationServices/google/controllers/feed.cfc:L63` obtains the SKU SmartList itself.
+ *
+ * M7/M8 OBEYED. The setting resolver is SYNCHRONOUS here because the port declares it so; nothing in
+ * this suite awaits a setting or depends on background completion. No value is memoised across tests:
+ * every double, entity and builder is constructed fresh per case, so no warm-container state can bleed
+ * between them.
  */
-async function captureRejection(work: Promise<unknown>): Promise<unknown> {
-  try {
-    await work;
-  } catch (error: unknown) {
-    return error;
+
+/*
+ * The Google Merchant specification URL carried in the legacy view's own CFML comment header at
+ * `integrationServices/google/views/feed/product.cfm:L4-L5`, preserved verbatim because deleting it
+ * would lose the only pointer the legacy author left to the field specification:
+ *
+ *   http://support.google.com/merchants/bin/answer.py?hl=en&answer=188494&topic=2473824&ctx=topic#US
+ *
+ * It sat inside `<!--- ... --->`, a CFML server-side comment, so it was NEVER emitted. The assertion
+ * below proves the port did not promote it into output.
+ */
+const LEGACY_SPECIFICATION_URL =
+  'http://support.google.com/merchants/bin/answer.py?hl=en&answer=188494&topic=2473824&ctx=topic#US';
+
+/* Byte-exact envelope literals read from the legacy view. */
+const EXPECTED_XML_DECLARATION = '<?xml version="1.0"?>';
+const EXPECTED_RSS_OPEN_TAG = '<rss version="2.0" xmlns:g="http://base.google.com/ns/1.0">';
+const EXPECTED_CHANNEL_TITLE_ELEMENT = '<title>Slatwall Product Feed</title>';
+
+/*
+ * Deterministic render inputs.
+ *
+ * JUDGMENT, RECORDED RATHER THAN APPLIED SILENTLY: the two instants are constructed with `Date.UTC`
+ * rather than with the local-time `new Date(y, m, d, …)` form. `ProductFeedBuilder` renders each
+ * endpoint by shifting the supplied instant by the supplied raw offset and then reading the shifted
+ * value's UTC components, so a locally constructed literal would encode the HOST's zone into the
+ * expected bytes and make this suite pass or fail according to where it ran. Supplying a true instant
+ * and asserting the shifted wall clock keeps every byte below host-timezone-independent while still
+ * exercising exactly the arithmetic the legacy `dateFormat`/`timeFormat` pair performed at
+ * `integrationServices/google/views/feed/product.cfm:L30`.
+ *
+ * Epoch milliseconds are held at module scope because a number is immutable; the `Date` objects
+ * themselves are constructed inside the scenario factory so no two cases can share one.
+ */
+const RENDER_INSTANT_EPOCH_MS = Date.UTC(2024, 0, 1, 12, 30, 45);
+const SALE_EXPIRATION_EPOCH_MS = Date.UTC(2024, 1, 9, 3, 15, 0);
+const RAW_UTC_HOUR_OFFSET = '5';
+const RENDER_HOST = 'catalog.example.test';
+const ABSOLUTE_URL_PREFIX = `http://${RENDER_HOST}`;
+
+/*
+ * The two effective-date endpoints the offset above produces. Both are shifted back five hours from the
+ * instants above, and both carry the raw bare-number offset the legacy template interpolated.
+ */
+const EXPECTED_EFFECTIVE_DATE_START = '2024-01-01T07:30:45-5';
+const EXPECTED_EFFECTIVE_DATE_END = '2024-02-08T22:15:00-5';
+
+/*
+ * Identifiers. 32-character lower-case hex with no dashes, matching the platform's own identifier shape
+ * (`model/dao/HibachiDAO.cfc` `createSlatwallUUID()`), so nothing here implies an auto-increment key or
+ * an RFC-4122 dashed form.
+ */
+const SKU_ID = 'aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa1';
+const SECOND_SKU_ID = 'aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa2';
+const PRODUCT_ID = 'bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb2';
+const BRAND_ID = 'ddddddddddddddddddddddddddddddd4';
+
+/*
+ * Setting values. These are FIXTURE values chosen so each one is observable in the output; none is a
+ * claim about a production default. `config/dbdata/SlatwallSetting.xml.cfm` seeds NEITHER shipping key,
+ * and the effective-value engine that would supply a metadata default lives in the out-of-scope setting
+ * service, so inventing a default here would be fabrication. The resolver double refuses an unseeded
+ * key for exactly that reason, which is why every case seeds precisely what it reads.
+ */
+const SETTING_GLOBAL_URL_KEY_PRODUCT = 'product';
+const SETTING_IMAGE_MISSING_IMAGE_PATH = '/missing.png';
+const SETTING_SKU_SHIPPING_WEIGHT = '5';
+const SETTING_SKU_SHIPPING_WEIGHT_UNIT_CODE = 'lb';
+
+const DEFAULT_SETTING_SEEDS: readonly SettingSeed[] = Object.freeze([
+  Object.freeze({ settingName: 'globalURLKeyProduct', value: SETTING_GLOBAL_URL_KEY_PRODUCT }),
+  Object.freeze({ settingName: 'imageMissingImagePath', value: SETTING_IMAGE_MISSING_IMAGE_PATH }),
+  Object.freeze({ settingName: 'skuShippingWeight', value: SETTING_SKU_SHIPPING_WEIGHT }),
+  Object.freeze({
+    settingName: 'skuShippingWeightUnitCode',
+    value: SETTING_SKU_SHIPPING_WEIGHT_UNIT_CODE,
+  }),
+]);
+
+/*
+ * Image fixtures. The image port double ECHOES by default rather than composing a directory layout, so
+ * the composed value is seeded explicitly. The shape of the seeded value follows the hard-coded
+ * `/product/default/` segment the legacy entity used at `model/entity/Sku.cfc:L145-L147`; the real
+ * composition is the adapter's responsibility and is not asserted here.
+ */
+const SKU_IMAGE_FILE = 'nike-air.jpg';
+const SKU_COMPOSED_IMAGE_PATH = '/product/default/nike-air.jpg';
+const FIRST_ADDITIONAL_IMAGE_PATH = '/product/default/nike-air-side.jpg';
+const SECOND_ADDITIONAL_IMAGE_PATH = '/product/default/nike-air-sole.jpg';
+const THIRD_ADDITIONAL_IMAGE_PATH = '/product/default/nike-air-top.jpg';
+
+/*
+ * The escaping sentinel and its legacy-compatible result.
+ *
+ * `htmlEditFormat` processes `&` FIRST and then the three angle/quote characters, and it leaves the
+ * APOSTROPHE alone. Ordering matters: escaping `<` before `&` would double-escape the ampersand it
+ * introduces. The single quote surviving untouched is the asymmetry that makes this sentinel worth
+ * using rather than a bare `&`.
+ */
+const ESCAPE_SENTINEL = 'A&B<C>D"E\'F';
+const ESCAPED_SENTINEL = "A&amp;B&lt;C&gt;D&quot;E'F";
+
+/*
+ * The builder indents channel children with two tabs and item children with three. That difference is
+ * the only thing separating the channel-level `<title>`/`<description>` pair from the item-level pair,
+ * and the channel pair is NOT escaped while the item pair IS — so every assertion that could be
+ * ambiguous between them is anchored on the indent rather than on the bare tag.
+ */
+const CHANNEL_FIELD_INDENT = '\t\t';
+const ITEM_FIELD_INDENT = '\t\t\t';
+
+/** Anchor a markup fragment to the item-field indent so it cannot match a channel-level element. */
+function itemField(markup: string): string {
+  return `${ITEM_FIELD_INDENT}${markup}`;
+}
+
+/** Anchor a markup fragment to the channel-field indent. */
+function channelField(markup: string): string {
+  return `${CHANNEL_FIELD_INDENT}${markup}`;
+}
+
+/** Count non-overlapping occurrences of `needle`. Used where "exactly one element" is the assertion. */
+function countOccurrences(haystack: string, needle: string): number {
+  let count = 0;
+  let at = haystack.indexOf(needle);
+  while (at !== -1) {
+    count += 1;
+    at = haystack.indexOf(needle, at + needle.length);
+  }
+  return count;
+}
+
+/* -----------------------------------------------------------------------------------------------------
+ * The typed scenario factory.
+ *
+ * Everything it returns is created fresh on every call: the four port doubles with their own call logs,
+ * the five entities, the builder, and both `Date` instants. There is no module-scope mutable state, no
+ * singleton double, no shared call array and no shared result queue anywhere in this file, so no case
+ * can observe another's writes. Only frozen literal constants live at module scope.
+ * -------------------------------------------------------------------------------------------------- */
+
+interface ScenarioSeed {
+  readonly host?: string;
+  readonly utcHourOffset?: string;
+  /** Appended AFTER the defaults, so a later seed for the same key wins. */
+  readonly settings?: readonly SettingSeed[];
+  readonly imagePathsByImageFile?: Readonly<Record<string, string>>;
+  readonly productDescription?: string;
+  readonly productTypeDescription?: string;
+  readonly productTypeName?: string;
+  /** Supplying this wires a parent product type, which makes `getSimpleRepresentation()` walk. */
+  readonly parentProductTypeName?: string;
+  readonly calculatedTitle?: string;
+  readonly productName?: string;
+  readonly productCode?: string;
+  readonly urlTitle?: string;
+  readonly productPrice?: number | string;
+  /** Leaves the product with no price at all, exercising the empty-element branch. */
+  readonly omitProductPrice?: boolean;
+  readonly skuCode?: string;
+  readonly skuPrice?: number | string;
+  /** `'absent'` omits the brand object entirely, exercising the legacy `isNull` branch. */
+  readonly brand?: 'present' | 'absent';
+  readonly brandName?: string;
+}
+
+interface RenderRequest {
+  /** Defaults to the scenario's single SKU. Supply several to observe returned record order. */
+  readonly skus?: readonly Sku[];
+  /** Applied to every record. Defaults to no additional images. */
+  readonly productImages?: readonly ProductFeedImage[];
+  /** Forwarded to the builder's declared render options when supplied, and omitted otherwise. */
+  readonly signal?: AbortSignal;
+}
+
+interface FeedScenario {
+  readonly productType: ProductType;
+  readonly product: Product;
+  readonly sku: Sku;
+  readonly brand: Brand | undefined;
+  readonly settings: SettingResolverDouble;
+  readonly images: ImagePathDouble;
+  readonly pricing: PricingDouble;
+  readonly smartList: SmartListQueryDouble;
+  readonly builder: ProductFeedBuilder;
+  readonly context: ProductFeedRenderContext;
+  readonly saleExpiration: Date;
+  /** Seed one product's sale details, keyed by SKU identifier exactly as the port declares. */
+  seedSaleDetails(details: SalePriceDetailsBySkuId): void;
+  /**
+   * Materialize records THROUGH the SmartList port, then serialize them.
+   *
+   * This is the boundary the legacy view crossed at
+   * `integrationServices/google/views/feed/product.cfm:L8,L16`, where the records arrived already
+   * materialized from `rc.skuSmartList.getRecords()`. The double is configured with the rows, the real
+   * `executeRecords` member is called to obtain them, and only then are they handed to the builder — so
+   * this suite proves the records originate behind the port without asserting anything about how the
+   * query that produced them was composed.
+   */
+  render(request?: RenderRequest): Promise<string>;
+}
+
+function createScenario(seed: ScenarioSeed = {}): FeedScenario {
+  /*
+   * The legacy fixture contract from `meta/tests/unit/Helper.cfc:L52-L77`, reused rather than retyped so
+   * the product code, name, price and merchandise product-type identifier stay traceable.
+   */
+  const legacyFixture = createTestMerchandiseProductData();
+
+  const settings = createSettingResolverDouble({
+    settings: [...DEFAULT_SETTING_SEEDS, ...(seed.settings ?? [])],
+  });
+  const images = createImagePathDouble({
+    /*
+     * `resizedImagePath` is deliberately left unseeded: the double then echoes each request's OWN
+     * `imagePath`, which is the only configuration under which "each additional image used its own
+     * resized path" is a falsifiable claim. A single global resize answer would collapse every image
+     * onto one value and make the repeated-image assertions vacuous.
+     */
+    imagePathsByImageFile: seed.imagePathsByImageFile ?? {
+      [SKU_IMAGE_FILE]: SKU_COMPOSED_IMAGE_PATH,
+    },
+  });
+  const pricing = createPricingDouble();
+  const smartList = createSmartListQueryDouble();
+
+  const productTypeSeed: {
+    productTypeID: string;
+    productTypeName: string;
+    productTypeDescription?: string;
+    parentProductType?: ProductType;
+  } = {
+    productTypeID: MERCHANDISE_PRODUCT_TYPE_ID,
+    productTypeName: seed.productTypeName ?? MERCHANDISE_PRODUCT_TYPE.productTypeName,
+  };
+  if (seed.productTypeDescription !== undefined) {
+    productTypeSeed.productTypeDescription = seed.productTypeDescription;
+  }
+  if (seed.parentProductTypeName !== undefined) {
+    productTypeSeed.parentProductType = buildProductType({
+      productTypeName: seed.parentProductTypeName,
+    });
+  }
+  const productType = buildProductType(productTypeSeed);
+
+  const brand =
+    (seed.brand ?? 'present') === 'absent'
+      ? undefined
+      : buildBrand({ brandID: BRAND_ID, brandName: seed.brandName ?? 'Nike' });
+
+  const productSeed: {
+    productID: string;
+    productCode: string;
+    productName: string;
+    urlTitle: string;
+    calculatedTitle: string;
+    productType: ProductType;
+    productDescription?: string;
+    brand?: Brand;
+  } = {
+    productID: PRODUCT_ID,
+    productCode: seed.productCode ?? legacyFixture.productCode,
+    /*
+     * A sentinel distinct from `calculatedTitle`. `Product.getTitle()` is the TEMPLATE-driven member
+     * (`model/entity/Product.cfc:L540-L545`) that interpolates `productTitleString`; the feed reads the
+     * PERSISTED `calculatedTitle` instead (`integrationServices/google/views/feed/product.cfm:L18`).
+     * Keeping the two values different is what makes the item title's source unambiguous.
+     */
+    productName: seed.productName ?? 'TEMPLATE-ONLY-PRODUCT-NAME',
+    urlTitle: seed.urlTitle ?? 'nike-air',
+    calculatedTitle: seed.calculatedTitle ?? 'PERSISTED-CALCULATED-TITLE',
+    productType,
+  };
+  if (seed.productDescription !== undefined) {
+    productSeed.productDescription = seed.productDescription;
+  }
+  if (brand !== undefined) {
+    productSeed.brand = brand;
+  }
+  const product = buildProduct(productSeed);
+
+  if (seed.omitProductPrice !== true) {
+    product.price = toExactDecimal(seed.productPrice ?? legacyFixture.price);
+  }
+
+  const sku = buildSku({
+    skuID: SKU_ID,
+    skuCode: seed.skuCode ?? `${legacyFixture.productCode}-1`,
+    /* Deliberately different from the product price so `g:price`'s source is observable. */
+    price: seed.skuPrice ?? 90,
+    imageFile: SKU_IMAGE_FILE,
+    product,
+  });
+
+  const builder = new ProductFeedBuilder(images.imagePaths, pricing.pricing, settings.resolver);
+
+  const context: ProductFeedRenderContext = {
+    host: seed.host ?? RENDER_HOST,
+    renderTime: new Date(RENDER_INSTANT_EPOCH_MS),
+    utcHourOffset: seed.utcHourOffset ?? RAW_UTC_HOUR_OFFSET,
+  };
+
+  return {
+    productType,
+    product,
+    sku,
+    brand,
+    settings,
+    images,
+    pricing,
+    smartList,
+    builder,
+    context,
+    saleExpiration: new Date(SALE_EXPIRATION_EPOCH_MS),
+    seedSaleDetails: (details: SalePriceDetailsBySkuId): void => {
+      pricing.set(PRODUCT_ID, details);
+    },
+    render: async (request: RenderRequest = {}): Promise<string> => {
+      const rows = request.skus ?? [sku];
+      smartList.enqueue({ kind: 'page', metrics: {}, records: rows });
+      const materialized = await smartList.smartList.executeRecords({ entityName: 'SlatwallSku' });
+      const productImages = request.productImages ?? [];
+      const records: readonly ProductFeedRecord[] = materialized.map((row) => ({
+        sku: row,
+        productImages,
+      }));
+      /*
+       * The options argument is OMITTED rather than passed as `undefined` when no signal was requested,
+       * because `exactOptionalPropertyTypes` makes those two different things and the builder declares
+       * the member optional.
+       */
+      if (request.signal === undefined) {
+        return builder.build(records, context);
+      }
+      return builder.build(records, context, { signal: request.signal });
+    },
+  };
+}
+
+/** Every resize request the image port received, in call order. */
+function resizeRequests(images: ImagePathDouble): readonly ResizedImagePathRequest[] {
+  const requests: ResizedImagePathRequest[] = [];
+  for (const call of images.calls) {
+    if (call.member === 'getResizedImagePath') {
+      requests.push(call.request);
+    }
+  }
+  return requests;
+}
+
+/** Every setting name the resolver was asked for, in call order. */
+function resolvedSettingNames(settings: SettingResolverDouble): readonly string[] {
+  return settings.calls.map((call) => call.settingName);
+}
+
+/** The resolution context recorded for the first call naming `settingName`, if there was one. */
+function firstResolutionContext(
+  settings: SettingResolverDouble,
+  settingName: string,
+): SettingResolutionContext | undefined {
+  for (const call of settings.calls) {
+    if (call.settingName === settingName) {
+      return call.context;
+    }
   }
   return undefined;
 }
 
-/* ================================================================================================
- * SECTION 1 — the host is emitted RAW, because `product.cfm` emits it raw
+/* -----------------------------------------------------------------------------------------------------
+ * Source-text inspection for the two source-level censuses.
  *
- * ⛔ THIS SECTION EXERCISED `validateFeedHostAuthority`, AND THAT FUNCTION NO LONGER EXISTS. Six
- * cases asserted a character allowlist, an RFC 1035 63-octet DNS-label ceiling, a raising refusal for
- * an empty host, a refusal that never echoed the rejected value, and case preservation. All of it is
- * withdrawn with SEC-06 / DECISION G-1.
- *
- * WHY: `integrationServices/google/views/feed/product.cfm` interpolates `CGI.HTTP_HOST` into all five
- * of its absolute URLs — `:L14`, `:L15`, `:L22`, `:L23` and `:L24` — with no test of any kind. A
- * refusal CHANGES AN OUTCOME the legacy produces, so AAP §0.8.2 guideline 4 forbids it and D18
- * (AAP §0.6.7.7) does not license it: D18 is a precedent only for a divergence that removes a flaw
- * class WITHOUT changing an outcome, which parameterised SQL does and a refusal does not. The
- * character allowlist and the octet ceiling were also figures the source states nowhere (S9, IR-12).
- *
- * WHAT REPLACES IT: withdrawal regressions. They pin the RAW emission the legacy produces, so a future
- * revision cannot quietly reinstate the gate without a failing test. The residual CWE-91 and
- * origin-rebasing exposure is FLAGGED in the builder's WITHDRAWN RAW-SINK VALIDATION note (S8), not
- * closed here.
- * ============================================================================================= */
-
-describe('NET-NEW — the configured host reaches the document unvalidated and unmodified', () => {
-  it('emits a host containing XML-significant characters RAW, reproducing the legacy defect', async () => {
-    /* WITHDRAWAL REGRESSION. An earlier revision refused this host outright. `:L14` and `:L15`
-     * interpolate it, so the legacy emits it — and the injected element really does appear, which is
-     * precisely the carried defect the flag names. */
-    const xml = await makeBuilder().build([], makeContext('a&b<c>"d'));
-
-    expect(xml).toContain('<link>http://a&b<c>"d</link>');
-    expect(xml).toContain('<description>Google Product Feed for http://a&b<c>"d</description>');
-  });
-
-  it('emits an empty host as the bare scheme prefix rather than refusing the render', async () => {
-    /* WITHDRAWAL REGRESSION. `src/config/env.ts` still refuses a blank `GOOGLE_FEED_HOST` at load —
-     * a configuration-completeness rule — but nothing between that read and this document checks it,
-     * so a caller constructing a context directly gets the legacy's own interpolation of an empty
-     * value. */
-    const xml = await makeBuilder().build([], makeContext(''));
-
-    expect(xml).toContain('<link>http://</link>');
-    expect(xml).toContain('<description>Google Product Feed for http://</description>');
-  });
-
-  it('preserves case, port and length exactly, normalising nothing', async () => {
-    /* The one assertion that survives the withdrawal unchanged in substance: the value is not
-     * lower-cased, punycoded, trimmed, stripped of a default port or upgraded to a secure scheme,
-     * because every one of those would change emitted bytes for a legitimate host. The 300-character
-     * label would have breached the withdrawn 63-octet ceiling. */
-    const longLabel = `${'a'.repeat(300)}.example.com`;
-
-    for (const host of ['Store.Example.COM:80', 'localhost:8080', '[2001:db8::1]:443', longLabel]) {
-      expect(await makeBuilder().build([], makeContext(host))).toContain(
-        `<link>http://${host}</link>`,
-      );
-    }
-  });
-
-  it('rebases every absolute URL in the item onto whatever host it is given', async () => {
-    /* WITHDRAWAL REGRESSION, and the sharpest statement of what the withdrawn gate was for. All three
-     * item-level absolute URLs are built on the same prefix (`:L22`, `:L23`, `:L24`), so the host
-     * governs the whole document's origin. That is the legacy's behaviour and it is carried. */
-    const { sku } = makeFixture();
-    const images: readonly ProductFeedImage[] = [{ imagePath: '/custom/a.jpg' }];
-
-    const xml = await makeBuilder().build([record(sku, images)], makeContext('other.example.net'));
-
-    expect(xml).toContain('<link>http://other.example.net/product/nike-air-jorden/</link>');
-    expect(xml).toContain(
-      '<g:image_link>http://other.example.net/product/default/nike.jpg</g:image_link>',
-    );
-    expect(xml).toContain(
-      '<g:additional_image_link>http://other.example.net/custom/a.jpg</g:additional_image_link>',
-    );
-  });
-});
-
-/* ================================================================================================
- * SECTION 2 — every field mapping, in the legacy's own order (AAP §0.4.1.12 mandate)
- * ============================================================================================= */
-
-describe('NET-NEW — the rendered document reproduces every legacy field mapping', () => {
-  it('renders the whole envelope and all sixteen item fields in source order', async () => {
-    const { sku } = makeFixture();
-    const xml = await makeBuilder().build([record(sku)], makeContext());
-
-    /* Byte-exact, tabs included. Envelope from `product.cfm:L1`, `:L11-L15`, `:L64-L65`; item
-     * fields from `:L17-L58` in the legacy's own order. */
-    expect(xml).toBe(
-      [
-        '<?xml version="1.0"?>',
-        '<rss version="2.0" xmlns:g="http://base.google.com/ns/1.0">',
-        '\t<channel>',
-        '\t\t<title>Slatwall Product Feed</title>',
-        '\t\t<link>http://store.example.com</link>',
-        '\t\t<description>Google Product Feed for http://store.example.com</description>',
-        '\t\t<item>',
-        '\t\t\t<g:id>SKU-001</g:id>',
-        '\t\t\t<title>Nike Air Jorden</title>',
-        '\t\t\t<description>Product level description</description>',
-        '\t\t\t<g:google_product_category></g:google_product_category>',
-        '\t\t\t<g:product_type>Merchandise</g:product_type>',
-        '\t\t\t<link>http://store.example.com/product/nike-air-jorden/</link>',
-        '\t\t\t<g:image_link>http://store.example.com/product/default/nike.jpg</g:image_link>',
-        '\t\t\t<g:condition>new</g:condition>',
-        '\t\t\t<g:availability>in stock</g:availability>',
-        '\t\t\t<g:price>100</g:price>',
-        '\t\t\t<g:item_group_id>NIKE-AIR</g:item_group_id>',
-        '\t\t\t<g:shipping_weight>5 lb</g:shipping_weight>',
-        '\t\t</item>',
-        '\t</channel>',
-        '</rss>',
-      ].join('\n'),
-    );
-  });
-
-  it('emits one item per record, in the order given', async () => {
-    const first = makeFixture();
-    const second = makeFixture();
-    second.sku.skuID = 'ddddddddddddddddddddddddddddddd4';
-    second.sku.skuCode = 'SKU-002';
-
-    const xml = await makeBuilder().build([record(first.sku), record(second.sku)], makeContext());
-
-    expect(xml.indexOf('<g:id>SKU-001</g:id>')).toBeLessThan(xml.indexOf('<g:id>SKU-002</g:id>'));
-    expect(xml.split('<item>')).toHaveLength(3);
-  });
-
-  it('falls back to the product type description, then to an empty element', async () => {
-    /* The three-way selection of `product.cfm:L19`. */
-    const withProduct = makeFixture();
-    expect(await makeBuilder().build([record(withProduct.sku)], makeContext())).toContain(
-      '<description>Product level description</description>',
-    );
-
-    const withType = makeFixture();
-    withType.product.productDescription = '';
-    expect(await makeBuilder().build([record(withType.sku)], makeContext())).toContain(
-      '<description>Type level description</description>',
-    );
-
-    const withNeither = makeFixture();
-    withNeither.product.productDescription = '';
-    withNeither.productType.productTypeDescription = '';
-    expect(await makeBuilder().build([record(withNeither.sku)], makeContext())).toContain(
-      '<description></description>',
-    );
-  });
-
-  it('emits one additional image link per product image, in array order', async () => {
-    const { sku } = makeFixture();
-    const images: readonly ProductFeedImage[] = [
-      { imagePath: '/custom/a.jpg' },
-      { imagePath: '/custom/b.jpg' },
-    ];
-
-    const xml = await makeBuilder().build([record(sku, images)], makeContext());
-
-    expect(xml).toContain(
-      '<g:additional_image_link>http://store.example.com/custom/a.jpg</g:additional_image_link>',
-    );
-    expect(xml).toContain(
-      '<g:additional_image_link>http://store.example.com/custom/b.jpg</g:additional_image_link>',
-    );
-    expect(xml.indexOf('/custom/a.jpg')).toBeLessThan(xml.indexOf('/custom/b.jpg'));
-  });
-
-  it('emits no additional image link at all for a product with no images', async () => {
-    const { sku } = makeFixture();
-    expect(await makeBuilder().build([record(sku)], makeContext())).not.toContain(
-      'g:additional_image_link',
-    );
-  });
-
-  it('emits an empty price element for an unpriced product rather than zero', async () => {
-    /* `model/entity/Product.cfc:L561-L568` falls off the end with no return. */
-    const { sku, product } = makeFixture();
-    delete product.price;
-    delete product.defaultSku;
-
-    expect(await makeBuilder().build([record(sku)], makeContext())).toContain(
-      '<g:price></g:price>',
-    );
-  });
-
-  it('raises when a record carries no product, as the legacy null dereference does', async () => {
-    const { sku } = makeFixture();
-    delete sku.product;
-
-    await expect(makeBuilder().build([record(sku)], makeContext())).rejects.toThrow(DomainError);
-  });
-
-  it('renders an empty element for every absent value rather than omitting the field', async () => {
-    /* CFML interpolates a null as the empty string, so the legacy emits the element with no
-     * content. Omitting the element would change the document's field census, and substituting a
-     * placeholder would invent data (S9). */
-    const { sku, product, productType } = makeFixture();
-    delete sku.skuCode;
-    delete product.calculatedTitle;
-    delete product.productDescription;
-    delete product.productCode;
-    delete product.urlTitle;
-    delete productType.productTypeDescription;
-    delete sku.imageFile;
-
-    const xml = await makeBuilder().build([record(sku)], makeContext());
-
-    expect(xml).toContain('<g:id></g:id>');
-    expect(xml).toContain('<title></title>');
-    expect(xml).toContain('<description></description>');
-    expect(xml).toContain('<g:item_group_id></g:item_group_id>');
-    /* A missing url title still yields the two slashes the legacy produced —
-     * `model/entity/Product.cfc:L207-L209` interpolates the null as empty. */
-    expect(xml).toContain('<link>http://store.example.com/product//</link>');
-    expect(xml).toContain('<g:image_link>http://store.example.com/product/default/</g:image_link>');
-  });
-
-  it('REFUSES to render an item for a product with no product type', async () => {
-    /* ⚠️ THIS CASE ASSERTED THE OPPOSITE, AND THE OPPOSITE WAS FINDING F14.
-     *
-     * It expected `<g:product_type></g:product_type>` and `<description></description>`, reasoning
-     * that "the legacy dereferences the association unguarded at `:L19` and `:L21`; under strict
-     * typing the association is genuinely optional, and falling through keeps the selection total".
-     * The first half of that is the correct reading of the source; the conclusion is the inverse of
-     * what it supports. An UNGUARDED dereference of a null association does not fall through in CFML
-     * — it RAISES — so the legacy render FAILS for such a product, and emitting empty elements invents
-     * a lenient behaviour the legacy does not have (AAP §0.7.3 S9).
-     *
-     * THREE INDEPENDENT PIECES OF EVIDENCE, ALL POINTING ONE WAY:
-     *   1. `product.cfm:L32` DOES guard its association — `<cfif not isNull(...getBrand())>` — so the
-     *      view demonstrably knows how to make a relationship optional and deliberately does not do it
-     *      for the product type at `:L19` or `:L21`.
-     *   2. `model/validation/Product.json` declares `"productType": [{"contexts":"save",
-     *      "required":true}]`. The association is not optional in the legacy DOMAIN either; a product
-     *      without one is a broken row, not a supported shape.
-     *   3. `model/entity/Product.cfc:L69` maps it `fetch="join"`, so the legacy never even reached the
-     *      view with the association unresolved.
-     *
-     * AND THE FAILURE MODE THE EMPTY ELEMENTS WOULD HAVE CAUSED IS THE WORSE ONE. `description` and
-     * `g:product_type` are two of the fields a merchant platform matches on, so an item with both
-     * empty is ACCEPTED and mis-categorised — a data-quality failure invisible in the feed itself.
-     * Refusing is both the faithful behaviour and the safe one, and it is what the rest of this module
-     * does for every other unguarded legacy dereference. */
-    const { sku, product } = makeFixture();
-    product.productDescription = '';
-    delete product.productType;
-
-    const refusal = await captureRejection(makeBuilder().build([record(sku)], makeContext()));
-
-    expect(refusal).toBeInstanceOf(DomainError);
-    const message = (refusal as DomainError).message;
-    expect(message).toContain('carries no product type');
-    expect(message).toContain(PRODUCT_ID);
-    /* The locator is named so the refusal is traceable to the line it reproduces. */
-    expect(message).toContain('product.cfm:L19');
-  });
-
-  it('still renders the product-type description fallback when the association IS present', async () => {
-    /* The companion to the refusal above: the fallback at `:L19` is a fallback between two
-     * DESCRIPTIONS, not between a present and an absent association, and it is unaffected. */
-    const { sku, product } = makeFixture();
-    product.productDescription = '';
-
-    expect(await makeBuilder().build([record(sku)], makeContext())).toContain(
-      '<description>Type level description</description>',
-    );
-  });
-});
-
-/* ================================================================================================
- * SECTION 3 — both conditional branches (AAP §0.4.1.12 mandate)
- * ============================================================================================= */
-
-describe('NET-NEW — the two conditional field groups', () => {
-  it('omits the sale-price pair when no promotion applies', async () => {
-    /* `model/entity/Sku.cfc:L546-L551` falls back to the ordinary price, so the strict
-     * greater-than at `product.cfm:L28` is false and the pair is correctly omitted. */
-    const { sku } = makeFixture();
-    const xml = await makeBuilder().build([record(sku)], makeContext());
-
-    expect(xml).not.toContain('g:sale_price');
-    expect(xml).not.toContain('g:sale_price_effective_date');
-  });
-
-  it('emits the sale price and the eleven-part effective range when one applies', async () => {
-    /* ⚠️ THE EXPECTED COMPONENTS CHANGED WITH FINDING F15, AND THE STRUCTURE DID NOT.
-     *
-     * This asserted `2026-07-31T13:45:09-5/2026-08-15T23:59:58-5` — each endpoint's components read
-     * straight off the value with the offset merely appended. F15 established that the label and the
-     * components must describe ONE zone, as they automatically did in the legacy where `now()` and
-     * `getTimeZoneInfo().utcHourOffset` both came from a single engine's single zone. The components
-     * are therefore now computed FOR the reported offset: `13:45:09Z − 5h = 08:45:09` and
-     * `23:59:58Z − 5h = 18:59:58`, each still labelled `-5`.
-     *
-     * The eleven-part STRUCTURE this case exists to pin — date, `T`, time, `-`, offset, `/`, and the
-     * same five again — is asserted unchanged, and the arithmetic is written out above rather than
-     * left for a reader to reverse-engineer from the literal. */
-    const { sku } = makeFixture();
-    const pricing = makePricing({
-      [SKU_ID]: {
-        salePrice: 75,
-        salePriceExpirationDateTime: new Date(Date.UTC(2026, 7, 15, 23, 59, 58)),
-      },
-    });
-
-    const xml = await makeBuilder(makeSettings(), pricing).build([record(sku)], makeContext());
-
-    expect(xml).toContain('<g:sale_price>75</g:sale_price>');
-    expect(xml).toContain(
-      '<g:sale_price_effective_date>2026-07-31T08:45:09-5/2026-08-15T18:59:58-5' +
-        '</g:sale_price_effective_date>',
-    );
-  });
-
-  it('shifts the components with the offset the label reports, so the two never disagree', async () => {
-    /* The F15 invariant stated as its own case rather than left implicit in a literal: the SAME instant
-     * rendered under two offsets must produce components that differ by exactly the offset difference,
-     * and neither must depend on the host's timezone configuration. */
-    const { sku } = makeFixture();
-    const pricing = makePricing({ [SKU_ID]: { salePrice: 75 } });
-    const builder = makeBuilder(makeSettings(), pricing);
-
-    expect(await builder.build([record(sku)], makeContext('store.example.com', '0'))).toContain(
-      '<g:sale_price_effective_date>2026-07-31T13:45:09-0/T-0</g:sale_price_effective_date>',
-    );
-    expect(await builder.build([record(sku)], makeContext('store.example.com', '8'))).toContain(
-      '<g:sale_price_effective_date>2026-07-31T05:45:09-8/T-8</g:sale_price_effective_date>',
-    );
-  });
-
-  it('carries an absent expiration leniently, leaving the separators in place', async () => {
-    /* `model/entity/Sku.cfc:L560-L565` returns the empty string, and the lenient CFML branch is
-     * the one reproduced — no date is invented and the render instant is NOT substituted. Only the
-     * start endpoint's components moved with F15; the absent endpoint still collapses to an empty date
-     * and an empty time with the `T`, the hyphen and the offset all left in place. */
-    const { sku } = makeFixture();
-    const pricing = makePricing({ [SKU_ID]: { salePrice: 75 } });
-
-    const xml = await makeBuilder(makeSettings(), pricing).build([record(sku)], makeContext());
-
-    expect(xml).toContain(
-      '<g:sale_price_effective_date>2026-07-31T08:45:09-5/T-5</g:sale_price_effective_date>',
-    );
-  });
-
-  it('omits the brand element when there is no brand association', async () => {
-    const { sku } = makeFixture();
-    expect(await makeBuilder().build([record(sku)], makeContext())).not.toContain('g:brand');
-  });
-
-  it('emits an EMPTY brand element for a brand whose name is blank', async () => {
-    /* `product.cfm:L32` guards on the ASSOCIATION, not on the name. Guarding on the name would
-     * drop the element and change the document's field census. */
-    const { sku, product } = makeFixture();
-    product.brand = new Brand();
-
-    expect(await makeBuilder().build([record(sku)], makeContext())).toContain(
-      '<g:brand></g:brand>',
-    );
-  });
-
-  it('emits the brand name from the brand own accessor', async () => {
-    const { sku, product } = makeFixture();
-    const brand = new Brand();
-    brand.brandName = 'Nike';
-    product.brand = brand;
-
-    expect(await makeBuilder().build([record(sku)], makeContext())).toContain(
-      '<g:brand>Nike</g:brand>',
-    );
-  });
-});
-
-/* ================================================================================================
- * SECTION 4 — parity guard: the six legacy `htmlEditFormat` fields are BYTE-IDENTICAL
- *
- * This is the one part of the original SEC-06 coverage that survives the DECISION G-3 withdrawal
- * unchanged, because it was never testing a hardening. `product.cfm` escapes exactly these six fields
- * with `htmlEditFormat` at `:L17`, `:L18`, `:L19`, `:L21`, `:L32` and `:L39`, so reproducing that
- * escaper character-for-character IS the parity requirement — including its double-escape of the
- * product type's literal `&raquo;` separator, and including its refusal to touch the apostrophe.
- * ============================================================================================= */
-
-describe('SEC-06 — the six legacy htmlEditFormat fields keep their exact escaping', () => {
-  const HOSTILE = 'a&b<c>d"e\'f';
-  const ESCAPED = "a&amp;b&lt;c&gt;d&quot;e'f";
-
-  it('escapes exactly four characters, ampersand first, and leaves the apostrophe alone', async () => {
-    const { sku, product, productType } = makeFixture();
-    sku.skuCode = HOSTILE;
-    product.calculatedTitle = HOSTILE;
-    product.productDescription = HOSTILE;
-    product.productCode = HOSTILE;
-    productType.productTypeName = HOSTILE;
-    const brand = new Brand();
-    brand.brandName = HOSTILE;
-    product.brand = brand;
-
-    const xml = await makeBuilder().build([record(sku)], makeContext());
-
-    expect(xml).toContain(`<g:id>${ESCAPED}</g:id>`);
-    expect(xml).toContain(`<title>${ESCAPED}</title>`);
-    expect(xml).toContain(`<description>${ESCAPED}</description>`);
-    expect(xml).toContain(`<g:product_type>${ESCAPED}</g:product_type>`);
-    expect(xml).toContain(`<g:brand>${ESCAPED}</g:brand>`);
-    expect(xml).toContain(`<g:item_group_id>${ESCAPED}</g:item_group_id>`);
-  });
-
-  it('never double-escapes, so an ampersand becomes exactly one entity', async () => {
-    const { sku } = makeFixture();
-    sku.skuCode = '&';
-
-    const xml = await makeBuilder().build([record(sku)], makeContext());
-
-    expect(xml).toContain('<g:id>&amp;</g:id>');
-    expect(xml).not.toContain('&amp;amp;');
-  });
-
-  it('preserves the product type double-escape, so the guillemet entity emits as &amp;raquo;', async () => {
-    /* `model/entity/ProductType.cfc:L273-L278` joins with the LITERAL entity text ' &raquo; ', and
-     * `product.cfm:L21` escapes the finished string. The legacy therefore emits `&amp;raquo;`, and
-     * "fixing" that would change bytes on the wire. */
-    const { sku, productType } = makeFixture();
-    const parent = new ProductType();
-    parent.productTypeID = 'eeeeeeeeeeeeeeeeeeeeeeeeeeeeeee5';
-    parent.productTypeName = 'Apparel';
-    productType.parentProductType = parent;
-
-    expect(await makeBuilder().build([record(sku)], makeContext())).toContain(
-      '<g:product_type>Apparel &amp;raquo; Merchandise</g:product_type>',
-    );
-  });
-});
-
-/* ================================================================================================
- * SECTION 4b — SEC-02 remediation: a code point XML 1.0 forbids is REFUSED (DECISION G-4)
- * ============================================================================================= */
-
-describe('SEC-02 — a code point XML 1.0 cannot represent is refused, never emitted, never altered', () => {
-  it('refuses U+0001, which previously made the whole document unparseable', async () => {
-    const { sku } = makeFixture();
-    sku.skuCode = `SKU\u0001CODE`;
-
-    await expect(makeBuilder().build([record(sku)], makeContext())).rejects.toBeInstanceOf(
-      DataIntegrityError,
-    );
-  });
-
-  it('refuses every forbidden C0 control, plus U+FFFE and U+FFFF', async () => {
-    /* The complement of the XML 1.0 `Char` production within the BMP, enumerated rather than sampled:
-     * `Char ::= #x9 | #xA | #xD | [#x20-#xD7FF] | [#xE000-#xFFFD] | [#x10000-#x10FFFF]`. */
-    const forbidden = [
-      ...Array.from({ length: 9 }, (_unused, index) => index), // U+0000 .. U+0008
-      0x0b,
-      0x0c,
-      ...Array.from({ length: 18 }, (_unused, index) => 0x0e + index), // U+000E .. U+001F
-      0xfffe,
-      0xffff,
-    ];
-
-    for (const codePoint of forbidden) {
-      const { sku } = makeFixture();
-      sku.skuCode = `x${String.fromCharCode(codePoint)}y`;
-
-      await expect(makeBuilder().build([record(sku)], makeContext())).rejects.toBeInstanceOf(
-        DataIntegrityError,
-      );
-    }
-  });
-
-  it('refuses a lone surrogate but ACCEPTS a well-formed pair, which encodes a legal character', async () => {
-    const withLoneHigh = makeFixture();
-    withLoneHigh.sku.skuCode = 'x\ud83dy';
-    await expect(
-      makeBuilder().build([record(withLoneHigh.sku)], makeContext()),
-    ).rejects.toBeInstanceOf(DataIntegrityError);
-
-    const withLoneLow = makeFixture();
-    withLoneLow.sku.skuCode = 'x\udc9ay';
-    await expect(
-      makeBuilder().build([record(withLoneLow.sku)], makeContext()),
-    ).rejects.toBeInstanceOf(DataIntegrityError);
-
-    const withPair = makeFixture();
-    withPair.sku.skuCode = 'x\ud83d\udc9ay';
-    expect(await makeBuilder().build([record(withPair.sku)], makeContext())).toContain(
-      '<g:id>x\u{1f49a}y</g:id>',
-    );
-  });
-
-  it('ACCEPTS tab, line feed and carriage return, which the Char production admits', async () => {
-    /* A multi-line product description is ordinary feed content. Refusing these three would break
-     * legitimate data, and stripping them would alter it. */
-    const { sku, product } = makeFixture();
-    sku.skuCode = 'PLAIN';
-    product.productDescription = 'line one\nline two\ttabbed\rreturned';
-
-    expect(await makeBuilder().build([record(sku)], makeContext())).toContain(
-      '<description>line one\nline two\ttabbed\rreturned</description>',
-    );
-  });
-
-  it('ACCEPTS DEL and the C1 block, which XML 1.0 permits even though XML 1.1 restricts them', async () => {
-    /* This document declares 1.0. Refusing them would be inventing a stricter rule than the format
-     * states, which AAP 0.7.3 S9 forbids. */
-    const { sku } = makeFixture();
-    sku.skuCode = 'x\u007f\u0085y';
-
-    expect(await makeBuilder().build([record(sku)], makeContext())).toContain(
-      '<g:id>x\u007f\u0085y</g:id>',
-    );
-  });
-
-  it('refuses rather than sanitises: no stripped, replaced or substituted output is ever produced', async () => {
-    const { sku } = makeFixture();
-    sku.skuCode = 'A\u0000B';
-
-    /* If the value were being sanitised the build would resolve with `AB`, `A?B` or `A\uFFFDB`. It
-     * rejects instead, which is the whole of DECISION G-4. */
-    await expect(makeBuilder().build([record(sku)], makeContext())).rejects.toThrow(
-      DataIntegrityError,
-    );
-  });
-});
-
-/* ================================================================================================
- * SECTION 5 — the ten fields the legacy leaves RAW are emitted RAW
- *
- * ⛔ THIS SECTION ASSERTED THAT NINE FURTHER FIELDS WERE ESCAPED, AND THAT IS WITHDRAWN. SEC-06 /
- * DECISION G-3 applied the legacy's own escaper to nine sinks the legacy escapes nowhere. Escaping is
- * a BYTE CHANGE at precisely the values that matter, so it is a behaviour change: AAP §0.8.2
- * guideline 4 forbids it and D18 does not license it, for the same reason set out in section 1.
- *
- * The ten raw substitutions, read from the view: the channel link (`:L14`), the channel description
- * (`:L15`), the item link (`:L22`), `g:image_link` (`:L23`), each `g:additional_image_link` (`:L24`),
- * `g:price` (`:L27`), `g:sale_price` (`:L29`), both offset appearances inside
- * `g:sale_price_effective_date` (`:L30`) and `g:shipping_weight` (`:L58`).
- *
- * WHAT SURVIVES: the ARITHMETIC read of the UTC hour offset. `readUtcHourOffset` is not an escaping
- * substitute and not a control — `product.cfm:L30` reads the offset from
- * `getTimeZoneInfo().utcHourOffset`, a machine-generated numeric value, and the target has no such
- * built-in and must compute the labelled wall clock itself (F15). It cannot render the endpoint at all
- * without a numeric reading, which makes the read an execution-model necessity.
- * ============================================================================================= */
-
-describe('SEC-06 WITHDRAWN — every field the legacy leaves raw stays raw', () => {
-  it('emits the shipping weight RAW, so injected markup really does reach the document', async () => {
-    /* WITHDRAWAL REGRESSION, and the most consequential one in the file. An earlier revision escaped
-     * this join and asserted that the injected `g:price` "never becomes real markup". `:L58`
-     * interpolates both values, so under the legacy it DOES become real markup, and the port carries
-     * that. Neither key is seeded in `config/dbdata/SlatwallSetting.xml.cfm`, so both are whatever the
-     * settings store holds — which is exactly why the exposure is flagged (S8) rather than denied. */
-    const settings = makeSettings({
-      skuShippingWeight: '5</g:shipping_weight><g:price>0</g:price><x>',
-      skuShippingWeightUnitCode: 'l&b',
-    });
-    const { sku } = makeFixture();
-
-    const xml = await makeBuilder(settings).build([record(sku)], makeContext());
-
-    expect(xml).toContain(
-      '<g:shipping_weight>5</g:shipping_weight><g:price>0</g:price><x> l&b</g:shipping_weight>',
-    );
-    /* The genuine price element is still emitted; the injected one is now ALSO present, which is the
-     * carried defect stated as an assertion rather than left implicit. */
-    expect(xml).toContain('<g:price>100</g:price>');
-    expect(xml).toContain('<g:price>0</g:price>');
-  });
-
-  it('preserves the single literal space when both shipping settings resolve empty', async () => {
-    const settings = makeSettings({ skuShippingWeight: '', skuShippingWeightUnitCode: '' });
-    const { sku } = makeFixture();
-
-    expect(await makeBuilder(settings).build([record(sku)], makeContext())).toContain(
-      '<g:shipping_weight> </g:shipping_weight>',
-    );
-  });
-
-  it('refuses a UTC hour offset it cannot read as a number of hours, because it cannot render one', async () => {
-    /* ⭐ THE ONE SURVIVING REFUSAL ON A RAW SINK, AND IT IS NOT A HARDENING.
-     *
-     * `product.cfm:L30` takes the offset from `getTimeZoneInfo().utcHourOffset`, whose value is
-     * machine-generated and always numeric, so a non-numeric offset is not a state the legacy can
-     * reach and refusing one forecloses no legacy outcome. The target must shift an absolute instant
-     * into the labelled zone itself (F15) and therefore has no components to emit beside a label it
-     * cannot read. The refusal is arithmetic necessity, not encoding defence — the offset TEXT is
-     * emitted verbatim and unescaped once it reads. */
-    const { sku } = makeFixture();
-    const pricing = makePricing({ [SKU_ID]: { salePrice: 75 } });
-    const context = makeContext('store.example.com', '5</g:sale_price_effective_date><x>&');
-
-    const refusal = await captureRejection(
-      makeBuilder(makeSettings(), pricing).build([record(sku)], context),
-    );
-
-    expect(refusal).toBeInstanceOf(DomainError);
-    /* The refusal names the rule, not the payload: a diagnostic that quotes the rejected value back
-     * into a log is itself a disclosure channel. */
-    const message = (refusal as DomainError).message;
-    expect(message).toContain('not a finite number of hours');
-    expect(message).not.toContain('<x>');
-    expect(message).not.toContain('g:sale_price_effective_date>');
-  });
-
-  it('emits an accepted offset UNMODIFIED and UNESCAPED, whatever numeric spelling it arrived in', async () => {
-    /* `ProductFeedRenderContext.utcHourOffset` promises the text is emitted verbatim, so the numeric
-     * READ must not become a re-format: no padding, no sign normalisation, no decimal or exponent
-     * rewriting, and — since DECISION G-3 is withdrawn — no escaping either. Each spelling below is
-     * one `Number()` accepts and one whose text differs from its canonical form, so a silent round-trip
-     * through a number would be visible here. `+5` also proves the LITERAL hyphen at `product.cfm:L30`
-     * is emitted regardless of the value's own sign. */
-    const { sku } = makeFixture();
-    const pricing = makePricing({ [SKU_ID]: { salePrice: 75 } });
-    const builder = makeBuilder(makeSettings(), pricing);
-
-    for (const [offset, expectedStart] of [
-      ['05', '2026-07-31T08:45:09'],
-      ['+5', '2026-07-31T08:45:09'],
-      ['-3', '2026-07-31T16:45:09'],
-      ['5.5', '2026-07-31T08:15:09'],
-      ['0', '2026-07-31T13:45:09'],
-    ] as const) {
-      const xml = await builder.build([record(sku)], makeContext('store.example.com', offset));
-      expect(xml).toContain(
-        `<g:sale_price_effective_date>${expectedStart}-${offset}/T-${offset}` +
-          `</g:sale_price_effective_date>`,
-      );
-    }
-  });
-
-  it('leaves an ampersand in a URL bare, exactly as the legacy leaves it', async () => {
-    /* WITHDRAWAL REGRESSION. An earlier revision escaped this to `&amp;` and argued that a bare
-     * ampersand "leaves the document with no defined parse" — a true statement about XML and an
-     * irrelevant one about parity, because `:L22` emits the finished URL with no `htmlEditFormat`
-     * call. The ill-formedness is the legacy's, and it is carried and flagged (S8). */
-    const { sku } = makeFixture();
-    const settings = makeSettings({ globalURLKeyProduct: 'p?a=1&b=2' });
-
-    const xml = await makeBuilder(settings).build([record(sku)], makeContext());
-
-    expect(xml).toContain('<link>http://store.example.com/p?a=1&b=2/nike-air-jorden/</link>');
-  });
-
-  it('leaves the two fixed values and the empty category untouched', async () => {
-    const { sku } = makeFixture();
-    const xml = await makeBuilder().build([record(sku)], makeContext());
-
-    expect(xml).toContain('<g:condition>new</g:condition>');
-    expect(xml).toContain('<g:availability>in stock</g:availability>');
-    expect(xml).toContain('<g:google_product_category></g:google_product_category>');
-  });
-
-  it('renders both prices as plain decimal numbers', async () => {
-    /* F21 — rendered through `renderFeedMoney`, not `String(...)`, so exponential notation cannot
-     * reach the document. That is a REPRESENTATION rule about the value, not an escaping rule, which
-     * is why it is unaffected by the DECISION G-3 withdrawal. */
-    const { sku, product } = makeFixture();
-    product.price = toExactDecimal(1234.5);
-    sku.price = toExactDecimal(1234.5);
-    const pricing = makePricing({ [SKU_ID]: { salePrice: 999.99 } });
-
-    const xml = await makeBuilder(makeSettings(), pricing).build([record(sku)], makeContext());
-
-    expect(xml).toContain('<g:price>1234.5</g:price>');
-    expect(xml).toContain('<g:sale_price>999.99</g:sale_price>');
-  });
-
-  /* ==============================================================================================
-   * F07 — EXACT DECIMAL FIDELITY THROUGH THE FEED. NET-NEW.
-   *
-   * These four assertions are the observable half of the representation change. Every one of them
-   * FAILS if the monetary members go back to being `number`, which is what makes them worth having
-   * rather than restating the type declaration.
-   * ============================================================================================ */
-
-  it('F07 — emits a price a double cannot represent, digit for digit', async () => {
-    /* THE HEADLINE CASE FROM THE FINDING. `Number('9007199254740993.01')` is 9007199254740994, so a
-     * port carrying this value as a double emits a DIFFERENT amount from the one stored. */
-    const { sku, product } = makeFixture();
-    const exact = '9007199254740993.01';
-    product.price = toExactDecimal(exact);
-    sku.price = toExactDecimal(exact);
-
-    const xml = await makeBuilder(makeSettings(), makePricing({})).build(
-      [record(sku)],
-      makeContext(),
-    );
-
-    expect(xml).toContain(`<g:price>${exact}</g:price>`);
-    expect(xml).not.toContain('9007199254740994');
-  });
-
-  it('F07 — preserves the stored scale, closing the trailing-zero half of F21', async () => {
-    /* The residue an earlier revision of `renderFeedMoney` recorded as unfixable: a stored `100.00`
-     * became the number 100 at hydration and was emitted as `100`. It is now emitted as stored, and no
-     * scale is imposed on a value that does not carry one — `50` stays `50`. */
-    const { sku, product } = makeFixture();
-    product.price = toExactDecimal('100.00');
-    sku.price = toExactDecimal('100.00');
-
-    const withScale = await makeBuilder(makeSettings(), makePricing({})).build(
-      [record(sku)],
-      makeContext(),
-    );
-    expect(withScale).toContain('<g:price>100.00</g:price>');
-
-    product.price = toExactDecimal('50');
-    sku.price = toExactDecimal('50');
-    const withoutScale = await makeBuilder(makeSettings(), makePricing({})).build(
-      [record(sku)],
-      makeContext(),
-    );
-    expect(withoutScale).toContain('<g:price>50</g:price>');
-  });
-
-  it('F07 — omits the sale pair when the prices differ only in scale', async () => {
-    /* THE LEXICAL-COMPARISON TRAP, ASSERTED. `'100.00' > '100'` is TRUE as a string comparison, so a
-     * port using `>` on the branded strings would put an unpromoted product on sale. The digit-wise
-     * comparison treats the two spellings as equal, and the strict gate therefore omits the pair. */
-    const { sku } = makeFixture();
-    sku.price = toExactDecimal('100.00');
-    const pricing = makePricing({ [SKU_ID]: { salePrice: 100 } });
-
-    const xml = await makeBuilder(makeSettings(), pricing).build([record(sku)], makeContext());
-
-    expect(xml).not.toContain('<g:sale_price>');
-  });
-
-  it('F07 — orders by magnitude rather than lexically when gating the sale pair', async () => {
-    /* Lexically `'9'` is greater than `'10'`, which would advertise a nine-unit SKU discounted to ten
-     * as being on sale — a discount that is not one. Digit-wise it is less, so the pair is omitted. */
-    const { sku } = makeFixture();
-    sku.price = toExactDecimal('9');
-    const pricing = makePricing({ [SKU_ID]: { salePrice: 10 } });
-
-    const xml = await makeBuilder(makeSettings(), pricing).build([record(sku)], makeContext());
-
-    expect(xml).not.toContain('<g:sale_price>');
-  });
-});
-
-/* ================================================================================================
- * SECTION 6 — URL paths are appended UNVALIDATED, because `product.cfm` validates none
- *
- * ⛔ THIS SECTION ASSERTED SEVEN REFUSALS, AND ALL OF THEM ARE WITHDRAWN. SEC-06 / DECISION G-2
- * declared a `requireRelativeFeedPath` guard over an RFC 3986 excluded-character set that raised for a
- * path which did not begin with a slash, began with two slashes, or carried an excluded character.
- * `:L22`, `:L23` and `:L24` append their paths with no test of any kind, so each refusal removed a
- * document the legacy produces — AAP §0.8.2 guideline 4, and D18 does not license it (section 1).
- *
- * WHAT REPLACES IT: withdrawal regressions pinning the RAW append, including the origin-relocation
- * case, so the gate cannot be reinstated silently. The exposure is FLAGGED at each emission site and in
- * the builder's WITHDRAWN RAW-SINK VALIDATION note (S8).
- * ============================================================================================= */
-
-describe('SEC-06 WITHDRAWN — a URL path is appended exactly as resolved', () => {
-  it('appends a scheme-relative path RAW, so the URL really does rebase onto a foreign host', async () => {
-    /* WITHDRAWAL REGRESSION, and the sharpest of them: `http://store.example.com` + `//evil.example.com/…`
-     * resolves at `evil.example.com` for any conforming consumer. `:L22` produces exactly that, so the
-     * port produces it too. */
-    const { sku } = makeFixture();
-    const settings = makeSettings({ globalURLKeyProduct: '/evil.example.com' });
-
-    expect(await makeBuilder(settings).build([record(sku)], makeContext())).toContain(
-      '<link>http://store.example.com//evil.example.com/nike-air-jorden/</link>',
-    );
-  });
-
-  it('appends a path that does not begin with a slash RAW, concatenating it onto the authority', async () => {
-    const { sku } = makeFixture();
-    const imagePaths = makeImagePaths(() => 'product/default/nike.jpg');
-
-    expect(
-      await makeBuilder(makeSettings(), makePricing(), imagePaths).build(
-        [record(sku)],
-        makeContext(),
-      ),
-    ).toContain('<g:image_link>http://store.example.comproduct/default/nike.jpg</g:image_link>');
-  });
-
-  it('appends every character RFC 3986 excludes from a URI, unescaped and unrejected', async () => {
-    /* WITHDRAWAL REGRESSION over the exact set the withdrawn guard rejected. The image path is a
-     * resolved `ImageWebPath`, which `src/ports/ImagePathPort.ts` documents as a purely NOMINAL label
-     * that "asserts nothing about the value" — so nothing upstream constrains it either. */
-    const { sku } = makeFixture();
-
-    for (const hostile of [
-      '/a"b',
-      '/a<b',
-      '/a>b',
-      '/a\\b',
-      '/a^b',
-      '/a{b',
-      '/a}b',
-      '/a|b',
-      '/a b',
-      '/a\tb',
-      '/a\u007Fb',
-    ]) {
-      const imagePaths = makeImagePaths(() => hostile);
-      const xml = await makeBuilder(makeSettings(), makePricing(), imagePaths).build(
-        [record(sku)],
-        makeContext(),
-      );
-      expect(xml).toContain(`<g:image_link>http://store.example.com${hostile}</g:image_link>`);
-    }
-  });
-
-  it('appends each additional image path independently and RAW', async () => {
-    const { sku } = makeFixture();
-    const images: readonly ProductFeedImage[] = [
-      { imagePath: '/custom/a.jpg' },
-      { imagePath: '//evil.example.com/b.jpg' },
-    ];
-
-    const xml = await makeBuilder().build([record(sku, images)], makeContext());
-
-    expect(xml).toContain(
-      '<g:additional_image_link>http://store.example.com/custom/a.jpg</g:additional_image_link>',
-    );
-    expect(xml).toContain(
-      '<g:additional_image_link>http://store.example.com//evil.example.com/b.jpg' +
-        '</g:additional_image_link>',
-    );
-  });
-
-  it('accepts the empty path, which yields the bare host', async () => {
-    /* Reachable rather than theoretical: the missing-image setting is unseeded, so the image
-     * adapter can legitimately resolve empty. */
-    const { sku } = makeFixture();
-    const imagePaths = makeImagePaths(() => '');
-
-    expect(
-      await makeBuilder(makeSettings(), makePricing(), imagePaths).build(
-        [record(sku)],
-        makeContext(),
-      ),
-    ).toContain('<g:image_link>http://store.example.com</g:image_link>');
-  });
-
-  it('labels an unsaved sku rather than reporting an empty identifier', async () => {
-    /* The one diagnostic assertion that survives the withdrawal: `SKU_UNSAVED_ID_VALUE` is the empty
-     * string, so a fresh SKU has no identifier to name, and the `(unsaved)` label is what
-     * `ProductFeedBuilder.requireProduct` reports instead. The companion half of this case drove the
-     * withdrawn path guard and is gone with it. */
-    const orphan = new Sku();
-
-    const productRefusal = await captureRejection(
-      makeBuilder().build([record(orphan)], makeContext()),
-    );
-
-    expect(productRefusal).toBeInstanceOf(DomainError);
-    expect((productRefusal as DomainError).message).toContain('Sku (unsaved)');
-  });
-});
-
-/* ================================================================================================
- * SECTION 7 — the document's well-formedness is exactly as good as the legacy's, and no better
- *
- * ⛔ THIS SECTION ASSERTED THAT A DOCUMENT BUILT ENTIRELY FROM HOSTILE VALUES STAYED WELL-FORMED, AND
- * THAT PROPERTY IS WITHDRAWN ALONG WITH THE ESCAPING THAT PRODUCED IT. It is replaced by the honest
- * statement of the same territory: the six fields the legacy escapes are still safe, the ten it leaves
- * raw are still unsafe, and the boundary between them is asserted rather than asserted away.
- *
- * No XML parser is available and the dependency set is frozen at one runtime package (AAP §0.5.2), so
- * the two properties below are proxies for well-formedness rather than a parse, and saying so is more
- * useful than implying one.
- * ============================================================================================= */
-
-describe('SEC-06 WITHDRAWN — the escaped six hold the line and the raw ten do not', () => {
-  const BREAKOUT = '"><g:price>0</g:price><injected>&';
-
-  it('neutralises a breakout payload in all six legacy-escaped fields', async () => {
-    /* The parity property that is genuinely load-bearing: `htmlEditFormat` at `:L17`, `:L18`, `:L19`,
-     * `:L21`, `:L32` and `:L39` is the legacy's own defence and it is reproduced exactly, so the
-     * withdrawal of DECISION G-3 costs nothing at these six sinks. */
-    const { sku, product, productType } = makeFixture();
-    sku.skuCode = BREAKOUT;
-    product.calculatedTitle = BREAKOUT;
-    product.productDescription = BREAKOUT;
-    product.productCode = BREAKOUT;
-    productType.productTypeName = BREAKOUT;
-    const brand = new Brand();
-    brand.brandName = BREAKOUT;
-    product.brand = brand;
-
-    const xml = await makeBuilder().build([record(sku)], makeContext());
-
-    const escaped = '&quot;&gt;&lt;g:price&gt;0&lt;/g:price&gt;&lt;injected&gt;&amp;';
-    expect(xml).toContain(`<g:id>${escaped}</g:id>`);
-    expect(xml).toContain(`<title>${escaped}</title>`);
-    expect(xml).toContain(`<description>${escaped}</description>`);
-    expect(xml).toContain(`<g:product_type>${escaped}</g:product_type>`);
-    expect(xml).toContain(`<g:brand>${escaped}</g:brand>`);
-    expect(xml).toContain(`<g:item_group_id>${escaped}</g:item_group_id>`);
-  });
-
-  it('carries the legacy defect at a raw sink: injected markup becomes real markup', async () => {
-    /* WITHDRAWAL REGRESSION, stated as bluntly as the carried-defect register states its entries. The
-     * shipping
-     * weight is one of the ten raw substitutions, so a breakout payload in it produces a real
-     * `<injected>` element and a bare ampersand. This is the CWE-91 exposure carried from `:L58` and
-     * FLAGGED for the operator (S8) — it is not a target regression, and a test that pretended
-     * otherwise would misreport parity. */
-    const { sku } = makeFixture();
-    const settings = makeSettings({ skuShippingWeight: BREAKOUT });
-
-    const xml = await makeBuilder(settings).build([record(sku)], makeContext());
-
-    expect(xml).toContain('<injected>');
-    expect(xml).toMatch(/&(?!(?:amp|lt|gt|quot);)/);
-  });
-
-  it('admits no unexpected element name once every raw sink is given a benign value', async () => {
-    /* With the ten raw sinks holding ordinary values, the document's element census is exactly the
-     * nineteen names the builder emits — which is the property that actually pins the field mapping.
-     * The hostile title still cannot add a name, because `title` is one of the escaped six. */
-    const { sku, product } = makeFixture();
-    product.calculatedTitle = BREAKOUT;
-
-    const xml = await makeBuilder().build([record(sku)], makeContext());
-
-    const permitted: ReadonlySet<string> = new Set([
-      'rss',
-      'channel',
-      'item',
-      'title',
-      'link',
-      'description',
-      'g:id',
-      'g:google_product_category',
-      'g:product_type',
-      'g:image_link',
-      'g:additional_image_link',
-      'g:condition',
-      'g:availability',
-      'g:price',
-      'g:sale_price',
-      'g:sale_price_effective_date',
-      'g:brand',
-      'g:item_group_id',
-      'g:shipping_weight',
-    ]);
-
-    for (const match of xml.matchAll(/<\/?([A-Za-z][\w:.-]*)/g)) {
-      const name = match[1];
-      expect(name).toBeDefined();
-      expect(permitted.has(name ?? '')).toBe(true);
-    }
-    expect(xml).not.toContain('<injected');
-  });
-});
-
-/* ================================================================================================
- * P7 / P17 — REPETITION REMOVAL AND CANCELLATION
- *
- * COVERAGE PROVENANCE: **NET-NEW**, like every other section of this file.
- *
- * These are REGRESSION tests for two structural changes, so each one pins the property that would be
- * lost if the change were undone or "simplified":
- *   - P7 removed two product-wide repeats — the sale-price read and the additional-image resolutions.
- *     The test that matters most is the DIFFERENTIAL one: rendering six records as one document must
- *     produce byte-identical `item` elements to rendering them as six documents, because that is what
- *     makes the repetition removal a structural change rather than a behavioural one.
- *   - P17 added a cancellation path. The property under test is that it fires only at a RECORD
- *     BOUNDARY and that a cancelled render RAISES rather than returning a shorter feed.
- * ============================================================================================= */
-
-/** A second product family, so a repeat across siblings of one product is distinguishable. */
-const SECOND_PRODUCT_ID = 'ddddddddddddddddddddddddddddddd4';
-
-interface CountingSpies {
-  readonly pricing: PricingPort;
-  readonly imagePaths: ImagePathPort;
-  readonly pricingCalls: string[];
-  readonly resizeCalls: string[];
+ * Two mandated checks cannot be observed at runtime at all: that the eleven fields the legacy author
+ * disabled remain present as SOURCE COMMENTS in three separate blocks interleaved with the live fields,
+ * and that the escape helper is called at exactly six sites. Both are properties of the source text, so
+ * the builder is read as TEXT with `node:fs`/`node:path` only. Nothing here parses, evaluates, imports
+ * for reflection, or modifies the builder, and neither built-in is used anywhere else in this file —
+ * there is no filesystem double, no network double and no product behaviour routed through them.
+ * -------------------------------------------------------------------------------------------------- */
+
+const BUILDER_SOURCE_PATH = join(
+  __dirname,
+  '..',
+  '..',
+  'src',
+  'integrations',
+  'google',
+  'ProductFeedBuilder.ts',
+);
+
+interface SourceSpan {
+  readonly start: number;
+  /** Exclusive. */
+  readonly end: number;
 }
 
-function makeCountingSpies(
-  detailsByProduct: ReadonlyMap<string, SalePriceDetailsBySkuId>,
-  onResize?: () => void,
-): CountingSpies {
-  const pricingCalls: string[] = [];
-  const resizeCalls: string[] = [];
-  return {
-    pricingCalls,
-    resizeCalls,
-    pricing: {
-      getSalePriceDetailsForProductSkus: (productId: string): Promise<SalePriceDetailsBySkuId> => {
-        pricingCalls.push(productId);
-        return Promise.resolve(detailsByProduct.get(productId) ?? {});
-      },
-    },
-    imagePaths: {
-      getImagePath: (imageFile: string): Promise<ImageWebPath> =>
-        Promise.resolve(toImageWebPath(`/product/default/${imageFile}`)),
-      getResizedImagePath: (request: ResizedImagePathRequest): Promise<ImageWebPath> => {
-        resizeCalls.push(String(request.imagePath));
-        onResize?.();
-        return Promise.resolve(toImageWebPath(String(request.imagePath)));
-      },
-      getImageExistsFlag: (): Promise<boolean> => Promise.resolve(true),
-      saveImageFile: (): Promise<boolean> => Promise.resolve(true),
-    },
-  };
+interface PartitionedSource {
+  readonly text: string;
+  /** Every line-comment and block-comment span, in source order. */
+  readonly commentSpans: readonly SourceSpan[];
+  /** The complement of `commentSpans`: every run of executable text, in source order. */
+  readonly codeSpans: readonly SourceSpan[];
 }
 
-interface Family {
-  readonly productID: string;
-  readonly records: readonly ProductFeedRecord[];
-  readonly details: SalePriceDetailsBySkuId;
+/*
+ * Split the source into comment spans and code spans.
+ *
+ * A naive `indexOf('//')` scan would mistake the `//` inside a `'http://…'` literal for a comment, and
+ * the builder contains eleven such literals, so the walk tracks string, template-literal and
+ * `${…}`-substitution state explicitly. Template substitutions nest arbitrarily, hence the frame stack
+ * rather than a boolean. `charAt` is used rather than indexing because it answers `string` for an
+ * out-of-range position, which keeps the walk total under `noUncheckedIndexedAccess` without a narrowing
+ * branch on every character.
+ *
+ * The partition is verified to be exhaustive and non-overlapping by a dedicated case below: the two span
+ * collections must reconstruct the source byte for byte. Without that self-check a silent bug in this
+ * walk could make the censuses assert nothing.
+ */
+function partitionBuilderSource(text: string): PartitionedSource {
+  type Frame = { kind: 'code'; braceDepth: number } | { kind: 'template' };
+  const commentSpans: SourceSpan[] = [];
+  const stack: Frame[] = [{ kind: 'code', braceDepth: 0 }];
+  let index = 0;
+
+  while (index < text.length) {
+    const frame = stack[stack.length - 1];
+    if (frame === undefined) {
+      break;
+    }
+
+    if (frame.kind === 'template') {
+      const character = text.charAt(index);
+      if (character === '\\') {
+        index += 2;
+      } else if (character === '`') {
+        stack.pop();
+        index += 1;
+      } else if (character === '$' && text.charAt(index + 1) === '{') {
+        stack.push({ kind: 'code', braceDepth: 0 });
+        index += 2;
+      } else {
+        index += 1;
+      }
+      continue;
+    }
+
+    const character = text.charAt(index);
+    const following = text.charAt(index + 1);
+
+    if (character === '/' && following === '/') {
+      const newline = text.indexOf('\n', index);
+      const end = newline === -1 ? text.length : newline;
+      commentSpans.push({ start: index, end });
+      index = end;
+      continue;
+    }
+
+    if (character === '/' && following === '*') {
+      const close = text.indexOf('*/', index + 2);
+      const end = close === -1 ? text.length : close + 2;
+      commentSpans.push({ start: index, end });
+      index = end;
+      continue;
+    }
+
+    if (character === "'" || character === '"') {
+      index += 1;
+      while (index < text.length) {
+        const inner = text.charAt(index);
+        if (inner === '\\') {
+          index += 2;
+          continue;
+        }
+        if (inner === character || inner === '\n') {
+          index += 1;
+          break;
+        }
+        index += 1;
+      }
+      continue;
+    }
+
+    if (character === '`') {
+      stack.push({ kind: 'template' });
+      index += 1;
+      continue;
+    }
+
+    if (character === '{') {
+      frame.braceDepth += 1;
+      index += 1;
+      continue;
+    }
+
+    if (character === '}') {
+      if (frame.braceDepth === 0 && stack.length > 1) {
+        stack.pop();
+      } else {
+        frame.braceDepth -= 1;
+      }
+      index += 1;
+      continue;
+    }
+
+    index += 1;
+  }
+
+  const codeSpans: SourceSpan[] = [];
+  let cursor = 0;
+  for (const span of commentSpans) {
+    if (span.start > cursor) {
+      codeSpans.push({ start: cursor, end: span.start });
+    }
+    cursor = span.end;
+  }
+  if (cursor < text.length) {
+    codeSpans.push({ start: cursor, end: text.length });
+  }
+
+  return { text, commentSpans, codeSpans };
+}
+
+/** Concatenate the text of every span, joined so no accidental token spans a boundary. */
+function spanText(source: PartitionedSource, spans: readonly SourceSpan[]): string {
+  return spans.map((span) => source.text.slice(span.start, span.end)).join('\n');
+}
+
+/** Every offset at which `needle` occurs inside a CODE span, in source order. */
+function codeOffsetsOf(source: PartitionedSource, needle: string): readonly number[] {
+  const offsets: number[] = [];
+  for (const span of source.codeSpans) {
+    const region = source.text.slice(span.start, span.end);
+    let at = region.indexOf(needle);
+    while (at !== -1) {
+      offsets.push(span.start + at);
+      at = region.indexOf(needle, at + 1);
+    }
+  }
+  return offsets;
 }
 
 /**
- * Builds one product with `skuCount` SKUs and two additional images.
- *
- * ⚠️ EVERY CALL PRODUCES FRESH INSTANCES, WHICH IS ESSENTIAL RATHER THAN TIDY. `Sku` memoises its own
- * sale-price slice in a private field — a faithful port of the per-instance guard at
- * `model/entity/Sku.cfc:L540` — so re-rendering the SAME instances would answer from that field and
- * issue no port call, reporting a baseline of zero and making the comparison below meaningless.
+ * Split every `openTag`…`closeTag` region found in code into those that call `helper` and those that do
+ * not. This is what turns "these six fields are escaped and those seven are not" into a source-level
+ * statement rather than an inference.
  */
-function makeFamily(productID: string, tag: string, skuCount: number): Family {
-  const productType = new ProductType();
-  productType.productTypeID = PRODUCT_TYPE_ID;
-  productType.productTypeName = `Type ${tag}`;
-  productType.productTypeDescription = `Type description ${tag}`;
-
-  const product = new Product();
-  product.productID = productID;
-  product.calculatedTitle = `Title ${tag}`;
-  product.productDescription = `Description ${tag}`;
-  product.productCode = `CODE-${tag}`;
-  product.urlTitle = `url-${tag}`;
-  product.price = toExactDecimal(100);
-  product.productType = productType;
-
-  const images: readonly ProductFeedImage[] = [
-    { imagePath: `/images/${tag}/extra-0.jpg` },
-    { imagePath: `/images/${tag}/extra-1.jpg` },
-  ];
-
-  const records: ProductFeedRecord[] = [];
-  const details: Record<string, { salePrice: number; salePriceExpirationDateTime: Date }> = {};
-  for (let index = 0; index < skuCount; index += 1) {
-    const sku = new Sku();
-    sku.skuID = `${tag.toLowerCase().repeat(16)}`.slice(0, 30) + String(index).padStart(2, '0');
-    sku.skuCode = `SKU-${tag}-${index}`;
-    sku.price = toExactDecimal(100);
-    sku.imageFile = `img-${tag}-${index}.jpg`;
-    sku.product = product;
-    records.push({ sku, productImages: images });
-    details[sku.skuID] = {
-      salePrice: 80,
-      salePriceExpirationDateTime: new Date(Date.UTC(2026, 11, 25, 6, 30, 0)),
-    };
+function escapeCensus(
+  source: PartitionedSource,
+  openTag: string,
+  closeTag: string,
+  helper: string,
+): { readonly escaped: number; readonly raw: number } {
+  let escaped = 0;
+  let raw = 0;
+  for (const span of source.codeSpans) {
+    const region = source.text.slice(span.start, span.end);
+    let at = region.indexOf(openTag);
+    while (at !== -1) {
+      const close = region.indexOf(closeTag, at);
+      const enclosed = close === -1 ? region.slice(at) : region.slice(at, close);
+      if (enclosed.includes(`${helper}(`)) {
+        escaped += 1;
+      } else {
+        raw += 1;
+      }
+      at = region.indexOf(openTag, at + 1);
+    }
   }
-
-  return { productID, records, details };
+  return { escaped, raw };
 }
 
-function makeTwoFamilies(): {
-  readonly records: readonly ProductFeedRecord[];
-  readonly detailsByProduct: ReadonlyMap<string, SalePriceDetailsBySkuId>;
-} {
-  const first = makeFamily(PRODUCT_ID, 'AA', 3);
-  const second = makeFamily(SECOND_PRODUCT_ID, 'BB', 3);
-  return {
-    records: [...first.records, ...second.records],
-    detailsByProduct: new Map([
-      [first.productID, first.details],
-      [second.productID, second.details],
-    ]),
-  };
+/**
+ * A field name matcher with an identifier boundary.
+ *
+ * `g:shipping` must not match live `g:shipping_weight`, and `g:tax` must not match `g:tax_ship`, so the
+ * trailing character class excludes the underscore as well as alphanumerics. Every disabled-field check
+ * in this file goes through this one builder so no call site can forget the boundary.
+ */
+function fieldNamePattern(fieldName: string): RegExp {
+  return new RegExp(`${fieldName}(?![A-Za-z0-9_])`);
 }
 
-/** Splits a rendered document into its `item` element bodies, in document order. */
-function itemBodies(document: string): string[] {
-  return document
-    .split('<item>')
-    .slice(1)
-    .map((chunk) => chunk.split('</item>')[0] ?? '');
+/** The single comment span containing every one of `fieldNames`; fails loudly when there is not exactly one. */
+function soleCommentSpanContaining(
+  source: PartitionedSource,
+  fieldNames: readonly string[],
+): SourceSpan {
+  const matches = source.commentSpans.filter((span) => {
+    const comment = source.text.slice(span.start, span.end);
+    return fieldNames.every((fieldName) => fieldNamePattern(fieldName).test(comment));
+  });
+  expect(matches).toHaveLength(1);
+  const [only] = matches;
+  if (only === undefined) {
+    throw new Error(
+      `No single builder comment span carries all of: ${fieldNames.join(', ')}. The three disabled ` +
+        'blocks may have been flattened, split further, or deleted.',
+    );
+  }
+  return only;
 }
 
-describe('P7 — a product-wide read is paid for once per product, not once per SKU', () => {
-  test('the sale-price read collapses to one call per distinct product', async () => {
-    const { records, detailsByProduct } = makeTwoFamilies();
-    const spies = makeCountingSpies(detailsByProduct);
+/** The one offset at which `needle` occurs in code; fails loudly when it is not unique. */
+function soleCodeOffsetOf(source: PartitionedSource, needle: string): number {
+  const offsets = codeOffsetsOf(source, needle);
+  expect(offsets).toHaveLength(1);
+  const [only] = offsets;
+  if (only === undefined) {
+    throw new Error(`\`${needle}\` does not occur exactly once in the builder's executable text.`);
+  }
+  return only;
+}
 
-    await new ProductFeedBuilder(spies.imagePaths, spies.pricing, makeSettings()).build(
-      records,
-      makeContext(),
-    );
+/* The eleven top-level field names the legacy author disabled, grouped exactly as the source groups them. */
+const DISABLED_BLOCK_ONE_FIELDS: readonly string[] = Object.freeze([
+  'g:gtin',
+  'g:mpn',
+  'g:gender',
+  'g:age_group',
+]);
+const DISABLED_BLOCK_TWO_FIELDS: readonly string[] = Object.freeze([
+  'g:color',
+  'g:size',
+  'g:material',
+  'g:pattern',
+  'g:tax',
+  'g:shipping',
+]);
+const DISABLED_BLOCK_TWO_NESTED_FIELDS: readonly string[] = Object.freeze([
+  'g:country',
+  'g:region',
+  'g:rate',
+  'g:tax_ship',
+  'g:service',
+  'g:price',
+]);
+const DISABLED_BLOCK_THREE_FIELDS: readonly string[] = Object.freeze(['g:online_only']);
+const ALL_DISABLED_TOP_LEVEL_FIELDS: readonly string[] = Object.freeze([
+  ...DISABLED_BLOCK_ONE_FIELDS,
+  ...DISABLED_BLOCK_TWO_FIELDS,
+  ...DISABLED_BLOCK_THREE_FIELDS,
+]);
 
-    /* Six SKUs across two products: two reads, in first-seen product order. */
-    expect(spies.pricingCalls).toEqual([PRODUCT_ID, SECOND_PRODUCT_ID]);
+/* =====================================================================================================
+ * §1 — The RSS envelope and the channel, byte for byte.
+ * ================================================================================================== */
+
+describe('NET-NEW ProductFeedBuilder — RSS envelope and channel', () => {
+  /*
+   * M2 — EXECUTION-MODEL MISMATCH, FLAGGED AND LEFT UNRESOLVED.
+   *
+   * `integrationServices/google/views/feed/product.cfm:L9` set `<cfsetting requesttimeout="360" />`,
+   * granting the feed render a 360-second budget on a persistent application server. That budget fits
+   * inside AWS Lambda's 900-second function ceiling but far exceeds the roughly 29-second synchronous
+   * API Gateway integration budget, so a synchronous route cannot carry the legacy budget. The choice
+   * between an asynchronous and a streamed delivery model is a HANDLER-LAYER decision and is explicitly
+   * unresolved: no timeout assertion, timeout constant, page size, chunk size or delivery policy appears
+   * anywhere in this file, because inventing one would substitute a guess for the decision.
+   */
+  it('[NET-NEW] opens with the exact declaration, RSS tag and channel, and no encoding attribute', async () => {
+    const scenario = createScenario();
+
+    const xml = await scenario.render();
+
+    /*
+     * `integrationServices/google/views/feed/product.cfm:L1` carries the declaration and the opening
+     * `<cfsilent>` on the SAME physical line. `<cfsilent>` is a server-side tag that suppresses output
+     * and is never emitted, so the emitted prefix is the declaration alone — and the declaration itself
+     * carries NO `encoding` attribute, which is preserved rather than "corrected" to UTF-8.
+     */
+    expect(xml.startsWith(EXPECTED_XML_DECLARATION)).toBe(true);
+    expect(xml).not.toContain('encoding=');
+    /* `:L11` then `:L12`, in that order and nothing between them. */
+    expect(
+      xml.startsWith(`${EXPECTED_XML_DECLARATION}\n${EXPECTED_RSS_OPEN_TAG}\n\t<channel>\n`),
+    ).toBe(true);
+    expect(countOccurrences(xml, EXPECTED_RSS_OPEN_TAG)).toBe(1);
   });
 
-  test('the same document rendered one record at a time pays the full un-memoised cost', async () => {
-    const { records, detailsByProduct } = makeTwoFamilies();
-    const spies = makeCountingSpies(detailsByProduct);
-    const builder = new ProductFeedBuilder(spies.imagePaths, spies.pricing, makeSettings());
+  it('[NET-NEW] emits the exact channel title, hard-coded http link and channel description', async () => {
+    const scenario = createScenario();
 
-    for (const single of records) {
-      await builder.build([single], makeContext());
-    }
+    const xml = await scenario.render();
 
-    /* One read per SKU — which is precisely the repetition the whole-document render removes. */
-    expect(spies.pricingCalls).toHaveLength(6);
+    /* `:L13` — a fixed literal, not derived from any setting. */
+    expect(xml).toContain(channelField(EXPECTED_CHANNEL_TITLE_ELEMENT));
+    /*
+     * `:L14` — `http://#CGI.HTTP_HOST#`. The scheme is HARD-CODED `http://` in the legacy template; it is
+     * never HTTPS and is never negotiated from the request, so no scheme normalisation is applied here.
+     */
+    expect(xml).toContain(channelField(`<link>http://${RENDER_HOST}</link>`));
+    expect(xml).not.toContain('https://');
+    /*
+     * `:L15` — the channel description. It is required output even though a summary field list can omit
+     * it, and it repeats the same hard-coded `http://` prefix rather than reusing the link element.
+     */
+    expect(xml).toContain(
+      channelField(`<description>Google Product Feed for http://${RENDER_HOST}</description>`),
+    );
   });
 
-  test('each distinct resized-image request is resolved exactly once per document', async () => {
-    const { records, detailsByProduct } = makeTwoFamilies();
-    const spies = makeCountingSpies(detailsByProduct);
+  it('[NET-NEW] closes the channel before the RSS element and appends no trailing newline', async () => {
+    const scenario = createScenario();
 
-    await new ProductFeedBuilder(spies.imagePaths, spies.pricing, makeSettings()).build(
-      records,
-      makeContext(),
-    );
+    const xml = await scenario.render();
 
-    /* Six per-SKU primary images plus four distinct additional images. Every request is distinct, so
-     * no answer was served twice — and without the wrapper the additional images alone would account
-     * for twelve resolutions rather than four. */
-    expect(spies.resizeCalls).toHaveLength(10);
-    expect(new Set(spies.resizeCalls).size).toBe(10);
+    /* `:L64` then `:L65`. */
+    expect(xml.endsWith('\t</channel>\n</rss>')).toBe(true);
+    expect(xml.indexOf('</channel>')).toBeLessThan(xml.indexOf('</rss>'));
+    expect(countOccurrences(xml, '</channel>')).toBe(1);
+    expect(countOccurrences(xml, '</rss>')).toBe(1);
   });
 
-  test('DIFFERENTIAL: the emitted item elements are byte-identical either way', async () => {
-    const whole = makeTwoFamilies();
-    const wholeSpies = makeCountingSpies(whole.detailsByProduct);
-    const wholeDocument = await new ProductFeedBuilder(
-      wholeSpies.imagePaths,
-      wholeSpies.pricing,
-      makeSettings(),
-    ).build(whole.records, makeContext());
+  it('[NET-NEW] emits one item per SmartList-returned record, in the order the port returned them', async () => {
+    const scenario = createScenario();
+    const secondSku = buildSku({
+      skuID: SECOND_SKU_ID,
+      skuCode: 'TESTPRODUCTXXX-2',
+      price: 90,
+      imageFile: SKU_IMAGE_FILE,
+      product: scenario.product,
+    });
 
-    /* FRESH instances, so the baseline is genuinely un-memoised — see {@link makeFamily}. */
-    const baseline = makeTwoFamilies();
-    const baselineSpies = makeCountingSpies(baseline.detailsByProduct);
-    const baselineBuilder = new ProductFeedBuilder(
-      baselineSpies.imagePaths,
-      baselineSpies.pricing,
-      makeSettings(),
+    const xml = await scenario.render({ skus: [secondSku, scenario.sku] });
+
+    /*
+     * `:L16` looped `rc.skuSmartList.getRecords()` and emitted one `<item>` per element in the order the
+     * collection yielded them. Two DISTINCT SKU codes are used so the order is observable, and the
+     * records are deliberately supplied in reverse of construction order so a hidden sort would fail.
+     */
+    expect(countOccurrences(xml, `${CHANNEL_FIELD_INDENT}<item>`)).toBe(2);
+    expect(countOccurrences(xml, `${CHANNEL_FIELD_INDENT}</item>`)).toBe(2);
+    expect(xml.indexOf('<g:id>TESTPRODUCTXXX-2</g:id>')).toBeLessThan(
+      xml.indexOf('<g:id>TESTPRODUCTXXX-1</g:id>'),
     );
-    const baselineItems: string[] = [];
-    for (const single of baseline.records) {
-      baselineItems.push(itemBodies(await baselineBuilder.build([single], makeContext()))[0] ?? '');
-    }
 
-    expect(itemBodies(wholeDocument)).toEqual(baselineItems);
-    /* And the reduction is real rather than incidental. */
-    expect(baselineSpies.pricingCalls.length).toBeGreaterThan(wholeSpies.pricingCalls.length);
-    expect(baselineSpies.resizeCalls.length).toBeGreaterThan(wholeSpies.resizeCalls.length);
+    /*
+     * The rows crossed the SmartList port boundary and were materialized through its real
+     * `executeRecords` member — the records-only view, which is the one the legacy `getRecords()` read.
+     * Nothing about how the query was COMPOSED is asserted: joins, filters and the `'1^'` availability
+     * range belong to `ProductFeedQuery`, which this file never imports.
+     */
+    expect(scenario.smartList.executions).toHaveLength(1);
+    expect(scenario.smartList.executions[0]?.selection).toBe('recordsOnly');
+    expect(scenario.smartList.lastQuery()?.entityName).toBe('SlatwallSku');
+  });
+
+  it('[NET-NEW] emits no CFML tag, no markup comment and not the legacy specification URL', async () => {
+    const scenario = createScenario();
+
+    const xml = await scenario.render();
+
+    /* `:L1`, `:L10`, `:L16`, `:L63` and `:L66` are all server-side and produce no output. */
+    expect(xml).not.toContain('<cfsilent>');
+    expect(xml).not.toContain('</cfsilent>');
+    expect(xml).not.toContain('<cfoutput>');
+    expect(xml).not.toContain('</cfoutput>');
+    expect(xml).not.toContain('<cfloop');
+    expect(xml).not.toContain('<cfif');
+    expect(xml).not.toContain('<cfsetting');
+    /* CFML server-side comment delimiters, and the XML comment they must not have become. */
+    expect(xml).not.toContain('<!---');
+    expect(xml).not.toContain('--->');
+    expect(xml).not.toContain('<!--');
+    /*
+     * `:L4-L5` — the specification URL lived inside a CFML server-side comment. It is preserved as a
+     * TypeScript comment at the head of this file so the pointer survives, and it must not appear in the
+     * rendered document.
+     */
+    expect(xml).not.toContain(LEGACY_SPECIFICATION_URL);
+    expect(xml).not.toContain('support.google.com');
   });
 });
 
-describe('P17 — a feed render can be cancelled, and only at a record boundary', () => {
-  test('an already-aborted signal renders nothing and reads nothing', async () => {
-    const { records, detailsByProduct } = makeTwoFamilies();
-    const spies = makeCountingSpies(detailsByProduct);
+/* =====================================================================================================
+ * §2 — Identity, title, description, category and product type.
+ * ================================================================================================== */
+
+describe('NET-NEW ProductFeedBuilder — identity, title, description, category, product type', () => {
+  it('[NET-NEW] emits g:id from the escaped SKU code', async () => {
+    const scenario = createScenario({ skuCode: ESCAPE_SENTINEL });
+
+    const xml = await scenario.render();
+
+    /* `integrationServices/google/views/feed/product.cfm:L17` — `htmlEditFormat(sku.getSkuCode())`. */
+    expect(xml).toContain(itemField(`<g:id>${ESCAPED_SENTINEL}</g:id>`));
+  });
+
+  it('[NET-NEW] emits the item title from the persisted calculatedTitle, never from the template getTitle', async () => {
+    const scenario = createScenario({
+      calculatedTitle: ESCAPE_SENTINEL,
+      productName: 'TEMPLATE-ONLY-PRODUCT-NAME',
+    });
+
+    const xml = await scenario.render();
+
+    /*
+     * `:L18` reads the PERSISTED `calculatedTitle`. `Product.getTitle()`
+     * (`model/entity/Product.cfc:L540-L545`) is a different member entirely: it interpolates the
+     * `productTitleString` setting template. The two sentinels are deliberately distinct so the source is
+     * unambiguous, and this suite never calls `getTitle()`.
+     */
+    expect(xml).toContain(itemField(`<title>${ESCAPED_SENTINEL}</title>`));
+    expect(xml).not.toContain('TEMPLATE-ONLY-PRODUCT-NAME');
+    /*
+     * A second, independent proof: `productTitleString` is never seeded, and the resolver double RAISES
+     * for an unseeded key. Its absence from the call log therefore establishes that the template member
+     * was not reached, rather than merely that its output did not happen to appear.
+     */
+    expect(resolvedSettingNames(scenario.settings)).not.toContain('productTitleString');
+  });
+
+  /*
+   * THE THREE-BRANCH DESCRIPTION — a judgment call, recorded rather than smoothed over.
+   *
+   * `integrationServices/google/views/feed/product.cfm:L19` is a single element with a three-way body:
+   *   BRANCH A — `len(product.getProductDescription())` is truthy, so the PRODUCT description is emitted.
+   *   BRANCH B — it is falsy, so the fallback tests `len(productType.getProductTypeDescription())` and
+   *              emits the PRODUCT TYPE description.
+   *   BRANCH C — both are falsy, and the `<cfif>`/`<cfelseif>` pair has no `<cfelse>`, so the element is
+   *              still emitted with an EMPTY body.
+   * The gate is `len()`, which is a LENGTH test rather than a null test and rather than a trimmed test.
+   * A whitespace-only product description therefore has non-zero length and WINS, and the port does not
+   * trim, does not coalesce whitespace, and does not harmonise this gate with the `isNull()` object test
+   * that guards the brand element at `:L32`.
+   */
+  it('[NET-NEW] description branch A — a non-empty product description wins and is escaped', async () => {
+    const scenario = createScenario({
+      productDescription: ESCAPE_SENTINEL,
+      productTypeDescription: 'TYPE-LEVEL-DESCRIPTION',
+    });
+
+    const xml = await scenario.render();
+
+    expect(xml).toContain(itemField(`<description>${ESCAPED_SENTINEL}</description>`));
+    expect(xml).not.toContain('TYPE-LEVEL-DESCRIPTION');
+  });
+
+  it('[NET-NEW] description branch B — an empty product description falls through to the escaped product type description', async () => {
+    const scenario = createScenario({
+      productDescription: '',
+      productTypeDescription: ESCAPE_SENTINEL,
+    });
+
+    const xml = await scenario.render();
+
+    expect(xml).toContain(itemField(`<description>${ESCAPED_SENTINEL}</description>`));
+  });
+
+  it('[NET-NEW] description branch C — both empty still emits the paired empty element', async () => {
+    const scenario = createScenario({ productDescription: '', productTypeDescription: '' });
+
+    const xml = await scenario.render();
+
+    /*
+     * `:L19` has no `<cfelse>`, so the element is emitted with nothing inside it. It is NOT omitted and
+     * NOT self-closing — a reader tidying this into `<description/>` would change the bytes a merchant
+     * feed processor receives.
+     */
+    expect(xml).toContain(itemField('<description></description>'));
+    expect(xml).not.toContain('<description/>');
+    expect(xml).not.toContain('<description />');
+  });
+
+  it('[NET-NEW] description gate is len(), so a whitespace-only product description is kept untrimmed', async () => {
+    const scenario = createScenario({
+      productDescription: '   ',
+      productTypeDescription: 'TYPE-LEVEL-DESCRIPTION',
+    });
+
+    const xml = await scenario.render();
+
+    /* Three spaces have non-zero length, so branch A wins and the spaces survive verbatim. */
+    expect(xml).toContain(itemField('<description>   </description>'));
+    expect(xml).not.toContain('TYPE-LEVEL-DESCRIPTION');
+  });
+
+  it('[NET-NEW] emits g:google_product_category as a paired empty element and never populates it', async () => {
+    const scenario = createScenario();
+
+    const xml = await scenario.render();
+
+    /*
+     * `:L20` is a hard-coded empty element. THE CATEGORY DRIFT TRAP: the integration declares a
+     * `productGoogleProductType` select setting at
+     * `integrationServices/google/Integration.cfc:L68-L70`, and it is tempting to conclude the feed
+     * populates the category from it. It does not — `getSettingOptions()` in that same file has an EMPTY
+     * body, and the view never reads the setting. The element ships empty.
+     */
+    expect(xml).toContain(itemField('<g:google_product_category></g:google_product_category>'));
+    expect(xml).not.toContain('<g:google_product_category/>');
+    expect(xml).not.toContain('<g:google_product_category />');
+    expect(xml).not.toContain('productGoogleProductType');
+    expect(resolvedSettingNames(scenario.settings)).not.toContain('productGoogleProductType');
+  });
+
+  it('[NET-NEW] emits g:product_type from the escaped product type simple representation', async () => {
+    const scenario = createScenario({ productTypeName: ESCAPE_SENTINEL });
+
+    const xml = await scenario.render();
+
+    /* `:L21` — `htmlEditFormat(productType.getSimpleRepresentation())`. */
+    expect(xml).toContain(itemField(`<g:product_type>${ESCAPED_SENTINEL}</g:product_type>`));
+  });
+
+  it('[NET-NEW] escapes the raquo separator a product type hierarchy introduces', async () => {
+    const scenario = createScenario({
+      parentProductTypeName: 'Apparel',
+      productTypeName: 'Shirts',
+    });
+
+    const xml = await scenario.render();
+
+    /*
+     * `model/entity/ProductType.cfc:L273-L278` joins a child to its parent with the LITERAL text
+     * ` &raquo; ` — an HTML entity written out as characters, not a Unicode guillemet. `htmlEditFormat`
+     * then escapes its leading ampersand, so the emitted separator is ` &amp;raquo; `. That double-escaped
+     * look is the legacy output and is preserved rather than "repaired" to a real `»`.
+     */
+    expect(xml).toContain(itemField('<g:product_type>Apparel &amp;raquo; Shirts</g:product_type>'));
+    expect(xml).not.toContain(' &raquo; ');
+  });
+});
+
+/* =====================================================================================================
+ * §3 — Absolute URLs and images. Every one of these fields is UNESCAPED.
+ * ================================================================================================== */
+
+describe('NET-NEW ProductFeedBuilder — links and images', () => {
+  it('[NET-NEW] emits the item link as raw http, keeping the product URL leading and trailing slashes', async () => {
+    const scenario = createScenario({ urlTitle: 'nike-air' });
+
+    const xml = await scenario.render();
+
+    /*
+     * `integrationServices/google/views/feed/product.cfm:L22` concatenates the hard-coded `http://`, the
+     * raw host and `product.getProductURL()`. `model/entity/Product.cfc:L207-L209` composes that path as
+     * `/#setting('globalURLKeyProduct')#/#getURLTitle()#/`, so it carries BOTH a leading and a trailing
+     * slash. Neither is trimmed, and the two slashes are why the concatenation needs no separator.
+     */
+    expect(xml).toContain(
+      itemField(`<link>${ABSOLUTE_URL_PREFIX}/${SETTING_GLOBAL_URL_KEY_PRODUCT}/nike-air/</link>`),
+    );
+    expect(xml).not.toContain('<link>https://');
+    /* The URL key is read through the setting resolver, not hard-coded in the builder. */
+    expect(resolvedSettingNames(scenario.settings)).toContain('globalURLKeyProduct');
+  });
+
+  it('[NET-NEW] leaves ampersands and angle brackets in the item link unescaped', async () => {
+    const scenario = createScenario({ urlTitle: ESCAPE_SENTINEL });
+
+    const xml = await scenario.render();
+
+    /*
+     * `:L22` does NOT wrap the link in `htmlEditFormat`, so a URL title carrying `&` or `<` reaches the
+     * document raw and the result is not well-formed XML. That is the legacy behaviour, it is preserved,
+     * and it is exactly why this suite asserts against the raw string rather than through an XML parser:
+     * a parser would either reject the document or silently normalise the very bytes under test.
+     */
+    expect(xml).toContain(
+      itemField(
+        `<link>${ABSOLUTE_URL_PREFIX}/${SETTING_GLOBAL_URL_KEY_PRODUCT}/${ESCAPE_SENTINEL}/</link>`,
+      ),
+    );
+    expect(xml).not.toContain(`/${ESCAPED_SENTINEL}/`);
+  });
+
+  it('[NET-NEW] emits g:image_link from the SKU resized path with no size arguments', async () => {
+    const scenario = createScenario();
+
+    const xml = await scenario.render();
+
+    /*
+     * `:L23` calls `sku.getResizedImagePath()` with NO arguments at all. `model/entity/Sku.cfc:L192-L218`
+     * accepts an optional size, width and height and applies a deprecated-size gate when one is supplied;
+     * the feed supplies none, so none of that gate runs. The recorded request proves the absence rather
+     * than assuming it.
+     */
+    expect(xml).toContain(
+      itemField(`<g:image_link>${ABSOLUTE_URL_PREFIX}${SKU_COMPOSED_IMAGE_PATH}</g:image_link>`),
+    );
+
+    const requests = resizeRequests(scenario.images);
+    expect(requests).toHaveLength(1);
+    expect(Object.keys(requests[0] ?? {}).sort()).toStrictEqual(['imagePath', 'missingImagePath']);
+    expect(requests[0]?.size).toBeUndefined();
+    expect(requests[0]?.width).toBeUndefined();
+    expect(requests[0]?.height).toBeUndefined();
+    expect(requests[0]?.resizeMethod).toBeUndefined();
+  });
+
+  it('[NET-NEW] emits no g:additional_image_link when the product has zero images', async () => {
+    const scenario = createScenario();
+
+    const xml = await scenario.render({ productImages: [] });
+
+    /* `:L24` loops `product.getProductImages()`; an empty collection emits nothing at all. */
+    expect(xml).not.toContain('<g:additional_image_link');
+    /* Only the SKU's own image was resized. */
+    expect(resizeRequests(scenario.images)).toHaveLength(1);
+  });
+
+  it('[NET-NEW] emits exactly one g:additional_image_link for a single product image', async () => {
+    const scenario = createScenario();
+
+    const xml = await scenario.render({
+      productImages: [{ imagePath: FIRST_ADDITIONAL_IMAGE_PATH }],
+    });
+
+    expect(countOccurrences(xml, '<g:additional_image_link>')).toBe(1);
+    expect(xml).toContain(
+      itemField(
+        `<g:additional_image_link>${ABSOLUTE_URL_PREFIX}${FIRST_ADDITIONAL_IMAGE_PATH}</g:additional_image_link>`,
+      ),
+    );
+  });
+
+  it('[NET-NEW] emits one g:additional_image_link per image in input order, with each image own path, no sort, dedupe or filter', async () => {
+    const scenario = createScenario();
+
+    /*
+     * Supplied out of construction order and with a deliberate duplicate: input order is third, first,
+     * second, first. `:L24` iterates the collection as given, so a hidden sort, a dedupe or a filter would
+     * each fail this case, and reusing the SKU's primary path for the additional links would fail it too.
+     */
+    const xml = await scenario.render({
+      productImages: [
+        { imagePath: THIRD_ADDITIONAL_IMAGE_PATH },
+        { imagePath: FIRST_ADDITIONAL_IMAGE_PATH },
+        { imagePath: SECOND_ADDITIONAL_IMAGE_PATH },
+        { imagePath: FIRST_ADDITIONAL_IMAGE_PATH },
+      ],
+    });
+
+    expect(countOccurrences(xml, '<g:additional_image_link>')).toBe(4);
+    const additionalLinks = xml
+      .split('\n')
+      .filter((line) => line.includes('<g:additional_image_link>'));
+    expect(additionalLinks).toStrictEqual([
+      itemField(
+        `<g:additional_image_link>${ABSOLUTE_URL_PREFIX}${THIRD_ADDITIONAL_IMAGE_PATH}</g:additional_image_link>`,
+      ),
+      itemField(
+        `<g:additional_image_link>${ABSOLUTE_URL_PREFIX}${FIRST_ADDITIONAL_IMAGE_PATH}</g:additional_image_link>`,
+      ),
+      itemField(
+        `<g:additional_image_link>${ABSOLUTE_URL_PREFIX}${SECOND_ADDITIONAL_IMAGE_PATH}</g:additional_image_link>`,
+      ),
+      itemField(
+        `<g:additional_image_link>${ABSOLUTE_URL_PREFIX}${FIRST_ADDITIONAL_IMAGE_PATH}</g:additional_image_link>`,
+      ),
+    ]);
+    /* None of the four reused the SKU's primary resized path. */
+    expect(countOccurrences(xml, SKU_COMPOSED_IMAGE_PATH)).toBe(1);
+
+    /*
+     * FIVE resized paths were needed — the SKU's own image plus four product images — but only FOUR
+     * requests reached the port, because the builder memoises resized paths WITHIN a single `build()`
+     * invocation, keyed on the request. The memo is a PORT-CALL optimisation and not a document one: the
+     * repeated path still produced its own fourth `<g:additional_image_link>` asserted above, so no dedupe
+     * leaked into the feed and `:L24`'s one-element-per-image loop is intact.
+     *
+     * M7 — that memo lives on the invocation rather than at module scope. The legacy equivalents were an
+     * entity-instance cache and a `cacheuse="transactional"` second-level cache, neither of which survives
+     * a request; scoping the port memo the same way is what keeps a warm Lambda container from serving one
+     * tenant's resolved paths to another. The following case proves the memo does not outlive a build.
+     */
+    const requests = resizeRequests(scenario.images);
+    expect(requests).toHaveLength(4);
+    expect(requests.map((request) => String(request.imagePath))).toStrictEqual([
+      SKU_COMPOSED_IMAGE_PATH,
+      THIRD_ADDITIONAL_IMAGE_PATH,
+      FIRST_ADDITIONAL_IMAGE_PATH,
+      SECOND_ADDITIONAL_IMAGE_PATH,
+    ]);
+
+    /*
+     * Every resize — the SKU's and each image's — was requested with NO size, width, height or
+     * resize method, exactly as `:L23-L24` call the two accessors.
+     */
+    for (const request of requests) {
+      expect(Object.keys(request).sort()).toStrictEqual(['imagePath', 'missingImagePath']);
+      expect(request.size).toBeUndefined();
+      expect(request.width).toBeUndefined();
+      expect(request.height).toBeUndefined();
+      expect(request.resizeMethod).toBeUndefined();
+    }
+  });
+
+  it('[NET-NEW] does not carry a resized-path memo across two build invocations', async () => {
+    const scenario = createScenario();
+
+    await scenario.render({ productImages: [{ imagePath: FIRST_ADDITIONAL_IMAGE_PATH }] });
+    const afterFirstBuild = resizeRequests(scenario.images).length;
+    await scenario.render({ productImages: [{ imagePath: FIRST_ADDITIONAL_IMAGE_PATH }] });
+    const afterSecondBuild = resizeRequests(scenario.images).length;
+
+    /*
+     * M7 — the second invocation resolved the SAME two paths again rather than reusing the first
+     * invocation's memo, which is the observable difference between per-invocation state and module-scope
+     * state on a warm container. Nothing here asserts a cache size, a hit rate or a timing figure; the
+     * claim is only that the memo does not outlive a build.
+     */
+    expect(afterFirstBuild).toBe(2);
+    expect(afterSecondBuild).toBe(4);
+  });
+});
+
+/* =====================================================================================================
+ * §4 — Fixed literals, the product price, and the price/sale-gate asymmetry.
+ * ================================================================================================== */
+
+describe('NET-NEW ProductFeedBuilder — fixed literals, price and the conditional sale pair', () => {
+  it('[NET-NEW] emits g:condition and g:availability as fixed literals, keeping the space in "in stock"', async () => {
+    const scenario = createScenario();
+
+    const xml = await scenario.render();
+
+    /*
+     * `integrationServices/google/views/feed/product.cfm:L25-L26` hard-code both values. Neither is
+     * derived from inventory, from a setting, or from the availability range the controller applied —
+     * every item in the feed claims `new` and `in stock` unconditionally. The single space inside
+     * `in stock` is part of the literal.
+     */
+    expect(xml).toContain(itemField('<g:condition>new</g:condition>'));
+    expect(xml).toContain(itemField('<g:availability>in stock</g:availability>'));
+    expect(xml).not.toContain('<g:availability>instock</g:availability>');
+  });
+
+  /*
+   * THE PRICE / SALE-GATE ASYMMETRY — a judgment call, recorded so it is never "tidied up".
+   *
+   * `integrationServices/google/views/feed/product.cfm:L27` emits `sku.getProduct().getPrice()`: the
+   * PRODUCT's price. `:L28` then gates the sale pair on `sku.getPrice() gt sku.getSalePrice()`: the SKU's
+   * OWN regular price. The two lines read DIFFERENT prices, and they sit one line apart, which is exactly
+   * why a well-intentioned port is tempted to harmonise them. Harmonising either direction changes which
+   * items appear on sale and what price they advertise. The two cases below straddle the sale price with
+   * the product and SKU prices in both directions, so each half of the asymmetry is independently pinned.
+   */
+  it('[NET-NEW] emits g:price from the product price while gating the sale pair on the SKU price', async () => {
+    const scenario = createScenario({ productPrice: 60, skuPrice: 90 });
+    scenario.seedSaleDetails({
+      [SKU_ID]: buildSalePriceDetails({
+        salePrice: 79.5,
+        salePriceExpirationDateTime: scenario.saleExpiration,
+      }),
+    });
+
+    const xml = await scenario.render();
+
+    /* `:L27` — the PRODUCT price, 60, not the SKU's 90. */
+    expect(xml).toContain(itemField('<g:price>60</g:price>'));
+    /*
+     * `:L28-L29` — the gate compared the SKU's 90 against the sale price 79.5 and passed. Had it read the
+     * product's 60 instead, 60 is NOT greater than 79.5 and the pair would have been omitted, so the
+     * presence of these elements proves the gate reads the SKU price.
+     */
+    expect(xml).toContain(itemField('<g:sale_price>79.5</g:sale_price>'));
+    expect(xml).toContain('<g:sale_price_effective_date>');
+    /* The sale price came through the pricing port, never off an excluded calculated entity member. */
+    expect(scenario.pricing.requestedProductIds).toStrictEqual([PRODUCT_ID]);
+  });
+
+  it('[NET-NEW] omits the sale pair at equality even when the product price exceeds the sale price', async () => {
+    const scenario = createScenario({ productPrice: 100, skuPrice: 79.5 });
+    scenario.seedSaleDetails({
+      [SKU_ID]: buildSalePriceDetails({
+        salePrice: 79.5,
+        salePriceExpirationDateTime: scenario.saleExpiration,
+      }),
+    });
+
+    const xml = await scenario.render();
+
+    /*
+     * `:L28` uses `gt`, a STRICT comparison, so equality omits the pair. The product price of 100 is
+     * greater than 79.5; had the gate read it, both elements would appear. Their absence is the other half
+     * of the asymmetry.
+     */
+    expect(xml).toContain(itemField('<g:price>100</g:price>'));
+    expect(xml).not.toContain('<g:sale_price>');
+    expect(xml).not.toContain('<g:sale_price_effective_date>');
+  });
+
+  it('[NET-NEW] omits the sale pair when the SKU price is below the sale price', async () => {
+    const scenario = createScenario({ productPrice: 100, skuPrice: 50 });
+    scenario.seedSaleDetails({
+      [SKU_ID]: buildSalePriceDetails({
+        salePrice: 79.5,
+        salePriceExpirationDateTime: scenario.saleExpiration,
+      }),
+    });
+
+    const xml = await scenario.render();
+
+    expect(xml).not.toContain('<g:sale_price>');
+    expect(xml).not.toContain('<g:sale_price_effective_date>');
+  });
+
+  it('[NET-NEW] falls back to the regular SKU price when no salePrice is supplied, so the pair is omitted', async () => {
+    const scenario = createScenario({ productPrice: 100, skuPrice: 90 });
+    /*
+     * The details object carries a discount TYPE but no `salePrice`. `model/entity/Sku.cfc:L546-L551`
+     * returns `salePriceDetails["salePrice"]` only when that key exists and otherwise falls back to
+     * `getPrice()` — the SKU's own regular price. The comparison therefore becomes 90 against 90, which
+     * `gt` rejects, and the pair is omitted. Substituting null or zero for a missing sale price would put
+     * EVERY SKU in the catalogue on sale, which is why the fallback is pinned rather than assumed.
+     *
+     * `SalePriceDetails` declares exactly three optional keys — `salePrice`, `salePriceDiscountType` and
+     * `salePriceExpirationDateTime`. There is deliberately no `salePriceDiscountAmount`, and the builder
+     * for this object admits no such key, so one cannot be added by accident.
+     */
+    scenario.seedSaleDetails({
+      [SKU_ID]: buildSalePriceDetails({ salePriceDiscountType: 'percentageOff' }),
+    });
+
+    const xml = await scenario.render();
+
+    expect(xml).toContain(itemField('<g:price>100</g:price>'));
+    expect(xml).not.toContain('<g:sale_price>');
+    expect(xml).not.toContain('<g:sale_price_effective_date>');
+    /* The port WAS consulted; the omission is the fallback's outcome, not a skipped lookup. */
+    expect(scenario.pricing.requestedProductIds).toStrictEqual([PRODUCT_ID]);
+  });
+
+  it('[NET-NEW] emits g:price as a paired empty element when the product has no price at all', async () => {
+    const scenario = createScenario({ omitProductPrice: true });
+
+    const xml = await scenario.render();
+
+    /*
+     * `model/entity/Product.cfc:L561-L568` returns `variables.price` when it exists, otherwise the default
+     * SKU's price, and otherwise falls off the end of the function returning nothing. Interpolating that
+     * nothing produced an EMPTY element. It is not `0`, it is not omitted, and it is not self-closing —
+     * substituting a zero would advertise a free product.
+     */
+    expect(xml).toContain(itemField('<g:price></g:price>'));
+    expect(xml).not.toContain('<g:price>0</g:price>');
+    expect(xml).not.toContain('<g:price/>');
+    expect(xml).not.toContain('<g:price />');
+  });
+});
+
+/* =====================================================================================================
+ * §5 — The malformed sale-price effective date, and the literal tab that follows it.
+ * ================================================================================================== */
+
+/** The text between the first `<tag>` and its `</tag>`, or `undefined` when the element is absent. */
+function elementContent(xml: string, tag: string): string | undefined {
+  const open = `<${tag}>`;
+  const close = `</${tag}>`;
+  const start = xml.indexOf(open);
+  if (start === -1) {
+    return undefined;
+  }
+  const end = xml.indexOf(close, start + open.length);
+  if (end === -1) {
+    return undefined;
+  }
+  return xml.slice(start + open.length, end);
+}
+
+describe('NET-NEW ProductFeedBuilder — sale price effective date', () => {
+  it('[NET-NEW] renders both endpoints with the malformed bare-number offset twice', async () => {
+    const scenario = createScenario({ productPrice: 100, skuPrice: 90 });
+    scenario.seedSaleDetails({
+      [SKU_ID]: buildSalePriceDetails({
+        salePrice: 79.5,
+        salePriceExpirationDateTime: scenario.saleExpiration,
+      }),
+    });
+
+    const xml = await scenario.render();
+    const content = elementContent(xml, 'g:sale_price_effective_date');
+
+    /*
+     * TODO(parity) `integrationServices/google/views/feed/product.cfm:L30` — THE OFFSET IS MALFORMED AND
+     * IS DEPRIVED OF ITS COLON ON PURPOSE.
+     *
+     * The legacy expression is
+     *   `#dateFormat(now(),"YYYY-MM-DD")#T#timeFormat(now(),"HH:mm:ss")#-#getTimeZoneInfo().utcHourOffset#`
+     * repeated for the expiration and joined with `/`. `getTimeZoneInfo().utcHourOffset` answers a BARE
+     * NUMBER, so the emitted suffix is `-5`, not the ISO-8601 `-05:00` a merchant feed processor expects,
+     * and the hyphen in front of it is a literal in the template rather than a sign derived from the
+     * offset's direction. This is carried across EXACTLY. It is not padded, not colon-separated, not
+     * sign-corrected and not normalised to `Z`. Repairing it would make the port's output incomparable to
+     * the legacy system's, which is the one thing behaviour preservation forbids.
+     */
+    expect(content).toBe(`${EXPECTED_EFFECTIVE_DATE_START}/${EXPECTED_EFFECTIVE_DATE_END}`);
+
+    /* Two endpoints, each carrying the SAME raw offset value, and the date/time pieces exact. */
+    const endpoints = (content ?? '').split('/');
+    expect(endpoints).toHaveLength(2);
+    expect(endpoints[0]).toBe(`2024-01-01T07:30:45-${RAW_UTC_HOUR_OFFSET}`);
+    expect(endpoints[1]).toBe(`2024-02-08T22:15:00-${RAW_UTC_HOUR_OFFSET}`);
+
+    /* No valid signed `HH:MM` offset appears anywhere in the document, and no `Z` normalisation occurred. */
+    expect(xml).not.toMatch(/[+-]\d{2}:\d{2}/);
+    expect(content).not.toContain('Z');
+    expect(content).not.toContain('-05:00');
+    expect(content).not.toContain('+00:00');
+
+    /*
+     * THE LITERAL TRAILING TAB. `:L30` ends with a tab character after the closing tag, verified in the
+     * legacy file with a byte inspection rather than inferred from indentation. It is emitted, so it is
+     * asserted byte-exactly here; trimming it would be a silent change to the document a merchant feed
+     * processor receives.
+     */
+    expect(xml).toContain('</g:sale_price_effective_date>\t');
+  });
+
+  it('[NET-NEW] interpolates whatever raw offset the caller supplies, unformatted', async () => {
+    const scenario = createScenario({
+      productPrice: 100,
+      skuPrice: 90,
+      utcHourOffset: '7',
+    });
+    scenario.seedSaleDetails({
+      [SKU_ID]: buildSalePriceDetails({
+        salePrice: 79.5,
+        salePriceExpirationDateTime: scenario.saleExpiration,
+      }),
+    });
+
+    const xml = await scenario.render();
+
+    /*
+     * The offset is interpolated as TEXT, and the wall clock of both endpoints shifts with it, matching
+     * what `getTimeZoneInfo().utcHourOffset` did on the legacy host. Still no colon, still no padding.
+     */
+    expect(elementContent(xml, 'g:sale_price_effective_date')).toBe(
+      '2024-01-01T05:30:45-7/2024-02-08T20:15:00-7',
+    );
+    expect(xml).not.toMatch(/[+-]\d{2}:\d{2}/);
+  });
+});
+
+/* =====================================================================================================
+ * §6 — Brand, item group identifier, and shipping weight.
+ * ================================================================================================== */
+
+describe('NET-NEW ProductFeedBuilder — brand, item group and shipping weight', () => {
+  it('[NET-NEW] emits an escaped g:brand when the brand object is present', async () => {
+    const scenario = createScenario({ brand: 'present', brandName: ESCAPE_SENTINEL });
+
+    const xml = await scenario.render();
+
+    /* `integrationServices/google/views/feed/product.cfm:L32` — `htmlEditFormat(brand.getBrandName())`. */
+    expect(xml).toContain(itemField(`<g:brand>${ESCAPED_SENTINEL}</g:brand>`));
+  });
+
+  it('[NET-NEW] emits a paired empty g:brand when the brand object exists with an empty name', async () => {
+    const scenario = createScenario({ brand: 'present', brandName: '' });
+
+    const xml = await scenario.render();
+
+    /*
+     * `:L32` tests the OBJECT, not the name, so a brand whose name is empty still satisfies the guard and
+     * still emits the element — empty. Testing the name here instead would silently drop the element for
+     * every unnamed brand.
+     */
+    expect(xml).toContain(itemField('<g:brand></g:brand>'));
+    expect(xml).not.toContain('<g:brand/>');
+    expect(xml).not.toContain('<g:brand />');
+  });
+
+  it('[NET-NEW] omits the entire g:brand element when the brand is absent, while an empty description stays present', async () => {
+    const scenario = createScenario({
+      brand: 'absent',
+      productDescription: '',
+      productTypeDescription: '',
+    });
+
+    const xml = await scenario.render();
+
+    /*
+     * THE `isNull` / `len` INCONSISTENCY — a judgment call, recorded and deliberately NOT harmonised.
+     *
+     * `:L32` guards the brand with `not isNull(product.getBrand())`: an OBJECT-EXISTENCE test, so an
+     * absent brand removes the whole element, opening tag and all. `:L19` guards the description with
+     * `len(...)`: a LENGTH test whose element is emitted either way and merely goes empty. Two adjacent
+     * conditional fields, two different kinds of guard, two different outcomes for "no value". A port that
+     * made both behave the same way — either both empty or both omitted — would change the document in one
+     * of the two places no matter which way it chose. Both are preserved exactly as written.
+     */
+    expect(xml).not.toContain('<g:brand>');
+    expect(xml).not.toContain('</g:brand>');
+    expect(xml).toContain(itemField('<description></description>'));
+    /* Ordering around the removed element still holds: the item group follows the product price. */
+    expect(xml.indexOf('<g:price>')).toBeLessThan(xml.indexOf('<g:item_group_id>'));
+  });
+
+  it('[NET-NEW] emits g:item_group_id from the escaped product code', async () => {
+    const scenario = createScenario({ productCode: ESCAPE_SENTINEL });
+
+    const xml = await scenario.render();
+
+    /* `:L39` — `htmlEditFormat(product.getProductCode())`, the live field wedged between two disabled blocks. */
+    expect(xml).toContain(itemField(`<g:item_group_id>${ESCAPED_SENTINEL}</g:item_group_id>`));
+  });
+
+  it('[NET-NEW] assembles g:shipping_weight from two settings joined by exactly one space', async () => {
+    const scenario = createScenario();
+
+    const xml = await scenario.render();
+
+    /*
+     * `:L58` interpolates the legacy `setting()` accessor on the SKU keyed `'skuShippingWeight'`, then a
+     * single literal space, then the same accessor keyed `'skuShippingWeightUnitCode'`. Both key names are
+     * byte-exact; the separator is one space, not a comma and not two spaces; and neither value is trimmed
+     * or defaulted. The two values are read through the injected resolver port here, never off the entity.
+     */
+    expect(xml).toContain(
+      itemField(
+        `<g:shipping_weight>${SETTING_SKU_SHIPPING_WEIGHT} ${SETTING_SKU_SHIPPING_WEIGHT_UNIT_CODE}</g:shipping_weight>`,
+      ),
+    );
+    expect(elementContent(xml, 'g:shipping_weight')).toBe(
+      `${SETTING_SKU_SHIPPING_WEIGHT} ${SETTING_SKU_SHIPPING_WEIGHT_UNIT_CODE}`,
+    );
+    expect(xml).not.toContain('<g:shipping_weight>5  lb</g:shipping_weight>');
+    expect(xml).not.toContain('<g:shipping_weight>5lb</g:shipping_weight>');
+
+    /*
+     * The two keys were resolved in the legacy order, consecutively, and both against the SKU that is
+     * being serialized — `model/entity/HibachiEntity.cfc:L128-L131` forwards `object=this`, so the
+     * resolution context is the SKU rather than a global lookup.
+     */
+    const names = resolvedSettingNames(scenario.settings);
+    const weightAt = names.indexOf('skuShippingWeight');
+    const unitAt = names.indexOf('skuShippingWeightUnitCode');
+    expect(weightAt).toBeGreaterThanOrEqual(0);
+    expect(unitAt).toBe(weightAt + 1);
+    expect(firstResolutionContext(scenario.settings, 'skuShippingWeight')).toStrictEqual({
+      entityName: 'Sku',
+      entityId: SKU_ID,
+    });
+    expect(firstResolutionContext(scenario.settings, 'skuShippingWeightUnitCode')).toStrictEqual({
+      entityName: 'Sku',
+      entityId: SKU_ID,
+    });
+
+    /*
+     * M8 — the resolver is SYNCHRONOUS by declaration and is never awaited. Had it been awaited, or had a
+     * promise been interpolated, the element would carry `[object Promise]` instead of the value.
+     */
+    expect(xml).not.toContain('[object Promise]');
+  });
+
+  it('[NET-NEW] leaves ampersands and angle brackets in g:shipping_weight unescaped', async () => {
+    const scenario = createScenario({
+      settings: [
+        { settingName: 'skuShippingWeight', value: '1&2' },
+        { settingName: 'skuShippingWeightUnitCode', value: '<lb>' },
+      ],
+    });
+
+    const xml = await scenario.render();
+
+    /*
+     * `:L58` does not wrap either value in `htmlEditFormat`, so both reach the document raw. The result is
+     * not well-formed XML, which is the legacy behaviour and the reason this suite never routes output
+     * through a parser.
+     */
+    expect(xml).toContain(itemField('<g:shipping_weight>1&2 <lb></g:shipping_weight>'));
+    expect(xml).not.toContain('1&amp;2');
+    expect(xml).not.toContain('&lt;lb&gt;');
+  });
+});
+
+/* =====================================================================================================
+ * §7 — The three disabled blocks, and the live fields interleaved between them.
+ * ================================================================================================== */
+
+describe('NET-NEW ProductFeedBuilder — disabled fields, at runtime', () => {
+  it('[NET-NEW] emits none of the eleven disabled top-level fields as a live element', async () => {
+    const scenario = createScenario();
+
+    const xml = await scenario.render({
+      productImages: [{ imagePath: FIRST_ADDITIONAL_IMAGE_PATH }],
+    });
+
+    /*
+     * THE THREE-BLOCK INTERLEAVING — a judgment call, recorded because a flat field list hides it.
+     *
+     * `integrationServices/google/views/feed/product.cfm` disables its optional fields in THREE separate
+     * CFML comment blocks with LIVE fields wedged between them, not in one block at the end:
+     *   BLOCK 1 `:L33-L38` — `g:gtin`, `g:mpn`, `g:gender`, `g:age_group`
+     *   LIVE    `:L39`     — `g:item_group_id`
+     *   BLOCK 2 `:L40-L57` — `g:color`, `g:size`, `g:material`, `g:pattern`, then `g:tax` wrapping
+     *                        `g:country`, `g:region`, `g:rate`, `g:tax_ship`, then `g:shipping` wrapping
+     *                        `g:country`, `g:region`, `g:service`, `g:price`
+     *   LIVE    `:L58`     — `g:shipping_weight`
+     *   BLOCK 3 `:L59-L61` — `g:online_only`
+     * The tag-boundary matcher below is why `g:shipping` cannot false-match the live `g:shipping_weight`
+     * and `g:tax` cannot false-match `g:tax_ship`.
+     */
+    for (const fieldName of ALL_DISABLED_TOP_LEVEL_FIELDS) {
+      expect(xml).not.toMatch(fieldNamePattern(`<${fieldName}`));
+      expect(xml).not.toMatch(fieldNamePattern(`</${fieldName}`));
+    }
+
+    /* The live fields those patterns must NOT have suppressed are still present. */
+    expect(xml).toContain('<g:shipping_weight>');
+    expect(xml).toContain('<g:additional_image_link>');
+  });
+
+  it('[NET-NEW] emits the live product price exactly once and none of the disabled nested children', async () => {
+    const scenario = createScenario();
+
+    const xml = await scenario.render();
+
+    /*
+     * `g:price` is BOTH a live top-level field (`:L27`) and a disabled child of the commented `g:shipping`
+     * group (`:L40-L57`). A blanket absence assertion is therefore impossible and a substring assertion
+     * would false-match, so the claim is stated as a count: one item yields exactly one `<g:price>`.
+     */
+    expect(countOccurrences(xml, `${CHANNEL_FIELD_INDENT}<item>`)).toBe(1);
+    expect(countOccurrences(xml, '<g:price>')).toBe(1);
+    expect(countOccurrences(xml, '</g:price>')).toBe(1);
+
+    /* The nested children of both disabled groups never appear. */
+    for (const fieldName of DISABLED_BLOCK_TWO_NESTED_FIELDS) {
+      if (fieldName === 'g:price') {
+        continue;
+      }
+      expect(xml).not.toMatch(fieldNamePattern(`<${fieldName}`));
+    }
+
+    /* The disabled names were not converted into markup comments either. */
+    expect(xml).not.toContain('<!--');
+  });
+
+  it('[NET-NEW] keeps the live interleaving order: brand, then item group, then shipping weight', async () => {
+    const scenario = createScenario({ brand: 'present', brandName: 'Nike' });
+
+    const xml = await scenario.render();
+
+    /* `:L32`, `:L39`, `:L58` — the order the disabled blocks sit between. */
+    const brandAt = xml.indexOf('<g:brand>');
+    const itemGroupAt = xml.indexOf('<g:item_group_id>');
+    const shippingWeightAt = xml.indexOf('<g:shipping_weight>');
+    expect(brandAt).toBeGreaterThan(-1);
+    expect(brandAt).toBeLessThan(itemGroupAt);
+    expect(itemGroupAt).toBeLessThan(shippingWeightAt);
+  });
+});
+
+describe('NET-NEW ProductFeedBuilder — disabled fields, in the builder source text', () => {
+  it('[NET-NEW] partitions the builder source into comment and code spans that reconstruct it exactly', () => {
+    const source = partitionBuilderSource(readFileSync(BUILDER_SOURCE_PATH, 'utf8'));
+
+    /*
+     * A self-check on the walk itself. Without it, a silent bug in the comment/code partition would make
+     * both source-level censuses below assert nothing at all while still reporting green.
+     */
+    const ordered = [...source.commentSpans, ...source.codeSpans].sort((a, b) => a.start - b.start);
+    let rebuilt = '';
+    for (const span of ordered) {
+      expect(span.start).toBe(rebuilt.length);
+      rebuilt += source.text.slice(span.start, span.end);
+    }
+    expect(rebuilt).toBe(source.text);
+    expect(source.commentSpans.length).toBeGreaterThan(0);
+    expect(source.codeSpans.length).toBeGreaterThan(0);
+  });
+
+  it('[NET-NEW] keeps every disabled field name in comments and out of executable text', () => {
+    const source = partitionBuilderSource(readFileSync(BUILDER_SOURCE_PATH, 'utf8'));
+    const commentText = spanText(source, source.commentSpans);
+    const codeText = spanText(source, source.codeSpans);
+
+    /*
+     * The names are retained because they document the intended future surface and deleting them would
+     * lose information. Retained means retained AS COMMENTS: present in the comment text, absent from the
+     * executable text, so no disabled field can be emitted by accident.
+     */
+    for (const fieldName of [
+      ...ALL_DISABLED_TOP_LEVEL_FIELDS,
+      ...DISABLED_BLOCK_TWO_NESTED_FIELDS,
+    ]) {
+      expect(commentText).toMatch(fieldNamePattern(fieldName));
+      if (fieldName === 'g:price') {
+        /* Live at `:L27`, so it legitimately appears in code as well; the runtime count pins it. */
+        continue;
+      }
+      expect(codeText).not.toMatch(fieldNamePattern(fieldName));
+    }
+  });
+
+  it('[NET-NEW] preserves three separate disabled blocks interleaved with the live item group and shipping weight code', () => {
+    const source = partitionBuilderSource(readFileSync(BUILDER_SOURCE_PATH, 'utf8'));
+
+    const itemGroupCodeAt = soleCodeOffsetOf(source, '<g:item_group_id>');
+    const shippingWeightCodeAt = soleCodeOffsetOf(source, '<g:shipping_weight>');
+
+    const blockOne = soleCommentSpanContaining(source, DISABLED_BLOCK_ONE_FIELDS);
+    const blockTwo = soleCommentSpanContaining(source, [
+      ...DISABLED_BLOCK_TWO_FIELDS,
+      ...DISABLED_BLOCK_TWO_NESTED_FIELDS,
+    ]);
+    const blockThree = soleCommentSpanContaining(source, DISABLED_BLOCK_THREE_FIELDS);
+
+    /* BLOCK 1's four names sit together, before the live item-group serialization. */
+    expect(blockOne.end).toBeLessThan(itemGroupCodeAt);
+    /* BLOCK 2 sits after the item-group code and before the shipping-weight code. */
+    expect(blockTwo.start).toBeGreaterThan(itemGroupCodeAt);
+    expect(blockTwo.end).toBeLessThan(shippingWeightCodeAt);
+    /* BLOCK 3 sits after the shipping-weight code. */
+    expect(blockThree.start).toBeGreaterThan(shippingWeightCodeAt);
+
+    /*
+     * THREE blocks, not one. Flattening every disabled name into a single comment would still satisfy
+     * "the names are retained" while destroying the record of WHERE each group sat relative to the live
+     * fields — which is the only reason the legacy interleaving is recoverable at all.
+     */
+    const starts = [blockOne.start, blockTwo.start, blockThree.start];
+    expect(new Set(starts).size).toBe(3);
+    expect(starts).toStrictEqual([...starts].sort((left, right) => left - right));
+  });
+});
+
+/* =====================================================================================================
+ * §8 — The asymmetric escaping map.
+ * ================================================================================================== */
+
+describe('NET-NEW ProductFeedBuilder — asymmetric htmlEditFormat escaping', () => {
+  it('[NET-NEW] escapes exactly six dynamic fields and leaves the URL, money and weight fields raw', async () => {
+    const rawImagePath = '/product/default/a&b<c.jpg';
+    const rawAdditionalImagePath = '/product/default/d&e<f.jpg';
+    const scenario = createScenario({
+      skuCode: ESCAPE_SENTINEL,
+      calculatedTitle: ESCAPE_SENTINEL,
+      productDescription: ESCAPE_SENTINEL,
+      productTypeName: ESCAPE_SENTINEL,
+      brandName: ESCAPE_SENTINEL,
+      productCode: ESCAPE_SENTINEL,
+      urlTitle: ESCAPE_SENTINEL,
+      imagePathsByImageFile: { [SKU_IMAGE_FILE]: rawImagePath },
+      settings: [
+        { settingName: 'skuShippingWeight', value: '1&2' },
+        { settingName: 'skuShippingWeightUnitCode', value: '<lb>' },
+      ],
+    });
+
+    const xml = await scenario.render({
+      productImages: [{ imagePath: rawAdditionalImagePath }],
+    });
+
+    /*
+     * THE ESCAPING ASYMMETRY — a judgment call, and the one most likely to be "cleaned up" by mistake.
+     *
+     * `integrationServices/google/views/feed/product.cfm` wraps SIX dynamic values in `htmlEditFormat`
+     * and leaves SEVEN untouched, and it does so field by field rather than by category:
+     *   ESCAPED  — `g:id` (`:L17`), item `title` (`:L18`), the selected `description` (`:L19`),
+     *              `g:product_type` (`:L21`), `g:brand` (`:L32`), `g:item_group_id` (`:L39`)
+     *   RAW      — item `link` (`:L22`), `g:image_link` (`:L23`), every `g:additional_image_link`
+     *              (`:L24`), `g:price` (`:L27`), `g:sale_price` (`:L29`),
+     *              `g:sale_price_effective_date` (`:L30`), `g:shipping_weight` (`:L58`)
+     * The fixed `g:google_product_category`, `g:condition` and `g:availability` values bypass the helper
+     * because they are literals with nothing to escape.
+     *
+     * A uniform "escape everything" implementation would corrupt every URL in the feed; a uniform "escape
+     * nothing" implementation would emit unescaped product text. Either one is a silent behaviour change,
+     * so the asymmetry is pinned field by field.
+     *
+     * `htmlEditFormat` processes `&` FIRST and then `<`, `>` and the double quote, and it leaves the
+     * APOSTROPHE alone — hence `A&B<C>D"E'F` becoming `A&amp;B&lt;C&gt;D&quot;E'F` with its single quote
+     * intact rather than turned into `&#39;`.
+     */
+    expect(xml).toContain(itemField(`<g:id>${ESCAPED_SENTINEL}</g:id>`));
+    expect(xml).toContain(itemField(`<title>${ESCAPED_SENTINEL}</title>`));
+    expect(xml).toContain(itemField(`<description>${ESCAPED_SENTINEL}</description>`));
+    expect(xml).toContain(itemField(`<g:product_type>${ESCAPED_SENTINEL}</g:product_type>`));
+    expect(xml).toContain(itemField(`<g:brand>${ESCAPED_SENTINEL}</g:brand>`));
+    expect(xml).toContain(itemField(`<g:item_group_id>${ESCAPED_SENTINEL}</g:item_group_id>`));
+    /* Six escaped fields, six occurrences: nothing else in the document was escaped. */
+    expect(countOccurrences(xml, ESCAPED_SENTINEL)).toBe(6);
+
+    /* And the raw side, byte for byte. */
+    expect(xml).toContain(
+      itemField(
+        `<link>${ABSOLUTE_URL_PREFIX}/${SETTING_GLOBAL_URL_KEY_PRODUCT}/${ESCAPE_SENTINEL}/</link>`,
+      ),
+    );
+    expect(xml).toContain(
+      itemField(`<g:image_link>${ABSOLUTE_URL_PREFIX}${rawImagePath}</g:image_link>`),
+    );
+    expect(xml).toContain(
+      itemField(
+        `<g:additional_image_link>${ABSOLUTE_URL_PREFIX}${rawAdditionalImagePath}</g:additional_image_link>`,
+      ),
+    );
+    expect(xml).toContain(itemField('<g:shipping_weight>1&2 <lb></g:shipping_weight>'));
+    /* The one raw sentinel is the link's; the image and weight values carry their own raw characters. */
+    expect(countOccurrences(xml, ESCAPE_SENTINEL)).toBe(1);
+    expect(xml).not.toContain('a&amp;b&lt;c.jpg');
+    expect(xml).not.toContain('d&amp;e&lt;f.jpg');
+  });
+
+  it('[NET-NEW] escapes the product type description when the fallback branch supplies it', async () => {
+    /*
+     * The description site is escaped on BOTH of its branches, not only the product one: `:L19` wraps the
+     * product-type fallback in `htmlEditFormat` as well. Branch A's escaping is asserted in the case above
+     * and in §2; this pins branch B independently so a port cannot escape one branch and forget the other.
+     */
+    const scenario = createScenario({
+      productDescription: '',
+      productTypeDescription: ESCAPE_SENTINEL,
+    });
+
+    const xml = await scenario.render();
+
+    expect(xml).toContain(itemField(`<description>${ESCAPED_SENTINEL}</description>`));
+    expect(countOccurrences(xml, ESCAPED_SENTINEL)).toBe(1);
+  });
+
+  it('[NET-NEW] calls the builder escape helper at exactly six sites, matching the raw and escaped fields', () => {
+    const source = partitionBuilderSource(readFileSync(BUILDER_SOURCE_PATH, 'utf8'));
+    const codeText = spanText(source, source.codeSpans);
+
+    /*
+     * WHY A SOURCE-LEVEL CENSUS IS REQUIRED HERE.
+     *
+     * Three of the seven raw fields — `g:price`, `g:sale_price` and `g:sale_price_effective_date` — are
+     * typed as monetary decimals and a `Date`. There is no way to push `&` or `<` through them without a
+     * cast, and this suite adds no cast, so their raw-ness cannot be demonstrated by a sentinel. Their
+     * exact raw output is asserted in §4 and §5; the claim that the escape helper is never applied to them
+     * is carried HERE, by counting the helper's call sites in the builder's executable text.
+     *
+     * The helper's name is DISCOVERED from the source rather than assumed, so renaming it does not
+     * silently reduce this case to a tautology.
+     */
+    const declaration = /function\s+(escape[A-Za-z0-9_]*)\s*\(/.exec(codeText);
+    expect(declaration).not.toBeNull();
+    const helperName = declaration === null ? '' : (declaration[1] ?? '');
+    expect(helperName.length).toBeGreaterThan(0);
+
+    /* Every occurrence in executable text, less the declaration itself, is a call site. */
+    const occurrences = codeOffsetsOf(source, `${helperName}(`).length;
+    expect(occurrences - 1).toBe(6);
+
+    /*
+     * And those six calls sit at exactly the six escaped fields. `title` and `description` each show ONE
+     * escaped site and ONE raw site, because the channel-level pair at `:L13` and `:L15` is fixed text and
+     * is never escaped while the item-level pair at `:L18` and `:L19` always is. `link` shows two raw
+     * sites for the same channel/item reason.
+     */
+    const expectedCensus: readonly {
+      readonly openTag: string;
+      readonly closeTag: string;
+      readonly escaped: number;
+      readonly raw: number;
+    }[] = [
+      { openTag: '<g:id>', closeTag: '</g:id>', escaped: 1, raw: 0 },
+      { openTag: '<title>', closeTag: '</title>', escaped: 1, raw: 1 },
+      { openTag: '<description>', closeTag: '</description>', escaped: 1, raw: 1 },
+      { openTag: '<g:product_type>', closeTag: '</g:product_type>', escaped: 1, raw: 0 },
+      { openTag: '<g:brand>', closeTag: '</g:brand>', escaped: 1, raw: 0 },
+      { openTag: '<g:item_group_id>', closeTag: '</g:item_group_id>', escaped: 1, raw: 0 },
+      { openTag: '<link>', closeTag: '</link>', escaped: 0, raw: 2 },
+      { openTag: '<g:image_link>', closeTag: '</g:image_link>', escaped: 0, raw: 1 },
+      {
+        openTag: '<g:additional_image_link>',
+        closeTag: '</g:additional_image_link>',
+        escaped: 0,
+        raw: 1,
+      },
+      { openTag: '<g:price>', closeTag: '</g:price>', escaped: 0, raw: 1 },
+      { openTag: '<g:sale_price>', closeTag: '</g:sale_price>', escaped: 0, raw: 1 },
+      {
+        openTag: '<g:sale_price_effective_date>',
+        closeTag: '</g:sale_price_effective_date>',
+        escaped: 0,
+        raw: 1,
+      },
+      { openTag: '<g:shipping_weight>', closeTag: '</g:shipping_weight>', escaped: 0, raw: 1 },
+    ];
+
+    let escapedSites = 0;
+    for (const entry of expectedCensus) {
+      const observed = escapeCensus(source, entry.openTag, entry.closeTag, helperName);
+      expect(observed).toStrictEqual({ escaped: entry.escaped, raw: entry.raw });
+      escapedSites += observed.escaped;
+    }
+    /* The six field-level escaped sites account for every one of the six calls counted above. */
+    expect(escapedSites).toBe(6);
+  });
+});
+
+/* =====================================================================================================
+ * §9 — The guards on the builder's own public render surface.
+ *
+ * These are part of `build()`'s declared contract, not of any collaborator's, so they belong here. Two of
+ * them carry legacy-parity judgments that the field assertions above would otherwise leave invisible: the
+ * legacy view dereferenced the product and product-type associations WITHOUT a guard while guarding the
+ * brand association, and an unrepresentable character is refused rather than silently stripped.
+ *
+ * Only the fact of the rejection and its `Error` nature are asserted. The message text belongs to
+ * `src/errors/**`, which this file neither imports nor couples to, so pinning the wording here would
+ * couple a serializer test to a sibling module's copy.
+ * ================================================================================================== */
+
+/** Await a render that must reject, and hand back the reason as an `Error`. */
+async function captureRejection(work: Promise<string>): Promise<Error> {
+  try {
+    await work;
+  } catch (reason) {
+    if (reason instanceof Error) {
+      return reason;
+    }
+    throw new Error(
+      'The builder rejected with a reason that is not an Error, which cannot be asserted against.',
+    );
+  }
+  throw new Error('The builder resolved a document where a rejection was required.');
+}
+
+describe('NET-NEW ProductFeedBuilder — render guards', () => {
+  it('[NET-NEW] rejects a selected SKU that carries no product', async () => {
+    const scenario = createScenario();
+    const orphanSku = buildSku({
+      skuID: SECOND_SKU_ID,
+      skuCode: 'ORPHAN-1',
+      price: 90,
+      imageFile: SKU_IMAGE_FILE,
+    });
+
+    const error = await captureRejection(scenario.render({ skus: [orphanSku] }));
+
+    /*
+     * `integrationServices/google/views/feed/product.cfm:L18` reaches straight through
+     * `sku.getProduct().getCalculatedTitle()` with no guard, and `:L22`, `:L27`, `:L32` and `:L39` do the
+     * same. A product-less SKU therefore failed the legacy render too; refusing here preserves that rather
+     * than inventing a skip that would silently shrink the feed.
+     */
+    expect(error).toBeInstanceOf(Error);
+    expect(error.message.length).toBeGreaterThan(0);
+  });
+
+  it('[NET-NEW] rejects a product that carries no product type, unlike an absent brand', async () => {
+    const scenario = createScenario();
+    const typelessProduct = buildProduct({
+      productID: PRODUCT_ID,
+      productCode: 'TESTPRODUCTXXX',
+      urlTitle: 'nike-air',
+      calculatedTitle: 'PERSISTED-CALCULATED-TITLE',
+    });
+    const sku = buildSku({
+      skuID: SECOND_SKU_ID,
+      skuCode: 'TESTPRODUCTXXX-2',
+      price: 90,
+      imageFile: SKU_IMAGE_FILE,
+      product: typelessProduct,
+    });
+
+    const error = await captureRejection(scenario.render({ skus: [sku] }));
+
+    /*
+     * THE OTHER FACE OF THE `isNull` / `len` INCONSISTENCY. `:L21` dereferences
+     * `product.getProductType().getSimpleRepresentation()` with NO guard, while `:L32` guards the brand
+     * association with `isNull`. Two associations one line apart, one guarded and one not: an absent brand
+     * quietly drops an element, an absent product type fails the render outright. Both outcomes are
+     * preserved, and neither is harmonised into the other.
+     */
+    expect(error).toBeInstanceOf(Error);
+    expect(error.message.length).toBeGreaterThan(0);
+  });
+
+  it('[NET-NEW] rejects a non-numeric UTC hour offset only once a sale actually renders', async () => {
+    const harmless = createScenario({ utcHourOffset: 'not-an-offset' });
+
+    /*
+     * With no sale, the offset is never read, so the render succeeds — the legacy template only
+     * interpolated `getTimeZoneInfo().utcHourOffset` inside the conditional block at `:L28-L31`.
+     */
+    const xml = await harmless.render();
+    expect(xml).not.toContain('<g:sale_price_effective_date>');
+    expect(xml).not.toContain('not-an-offset');
+
+    const onSale = createScenario({
+      productPrice: 100,
+      skuPrice: 90,
+      utcHourOffset: 'not-an-offset',
+    });
+    onSale.seedSaleDetails({
+      [SKU_ID]: buildSalePriceDetails({
+        salePrice: 79.5,
+        salePriceExpirationDateTime: onSale.saleExpiration,
+      }),
+    });
+
+    const error = await captureRejection(onSale.render());
+
+    /*
+     * Once the pair must render, the offset determines BOTH the emitted wall-clock components and the
+     * offset label, so a value that cannot be interpreted as hours would produce a timestamp whose
+     * components and label disagree. It is refused rather than defaulted to zero — defaulting would invent
+     * a timezone the source never stated.
+     */
+    expect(error).toBeInstanceOf(Error);
+    expect(error.message.length).toBeGreaterThan(0);
+  });
+
+  it('[NET-NEW] rejects each value XML 1.0 forbids rather than stripping or substituting it', async () => {
+    /*
+     * PRESERVE, DO NOT REPAIR — applied to data rather than to code. Stripping an offending unit or
+     * substituting a replacement character would emit a document that differs from the stored value, and
+     * altering stored catalog data is not a serializer's decision to make.
+     *
+     * A lone high surrogate and a lone low surrogate each encode no character at all, and a C0 control
+     * other than tab, line feed or carriage return is outside XML 1.0's `Char` production, so no escaping
+     * can make any of the three serialisable.
+     */
+    const forbiddenTitles = ['Nike \ud800 Air', 'Nike \udc00 Air', 'Nike \u0001 Air'];
+
+    for (const calculatedTitle of forbiddenTitles) {
+      const scenario = createScenario({ calculatedTitle });
+
+      const error = await captureRejection(scenario.render());
+
+      expect(error).toBeInstanceOf(Error);
+      expect(error.message.length).toBeGreaterThan(0);
+    }
+  });
+
+  it('[NET-NEW] emits a legal supplementary character unchanged instead of refusing it', async () => {
+    /*
+     * The representability check must admit everything XML 1.0's `Char` production admits, which includes
+     * supplementary characters encoded as a surrogate PAIR. A check that walked code units without pairing
+     * them would reject this title, so the passing case is asserted alongside the refusals above rather
+     * than left implied. The character needs no escaping, so it survives byte for byte.
+     */
+    const scenario = createScenario({ calculatedTitle: 'Nike \u{1F600} Air' });
+
+    const xml = await scenario.render();
+
+    expect(xml).toContain(itemField('<title>Nike \u{1F600} Air</title>'));
+  });
+
+  it('[NET-NEW] emits the three control characters XML 1.0 permits without escaping or stripping them', async () => {
+    /*
+     * Tab, line feed and carriage return are the only C0 controls inside XML 1.0's `Char` production, and
+     * `htmlEditFormat` never touched them, so a stored value carrying them reaches the document verbatim.
+     * The legacy view itself relied on that: `integrationServices/google/views/feed/product.cfm:L30` ends
+     * with a literal tab that is emitted rather than swallowed. A representability check that rejected
+     * these three, or an escaper that turned them into character references, would change stored product
+     * copy on its way out.
+     */
+    const scenario = createScenario({ productDescription: 'first\tsecond\r\nthird' });
+
+    const xml = await scenario.render();
+
+    expect(xml).toContain('<description>first\tsecond\r\nthird</description>');
+    expect(xml).not.toContain('&#9;');
+    expect(xml).not.toContain('&#10;');
+    expect(xml).not.toContain('&#13;');
+  });
+
+  it('[NET-NEW] rejects a render whose abort signal is already aborted', async () => {
+    const scenario = createScenario();
     const controller = new AbortController();
     controller.abort();
 
-    const error = await captureRejection(
-      new ProductFeedBuilder(spies.imagePaths, spies.pricing, makeSettings()).build(
-        records,
-        makeContext(),
-        { signal: controller.signal },
-      ),
-    );
+    const error = await captureRejection(scenario.render({ signal: controller.signal }));
 
-    expect(error).toBeInstanceOf(DomainError);
-    expect((error as DomainError).context).toEqual({ renderedRecords: 0 });
-    expect(spies.pricingCalls).toHaveLength(0);
-    expect(spies.resizeCalls).toHaveLength(0);
-  });
-
-  test('aborting mid-record completes that record and stops at the next boundary', async () => {
-    const { records, detailsByProduct } = makeTwoFamilies();
-    const controller = new AbortController();
-    let resolutions = 0;
-    const spies = makeCountingSpies(detailsByProduct, () => {
-      resolutions += 1;
-      /* Inside the SECOND record's image work: 1 primary + 2 additional per record. */
-      if (resolutions === 4) {
-        controller.abort();
-      }
-    });
-
-    const error = await captureRejection(
-      new ProductFeedBuilder(spies.imagePaths, spies.pricing, makeSettings()).build(
-        records,
-        makeContext(),
-        { signal: controller.signal },
-      ),
-    );
-
-    expect(error).toBeInstanceOf(DomainError);
-    /* TWO, not one: the record that was in flight was finished before the boundary was consulted. */
-    expect((error as DomainError).context).toEqual({ renderedRecords: 2 });
-  });
-
-  test('a cancelled render raises rather than returning a truncated feed', async () => {
-    const { records, detailsByProduct } = makeTwoFamilies();
-    const controller = new AbortController();
-    let resolutions = 0;
-    const spies = makeCountingSpies(detailsByProduct, () => {
-      resolutions += 1;
-      if (resolutions === 1) {
-        controller.abort();
-      }
-    });
-
-    const error = await captureRejection(
-      new ProductFeedBuilder(spies.imagePaths, spies.pricing, makeSettings()).build(
-        records,
-        makeContext(),
-        { signal: controller.signal },
-      ),
-    );
-
-    expect(error).toBeInstanceOf(DomainError);
-    expect((error as DomainError).message).toContain('cancelled before it completed');
-  });
-
-  test('an un-aborted signal changes not one byte of the document', async () => {
-    const withSignal = makeTwoFamilies();
-    const withSignalSpies = makeCountingSpies(withSignal.detailsByProduct);
-    const withSignalDocument = await new ProductFeedBuilder(
-      withSignalSpies.imagePaths,
-      withSignalSpies.pricing,
-      makeSettings(),
-    ).build(withSignal.records, makeContext(), { signal: new AbortController().signal });
-
-    const without = makeTwoFamilies();
-    const withoutSpies = makeCountingSpies(without.detailsByProduct);
-    const withoutDocument = await new ProductFeedBuilder(
-      withoutSpies.imagePaths,
-      withoutSpies.pricing,
-      makeSettings(),
-    ).build(without.records, makeContext());
-
-    expect(withSignalDocument).toBe(withoutDocument);
-  });
-});
-
-/* ================================================================================================
- * RULE 3a — IDENTIFIER-ONLY REFERENCES, ASSERTED AT THE MAPPER RATHER THAN THROUGH A CHAIN
- * ================================================================================================
- * These three cases arrived as part of a longer suite that drove raw rows through a FEED-LOCAL
- * relationship assembler. That assembler is gone — `src/integrations/google/ProductFeedQuery.ts` records
- * under decision F-3 that the wider candidate was taken instead, the aggregate loaders in
- * `src/adapters/mysql/catalogAggregates.ts`, and that a feed-only projection "was not taken". The four
- * cases in that suite which drove the chain are therefore not carried: they constructed a class that no
- * longer exists and read `selection.records` from a member whose shipped signature answers `Sku[]`.
- *
- * WHAT WAS CHECKED BEFORE DROPPING THEM, because coverage must not fall silently.
- * `test/adapters/catalogAggregates.test.ts` exercises the same behaviour against the mechanism that
- * SHIPS, and more widely: it attaches the product every SKU names, attaches the product type and brand,
- * binds the default SKU through the injected adapter and reads a price through it, gives sibling SKUs the
- * same product instance, issues ONE product statement for a batch naming one product twice, leaves an
- * absent brand absent without raising, issues no association statement for an empty result, and binds
- * every identifier positionally. Nothing the dropped four asserted about resolution is unasserted now.
- *
- * WHY THESE THREE ARE KEPT RATHER THAN DROPPED WITH THEM. They assert the MAPPER's own contract and
- * touch neither the assembler nor the selection: a row's foreign key must survive as an
- * identifier-only reference, an absent foreign key must leave the association absent, and an unresolved
- * reference must REFUSE a value read rather than answer a plausible one. The third is the one with teeth:
- * `Product.getPrice()` delegates to the default SKU, so a reference that answered `0` would publish a
- * free product to a merchant feed. The nearest existing case,
- * `test/adapters/MySqlProductPersistence.test.ts`, asserts only the RESOLVED direction — that a bound
- * default SKU answers its price — so the refusal itself would otherwise be untested.
- * ============================================================================================== */
-
-/** The default-SKU identifier these three cases reference; distinct from every other fixture id here. */
-const UNRESOLVED_DEFAULT_SKU_ID = 'eeeeeeeeeeeeeeeeeeeeeeeeeeeeeee5';
-
-describe('NET-NEW — RULE 3a: a row mapper yields identifier-only references, never plausible values', () => {
-  it('maps the foreign key onto the SKU instead of dropping it', () => {
-    const sku = mapSkuRow({ skuID: SKU_ID, productID: PRODUCT_ID });
-
-    expect(sku.product?.productID).toBe(PRODUCT_ID);
-    // Only the identifier: a reference may not answer a non-identifier read with a plausible value.
-    expect(sku.product?.calculatedTitle).toBeUndefined();
-  });
-
-  it('leaves the association ABSENT when the row carries no foreign key', () => {
-    const sku = mapSkuRow({ skuID: SKU_ID });
-
-    expect('product' in sku).toBe(false);
-  });
-
-  it('refuses every value read of an unresolved default-SKU reference, so no product renders free', () => {
-    const product = mapProductRow({
-      productID: PRODUCT_ID,
-      defaultSkuID: UNRESOLVED_DEFAULT_SKU_ID,
-    });
-
-    expect(readProductDefaultSkuId(product.defaultSku ?? {})).toBe(UNRESOLVED_DEFAULT_SKU_ID);
-    // `Product.getPrice` delegates here, so a silent `0` would advertise a free product.
-    expect(() => product.getPrice()).toThrow(DomainError);
+    /*
+     * `ProductFeedRenderOptions.signal` is part of the builder's declared public surface, so the
+     * cancellation path is asserted here. It carries no legacy counterpart — the legacy view had a
+     * 360-second request budget (`:L9`, M2) and no cancellation concept at all — and this case invents no
+     * timeout, no budget and no delivery policy on the back of it.
+     */
+    expect(error).toBeInstanceOf(Error);
+    expect(error.message.length).toBeGreaterThan(0);
   });
 });
