@@ -3283,6 +3283,18 @@ export class ProductService {
    * across boundaries would leave a product row with no SKUs, or SKUs with no default, after a partial
    * failure. The boundary is the caller's, exactly as before.
    *
+   * ⭐ AND THE HOLDER OF THAT BOUNDARY IS NOW NAMEABLE, WHICH IT WAS NOT WHEN THE LINE ABOVE WAS
+   * WRITTEN. `UnitOfWork.runScoped` is the member; a writing route reaches it through a boundary that
+   * builds this service's whole collaborator graph FROM the transaction's scope and then settles on
+   * `product.hasErrors()` — the same re-read step 5 performs below. `src/handlers/skuHandler.ts`
+   * carries the delivered shape for SKU creation (`createProductSkuCreationBoundary`), and it is the
+   * shape every route that calls THIS member is obliged to reuse — the obligation belongs to the
+   * handler layer, so it is stated here rather than discharged here.
+   * The distinction that matters to THIS file is unchanged:
+   * this member neither opens nor settles anything, and it must not learn how to — its steps are
+   * sequential and its gate is `hasErrors()`, exactly as the legacy has them, whichever boundary
+   * encloses the call.
+   *
    * TEST PROVENANCE: NET-NEW as a service member, with TRACEABLE neighbours.
    * `meta/tests/unit/IssuesTest.cfc:L51-L71` (`issue_1097`) populates, saves and deletes a product with
    * a nested product-type struct and therefore exercises steps 1, 3 and 5 end to end.
