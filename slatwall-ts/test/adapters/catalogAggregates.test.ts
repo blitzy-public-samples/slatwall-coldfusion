@@ -34,7 +34,10 @@
  * TEST PROVENANCE: every case is **NET-NEW**. AAP 0.6.5.2 records that no legacy data-access test exists
  * for this slice, and none exists for the framework smart list either (AAP 0.8.3.7).
  */
-import { createCatalogAggregateLoaders } from '../../src/adapters/mysql/catalogAggregates';
+import {
+  attachSkuOptions,
+  createCatalogAggregateLoaders,
+} from '../../src/adapters/mysql/catalogAggregates';
 import type { ExactDecimal } from '../../src/util/formatting';
 import { toExactDecimal } from '../../src/util/formatting';
 import { SmartListQueryBuilder } from '../../src/adapters/mysql/SmartListQueryBuilder';
@@ -47,6 +50,7 @@ import type { Option } from '../../src/domain/option/Option';
 import type { Product, ProductDefaultSkuDelegate } from '../../src/domain/product/Product';
 import type { Sku } from '../../src/domain/sku/Sku';
 import type { SmartListRecord } from '../../src/ports/SmartListQueryPort';
+import { buildSku } from '../support/inMemoryRepositories';
 
 /* ================================================================================================
  * MIN-01 — THE ELEMENT TYPE IS DERIVED FROM THE ROOT ENTITY, PINNED HERE RATHER THAN ASSUMED
@@ -155,6 +159,20 @@ function makeBinderSpy(price: number): {
       },
     },
   };
+}
+
+/**
+ * Identifies the product-load statement the SKU and option roots' loaders issue.
+ *
+ * ⚠️ MATCHED ON THE QUALIFIED PROJECTION, AND WRITTEN ONCE FOR A REASON THE TWO NEGATIVE ASSERTIONS
+ * BELOW DEPEND ON. `catalogAggregates.projectionFor` qualifies every projected column with its
+ * whitelisted table name, so the product load now opens `SELECT SwProduct.productID`. Three inline
+ * `startsWith` calls against a stale prefix would leave the two NEGATIVE assertions passing vacuously —
+ * a predicate that can never match proves nothing about the statement it claims is absent — so the
+ * prefix lives here, where the POSITIVE assertion breaks first and forces the others to stay honest.
+ */
+function isProductLoad(sql: string): boolean {
+  return sql.startsWith('SELECT SwProduct.productID');
 }
 
 describe('SmartListQueryBuilder aggregate materialization — INT-02, the SKU root', () => {
@@ -275,9 +293,7 @@ describe('SmartListQueryBuilder aggregate materialization — INT-02, the SKU ro
 
     await builder.execute({ entityName: 'SlatwallSku' });
 
-    const productLookups = journal.statements.filter((statement) =>
-      statement.sql.startsWith('SELECT productID'),
-    );
+    const productLookups = journal.statements.filter((statement) => isProductLoad(statement.sql));
     /* Two SKUs naming one product, and the builder materialises `records` and `pageRecords` separately —
      * so a naive implementation would issue up to four. De-duplication across the whole invocation is
      * what makes it one. */
@@ -324,7 +340,7 @@ describe('SmartListQueryBuilder aggregate materialization — INT-02, the SKU ro
     expect(result.records).toEqual([]);
     /* `IN ()` is not legal SQL and there is nothing to ask for. */
     expect(journal.statements.some((statement) => statement.sql.includes('IN ()'))).toBe(false);
-    expect(journal.statements.filter((s) => s.sql.startsWith('SELECT productID'))).toHaveLength(0);
+    expect(journal.statements.filter((s) => isProductLoad(s.sql))).toHaveLength(0);
   });
 
   it('binds every identifier positionally and interpolates none', async () => {
@@ -380,7 +396,7 @@ describe('SmartListQueryBuilder aggregate materialization — DATA-02, the optio
 
     /* The option root touches no product and therefore no default SKU. */
     expect(binder.boundSkuIds).toEqual([]);
-    expect(journal.statements.some((s) => s.sql.startsWith('SELECT productID'))).toBe(false);
+    expect(journal.statements.some((s) => isProductLoad(s.sql))).toBe(false);
   });
 
   it('leaves the group absent when the column is empty, deferring to the consumer guard', async () => {
@@ -601,5 +617,180 @@ describe('SmartListQueryBuilder aggregate materialization — the roots that dec
      * which is the asymmetry the port's contract insists on.
      */
     expect(journal.statements).toHaveLength(2);
+  });
+});
+
+/*
+ * ===================================================================================================
+ * F2 — THE JOINED OPTION FETCH, ASSERTED ON ITS STATEMENT TEXT RATHER THAN ON ITS OBJECTS
+ * ===================================================================================================
+ * These cases exist because a whole class of defect was invisible to this suite. Every case above
+ * asserts on hydrated OBJECTS, and an in-memory double answers whatever shape it is asked for, so a
+ * statement no server would accept still produced a green run. `attachSkuOptions` — the port of
+ * `model/dao/SkuDAO.cfc:L157`'s `INNER JOIN FETCH sku.options`, and the only JOIN in the module — was
+ * emitting `SELECT link.skuID, optionID, …` with the option's own columns UNQUALIFIED. Both joined
+ * tables declare `optionID`, so MySQL refused the statement outright:
+ *
+ *   ER_NON_UNIQ_ERROR (1052): Column 'optionID' in field list is ambiguous
+ *
+ * That made `SkuRepository.findByProduct(product, true)` — and through it `SkuService.getProductSkus`
+ * with the fetch flag raised, an AAP 0.4.2.2 public member — non-functional against the real `Sw*`
+ * schema on EVERY invocation, while 779 tests stayed green.
+ *
+ * So these cases read the SQL rather than the objects, which is the half of the gate a suite with no
+ * database can hold. The other half was executed against MySQL 8.4.11 in a disposable schema shaped
+ * from the legacy column declarations, where the same statement failed before this fix and succeeds
+ * after it.
+ *
+ * ⚠️ THE LAST CASE IS THE ONE THAT CLOSES THE CLASS. The `*_PROJECTION` constants are shared across
+ * every loader in the module, so qualifying only the join would leave the next join to be written
+ * carrying the same fault. It asserts that NO projection this module emits is bare, wherever it
+ * appears — which is the property {@link projectionFor} now guarantees by construction.
+ *
+ * TEST PROVENANCE: every case is **NET-NEW**. AAP 0.6.5.2 records that no legacy data-access test
+ * exists for this slice.
+ */
+describe('F2 — the joined option fetch emits a statement a real server accepts', () => {
+  /**
+   * Runs the joined option fetch for two SKUs that share one option.
+   *
+   * ⚠️ THE `SwSkuOption` FIXTURE ROWS CARRY THE OPTION'S COLUMNS TOO, and that is the join being
+   * modelled rather than a fixture shortcut: the double resolves a statement to ONE table by its `FROM`
+   * clause, so for a joined read the row it returns has to be the JOINED row — the link table's `skuID`
+   * alongside the option's own columns, which is exactly what the server hands back.
+   */
+  async function fetchOptions(): Promise<{
+    readonly journal: Journal;
+    readonly skus: readonly Sku[];
+  }> {
+    const { executor, journal } = makeExecutor({
+      SwSkuOption: [
+        { skuID: ID.sku, optionID: ID.option, optionName: 'Small', optionGroupID: ID.optionGroup },
+        {
+          skuID: ID.siblingSku,
+          optionID: ID.option,
+          optionName: 'Small',
+          optionGroupID: ID.optionGroup,
+        },
+      ],
+      SwOptionGroup: [{ optionGroupID: ID.optionGroup, optionGroupCode: 'size' }],
+    });
+
+    const skus = [buildSku({ skuID: ID.sku }), buildSku({ skuID: ID.siblingSku })];
+    await attachSkuOptions(executor, skus);
+
+    return { journal, skus };
+  }
+
+  /** The one joined statement in the module, located by its `INNER JOIN` rather than by position. */
+  function joinedStatement(journal: Journal): {
+    readonly sql: string;
+    readonly params: readonly unknown[];
+  } {
+    const statement = journal.statements.find((candidate) =>
+      candidate.sql.includes('INNER JOIN SwOption'),
+    );
+    if (statement === undefined) {
+      throw new Error('the joined option fetch was never issued');
+    }
+    return statement;
+  }
+
+  /** The projected identifier list of a statement, or an empty string when it projects none. */
+  function projectionOf(sql: string): string {
+    return /^SELECT (.*?) FROM /.exec(sql)?.[1] ?? '';
+  }
+
+  it('qualifies EVERY projected column, so the field list carries no bare identifier', async () => {
+    const { journal } = await fetchOptions();
+    const projected = projectionOf(joinedStatement(journal).sql).split(', ');
+
+    /*
+     * Read off the statement rather than compared against a literal list, so the assertion stays true
+     * as the option's column set grows: `link.` is the link table's alias and `SwOption.` is the
+     * whitelisted table name, and those are the only two qualifiers this statement may carry.
+     */
+    expect(projected.length).toBeGreaterThan(1);
+    for (const column of projected) {
+      expect(column).toMatch(/^(?:link|SwOption)\.[A-Za-z]+$/);
+    }
+  });
+
+  it('never projects a bare `optionID`, the column both joined tables declare', async () => {
+    const { journal } = await fetchOptions();
+    const projection = projectionOf(joinedStatement(journal).sql);
+
+    /* The exact shape MySQL rejected: `optionID` with nothing in front of it. */
+    expect(projection.split(', ')).not.toContain('optionID');
+    expect(projection).toContain('SwOption.optionID');
+    expect(projection).toContain('link.skuID');
+  });
+
+  it('binds one placeholder per requested SKU and interpolates no value', async () => {
+    const { journal } = await fetchOptions();
+    const statement = joinedStatement(journal);
+
+    /* TR-4 — placeholder count equals parameter count, and every value travels as a parameter. */
+    expect((statement.sql.match(/\?/g) ?? []).length).toBe(statement.params.length);
+    expect(statement.params).toEqual([ID.sku, ID.siblingSku]);
+    expect(statement.sql).not.toContain(ID.sku);
+    expect(statement.sql).not.toContain(ID.siblingSku);
+    expect(statement.sql).not.toContain("'");
+  });
+
+  it('hydrates the options AND their groups onto every SKU that owns them', async () => {
+    const { skus } = await fetchOptions();
+
+    expect(skus).toHaveLength(2);
+    for (const sku of skus) {
+      expect(sku.options).toHaveLength(1);
+      /* The group comes with the option because the members that matter read through it:
+       * `Sku.generateImageFileName` reads `option.getOptionGroup().getImageGroupFlag()`
+       * [model/entity/Sku.cfc:L134]. */
+      expect(sku.options[0]?.optionGroup?.optionGroupCode).toBe('size');
+    }
+  });
+
+  it('qualifies the single-table loaders too, so no shared projection is a join hazard', async () => {
+    const { executor, journal } = makeExecutor({
+      SwProduct: [
+        {
+          productID: ID.product,
+          productName: 'Feed Product',
+          productTypeID: ID.productType,
+          brandID: ID.brand,
+          defaultSkuID: ID.defaultSku,
+        },
+      ],
+      SwProductType: [{ productTypeID: ID.productType, productTypeName: 'Merchandise' }],
+      SwBrand: [{ brandID: ID.brand, brandName: 'Nike' }],
+      SwSku: [
+        { skuID: ID.defaultSku, skuCode: 'SKU-DEFAULT', price: '99.00', productID: ID.product },
+      ],
+    });
+    const builder = new SmartListQueryBuilder(
+      executor,
+      createCatalogAggregateLoaders(makeBinderSpy(99).dependencies),
+    );
+
+    await builder.execute({ entityName: 'SlatwallProduct' });
+
+    /*
+     * The product root exercises four of the module's five projection constants in one pass. The
+     * builder's own record statement projects the base alias with a star and the count statement
+     * projects an aggregate, so neither names a column and both are excluded — what remains is exactly
+     * the loader statements, every one of which must qualify.
+     */
+    const projections = journal.statements
+      .map((statement) => projectionOf(statement.sql))
+      .filter((projection) => projection !== '' && !projection.includes('*'))
+      .filter((projection) => !projection.includes('recordsCount'));
+
+    expect(projections.length).toBeGreaterThan(0);
+    for (const projection of projections) {
+      for (const column of projection.split(', ')) {
+        expect(column).toMatch(/^[A-Za-z]+\.[A-Za-z]+$/);
+      }
+    }
   });
 });

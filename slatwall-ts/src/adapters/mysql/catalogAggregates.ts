@@ -135,14 +135,42 @@ const COLUMN = Object.freeze({
 });
 
 /**
- * Builds an explicit projection for one table.
+ * Builds an explicit, TABLE-QUALIFIED projection for one table.
  *
  * Explicit rather than `*` for the reason `MySqlSkuRepository` states about its own projection: it keeps
  * the statement stable if the physical table ever carries a column the entity does not declare. Column
  * order is immaterial — every mapper reads by name.
+ *
+ * ⭐ QUALIFICATION IS THE DEFAULT, AND IT IS THE FIX FOR A DEFECT THAT COULD ONLY BE SEEN ON A REAL
+ * SERVER. This function used to return BARE column names. That is safe in the three single-table
+ * statements below and FATAL in the one join: {@link attachSkuOptions} reads
+ * `SwSkuOption link INNER JOIN SwOption`, and `optionID` is a column of BOTH tables, so MySQL refused
+ * the whole statement with `ER_NON_UNIQ_ERROR (1052): Column 'optionID' in field list is ambiguous`.
+ * `SwSkuOption.optionID` is the port's own schema contract — `MySqlSkuRepository.persistSku` writes
+ * `INSERT INTO SwSkuOption (skuID, optionID)` and `findSkusBySelectedOptions` reads `so.optionID`
+ * (AAP §0.3.3.1) — so the collision is structural rather than incidental, and every SKU-option fetch
+ * through `SkuRepository.findByProduct` with `fetchOptions` raised failed on every invocation.
+ *
+ * ⚠️ FIXING THE ONE CALLER WOULD HAVE LEFT THE TRAP IN PLACE. A projection builder that takes a table
+ * name and then discards it is an invitation: every `*_PROJECTION` constant below reads as safe, and the
+ * next joined statement that reuses one reproduces the same failure with no warning. Qualifying HERE
+ * makes every projection in this module safe in a join by construction, which is the difference between
+ * fixing the instance and closing the class.
+ *
+ * ⚠️ THE QUALIFIER IS THE VALIDATED PHYSICAL TABLE NAME, NEVER A CALLER-SUPPLIED ALIAS. `table` has
+ * already been through {@link assertTableName} — the parameter type admits nothing else — so the emitted
+ * identifier is drawn from the same whitelist as the columns (AAP §0.7.3: "identifiers built only from
+ * validated whitelists"). No alias parameter is accepted, because an alias is a free string and would
+ * reopen the identifier surface the whitelist exists to close. Statements that need an ALIASED
+ * projection build one from the whitelist themselves, as `MySqlSkuRepository.hydrateSkuOptions` does.
+ *
+ * ⚠️ AND IT COSTS NOTHING AT EITHER END. Every single-table statement in this module names its table in
+ * `FROM` WITHOUT an alias, so `SwProduct.productID` resolves exactly as `productID` did; and the driver
+ * returns result keys UNQUALIFIED (`productID`, not `SwProduct.productID`), so every row mapper reads
+ * the same field names it always read and none of them changes.
  */
 function projectionFor(table: PhysicalTableName, columns: readonly string[]): string {
-  return columns.map((column) => assertColumnName(table, column)).join(', ');
+  return columns.map((column) => `${table}.${assertColumnName(table, column)}`).join(', ');
 }
 
 const PRODUCT_PROJECTION = projectionFor(PRODUCT_TABLE, [
@@ -726,6 +754,20 @@ export async function attachSkuOptions(executor: SqlExecutor, skus: readonly Sku
   }
 
   const placeholders = skuIdentifiers.map(() => '?').join(', ');
+  /*
+   * ⚠️ THE ONLY JOIN IN THIS MODULE, AND THEREFORE THE ONLY STATEMENT WHERE AN UNQUALIFIED PROJECTION
+   * IS FATAL. Both tables declare `optionID` — the link table because that IS the association, the
+   * option table because that is its primary key — so a bare `optionID` in the field list is ambiguous
+   * and MySQL refuses the statement outright with `ER_NON_UNIQ_ERROR (1052)` rather than guessing. That
+   * is what happened while {@link projectionFor} emitted bare names: this statement could not run at
+   * all, so `SkuRepository.findByProduct` with `fetchOptions` raised — the port of
+   * `model/dao/SkuDAO.cfc:L157`'s `INNER JOIN FETCH sku.options` — failed on every invocation.
+   *
+   * Every projected identifier below is now qualified: `link.` for the link table's own column, and the
+   * whitelisted table name for the option's columns, which {@link projectionFor} supplies. The two sides
+   * of the `ON` clause were already qualified and are unchanged, as are the bound parameters and their
+   * order (TR-4).
+   */
   const rows = await executor.execute(
     `SELECT link.${COLUMN.skuOptionSkuID}, ${OPTION_PROJECTION} ` +
       `FROM ${SKU_OPTION_TABLE} link ` +

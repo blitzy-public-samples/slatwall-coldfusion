@@ -122,7 +122,14 @@ import { IMAGE_UPLOAD_ALLOWED_EXTENSIONS } from '../../src/ports/ImagePathPort';
 import type { SmartListJoin } from '../../src/ports/SmartListQueryPort';
 import { resolveSmartListPropertyIdentifier } from '../../src/ports/SmartListQueryPort';
 import type { SkuSearchRow } from '../../src/ports/repositories/SkuRepository';
+import {
+  createOptionGroupSortOrderMemo,
+  MySqlSkuRepository,
+} from '../../src/adapters/mysql/MySqlSkuRepository';
+import { QueryRunner } from '../../src/adapters/mysql/QueryRunner';
+import { UniquePropertyChecker } from '../../src/adapters/mysql/UniquePropertyChecker';
 import { UnitOfWork } from '../../src/adapters/mysql/UnitOfWork';
+import { Validator } from '../../src/validation/Validator';
 import { OptionService } from '../../src/services/OptionService';
 import type { ManagedSku } from '../../src/services/SkuService';
 import {
@@ -540,6 +547,19 @@ function buildHarness(options: HarnessOptions = {}): Harness {
  * to instantiate the real implementation.
  */
 
+/** One statement the probe was asked to run, and which channel it arrived on. */
+interface DriverStatement {
+  /** `'transaction'` for the boundary's own connection, `'pool'` for anything that bypassed it. */
+  readonly channel: 'transaction' | 'pool';
+  /** `'write'` for INSERT/UPDATE/DELETE/REPLACE, `'read'` for everything else. */
+  readonly kind: 'read' | 'write';
+  readonly sql: string;
+  readonly params: readonly unknown[];
+}
+
+/** The error the POOL channel raises, quoted in the assertions that depend on it. */
+const POOL_EXECUTOR_USED_MESSAGE = 'POOL EXECUTOR USED';
+
 /** One transactional connection the probe handed out, plus the lifecycle it observed. */
 interface DriverProbe {
   readonly pool: {
@@ -555,14 +575,57 @@ interface DriverProbe {
   };
   /** `getConnection`, `begin`, `commit`, `rollback`, `release`, `destroy` — in the order they happened. */
   readonly lifecycle: readonly string[];
+  /** Every statement either channel was asked to run, in order, across both channels. */
+  readonly statements: readonly DriverStatement[];
+}
+
+/**
+ * Classifies a statement by what it does, which is all the probe needs to answer it correctly.
+ *
+ * A read is answered with an empty row list and a write with an affected-row acknowledgement, because
+ * `UnitOfWork.createExecutor` REFUSES a write whose result carries no `affectedRows` — deliberately, so
+ * that a read routed into `executeMutation` cannot be silently reported as "affected nothing". A probe
+ * that answered every statement with an empty list could therefore never let a real write through.
+ *
+ * @param sql - the statement text as issued.
+ * @returns `'write'` for the four mutating verbs, `'read'` otherwise.
+ */
+function classifyStatement(sql: string): 'read' | 'write' {
+  return /^\s*(?:insert|update|delete|replace)\b/i.test(sql) ? 'write' : 'read';
 }
 
 function createDriverProbe(): DriverProbe {
   const lifecycle: string[] = [];
-  const emptyResult = (): Promise<[unknown, unknown[]]> => Promise.resolve([[], []]);
+  const statements: DriverStatement[] = [];
+
+  const answer = (
+    channel: 'transaction' | 'pool',
+    sql: string,
+    values: readonly unknown[],
+  ): Promise<[unknown, unknown[]]> => {
+    const kind = classifyStatement(sql);
+    statements.push({ channel, kind, sql, params: [...values] });
+
+    /*
+     * ⛔ THE POOL CHANNEL IS POISONED, AND THAT IS THE ASSERTION RATHER THAN A CONVENIENCE. Inside a
+     * transaction boundary NOTHING may reach the pool: a statement that did would run on a different
+     * connection, outside the transaction, where it can neither see the boundary's uncommitted writes
+     * (M6) nor be discarded by its rollback. Answering such a statement successfully would let that
+     * defect pass as a green test — which is exactly what happened while `withExecutor` had no caller —
+     * so the probe fails loudly instead. A test that legitimately wants a pool-channel statement wants
+     * a different double.
+     */
+    if (channel === 'pool') {
+      return Promise.reject(new Error(POOL_EXECUTOR_USED_MESSAGE));
+    }
+
+    /* A write acknowledgement for a write, an empty result set for a read. */
+    return Promise.resolve(kind === 'write' ? [{ affectedRows: 1 }, []] : [[], []]);
+  };
 
   const connection = {
-    execute: (): Promise<[unknown, unknown[]]> => emptyResult(),
+    execute: (sql: string, values: readonly unknown[]): Promise<[unknown, unknown[]]> =>
+      answer('transaction', sql, values),
     beginTransaction: (): Promise<void> => {
       lifecycle.push('begin');
 
@@ -588,8 +651,10 @@ function createDriverProbe(): DriverProbe {
 
   return {
     lifecycle,
+    statements,
     pool: {
-      execute: (): Promise<[unknown, unknown[]]> => emptyResult(),
+      execute: (sql: string, values: readonly unknown[]): Promise<[unknown, unknown[]]> =>
+        answer('pool', sql, values),
       getConnection: (): Promise<typeof connection> => {
         lifecycle.push('getConnection');
 
@@ -1709,6 +1774,207 @@ describe('SkuService.createSkus — M6: the validation read-back contract (AAP �
     /* One acquisition, one begin, one commit, one release — a single boundary around all eight calls. */
     expect(probe.lifecycle).toEqual(['getConnection', 'begin', 'commit', 'release']);
     expect(readWriteTrace(harness)).toHaveLength(8);
+  });
+
+  it('NET-NEW M6 — the REAL adapter runs EVERY statement on the boundary connection, never the pool', async () => {
+    /*
+     * ===============================================================================================
+     * THE HALF OF M6 THAT NOTHING ELSE IN THIS SUITE COULD SEE
+     * ===============================================================================================
+     * Every other case here drives the IN-MEMORY SKU repository, so no statement is ever issued and no
+     * executor is ever consulted. `MySqlSkuRepository.withExecutor` — the member that adopts a
+     * boundary's connection — consequently had NO caller anywhere in `src/**` or `test/**`, and making
+     * it discard the executor it was handed left the whole suite green. A repository that stayed
+     * pool-bound inside a transaction would read and write on a DIFFERENT connection: it could not see
+     * the boundary's uncommitted sibling SKUs (which is precisely the M6 read-back the case above
+     * proves at the service layer) and a rollback could not take its writes back. That is a silent,
+     * total failure of the contract this checkpoint exists to protect, so it gets an assertion.
+     *
+     * ⭐ THIS CASE IS A MINIATURE COMPOSITION ROOT, DELIBERATELY. It builds the graph the way
+     * `src/config/container.ts` will: the concrete adapters are constructed ONCE against the pool, and
+     * then re-bound per boundary inside `buildGraph`. `runScoped` exists for exactly that shape — the
+     * graph is a function of the scope — so using it here is not test scaffolding, it is the intended
+     * call sequence executed early.
+     *
+     * ⚠️ BOTH RE-BINDABLE COLLABORATORS ARE RE-BOUND, because both read inside the boundary.
+     * `MySqlSkuRepository` serves the `hasUniqueOptions` read-back and the writes;
+     * `UniquePropertyChecker` serves the `skuCode` uniqueness rule declared at
+     * `model/validation/Sku.json:L4`. A test that re-bound only the repository would leave the
+     * uniqueness read on the pool and still pass, so it would document half a contract.
+     *
+     * ⛔ AND THE POOL IS POISONED RATHER THAN MERELY WATCHED. `createDriverProbe` rejects any statement
+     * that arrives on the pool channel, so a graph that failed to re-bind fails LOUDLY with
+     * `POOL EXECUTOR USED` instead of quietly succeeding against the wrong connection. The
+     * emptiness assertion below is the readable form of the same fact; the rejection is what makes it
+     * impossible to pass by accident.
+     *
+     * TEST PROVENANCE: NET-NEW. AAP 0.6.5.2 records that no legacy service test exists for this slice,
+     * and the legacy has no analogue of this contract at all — Hibachi's implicit request-end flush had
+     * no per-boundary executor to bind.
+     */
+    const { options } = buildColorAndSizeOptions();
+    const harness = buildHarness({ resolvableOptions: options });
+    const product = buildMerchandiseProduct();
+    const probe = createDriverProbe();
+    const unitOfWork = new UnitOfWork(probe.pool);
+
+    /*
+     * The pool-bound graph a composition root builds once per container: the REAL `QueryRunner` over the
+     * REAL pool seam, not a hand-written executor double. Nothing in this test is allowed to succeed
+     * through it.
+     */
+    const poolExecutor = new QueryRunner(probe.pool);
+    const poolBoundRepository = new MySqlSkuRepository(
+      poolExecutor,
+      createOptionGroupSortOrderMemo(),
+      harness.productTypeRoots.resolver,
+      /* The unauthenticated case, which is what `org/Hibachi/HibachiObject.cfc:L74-L76` yields. */
+      { getCurrentAccount: () => undefined },
+    );
+    const poolBoundChecker = new UniquePropertyChecker(poolExecutor);
+
+    let scopeExecutor: unknown;
+    let boundRepository: MySqlSkuRepository | undefined;
+
+    const created = await unitOfWork.runScoped(
+      (scope) => {
+        scopeExecutor = scope.executor;
+        boundRepository = poolBoundRepository.withExecutor(scope.executor);
+
+        return new SkuService(
+          boundRepository,
+          harness.optionService,
+          harness.subscriptionTerms.subscriptionTerms,
+          harness.accessContents.accessContents,
+          harness.imagePaths.imagePaths,
+          harness.skuQueries.smartList,
+          new Validator(poolBoundChecker.withExecutor(scope.executor)),
+          harness.productTypeRoots.resolver,
+          createDefaultSkuDelegate,
+        );
+      },
+      (service) =>
+        service.createSkus(product, {
+          price: TEST_MERCHANDISE_PRODUCT_PRICE,
+          /* Two combinations: two colours across one size, so a SECOND SKU exists to read back for. */
+          options: `${ID.red},${ID.blue},${ID.small}`,
+        }),
+      () => skuBatchHasErrors(product),
+    );
+
+    expect(created).toBe(true);
+    expect(skuBatchHasErrors(product)).toBe(false);
+    expect(probe.lifecycle).toEqual(['getConnection', 'begin', 'commit', 'release']);
+
+    /* [1] NOTHING BYPASSED THE BOUNDARY. */
+    expect(probe.statements.filter((statement) => statement.channel === 'pool')).toEqual([]);
+    expect(probe.statements.length).toBeGreaterThan(0);
+
+    /* [2] THE GRAPH ADOPTED THE SCOPE'S OWN EXECUTOR, and did so by producing a NEW instance rather
+     * than by mutating the pool-bound one — the distinction `withExecutor` documents (M7). */
+    expect(scopeExecutor).toBeDefined();
+    expect(boundRepository).toBeDefined();
+    expect(boundRepository).not.toBe(poolBoundRepository);
+
+    /* [3] THE STATEMENTS ARE THE REAL ADAPTER'S, so this is the ported SQL rather than a double's. */
+    const transactional = probe.statements.filter(
+      (statement) => statement.channel === 'transaction',
+    );
+    const indicesWhere = (predicate: (sql: string) => boolean): number[] =>
+      transactional.reduce<number[]>(
+        (found, statement, index) => (predicate(statement.sql) ? [...found, index] : found),
+        [],
+      );
+
+    /* `MySqlSkuRepository.findSkusBySelectedOptions` — the M6 read-back, T1 through T5 (AAP 0.3.3.1). */
+    const readBacks = indicesWhere((sql) => sql.startsWith('SELECT DISTINCT s.skuID'));
+    /* `UniquePropertyChecker.isUniqueProperty` — `model/validation/Sku.json:L4`'s `skuCode` rule. */
+    const uniquenessReads = indicesWhere((sql) => sql.startsWith('SELECT 1 FROM SwSku e'));
+    /* `MySqlSkuRepository.persistSku`'s insert-or-update probe, then the row, then the option links. */
+    const existenceProbes = indicesWhere(
+      (sql) => sql === 'SELECT skuID FROM SwSku WHERE skuID = ?',
+    );
+    const skuRowWrites = indicesWhere((sql) => sql.startsWith('INSERT INTO SwSku ('));
+    const linkWrites = indicesWhere((sql) => sql.startsWith('INSERT INTO SwSkuOption'));
+
+    /* One of each, per SKU, for the two combinations the odometer produced — and NOTHING ELSE, so an
+     * extra round trip introduced anywhere in this path shows up here rather than passing unnoticed. */
+    expect(readBacks).toHaveLength(2);
+    expect(uniquenessReads).toHaveLength(2);
+    expect(existenceProbes).toHaveLength(2);
+    expect(skuRowWrites).toHaveLength(2);
+    expect(linkWrites).toHaveLength(2);
+    expect(transactional).toHaveLength(10);
+
+    /* [4] THE INTERLEAVE IS THE POINT OF M6: the second SKU's uniqueness read-back is issued AFTER the
+     * first SKU's row and option links were written, on the SAME connection, so the legacy's
+     * flush-then-query visibility is reproduced rather than approximated. */
+    expect(requireAt(readBacks, 0, 'the first read-back')).toBeLessThan(
+      requireAt(skuRowWrites, 0, 'the first SKU row write'),
+    );
+    expect(requireAt(readBacks, 1, 'the second read-back')).toBeGreaterThan(
+      requireAt(linkWrites, 0, 'the first option-link write'),
+    );
+
+    /* [5] TR-4 — every value travelled as a bound parameter on the transaction channel. */
+    for (const statement of transactional) {
+      expect((statement.sql.match(/\?/g) ?? []).length).toBe(statement.params.length);
+      expect(statement.sql).not.toContain("'");
+    }
+  });
+
+  it('NET-NEW M6 — a graph that stays pool-bound inside the boundary FAILS rather than passing quietly', async () => {
+    /*
+     * The negative twin of the case above, and the reason the pool channel is poisoned rather than
+     * merely counted. Here the graph is built with the pool-bound repository ON PURPOSE — which is
+     * exactly the state a `withExecutor` that ignored its argument would produce — and the boundary must
+     * refuse the work instead of committing it against the wrong connection.
+     *
+     * Without this case the emptiness assertion above could still be satisfied by a suite in which no
+     * statement was ever issued at all, so this is what proves the probe can actually tell the two
+     * situations apart.
+     */
+    const { options } = buildColorAndSizeOptions();
+    const harness = buildHarness({ resolvableOptions: options });
+    const product = buildMerchandiseProduct();
+    const probe = createDriverProbe();
+    const unitOfWork = new UnitOfWork(probe.pool);
+
+    const poolExecutor = new QueryRunner(probe.pool);
+    const poolBoundRepository = new MySqlSkuRepository(
+      poolExecutor,
+      createOptionGroupSortOrderMemo(),
+      harness.productTypeRoots.resolver,
+      { getCurrentAccount: () => undefined },
+    );
+
+    await expect(
+      unitOfWork.runScoped(
+        () =>
+          new SkuService(
+            /* NOT re-bound. */
+            poolBoundRepository,
+            harness.optionService,
+            harness.subscriptionTerms.subscriptionTerms,
+            harness.accessContents.accessContents,
+            harness.imagePaths.imagePaths,
+            harness.skuQueries.smartList,
+            harness.validation.validator,
+            harness.productTypeRoots.resolver,
+            createDefaultSkuDelegate,
+          ),
+        (service) =>
+          service.createSkus(product, {
+            price: TEST_MERCHANDISE_PRODUCT_PRICE,
+            options: `${ID.red},${ID.blue},${ID.small}`,
+          }),
+        () => skuBatchHasErrors(product),
+      ),
+    ).rejects.toThrow(POOL_EXECUTOR_USED_MESSAGE);
+
+    /* The boundary unwound rather than committing, and the offending statement is on record. */
+    expect(probe.lifecycle).toEqual(['getConnection', 'begin', 'rollback', 'release']);
+    expect(probe.statements.filter((statement) => statement.channel === 'pool')).not.toEqual([]);
   });
 
   it('NET-NEW rolls the whole boundary back when the batch accumulated a finding, keeping the errors', async () => {

@@ -2596,59 +2596,31 @@ export class SkuService {
       sku.addErrors(findings.getErrors());
     }
 
-    /* ⭐ THE IDENTIFIER IS MINTED HERE, AND THE POSITION OF THIS LINE IS THE WHOLE OF THE DECISION.
-     *
-     * A SKU built by any of the five creation branches above carries {@link SKU_UNSAVED_ID_VALUE} —
-     * the empty string [model/entity/Sku.cfc:L52 `unsavedvalue="" default=""`] — because nothing in
-     * the ported creation path assigns one, exactly as nothing in the legacy creation path does.
-     * `model/service/SkuService.cfc:L58-L211` never touches `skuID`: the legacy identifier is produced
-     * by Hibernate's `generator="uuid"` AT THE MOMENT THE ROW IS WRITTEN, and AAP IR-6 records that
-     * generator as `createSlatwallUUID()` — 32 hexadecimal characters with no dashes.
-     *
-     * WRITE-TIME IS THEREFORE THE FAITHFUL MOMENT, AND EARLIER WOULD CHANGE BEHAVIOUR TWICE OVER.
-     * Minting in `newSku()` or anywhere before the rule pass would make `Sku.isNew()` false during
-     * relationship assembly, and `Sku.setProduct` [`model/entity/Sku.cfc:L108`] branches on exactly
-     * that: a NEW sku takes the append path unconditionally because CFML `or` short-circuits, whereas
-     * a sku with an identifier takes the `!has...` test instead. It would also change what
-     * `hasUniqueOptions` sees, because `model/entity/Sku.cfc:L763-L768`'s self-exclusion clause
-     * compares `skus[1].getSkuID()` against `getSkuID()` — a comparison the legacy performs while the
-     * subject's identifier is still the unsaved sentinel, which is precisely why AAP 0.6.2 calls that
-     * clause a defensive no-op. Assigning after validation and before the write preserves both.
-     *
-     * ⚠️ AND WITHOUT THIS LINE NOTHING COULD BE CREATED AT ALL. `SkuRepository.persistSku` refuses a
-     * SKU that still carries the sentinel — deliberately, because TR-5 requires a missing collaborator
-     * be surfaced rather than swallowed, and because a repository that minted its own identifier would
-     * hide the very question this comment answers. That refusal was reachable from every one of the
-     * five branches, so the guard was doing its job and the caller was not doing its own.
-     *
-     * The value is NOT validated for shape here, and the entity does not validate it either: neither
-     * does the legacy, and `src/util/uuid.ts` is the single place the format is decided. */
-    sku.skuID = createSlatwallUUID();
-
-    /* ⛔ THE PERSIST IS UNCONDITIONAL, AND DELIBERATELY NOT GATED ON THIS SKU VALIDATING CLEANLY.
-     *
-     * The legacy never conditions the write on the rule outcome either: `model/service/HibachiService.cfc`
-     * decides whether to keep the work at the SAVE boundary, and the batch's own gate is the
-     * `product.hasErrors()` check the caller performs afterwards. Skipping the write for a SKU that
-     * failed a rule would make the NEXT SKU's uniqueness read observe a different sibling set than the
-     * legacy shows it, which is exactly the silent divergence M6 is about. The enclosing transaction —
-     * opened and closed by the caller, never here — is what discards a failed batch. */
-
-    /* ⚠️ THE IDENTIFIER IS MINTED HERE, AND THIS LINE IS THE REASON A NEW SKU CAN BE WRITTEN AT ALL
+    /* ⭐ THE IDENTIFIER IS MINTED HERE, AND THE POSITION OF THIS LINE IS THE WHOLE OF THE DECISION
      * (IR-6).
      *
-     * `model/entity/Sku.cfc:L52` declares `skuID` as
+     * A SKU built by any of the five creation branches above carries {@link SKU_UNSAVED_ID_VALUE} —
+     * the empty string — because nothing in the ported creation path assigns one, exactly as nothing in
+     * the legacy creation path does. `model/entity/Sku.cfc:L52` declares the column as
      * `fieldtype="id" generator="uuid" ormtype="string" length="32" unsavedvalue="" default=""`, so the
      * legacy identifier is generated in APPLICATION CODE — `createSlatwallUUID()`
-     * [model/dao/HibachiDAO.cfc:L51-L53] — and never by the database. Hibernate performed that
-     * generation at FLUSH time, which is the moment this line reproduces: the graph is fully
-     * constructed, the rules have run, and the row is about to be written.
+     * [model/dao/HibachiDAO.cfc:L51-L53], recorded by AAP IR-6 as 32 hexadecimal characters with no
+     * dashes — and never by the database. `model/service/SkuService.cfc:L58-L211` never touches `skuID`
+     * at all; Hibernate produced it at FLUSH time, which is the moment this line reproduces: the graph
+     * is fully constructed, the rules have run, and the row is about to be written.
      *
-     * ⛔ IT IS NOT MINTED IN {@link SkuService.newSku}, AND THE PLACEMENT IS BEHAVIOUR RATHER THAN TASTE.
-     * `Sku.isNew()` tests `skuID === SKU_UNSAVED_ID_VALUE`, and {@link Sku.setProduct} branches on that
-     * answer to decide whether to append this SKU to the product's own collection. Assigning the
-     * identifier any earlier would flip `isNew()` to false while the graph was still being assembled and
-     * silently change that decision — the SKU would go unappended, and nothing would report it.
+     * ⛔ EARLIER WOULD CHANGE BEHAVIOUR TWICE OVER, so the placement is behaviour rather than taste.
+     * `Sku.isNew()` tests `skuID === SKU_UNSAVED_ID_VALUE`, and {@link Sku.setProduct}
+     * [model/entity/Sku.cfc:L108] branches on that answer to decide whether to append this SKU to the
+     * product's own collection: a NEW sku takes the append path unconditionally because CFML `or`
+     * short-circuits, whereas a sku that already carries an identifier takes the `!has...` test instead.
+     * Minting in {@link SkuService.newSku} — or anywhere before the rule pass — would flip `isNew()` to
+     * false while the graph was still being assembled, the SKU would go unappended, and nothing would
+     * report it. It would also change what `hasUniqueOptions` sees, because
+     * `model/entity/Sku.cfc:L763-L768`'s self-exclusion clause compares `skus[1].getSkuID()` against
+     * `getSkuID()` — a comparison the legacy performs while the subject's identifier is still the unsaved
+     * sentinel, which is precisely why AAP 0.6.2 calls that clause a defensive no-op. Assigning after
+     * validation and before the write preserves both.
      *
      * ⚠️ THE LEGACY ROUTES `isNew()` THROUGH TWO FURTHER MEMBERS AND THIS PORT DOES NOT, so the exposure
      * there is wider than it is here. `addAccessContent` guards its LOCAL append with this SKU's
@@ -2660,18 +2632,43 @@ export class SkuService {
      * this port does not model. One live dependency on `isNew()` during graph construction is therefore
      * enough to fix the placement, and it would still be the right placement if the other two returned.
      *
-     * ⛔ AND IT IS NOT MINTED IN THE REPOSITORY, unlike `MySqlBrandRepository.saveBrand` — because
-     * `SkuRepository.persistSku` is declared to REFUSE an unidentified SKU rather than to identify one,
-     * and that refusal is a real guard against a half-built entity reaching a statement. Both facts are
-     * kept: the identifier is assigned here, one statement before the write, and the repository's guard
-     * stays in place as defence in depth. It should now be unreachable from this path, which is exactly
-     * what a defence-in-depth check is for.
+     * ⚠️ AND WITHOUT THIS LINE NOTHING COULD BE CREATED AT ALL. `SkuRepository.persistSku` refuses a
+     * SKU that still carries the sentinel — deliberately, because TR-5 requires a missing collaborator be
+     * surfaced rather than swallowed, and because a repository that minted its own identifier would hide
+     * the very question this comment answers. That is also why the mint is NOT done in the repository,
+     * unlike `MySqlBrandRepository.saveBrand`: both facts are kept, with the identifier assigned here one
+     * statement before the write and the repository's refusal left in place as defence in depth. It
+     * should be unreachable from this path, which is exactly what a defence-in-depth check is for.
+     *
+     * ⛔ THE GUARD IS THE MINT — THERE IS EXACTLY ONE ASSIGNMENT, AND A SECOND ONE WAS REMOVED. An
+     * earlier revision of this method assigned unconditionally a few statements above and then repeated
+     * the assignment inside this guard, so two identifiers were generated per SKU, the first was
+     * discarded, and `skuID` could never still hold the sentinel by the time the guard was tested — the
+     * condition was dead code that contradicted its own note. Every current caller hands over a freshly
+     * created SKU, so nothing observable changed today; what changed is that the code now means what it
+     * says. Re-minting a key an entity already carries would orphan the row that key belongs to, and a
+     * single conditional assignment is the cheapest way to make that impossible rather than merely
+     * unlikely. This is a defect the PORT introduced, not one carried from the legacy, so it is corrected
+     * rather than annotated — AAP 0.6.7's preserve-and-annotate rule governs legacy behaviour, and the
+     * legacy mints exactly once.
      *
      * ⚠️ ONLY FOR A NEW SKU. An already-identified SKU keeps its identifier, so a re-save updates the
-     * row it belongs to rather than inserting a second one. */
+     * row it belongs to rather than inserting a second one.
+     *
+     * The value is NOT validated for shape here, and the entity does not validate it either: neither
+     * does the legacy, and `src/util/uuid.ts` is the single place the format is decided. */
     if (sku.skuID === SKU_UNSAVED_ID_VALUE) {
       sku.skuID = createSlatwallUUID();
     }
+
+    /* ⛔ THE PERSIST IS UNCONDITIONAL, AND DELIBERATELY NOT GATED ON THIS SKU VALIDATING CLEANLY.
+     *
+     * The legacy never conditions the write on the rule outcome either: `model/service/HibachiService.cfc`
+     * decides whether to keep the work at the SAVE boundary, and the batch's own gate is the
+     * `product.hasErrors()` check the caller performs afterwards. Skipping the write for a SKU that
+     * failed a rule would make the NEXT SKU's uniqueness read observe a different sibling set than the
+     * legacy shows it, which is exactly the silent divergence M6 is about. The enclosing transaction —
+     * opened and closed by the caller, never here — is what discards a failed batch. */
 
     await this.skuRepository.persistSku(sku);
 
