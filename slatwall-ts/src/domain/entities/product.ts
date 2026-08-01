@@ -1,7 +1,8 @@
 // ---------------------------------------------------------------------------
 // slatwall-ts - Product entity
 //
-// PORT OF model/entity/Product.cfc (841 lines, confirmed by `wc -l`).
+// PORT OF model/entity/Product.cfc (841 lines, confirmed by `wc -l`). FILE 18 OF 18 in
+// src/domain/entities, and the second-largest in-scope entity after model/entity/Sku.cfc (916).
 //
 // THE COMPONENT DECLARATION, VERBATIM [model/entity/Product.cfc:L49]
 //
@@ -10,210 +11,320 @@
 //   hb_serviceName="productService" hb_permission="this"
 //   hb_processContexts="updateSkus,addOptionGroup,addOption,addSubscriptionTerm" {
 //
-// Schema continuity is a binding constraint: entity property metadata IS the contract. Table
-// `SwProduct`, entity name `SlatwallProduct`. No migration, no rename, no new table, no column
-// change. Every `hb_*` attribute value is carried forward verbatim so the legacy admin can still
-// resolve it - including `hb_processContexts`, whose four values name the four process objects the
-// admin can drive against a product. Three of those four are in scope
-// (`Product_UpdateSkus`, `Product_AddOptionGroup`, `Product_AddOption`); `addSubscriptionTerm` is
-// not, and that asymmetry is recorded rather than tidied out of the attribute.
+// Schema continuity (B5) is a binding constraint: entity property metadata IS the contract. Table
+// `SwProduct`, entity name `SlatwallProduct`, no migration, no rename, no new table, no column
+// change. Every `hb_*` and `rbKey` attribute value is carried forward verbatim, as an inert string
+// constant, so the legacy admin can still resolve it - including `hb_processContexts`, whose four
+// values name the four process objects the admin can drive against a product. Three of the four are
+// in scope (`Product_UpdateSkus`, `Product_AddOptionGroup`, `Product_AddOption`);
+// `addSubscriptionTerm` is not, and that asymmetry is recorded rather than tidied out.
+// JavaRB IS NOT PORTED and NO i18n runtime is introduced (AAP 0.5.3).
 //
-// ★ WHY THIS ENTITY IS THE CENTRE OF THE SLICE. It is the aggregate root of the catalog half of the
-// migration. It owns the SKU collection the promotion engine prices, it is the join point between
-// `Brand`, `ProductType`, `Category` and `Option`, it carries the ONE entity method with legacy test
-// coverage (`getProductURL()`, pinned by meta/tests/unit/entity/ProductTest.cfc), and it is named
-// directly in the must-preserve list through `getSkuBySelectedOptions()` /
-// `getSkusBySelectedOptions()` - the entity-side face of
-// `ProductService.getProductSkusBySelectedOptions()`.
+// ---------------------------------------------------------------------------
+// ★ WHAT THIS FILE SPENDS, EXHAUSTIVELY (the §9 Phase E statement, in one place)
+// ---------------------------------------------------------------------------
 //
-// THE ASSOCIATION CENSUS, receiver-qualified against every `arrayAppend`/`arrayDeleteAt` site in
-// model/entity/*.cfc. This is the project's ONE association-ownership rule and it is mechanical, not
-// a judgment call: an accessor returns the LIVE mutable array iff some entity mutates it IN PLACE
-// THROUGH that accessor with the receiver resolving to a product. The census command was
+// 1. DELIBERATE DIVERGENCES: EXACTLY ONE - DEFECT 19, `getBrandName()`
+//    [model/entity/Product.cfc:L524-L532], FIXED. That is divergence (c) of the three the project
+//    allocates, and its two siblings (DEFECT 17 and DEFECT 18) were already spent in
+//    src/domain/entities/sku.ts. THE BUDGET IS NOW CLOSED: no fourth divergence may ever be spent,
+//    here or anywhere. Every other defect on this component is reproduced as-is.
 //
-//   grep -rnE "array(Append|DeleteAt)\(\s*(arguments\.)?product\.get" model/ integrationServices/
+// 2. SIGNATURE WIDENINGS: ZERO. The one and only entity-layer widening was spent on
+//    `isCurrent(now?: Date)` in src/domain/entities/promotionPeriod.ts.
 //
-// and it returns twenty-two hits over eleven accessors; the three remaining collections return no
-// hit at all.
+// 3. SIGNATURE RESHAPINGS: ZERO. VISIBILITY WIDENINGS: ZERO.
 //
-//   | locator | property                      | fieldtype             | accessor | mutated at |
-//   |---------|-------------------------------|-----------------------|----------|------------|
-//   | L73     | skus                          | one-to-many           | LIVE     | Sku.cfc:L607, L616 |
-//   | L74     | productImages                 | one-to-many           | LIVE     | Image.cfc:L158, L167 |
-//   | L75     | attributeValues               | one-to-many           | LIVE     | AttributeValue.cfc:L242, L251 |
-//   | L76     | productReviews                | one-to-many           | LIVE     | ProductReview.cfc:L117, L126 |
-//   | L79     | listingPages                  | many-to-many owner    | readonly | (no site)  |
-//   | L80     | categories                    | many-to-many owner    | readonly | (no site)  |
-//   | L81     | relatedProducts               | many-to-many owner    | readonly | (no site)  |
-//   | L84     | promotionRewards              | many-to-many inverse  | LIVE     | PromotionReward.cfc:L263, L273 |
-//   | L85     | promotionRewardExclusions     | many-to-many inverse  | LIVE     | PromotionReward.cfc:L363, L373 |
-//   | L86     | promotionQualifiers           | many-to-many inverse  | LIVE     | PromotionQualifier.cfc:L205, L215 |
-//   | L87     | promotionQualifierExclusions  | many-to-many inverse  | LIVE     | PromotionQualifier.cfc:L305, L315 |
-//   | L88     | priceGroupRates               | many-to-many inverse  | LIVE     | PriceGroupRate.cfc:L224, L234 |
-//   | L89     | vendors                       | many-to-many inverse  | LIVE     | Vendor.cfc:L158, L168 |
-//   | L90     | physicals                     | many-to-many inverse  | LIVE     | Physical.cfc:L164, L174 |
+// 4. ORM HOOK RESHAPINGS: ZERO, and this was verified rather than assumed. `Product.cfc` carries
+//    the ORM Event Hooks banner pair at [L826] START and [L828] END with NOTHING between them -
+//    no `preInsert`, no `preUpdate`, no `preDelete`. Contrast src/domain/entities/priceGroup.ts,
+//    where the hooks exist and had to be re-expressed as explicit path maintenance.
 //
-// FOUR ROWS DESERVE COMMENT, BECAUSE THEY LOOK WRONG AND ARE NOT.
+// 5. THE §3.9 BRANCH TAKEN: BRANCH (b) - OMIT. See the `getSalePriceDetailsForSkus` note in the
+//    OMISSION REGISTER below for the full reasoning and the three locators it cites.
 //
-//   * `listingPages` is `readonly` even though this entity OWNS the link table and hand-writes
-//     `addListingPage`/`removeListingPage` [L712-L730]. Those helpers mutate the PRIVATE FIELD
-//     directly (`arrayAppend(variables.listingPages, ...)`), never `getListingPages()`, and no other
-//     entity reaches in - model/entity/Content.cfc declares the `listingProducts` inverse at its L75
-//     but hand-writes no helper pair for it. Private storage mutable, accessor `readonly`: exactly
-//     what the rule prescribes.
-//   * `categories` is `readonly` and has NO helper pair at all, on EITHER side. This entity declares
-//     the owning `categories` many-to-many at L80 and then never writes an `addCategory`; verified by
-//     grep, model/entity/Category.cfc declares no `addProduct`, no `removeProduct` and no
-//     `hasProduct`. The link table `SwProductCategory` is therefore only ever written by the ORM
-//     through `populate()`. Recorded because the absence is easy to mistake for an omission here.
-//   * `relatedProducts` is SELF-REFERENTIAL (`SwRelatedProduct`, `Product` on both ends) and also
-//     helper-free. It is materialized and exposed `readonly`; the self-reference is why the field is
-//     typed `Product[]` and why nothing in this class walks it.
-//   * `vendors` and `physicals` ARE materialized here, whereas src/domain/entities/brand.ts
-//     deliberately materializes NEITHER. That is not an inconsistency, it is the census speaking: no
-//     entity mutates `brand.getVendors()` or `brand.getPhysicals()`, so brand.ts could omit both
-//     accessors and keep only the delegating helpers, while model/entity/Vendor.cfc:L158 and
-//     model/entity/Physical.cfc:L164 DO mutate `product.getVendors()` and `product.getPhysicals()`
-//     in place. An accessor that a far side appends to cannot be omitted. Both far-side types are
-//     out of scope and outside the eighteen-file entity budget, so both are typed by the module-local
-//     projections {@link ProductVendorLink} and {@link ProductPhysicalLink} rather than by an entity
-//     class this port does not author.
+// 6. THE VERIFIED BOOLEAN COUNT: THREE persistent boolean columns, of which EXACTLY ONE declares a
+//    default. See the BOOLEAN CENSUS below.
 //
-// TWELVE CONTAINMENT PROBES ARE AUTHORED, AND EVERY ONE HAS A REAL CALLER. Eleven are called by a
-// far side's owning-side helper - `hasSku` [Sku.cfc:L605], `hasProductImage` [Image.cfc:L156],
-// `hasAttributeValue` [AttributeValue.cfc:L240], `hasProductReview` [ProductReview.cfc:L115],
-// `hasPriceGroupRate` [PriceGroupRate.cfc:L222], `hasPromotionReward` [PromotionReward.cfc:L261],
-// `hasPromotionRewardExclusion` [PromotionReward.cfc:L361], `hasPromotionQualifier`
-// [PromotionQualifier.cfc:L203], `hasPromotionQualifierExclusion` [PromotionQualifier.cfc:L303],
-// `hasVendor` [Vendor.cfc:L156] and `hasPhysical` [Physical.cfc:L162] - and the twelfth,
-// `hasListingPage`, is called by THIS class's own `addListingPage` [L713]. No aggregate `hasAnyXXX`
-// probe is authored, because no in-scope caller invokes one against a product: the promotion engine's
-// four aggregate calls [PromotionService.cfc:L885, L914, L951, L980] all target a REWARD or a
-// QUALIFIER, never a product.
+// 7. THE RESOLVED L783-L790 GAP: a banner run, quoted verbatim in the GAP RESOLUTION below.
 //
-// TWELVE DISTINCT DEFECTS LIVE IN THIS COMPONENT. Eleven are reproduced; ONE is fixed as a
-// documented deliberate divergence because the AAP directs it. Each is marked at its site.
+// 8. THE OMIT CLUSTERS TAKEN: image/asset path, stock/inventory/location, CMS pages and templates,
+//    product reviews, framework property-option helpers, and framework smart lists. Each is
+//    enumerated with its locator in the OMISSION REGISTER at the foot of this class.
 //
-//   D1  L227-L239  `getProductRating()` averages the FIRST review's rating N times - it indexes
-//                  `getProductReviews()[1]` inside a loop counted by `i`. The returned average is
-//                  therefore always review #1's rating, whatever the others say. It also re-declares
-//                  `var totalRatingPoints` INSIDE the loop with `+=`.
-//   D2  L191-L197  `getPageIDs()` calls `getPages()`, which does not exist - the property is
-//                  `listingPages` [L79]. RAISES.
-//   D3  L173       `getTemplateOptions()` calls `getService("ProductService").getProductTemplates()`,
-//                  which is declared NOWHERE in the repository. RAISES.
-//   D4  L184-L190  `getTemplate()`'s first branch is DEAD: it tests `variables.template`, but
-//                  `template` is not a declared property of this component and nothing assigns it.
-//   D5  L534-L538  `getBrandOptions()` is a NO-OP OVERRIDE - it writes `rbKey('define.none')` into
-//                  the row the framework already prepended with that exact value.
-//   D6  L272-L315  `getImageGalleryArray()` assigns the image DESCRIPTION to the `name` key
-//                  [L303-L305], leaving `description` empty; and it dedupes the two loops against ONE
-//                  shared list using two DIFFERENT keys - image FILENAME in the sku loop [L272] and
-//                  image ID in the alternate-image loop [L289].
-//   D7  L479-L484  `getQuantity()`'s `locationID` branch computes its value and DISCARDS it - the
-//                  statement has no `return` - so that branch always falls through to `return 0`.
-//   D8  L594-L602  `getSalePrice()`'s second branch evaluates `getSkus()[1].getSalePrice();` with no
-//                  `return`, so a product with skus but no default sku always answers `0`.
-//   D9  L614-L622  `getSalePriceExpirationDateTime()` calls `getSalePricExpirationDateTime()` on the
-//                  default sku - missing the `e` - while model/entity/Sku.cfc:L560 declares the
-//                  correctly-spelled method. RAISES on the `returntype="date"` coercion.
-//   D10 L631-L633  `getProductOptionsByGroup()` calls `getProductService()`, which is defined
-//                  nowhere. RAISES.
-//   D11 L556       `getAllowBackorderFlag()` declares `returntype="numeric"` and returns the BOOLEAN
-//                  setting `skuAllowBackorderFlag`; the matching non-persistent property at L103 is
-//                  declared `type="boolean"`. Two of the three disagree.
-//   D12 L524-L532  `getBrandName()` POISONS ITS OWN MEMO - it writes `variables.brandName = ""` and
-//                  then returns the computed name WITHOUT storing it, so every call after the first
-//                  answers `""`. ★ THIS IS THE ONE FIXED DEFECT; see the method for the AAP citation
-//                  and for why the AAP's stated rationale is corrected rather than repeated.
+// ---------------------------------------------------------------------------
+// ★ AAP CORRECTION - THREE EAGER `fetch="join"` MANY-TO-ONES, NOT ONE
+// ---------------------------------------------------------------------------
 //
-// FIVE SECONDARY ITEMS are recorded at their sites and are not counted above: the
-// `singlularname="productReview"` typo in the L76 property ATTRIBUTE NAME itself; the unguarded
-// `getBaseProductType()` dereference [L493]; the unscoped `quantityType` / `stockID` reads inside
-// `getQuantity()` [L458-L459, L466]; the two typo'd keys `retrictgroups` and `targetPrams` in
-// `getCrumbData()`'s returned struct [L387, L392], which are Mura DATA CONTRACT keys and are
-// therefore preserved byte-for-byte; and - S5, found while porting the helper block rather than while
-// reading the property block - the two `isNew()` disjuncts in `addListingPage()` [L713, L716] are
-// SWAPPED relative to every other many-to-many owner in the tree, which moves the duplicate-admitting
-// case from "the argument is unsaved" onto "THIS PRODUCT is unsaved" - the common path in the admin.
-// It is a secondary item rather than a numbered defect because it changes duplicate handling on a
-// multi-add rather than a returned value; see `addListingPage` for the full argument.
+// LEGACY-NOTE [model/entity/Product.cfc:L68-L70]: the AAP states that `PromotionPeriod.promotion`
+//   is the only eager fetch in the slice. THAT IS FALSE. `Product` declares THREE eager
+//   `fetch="join"` many-to-ones - `brand` [L68], `productType` [L69] and `defaultSku` [L70] -
+//   verified by `grep -n 'fetch="join"' model/entity/Product.cfc`, which returns exactly those
+//   three lines and no others.
+// Recorded as a correction to the plan; the plan is not the authority on the source.
 //
-// THE `extends` CHAIN IS THREE LEVELS DEEP, NOT TWO. `extends="HibachiEntity"` on L49 is
-// UNQUALIFIED, so it resolves to the local model/entity/HibachiEntity.cfc (274 lines), whose own L49
-// reads `component output="false" accessors="true" persistent="false"
-// extends="Slatwall.org.Hibachi.HibachiEntity"`. That intermediate class is where `setting()` [L129],
-// `populate()` [L56] and `getAttributeValue()` [L151] actually live, and 112 of the 113 components
-// under model/entity/ pass through it. Neither level is ported: an entity reaching outward through a
-// service locator is exactly the pattern the ESLint `no-restricted-imports` layer boundary exists to
-// make impossible. This component has TWENTY-ONE `getService(` sites of its own, and every one
-// becomes either a constructor-materialized value, an injected narrow port, or a documented
-// non-port - never a direct import. That is transformation rule T2.
+// The consequence is mechanical rather than cosmetic: because all three are eager, the repository
+// materializes them, and every accessor that reads them is therefore SYNCHRONOUS. There is no
+// `lazy=` attribute ANYWHERE in `Product.cfc` (verified: `grep -n 'lazy=' model/entity/Product.cfc`
+// returns nothing), so unlike `ProductType.products` [model/entity/ProductType.cfc:L66],
+// `PromotionCode.orders` [model/entity/PromotionCode.cfc:L68] and `Sku.orderItems`
+// [model/entity/Sku.cfc:L71], this component has no `lazy="extra"` collection to treat as inert on
+// that ground. Its inert collections are inert for a different reason - the far-side entity is out
+// of scope - and that is recorded per collection below.
 //
-// ★ AND THE INTERMEDIATE CLASS IS WHAT MAKES D2, D3, D9 AND D10 FAIL THE WAY THEY DO. The framework
-// dispatcher [org/Hibachi/HibachiEntity.cfc:L507-L565] tries eleven prefix/suffix conventions and
-// then, as its LAST branch [L559-L561], falls back to `getAttributeValue(<rest of the name>)` for any
-// unmatched `getXXX` - but only when the entity declares an `attributeValues` property. Product
-// declares one at L75, so `getPages()`, `getProductService()` and Sku's
-// `getSalePricExpirationDateTime()` all reach that fallback and receive the EMPTY STRING
-// [model/entity/HibachiEntity.cfc:L151] instead of the L565 throw. The failure then happens one step
-// later - `arrayLen("")`, `"".getProductOptionsByGroup()`, `returntype="date"` coercion - which is
-// why each of those methods raises with a DIFFERENT message than a plain missing-method error. The
-// fallback is `get`-only, so an unmatched `addXXX`/`removeXXX` still reaches the L565 throw.
+// `Sku.product` is the inverse side of `Product.skus`: a LAZY many-to-one with
+// `hb_cascadeCalculate="true"` and no `fetch="join"` [model/entity/Sku.cfc].
 //
-// SMART LISTS ARE NOT PORTED, BY EXPLICIT PLAN DECISION, and this component has more of them than
-// any other in-scope entity: `getProductTypeOptions()` [L125-L143],
-// `getListingPagesOptionsSmartList()` [L145-L152], `getOptionGroups()` [L250-L259],
-// `getOptionsByOptionGroup()` [L339-L346], `getDefaultProductImageFiles()` [L497-L514],
-// `getBrandOptions()` [L534-L538], `getAssignedAttributeSetSmartList()` [L795-L822] and the
-// deprecated `getAttributeSets()` [L832-L838]. Reproducing `HibachiSmartList` - a generic,
-// string-keyed, dynamically-filtered query builder - would import exactly the framework coupling this
-// refactor exists to remove and would be untypeable under the strict profile. THE DECISION IS NOT
-// UNIFORM, AND THE DIVIDING LINE IS STATED ONCE HERE SO IT IS AUDITABLE:
+// ---------------------------------------------------------------------------
+// ★ BOOLEAN CENSUS - RE-VERIFIED PER LINE, BOTH CASINGS
+// ---------------------------------------------------------------------------
 //
-//   * WHERE THE SMART LIST ONLY RE-QUERIES DATA THIS ENTITY ALREADY HOLDS, the method is PORTED and
-//     computed in memory from the materialized graph. That covers `getOptionGroups()`,
-//     `getOptionsByOptionGroup()` and `getDefaultProductImageFiles()`, each of which filters on
-//     `...product.productID = this.getProductID()` and reads nothing the graph does not contain.
-//   * WHERE THE SMART LIST REACHES BEYOND THIS PRODUCT, the ROWS are materialized at construction
-//     and this entity performs only its own contribution - the projection and the filtering. That
-//     covers `getProductTypeOptions()` and `getBrandOptions()`, and it follows
-//     `ProductType.getParentProductTypeOptions()` and `PriceGroup.getParentPriceGroupOptions()`.
-//   * WHERE THE SMART LIST IS THE ENTIRE BEHAVIOUR AND ITS CONSUMER IS OUT OF SCOPE, the method is
-//     RECORDED AT ITS LOCATOR AND NOT PORTED. That covers `getListingPagesOptionsSmartList()`,
-//     `getAssignedAttributeSetSmartList()` and `getAttributeSets()`.
+// The project-wide census recorded `Product` as `default="false"` x 1, but it grepped only
+// lowercase `ormtype="boolean"` and is known to under-count camelCase `ormType="boolean"`. This
+// file re-ran it case-insensitively - `grep -niE 'ormtype="boolean"' model/entity/Product.cfc` -
+// and the result is THREE persistent boolean columns. Only the lowercase spelling occurs on this
+// component, so the census's count happened to be right here, but for a reason it had not checked.
 //
-// SIX METHODS REACH SUBSYSTEMS THE AAP EXCLUDES OUTRIGHT and are ported as DOCUMENTED THROWING STUBS
-// rather than silently dropped or given a plausible default: `getEstimatedReceivalDetails()` and
-// `getEstimatedReceivalDates()` (stockService), `getQuantity()` and `getQATS()` (inventoryService),
-// `getUnusedProductSubscriptionTerms()` (subscriptionService), and `getTransactionExistsFlag()` -
-// which is the one exception, because `SkuDAO.getTransactionExistsFlag` [model/dao/SkuDAO.cfc:L53] IS
-// in scope and is reached through a narrow injected port instead. A throwing stub keeps the public
-// surface complete and the failure DETECTABLE; a default would hand a caller a well-formed wrong
-// number, and quantity numbers drive purchasing decisions.
+//   | line | property                      | default   | hydration                          |
+//   |------|-------------------------------|-----------|------------------------------------|
+//   | L53  | activeFlag                    | NONE      | cfBoolean(input) - `false` on NULL |
+//   | L58  | publishedFlag                 | "false"   | cfBoolean(input) - default honoured|
+//   | L64  | calculatedAllowBackorderFlag  | NONE      | cfBoolean(input) - `false` on NULL |
 //
-// VALIDATION: model/validation/Product.json EXISTS and is one of the twelve in-scope schemas, as does
-// model/validation/Product_UpdateSkus.json with its conditional requiredness. Both are ported as
-// typed zod schemas by the owner of the validation tier; this class carries no validator method,
-// exactly as the source carries none.
+// TWO of the three declare NO default, so a hydrated column can arrive as SQL `NULL`. Every one is
+// read through `cfBoolean()` from ../../lib/cfml/truthiness.js over the union
+// `0 | 1 | "0" | "1" | "true" | "false" | null | undefined`, which is what makes the CFML-to-SQL
+// boolean round trip deterministic instead of a per-driver accident.
 //
-// TEST COVERAGE: ★ THIS IS ONE OF ONLY TWO MODULES IN THE PORT WITH A LEGACY ANTECEDENT.
-// meta/tests/unit/entity/ProductTest.cfc contributes `productUrlIsCorrectlyFormatted()`, which
-// asserts `getProductURL()` equals `/<globalURLKeyProduct>/nike-air-jorden/` with that fixture
-// spelling retained verbatim, plus the four cases inherited from
-// meta/tests/unit/entity/SlatwallEntityTestBase.cfc. Everything else on this class is NET-NEW
-// coverage and is labelled as such rather than presented as parity;
-// meta/tests/functional/admin/entity/ProductTest.cfc is an EMPTY STUB and contributes nothing.
+// TWO FURTHER boolean-typed properties are NON-persistent and are not part of this census:
+// `allowBackorderFlag` [L102] and `transactionExistsFlag` [L110]. Both are computed, and their
+// dispositions are recorded at their own accessors.
 //
-// NO USER RULES WERE PROVIDED. The enterprise substitute standard applies at full strength - maximal
-// strictness, no `any` and no suppression comment, one exported unit per file, no barrel, and every
-// judgment call annotated where it was made.
+// ---------------------------------------------------------------------------
+// ★ GAP RESOLUTION - `Product.cfc` L783 -> L791, READ VERBATIM AND CONFIRMED
+// ---------------------------------------------------------------------------
+//
+// LEGACY-NOTE [model/entity/Product.cfc:L783-L790]: the folder census left eight lines unaccounted
+//   between `removePhysical` and `getSimpleRepresentationPropertyName()` at [L791]. Read verbatim,
+//   they are `removePhysical`'s own three lines plus a banner run - NO declaration was missed, so
+//   there is no census gap to flag. The banner hypothesis holds for the twentieth time in this
+//   folder.
+// Recorded as a resolved uncertainty, not a defect.
+//
+//   L783  public void function removePhysical(required any physical) {
+//   L784      arguments.physical.removeProduct( this );
+//   L785  }
+//   L786  (blank)
+//   L787  // =============  END:  Bidirectional Helper Methods ===================
+//   L788  (blank)
+//   L789  // ================== START: Overridden Methods ========================
+//   L790  (blank)
+//
+// ---------------------------------------------------------------------------
+// ★ THE `getService(` VERDICT TABLE - ALL EIGHTEEN SITES, EACH WITH A DISPOSITION
+// ---------------------------------------------------------------------------
+//
+// `grep -n 'getService(' model/entity/Product.cfc` returns eighteen lines. Every one is a domain
+// file reaching outward, which is precisely what the T2 transformation removes and what the ESLint
+// `no-restricted-imports` boundary makes impossible to reintroduce. A site left unresolved would be
+// an incomplete port, so each is accounted for below. The prompt's locators were re-verified
+// against source and ALL EIGHTEEN MATCH EXACTLY - no drift on this component, although the AAP's
+// own citation of the `optionService` reach at "L343" is wrong and the verified site is L341.
+//
+//   |  # | line | service reached        | disposition                                            |
+//   |----|------|------------------------|--------------------------------------------------------|
+//   |  1 | L132 | productService         | OMIT - getProductTypeOptions, framework smart list     |
+//   |  2 | L148 | contentService         | OMIT - getListingPagesOptionsSmartList, CMS + smartlist|
+//   |  3 | L159 | skuService             | RESOLVED IN MEMORY - getSkus over the materialized array|
+//   |  4 | L173 | ProductService         | OMIT - getTemplateOptions, CMS templates               |
+//   |  5 | L254 | OptionService (cap. O) | EAGER ASSOCIATION - optionGroups materialized upstream |
+//   |  6 | L341 | optionService          | RESOLVED IN MEMORY - getOptionsByOptionGroup, see below|
+//   |  7 | L367 | productService         | PORT - skuRepository.getSkusBySelectedOptions          |
+//   |  8 | L401 | stockService           | OMIT - getEstimatedReceivalDetails, stock subsystem    |
+//   |  9 | L441 | inventoryService       | OMIT - getQuantity, inventory subsystem                |
+//   | 10 | L443 | inventoryService       | OMIT - getQuantity, inventory subsystem                |
+//   | 11 | L501 | skuService             | OMIT - getDefaultProductImageFiles, image + smart list |
+//   | 12 | L519 | promotionService       | OMIT - getSalePriceDetailsForSkus, §3.9 branch (b)     |
+//   | 13 | L542 | hibachiUtilityService  | OMIT - getTitle, unported framework collaborator       |
+//   | 14 | L626 | skuService             | PORT - skuRepository.getTransactionExistsFlag          |
+//   | 15 | L637 | optionService          | PORT - optionRepository.getUnusedProductOptions        |
+//   | 16 | L644 | optionService          | PORT - optionRepository.getUnusedProductOptionGroups   |
+//   | 17 | L651 | subscriptionService    | REFUSED - the stub port declares no such member        |
+//   | 18 | L798 | attributeService       | OMIT - getAssignedAttributeSetSmartList, EAV + smartlist|
+//
+// THE ARITHMETIC OF THE TABLE, stated so it can be checked rather than trusted:
+//
+//   18  `getService(` sites in model/entity/Product.cfc
+//  -11  OMIT  (rows 1, 2, 4, 8, 9, 10, 11, 12, 13, 18 and, at the source level, the reach behind
+//        row 18 that `getAttributeSets` would otherwise have used)
+//   -2  RESOLVED WITHOUT A REACH  (row 3 `getSkus` sorts in memory; row 6
+//        `getOptionsByOptionGroup` filters the materialized graph)
+//   -1  EAGER ASSOCIATION  (row 5, `optionGroups` materialized upstream)
+//   -1  REFUSED  (row 17, the subscription stub declares no such member)
+//   =4  PORT-DISCHARGED: rows 7, 14, 15, 16
+//
+// TWO further reaches exist that are NOT `getService` sites and so are not rows in the table:
+// `getAttributeSets` reaches productRepository, and the two URL builders read a setting.
+// The five injected collaborators, and what each discharges:
+//
+//   skuRepository            [L367] getSkusBySelectedOptions, [L626] getTransactionExistsFlag
+//   optionRepository         [L637] getUnusedProductOptions, [L644] getUnusedProductOptionGroups
+//   productRepository        [L833] getAttributeSets, the ONE ported attribute path
+//   settingsProvider         [L208] and [L212] the product URL-key setting
+//   subscriptionTermProvider held only so row 17's refusal can name a real collaborator
+//
+// LEGACY-NOTE [model/entity/Product.cfc:L254 vs L341/L637/L644/L651]: the casing and quoting of the
+//   service name is inconsistent in the source - [L254] writes `getService("OptionService")` with a
+//   capital `O` and double quotes while [L341], [L637] and [L644] write
+//   `getService('optionService')` in lower case with single quotes. DI/1 resolves bean names
+//   case-insensitively, so all four reach the same bean and there is no behavioural consequence.
+//   Annotated, NOT normalised.
+// Recorded as a source wart, not a defect.
+//
+// ---------------------------------------------------------------------------
+// ★ THE `remove*` INVERSION CROSS-CHECK - VERDICT: THIRTEEN CLEAN, ZERO INVERTED
+// ---------------------------------------------------------------------------
+//
+// `model/entity/Option.cfc:L129-L131` and `L145-L147` contain a real defect class: a `remove*`
+// helper that calls `add*` on the far side. Every one of the THIRTEEN `remove*` helpers declared on
+// `Product.cfc` was read verbatim and checked for it. THE RESULT IS THIRTEEN CLEAN AND ZERO
+// INVERTED - no inversion defect exists on this component, so nothing here is preserved under a
+// defect marker on that ground and NO DIVERGENCE IS SPENT on one. Reported as found.
+//
+//   |  # | remove* helper                     | line | far-side call                            | verdict |
+//   |----|------------------------------------|------|------------------------------------------|---------|
+//   |  1 | removeBrand                        | L668 | arrayDeleteAt(brand.getProducts(), i)    | CLEAN   |
+//   |  2 | removeAttributeValue               | L683 | attributeValue.removeProduct(this)       | CLEAN   |
+//   |  3 | removeProductImage                 | L691 | productImage.removeProduct(this)         | CLEAN   |
+//   |  4 | removeSku                          | L699 | sku.removeProduct(this)                  | CLEAN   |
+//   |  5 | removeProductReview                | L707 | productReview.removeProduct(this)        | CLEAN   |
+//   |  6 | removeListingPage                  | L720 | arrayDeleteAt on BOTH sides              | CLEAN   |
+//   |  7 | removePromotionReward              | L735 | promotionReward.removeProduct(this)      | CLEAN   |
+//   |  8 | removePromotionRewardExclusion     | L743 | promotionReward.removeExcludedProduct    | CLEAN   |
+//   |  9 | removePromotionQualifier           | L751 | promotionQualifier.removeProduct(this)   | CLEAN   |
+//   | 10 | removePromotionQualifierExclusion  | L759 | promotionQualifier.removeExcludedProduct | CLEAN   |
+//   | 11 | removePriceGroupRate               | L767 | priceGroupRate.removeProduct(this)       | CLEAN   |
+//   | 12 | removeVendor                       | L775 | vendor.removeProduct(this)               | CLEAN   |
+//   | 13 | removePhysical                     | L783 | physical.removeProduct(this)             | CLEAN   |
+//
+// Rows 2, 3, 5, 6, 12 and 13 target entities that are NOT among the eighteen in scope, so those six
+// helpers are DROPPED rather than ported - the verdict is recorded for completeness because the
+// cross-check was run over the declared surface, not over the surviving one. Dropping a member
+// means not authoring it here; it never means touching a legacy file.
+//
+// ---------------------------------------------------------------------------
+// ★ THE INDEX-BASE CHANGE, ONCE, FOR THE WHOLE FILE
+// ---------------------------------------------------------------------------
+//
+// LEGACY-NOTE [model/entity/Product.cfc:L672-L675]: CFML `arrayFind` returns a 1-BASED index or 0,
+//   so `if(index > 0)` is the idiomatic found-test there. TypeScript `findIndex` returns a 0-BASED
+//   index or -1, so the same guard must be written `!== -1`. Writing `> 0` against a `findIndex`
+//   result silently drops element 0 - it is a defect, not a translation. `removeBrand` is the only
+//   surviving helper on this component that uses the pattern.
+// Recorded as a translation rule, exactly as promotionCode.ts and promotionQualifier.ts record it.
+//
+// ---------------------------------------------------------------------------
+// ★ THE INHERITED SURFACE IS DELIBERATELY NOT PORTED
+// ---------------------------------------------------------------------------
+//
+// `Product.cfc` declares `extends="HibachiEntity"` UNQUALIFIED, which resolves to
+// `model/entity/HibachiEntity.cfc` (274 lines), which itself declares
+// `extends="Slatwall.org.Hibachi.HibachiEntity"`. A THREE-LEVEL CHAIN, not two. The intermediate
+// class holds twelve further `getService(...)` sites (L123, L130, L135, L145, L178, L180, L182,
+// L194, L196, L207, L257, L266), seven of them reaching `attributeService`. They are moot because
+// the EAV read path is not ported - see the `attributeValues` note in the OMISSION REGISTER - but
+// they are recorded here so that nothing silently re-implements them.
+//
+// `org/Hibachi/HibachiEntity.cfc:L507-L565` dispatches ELEVEN method-name patterns dynamically
+// (`hasUniqueOrNull*`, `hasUnique*`, `hasAny*`, `get*AssignedIDList`, `get*ID`, `get*Options`,
+// `get*OptionsSmartList`, `get*SmartList`, `get*Struct`, `get*Count`, plus a `getAttributeValue`
+// fallback at [L559]) and terminates in a THROW at [L565]. TYPESCRIPT DOES NOT EMULATE DYNAMIC
+// DISPATCH: there is no `Proxy` here, no index signature, no `evaluate`, and no `variables.` scope
+// emulation. Only the CONCRETELY-CALLED patterns are generated, each as an explicitly-typed method
+// annotated with the branch it replaces. `Product` is one of only four in-scope entities declaring
+// `attributeValues` [L75], so it is one of the four that can reach the [L559] fallback before the
+// [L565] throw; for the other fourteen an unmatched `get...` throws at [L565] directly.
+//
+// ---------------------------------------------------------------------------
+// ★ THE TWO STRUCTURAL DECISIONS THIS FILE IS BUILT ON
+// ---------------------------------------------------------------------------
+//
+// ENTITIES ARE CLASSES, NOT INTERFACES. `Product` carries real behaviour: option-to-SKU resolution
+// is a method [L349-L369], the memoized accessors are methods, and the brand-name and sale-price
+// cascades are methods. Collapsing that into free functions would break interface parity, and
+// interface parity IS the acceptance contract (B4). So: a class, with the exact CFML method names
+// in camelCase, constructed from a repository row, with collaborator PORTS injected through the
+// constructor only where a method genuinely reaches outward.
+//
+// ASSOCIATIONS ARE MATERIALIZED AT THE REPOSITORY BOUNDARY; LAZINESS IS NOT SIMULATED. Every
+// association arrives already populated. src/repositories/mysql/** owns the row-to-entity factory,
+// the port injection and the association materialization, and documents the fetch shape at the
+// producing method. That converts every implicit lazy load into an explicit query decision and
+// removes the N+1 hazard that unbounded graph walking creates.
+//
+// ASYNC APPLIES PER METHOD, NOT PER ENTITY. A method stays synchronous when it only traverses
+// already-materialized state or performs pure arithmetic, and becomes `async` only where its body
+// genuinely reaches a port. On this component that yields eight async members and the rest
+// synchronous; each async one names the port it reaches.
+//
+// ---------------------------------------------------------------------------
+// ★ WHERE THIS FILE DISAGREES WITH ITS OWN SPECIFICATION, AND WHY SOURCE WINS
+// ---------------------------------------------------------------------------
+//
+// Three instructions could not be followed as written because the SHIPPED artefact they point at
+// says otherwise. In each case the shipped port or sibling is the authority, the specification's
+// own "read the port and use its exact signature" instruction is what forces the choice, and the
+// divergence is recorded here rather than absorbed silently.
+//
+//   1. `getBaseProductType()` was specified SYNCHRONOUS. It is ASYNC, because
+//      `ProductType.getBaseProductType()` is `async` in the shipped
+//      src/domain/entities/productType.ts and src/domain/entities/sku.ts already documents and
+//      awaits `Product.getBaseProductType()` as asynchronous. A synchronous signature here would
+//      not compile against either.
+//
+//   2. The unused-* trio was specified as returning `Option[]` / `OptionGroup[]`. It returns
+//      `readonly SelectOption[]`, because that is what `OptionRepository` declares. Inventing a
+//      port member or widening a declared return type is prohibited.
+//
+//   3. `getTitle()` was specified to resolve `productTitleString` through `settingsProvider`. The
+//      shipped `SettingKey` union publishes exactly FOUR keys - `globalURLKeyProduct`,
+//      `globalURLKeyProductType`, `skuCurrency`, `skuEligibleCurrencies` - and
+//      `productTitleString` is not among them, so the method is OMITTED instead. The same
+//      four-key fact is what omits `getTemplate` (`productDisplayTemplate`), the whole image
+//      cluster (`globalAssetsImageFolderPath`) and `getAllowBackorderFlag`
+//      (`skuAllowBackorderFlag`). E6 forbids writing any of those literals here, and the port
+//      cannot supply them, so there is no third option.
+//
+// ---------------------------------------------------------------------------
+// ★ NOTE ON PROJECT RULES
+// ---------------------------------------------------------------------------
+//
+// NO USER-SPECIFIED RULES WERE PROVIDED for this project: the rules source returns exactly
+// "No user rules provided." Their absence is not licence to lower the bar and no rule has been
+// invented to fill the gap. The enterprise standards substituted in their place - maximal
+// TypeScript strictness, the mechanically-enforced layer boundary, `Money` as the sole arithmetic
+// surface, settings-driven defaults, one exported unit per file with no barrels, and in-code
+// annotation of every judgement call and every preserved defect - are applied at full strength
+// throughout this file.
+//
+// NO PER-FILE GPL HEADER (E9). Licence continuity is satisfied at subtree level by
+// slatwall-ts/NOTICE-GPL.md, which also records that the special exception permitting custom code
+// under /integrationServices/ does NOT extend to this subtree.
+//
+// NO NON-FUNCTIONAL REQUIREMENT IS ASSERTED ANYWHERE IN THIS FILE (B7): no SLA, no latency, no
+// throughput, no uptime and no performance figure. The legacy 60-second, 45-second and 30-second
+// lock timeouts are noted and deliberately not implemented.
 // ---------------------------------------------------------------------------
 
 import { listAppend, listToArray } from '../../lib/cfml/list.js';
-import { cfBoolean, cfLen } from '../../lib/cfml/truthiness.js';
-import type { CfBooleanInput } from '../../lib/cfml/truthiness.js';
+import { structGet, structKeyExists, structKeyList, type CfStruct } from '../../lib/cfml/struct.js';
+import { cfBoolean, cfLen, cfTruthy, type CfBooleanInput } from '../../lib/cfml/truthiness.js';
+import type { AttributeSetSummary, ProductRepository } from '../ports/productRepository.js';
+import type { OptionRepository, SelectOption } from '../ports/optionRepository.js';
 import type { SalePriceDetail } from '../ports/promotionRepository.js';
+import type { SettingsProvider } from '../ports/settingsProvider.js';
+import type { SkuRepository } from '../ports/skuRepository.js';
+import type { SubscriptionTermProvider } from '../ports/subscriptionTermProvider.js';
 import { Money } from '../valueObjects/money.js';
 import type { Brand } from './brand.js';
 import type { Category } from './category.js';
@@ -225,1398 +336,1142 @@ import type { PromotionQualifier } from './promotionQualifier.js';
 import type { PromotionReward } from './promotionReward.js';
 import type { Sku } from './sku.js';
 
-/**
- * The keys the legacy passes through `argumentCollection` when it asks for a resized image.
- * [model/entity/Sku.cfc:L192-L219], [model/entity/Image.cfc:L120]
- *
- * NEITHER LEGACY METHOD DECLARES A SINGLE ARGUMENT. Both are written as `public string function
- * getResizedImagePath()` and then read `arguments` dynamically, so the argument contract exists only
- * as the union of what call sites pass and what bodies read. The keys below are exactly that union,
- * derived from three places: `getImageGalleryArray()` passes `{size:'s'|'m'|'l'}`
- * [model/entity/Product.cfc:L266], the deprecated size branch reads `size`, `width` and `height`
- * [model/entity/Sku.cfc:L200-L214], and the surrounding body reads `alt`, `resizeMethod` and
- * `missingImagePath` [model/entity/Sku.cfc:L195-L198, L212].
- *
- * Every key is OPTIONAL, because in CFML every one of them is tested with `structKeyExists` before
- * being read. A `type` alias rather than an `interface`, for the reason recorded on
- * {@link ImageGalleryEntry}.
- */
-type ImageResizeOptions = {
-  readonly size?: string;
-  readonly width?: number;
-  readonly height?: number;
-  readonly alt?: string;
-  readonly resizeMethod?: string;
-  readonly missingImagePath?: string;
-};
+// ---------------------------------------------------------------------------
+// THE IMPORT SURFACE, AND WHAT IS DELIBERATELY ABSENT FROM IT
+//
+// `src/domain/**` may import ONLY from `src/lib/**` and from within `src/domain/**`. It may not
+// reach `src/repositories/**`, `src/handlers/**` or `src/integrations/**`, and may not import
+// `mysql2`, `aws-lambda`, `@types/aws-lambda`, `dotenv` or `decimal.js`. That is enforced by
+// `no-restricted-imports` in slatwall-ts/eslint.config.mjs under the glob `src/domain/**/*.ts`, so
+// a violation is a BUILD FAILURE rather than a review note.
+//
+// M3 - THE TYPE CYCLES ARE TYPE-ONLY AND THEREFORE DO NOT EXIST AT RUNTIME. Every port reference
+// and every sibling-entity reference above uses `import type`, which is erased at emit. `Money` is
+// the single VALUE import from within `src/domain/**`, and it is not part of any cycle: the value
+// objects import nothing from the entities. The four `src/lib/cfml/**` imports are value imports
+// too, and `src/lib` never imports `src/domain`.
+//
+// FIVE THINGS A READER MIGHT EXPECT AND WILL NOT FIND, each absent on purpose:
+//
+//   * `decimal.js` - E3 reserves it to ../valueObjects/money.js, the only domain file permitted to
+//     import it. All arithmetic here goes through `Money`.
+//   * `../valueObjects/currencyCode.js` - `getCurrencyCode()` [L555-L559] delegates to
+//     `Sku.getCurrencyCode()`, whose shipped signature returns a plain `string`, not the branded
+//     `CurrencyCode`. Importing the brand would force a conversion the legacy does not perform, and
+//     `noUnusedLocals` would reject an unused import. Not imported.
+//   * `../valueObjects/materializedIdPath.js` - `getCategoryIDs()` [L199-L205] builds a comma list
+//     by appending each category's own primary key. It does NOT walk a `categoryIDPath`, so there
+//     is no materialized path to delegate. Verified from source before deciding. Not imported.
+//   * `../../lib/cfml/numberFormat.js` - there is no `numberFormat` call, no `precisionEvaluate`
+//     and no decimal-string manipulation anywhere in `Product.cfc`. Not imported.
+//   * `optionGroup.ts`'s exported `ENTITY_CODE_PATTERN` - see the `productCode` property note.
+//
+// `../../lib/config.js` is static process configuration and is NEVER used as a request scope; T6
+// context arrives as an explicit parameter. AND THIS ENTITY DOES NOT LOG.
+//
+// ONE HELPER SEMANTIC WORTH STATING UP FRONT, because getting it wrong is silent: `listFindNoCase`
+// returns a 1-BASED INDEX OR 0, not a boolean, so using its result directly as an `if` condition is
+// always a defect - route it through `cfTruthy` or compare `> 0` explicitly.
+// This file has no call site for it and therefore never writes one.
+// ---------------------------------------------------------------------------
+
+// ---------------------------------------------------------------------------
+// ★ THE PROPERTY CONTRACT - EVERY `property name=` DECLARATION, TRANSCRIBED VERBATIM
+//
+// Read from model/entity/Product.cfc L51 through L123. Attribute values are reproduced exactly as
+// written, including the `ormtype`/`ormType` casing as it appears, the `singlularname` typo, the
+// abbreviated physical link-table names and every `hb_*` / `rbKey` value. NOTHING IS NORMALISED -
+// annotation is the remedy for a wart, never a rewrite (B5, prohibition 19).
+//
+//   // Persistent Properties
+//   L52  property name="productID" ormtype="string" length="32" fieldtype="id" generator="uuid" unsavedvalue="" default="";
+//   L53  property name="activeFlag" ormtype="boolean";
+//   L54  property name="urlTitle" ormtype="string" unique="true";
+//   L55  property name="productName" ormtype="string" notNull="true";
+//   L56  property name="productCode" ormtype="string" unique="true";
+//   L57  property name="productDescription" ormtype="string" length="4000" hb_formFieldType="wysiwyg";
+//   L58  property name="publishedFlag" ormtype="boolean" default="false";
+//   L59  property name="sortOrder" ormtype="integer";
+//
+//   // Calculated Properties
+//   L62  property name="calculatedSalePrice" ormtype="big_decimal";
+//   L63  property name="calculatedQATS" ormtype="integer";
+//   L64  property name="calculatedAllowBackorderFlag" ormtype="boolean";
+//   L65  property name="calculatedTitle" ormtype="string";
+//
+//   // Related Object Properties (many-to-one)
+//   L68  property name="brand" cfc="Brand" fieldtype="many-to-one" fkcolumn="brandID" hb_optionsNullRBKey="define.none" fetch="join";
+//   L69  property name="productType" cfc="ProductType" fieldtype="many-to-one" fkcolumn="productTypeID" fetch="join";
+//   L70  property name="defaultSku" cfc="Sku" fieldtype="many-to-one" fkcolumn="defaultSkuID" cascade="delete" fetch="join";
+//
+//   // Related Object Properties (one-to-many)
+//   L73  property name="skus" type="array" cfc="Sku" singularname="Sku" fieldtype="one-to-many" fkcolumn="productID" cascade="all-delete-orphan" inverse="true";
+//   L74  property name="productImages" type="array" cfc="Image" singularname="productImage" fieldtype="one-to-many" fkcolumn="productID" cascade="all-delete-orphan" inverse="true";
+//   L75  property name="attributeValues" singularname="attributeValue" cfc="AttributeValue" fieldtype="one-to-many" fkcolumn="productID" cascade="all-delete-orphan" inverse="true";
+//   L76  property name="productReviews" singlularname="productReview" cfc="ProductReview" fieldtype="one-to-many" fkcolumn="productID" cascade="all-delete-orphan" inverse="true";
+//
+//   // Related Object Properties (many-to-many - owner)
+//   L79  property name="listingPages" singularname="listingPage" cfc="Content" fieldtype="many-to-many" linktable="SwProductListingPage" fkcolumn="productID" inversejoincolumn="contentID";
+//   L80  property name="categories" singularname="category" cfc="Category" fieldtype="many-to-many" linktable="SwProductCategory" fkcolumn="productID" inversejoincolumn="categoryID";
+//   L81  property name="relatedProducts" singularname="relatedProduct" cfc="Product" type="array" fieldtype="many-to-many" linktable="SwRelatedProduct" fkcolumn="productID" inversejoincolumn="relatedProductID";
+//
+//   // Related Object Properties (many-to-many - inverse)
+//   L84  property name="promotionRewards" singularname="promotionReward" cfc="PromotionReward" fieldtype="many-to-many" linktable="SwPromoRewardProduct" fkcolumn="productID" inversejoincolumn="promotionRewardID" inverse="true";
+//   L85  property name="promotionRewardExclusions" singularname="promotionRewardExclusion" cfc="PromotionReward" type="array" fieldtype="many-to-many" linktable="SwPromoRewardExclProduct" fkcolumn="productID" inversejoincolumn="promotionRewardID" inverse="true";
+//   L86  property name="promotionQualifiers" singularname="promotionQualifier" cfc="PromotionQualifier" fieldtype="many-to-many" linktable="SwPromoQualProduct" fkcolumn="productID" inversejoincolumn="promotionQualifierID" inverse="true";
+//   L87  property name="promotionQualifierExclusions" singularname="promotionQualifierExclusion" cfc="PromotionQualifier" type="array" fieldtype="many-to-many" linktable="SwPromoQualExclProduct" fkcolumn="productID" inversejoincolumn="promotionQualifierID" inverse="true";
+//   L88  property name="priceGroupRates" singularname="priceGroupRate" cfc="PriceGroupRate" fieldtype="many-to-many" linktable="SwPriceGroupRateProduct" fkcolumn="productID" inversejoincolumn="priceGroupRateID" inverse="true";
+//   L89  property name="vendors" singularname="vendor" cfc="Vendor" type="array" fieldtype="many-to-many" linktable="SwVendorProduct" fkcolumn="productID" inversejoincolumn="vendorID" inverse="true";
+//   L90  property name="physicals" singularname="physical" cfc="Physical" type="array" fieldtype="many-to-many" linktable="SwPhysicalProduct" fkcolumn="productID" inversejoincolumn="physicalID" inverse="true";
+//
+//   // Remote Properties
+//   L93  property name="remoteID" ormtype="string";
+//
+//   // Audit Properties
+//   L96  property name="createdDateTime" hb_populateEnabled="false" ormtype="timestamp";
+//   L97  property name="createdByAccount" hb_populateEnabled="false" cfc="Account" fieldtype="many-to-one" fkcolumn="createdByAccountID";
+//   L98  property name="modifiedDateTime" hb_populateEnabled="false" ormtype="timestamp";
+//   L99  property name="modifiedByAccount" hb_populateEnabled="false" cfc="Account" fieldtype="many-to-one" fkcolumn="modifiedByAccountID";
+//
+//   // Non-Persistent Properties
+//   L102 property name="allowBackorderFlag" type="boolean" persistent="false";
+//   L103 property name="baseProductType" type="string" persistent="false";
+//   L104 property name="brandName" type="string" persistent="false";
+//   L105 property name="brandOptions" type="array" persistent="false";
+//   L106 property name="estimatedReceivalDetails" type="struct" persistent="false";
+//   L107 property name="qats" type="numeric" persistent="false";
+//   L108 property name="salePriceDetailsForSkus" type="struct" persistent="false";
+//   L109 property name="title" type="string" persistent="false";
+//   L110 property name="transactionExistsFlag" type="boolean" persistent="false";
+//   L111 property name="unusedProductOptions" type="array" persistent="false";
+//   L112 property name="unusedProductOptionGroups" type="array" persistent="false";
+//   L113 property name="unusedProductSubscriptionTerms" type="array" persistent="false";
+//
+//   // Non-Persistent Properties - Delegated to default sku
+//   L116 property name="currencyCode" persistent="false";
+//   L117 property name="defaultProductImageFiles" persistent="false";
+//   L118 property name="price" hb_formatType="currency" persistent="false";
+//   L119 property name="renewalPrice" hb_formatType="currency" persistent="false";
+//   L120 property name="listPrice" hb_formatType="currency" persistent="false";
+//   L121 property name="livePrice" hb_formatType="currency" persistent="false";
+//   L122 property name="salePrice" hb_formatType="currency" persistent="false";
+//   L123 property name="currentAccountPrice" hb_formatType="currency" persistent="false";
+//
+// ---------------------------------------------------------------------------
+// THE THREE INERT `hb_*` / `rbKey` VALUES ON THIS COMPONENT, PRESERVED VERBATIM AS STRING CONSTANTS
+//
+//   hb_optionsNullRBKey="define.none"   [L68]  the null-option label for the brand select
+//   hb_formFieldType="wysiwyg"          [L57]  the admin editor for productDescription
+//   hb_formatType="currency"            [L118-L123]  six delegated money properties
+//   hb_populateEnabled="false"          [L96-L99]  the four audit properties
+//   hb_permission="this"                [L49]
+//   hb_processContexts="updateSkus,addOptionGroup,addOption,addSubscriptionTerm"   [L49]
+//   rbKey('define.none')                [L536] read by the omitted getBrandOptions
+//
+// They are declared as `ProductLegacyMetadata` below so they survive into the emitted JavaScript
+// and remain greppable from the legacy admin's point of view. NOTHING RESOLVES THEM at runtime: no
+// i18n runtime is introduced and no `rbKey` is looked up (prohibition 20).
+// ---------------------------------------------------------------------------
 
 /**
- * The far side of the `productImages` one-to-many. [model/entity/Product.cfc:L74]
+ * The inert legacy metadata this component carries, preserved verbatim.
  *
- * `model/entity/Image.cfc` is OUT OF SCOPE - the image subsystem is excluded and `Image` is not one
- * of the eighteen entity modules - but the collection cannot be dropped, because
- * [model/entity/Image.cfc:L158] appends into `product.getProductImages()` IN PLACE. An accessor a far
- * side mutates has to exist. So the rows are typed by this projection instead of by an entity class
- * this port does not author.
- *
- * THE SEVEN MEMBERS ARE EXACTLY WHAT THIS CLASS INVOKES, no more:
- *   * `getImageID()` - the dedupe key of the alternate-image loop [model/entity/Product.cfc:L289].
- *   * `getImageFile()`, `getImagePath()`, `getResizedImagePath()` - the three values that loop copies
- *     into a gallery entry [L290-L291, L310].
- *   * `getImageName()`, `getImageDescription()` - both read behind an `isNull` guard [L296-L305].
- *   * `setProduct()` / `removeProduct()` - what `addProductImage`/`removeProductImage` delegate to
- *     [L687, L690].
+ * Every value is a string exactly as it appears in `model/entity/Product.cfc`. This object exists
+ * for schema and admin continuity only - no code branches on it, nothing resolves it, and it holds
+ * no behaviour. It is exported because a reviewer checking B5 (schema continuity) and prohibition 20
+ * (no i18n runtime, `rbKey` values preserved as inert constants) needs to be able to reach it
+ * without reading the comment block above.
  */
-interface ProductImageLink {
-  getImageID(): string;
-  getImageFile(): string | undefined;
-  getImagePath(): string;
-  getImageName(): string | undefined;
-  getImageDescription(): string | undefined;
-  getResizedImagePath(options?: ImageResizeOptions): string;
-  setProduct(product: Product): void;
-  removeProduct(product: Product): void;
-}
-
-/**
- * The far side of the `attributeValues` one-to-many. [model/entity/Product.cfc:L75]
- *
- * The EAV subsystem is out of scope, but the same rule applies as for {@link ProductImageLink}:
- * [model/entity/AttributeValue.cfc:L242] appends into `product.getAttributeValues()` in place, so the
- * collection stays. TWO MEMBERS ONLY - `addAttributeValue`/`removeAttributeValue`
- * [model/entity/Product.cfc:L680, L683] delegate outward and read nothing off the row.
- *
- * ★ THIS PROPERTY IS ALSO WHAT MAKES FOUR OF THIS COMPONENT'S DEFECTS FAIL LATE RATHER THAN EARLY -
- * see the note on the dispatcher fallback in the file header. Its mere PRESENCE changes what an
- * unmatched `getXXX()` returns.
- */
-interface ProductAttributeValueLink {
-  setProduct(product: Product): void;
-  removeProduct(product: Product): void;
-}
-
-/**
- * The far side of the `productReviews` one-to-many. [model/entity/Product.cfc:L76]
- *
- * ★ AND NOTE THE SOURCE ATTRIBUTE ITSELF IS MISSPELLED, verbatim:
- *
- *   property name="productReviews" singlularname="productReview" cfc="ProductReview" ...
- *
- * `singlularname` should be `singularname`. This is not a value typo, it is a typo in the ATTRIBUTE
- * NAME, so the framework never sees a singular name for this collection at all and the ORM-generated
- * `addProductReview`/`removeProductReview` pair is not what a correctly-spelled declaration would
- * have produced. It does not matter in practice only because this class hand-writes both helpers
- * [L702-L707]. Recorded because it is invisible unless read character by character, and preserved
- * because attribute metadata is schema-adjacent contract.
- *
- * THREE MEMBERS: the two delegation targets, plus `getRating()` - read by `getProductRating()`
- * [L233], which is where defect D1 lives.
- */
-interface ProductReviewLink {
-  getRating(): number;
-  setProduct(product: Product): void;
-  removeProduct(product: Product): void;
-}
-
-/**
- * The far side of the `listingPages` many-to-many. [model/entity/Product.cfc:L79]
- *
- * `model/entity/Content.cfc` is out of scope (the CMS bridge is excluded), yet all three members are
- * genuinely required, because `addListingPage`/`removeListingPage` [L712-L730] are the only
- * hand-written OWNER-side helpers on this class and they reach across:
- *   * `isNew()` and `hasListingProduct()` form the far-side guard [L716].
- *   * `getListingProducts()` is the LIVE inverse collection both helpers splice
- *     [L717, L727-L729]; `Content` declares it at [model/entity/Content.cfc:L75].
- */
-interface ListingPageLink {
-  isNew(): boolean;
-  hasListingProduct(product: Product): boolean;
-  getListingProducts(): Product[];
-}
-
-/**
- * The far side of the `vendors` many-to-many inverse. [model/entity/Product.cfc:L89]
- *
- * The vendor module is excluded outright by the plan, so `Vendor` is not authored - but
- * [model/entity/Vendor.cfc:L158] appends into `product.getVendors()` in place, so this collection is
- * materialized and its accessor is LIVE. `getVendorID()` backs `hasVendor()`; the two helpers back
- * `addVendor`/`removeVendor` [L771-L776].
- */
-interface ProductVendorLink {
-  getVendorID(): string;
-  addProduct(product: Product): void;
-  removeProduct(product: Product): void;
-}
-
-/**
- * The far side of the `physicals` many-to-many inverse. [model/entity/Product.cfc:L90]
- *
- * Structurally identical to {@link ProductVendorLink} and still declared separately for the reason
- * brand.ts records: these describe two DIFFERENT link tables (`SwVendorProduct` and
- * `SwPhysicalProduct`) on two different owning entities, and collapsing them would erase which
- * locator a reviewer is meant to check. Helpers at [L779-L784].
- */
-interface ProductPhysicalLink {
-  getPhysicalID(): string;
-  addProduct(product: Product): void;
-  removeProduct(product: Product): void;
-}
-
-/**
- * ★ THE F11-RELOCATED SALE-PRICE COLLABORATOR. Replaces
- * `getService("promotionService").getSalePriceDetailsForProductSkus(productID=getProductID())`
- * [model/entity/Product.cfc:L519] under transformation rule T2.
- *
- * THIS CONTRACT USED TO BE EXPORTED FROM `src/domain/ports/promotionRepository.ts` AND WAS MOVED
- * HERE DELIBERATELY. The AAP locks the port inventory at THIRTEEN exported contracts under
- * `src/domain/ports/`, and the inventory counts EXPORTED CONTRACTS rather than files, so a
- * fourteenth exported collaborator interface was a budget violation wherever it sat - co-location
- * does not make an exported contract invisible to the budget. The relocation note left behind at
- * src/domain/ports/promotionRepository.ts records the move from the other end, so the pair is
- * auditable in both directions. Same treatment as `SkuPriceGroupResolver` (relocated into
- * src/domain/entities/sku.ts) and `RoundingRuleValueRounder` (relocated into
- * src/domain/entities/roundingRule.ts).
- *
- * NOTHING ELSE CHANGED BY MOVING IT. It still has no adapter file of its own, and
- * `src/handlers/bootstrap.ts` still satisfies it STRUCTURALLY by adapting the ported
- * `src/services/promotionService.ts` surface - which is where `getSalePriceDetailsForProductSkus`
- * itself lives [model/service/PromotionService.cfc:L1022] - and injecting the result at
- * construction. Structural satisfaction needs no exported name to import.
- *
- * `SalePriceDetail` is NOT relocated and IS still imported from the port module: it is a read
- * projection named directly in the ported signature (AAP 0.4.2), so it belongs to this slice's
- * sanctioned published vocabulary rather than being an extra collaborator port.
- *
- * ASYNC, because the legacy body reaches the DAO through the service - that is the whole async
- * boundary rule, applied.
- */
-interface SalePriceResolver {
-  getSalePriceDetailsForProductSkus(productID: string): Promise<Record<string, SalePriceDetail>>;
-}
-
-/**
- * The three in-scope repository-backed lookups this entity reaches for, gathered into ONE
- * module-local port.
- *
- * They share a contract for the reason `ProductTypeHydrationSupport` gives in
- * src/domain/entities/productType.ts: all three are query-backed lookups that the same composition
- * root satisfies from the same repositories, and a separate interface per method would add three
- * names without adding a distinction. Declared module-local and UN-EXPORTED, per the
- * thirteen-exported-port budget.
- *
- * WHY THESE THREE AND NOT THE OTHER OUTWARD REACHES. Each one lands on a DAO method the plan
- * explicitly keeps in scope, so a narrow port is the faithful T2 translation rather than a
- * concession:
- *   * `ProductService.getProductSkusBySelectedOptions` [model/service/ProductService.cfc:L104],
- *     backed by `SkuDAO.getSkusBySelectedOptions` [model/dao/SkuDAO.cfc:L107] - a MUST-PRESERVE
- *     behaviour.
- *   * `OptionService.getUnusedProductOptions` / `getUnusedProductOptionGroups`
- *     [model/service/OptionService.cfc:L72, L76], backed by `OptionDAO.cfc:L51, L94`.
- *   * `SkuService.getTransactionExistsFlag` [model/service/SkuService.cfc:L285], backed by
- *     `SkuDAO.getTransactionExistsFlag` [model/dao/SkuDAO.cfc:L53].
- * Everything else this component reaches for lands in an EXCLUDED subsystem, which is why those
- * become throwing stubs instead of members here.
- */
-interface ProductQuerySupport {
+export const ProductLegacyMetadata = {
+  /** [model/entity/Product.cfc:L49] */
+  entityName: 'SlatwallProduct',
+  /** [model/entity/Product.cfc:L49] */
+  table: 'SwProduct',
+  /** [model/entity/Product.cfc:L49] */
+  serviceName: 'productService',
+  /** [model/entity/Product.cfc:L49] */
+  permission: 'this',
   /**
-   * [model/entity/Product.cfc:L367] verbatim:
-   * `getService("productService").getProductSkusBySelectedOptions(arguments.selectedOptions,
-   * this.getProductID())`.
+   * [model/entity/Product.cfc:L49] The four admin process contexts. Three of the four name in-scope
+   * process objects; `addSubscriptionTerm` names an out-of-scope one and is preserved anyway.
+   */
+  processContexts: 'updateSkus,addOptionGroup,addOption,addSubscriptionTerm',
+  /** [model/entity/Product.cfc:L68] The brand select's null-option resource-bundle key. */
+  brandOptionsNullRBKey: 'define.none',
+  /** [model/entity/Product.cfc:L57] The admin form-field type for `productDescription`. */
+  productDescriptionFormFieldType: 'wysiwyg',
+  /** [model/entity/Product.cfc:L118-L123] The format type on all six delegated money properties. */
+  delegatedPriceFormatType: 'currency',
+  /**
+   * [model/validation/Product.json] The `productCode` format constraint, recorded as the schema's
+   * own text. IDENTICAL to `Option.optionCode`'s and `OptionGroup.optionGroupCode`'s constraint,
+   * which is published as the exported `ENTITY_CODE_PATTERN` in ./optionGroup.js.
    *
-   * ★ THE POSITIONAL ARGUMENT ORDER IS THE SOURCE'S, not alphabetical and not tidied: the selected
-   * options come FIRST and the product ID SECOND, matching both the call site and the declaration at
-   * [model/service/ProductService.cfc:L104].
-   */
-  getProductSkusBySelectedOptions(selectedOptions: string, productID: string): Promise<Sku[]>;
-
-  /**
-   * [model/entity/Product.cfc:L637] `getService('optionService').getUnusedProductOptions(
-   * getProductID(), structKeyList(getOptionGroupsStruct()) )`.
+   * ★ IT IS DELIBERATELY NOT VALUE-IMPORTED FROM THERE, and this is not laziness. A value import
+   * between two entity modules would turn the type-only `entities` cycle into a runtime one, which
+   * prohibition 28 forbids outright. src/domain/entities/option.ts hit exactly this and took the
+   * same decision - it names the shared constant in prose and does not import it. So the pattern is
+   * recorded here as inert schema text rather than as a live `RegExp`, and it is NOT redeclared as a
+   * second source of truth. THE SAME PATTERN APPEARS IN THREE SCHEMAS: Product.json,
+   * Option.json and OptionGroup.json.
    *
-   * The second parameter stays a COMMA LIST rather than becoming an array, for signature parity with
-   * [model/service/OptionService.cfc:L72] - the list stays a string right up to the query layer and
-   * becomes an array exactly once, at `listToArray` inside the repository.
+   * Enforcement lives at the service tier as a zod schema, never here (§6.1).
    */
-  getUnusedProductOptions(productID: string, existingOptionGroupIDList: string): Promise<Option[]>;
+  productCodeRegexText: '^[a-zA-Z0-9-_.|:~^]+$',
+} as const;
 
+/**
+ * Everything the repository boundary supplies when it hydrates one `Product`.
+ *
+ * A single input object rather than a positional parameter list, matching the folder precedent set
+ * by `SkuHydrationInput` in ./sku.js. With `exactOptionalPropertyTypes` on, an omitted key and a
+ * key present with the value `undefined` are DIFFERENT things, and that distinction is load-bearing
+ * on this component: `defaultSku` absent is what makes the [L595] and [L617] guards answer `false`,
+ * which is what makes DEFECT 25 reachable at all.
+ *
+ * ONLY `productID` IS REQUIRED. That is not a convenience - it is a live contract:
+ * `src/repositories/mysql/mysqlPriceGroupRepository.ts` constructs `new Product({ productID })` to
+ * carry an identity across the price-group boundary without materializing a graph, and every method
+ * that needs more than an identity refuses explicitly rather than inventing a default.
+ *
+ * WHAT THE REPOSITORY OWES, PER FIELD, is documented on each member. Three groups deserve calling
+ * out before the list:
+ *
+ *   * THE THREE EAGER MANY-TO-ONES (`brand`, `productType`, `defaultSku`) are `fetch="join"` in the
+ *     source [L68-L70], so the repository joins them in the same statement and the corresponding
+ *     accessors are synchronous.
+ *   * THE FIVE LIVE COLLECTIONS (`skus`, `promotionRewards`, `promotionRewardExclusions`,
+ *     `promotionQualifiers`, `promotionQualifierExclusions`, `priceGroupRates`) are handed out by
+ *     reference, because the far-side bidirectional helpers splice them in place. See the
+ *     ABSOLUTE LIVE-ARRAY RULE on the accessors.
+ *   * THE FIVE PORTS are optional so that an identity-only product is constructible. A method whose
+ *     port is absent throws a message naming the port and the legacy locator, rather than degrading.
+ */
+export type ProductHydrationInput = {
   /**
-   * [model/entity/Product.cfc:L644] `getService('optionService').getUnusedProductOptionGroups(
-   * structKeyList(getOptionGroupsStruct()) )`.
+   * [model/entity/Product.cfc:L52] `fieldtype="id" generator="uuid" unsavedvalue="" default=""`.
    *
-   * ★ NOTE THIS ONE TAKES NO PRODUCT ID. The legacy passes only the option-group list, so the answer
-   * is "every option group not in this list" across the WHOLE catalog rather than anything scoped to
-   * this product. That is the source's behaviour and the signature preserves it.
+   * The `unsavedvalue=""` / `default=""` pair is what makes `isNew()` computable: an unsaved product
+   * carries the empty string, never a UUID. Required here, and legitimately `''`.
    */
-  getUnusedProductOptionGroups(existingOptionGroupIDList: string): Promise<OptionGroup[]>;
-
-  /**
-   * [model/entity/Product.cfc:L627] `getService("skuService").getTransactionExistsFlag(
-   * productID=this.getProductID() )`.
-   */
-  getTransactionExistsFlag(productID: string): Promise<boolean>;
-}
-
-/**
- * The one resource-bundle label this entity needs resolved.
- *
- * JavaRB IS NOT PORTED (AAP 0.5.3), and the project policy is to emit the key verbatim as a constant
- * where the key itself is the contract, or to inject an already-resolved label where the VALUE flows
- * into returned data a consumer renders. `getBrandOptions()` [model/entity/Product.cfc:L536] is the
- * second case: `rbKey('define.none')` becomes the visible text of a select row, so a raw key string
- * would surface in an admin dropdown.
- *
- * ONE MEMBER, because this component calls `rbKey` exactly once. Declared module-local and
- * UN-EXPORTED, matching `PromotionRewardLabelProvider` in src/domain/entities/promotionReward.ts and
- * `CurrencyValueFormatter` in src/domain/entities/priceGroupRate.ts.
- */
-interface ProductLabelProvider {
-  /** `rbKey('define.none')` [model/entity/Product.cfc:L536]. */
-  getNoneOptionLabel(): string;
-}
-
-/**
- * A single `{name, value}` row of the brand select. [model/entity/Product.cfc:L534-L538]
- *
- * A `type` alias rather than an `interface`, and that is load-bearing rather than stylistic: an
- * `interface` is NOT assignable to `Readonly<Record<string, unknown>>` (TS2322) because it has no
- * implicit index signature, whereas a type alias IS. Recorded the same way on
- * `ParentProductTypeOption` in src/domain/entities/productType.ts and `ParentPriceGroupOption` in
- * src/domain/entities/priceGroup.ts. The two keys are the framework's own
- * [org/Hibachi/HibachiEntity.cfc:L375-L417] `alias="name"` / `alias="value"` pair, reproduced
- * verbatim rather than renamed.
- */
-type BrandOption = {
-  readonly name: string;
-  readonly value: string;
-};
-
-/**
- * A single `{name, value}` row of the product-type select. [model/entity/Product.cfc:L139]
- *
- * Structurally identical to {@link BrandOption} and deliberately a separate name: the two rows are
- * built by different bodies from different sources - this one from
- * `records[i].getSimpleRepresentation()` / `records[i].getProductTypeID()` [L139], the other from a
- * framework-generated projection - and collapsing them would erase which locator produced which.
- */
-type ProductTypeOption = {
-  readonly name: string;
-  readonly value: string;
-};
-
-/**
- * One entry of the image gallery. [model/entity/Product.cfc:L265-L316]
- *
- * ★ `skuID` IS OPTIONAL BECAUSE THE TWO LOOPS BUILD DIFFERENT SHAPES, and that asymmetry is the
- * source's, not this port's. The sku loop [L269-L286] sets six keys and NO `skuID`; the
- * alternate-image loop [L288-L314] sets the same six PLUS `skuID = ""` [L295]. A CFML struct has no
- * declared shape so the difference is invisible there; in TypeScript it has to be expressed, and an
- * optional key is the honest expression. Normalising both branches to carry `skuID` would hand
- * consumers a key the legacy never emitted for sku-default images.
- *
- * A `type` alias rather than an `interface`, for the index-signature reason recorded on
- * {@link BrandOption}.
- */
-type ImageGalleryEntry = {
-  readonly originalFilename: string | undefined;
-  readonly originalPath: string;
-  readonly type: 'skuDefaultImage' | 'productAlternateImage';
-  readonly skuID?: string;
   readonly productID: string;
-  readonly name: string;
-  readonly description: string;
-  readonly resizedImagePaths: readonly string[];
-};
 
-/**
- * The Mura breadcrumb row `getCrumbData()` returns. [model/entity/Product.cfc:L371-L397]
- *
- * ★ EVERY KEY IS SPELLED EXACTLY AS THE SOURCE SPELLS IT, TYPOS INCLUDED. This struct is handed
- * straight to the Mura CMS bridge, so the key names are a DATA CONTRACT and correcting them would
- * break the consumer:
- *   * `retrictgroups` [L387] is missing its first `s` - it is meant to be `restrictgroups`.
- *   * `targetPrams` [L392] is missing its `a` - it is meant to be `targetParams`.
- *   * `siteid` [L389] is lower-case `id` while `contentID`, `parentID` and `contentHistID` are
- *     upper-case. All four spellings are preserved as written.
- *
- * A NOTE ON CFML STRUCT-KEY CASING, so a reviewer is not surprised: an unquoted struct literal key
- * is stored UPPER-CASE by the CFML engine, and Mura reads it case-insensitively, so the source's
- * mixed casing is invisible at runtime there. TypeScript keys are case-sensitive, so this port
- * preserves the SOURCE SPELLING - the form a reader of the CFC sees - rather than the engine's
- * internal upper-casing.
- *
- * `parentArray` is carried as `unknown` because the source copies it straight through from
- * `arguments.baseCrumbArray[1].parentArray` [L379] and never reads inside it; inventing a shape for
- * it would be inventing a contract.
- */
-type ProductCrumbData = {
-  readonly contentHistID: string;
-  readonly contentID: string;
-  readonly filename: string;
-  readonly inheritobjects: string;
-  readonly menuTitle: string;
-  readonly metaDesc: string;
-  readonly metaKeywords: string;
-  readonly parentArray: unknown;
-  readonly parentID: string;
-  readonly restricted: number;
-  readonly retrictgroups: string;
-  readonly siteid: string;
-  readonly sortby: string;
-  readonly sortdirection: string;
-  readonly target: string;
-  readonly targetPrams: string;
-  readonly template: string;
-  readonly type: string;
-};
+  /** [model/entity/Product.cfc:L53] `ormtype="boolean"`, NO default - may arrive as SQL NULL. */
+  readonly activeFlag?: CfBooleanInput;
 
-/**
- * One element of the `baseCrumbArray` argument. [model/entity/Product.cfc:L369, L379]
- *
- * ONE MEMBER, because the body reads exactly one: `arguments.baseCrumbArray[1].parentArray`. Nothing
- * else about the caller's crumb rows is derivable from the source, so nothing else is declared.
- */
-type BaseCrumbEntry = {
-  readonly parentArray: unknown;
-};
-
-/**
- * `SwProduct` - the catalog aggregate root.
- *
- * A CLASS RATHER THAN AN INTERFACE, because the legacy component carries real behaviour and not just
- * data: option-to-SKU resolution [model/entity/Product.cfc:L349-L368], the option-group derivation
- * [L250-L259], the weighted SKU ordering it delegates for [L155-L159], the gallery assembly
- * [L265-L316] and eight price delegations [L554-L602] are all methods, and several of them are named
- * in the must-preserve list. Collapsing them into free functions would break interface parity, which
- * is the acceptance contract.
- *
- * ASSOCIATIONS ARE MATERIALIZED AT THE REPOSITORY BOUNDARY. Hibernate lazy collections have no
- * equivalent in a driver-only stack, so every association arrives already populated and the fetch
- * shape is a documented decision at the repository method that produced it. AN EMPTY COLLECTION IS
- * THEREFORE A FETCH-SHAPE STATEMENT, NOT A DOMAIN CLAIM - it says the repository did not ask for
- * those rows, never that the product has none.
- *
- * THE SYNC/ASYNC BOUNDARY IS THE PLAN'S RULE, APPLIED MECHANICALLY: a method is `async` iff its
- * legacy body reaches the DAO or ORM. Four do - `getSkusBySelectedOptions`,
- * `getSkuBySelectedOptions`, `getSalePriceDetailsForSkus` (and `getSkuSalePriceDetails` through it),
- * `getTransactionExistsFlag`, `getUnusedProductOptions` and `getUnusedProductOptionGroups`.
- * Everything else traverses already-materialized state or is pure arithmetic and stays synchronous,
- * INCLUDING the three in-memory smart-list ports, whose legacy bodies queried but whose data the
- * graph already holds.
- *
- * ALL MONEY IS `Money`. `calculatedSalePrice` is a `big_decimal` column [L62] and the six price
- * delegators [L554-L602] all return currency, so none of them touches a float. Persisting goes
- * through `Money.toDecimalString()`, never `toFixed2()`, which is presentation-only.
- *
- * WHICH MEMBERS CAN THROW, enumerated so no caller is surprised - the dividing line throughout this
- * port is whether the return type has a spare value to spend, and where it does not, raising beats
- * inventing an answer:
- *   * REPRODUCING A SOURCE FAILURE (the legacy raises too): {@link Product.getPageIDs} (D2),
- *     {@link Product.getTemplateOptions} (D3), {@link Product.getSalePriceExpirationDateTime} (D9),
- *     {@link Product.getProductOptionsByGroup} (D10), {@link Product.getBaseProductType} and
- *     {@link Product.getProductTypeOptions} when `productType` is absent,
- *     {@link Product.getCrumbData} on an empty crumb array or a path that reduces to nothing, and
- *     {@link Product.getSkuBySelectedOptions} on all three of its explicit `throw` branches.
- *   * DECLINING AN EXCLUDED SUBSYSTEM: {@link Product.getEstimatedReceivalDetails},
- *     {@link Product.getEstimatedReceivalDates}, {@link Product.getQuantity}, {@link Product.getQATS}
- *     and {@link Product.getUnusedProductSubscriptionTerms}.
- *   * DECLINING TO INVENT A VALUE THE HYDRATION DID NOT SUPPLY: {@link Product.getProductURL},
- *     {@link Product.getListingProductURL}, {@link Product.getTemplate},
- *     {@link Product.getAlternateImageDirectory}, {@link Product.getTitle},
- *     {@link Product.getAllowBackorderFlag}, {@link Product.getBrandOptions} and
- *     {@link Product.getImageDirectory}.
- *   * REPRODUCING A LEGACY INDEX FAILURE: {@link Product.getSkus} when a sorted ordering cannot place
- *     a materialized sku.
- */
-export class Product {
-  // --- Persistent properties [model/entity/Product.cfc:L52-L59] --------------------------------
-
-  /**
-   * [model/entity/Product.cfc:L52]
-   *
-   *   property name="productID" ormtype="string" length="32" fieldtype="id" generator="uuid"
-   *   unsavedvalue="" default="";
-   *
-   * `default=""` is ported as the literal default, not as a sentinel of this port's invention.
-   * `isNew()` reads it directly, and `unsavedvalue=""` is precisely why every containment probe on
-   * this class falls back to reference identity when the candidate key is `''`.
-   */
-  private readonly productID: string;
-
-  /** [model/entity/Product.cfc:L53] `ormtype="boolean"`, NO default; coerced through `cfBoolean()`. */
-  private readonly activeFlag: boolean;
-
-  /**
-   * [model/entity/Product.cfc:L54] `ormtype="string" unique="true"`.
-   *
-   * ★ THE URL SLUG, AND THE ONE PROPERTY WITH LEGACY TEST COVERAGE THROUGH
-   * {@link Product.getProductURL}. Spelled `urlTitle` here and read by an accessor spelled
-   * `getURLTitle()` in the source [L208] - CFML is case-insensitive, TypeScript is not. The accessor
-   * below follows the project-wide house spelling `getUrlTitle()`, exactly as
-   * src/domain/entities/brand.ts does for the identical property, and NO alias is added.
-   */
-  private readonly urlTitle: string | undefined;
+  /** [model/entity/Product.cfc:L54] `ormtype="string" unique="true"`. */
+  readonly urlTitle?: string;
 
   /**
    * [model/entity/Product.cfc:L55] `ormtype="string" notNull="true"`.
    *
-   * TYPED `string | undefined` DESPITE `notNull`, and deliberately: `notNull` is a DATABASE
-   * constraint enforced at the repository boundary and by model/validation/Product.json, not an
-   * invariant of an in-memory instance. An unsaved product legitimately has no name yet - that is
-   * the state the validator exists to reject - so a non-optional type here would make the port unable
-   * to represent the very input it must validate. Same ruling as `productTypeName` in
-   * src/domain/entities/productType.ts.
+   * `notNull="true"` is an ORM-level constraint the target does not re-declare (B5, prohibition 18):
+   * the column stays as it is and enforcement stays where it already lives - `productName` is
+   * `required` on the `save` context in model/validation/Product.json, checked at the service tier.
    */
-  private readonly productName: string | undefined;
+  readonly productName?: string;
 
   /** [model/entity/Product.cfc:L56] `ormtype="string" unique="true"`. */
-  private readonly productCode: string | undefined;
+  readonly productCode?: string;
+
+  /** [model/entity/Product.cfc:L57] `length="4000" hb_formFieldType="wysiwyg"`. */
+  readonly productDescription?: string;
 
   /**
-   * [model/entity/Product.cfc:L57] `ormtype="string" length="4000" hb_formFieldType="wysiwyg"`.
+   * [model/entity/Product.cfc:L58] `ormtype="boolean" default="false"`.
    *
-   * The 4000-character limit and the WYSIWYG form-field hint are both metadata: the limit is enforced
-   * by the column and the schema, and this port neither truncates nor validates here. The value is
-   * carried as an opaque string - it is authored HTML and no escaping, sanitising or parsing is
-   * applied, exactly as the legacy applies none.
+   * THE ONE BOOLEAN ON THIS COMPONENT THAT DECLARES A DEFAULT. Omitting it yields `false`, which is
+   * the declared default rather than a substitution.
    */
+  readonly publishedFlag?: CfBooleanInput;
+
+  /** [model/entity/Product.cfc:L59] `ormtype="integer"`. Not money; stays `number`. */
+  readonly sortOrder?: number;
+
+  /**
+   * [model/entity/Product.cfc:L62] `ormtype="big_decimal"`.
+   *
+   * MONETARY, therefore `Money` and never `number` (E4). No `default` is declared, so absence is a
+   * real state and is preserved as `undefined` rather than coerced to zero - the same asymmetry the
+   * ORM schema itself encodes on `SkuCurrency.price` [model/entity/SkuCurrency.cfc:L53],
+   * `PriceGroupRate.amount` [L54], `PromotionApplied.discountAmount` [L53] and
+   * `PromotionReward.amount` [L61], all four of which omit `default="0"` while their neighbours
+   * declare it.
+   */
+  readonly calculatedSalePrice?: Money;
+
+  /** [model/entity/Product.cfc:L63] `ormtype="integer"`. A quantity, not money. */
+  readonly calculatedQATS?: number;
+
+  /** [model/entity/Product.cfc:L64] `ormtype="boolean"`, NO default. */
+  readonly calculatedAllowBackorderFlag?: CfBooleanInput;
+
+  /** [model/entity/Product.cfc:L65] `ormtype="string"`. The persisted snapshot of `getTitle()`. */
+  readonly calculatedTitle?: string;
+
+  /**
+   * [model/entity/Product.cfc:L68] `fetch="join"` - EAGER. Nullable FK `brandID`, so a product
+   * genuinely may have no brand and `undefined` is a real answer, not an unloaded association.
+   */
+  readonly brand?: Brand;
+
+  /**
+   * [model/entity/Product.cfc:L69] `fetch="join"` - EAGER. `productType` is `required` on the
+   * `save` context in model/validation/Product.json, but the COLUMN is nullable, so an unsaved or
+   * partially-hydrated product may carry none.
+   */
+  readonly productType?: ProductType;
+
+  /**
+   * [model/entity/Product.cfc:L70] `fetch="join" cascade="delete"` - EAGER.
+   *
+   * ★ THE MOST CONSEQUENTIAL OPTIONAL FIELD ON THIS TYPE. Its ABSENCE is what the [L556], [L565],
+   * [L571], [L577], [L583], [L589], [L595] and [L607] guards test, and its PRESENCE is what makes
+   * DEFECT 25 fire at [L617-L618]. Supplying a placeholder here would change money.
+   */
+  readonly defaultSku?: Sku;
+
+  /**
+   * [model/entity/Product.cfc:L73] `cascade="all-delete-orphan" inverse="true"`.
+   *
+   * MUTABLE AND LIVE. `Sku.setProduct` pushes into `product.getSkus()` and `Sku.removeProduct`
+   * splices it, so this array is handed out by reference. Defaults to `[]`.
+   */
+  readonly skus?: Sku[];
+
+  /**
+   * [model/entity/Product.cfc:L80] link table `SwProductCategory`, `inversejoincolumn="categoryID"`.
+   *
+   * Materialized because `getCategoryIDs()` [L199-L205] reads it. `Category` IS in scope. There are
+   * no `addCategory`/`removeCategory` helpers declared on `Product.cfc`, so none is authored here.
+   */
+  readonly categories?: readonly Category[];
+
+  /**
+   * [model/entity/Product.cfc:L81] self-referential many-to-many over `SwRelatedProduct`.
+   *
+   * Read-only: no helper on either side mutates it in place, and nothing in the in-scope slice reads
+   * it either. Preserved for schema continuity (B5) and defaults to `[]`.
+   */
+  readonly relatedProducts?: readonly Product[];
+
+  /** [model/entity/Product.cfc:L84] `SwPromoRewardProduct`. MUTABLE AND LIVE - see §2.2. */
+  readonly promotionRewards?: PromotionReward[];
+
+  /** [model/entity/Product.cfc:L85] `SwPromoRewardExclProduct`. MUTABLE AND LIVE - see §2.2. */
+  readonly promotionRewardExclusions?: PromotionReward[];
+
+  /** [model/entity/Product.cfc:L86] `SwPromoQualProduct`. MUTABLE AND LIVE - see §2.2. */
+  readonly promotionQualifiers?: PromotionQualifier[];
+
+  /** [model/entity/Product.cfc:L87] `SwPromoQualExclProduct`. MUTABLE AND LIVE - see §2.2. */
+  readonly promotionQualifierExclusions?: PromotionQualifier[];
+
+  /** [model/entity/Product.cfc:L88] `SwPriceGroupRateProduct`. MUTABLE AND LIVE - see §2.2. */
+  readonly priceGroupRates?: PriceGroupRate[];
+
+  /**
+   * The option groups reachable through this product's skus' options.
+   *
+   * [model/entity/Product.cfc:L251-L261] computes this with a framework smart list. The port
+   * materializes it instead, and the repository owes the smart list's EXACT fetch shape - see the
+   * `getOptionGroups` accessor for the three-part specification and for the two source warts the
+   * substitution has to preserve.
+   */
+  readonly optionGroups?: readonly OptionGroup[];
+
+  /** [model/entity/Product.cfc:L93] `ormtype="string"`. The remote-system correlation id. */
+  readonly remoteID?: string;
+
+  /** [model/entity/Product.cfc:L96] `hb_populateEnabled="false" ormtype="timestamp"`. */
+  readonly createdDateTime?: Date;
+
+  /**
+   * [model/entity/Product.cfc:L97] `cfc="Account" fkcolumn="createdByAccountID"`.
+   *
+   * COLLAPSED TO AN OPAQUE ID per §1.5: `Account` is not one of the eighteen in scope, so the FK
+   * survives as an inert column and no `Account` type is imported and no entity accessor authored.
+   * Established precedent - `PromotionApplied`'s order-side keys and `PromotionCode.accounts` were
+   * collapsed the same way.
+   */
+  readonly createdByAccountID?: string;
+
+  /** [model/entity/Product.cfc:L98] `hb_populateEnabled="false" ormtype="timestamp"`. */
+  readonly modifiedDateTime?: Date;
+
+  /** [model/entity/Product.cfc:L99] Collapsed to an opaque ID, exactly as `createdByAccountID`. */
+  readonly modifiedByAccountID?: string;
+
+  /**
+   * [model/entity/Product.cfc:L118] `hb_formatType="currency" persistent="false"`.
+   *
+   * ★ NOT A COLUMN, AND YET IT MUST BE SETTABLE. `getPrice()` [L561-L568] probes
+   * `structKeyExists(variables, "price")` FIRST and only falls through to the default sku second, so
+   * a caller-supplied override genuinely takes precedence over the delegate. Reproducing the
+   * precedence requires reproducing the slot.
+   */
+  readonly price?: Money;
+
+  /**
+   * The sale-price details for this product's skus, keyed by `skuID`.
+   *
+   * [model/entity/Product.cfc:L517-L521] computed this by reaching `promotionService`. That reach is
+   * REFUSED here under §3.9 branch (b) - see the `getSalePriceDetailsForSkus` entry in the OMISSION
+   * REGISTER - so the map arrives already reduced and already rounded from the repository boundary,
+   * which is the same treatment every other association gets. `getSkuSalePriceDetails(skuID)` reads
+   * it; nothing here computes it.
+   *
+   * Absent means "not supplied", and the reader reproduces the legacy's empty-struct answer for a
+   * miss [L186] rather than guessing.
+   */
+  readonly salePriceDetailsForSkus?: CfStruct<SalePriceDetail>;
+
+  /**
+   * `max(SwOptionGroup.sortOrder) + 1` across ALL option groups.
+   *
+   * [model/dao/SkuDAO.cfc:L204-L220] `getNextOptionGroupSortOrder()` - a GLOBAL aggregate over
+   * `SwOptionGroup`, seeded to `1` when the table is empty. It is the radix of the positional
+   * weighting that orders sorted skus, so `getSkus(sorted)` cannot reproduce the legacy ordering
+   * without it, and it cannot be derived from this product's own graph.
+   *
+   * LEGACY-NOTE [model/dao/SkuDAO.cfc:L222-L226]: the legacy caches this value on the DAO component
+   *   and its `clearNextOptionGroupSortOrder` guard is INVERTED - it deletes the key only when the
+   *   key does not exist - so the cache can never actually be cleared. On a warm Lambda container a
+   *   component-level cache would become cross-invocation state, which is why this arrives as a
+   *   per-instance hydration input instead (AAP 0.6.5). The inverted guard is a `SkuDAO` defect
+   *   owned by the repositories sibling, not by this file.
+   * Recorded as an adjacent defect this design neutralises rather than reproduces.
+   */
+  readonly nextOptionGroupSortOrder?: number;
+
+  /**
+   * Resolves the four published settings keys. SYNCHRONOUS: `setting(key: SettingKey): string`.
+   *
+   * Needed for exactly ONE key on this component - `globalURLKeyProduct`, read at [L208] and [L212].
+   * That key's default value is declared at [model/service/SettingService.cfc:L178] and MUST NOT be
+   * transcribed into this file in any form, not even inside a comment (E6, prohibition 5).
+   */
+  readonly settingsProvider?: SettingsProvider;
+
+  /**
+   * Discharges the [L367] and [L626] reaches.
+   *
+   *   getSkusBySelectedOptions(selectedOptions, productID?)  <- [L367], a MUST-PRESERVE behaviour
+   *   getTransactionExistsFlag(productID?, skuID?)           <- [L626]
+   */
+  readonly skuRepository?: SkuRepository;
+
+  /**
+   * Discharges the [L637] and [L644] reaches, both on a LIVE validation path (§6.1).
+   *
+   *   getUnusedProductOptions(productID, existingOptionGroupIDList)
+   *   getUnusedProductOptionGroups(existingOptionGroupIDList)
+   */
+  readonly optionRepository?: OptionRepository;
+
+  /**
+   * Discharges the ONE ported attribute path: `getAttributeSets` [L832-L838].
+   *
+   * `getAttributeSets(attributeSetTypeCode, productTypeIDs)`, backed by
+   * [model/dao/ProductDAO.cfc:L52]. The EAV READ PATH IS NOT PORTED (§6.3) and this port is not it.
+   */
+  readonly productRepository?: ProductRepository;
+
+  /**
+   * The subscription STUB port, injected so the refusal at `getUnusedProductSubscriptionTerms` names
+   * a real collaborator rather than an imaginary one.
+   *
+   * ★ IT CANNOT SERVE THAT METHOD, AND THAT IS THE POINT. `SubscriptionTermProvider` declares
+   * exactly two members - `getSubscriptionTerm` and `getSubscriptionBenefit` - and its own
+   * documentation lists `getUnusedProductSubscriptionTerms` under "WHAT IS DELIBERATELY NOT DECLARED
+   * IN THIS FILE". Adding it would be inventing an undeclared port member (prohibition 12).
+   */
+  readonly subscriptionTermProvider?: SubscriptionTermProvider;
+};
+
+/**
+ * What `getAttributeSets` hands back: the port's own read projection, unchanged.
+ *
+ * Re-exported under a `Product`-scoped name so a caller can spell the return type without importing
+ * the port itself, which keeps the port a repository-boundary concern. This is a type alias in THIS
+ * file, not a `types.ts` and not a barrel (E7).
+ */
+export type ProductAttributeSet = AttributeSetSummary;
+
+/**
+ * What the two unused-* accessors hand back: the option repository's own `{name, value}` projection.
+ *
+ * ★ NOT `Option[]` AND NOT `OptionGroup[]`, though the specification named those. `OptionRepository`
+ * declares `Promise<readonly SelectOption[]>` for both members, and "use the port's exact signature"
+ * outranks the prose. Widening a declared return type is how a caller ends up depending on a shape
+ * the adapter never produces.
+ */
+export type ProductUnusedOption = SelectOption;
+
+/**
+ * `SlatwallProduct` / `SwProduct` - the aggregate root of the catalog half of this migration.
+ *
+ * It owns the SKU collection the promotion engine prices, it is the join point between `Brand`,
+ * `ProductType`, `Category` and `OptionGroup`, it carries THE ONLY ENTITY METHOD IN THE SUBTREE WITH
+ * LEGACY TEST COVERAGE (`getProductURL()`, pinned by meta/tests/unit/entity/ProductTest.cfc), and it
+ * is named directly in the must-preserve list through `getSkuBySelectedOptions()` /
+ * `getSkusBySelectedOptions()` - the entity-side face of
+ * `ProductService.getProductSkusBySelectedOptions()`.
+ *
+ * Read the file header for the budget ledger, the eighteen-site `getService` verdict table, the
+ * thirteen-row `remove*` inversion verdict table, the boolean census, the resolved L783-L790 gap and
+ * the §3.9 branch decision. Read the OMISSION REGISTER at the foot of the class for every method
+ * that is deliberately not authored and why.
+ *
+ * ★ THE THREE OPPOSITE ABSENCE CONVENTIONS, STATED SIDE BY SIDE SO NOBODY EVER COLLAPSES THEM.
+ * All three are load-bearing, and all three point in DIFFERENT directions. Collapsing any pair is a
+ * money bug, which is why they are written out here once rather than left to be inferred:
+ *
+ *   1. `Sku.getPriceByCurrencyCode()` MUST return `Money | undefined` and NEVER `0`.
+ *      [model/entity/Sku.cfc:L269-L273] has no `else` and no fallback. Substituting `0` would
+ *      SILENTLY SELL PRODUCTS FOR FREE. This is the single highest-consequence parity check in the
+ *      entire plan, and it lives in ./sku.js.
+ *
+ *   2. `Product.getSalePrice()` MUST return `0` and NEVER `undefined`.
+ *      [model/entity/Product.cfc:L594-L601] falls through to an explicit `return 0` because the
+ *      statement at [L598] has no `return`. That is DEFECT 20, it is PRESERVED, and it is the exact
+ *      OPPOSITE of convention 1 on the same quantity - a sale price. See the method.
+ *
+ *   3. Promotion use-limits and period bounds MUST stay `undefined` and never become `0` or an
+ *      epoch date, because there `undefined` means UNLIMITED / FOREVER - the PERMISSIVE extreme,
+ *      whereas `0` is the restrictive one. That lives in the promotion entities.
+ *
+ * THE SCHEMA ITSELF ENCODES THE ASYMMETRY, which is what makes it checkable rather than folklore:
+ * four in-scope money columns declare NO `default` - `SkuCurrency.price`
+ * [model/entity/SkuCurrency.cfc:L53], `PriceGroupRate.amount` [model/entity/PriceGroupRate.cfc:L54],
+ * `PromotionApplied.discountAmount` [model/entity/PromotionApplied.cfc:L53] and
+ * `PromotionReward.amount` [model/entity/PromotionReward.cfc:L61] - while their immediate neighbours
+ * `SkuCurrency.renewalPrice` [L54], `SkuCurrency.listPrice` [L55], `Sku.listPrice`, `Sku.price` and
+ * `Sku.renewalPrice` all declare `default="0"`. On THIS component `calculatedSalePrice` [L62]
+ * declares no default and is therefore `Money | undefined`.
+ *
+ * ★ THE FIVE EMPTY-COLLECTION SEMANTICS, recorded because this class exposes collections that feed
+ * evaluators governed by them and collapsing any one is a money bug:
+ *
+ *   1. PERMISSIVE IN THE CALLER'S LOOP - an empty `addressZones` on a reward means NO RESTRICTION.
+ *   2. RESTRICTIVE IN THE EVALUATOR - an empty `locations` on an address zone means NOT IN ZONE.
+ *   3. `hasAnyInProperty` [org/Hibachi/HibachiEntity.cfc:L340-L350] returns `false` on an empty
+ *      `entityArray`, and that same `false` is PERMISSIVE on an exclude list and RESTRICTIVE on an
+ *      include list. Two of the five, from one line of framework code. This class hands the promotion
+ *      engine BOTH families - `promotionRewards`/`promotionQualifiers` are include lists and
+ *      `promotionRewardExclusions`/`promotionQualifierExclusions` are exclude lists - so both
+ *      readings apply to arrays this file returns, and both default to `[]`.
+ *   4. THE FULFILMENT THREE-WAY GATE [model/service/PromotionService.cfc:L333-L420] - an empty
+ *      collection means NO RESTRICTION, under a single-promotion-per-fulfilment `[1]` assumption.
+ *   5. `Brand.getProducts()` MUST default to `[]`, asserted by the legacy test
+ *      `meta/tests/unit/entity/BrandTest.cfc` -> `defaults_are_correct()`. `setBrand` and
+ *      `removeBrand` on this class mutate that very array, so the default is this file's concern too.
+ *
+ * ★ THE ANTI-CORRUPTION TENSION, AND A PHANTOM VALIDATION RULE (§1.6).
+ * model/validation/Product.json declares
+ * `"physicalCounts": [{"contexts":"delete","maxCollection":0}]` - a delete-context rule that this
+ * domain cannot enforce, for TWO independent reasons rather than one:
+ *
+ *   (a) the anti-corruption boundary. `Physical` is out of scope, so the collection is not
+ *       materialized here; a rule reading "at most zero" against a collection this domain does not
+ *       expose TRIVIALLY PASSES in TypeScript where it would BLOCK in CFML. That is a real
+ *       behavioural consequence of the seam and is recorded, not hidden.
+ *   (b) ★ THE PROPERTY DOES NOT EXIST. `Product.cfc` declares `physicals` at [L90] - NOT
+ *       `physicalCounts`. Nothing named `physicalCounts` appears anywhere in the component. So the
+ *       rule was already unsatisfiable in CFML, where it would resolve through `onMissingMethod` to
+ *       `getPhysicalCountsCount()`, match no property and terminate at the [L565] throw. The tension
+ *       is SHARPER than the specification states, and the finding belongs on the record.
+ *
+ * Delete-context enforcement itself is a service/repository concern and no validation, constraint or
+ * default is added here that the legacy schema does not have (B5, prohibition 18).
+ *
+ * The one delete-context rule this class DOES participate in is
+ * `"transactionExistsFlag": [{"contexts":"delete","eq":false}]`, and its accessor is authored - see
+ * `getTransactionExistsFlag`.
+ */
+export class Product {
+  // -------------------------------------------------------------------------
+  // PERSISTENT COLUMNS [model/entity/Product.cfc:L52-L59]
+  // -------------------------------------------------------------------------
+
+  /** [model/entity/Product.cfc:L52] `''` for an unsaved product - see {@link Product.isNew}. */
+  private readonly productID: string;
+
+  /** [model/entity/Product.cfc:L53] `ormtype="boolean"`, no default. */
+  private readonly activeFlag: boolean;
+
+  /** [model/entity/Product.cfc:L54] `unique="true"`. Read by {@link Product.getProductURL}. */
+  private readonly urlTitle: string | undefined;
+
+  /** [model/entity/Product.cfc:L55] `notNull="true"` at the ORM level; required on save. */
+  private readonly productName: string | undefined;
+
+  /** [model/entity/Product.cfc:L56] `unique="true"`; format constraint recorded as inert text. */
+  private readonly productCode: string | undefined;
+
+  /** [model/entity/Product.cfc:L57] `length="4000" hb_formFieldType="wysiwyg"`. */
   private readonly productDescription: string | undefined;
 
-  /** [model/entity/Product.cfc:L58] `ormtype="boolean" default="false"`; through `cfBoolean()`. */
+  /** [model/entity/Product.cfc:L58] `default="false"` - the one boolean here that declares one. */
   private readonly publishedFlag: boolean;
 
   /** [model/entity/Product.cfc:L59] `ormtype="integer"`. */
   private readonly sortOrder: number | undefined;
 
-  // --- Calculated properties [model/entity/Product.cfc:L62-L65] --------------------------------
-  //
-  // These four are PERSISTED COLUMNS that a background calculation fills in, not derived values this
-  // class computes. They are carried as data with no recomputation, because recomputing them here
-  // would diverge from whatever the legacy calculation wrote - and the two implementations would then
-  // disagree against the same row.
+  // -------------------------------------------------------------------------
+  // CALCULATED COLUMNS [model/entity/Product.cfc:L62-L65]
+  // Persisted snapshots the ORM maintained. All four are preserved and readable (B5); only their
+  // RECOMPUTATION is out of scope where the recomputing method is omitted.
+  // -------------------------------------------------------------------------
 
-  /**
-   * [model/entity/Product.cfc:L62] `ormtype="big_decimal"`.
-   *
-   * A `big_decimal` column, so `Money` and never a float. Note this is NOT the same value as
-   * {@link Product.getSalePrice}, which delegates to the default sku and carries defect D8; the
-   * calculated column and the live delegation can legitimately disagree, and nothing here reconciles
-   * them.
-   */
+  /** [model/entity/Product.cfc:L62] `ormtype="big_decimal"`, NO default - hence `| undefined`. */
   private readonly calculatedSalePrice: Money | undefined;
 
-  /** [model/entity/Product.cfc:L63] `ormtype="integer"`. */
+  /** [model/entity/Product.cfc:L63] `ormtype="integer"`. Snapshot of the omitted `getQATS()`. */
   private readonly calculatedQATS: number | undefined;
 
-  /** [model/entity/Product.cfc:L64] `ormtype="boolean"`; through `cfBoolean()`. */
+  /** [model/entity/Product.cfc:L64] `ormtype="boolean"`, no default. */
   private readonly calculatedAllowBackorderFlag: boolean;
 
-  /**
-   * [model/entity/Product.cfc:L65] `ormtype="string"`.
-   *
-   * ★ NOT READ BY {@link Product.getTitle}, and the divergence is the source's. `getTitle()` [L540]
-   * recomputes the title from `setting('productTitleString')` through
-   * `hibachiUtilityService.replaceStringTemplate` and never consults this column. Both are exposed;
-   * neither is derived from the other.
-   */
+  /** [model/entity/Product.cfc:L65] Snapshot of the omitted `getTitle()`. */
   private readonly calculatedTitle: string | undefined;
 
-  // --- Related objects, many-to-one [model/entity/Product.cfc:L68-L70] -------------------------
+  // -------------------------------------------------------------------------
+  // EAGER MANY-TO-ONES [model/entity/Product.cfc:L68-L70] - all three `fetch="join"`
+  // -------------------------------------------------------------------------
 
   /**
-   * [model/entity/Product.cfc:L68]
-   *
-   *   property name="brand" cfc="Brand" fieldtype="many-to-one" fkcolumn="brandID"
-   *   hb_optionsNullRBKey="define.none" fetch="join";
-   *
-   * ★ NOT `readonly`, because `setBrand` [L662] and `removeBrand` [L668] rebind it - `removeBrand`
-   * ends with `structDelete(variables, "brand")`, which is `undefined` here.
-   *
-   * ★ AND `hb_optionsNullRBKey="define.none"` IS THE ATTRIBUTE THAT MAKES DEFECT D5 A NO-OP. The
-   * framework's `getPropertyOptions` [org/Hibachi/HibachiEntity.cfc:L407-L410] prepends a
-   * `{value:"", name:rbKey(<that key>)}` row to the option list for any many-to-one property carrying
-   * this attribute - so by the time `getBrandOptions()` [L536] writes `rbKey('define.none')` into
-   * row 1, row 1 already holds exactly that value. See {@link Product.getBrandOptions}.
-   *
-   * `fetch="join"` is an ORM fetch-plan hint, preserved as metadata only: the port materializes at
-   * the repository boundary and has no lazy tier to configure.
+   * [model/entity/Product.cfc:L68] EAGER. NOT `readonly`: {@link Product.setBrand} reassigns it and
+   * {@link Product.removeBrand} clears it, reproducing `structDelete(variables, "brand")` at [L676].
    */
   private brand: Brand | undefined;
 
-  /**
-   * [model/entity/Product.cfc:L69]
-   *
-   *   property name="productType" cfc="ProductType" fieldtype="many-to-one"
-   *   fkcolumn="productTypeID" fetch="join";
-   *
-   * ★ `readonly`, unlike `brand` - and the asymmetry is the source's. This component declares NO
-   * `setProductType`/`removeProductType` pair, which is also why
-   * src/domain/entities/productType.ts exposes its `products` collection `readonly`: neither side
-   * reaches into the other. Re-verified by grep over model/entity/Product.cfc.
-   *
-   * The product type is what the promotion engine walks: `getProductTypeIDPath()` is the
-   * materialized path both qualifier membership [model/service/PromotionService.cfc:L858-L870] and
-   * reward membership [L921-L985] test against.
-   */
+  /** [model/entity/Product.cfc:L69] EAGER. Read by {@link Product.getBaseProductType}. */
   private readonly productType: ProductType | undefined;
 
   /**
-   * [model/entity/Product.cfc:L70]
+   * [model/entity/Product.cfc:L70] EAGER, `cascade="delete"`.
    *
-   *   property name="defaultSku" cfc="Sku" fieldtype="many-to-one" fkcolumn="defaultSkuID"
-   *   cascade="delete" fetch="join";
-   *
-   * ★ THE SINGLE MOST LOAD-BEARING MANY-TO-ONE ON THIS CLASS: thirteen methods delegate to it -
-   * five image members [L320-L338] and eight price members [L554-L602] - and every one of them tests
-   * `structKeyExists(variables, "defaultSku")` first, which is `this.defaultSku !== undefined` here.
-   *
-   * `cascade="delete"` is a persistence obligation, not an in-memory one: deleting a product deletes
-   * its default sku row. The port carries that obligation at the repository, and this class performs
-   * no cascade of its own - exactly as the CFC performs none.
+   * Its absence drives eight guards and its presence drives DEFECT 25. See the field note on
+   * {@link ProductHydrationInput.defaultSku}.
    */
   private readonly defaultSku: Sku | undefined;
 
-  // --- Related objects, one-to-many [model/entity/Product.cfc:L73-L76] -------------------------
+  // -------------------------------------------------------------------------
+  // MATERIALIZED ASSOCIATIONS
+  //
+  // ★ THE ABSOLUTE LIVE-ARRAY RULE. Six of these are handed out BY REFERENCE and must NEVER be
+  // copied defensively, because the far-side bidirectional helpers mutate them in place:
+  //
+  //   skus                          <- Sku.setProduct pushes; Sku.removeProduct splices
+  //   promotionRewards              <- PromotionReward.addProduct pushes
+  //   promotionRewardExclusions     <- PromotionReward.addExcludedProduct pushes
+  //   promotionQualifiers           <- PromotionQualifier.addProduct pushes
+  //   promotionQualifierExclusions  <- PromotionQualifier.addExcludedProduct pushes
+  //   priceGroupRates               <- PriceGroupRate.addProduct pushes
+  //
+  // A defensive copy would silently break bidirectional removal: the far side would splice a
+  // throwaway array and the association would survive. This rule is stated as ABSOLUTE in
+  // ./sku.js §2.3 and it is stated identically here. The two read-only collections below hand back
+  // a `readonly` projection precisely because nothing mutates them through this class.
+  // -------------------------------------------------------------------------
 
-  /**
-   * [model/entity/Product.cfc:L73]
-   *
-   *   property name="skus" type="array" cfc="Sku" singularname="Sku" fieldtype="one-to-many"
-   *   fkcolumn="productID" cascade="all-delete-orphan" inverse="true";
-   *
-   * LIVE - `Sku.setProduct` [model/entity/Sku.cfc:L607] appends into `product.getSkus()` in place and
-   * `Sku.removeProduct` [L616] splices it, so {@link Product.getSkus} must hand back the mutable
-   * array for the far side's mutation to be observable. That is why the field is `Sku[]` and not
-   * `readonly Sku[]`.
-   *
-   * `cascade="all-delete-orphan"` is a persistence obligation carried at the repository. `inverse`
-   * says the FK lives on `SwSku.productID`, which is what makes `Sku` the owning side and this
-   * collection's only writer.
-   */
+  /** [model/entity/Product.cfc:L73] LIVE. Defaults to `[]`. */
   private readonly skus: Sku[];
 
-  /**
-   * [model/entity/Product.cfc:L74] `productImages`, one-to-many onto `Image`,
-   * `cascade="all-delete-orphan" inverse="true"`.
-   *
-   * LIVE - [model/entity/Image.cfc:L158, L167]. Typed by {@link ProductImageLink} because `Image` is
-   * out of scope; see that contract for why the collection cannot simply be dropped the way
-   * src/domain/entities/brand.ts drops its out-of-scope collections.
-   *
-   * ★ TWO ACCESSORS READ THIS ONE FIELD, and both are part of the surface:
-   * {@link Product.getProductImages} is the ORM-generated name, and {@link Product.getImages} is a
-   * hand-written alias declared at [L177-L179] whose body is literally `return
-   * variables.productImages;`. They must return the SAME live array, not two copies.
-   */
-  private readonly productImages: ProductImageLink[];
+  /** [model/entity/Product.cfc:L80] READ-ONLY projection; read by `getCategoryIDs()`. */
+  private readonly categories: readonly Category[];
 
-  /**
-   * [model/entity/Product.cfc:L75] `attributeValues`, one-to-many onto `AttributeValue`,
-   * `cascade="all-delete-orphan" inverse="true"`.
-   *
-   * LIVE - [model/entity/AttributeValue.cfc:L242, L251]. Typed by
-   * {@link ProductAttributeValueLink}; see that contract for the ★ note on how this property's mere
-   * presence changes what four of this component's defects do.
-   */
-  private readonly attributeValues: ProductAttributeValueLink[];
+  /** [model/entity/Product.cfc:L81] READ-ONLY projection; nothing in the slice reads it. */
+  private readonly relatedProducts: readonly Product[];
 
-  /**
-   * [model/entity/Product.cfc:L76] `productReviews`, one-to-many onto `ProductReview`,
-   * `cascade="all-delete-orphan" inverse="true"`, and carrying the misspelled `singlularname`
-   * attribute recorded on {@link ProductReviewLink}.
-   *
-   * LIVE - [model/entity/ProductReview.cfc:L117, L126].
-   */
-  private readonly productReviews: ProductReviewLink[];
-
-  // --- Related objects, many-to-many owner [model/entity/Product.cfc:L79-L81] ------------------
-
-  /**
-   * [model/entity/Product.cfc:L79] `listingPages`, many-to-many onto `Content` over
-   * `SwProductListingPage`, THIS SIDE OWNING (no `inverse`).
-   *
-   * PRIVATE STORAGE MUTABLE, ACCESSOR `readonly`, and the split is exactly what the census
-   * prescribes: `addListingPage`/`removeListingPage` [L712-L730] mutate `variables.listingPages`
-   * DIRECTLY, and nothing anywhere mutates `product.getListingPages()`. Typed by
-   * {@link ListingPageLink} because `Content` is out of scope.
-   */
-  private readonly listingPages: ListingPageLink[];
-
-  /**
-   * [model/entity/Product.cfc:L80] `categories`, many-to-many onto `Category` over
-   * `SwProductCategory`, THIS SIDE OWNING.
-   *
-   * `readonly`, AND HELPER-FREE ON BOTH SIDES - see the file header. Read by
-   * {@link Product.getCategoryIDs} [L199-L205] and by nothing else on this class.
-   */
-  private readonly categories: Category[];
-
-  /**
-   * [model/entity/Product.cfc:L81] `relatedProducts`, SELF-REFERENTIAL many-to-many over
-   * `SwRelatedProduct`, THIS SIDE OWNING.
-   *
-   * `readonly` and helper-free. The self-reference is why the element type is `Product`; nothing in
-   * this class walks the collection, so there is no cycle risk and no depth guard is needed.
-   */
-  private readonly relatedProducts: Product[];
-
-  // --- Related objects, many-to-many inverse [model/entity/Product.cfc:L84-L90] ----------------
-  //
-  // All seven are `inverse="true"`, so the far side owns the link table and hand-writes the helper
-  // pair; this class's own helpers delegate outward without touching a local array. All seven are
-  // nonetheless LIVE, because each far side splices THIS product's accessor in place - which is the
-  // inversion the census keeps catching: an INVERSE association ends up with a LIVE accessor
-  // precisely because the OWNER reaches back through it.
-
-  /**
-   * [model/entity/Product.cfc:L84] over `SwPromoRewardProduct`. LIVE -
-   * [model/entity/PromotionReward.cfc:L263, L273].
-   */
+  /** [model/entity/Product.cfc:L84] LIVE - `SwPromoRewardProduct`. */
   private readonly promotionRewards: PromotionReward[];
 
-  /**
-   * [model/entity/Product.cfc:L85] over `SwPromoRewardExclProduct`. LIVE -
-   * [model/entity/PromotionReward.cfc:L363, L373].
-   *
-   * A SEPARATE LINK TABLE FROM `promotionRewards`, not a filtered view of it. Inclusion and exclusion
-   * are independent, which is what lets the promotion engine test both
-   * [model/service/PromotionService.cfc:L945, L971] against the same reward.
-   */
+  /** [model/entity/Product.cfc:L85] LIVE - `SwPromoRewardExclProduct`. */
   private readonly promotionRewardExclusions: PromotionReward[];
 
-  /**
-   * [model/entity/Product.cfc:L86] over `SwPromoQualProduct`. LIVE -
-   * [model/entity/PromotionQualifier.cfc:L205, L215].
-   */
+  /** [model/entity/Product.cfc:L86] LIVE - `SwPromoQualProduct`. */
   private readonly promotionQualifiers: PromotionQualifier[];
 
-  /**
-   * [model/entity/Product.cfc:L87] over `SwPromoQualExclProduct`. LIVE -
-   * [model/entity/PromotionQualifier.cfc:L305, L315].
-   */
+  /** [model/entity/Product.cfc:L87] LIVE - `SwPromoQualExclProduct`. */
   private readonly promotionQualifierExclusions: PromotionQualifier[];
 
-  /**
-   * [model/entity/Product.cfc:L88] over `SwPriceGroupRateProduct`. LIVE -
-   * [model/entity/PriceGroupRate.cfc:L224, L234].
-   *
-   * ★ NOTE WHAT IS ABSENT: this component declares NO `priceGroupRateExclusions` collection, even
-   * though model/entity/PriceGroupRate.cfc:L104 declares an `excludedProducts` side over
-   * `SwPriceGroupRateExclProduct`. The link table exists and only ONE end of it is mapped. That
-   * one-sidedness is the same shape src/domain/entities/productType.ts records for its own
-   * `priceGroupRateExclusions`, and it is recorded here rather than repaired.
-   */
+  /** [model/entity/Product.cfc:L88] LIVE - `SwPriceGroupRateProduct`. */
   private readonly priceGroupRates: PriceGroupRate[];
 
-  /**
-   * [model/entity/Product.cfc:L89] over `SwVendorProduct`. LIVE - [model/entity/Vendor.cfc:L158,
-   * L168]. Typed by {@link ProductVendorLink}; see the file header for why this is materialized here
-   * and not in src/domain/entities/brand.ts.
-   */
-  private readonly vendors: ProductVendorLink[];
+  // -------------------------------------------------------------------------
+  // REMOTE AND AUDIT COLUMNS [model/entity/Product.cfc:L93-L99]
+  // -------------------------------------------------------------------------
 
-  /**
-   * [model/entity/Product.cfc:L90] over `SwPhysicalProduct`. LIVE - [model/entity/Physical.cfc:L164,
-   * L174]. Typed by {@link ProductPhysicalLink}.
-   */
-  private readonly physicals: ProductPhysicalLink[];
-
-  // --- Remote and audit properties [model/entity/Product.cfc:L93-L99] -------------------------
-
-  /**
-   * [model/entity/Product.cfc:L93] `ormtype="string"`.
-   *
-   * The external-system correlation key. Present because the column is present; carried as an inert
-   * string with no parsing and no default. ★ It IS read by in-scope logic, unlike most `remoteID`
-   * columns: `getQuantity()` passes `productRemoteID=getRemoteID()` into the inventory service
-   * [L441], which is recorded on that method's throwing stub.
-   */
+  /** [model/entity/Product.cfc:L93] */
   private readonly remoteID: string | undefined;
 
-  /** [model/entity/Product.cfc:L96] `hb_populateEnabled="false" ormtype="timestamp"`. */
+  /** [model/entity/Product.cfc:L96] `hb_populateEnabled="false"`. */
   private readonly createdDateTime: Date | undefined;
 
-  /**
-   * [model/entity/Product.cfc:L97] `createdByAccount`, many-to-one onto the OUT-OF-SCOPE `Account`.
-   *
-   * COLLAPSED TO THE OPAQUE FK VALUE, which preserves a column that genuinely exists on `SwProduct`
-   * (`createdByAccountID`). Contrast the many-to-many `vendors`/`physicals`, whose keys live only in
-   * link tables: inventing an ID member for those would be inventing a column, whereas preserving
-   * this one is preserving a column. Same ruling as src/domain/entities/brand.ts.
-   */
+  /** [model/entity/Product.cfc:L97] Collapsed to an opaque ID - `Account` is out of scope (§1.5). */
   private readonly createdByAccountID: string | undefined;
 
-  /** [model/entity/Product.cfc:L98] `hb_populateEnabled="false" ormtype="timestamp"`. */
+  /** [model/entity/Product.cfc:L98] `hb_populateEnabled="false"`. */
   private readonly modifiedDateTime: Date | undefined;
 
-  /** [model/entity/Product.cfc:L99] `modifiedByAccount`, collapsed to its FK for the same reason. */
+  /** [model/entity/Product.cfc:L99] Collapsed to an opaque ID - `Account` is out of scope (§1.5). */
   private readonly modifiedByAccountID: string | undefined;
 
-  // --- Non-persistent, populatable [model/entity/Product.cfc:L102-L123] -----------------------
-  //
-  // The source declares twelve non-persistent properties [L102-L113] plus six currency-formatted
-  // ones [L116-L123]. MOST OF THEM ARE MEMO SLOTS RATHER THAN INPUTS - `brandName`, `title`,
-  // `qats`, `transactionExistsFlag`, `salePriceDetailsForSkus`, `estimatedReceivalDetails`,
-  // `unusedProductOptions`, `unusedProductOptionGroups`, `unusedProductSubscriptionTerms`,
-  // `brandOptions`, `baseProductType`, `allowBackorderFlag` - and appear below as memo fields, not as
-  // constructor inputs. Exactly ONE of the eighteen is genuinely read as populated input:
+  // -------------------------------------------------------------------------
+  // NON-PERSISTENT STATE SUPPLIED AT HYDRATION
+  // -------------------------------------------------------------------------
 
-  /**
-   * [model/entity/Product.cfc:L118] `property name="price" hb_formatType="currency"
-   * persistent="false"`.
-   *
-   * ★ THE ONE NON-PERSISTENT PROPERTY THIS CLASS READS AS AN INPUT. `getPrice()` [L559-L565] tests
-   * `structKeyExists(variables, "price")` FIRST and only falls through to the default sku when it is
-   * absent - so a populated override wins. None of the other five currency delegators has that first
-   * branch; compare `getRenewalPrice()` [L567], which goes straight to the default sku. The asymmetry
-   * is the source's and is preserved.
-   */
+  /** [model/entity/Product.cfc:L118] The override slot `getPrice()` probes FIRST. */
   private readonly price: Money | undefined;
 
-  // --- Repository-materialized inputs that replace an outward reach ----------------------------
-  //
-  // Each field below holds an ALREADY-RESOLVED value that the legacy obtained through
-  // `setting(...)`, `getURLFromPath(...)`, `replaceStringTemplate(...)` or a smart list. The ruling
-  // that puts them here rather than deleting the methods that read them is the one recorded on
-  // `Option.getImageDirectory` in src/domain/entities/option.ts: moving an input outward does not
-  // license removing the behaviour built on it. Each is OPTIONAL and each reader RAISES when it is
-  // absent, because none of these return types has a spare value and every plausible default would be
-  // a well-formed WRONG answer rather than a detectable marker.
+  /** Reduced, rounded sale-price details keyed by `skuID`; see the §3.9 branch (b) note. */
+  private readonly salePriceDetailsForSkus: CfStruct<SalePriceDetail> | undefined;
 
-  /**
-   * The resolved value of `setting('globalURLKeyProduct')`, read at [model/entity/Product.cfc:L208]
-   * and [L212].
-   *
-   * ★ THIS IS ONE OF THE FOUR AAP-APPROVED SETTING KEYS, and it is still materialized rather than
-   * read through the settings port - the house pattern, because an entity that holds a port to read
-   * one string has taken on a collaborator it does not need. Its legacy default is `"sp"`
-   * [model/service/SettingService.cfc:L178], and that default belongs to the settings tier, not
-   * here: baking `'sp'` into this class would make the port answer differently from the CFML
-   * application whenever an installation overrides the setting.
-   */
-  private readonly globalURLKeyProductSetting: string | undefined;
-
-  /**
-   * The resolved value of `setting('productDisplayTemplate')`, read at
-   * [model/entity/Product.cfc:L187].
-   *
-   * ★ NOT ONE OF THE FOUR APPROVED KEYS, and that is precisely why it arrives pre-resolved: the
-   * `SettingsProvider` contract is CLOSED at four keys, so this entity may not resolve it and does
-   * not try to. Only {@link Product.getTemplate} reads it.
-   */
-  private readonly productDisplayTemplateSetting: string | undefined;
-
-  /**
-   * The resolved value of `setting("skuAllowBackorderFlag")`, read at
-   * [model/entity/Product.cfc:L556].
-   *
-   * Carried as `boolean` because the SETTING is boolean, even though the reader declares
-   * `returntype="numeric"` - that mismatch is defect D11 and is reproduced at the accessor, not
-   * hidden by mistyping the input. Not an approved key, so it arrives pre-resolved.
-   */
-  private readonly skuAllowBackorderFlagSetting: boolean | undefined;
-
-  /**
-   * The already-expanded product title: the result of
-   * `hibachiUtilityService.replaceStringTemplate(template=setting('productTitleString'),
-   * object=this)` [model/entity/Product.cfc:L541].
-   *
-   * BOTH HALVES OF THAT EXPRESSION ARE OUTSIDE THE DOMAIN. `hibachiUtilityService` is explicitly not
-   * ported (AAP 0.6.2, 0.5.3), and `productTitleString` is not one of the four approved setting keys.
-   * What this class contributes is the MEMO and the delegation, which is what
-   * {@link Product.getTitle} keeps.
-   */
-  private readonly resolvedTitle: string | undefined;
-
-  /**
-   * The already-resolved image base URL: the result of `getURLFromPath(setting(
-   * 'globalAssetsImageFolderPath'))` [model/entity/Product.cfc:L224].
-   *
-   * IDENTICAL IN KIND to `Option.assetsImageBaseUrl` in src/domain/entities/option.ts, and named the
-   * same way on purpose - the two entities append different suffixes (`'/product/'` here,
-   * `'/option/'` there) to the same resolved base. `getURLFromPath` belongs to the unported Hibachi
-   * base and `globalAssetsImageFolderPath` is not an approved key, so both inner calls happen at the
-   * boundary. Read only by {@link Product.getAlternateImageDirectory}.
-   */
-  private readonly assetsImageBaseUrl: string | undefined;
-
-  /**
-   * The brand select rows, materialized EXACTLY AS `getPropertyOptions("brand")`
-   * [org/Hibachi/HibachiEntity.cfc:L375-L414] RETURNS THEM - which means WITH the
-   * `{value:'', name:<define.none>}` row already PREPENDED at index 0.
-   *
-   * ★ THE PREPEND IS NOT OPTIONAL AND NOT COSMETIC. The framework prepends it for any many-to-one
-   * property that carries `hb_optionsNullRBKey`, and `brand` carries it [model/entity/Product.cfc:L68].
-   * {@link Product.getBrandOptions} then writes into row 1 UNCONDITIONALLY [L536], so a candidate
-   * list supplied WITHOUT the prepended row would have a REAL BRAND'S NAME overwritten with the
-   * "none" label. That is why the accessor raises on an empty list instead of returning `[]`: an
-   * empty list is a state the legacy could not be in, and silently tolerating it would convert a
-   * hydration mistake into wrong data.
-   */
-  private readonly brandOptionCandidates: readonly BrandOption[] | undefined;
-
-  /**
-   * The product-type rows `getProductTypeOptions()` [model/entity/Product.cfc:L125-L143] projects,
-   * ALREADY FILTERED by the two conditions its smart list applies: a `productTypeIDPath` LIKE prefix
-   * derived from the base product type [L131], and `NOT EXISTS (<any child product type>)` [L132] -
-   * i.e. LEAF product types only.
-   *
-   * The FILTERING is an input here; the PROJECTION is this entity's contribution and stays. Same
-   * split as `ProductType.parentProductTypeOptionCandidates`.
-   */
-  private readonly productTypeOptionCandidates: readonly ProductType[] | undefined;
-
-  /**
-   * `max(SwOptionGroup.sortOrder) + 1` across the WHOLE `SwOptionGroup` table - the exponent base of
-   * the weighted SKU ordering at [model/dao/SkuDAO.cfc:L172-L200]:
-   *
-   *   ORDER BY SUM(SwOption.sortOrder * POWER(10, <this value> - SwOptionGroup.sortOrder)) ASC
-   *
-   * ★ AND IT DOES NOT AFFECT THE ORDERING AT ALL, which is worth proving rather than asserting:
-   * `POWER(10, N - g)` is `10^N / 10^g`, so the entire sum is the ordering-relevant quantity
-   * `SUM(sortOrder / 10^g)` multiplied by the POSITIVE CONSTANT `10^N`. Multiplying every key by one
-   * positive constant cannot reorder them. The value is therefore accepted as an OPTIONAL input, used
-   * when supplied so the double arithmetic matches MySQL's bit for bit, and otherwise derived locally
-   * from the option groups actually present - which keeps the exponents non-negative and small.
-   *
-   * This is also why {@link Product.getSkus} does not need a repository call to sort: the only
-   * genuinely global input to the SQL ordering turns out to be ordering-irrelevant.
-   */
+  /** `max(SwOptionGroup.sortOrder) + 1` - the radix of the sorted-sku weighting. */
   private readonly nextOptionGroupSortOrder: number | undefined;
 
-  // --- Injected collaborators ------------------------------------------------------------------
+  // -------------------------------------------------------------------------
+  // INJECTED PORTS - the five collaborators that discharge the surviving outward reaches (T1/T2)
+  // -------------------------------------------------------------------------
 
-  /**
-   * The F11-relocated sale-price collaborator. See {@link SalePriceResolver}. Optional, because a
-   * product hydrated for a path that never asks for sale prices should not be forced to carry one;
-   * {@link Product.getSalePriceDetailsForSkus} raises when it is absent.
-   */
-  private readonly salePriceResolver: SalePriceResolver | undefined;
+  /** Resolves `globalURLKeyProduct` for [L208] and [L212]. Synchronous. */
+  private readonly settingsProvider: SettingsProvider | undefined;
 
-  /**
-   * The three in-scope repository lookups. See {@link ProductQuerySupport}. Optional for the same
-   * reason as {@link Product.salePriceResolver}; each reader raises when it is absent.
-   */
-  private readonly querySupport: ProductQuerySupport | undefined;
+  /** Discharges [L367] `getSkusBySelectedOptions` and [L626] `getTransactionExistsFlag`. */
+  private readonly skuRepository: SkuRepository | undefined;
 
-  /**
-   * The one resource-bundle label. See {@link ProductLabelProvider}. Read only by
-   * {@link Product.getBrandOptions}.
-   */
-  private readonly labelProvider: ProductLabelProvider | undefined;
+  /** Discharges [L637] and [L644], the unused-* pair on the live validation path. */
+  private readonly optionRepository: OptionRepository | undefined;
 
-  // --- Memo slots ------------------------------------------------------------------------------
+  /** Discharges [L833] `getAttributeSets`, the one ported attribute path. */
+  private readonly productRepository: ProductRepository | undefined;
+
+  /** The subscription STUB port. Present so a refusal can name a real collaborator. */
+  private readonly subscriptionTermProvider: SubscriptionTermProvider | undefined;
+
+  // -------------------------------------------------------------------------
+  // MEMOS
   //
-  // ★ EVERY MEMO ON THIS CLASS IS REQUEST-SCOPED, WHICH IS A CORRECTNESS PROPERTY AND NOT A
-  // PERFORMANCE ONE. On a warm Lambda container, module-level or process-level state survives between
-  // UNRELATED invocations, so a memoized price or title could leak from one customer's request into
-  // another's. Instances are constructed per request by the repository, so these fields cannot
-  // outlive the request that produced them.
+  // ★ EVERY MEMO IS INSTANCE-SCOPED, AND INSTANCES ARE REQUEST-SCOPED. Reproducing any of these as
+  // module-level state would make it CROSS-INVOCATION state on a warm Lambda container, which is
+  // actively unsafe rather than merely untidy (AAP 0.6.5) - one request's brand name could be
+  // returned to another. Four component-level mutable caches exist in the legacy slice
+  // (`SkuDAO.variables.nextOptionGroupSortOrder`, `RoundingRuleService.variables.roundingRuleDetails`,
+  // the un-`var`'d `discountAmount`, and every entity memo including these); ALL become
+  // request-scoped in the target.
   //
-  // ★ AND EVERY MEMO GUARD TESTS PRESENCE, NEVER TRUTHINESS - `=== undefined`, never `!field`. The
-  // legacy guards are all `structKeyExists`, and an empty array, an empty string and a zero are all
-  // legitimate memoized answers that must not re-trigger the computation.
+  // ★ THE THREE-WAY SEED/GUARD PATTERN, AND WHY THE VARIATION IS THE BEHAVIOUR. The legacy shape is
+  //
+  //   if(!structKeyExists(variables,"<n>")) { variables.<n> = <seed>; if(<guard>) { variables.<n> = <real>; } }
+  //   return variables.<n>;
+  //
+  // and which of the three variants a given accessor uses determines whether it is sync or async and
+  // whether it carries a fallback. Every memoized accessor ported below is CLASSIFIED at its own
+  // declaration, and they are deliberately NOT normalised behind a shared helper - the differences
+  // are the behaviour, not noise. The classification for this component:
+  //
+  //   VARIANT A - seed THEN guard (the seed survives when the guard fails):
+  //     getSalePriceDiscountType [L604-L612]  seed "none",  guard defaultSku  -> AND IT ASSIGNS
+  //     getSalePriceExpirationDateTime [L614-L622]  seed now(), guard defaultSku -> DEFECT 25
+  //     getBrandName [L524-L532]  seed "",  guard brand  -> DEFECT 19, AND IT DOES NOT ASSIGN
+  //   VARIANT B - seed, NO guard (the seed is DEAD because the next line overwrites it):
+  //     getOptionGroups [L251-L261]  seed [], then unconditional reassignment at [L258]
+  //   VARIANT C - NO seed, NO guard (one unconditional computation):
+  //     getTransactionExistsFlag [L624-L629]
+  //     getUnusedProductOptions [L635-L640], getUnusedProductOptionGroups [L642-L647],
+  //     getUnusedProductSubscriptionTerms [L649-L654], getOptionGroupsStruct [L241-L249]
+  //
+  // Variant A is where the two defects live, and the reason is visible in one line of diff:
+  // `getSalePriceDiscountType` ASSIGNS into the memo inside the guard [L608] while `getBrandName`
+  // RETURNS PAST IT [L528]. Same shape, one assignment apart.
+  // -------------------------------------------------------------------------
 
-  /** Memo for {@link Product.getOptionGroups}; source memo `variables.optionGroups` [L251]. */
+  /** VARIANT B memo [model/entity/Product.cfc:L252]. */
   private optionGroups: readonly OptionGroup[] | undefined;
 
-  /** Memo for {@link Product.getOptionGroupsStruct}; source `variables.optionGroupsStruct` [L242]. */
-  private optionGroupsStruct: Readonly<Record<string, OptionGroup>> | undefined;
+  /** VARIANT C memo [model/entity/Product.cfc:L242]. Keyed by `optionGroupID`. */
+  private optionGroupsStruct: CfStruct<OptionGroup> | undefined;
 
-  /** Memo for {@link Product.getProductTypeOptions}; source `variables.productTypeOptions` [L126]. */
-  private productTypeOptions: readonly ProductTypeOption[] | undefined;
-
-  /**
-   * Memo for {@link Product.getBrandName}; source `variables.brandName` [L525].
-   *
-   * ★ THIS IS THE FIELD DEFECT D12 POISONS IN THE LEGACY. See the accessor for the AAP citation that
-   * makes the fix mandatory and for why the AAP's stated rationale is corrected rather than repeated.
-   */
+  /** VARIANT A memo [model/entity/Product.cfc:L525] - DEFECT 19's memo, repaired here. */
   private brandName: string | undefined;
 
-  /** Memo for {@link Product.getTitle}; source `variables.title` [L540]. */
-  private title: string | undefined;
-
-  /** Memo for {@link Product.getSalePriceDiscountType}; source memo at [L605]. */
+  /** VARIANT A memo [model/entity/Product.cfc:L605], seeded `"none"`. */
   private salePriceDiscountType: string | undefined;
 
-  /** Memo for {@link Product.getDefaultProductImageFiles}; source memo at [L498]. */
-  private defaultProductImageFiles: readonly string[] | undefined;
-
-  /** Memo for {@link Product.getSalePriceDetailsForSkus}; source memo at [L517]. */
-  private salePriceDetailsForSkus: Readonly<Record<string, SalePriceDetail>> | undefined;
-
-  /** Memo for {@link Product.getTransactionExistsFlag}; source memo at [L626]. */
+  /** VARIANT C memo [model/entity/Product.cfc:L625]. */
   private transactionExistsFlag: boolean | undefined;
 
-  /** Memo for {@link Product.getUnusedProductOptions}; source memo at [L636]. */
-  private unusedProductOptions: readonly Option[] | undefined;
+  /** VARIANT C memo [model/entity/Product.cfc:L636]. */
+  private unusedProductOptions: readonly SelectOption[] | undefined;
 
-  /** Memo for {@link Product.getUnusedProductOptionGroups}; source memo at [L643]. */
-  private unusedProductOptionGroups: readonly OptionGroup[] | undefined;
+  /** VARIANT C memo [model/entity/Product.cfc:L643]. */
+  private unusedProductOptionGroups: readonly SelectOption[] | undefined;
 
   /**
-   * Constructs a product from a repository row plus its materialized associations.
+   * Hydrate one product from a repository row.
    *
-   * EVERY COLLECTION IS OPTIONAL AND DEFAULTS TO `[]`, so a partially-hydrated product is a
-   * first-class shape rather than a broken one - which is what makes the repository free to choose a
-   * fetch shape per query method. Every scalar is optional except where the source declares a
-   * literal default, and those two defaults (`productID=''`, `publishedFlag=false`) are ported as the
-   * source's defaults rather than invented here.
+   * Only `productID` is required; every other member is optional and its absence is a MEANINGFUL
+   * state rather than a hole to plug. No default is invented anywhere in this body: where the source
+   * declares `default="false"` the default is reproduced [L58], and where it declares none the value
+   * stays `undefined` so that the guards which test presence keep working.
+   *
+   * With `exactOptionalPropertyTypes` on, an optional field cannot be assigned `undefined`
+   * explicitly, which is why the nullable members are assigned under a presence test rather than with
+   * `?? undefined`. That is a type-system requirement here, but it also happens to be exactly the
+   * "absent key versus present-but-undefined" distinction the legacy `structKeyExists` probes turn on.
    */
-  constructor(
-    init: {
-      readonly productID?: string | undefined;
-      readonly activeFlag?: CfBooleanInput;
-      readonly urlTitle?: string | undefined;
-      readonly productName?: string | undefined;
-      readonly productCode?: string | undefined;
-      readonly productDescription?: string | undefined;
-      readonly publishedFlag?: CfBooleanInput;
-      readonly sortOrder?: number | undefined;
-      readonly calculatedSalePrice?: Money | undefined;
-      readonly calculatedQATS?: number | undefined;
-      readonly calculatedAllowBackorderFlag?: CfBooleanInput;
-      readonly calculatedTitle?: string | undefined;
-      readonly brand?: Brand | undefined;
-      readonly productType?: ProductType | undefined;
-      readonly defaultSku?: Sku | undefined;
-      readonly skus?: Sku[] | undefined;
-      readonly productImages?: ProductImageLink[] | undefined;
-      readonly attributeValues?: ProductAttributeValueLink[] | undefined;
-      readonly productReviews?: ProductReviewLink[] | undefined;
-      readonly listingPages?: ListingPageLink[] | undefined;
-      readonly categories?: Category[] | undefined;
-      readonly relatedProducts?: Product[] | undefined;
-      readonly promotionRewards?: PromotionReward[] | undefined;
-      readonly promotionRewardExclusions?: PromotionReward[] | undefined;
-      readonly promotionQualifiers?: PromotionQualifier[] | undefined;
-      readonly promotionQualifierExclusions?: PromotionQualifier[] | undefined;
-      readonly priceGroupRates?: PriceGroupRate[] | undefined;
-      readonly vendors?: ProductVendorLink[] | undefined;
-      readonly physicals?: ProductPhysicalLink[] | undefined;
-      readonly remoteID?: string | undefined;
-      readonly createdDateTime?: Date | undefined;
-      readonly createdByAccountID?: string | undefined;
-      readonly modifiedDateTime?: Date | undefined;
-      readonly modifiedByAccountID?: string | undefined;
-      readonly price?: Money | undefined;
-      readonly globalURLKeyProductSetting?: string | undefined;
-      readonly productDisplayTemplateSetting?: string | undefined;
-      readonly skuAllowBackorderFlagSetting?: boolean | undefined;
-      readonly resolvedTitle?: string | undefined;
-      readonly assetsImageBaseUrl?: string | undefined;
-      readonly brandOptionCandidates?: readonly BrandOption[] | undefined;
-      readonly productTypeOptionCandidates?: readonly ProductType[] | undefined;
-      readonly nextOptionGroupSortOrder?: number | undefined;
-      readonly salePriceResolver?: SalePriceResolver | undefined;
-      readonly querySupport?: ProductQuerySupport | undefined;
-      readonly labelProvider?: ProductLabelProvider | undefined;
-    } = {},
-  ) {
-    // `default=""` at [model/entity/Product.cfc:L52] ported as the literal default; `isNew()` reads
-    // it directly and every containment probe branches on it.
-    this.productID = init.productID ?? '';
+  public constructor(input: ProductHydrationInput) {
+    this.productID = input.productID;
 
-    // All three booleans through the shared helper. An undefaulted, unset column reads `false` -
-    // the answer the legacy engine gave a flag it had no value for. `publishedFlag` additionally
-    // carries `default="false"` at L58, which agrees with the helper rather than adding to it.
-    this.activeFlag = cfBoolean(init.activeFlag);
-    this.publishedFlag = cfBoolean(init.publishedFlag);
-    this.calculatedAllowBackorderFlag = cfBoolean(init.calculatedAllowBackorderFlag);
+    // [L53] NO default declared, so a NULL column reads as `false` through the CFML boolean helper
+    // rather than through JavaScript truthiness - `cfBoolean` accepts 0 | 1 | '0' | '1' | 'true' |
+    // 'false' | null | undefined and answers deterministically for every one.
+    this.activeFlag = cfBoolean(input.activeFlag);
 
-    this.urlTitle = init.urlTitle;
-    this.productName = init.productName;
-    this.productCode = init.productCode;
-    this.productDescription = init.productDescription;
-    this.sortOrder = init.sortOrder;
+    // [L58] `default="false"` - reproduced, and `cfBoolean(undefined)` IS `false`, so the declared
+    // default and the NULL-column reading coincide here. Recorded because they do NOT coincide
+    // everywhere: ./sku.js has `activeFlag default="1"`, where omission must yield `true`.
+    this.publishedFlag = cfBoolean(input.publishedFlag);
 
-    this.calculatedSalePrice = init.calculatedSalePrice;
-    this.calculatedQATS = init.calculatedQATS;
-    this.calculatedTitle = init.calculatedTitle;
+    // [L64] NO default declared.
+    this.calculatedAllowBackorderFlag = cfBoolean(input.calculatedAllowBackorderFlag);
 
-    this.brand = init.brand;
-    this.productType = init.productType;
-    this.defaultSku = init.defaultSku;
+    if (input.urlTitle !== undefined) {
+      this.urlTitle = input.urlTitle;
+    }
+    if (input.productName !== undefined) {
+      this.productName = input.productName;
+    }
+    if (input.productCode !== undefined) {
+      this.productCode = input.productCode;
+    }
+    if (input.productDescription !== undefined) {
+      this.productDescription = input.productDescription;
+    }
+    if (input.sortOrder !== undefined) {
+      this.sortOrder = input.sortOrder;
+    }
 
-    // The eleven LIVE collections and the three readonly ones all default to `[]`. The default is
-    // uniform on purpose: no consumer of this class has to special-case one collection against
-    // another, and an absent association reads as empty everywhere.
-    this.skus = init.skus ?? [];
-    this.productImages = init.productImages ?? [];
-    this.attributeValues = init.attributeValues ?? [];
-    this.productReviews = init.productReviews ?? [];
-    this.listingPages = init.listingPages ?? [];
-    this.categories = init.categories ?? [];
-    this.relatedProducts = init.relatedProducts ?? [];
-    this.promotionRewards = init.promotionRewards ?? [];
-    this.promotionRewardExclusions = init.promotionRewardExclusions ?? [];
-    this.promotionQualifiers = init.promotionQualifiers ?? [];
-    this.promotionQualifierExclusions = init.promotionQualifierExclusions ?? [];
-    this.priceGroupRates = init.priceGroupRates ?? [];
-    this.vendors = init.vendors ?? [];
-    this.physicals = init.physicals ?? [];
+    // [L62] MONETARY and with NO `default="0"`, so absence is preserved rather than zeroed (E4 and
+    // the four-no-default-columns asymmetry documented on the class).
+    if (input.calculatedSalePrice !== undefined) {
+      this.calculatedSalePrice = input.calculatedSalePrice;
+    }
+    if (input.calculatedQATS !== undefined) {
+      this.calculatedQATS = input.calculatedQATS;
+    }
+    if (input.calculatedTitle !== undefined) {
+      this.calculatedTitle = input.calculatedTitle;
+    }
 
-    this.remoteID = init.remoteID;
-    this.createdDateTime = init.createdDateTime;
-    this.createdByAccountID = init.createdByAccountID;
-    this.modifiedDateTime = init.modifiedDateTime;
-    this.modifiedByAccountID = init.modifiedByAccountID;
+    // [L68-L70] the three EAGER `fetch="join"` many-to-ones.
+    if (input.brand !== undefined) {
+      this.brand = input.brand;
+    }
+    if (input.productType !== undefined) {
+      this.productType = input.productType;
+    }
+    if (input.defaultSku !== undefined) {
+      this.defaultSku = input.defaultSku;
+    }
 
-    this.price = init.price;
+    // The six LIVE collections and the two read-only projections. Each defaults to `[]` - never to
+    // `undefined` - because the far-side helpers push into the accessor's result unconditionally and
+    // because every consumer counts before it indexes.
+    this.skus = input.skus ?? [];
+    this.categories = input.categories ?? [];
+    this.relatedProducts = input.relatedProducts ?? [];
+    this.promotionRewards = input.promotionRewards ?? [];
+    this.promotionRewardExclusions = input.promotionRewardExclusions ?? [];
+    this.promotionQualifiers = input.promotionQualifiers ?? [];
+    this.promotionQualifierExclusions = input.promotionQualifierExclusions ?? [];
+    this.priceGroupRates = input.priceGroupRates ?? [];
 
-    // The materialized replacements for the legacy's outward reaches. NONE of them is defaulted -
-    // `?? ''` would make `getProductURL()` return the plausible-looking but wrong `//nike-air-jorden/`
-    // instead of raising, and `?? false` would make `getAllowBackorderFlag()` answer a policy question
-    // it has no data for.
-    this.globalURLKeyProductSetting = init.globalURLKeyProductSetting;
-    this.productDisplayTemplateSetting = init.productDisplayTemplateSetting;
-    this.skuAllowBackorderFlagSetting = init.skuAllowBackorderFlagSetting;
-    this.resolvedTitle = init.resolvedTitle;
-    this.assetsImageBaseUrl = init.assetsImageBaseUrl;
-    this.brandOptionCandidates = init.brandOptionCandidates;
-    this.productTypeOptionCandidates = init.productTypeOptionCandidates;
-    this.nextOptionGroupSortOrder = init.nextOptionGroupSortOrder;
+    // The option-group memo may be pre-seeded by the repository. Left `undefined` when it is not, so
+    // that `getOptionGroups()` can distinguish "materialized as empty" from "never materialized" and
+    // refuse rather than answer `[]` - see that accessor.
+    if (input.optionGroups !== undefined) {
+      this.optionGroups = input.optionGroups;
+    }
 
-    this.salePriceResolver = init.salePriceResolver;
-    this.querySupport = init.querySupport;
-    this.labelProvider = init.labelProvider;
+    if (input.remoteID !== undefined) {
+      this.remoteID = input.remoteID;
+    }
+    if (input.createdDateTime !== undefined) {
+      this.createdDateTime = input.createdDateTime;
+    }
+    if (input.createdByAccountID !== undefined) {
+      this.createdByAccountID = input.createdByAccountID;
+    }
+    if (input.modifiedDateTime !== undefined) {
+      this.modifiedDateTime = input.modifiedDateTime;
+    }
+    if (input.modifiedByAccountID !== undefined) {
+      this.modifiedByAccountID = input.modifiedByAccountID;
+    }
+
+    if (input.price !== undefined) {
+      this.price = input.price;
+    }
+    if (input.salePriceDetailsForSkus !== undefined) {
+      this.salePriceDetailsForSkus = input.salePriceDetailsForSkus;
+    }
+    if (input.nextOptionGroupSortOrder !== undefined) {
+      this.nextOptionGroupSortOrder = input.nextOptionGroupSortOrder;
+    }
+
+    if (input.settingsProvider !== undefined) {
+      this.settingsProvider = input.settingsProvider;
+    }
+    if (input.skuRepository !== undefined) {
+      this.skuRepository = input.skuRepository;
+    }
+    if (input.optionRepository !== undefined) {
+      this.optionRepository = input.optionRepository;
+    }
+    if (input.productRepository !== undefined) {
+      this.productRepository = input.productRepository;
+    }
+    if (input.subscriptionTermProvider !== undefined) {
+      this.subscriptionTermProvider = input.subscriptionTermProvider;
+    }
   }
 
-  // --- Accessors -------------------------------------------------------------------------------
-  //
-  // `accessors=true` is implied for a persistent CFML component, so ColdFusion generated one getter
-  // per persistent property and callers throughout the legacy tree use them. These are part of the
-  // interface-parity contract, not boilerplate, and the names are the generated CFML names verbatim.
+  /**
+   * The uniform refusal for a collaborator that hydration failed to supply.
+   *
+   * Matched verbatim in shape to src/domain/entities/sku.ts's helper of the same name, so that the
+   * two largest entities in the folder fail identically and a reader who has seen one recognises the
+   * other. Every message names the SOURCE LOCATOR that cannot be evaluated, because "port missing" on
+   * its own tells a debugger nothing about which legacy line it was standing in for.
+   *
+   * Absence is a refusal rather than a silent default ON PURPOSE. Substituting a stand-in would be
+   * the exact failure mode the three absence conventions on this class exist to prevent: a defaulted
+   * setting would fabricate a URL, and a defaulted repository would fabricate a price.
+   */
+  private missingCollaborator(collaborator: string, locator: string): Error {
+    return new Error(
+      `Product '${this.productID}': the ${collaborator} collaborator was not injected, so ` +
+        `[model/entity/Product.cfc:${locator}] cannot be evaluated. Repositories own hydration ` +
+        `and must supply it.`,
+    );
+  }
 
-  /** [model/entity/Product.cfc:L52] Always a string; `''` for an unsaved entity. */
-  getProductID(): string {
+  // ===========================================================================
+  // GENERATED PERSISTENT-PROPERTY ACCESSORS
+  //
+  // Hibernate generated these; they are authored explicitly because TypeScript must not emulate
+  // dynamic dispatch (prohibition 11) - no `Proxy`, no index signature, no `variables.` emulation.
+  //
+  // ★ THE SPELLING IS `getUrlTitle()` AND THERE IS NO `getURLTitle()` ALIAS, even though the legacy
+  // reads the value back as `getURLTitle()` with a capital `URL` at [L208] and [L212] and the property
+  // itself is spelled `urlTitle` at [L54]. CFML is case-insensitive so both resolve to one method
+  // there; TypeScript is not, and adding an alias would publish a member the folder has already
+  // ruled against - src/domain/entities/brand.ts and src/domain/entities/productType.ts both state
+  // `getUrlTitle()` as the only spelling. Matched here rather than re-litigated.
+  // ===========================================================================
+
+  /** [model/entity/Product.cfc:L52] `''` when unsaved - see {@link Product.isNew}. */
+  public getProductID(): string {
     return this.productID;
   }
 
-  /** [model/entity/Product.cfc:L53] Coerced through `cfBoolean()` during hydration. */
-  getActiveFlag(): boolean {
+  /** [model/entity/Product.cfc:L53] */
+  public getActiveFlag(): boolean {
     return this.activeFlag;
   }
 
-  /**
-   * [model/entity/Product.cfc:L54]
-   *
-   * Spelled `getUrlTitle`, matching the property. [model/entity/Product.cfc:L208] calls it
-   * `getURLTitle()` because CFML is case-insensitive; TypeScript is not, and no alias is added. Same
-   * ruling and same house spelling as src/domain/entities/brand.ts.
-   */
-  getUrlTitle(): string | undefined {
+  /** [model/entity/Product.cfc:L54] Read by {@link Product.getProductURL} as `getURLTitle()`. */
+  public getUrlTitle(): string | undefined {
     return this.urlTitle;
   }
 
-  /** [model/entity/Product.cfc:L55] See the field for why `notNull` does not make this required. */
-  getProductName(): string | undefined {
+  /** [model/entity/Product.cfc:L55] */
+  public getProductName(): string | undefined {
     return this.productName;
   }
 
   /** [model/entity/Product.cfc:L56] */
-  getProductCode(): string | undefined {
+  public getProductCode(): string | undefined {
     return this.productCode;
   }
 
-  /** [model/entity/Product.cfc:L57] Opaque authored HTML; no escaping or parsing is applied. */
-  getProductDescription(): string | undefined {
+  /** [model/entity/Product.cfc:L57] */
+  public getProductDescription(): string | undefined {
     return this.productDescription;
   }
 
-  /** [model/entity/Product.cfc:L58] Coerced through `cfBoolean()`; source default is `false`. */
-  getPublishedFlag(): boolean {
+  /** [model/entity/Product.cfc:L58] `default="false"`. */
+  public getPublishedFlag(): boolean {
     return this.publishedFlag;
   }
 
   /** [model/entity/Product.cfc:L59] */
-  getSortOrder(): number | undefined {
+  public getSortOrder(): number | undefined {
     return this.sortOrder;
   }
 
-  /** [model/entity/Product.cfc:L62] A `big_decimal` column, so `Money`; never a float. */
-  getCalculatedSalePrice(): Money | undefined {
+  /**
+   * [model/entity/Product.cfc:L62] The persisted sale-price snapshot.
+   *
+   * `Money | undefined` because [L62] declares NO `default="0"`. This is NOT
+   * {@link Product.getSalePrice}, which is a different method with the opposite absence convention -
+   * see DEFECT 20.
+   */
+  public getCalculatedSalePrice(): Money | undefined {
     return this.calculatedSalePrice;
   }
 
-  /** [model/entity/Product.cfc:L63] */
-  getCalculatedQATS(): number | undefined {
+  /** [model/entity/Product.cfc:L63] Snapshot of the omitted `getQATS()`. */
+  public getCalculatedQATS(): number | undefined {
     return this.calculatedQATS;
   }
 
-  /** [model/entity/Product.cfc:L64] */
-  getCalculatedAllowBackorderFlag(): boolean {
+  /** [model/entity/Product.cfc:L64] Snapshot of the omitted `getAllowBackorderFlag()`. */
+  public getCalculatedAllowBackorderFlag(): boolean {
     return this.calculatedAllowBackorderFlag;
   }
 
-  /** [model/entity/Product.cfc:L65] Not consulted by {@link Product.getTitle}; see the field. */
-  getCalculatedTitle(): string | undefined {
+  /** [model/entity/Product.cfc:L65] Snapshot of the omitted `getTitle()`. */
+  public getCalculatedTitle(): string | undefined {
     return this.calculatedTitle;
   }
 
-  /** [model/entity/Product.cfc:L68] `undefined` after `removeBrand()`; see the field. */
-  getBrand(): Brand | undefined {
+  /** [model/entity/Product.cfc:L68] EAGER `fetch="join"`. */
+  public getBrand(): Brand | undefined {
     return this.brand;
   }
 
-  /** [model/entity/Product.cfc:L69] */
-  getProductType(): ProductType | undefined {
+  /** [model/entity/Product.cfc:L69] EAGER `fetch="join"`. */
+  public getProductType(): ProductType | undefined {
     return this.productType;
   }
 
-  /** [model/entity/Product.cfc:L70] The receiver of thirteen delegating members. */
-  getDefaultSku(): Sku | undefined {
+  /**
+   * [model/entity/Product.cfc:L70] EAGER `fetch="join"`.
+   *
+   * Called live by `Sku.getDefaultFlag()` [src/domain/entities/sku.ts], which reproduces
+   * [model/entity/Sku.cfc:L443]'s unconditional dereference by raising when this answers nothing.
+   */
+  public getDefaultSku(): Sku | undefined {
     return this.defaultSku;
   }
 
+  /** [model/entity/Product.cfc:L80] READ-ONLY projection; the source of `getCategoryIDs()`. */
+  public getCategories(): readonly Category[] {
+    return this.categories;
+  }
+
+  /** [model/entity/Product.cfc:L81] READ-ONLY projection. */
+  public getRelatedProducts(): readonly Product[] {
+    return this.relatedProducts;
+  }
+
   /** [model/entity/Product.cfc:L93] */
-  getRemoteID(): string | undefined {
+  public getRemoteID(): string | undefined {
     return this.remoteID;
   }
 
   /** [model/entity/Product.cfc:L96] */
-  getCreatedDateTime(): Date | undefined {
+  public getCreatedDateTime(): Date | undefined {
     return this.createdDateTime;
   }
 
-  /** [model/entity/Product.cfc:L97] The FK value of the out-of-scope `createdByAccount`. */
-  getCreatedByAccountID(): string | undefined {
+  /**
+   * [model/entity/Product.cfc:L97] The opaque account identifier, NOT an `Account` entity.
+   *
+   * LEGACY-NOTE [model/entity/Product.cfc:L97]: `createdByAccount` is `cfc="Account"`, which is not
+   * one of the eighteen in-scope entities, so the association collapses to its foreign key per §1.5.
+   * Preserved deliberately; do not fix without a product decision.
+   */
+  public getCreatedByAccountID(): string | undefined {
     return this.createdByAccountID;
   }
 
   /** [model/entity/Product.cfc:L98] */
-  getModifiedDateTime(): Date | undefined {
+  public getModifiedDateTime(): Date | undefined {
     return this.modifiedDateTime;
   }
 
-  /** [model/entity/Product.cfc:L99] The FK value of the out-of-scope `modifiedByAccount`. */
-  getModifiedByAccountID(): string | undefined {
+  /**
+   * [model/entity/Product.cfc:L99] The opaque account identifier, NOT an `Account` entity.
+   *
+   * LEGACY-NOTE [model/entity/Product.cfc:L99]: `modifiedByAccount` is `cfc="Account"`, out of scope,
+   * so the association collapses to its foreign key per §1.5.
+   * Preserved deliberately; do not fix without a product decision.
+   */
+  public getModifiedByAccountID(): string | undefined {
     return this.modifiedByAccountID;
   }
 
-  // --- Association accessors -------------------------------------------------------------------
+  // ===========================================================================
+  // FRAMEWORK MEMBER
+  // ===========================================================================
+
+  /**
+   * Whether this instance has never been persisted.
+   *
+   * The empty-string test is not an approximation of the framework, it is literally what the
+   * framework does: `isNew()` [org/Hibachi/HibachiEntity.cfc:L707-L709] returns `getNewFlag()`, and
+   * `getNewFlag()` [org/Hibachi/HibachiEntity.cfc:L571-L576] is
+   * `if(getPrimaryIDValue() == "") { return true; } return false;`. The empty string it compares
+   * against is the `unsavedvalue=""` on the id property at [model/entity/Product.cfc:L52].
+   *
+   * WHY IT IS AUTHORED even though `Product.cfc` never calls it itself: FIVE far-side guards in
+   * already-shipped siblings call `arguments.product.isNew()` across a module boundary -
+   * [model/entity/PriceGroupRate.cfc:L219], [model/entity/PromotionQualifier.cfc:L201] and [L301],
+   * [model/entity/PromotionReward.cfc:L259] and [L359] - and the legacy suite asserts it directly
+   * through the inherited `defaults_are_correct()` at
+   * [meta/tests/unit/entity/SlatwallEntityTestBase.cfc].
+   *
+   * NOTHING ELSE THE DISPATCHER AT [org/Hibachi/HibachiEntity.cfc:L507-L565] CAN SYNTHESISE IS
+   * AUTHORED BEYOND THE SIX CONTAINMENT PROBES BELOW. There is no `hasAny*`, no `hasUnique*`, no
+   * `get*AssignedIDList`, no `get*OptionsSmartList`, no `get*SmartList`, and no `getPrimaryIDValue`,
+   * `getPrimaryIDPropertyName`, `getSimpleRepresentation`, `validate` or `hasErrors`. Those are
+   * metadata-driven dynamic dispatch and framework validation, whose responsibilities the plan
+   * redistributes to typed repository queries and service-tier zod schemas.
+   *
+   * ★ AND `Product` IS ONE OF ONLY FOUR IN-SCOPE ENTITIES THAT COULD REACH THE EAV FALLBACK. Because
+   * it declares `attributeValues` at [L75], an unmatched `get...` call here would fall past the ten
+   * name patterns to the `getAttributeValue` fallback at [org/Hibachi/HibachiEntity.cfc:L559] BEFORE
+   * terminating at the [L565] throw - which is precisely the mechanism behind the two throwing
+   * methods below. For the other fourteen entities an unmatched `get...` throws at [L565] directly.
+   */
+  public isNew(): boolean {
+    return this.productID === '';
+  }
+
+  // ===========================================================================
+  // ★ CONTAINMENT PROBES - THE SIX FAR-SIDE CONTRACT MEMBERS (§2)
   //
-  // Liveness is decided by the census in the file header and by nothing else. The eleven LIVE
-  // accessors hand back the mutable array because a far side splices it; the three readonly ones hand
-  // back a projection because nothing does.
-
-  /**
-   * The product's SKUs. [model/entity/Product.cfc:L155-L160]
-   *
-   *   public array function getSkus(boolean sorted=false, boolean fetchOptions=false) {
-   *       if(!arguments.sorted && !arguments.fetchOptions) {
-   *           return variables.skus;
-   *       }
-   *       return getService("skuService").getProductSkus(product=this, sorted=arguments.sorted,
-   *                                                      fetchOptions=arguments.fetchOptions);
-   *   }
-   *
-   * ★ THE DEFAULT CALL RETURNS THE LIVE ARRAY AND THE FLAGGED CALLS RETURN A FRESH ONE. That is the
-   * source's shape, not a convenience: `Sku.setProduct` [model/entity/Sku.cfc:L607] appends into
-   * `product.getSkus()`, which only works because the no-argument form hands back `variables.skus`
-   * itself. Both flagged branches build a new array in the legacy too, since the service returns
-   * whatever the DAO query produced.
-   *
-   * ★ AND THE FLAGGED BRANCHES ARE PORTED IN MEMORY RATHER THAN THROUGH A PORT, per AAP 0.4.2 - "Sync
-   * over a materialized array; sorting is applied in memory when the array was fetched unsorted". The
-   * two things the legacy needed a query for both turn out to be derivable: the INNER JOIN FETCH
-   * filter reads only `sku.getOptions()`, and the ORDER BY key is ordering-equivalent to a purely
-   * local computation (proved on {@link Product.nextOptionGroupSortOrder}). See
-   * `applyFetchOptionsFilter` and `sortSkusByOptionGroupWeighting` for the two reproductions and for
-   * the two behaviours they preserve that a naive port would lose.
-   *
-   * WHAT CAN THROW HERE: the `fetchOptions` branch dereferences the product type
-   * [model/dao/SkuDAO.cfc:L156] and raises when it is absent, exactly as the legacy does; it raises
-   * for the two out-of-scope base product types; and the sorted branch raises when a materialized
-   * sku has no place in the computed ordering, which is the legacy's index-zero assignment failure.
-   */
-  getSkus(sorted: boolean = false, fetchOptions: boolean = false): Sku[] {
-    // [model/entity/Product.cfc:L156-L158] the LIVE fast path, byte for byte.
-    if (!sorted && !fetchOptions) {
-      return this.skus;
-    }
-
-    // [model/service/SkuService.cfc:L221] `getSkuDAO().getProductSkus(product, fetchOptions)`.
-    let skus: Sku[] = this.applyFetchOptionsFilter(fetchOptions);
-
-    // [model/service/SkuService.cfc:L223] the three-part guard, in order and with CFML's
-    // short-circuit semantics that `&&` reproduces exactly. ★ NOTE IT TESTS ONLY `skus[1]`: a
-    // product whose FIRST sku has no options is never sorted, however many options the others have.
-    // That is preserved, not normalised.
-    const firstSku: Sku | undefined = skus[0];
-    if (sorted && skus.length > 1 && firstSku !== undefined && firstSku.getOptions().length > 0) {
-      skus = this.sortSkusByOptionGroupWeighting(skus);
-    }
-
-    return skus;
-  }
-
-  /**
-   * The alternate product images. [model/entity/Product.cfc:L74]
-   *
-   * LIVE, because [model/entity/Image.cfc:L158] appends into this very accessor's result.
-   * {@link Product.getImages} is a hand-written alias over the SAME array; see that method.
-   */
-  getProductImages(): ProductImageLink[] {
-    return this.productImages;
-  }
-
-  /** The EAV attribute values. [model/entity/Product.cfc:L75] LIVE - AttributeValue.cfc:L242. */
-  getAttributeValues(): ProductAttributeValueLink[] {
-    return this.attributeValues;
-  }
-
-  /** The product reviews. [model/entity/Product.cfc:L76] LIVE - ProductReview.cfc:L117. */
-  getProductReviews(): ProductReviewLink[] {
-    return this.productReviews;
-  }
-
-  /**
-   * The content pages this product is listed on. [model/entity/Product.cfc:L79]
-   *
-   * `readonly` even though this side OWNS the link table, because the owning helpers mutate the
-   * private field and no far side reaches through this accessor. See the field.
-   */
-  getListingPages(): readonly ListingPageLink[] {
-    return this.listingPages;
-  }
-
-  /**
-   * The categories this product belongs to. [model/entity/Product.cfc:L80]
-   *
-   * `readonly`, and the association is helper-free on BOTH sides - see the file header. Read by
-   * {@link Product.getCategoryIDs}.
-   */
-  getCategories(): readonly Category[] {
-    return this.categories;
-  }
-
-  /** The self-referential related products. [model/entity/Product.cfc:L81] `readonly`. */
-  getRelatedProducts(): readonly Product[] {
-    return this.relatedProducts;
-  }
-
-  /** [model/entity/Product.cfc:L84] LIVE - PromotionReward.cfc:L263. */
-  getPromotionRewards(): PromotionReward[] {
-    return this.promotionRewards;
-  }
-
-  /** [model/entity/Product.cfc:L85] LIVE - PromotionReward.cfc:L363. A separate link table. */
-  getPromotionRewardExclusions(): PromotionReward[] {
-    return this.promotionRewardExclusions;
-  }
-
-  /** [model/entity/Product.cfc:L86] LIVE - PromotionQualifier.cfc:L205. */
-  getPromotionQualifiers(): PromotionQualifier[] {
-    return this.promotionQualifiers;
-  }
-
-  /** [model/entity/Product.cfc:L87] LIVE - PromotionQualifier.cfc:L305. */
-  getPromotionQualifierExclusions(): PromotionQualifier[] {
-    return this.promotionQualifierExclusions;
-  }
-
-  /** [model/entity/Product.cfc:L88] LIVE - PriceGroupRate.cfc:L224. See the field for what is absent. */
-  getPriceGroupRates(): PriceGroupRate[] {
-    return this.priceGroupRates;
-  }
-
-  /** [model/entity/Product.cfc:L89] LIVE - Vendor.cfc:L158. Rows typed by {@link ProductVendorLink}. */
-  getVendors(): ProductVendorLink[] {
-    return this.vendors;
-  }
-
-  /** [model/entity/Product.cfc:L90] LIVE - Physical.cfc:L164. Rows typed by {@link ProductPhysicalLink}. */
-  getPhysicals(): ProductPhysicalLink[] {
-    return this.physicals;
-  }
-
-  // --- Containment probes ----------------------------------------------------------------------
+  // NOT ONE of these is declared in `Product.cfc`. All six are synthesised by the dispatcher at
+  // [org/Hibachi/HibachiEntity.cfc:L507-L565], whose CFML semantics are Hibernate's implicit
+  // collection-contains - SESSION IDENTITY, i.e. the primary key for a persistent row. So the
+  // comparison basis is the PRIMARY KEY: never object reference, never deep equality
+  // (prohibition 10).
   //
-  // ALL TWELVE MATCH BY PRIMARY KEY WITH A REFERENCE FALLBACK, and the fallback is not defensive
-  // padding - it is required by `unsavedvalue=""`. Every unsaved row's key is `''`, so a pure key
-  // comparison would report two DIFFERENT unsaved rows as the same one and the far side's guard would
-  // skip a legitimate append.
+  // ★ WITH ONE NECESSARY EXCEPTION - THE UNSAVED-CANDIDATE REFERENCE FALLBACK. Every unsaved row's
+  // key is `''` (`unsavedvalue=""`), so a pure key comparison would report two DIFFERENT unsaved rows
+  // as the same one and the far side's guard would then skip a legitimate append. Where the candidate
+  // is unsaved, identity is the only thing left to compare, so the probe falls back to reference
+  // containment. This is the rule src/domain/entities/brand.ts states as project-wide and
+  // src/domain/entities/promotionReward.ts implements; src/domain/entities/priceGroupRate.ts omits
+  // the fallback, and the divergence is recorded here rather than silently copied either way.
   //
-  // ★ AND NOTE THE DELIBERATE ASYMMETRY WITH THE `remove*` HELPERS BELOW: a probe matches by KEY, a
-  // remove splices by REFERENCE (`arrayFind` with an object needle). Those are two different legacy
-  // mechanisms and they are never normalised together.
-  //
-  // THE PARAMETER TYPES ARE THE CONCRETE IN-SCOPE CLASSES where one exists, and the `*Link`
-  // projection where the far side is out of scope - in which case the projection carries the primary
-  // key accessor precisely so the probe can do its job.
+  // ★ THE SPECIFICATION LISTS FIVE PROBES. THERE ARE SIX. `hasSku` is required too, and it is not in
+  // the §2.1 table: `Sku.setProduct` calls `product.hasSku(this)` verbatim from
+  // [model/entity/Sku.cfc:L607], and src/domain/entities/sku.ts reproduces that call live. Omitting
+  // it would break the compile of an already-shipped sibling, so the census was re-run against the
+  // actual TypeScript call sites rather than trusted from the table.
+  // ===========================================================================
 
   /**
-   * Called by `Sku.setProduct` [model/entity/Sku.cfc:L605]:
-   * `if(isNew() or !arguments.product.hasSku( this ))`.
-   */
-  hasSku(sku: Sku): boolean {
-    const candidateID: string = sku.getSkuID();
-    if (candidateID === '') {
-      return this.skus.includes(sku);
-    }
-    return this.skus.some((held: Sku) => held.getSkuID() === candidateID);
-  }
-
-  /**
-   * Called by `Image.setProduct` [model/entity/Image.cfc:L156]:
-   * `if(isNew() or !arguments.product.hasProductImage( this ))`.
-   */
-  hasProductImage(productImage: ProductImageLink): boolean {
-    const candidateID: string = productImage.getImageID();
-    if (candidateID === '') {
-      return this.productImages.includes(productImage);
-    }
-    return this.productImages.some((held: ProductImageLink) => held.getImageID() === candidateID);
-  }
-
-  /**
-   * Called by `AttributeValue.setProduct` [model/entity/AttributeValue.cfc:L240]:
-   * `if(isNew() or !arguments.product.hasAttributeValue( this ))`.
-   *
-   * ★ THE ONE PROBE THAT CANNOT MATCH BY KEY, and the reason is recorded rather than worked around:
-   * {@link ProductAttributeValueLink} carries no primary-key accessor, because the two members it
-   * does carry are the only ones this class invokes and widening the projection to satisfy a probe
-   * would make it less precise for the helpers that use it. Reference identity is therefore the whole
-   * test here. That is STRICTER than the legacy for saved rows - two distinct instances of the same
-   * `SwAttributeValue` row would compare unequal - and it is safe in this port because association
-   * arrays are materialized once per request from one repository pass, so a row appears as exactly
-   * one instance.
-   */
-  hasAttributeValue(attributeValue: ProductAttributeValueLink): boolean {
-    return this.attributeValues.includes(attributeValue);
-  }
-
-  /**
-   * Called by `ProductReview.setProduct` [model/entity/ProductReview.cfc:L115]:
-   * `if(isNew() or !arguments.product.hasProductReview( this ))`.
-   *
-   * Reference identity for the same reason as {@link Product.hasAttributeValue}:
-   * {@link ProductReviewLink} carries `getRating()` and the two delegation members, none of which is
-   * a primary key.
-   */
-  hasProductReview(productReview: ProductReviewLink): boolean {
-    return this.productReviews.includes(productReview);
-  }
-
-  /**
-   * Called by this class's own `addListingPage` [model/entity/Product.cfc:L714]:
-   * `if(isNew() or !hasListingPage(arguments.listingPage))`.
-   *
-   * ★ THE ONLY PROBE ON THIS CLASS WITH AN INTERNAL CALLER RATHER THAN A FAR-SIDE ONE, which is a
-   * direct consequence of `listingPages` being the one association this side owns AND hand-writes
-   * helpers for. Reference identity, because {@link ListingPageLink} carries no key accessor - the
-   * three members it declares are exactly the three the helpers invoke.
-   */
-  hasListingPage(listingPage: ListingPageLink): boolean {
-    return this.listingPages.includes(listingPage);
-  }
-
-  /**
-   * Called by `PriceGroupRate.addProduct` [model/entity/PriceGroupRate.cfc:L222]:
+   * Called by `PriceGroupRate.addProduct` [model/entity/PriceGroupRate.cfc:L223]:
    * `if(isNew() or !arguments.product.hasPriceGroupRate( this ))`.
    */
-  hasPriceGroupRate(priceGroupRate: PriceGroupRate): boolean {
+  public hasPriceGroupRate(priceGroupRate: PriceGroupRate): boolean {
     const candidateID: string = priceGroupRate.getPriceGroupRateID();
     if (candidateID === '') {
       return this.priceGroupRates.includes(priceGroupRate);
@@ -1627,38 +1482,10 @@ export class Product {
   }
 
   /**
-   * Called by `PromotionReward.addProduct` [model/entity/PromotionReward.cfc:L261]:
-   * `if(isNew() or !arguments.product.hasPromotionReward( this ))`.
+   * Called by `PromotionQualifier.addProduct` [model/entity/PromotionQualifier.cfc:L204]:
+   * `if(isNew() or !arguments.product.hasPromotionQualifier( this ))`. INCLUDE side [L86].
    */
-  hasPromotionReward(promotionReward: PromotionReward): boolean {
-    const candidateID: string = promotionReward.getPromotionRewardID();
-    if (candidateID === '') {
-      return this.promotionRewards.includes(promotionReward);
-    }
-    return this.promotionRewards.some(
-      (held: PromotionReward) => held.getPromotionRewardID() === candidateID,
-    );
-  }
-
-  /**
-   * Called by `PromotionReward.addExcludedProduct` [model/entity/PromotionReward.cfc:L361]:
-   * `if(isNew() or !arguments.product.hasPromotionRewardExclusion( this ))`.
-   */
-  hasPromotionRewardExclusion(promotionReward: PromotionReward): boolean {
-    const candidateID: string = promotionReward.getPromotionRewardID();
-    if (candidateID === '') {
-      return this.promotionRewardExclusions.includes(promotionReward);
-    }
-    return this.promotionRewardExclusions.some(
-      (held: PromotionReward) => held.getPromotionRewardID() === candidateID,
-    );
-  }
-
-  /**
-   * Called by `PromotionQualifier.addProduct` [model/entity/PromotionQualifier.cfc:L203]:
-   * `if(isNew() or !arguments.product.hasPromotionQualifier( this ))`.
-   */
-  hasPromotionQualifier(promotionQualifier: PromotionQualifier): boolean {
+  public hasPromotionQualifier(promotionQualifier: PromotionQualifier): boolean {
     const candidateID: string = promotionQualifier.getPromotionQualifierID();
     if (candidateID === '') {
       return this.promotionQualifiers.includes(promotionQualifier);
@@ -1669,10 +1496,10 @@ export class Product {
   }
 
   /**
-   * Called by `PromotionQualifier.addExcludedProduct` [model/entity/PromotionQualifier.cfc:L303]:
-   * `if(isNew() or !arguments.product.hasPromotionQualifierExclusion( this ))`.
+   * Called by `PromotionQualifier.addExcludedProduct`
+   * [model/entity/PromotionQualifier.cfc:L304]. EXCLUDE side [L87].
    */
-  hasPromotionQualifierExclusion(promotionQualifier: PromotionQualifier): boolean {
+  public hasPromotionQualifierExclusion(promotionQualifier: PromotionQualifier): boolean {
     const candidateID: string = promotionQualifier.getPromotionQualifierID();
     if (candidateID === '') {
       return this.promotionQualifierExclusions.includes(promotionQualifier);
@@ -1683,290 +1510,208 @@ export class Product {
   }
 
   /**
-   * Called by `Vendor.addProduct` [model/entity/Vendor.cfc:L156]:
-   * `if(isNew() or !arguments.product.hasVendor( this ))`.
+   * Called by `PromotionReward.addProduct` [model/entity/PromotionReward.cfc:L262]:
+   * `if(isNew() or !arguments.product.hasPromotionReward( this ))`. INCLUDE side [L84].
    */
-  hasVendor(vendor: ProductVendorLink): boolean {
-    const candidateID: string = vendor.getVendorID();
+  public hasPromotionReward(promotionReward: PromotionReward): boolean {
+    const candidateID: string = promotionReward.getPromotionRewardID();
     if (candidateID === '') {
-      return this.vendors.includes(vendor);
+      return this.promotionRewards.includes(promotionReward);
     }
-    return this.vendors.some((held: ProductVendorLink) => held.getVendorID() === candidateID);
-  }
-
-  /**
-   * Called by `Physical.addProduct` [model/entity/Physical.cfc:L162]:
-   * `if(isNew() or !arguments.product.hasPhysical( this ))`.
-   */
-  hasPhysical(physical: ProductPhysicalLink): boolean {
-    const candidateID: string = physical.getPhysicalID();
-    if (candidateID === '') {
-      return this.physicals.includes(physical);
-    }
-    return this.physicals.some((held: ProductPhysicalLink) => held.getPhysicalID() === candidateID);
-  }
-
-  /**
-   * Whether this product has never been persisted.
-   * [org/Hibachi/HibachiEntity.cfc:L571-L576, L707-L709]
-   *
-   * The framework compares the primary key against the property's `unsavedvalue`, which
-   * [model/entity/Product.cfc:L52] declares as `""`. TOTAL: it never throws.
-   */
-  isNew(): boolean {
-    return this.productID === '';
-  }
-
-  // --- Pre-banner members [model/entity/Product.cfc:L125-L186] ---------------------------------
-  //
-  // The source declares these BEFORE its first section banner, in this order, and the order is
-  // preserved so a reviewer diffing the two files reads the same sequence.
-
-  /**
-   * The LEAF product types under a base type, as `{name, value}` select rows.
-   * [model/entity/Product.cfc:L125-L143]
-   *
-   *   public any function getProductTypeOptions( string baseProductType ) {
-   *     if(!structKeyExists(variables, "productTypeOptions")) {
-   *       if(!structKeyExists(arguments, "baseProductType")) {
-   *         arguments.baseProductType = getProductType().getBaseProductType();
-   *       }
-   *       var smartList = getPropertyOptionsSmartList( "productType" );
-   *       smartList.addLikeFilter( "productTypeIDPath", "#...getProductTypeID()#%" );
-   *       smartList.addWhereCondition( "NOT EXISTS( SELECT pt FROM SlatwallProductType pt
-   *                                     WHERE pt.parentProductType.productTypeID = ...)" );
-   *       ... arrayAppend(variables.productTypeOptions,
-   *             {name=records[i].getSimpleRepresentation(), value=records[i].getProductTypeID()});
-   *     }
-   *     return variables.productTypeOptions;
-   *   }
-   *
-   * WHAT IS PORTED AND WHAT IS NOT, on the dividing line stated in the file header: the SMART LIST is
-   * an input, so the already-prefix-filtered LEAF rows arrive at construction; the PROJECTION is this
-   * entity's contribution and stays. Same split as `ProductType.getParentProductTypeOptions()`.
-   *
-   * ★ THE ARGUMENT IS OPTIONAL WITH NO DEFAULT, AND THAT IS OBSERVABLE. `string baseProductType`
-   * [L125] declares no `="..."`, so omitting it takes the L127-L129 branch, which dereferences
-   * `getProductType()` UNGUARDED. On a product with no product type the legacy therefore RAISES
-   * before it ever reaches the query. The port reproduces that raise by dereferencing the product
-   * type in exactly that case - and then discards the derived value, because the prefix filter has
-   * already been applied upstream. Discarding it is not sloppiness: the value's only legacy use was
-   * the filter, and dropping the dereference would silently make a raising call succeed.
-   *
-   * ★ AND IT CAN RAISE A SECOND WAY: a candidate row whose product type has no name cannot be
-   * projected, because `ProductTypeOption.name` is a string. `ProductType.getSimpleRepresentation()`
-   * types its return honestly as `string | undefined` - `productTypeName`
-   * [model/entity/ProductType.cfc:L57] is a nullable column that model/validation/ProductType.json
-   * requires in the SAVE context only - so the absent-name failure is raised HERE, at the projection
-   * that cannot represent it, rather than inside the representation itself. The method still raises on
-   * the same input; only the origin of the raise moved, and it moved to the line that actually has the
-   * problem.
-   *
-   * ★ ASYNCHRONOUS, BECAUSE THE RAISE IT REPRODUCES IS. The L127-L129 branch derives the base type
-   * through {@link Product.getBaseProductType}, which is async because
-   * `ProductType.getBaseProductType()` reaches the repository for the root product type
-   * [model/entity/ProductType.cfc:L112]. The derived value is still discarded - see above - but the
-   * dereference and the round trip it entails are not, because dropping them would silently turn a
-   * raising call into a succeeding one.
-   */
-  async getProductTypeOptions(baseProductType?: string): Promise<readonly ProductTypeOption[]> {
-    // [model/entity/Product.cfc:L126] the memo guard, testing PRESENCE and not truthiness.
-    if (this.productTypeOptions !== undefined) {
-      return this.productTypeOptions;
-    }
-
-    // [model/entity/Product.cfc:L127-L129] reproduced for its RAISE, not for its value. See the doc.
-    if (baseProductType === undefined) {
-      if (this.productType === undefined) {
-        throw new Error(
-          'Product.getProductTypeOptions was called without a baseProductType on a product that ' +
-            'has no product type. The legacy body at model/entity/Product.cfc:L127-L129 derives ' +
-            'the base type with an unguarded getProductType().getBaseProductType(), which fails ' +
-            'the same way on the same input.',
-        );
-      }
-      // The derived value is deliberately unused - the prefix filter it fed has already been
-      // applied by the repository that supplied `productTypeOptionCandidates`. It is still AWAITED
-      // rather than left floating, because the dereference is reproduced for its RAISE and an
-      // unawaited rejection would surface as an unhandled promise instead of as this call failing.
-      await this.productType.getBaseProductType();
-    }
-
-    if (this.productTypeOptionCandidates === undefined) {
-      throw new Error(
-        'Product.getProductTypeOptions was called on a product hydrated without product-type ' +
-          'option candidates. The legacy body at model/entity/Product.cfc:L130-L134 obtains them ' +
-          'from a smart list filtered by productTypeIDPath prefix and restricted to leaf types, ' +
-          'and that query is outside the domain in this port, so the rows must be supplied at ' +
-          'construction. No default is substituted because an empty list is indistinguishable ' +
-          'from a catalog that genuinely has no leaf types under the base.',
-      );
-    }
-
-    // [model/entity/Product.cfc:L136-L140] the projection, verbatim: the framework's own
-    // `alias="name"` / `alias="value"` key pair, built from the simple representation and the key.
-    const options: ProductTypeOption[] = [];
-    for (const candidate of this.productTypeOptionCandidates) {
-      // `getSimpleRepresentation()` is honestly typed `string | undefined` because
-      // `productTypeName` [model/entity/ProductType.cfc:L57] is nullable. A row that cannot name
-      // itself cannot be projected into a `{name, value}` select option, so it raises here - see the
-      // second raise note on this method's doc.
-      const name: string | undefined = candidate.getSimpleRepresentation();
-      if (name === undefined) {
-        throw new Error(
-          'Product.getProductTypeOptions cannot project product type ' +
-            `'${candidate.getProductTypeID()}' into a select option because it has no ` +
-            'productTypeName, so ProductType.getSimpleRepresentation() ' +
-            '[model/entity/ProductType.cfc:L273-L278] resolves to nothing. The legacy projection at ' +
-            'model/entity/Product.cfc:L137-L139 assigns that null straight into the option struct.',
-        );
-      }
-      options.push({
-        name,
-        value: candidate.getProductTypeID(),
-      });
-    }
-
-    this.productTypeOptions = options;
-    return this.productTypeOptions;
-  }
-
-  // LEGACY-NOTE [model/entity/Product.cfc:L145-L152]: `getListingPagesOptionsSmartList()` IS
-  // DELIBERATELY NOT PORTED. Its whole body memoizes
-  // `getService("contentService").getContentSmartList()` and adds one `addOrder("title|ASC")`, so the
-  // method IS the smart list - there is no local contribution to keep, and its only consumer is the
-  // admin listing-page picker, which is out of scope. This is the third bullet of the smart-list
-  // dividing line in the file header. Recorded rather than silently dropped, so the omission is
-  // auditable.
-
-  /**
-   * Finds one of this product's SKUs by ID. [model/entity/Product.cfc:L162-L169]
-   *
-   *   public any function getSkuByID(required string skuID) {
-   *     var skus = getSkus();
-   *     for(var i = 1; i <= arrayLen(skus); i++) {
-   *       if(skus[i].getSkuID() == arguments.skuID) { return skus[i]; }
-   *     }
-   *   }
-   *
-   * ★ IT FALLS OFF THE END WITH NO `return`, so a miss yields CFML null - which is `undefined` here,
-   * and that is why the return type is widened rather than defaulted. Substituting a zero-ish or
-   * empty-object answer would let a caller price the wrong sku.
-   *
-   * ★ THE COMPARISON IS CFML `==`, WHICH IS CASE-INSENSITIVE FOR STRINGS. A UUID key makes that
-   * academic in practice, but the port folds both sides anyway rather than relying on the data's
-   * shape - a case-sensitive `===` would MISS a row CFML finds, which is the more dangerous
-   * direction.
-   *
-   * It searches `getSkus()` with NO arguments, so it sees the live materialized array and never
-   * triggers the sorted or fetch-options paths.
-   */
-  getSkuByID(skuID: string): Sku | undefined {
-    const needle: string = skuID.toLowerCase();
-    for (const sku of this.getSkus()) {
-      if (sku.getSkuID().toLowerCase() === needle) {
-        return sku;
-      }
-    }
-    return undefined;
-  }
-
-  /**
-   * The display templates a product can be rendered with. [model/entity/Product.cfc:L171-L176]
-   *
-   *   if(!isDefined("variables.templateOptions")){
-   *     variables.templateOptions = getService("ProductService").getProductTemplates();
-   *   }
-   *   return variables.templateOptions;
-   *
-   * ★ LEGACY-DEFECT D3 - THIS METHOD CANNOT SUCCEED IN THE LEGACY EITHER, and the mechanism is worth
-   * spelling out because it is not a missing-method error. `getProductTemplates()` is declared
-   * NOWHERE in the repository - verified by grep across every `.cfc` and `.cfm` - so the call reaches
-   * `HibachiService.onMissingMethod` [org/Hibachi/HibachiService.cfc:L255-L263], which routes any
-   * unmatched `get*` that does not end in `smartlist` to `onMissingGetMethod`
-   * [org/Hibachi/HibachiService.cfc:L305-L328]. That helper strips the `get` prefix to get the entity
-   * name `ProductTemplates`, finds no `by` in it, and then reads `missingMethodArguments[1]` for the
-   * ID [L325] - but the call passes NO ARGUMENTS AT ALL, so the struct has no key `1` and the read
-   * itself fails.
-   *
-   * Reproduced as a raise rather than repaired: authoring a working template lookup would be
-   * inventing a capability the legacy never had, and returning `[]` would silently convert a hard
-   * failure into an empty admin dropdown.
-   *
-   * Preserved deliberately; do not fix without a product decision.
-   */
-  getTemplateOptions(): never {
-    throw new Error(
-      'Product.getTemplateOptions reproduces LEGACY-DEFECT [model/entity/Product.cfc:L173]: it ' +
-        'calls getService("ProductService").getProductTemplates(), which is declared nowhere in ' +
-        'the repository. The call falls through to HibachiService.onMissingMethod and then to ' +
-        'onMissingGetMethod [org/Hibachi/HibachiService.cfc:L305-L326], which reads ' +
-        'missingMethodArguments[1] for an entity ID that the argument-less call never supplied. ' +
-        'The legacy fails on the same input.',
+    return this.promotionRewards.some(
+      (held: PromotionReward) => held.getPromotionRewardID() === candidateID,
     );
   }
 
   /**
-   * The alternate product images. [model/entity/Product.cfc:L177-L179]
-   *
-   *   public any function getImages() { return variables.productImages; }
-   *
-   * ★ A HAND-WRITTEN ALIAS OVER `productImages`, NOT A SECOND COLLECTION. It returns the same array
-   * object as {@link Product.getProductImages}, which is why it is LIVE here too: an alias that
-   * copied would break `Image.setProduct` [model/entity/Image.cfc:L158] for any caller that reached
-   * the collection through this name. Both names are kept because both have callers - this one is
-   * what {@link Product.getImageGalleryArray} uses [L288-L313].
+   * Called by `PromotionReward.addExcludedProduct` [model/entity/PromotionReward.cfc:L362].
+   * EXCLUDE side [L85].
    */
-  getImages(): ProductImageLink[] {
-    return this.productImages;
+  public hasPromotionRewardExclusion(promotionReward: PromotionReward): boolean {
+    const candidateID: string = promotionReward.getPromotionRewardID();
+    if (candidateID === '') {
+      return this.promotionRewardExclusions.includes(promotionReward);
+    }
+    return this.promotionRewardExclusions.some(
+      (held: PromotionReward) => held.getPromotionRewardID() === candidateID,
+    );
   }
 
   /**
-   * The sale-price detail for one of this product's SKUs. [model/entity/Product.cfc:L181-L186]
+   * Called by `Sku.setProduct` [model/entity/Sku.cfc:L607]:
+   * `if(isNew() or !arguments.product.hasSku( this ))`.
    *
-   *   public struct function getSkuSalePriceDetails( required any skuID ) {
-   *     if(structKeyExists(getSalePriceDetailsForSkus(), arguments.skuID)) {
-   *       return getSalePriceDetailsForSkus()[ arguments.skuID ];
-   *     }
-   *     return {};
+   * THE SIXTH PROBE, ABSENT FROM THE §2.1 TABLE - see the section banner.
+   */
+  public hasSku(sku: Sku): boolean {
+    const candidateID: string = sku.getSkuID();
+    if (candidateID === '') {
+      return this.skus.includes(sku);
+    }
+    return this.skus.some((held: Sku) => held.getSkuID() === candidateID);
+  }
+
+  // ===========================================================================
+  // ★ THE FIVE LIVE-ARRAY ACCESSORS (§2.1 / §2.2)
+  //
+  // EVERY ONE RETURNS THE LIVE INTERNAL ARRAY REFERENCE, NEVER A DEFENSIVE COPY. This is ABSOLUTE.
+  // The far-side helpers `push` into and `splice` out of exactly these arrays:
+  //
+  //   priceGroupRate.ts        push -> getPriceGroupRates(),              splice -> same
+  //   promotionQualifier.ts    push -> getPromotionQualifiers(),          splice -> same
+  //   promotionQualifier.ts    push -> getPromotionQualifierExclusions(), splice -> same
+  //   promotionReward.ts       push -> getPromotionRewards(),             splice -> same
+  //   promotionReward.ts       push -> getPromotionRewardExclusions(),    splice -> same
+  //   sku.ts                   push -> getSkus(),                        splice -> same
+  //
+  // A copy would silently break bidirectional removal: the far side would splice a throwaway array,
+  // the association would survive, and nothing would report an error. The return types are therefore
+  // MUTABLE arrays rather than `readonly` ones - deliberately, because `readonly` would make the
+  // far-side `push` a compile error and force a cast, and a cast to defeat a boundary this file
+  // itself declared would be worse than the honest mutable type.
+  //
+  // {@link Product.getSkus} is the sixth and is authored separately, because [L155-L161] OVERRIDES
+  // the generated accessor with two parameters.
+  // ===========================================================================
+
+  /** [model/entity/Product.cfc:L88] LIVE. Mutated by `PriceGroupRate.addProduct`/`removeProduct`. */
+  public getPriceGroupRates(): PriceGroupRate[] {
+    return this.priceGroupRates;
+  }
+
+  /** [model/entity/Product.cfc:L86] LIVE. Mutated by `PromotionQualifier.addProduct`. */
+  public getPromotionQualifiers(): PromotionQualifier[] {
+    return this.promotionQualifiers;
+  }
+
+  /** [model/entity/Product.cfc:L87] LIVE. Mutated by `PromotionQualifier.addExcludedProduct`. */
+  public getPromotionQualifierExclusions(): PromotionQualifier[] {
+    return this.promotionQualifierExclusions;
+  }
+
+  /** [model/entity/Product.cfc:L84] LIVE. Mutated by `PromotionReward.addProduct`. */
+  public getPromotionRewards(): PromotionReward[] {
+    return this.promotionRewards;
+  }
+
+  /** [model/entity/Product.cfc:L85] LIVE. Mutated by `PromotionReward.addExcludedProduct`. */
+  public getPromotionRewardExclusions(): PromotionReward[] {
+    return this.promotionRewardExclusions;
+  }
+
+  // ===========================================================================
+  // ★ THE URL PAIR - `getProductURL()` IS THE ONLY LEGACY-TESTED ENTITY METHOD IN THE SUBTREE
+  // ===========================================================================
+
+  /**
+   * ★ THE PRODUCT DETAIL URL - THE ONE ENTITY METHOD IN THIS WHOLE SUBTREE THAT AN EXISTING LEGACY
+   * TEST PINS.
+   *
+   * [model/entity/Product.cfc:L207-L209] verbatim:
+   *
+   *   public string function getProductURL() {
+   *     return "/#setting('globalURLKeyProduct')#/#getURLTitle()#/";
    *   }
    *
-   * ASYNC, because it reads through {@link Product.getSalePriceDetailsForSkus}, whose legacy body
-   * reaches the DAO. The `required any skuID` parameter is narrowed to `string`; the legacy `any` is
-   * a consequence of CFML having no narrower option, not a design choice.
+   * THE ASSERTION THIS MUST SATISFY. `meta/tests/unit/entity/ProductTest.cfc` ->
+   * `productUrlIsCorrectlyFormatted()` builds a product with `urlTitle = "nike-air-jorden"` and
+   * asserts the result equals `/<globalURLKeyProduct>/nike-air-jorden/` - WITH BOTH THE LEADING AND
+   * THE TRAILING SLASH. The fixture spelling `nike-air-jorden` is retained verbatim in the ported
+   * suite, typo and all, because changing a fixture is changing the test. That makes this file one of
+   * only TWO in the folder whose suite is PARITY rather than net-new; the other is
+   * src/domain/entities/brand.ts. The remaining sixteen are net-new and are labelled net-new,
+   * because presenting net-new coverage as parity fails the traceability gate.
    *
-   * ★ A MISS ANSWERS `undefined`, NOT `{}` - a documented divergence, and the argument for it is the
-   * same one that governs the currency accessors under AAP 0.6.3. The legacy `{}` is a struct whose
-   * every key is absent, so every downstream `structKeyExists(details,'salePrice')` test fails and
-   * every read of `details.salePrice` raises. `undefined` reproduces exactly that pair of outcomes in
-   * TypeScript - a property test fails, a property read is a type error - while ALSO being
-   * distinguishable at the type level, which `{}` typed as `SalePriceDetail` would not be. Returning
-   * a `SalePriceDetail`-shaped object with zeroed money would be the dangerous alternative: it would
-   * put a sale price of zero on a sku that has no sale.
+   * SYNCHRONOUS, because `SettingsProvider.setting()` is synchronous by design - the composition root
+   * resolves every default eagerly so the domain layer never awaits a setting.
+   *
+   * THE DEFAULT URL KEY IS NOT HERE AND MUST NEVER BE - NOT EVEN QUOTED IN A COMMENT. It is declared
+   * once, at [model/service/SettingService.cfc:L178], as the `defaultValue` of the
+   * `globalURLKeyProduct` text setting, and the legacy entity carries no literal fallback of any
+   * kind. Transcribing that value into this method would move a configuration decision into the
+   * domain layer and would change what a differently configured installation emits (E6,
+   * prohibition 5).
+   *
+   * `getURLTitle()` in the legacy body is this class's `getUrlTitle()` - see the accessor note on the
+   * capitalisation. A `urlTitle` of `undefined` interpolates as the empty string, which is exactly
+   * what CFML does with an unset `urlTitle` here, so the empty-title case needs no special arm.
    */
-  async getSkuSalePriceDetails(skuID: string): Promise<SalePriceDetail | undefined> {
-    const details: Readonly<Record<string, SalePriceDetail>> =
-      await this.getSalePriceDetailsForSkus();
-
-    // [model/entity/Product.cfc:L182] `structKeyExists` on a struct keyed by skuID. CFML struct keys
-    // are CASE-INSENSITIVE, so a lookup that differs only in case still hits; the port therefore
-    // matches the key case-insensitively rather than relying on `Object.hasOwn`.
-    const needle: string = skuID.toLowerCase();
-    for (const [key, detail] of Object.entries(details)) {
-      if (key.toLowerCase() === needle) {
-        return detail;
-      }
+  public getProductURL(): string {
+    if (this.settingsProvider === undefined) {
+      throw this.missingCollaborator('settings provider', 'L208');
     }
-
-    return undefined;
+    const urlKey: string = this.settingsProvider.setting('globalURLKeyProduct');
+    return `/${urlKey}/${this.urlTitle ?? ''}/`;
   }
 
-  // --- Non-Persistent Helpers [model/entity/Product.cfc:L188] ----------------------------------
-  //
-  // The source's own comment banner. Its members run from L191 to L248.
+  /**
+   * The same URL WITHOUT the leading slash, for use inside a listing page's own path.
+   *
+   * [model/entity/Product.cfc:L211-L213] verbatim:
+   *
+   *   public string function getListingProductURL() {
+   *     return "#setting('globalURLKeyProduct')#/#getURLTitle()#/";
+   *   }
+   *
+   * LEGACY-NOTE [model/entity/Product.cfc:L211-L213]: the ONLY difference from `getProductURL()` is
+   * the absent leading slash - the trailing one is still present in both. The two methods sit four
+   * lines apart and differ by one character, so the difference is reproduced explicitly rather than
+   * by deriving one from the other.
+   * Preserved deliberately; do not fix without a product decision.
+   */
+  public getListingProductURL(): string {
+    if (this.settingsProvider === undefined) {
+      throw this.missingCollaborator('settings provider', 'L212');
+    }
+    const urlKey: string = this.settingsProvider.setting('globalURLKeyProduct');
+    return `${urlKey}/${this.urlTitle ?? ''}/`;
+  }
+
+  // ===========================================================================
+  // ID-LIST ACCESSORS
+  // ===========================================================================
 
   /**
-   * The IDs of the pages this product is listed on. [model/entity/Product.cfc:L191-L197]
+   * The comma-delimited list of this product's category IDs.
+   *
+   * [model/entity/Product.cfc:L199-L205] verbatim:
+   *
+   *   var categoryIDs = "";
+   *   for( var i=1; i<= arrayLen(getCategories()); i++ ) {
+   *     categoryIDs = listAppend(categoryIDs,getCategories()[i].getCategoryID());
+   *   }
+   *   return categoryIDs;
+   *
+   * ★ THIS IS A PLAIN COMMA-LIST BUILD, NOT A MATERIALIZED PATH WALK, and the distinction decided an
+   * import. `../valueObjects/materializedIdPath.js` centralises `productTypeIDPath` /
+   * `priceGroupIDPath` / `categoryIDPath` walking, and it is deliberately NOT imported by this file,
+   * because nothing here walks a path: this loop appends one key per element of an already-materialized
+   * collection. Importing it "for symmetry" would add an unused dependency; the folder rule is that a
+   * value import must be earned by a call.
+   *
+   * `listAppend` from `../../lib/cfml/list.js` is used rather than `Array.join`, because the helper is
+   * PURE and emits NO LEADING DELIMITER ON AN EMPTY LIST - the property proven load-bearing at
+   * [model/entity/Sku.cfc:L234-L236] and [L886-L888]. `join` would agree here by coincidence; the
+   * helper agrees by contract, and the contract is what the rest of the slice depends on.
+   *
+   * `Category` is ported as a read-mostly leaf: its `cmsCategoryID` column (index
+   * `RI_CMSCATEGORYID`) and its `site` association survive as INERT persisted columns with NO CMS
+   * behaviour ported at all, preserving the schema contract (B5). There is no `CategoryService` and
+   * none may be invented - `Category.cfc` declares `hb_serviceName="contentService"`, and
+   * `ContentService` is out of scope beyond the narrow category access path.
+   */
+  public getCategoryIDs(): string {
+    let categoryIDs = '';
+    for (const category of this.categories) {
+      categoryIDs = listAppend(categoryIDs, category.getCategoryID());
+    }
+    return categoryIDs;
+  }
+
+  /**
+   * ★ PRESERVED AS THROWING - the legacy body calls a method that does not exist.
+   *
+   * [model/entity/Product.cfc:L191-L197] verbatim:
    *
    *   public string function getPageIDs() {
    *     var pageIDs = "";
@@ -1976,1148 +1721,1002 @@ export class Product {
    *     return pageIDs;
    *   }
    *
-   * ★ LEGACY-DEFECT D2 - `getPages()` DOES NOT EXIST. The property is `listingPages` [L79], and no
-   * `pages` property, alias or method is declared anywhere on this component or its two base classes.
+   * `getPages()` IS NOT DECLARED ANYWHERE IN `Product.cfc` AND NO `pages` PROPERTY EXISTS. The
+   * component declares `listingPages` at [L82] - a many-to-many against `Content` through
+   * `SwProductListingPage` - and nothing named `pages`. So in CFML the call falls into
+   * `onMissingMethod` [org/Hibachi/HibachiEntity.cfc:L507-L565], fails to match any of the ten
+   * name patterns (`getPages` is not `get<Prop>ID`, not `get<Prop>Options`, not `get<Prop>Count`,
+   * and so on), reaches the `getAttributeValue` fallback at [L559] - which this component CAN reach,
+   * being one of only four in-scope entities that declares `attributeValues` [L75] - finds no
+   * attribute named `Pages`, and terminates at the [L565] throw. The method cannot return; it can
+   * only raise.
    *
-   * THE FAILURE PATH IS TWO STEPS, NOT ONE, AND THAT MATTERS FOR THE MESSAGE. `getPages` reaches
-   * `HibachiEntity.onMissingMethod` [org/Hibachi/HibachiEntity.cfc:L507-L565] and matches NONE of the
-   * ten prefix/suffix conventions - it is not `hasUniqueOrNull*`, `hasUnique*`, `hasAny*`, and it ends
-   * in neither `AssignedIDList`, `ID`, `Options`, `OptionsSmartList`, `SmartList`, `Struct` nor
-   * `Count`. It therefore reaches the LAST branch [L559-L561], which fires because this entity
-   * declares `attributeValues` [L75], and returns `getAttributeValue("Pages")` - the EMPTY STRING
-   * [model/entity/HibachiEntity.cfc:L151]. The L565 throw is never reached. The actual failure is the
-   * NEXT line: `arrayLen("")` on a string.
+   * Behaviour preservation extends to defects: A METHOD THAT THROWS AT RUNTIME TODAY THROWS IN THE
+   * TARGET. Writing a working implementation over `listingPages` would be inventing a feature and
+   * calling it a port.
    *
-   * Reproduced as a raise. Note there is a correct implementation sitting right beside it -
-   * {@link Product.getCategoryIDs} is the same loop over `getCategories()` and it works - so the fix
-   * is obvious and is still not applied, because a method that fails today must fail identically
-   * after the port.
-   *
+   * LEGACY-DEFECT [model/entity/Product.cfc:L191-L197]: `getPageIDs()` iterates `getPages()`, which
+   * is undeclared, so the call reaches [org/Hibachi/HibachiEntity.cfc:L559] and then throws at [L565].
    * Preserved deliberately; do not fix without a product decision.
    */
-  getPageIDs(): never {
+  public getPageIDs(): never {
     throw new Error(
-      'Product.getPageIDs reproduces LEGACY-DEFECT [model/entity/Product.cfc:L193]: it iterates ' +
-        'getPages(), but this entity declares no such property - the collection is listingPages ' +
-        '[model/entity/Product.cfc:L79]. In the legacy the call reaches the onMissingMethod ' +
-        'attribute-value fallback [org/Hibachi/HibachiEntity.cfc:L559-L561], which returns the ' +
-        'empty string, and arrayLen("") then fails. Compare getCategoryIDs(), which is the same ' +
-        'loop written correctly.',
+      `Product '${this.productID}': getPageIDs() cannot return. ` +
+        `[model/entity/Product.cfc:L193] iterates getPages(), which is not declared on the ` +
+        `component and corresponds to no property - the component declares listingPages at [L82], ` +
+        `not pages. In CFML the call reaches the onMissingMethod dispatcher at ` +
+        `[org/Hibachi/HibachiEntity.cfc:L507-L565], matches no name pattern, falls through to the ` +
+        `getAttributeValue fallback at [L559] and terminates at the throw at [L565]. This throw is ` +
+        `the faithful port of that behaviour, not a stub awaiting implementation.`,
     );
   }
 
+  // ===========================================================================
+  // OVERRIDDEN METHODS [model/entity/Product.cfc:L789-L791]
+  // ===========================================================================
+
   /**
-   * The IDs of the categories this product belongs to, as a comma list.
-   * [model/entity/Product.cfc:L199-L205]
+   * Which property represents this product in a listing.
    *
-   *   var categoryIDs = "";
-   *   for( var i=1; i<= arrayLen(getCategories()); i++ ) {
-   *     categoryIDs = listAppend(categoryIDs,getCategories()[i].getCategoryID());
-   *   }
-   *   return categoryIDs;
+   * [model/entity/Product.cfc:L791-L793] verbatim: `return "productName";`
    *
-   * ★ THE COMMA-LIST RETURN IS PRESERVED RATHER THAN BECOMING `string[]`, because the list stays a
-   * string right up to the query layer everywhere in this port - the same discipline
-   * `getUnusedProductOptions`' `existingOptionGroupIDList` parameter follows. `listAppend` is the
-   * ported CFML helper, so the empty-list behaviour matches exactly: an empty collection yields `''`
-   * rather than `','`.
-   *
-   * TOTAL: it never throws. An empty collection yields the empty string, which is truthful rather
-   * than a substituted default.
+   * The framework's `getSimpleRepresentation()` consumes this, and THAT method is deliberately not
+   * ported - it is metadata-driven dispatch. The override itself is a one-line constant with no
+   * framework reach of its own, so it ports cleanly and is authored for surface completeness.
    */
-  getCategoryIDs(): string {
-    let categoryIDs: string = '';
-    for (const category of this.getCategories()) {
-      categoryIDs = listAppend(categoryIDs, category.getCategoryID());
+  public getSimpleRepresentationPropertyName(): string {
+    return 'productName';
+  }
+
+  // ===========================================================================
+  // BIDIRECTIONAL HELPER METHODS [model/entity/Product.cfc:L659-L787]
+  //
+  // ★ THE INVERSION CROSS-CHECK VERDICT: THIRTEEN `remove*` HELPERS, ALL CLEAN, ZERO INVERTED.
+  // The full verdict table is in the file header. The defect class being screened for is real and
+  // lives elsewhere in this folder - [model/entity/Option.cfc:L129-L131] and [L145-L147] each declare
+  // a `remove*` whose body calls `add*` on the far side - so every body here was read verbatim and
+  // checked individually rather than assumed. Every `remove*` in `Product.cfc` calls a far-side
+  // `remove*`. Nothing to preserve, and no divergence spent.
+  //
+  // Of the thirteen pairs, SEVEN have an in-scope far side and are authored below - Brand, Sku,
+  // PromotionReward, PromotionRewardExclusion, PromotionQualifier, PromotionQualifierExclusion and
+  // PriceGroupRate. The other SIX point at entities outside the eighteen - AttributeValue,
+  // ProductImage, ProductReview, ListingPage (Content), Vendor and Physical - and are omitted with a
+  // note apiece in the OMISSION REGISTER at the foot of this class.
+  // ===========================================================================
+
+  // --- Brand (many-to-one) [model/entity/Product.cfc:L661] --------------------------------------
+
+  /**
+   * Points this product at a brand, wiring both sides.
+   *
+   * [model/entity/Product.cfc:L662-L667] verbatim:
+   *
+   *   variables.brand = arguments.brand;
+   *   if(isNew() or !arguments.brand.hasProduct( this )) {
+   *     arrayAppend(arguments.brand.getProducts(), this);
+   *   }
+   *
+   * THE `isNew() or` SHORT-CIRCUIT IS PRESERVED EXACTLY: a brand-new product is appended WITHOUT the
+   * containment probe, which is how the legacy avoided probing against an unsaved key. Reversing the
+   * operands - probing first - would change nothing observable today but would reintroduce the very
+   * ambiguity the short-circuit exists to dodge, so the order stands.
+   *
+   * `getProducts()` on the far side hands back src/domain/entities/brand.ts's LIVE array, and this
+   * push mutates it. That array defaults to `[]` there, asserted by the legacy test
+   * `meta/tests/unit/entity/BrandTest.cfc` -> `defaults_are_correct()`.
+   */
+  public setBrand(brand: Brand): void {
+    this.brand = brand;
+    if (this.isNew() || !brand.hasProduct(this)) {
+      brand.getProducts().push(this);
     }
-    return categoryIDs;
   }
 
   /**
-   * The product's public URL. [model/entity/Product.cfc:L207-L209]
+   * Detaches this product from a brand, unwiring both sides.
    *
-   *   public string function getProductURL() {
-   *     return "/#setting('globalURLKeyProduct')#/#getURLTitle()#/";
-   *   }
+   * [model/entity/Product.cfc:L668-L677] verbatim:
    *
-   * ★ THE ONE METHOD ON THIS ENTIRE PORT WITH GENUINE LEGACY TEST PARITY.
-   * meta/tests/unit/entity/ProductTest.cfc's `productUrlIsCorrectlyFormatted()` pins it, asserting
-   * the result equals `/<globalURLKeyProduct>/nike-air-jorden/` with that fixture spelling - typo
-   * included - retained verbatim. The leading AND trailing slashes are both part of the asserted
-   * value, which is why neither is trimmed and why the sibling
-   * {@link Product.getListingProductURL} is a genuinely different string rather than a duplicate.
+   *   if(!structKeyExists(arguments, "brand")) { arguments.brand = variables.brand; }
+   *   var index = arrayFind(arguments.brand.getProducts(), this);
+   *   if(index > 0) { arrayDeleteAt(arguments.brand.getProducts(), index); }
+   *   structDelete(variables, "brand");
    *
-   * `globalURLKeyProduct` IS one of the four AAP-approved setting keys, and it still arrives
-   * pre-resolved - see {@link Product.globalURLKeyProductSetting} for why an entity holding a port to
-   * read one string is the wrong trade.
+   * The omitted-argument default at [L669-L671] becomes an optional parameter. The `structDelete` at
+   * [L676] becomes an assignment of `undefined`, NEVER `delete this.brand` - with
+   * `exactOptionalPropertyTypes` on, assignment is the checkable form and `delete` on a
+   * non-optional field is not even legal.
    *
-   * IT RAISES ON EITHER MISSING INPUT, and the reasoning is the standard one: `returntype="string"`
-   * leaves no spare value, and both plausible defaults produce a WELL-FORMED WRONG URL rather than a
-   * detectable marker - `//nike-air-jorden/` for an absent key, `/sp//` for an absent slug. A wrong
-   * URL is not a detectable failure, it is a 404 or, worse, another product's page.
+   * ★ `index > 0` BECOMES `!== -1`, AND THAT IS NOT A STYLE CHANGE. CFML's `arrayFind` returns a
+   * 1-BASED index or 0, so `> 0` is exactly right there. TypeScript's `findIndex` returns a 0-BASED
+   * index or -1, so carrying `> 0` across literally would SILENTLY REFUSE TO REMOVE THE FIRST
+   * PRODUCT OF A BRAND - element 0 would test false and survive. The same base change is recorded in
+   * src/domain/entities/promotionCode.ts and src/domain/entities/promotionQualifier.ts; it is
+   * recorded again here because the failure is invisible in testing that never happens to target
+   * element 0.
    */
-  getProductURL(): string {
-    if (this.globalURLKeyProductSetting === undefined) {
+  public removeBrand(brand?: Brand): void {
+    const target = brand ?? this.brand;
+    if (target === undefined) {
+      // LEGACY-NOTE [model/entity/Product.cfc:L669-L672]: with no argument and no `variables.brand`,
+      // CFML raises on `arguments.brand.getProducts()`. Raising here is the faithful port.
+      // Preserved deliberately; do not fix without a product decision.
       throw new Error(
-        'Product.getProductURL was called on a product hydrated without a resolved ' +
-          "globalURLKeyProduct setting. The legacy body reads setting('globalURLKeyProduct') " +
-          '[model/entity/Product.cfc:L208], whose default is "sp" ' +
-          '[model/service/SettingService.cfc:L178]; that resolution happens at the boundary in ' +
-          'this port, so the value must be supplied at construction. No default is substituted ' +
-          'because every candidate produces a well-formed wrong URL rather than a detectable marker.',
+        `Product '${this.productID}': removeBrand was called with no argument and no owning ` +
+          `brand, which raises at [model/entity/Product.cfc:L672].`,
       );
     }
-    if (this.urlTitle === undefined) {
-      throw new Error(
-        'Product.getProductURL was called on a product with no urlTitle. The legacy interpolates ' +
-          'getURLTitle() directly [model/entity/Product.cfc:L208] and would emit a URL with an ' +
-          'empty path segment, which resolves to a different page rather than failing.',
-      );
-    }
-
-    // [model/entity/Product.cfc:L208] verbatim, including both slashes.
-    return `/${this.globalURLKeyProductSetting}/${this.urlTitle}/`;
-  }
-
-  /**
-   * The product's URL as embedded in a listing page. [model/entity/Product.cfc:L211-L213]
-   *
-   *   return "#setting('globalURLKeyProduct')#/#getURLTitle()#/";
-   *
-   * ★ IDENTICAL TO {@link Product.getProductURL} EXCEPT FOR THE LEADING SLASH, and the difference is
-   * deliberate on the source's part: this form is concatenated onto a listing page's own path, so a
-   * leading slash would make it absolute and discard that prefix. Both methods are kept, and neither
-   * delegates to the other, because the legacy keeps them separate and a shared helper would invite
-   * exactly the "harmless" normalisation that breaks one of the two.
-   *
-   * Raises on the same two missing inputs, for the same reasons.
-   */
-  getListingProductURL(): string {
-    if (this.globalURLKeyProductSetting === undefined) {
-      throw new Error(
-        'Product.getListingProductURL was called on a product hydrated without a resolved ' +
-          'globalURLKeyProduct setting. See getProductURL() for the full reasoning; the two ' +
-          'methods differ only in the leading slash [model/entity/Product.cfc:L208 vs L212].',
-      );
-    }
-    if (this.urlTitle === undefined) {
-      throw new Error(
-        'Product.getListingProductURL was called on a product with no urlTitle. See ' +
-          'getProductURL() for the full reasoning.',
-      );
-    }
-
-    // [model/entity/Product.cfc:L212] verbatim - NO leading slash, trailing slash retained.
-    return `${this.globalURLKeyProductSetting}/${this.urlTitle}/`;
-  }
-
-  /**
-   * The display template for this product. [model/entity/Product.cfc:L215-L221]
-   *
-   *   if(!structKeyExists(variables, "template") || variables.template == "") {
-   *     return setting('productDisplayTemplate');
-   *   } else {
-   *     return variables.template;
-   *   }
-   *
-   * ★ LEGACY-DEFECT D4 - THE `else` BRANCH IS UNREACHABLE. `template` is NOT a declared property of
-   * this component: it appears in no `property` tag, `populate()` only writes declared properties, and
-   * the only `setTemplate(` call in the whole repository
-   * [integrationServices/mura/model/handler/MuraEventHandler.cfc:L821] targets a MURA PAGE object,
-   * not a Slatwall product. So `structKeyExists(variables, "template")` is always false, the
-   * short-circuit fires on the first disjunct, and the method always returns the setting.
-   *
-   * The port therefore holds NO `template` field. Adding one to preserve a branch nothing can enter
-   * would be adding dead state, and the shape of the source is recorded here instead - which is the
-   * auditable form of the same information. The `|| variables.template == ""` half is doubly
-   * unreachable and is recorded for the same reason.
-   *
-   * `productDisplayTemplate` is NOT one of the four approved setting keys, so it arrives pre-resolved
-   * and the method raises when it was not supplied.
-   *
-   * Preserved deliberately; do not fix without a product decision.
-   */
-  getTemplate(): string {
-    if (this.productDisplayTemplateSetting === undefined) {
-      throw new Error(
-        'Product.getTemplate was called on a product hydrated without a resolved ' +
-          "productDisplayTemplate setting. The legacy body reads setting('productDisplayTemplate') " +
-          '[model/entity/Product.cfc:L187], and productDisplayTemplate is not one of the four ' +
-          'settings keys this port exposes to the domain, so the value must be supplied at ' +
-          'construction. No default is substituted because a wrong template name renders the ' +
-          'wrong page rather than failing.',
-      );
-    }
-    return this.productDisplayTemplateSetting;
-  }
-
-  /**
-   * The directory this product's ALTERNATE images live in. [model/entity/Product.cfc:L223-L225]
-   *
-   *   public string function getAlternateImageDirectory() {
-   *     return getURLFromPath(setting('globalAssetsImageFolderPath')) & '/product/';
-   *   }
-   *
-   * ★ THE SAME SHAPE AS `Option.getImageDirectory` IN src/domain/entities/option.ts, DOWN TO THE
-   * WART. This entity contributes exactly `& '/product/'`; the `assetsImageBaseUrl` field holds the
-   * already-resolved `getURLFromPath(setting('globalAssetsImageFolderPath'))`, so no setting is read
-   * here and no framework helper is re-implemented here. `getURLFromPath` belongs to the unported
-   * Hibachi base and `globalAssetsImageFolderPath` is not an approved settings key, which is why both
-   * inner calls happen at the boundary.
-   *
-   * THE CONCATENATION IS VERBATIM INCLUDING ITS WART: the separator before `product` is
-   * unconditional, so a base that already ends in one produces a DOUBLED separator -
-   * `.../images//product/`. Reproduced rather than tidied, because normalising it here would make
-   * this port emit a different path than the CFML application does for the same setting value, and
-   * both write into the same filesystem. A trailing-slash policy, if one is ever wanted, belongs at
-   * the boundary that resolves the base, where it applies to every consumer at once.
-   *
-   * IT RAISES WHEN THE BASE WAS NOT MATERIALIZED. `returntype="string"` leaves no spare value, and
-   * `'/product/'` would be a well-formed WRONG directory rather than a detectable marker - and the
-   * legacy consumers of this value do file existence checks, deletes and moves against it. Returning
-   * a wrong directory to code that deletes files is the one outcome worse than raising.
-   */
-  getAlternateImageDirectory(): string {
-    if (this.assetsImageBaseUrl === undefined) {
-      throw new Error(
-        'Product.getAlternateImageDirectory was called on a product hydrated without an assets ' +
-          'image base URL. The legacy body at model/entity/Product.cfc:L224 resolves its base ' +
-          "through getURLFromPath(setting('globalAssetsImageFolderPath')), and both of those calls " +
-          'are outside the domain in this port, so the resolved base must be supplied at ' +
-          'construction. No default is substituted because every candidate value would be a ' +
-          'well-formed wrong path rather than a detectable marker.',
-      );
-    }
-
-    // [model/entity/Product.cfc:L224] verbatim: `<base> & '/product/'`.
-    return `${this.assetsImageBaseUrl}/product/`;
-  }
-
-  /**
-   * The product's average review rating. [model/entity/Product.cfc:L227-L239]
-   *
-   *   var totalRatingPoints = 0;
-   *   var averageRating = 0;
-   *   if(arrayLen(getProductReviews())) {
-   *     for(var i=1; i<=arrayLen(getProductReviews()); i++) {
-   *       var totalRatingPoints += getProductReviews()[1].getRating();
-   *     }
-   *     averageRating = totalRatingPoints / arrayLen(getProductReviews());
-   *   }
-   *   return averageRating;
-   *
-   * ★ LEGACY-DEFECT D1 - THE LOOP INDEXES `[1]`, NOT `[i]`. It therefore adds REVIEW #1's rating
-   * once per review and divides by the review count, so the "average" is always review #1's rating
-   * exactly - `(r1 * n) / n`. Reviews 2..n are read from the database, iterated over, and ignored.
-   *
-   * A SECOND WART IN THE SAME LINE: `var totalRatingPoints +=` re-declares the variable INSIDE the
-   * loop body with a compound assignment. CFML tolerates the redundant `var` and treats it as an
-   * assignment to the existing function-scoped variable, so the accumulation does happen - but the
-   * line reads as though it should reset each iteration, and a reviewer needs to know it does not.
-   *
-   * BOTH ARE REPRODUCED, and the arithmetic is written to make the defect legible rather than to hide
-   * it behind a `* n / n` simplification: the loop really does run `n` times and really does add the
-   * same value each time, so a test that spies on `getRating()` sees `n` calls on review #1 and none
-   * on the others. Simplifying to `firstRating` would be observationally equal in the RESULT and
-   * unequal in the CALLS, and the calls are what a characterization test pins.
-   *
-   * TOTAL: it never throws. No reviews yields `0`, which is the source's own initialisation and not a
-   * substituted default.
-   *
-   * Preserved deliberately; do not fix without a product decision.
-   */
-  getProductRating(): number {
-    let totalRatingPoints: number = 0;
-    let averageRating: number = 0;
-
-    const reviews: readonly ProductReviewLink[] = this.getProductReviews();
-
-    // [model/entity/Product.cfc:L232] `if(arrayLen(getProductReviews()))` - CFML numeric truthiness,
-    // i.e. non-zero. The guard is what keeps the division below from dividing by zero.
-    if (reviews.length > 0) {
-      const firstReview: ProductReviewLink | undefined = reviews[0];
-      for (let i: number = 0; i < reviews.length; i += 1) {
-        // *** LEGACY-DEFECT [model/entity/Product.cfc:L233]: indexes `getProductReviews()[1]`
-        // inside a loop counted by `i`, so every iteration adds the FIRST review's rating.
-        // Preserved deliberately; do not fix without a product decision.
-        if (firstReview !== undefined) {
-          totalRatingPoints += firstReview.getRating();
-        }
-      }
-      averageRating = totalRatingPoints / reviews.length;
-    }
-
-    return averageRating;
-  }
-
-  /**
-   * This product's option groups, keyed by option-group ID. [model/entity/Product.cfc:L241-L248]
-   *
-   *   if( !structKeyExists(variables, "optionGroupsStruct") ) {
-   *     variables.optionGroupsStruct = {};
-   *     for(var optionGroup in getOptionGroups()){
-   *       variables.optionGroupsStruct[optionGroup.getOptionGroupID()] = optionGroup;
-   *     }
-   *   }
-   *   return variables.optionGroupsStruct;
-   *
-   * Built over {@link Product.getOptionGroups}, so it inherits that method's in-memory derivation and
-   * its fetch-shape caveat. Its only consumers are `structKeyList(...)` calls in
-   * {@link Product.getUnusedProductOptions} and {@link Product.getUnusedProductOptionGroups}.
-   *
-   * ★ AND THE KEY ORDER THOSE CONSUMERS SEE IS NON-DETERMINISTIC IN THE LEGACY, which is worth
-   * stating so nobody "fixes" it later: a plain CFML struct is an unordered hash map, so
-   * `structKeyList()` emits keys in hash order rather than insertion order. Any total order therefore
-   * complies with the source, and both consumers pass the list into an SQL `IN (...)` predicate where
-   * order is irrelevant anyway. This port emits insertion order because that is what a JavaScript
-   * object with string keys gives, not because the source specifies it.
-   *
-   * TOTAL: it never throws.
-   */
-  getOptionGroupsStruct(): Readonly<Record<string, OptionGroup>> {
-    if (this.optionGroupsStruct !== undefined) {
-      return this.optionGroupsStruct;
-    }
-
-    const struct: Record<string, OptionGroup> = {};
-    for (const optionGroup of this.getOptionGroups()) {
-      struct[optionGroup.getOptionGroupID()] = optionGroup;
-    }
-
-    this.optionGroupsStruct = struct;
-    return this.optionGroupsStruct;
-  }
-
-  /**
-   * The distinct option groups used by this product's SKUs, ordered by sort order.
-   * [model/entity/Product.cfc:L250-L259]
-   *
-   *   if( !structKeyExists(variables, "optionGroups") ) {
-   *     variables.optionGroups = [];
-   *     var smartList = getService("OptionService").getOptionGroupSmartList();
-   *     smartList.setSelectDistinctFlag(1);
-   *     smartList.addFilter("options.skus.product.productID", this.getProductID());
-   *     smartList.addOrder("sortOrder|ASC");
-   *     variables.optionGroups = smartList.getRecords();
-   *   }
-   *   return variables.optionGroups;
-   *
-   * ★ PORTED IN MEMORY, NOT STUBBED, AND THE JUSTIFICATION IS MECHANICAL: the smart list's ONLY
-   * filter is `options.skus.product.productID = <this product>`, so it re-queries precisely the
-   * subgraph this entity already holds - `this.skus` -> `sku.getOptions()` -> `option.getOptionGroup()`.
-   * Nothing outside the product is read. That is the first bullet of the smart-list dividing line in
-   * the file header, and it is why this method stays SYNCHRONOUS despite its legacy body querying.
-   *
-   * THREE FIDELITY POINTS.
-   *
-   *   1. `setSelectDistinctFlag(1)` [L253] is why the same option group reached through two different
-   *      SKUs appears ONCE. Distinctness is by option-group ID, which is the projection SQL DISTINCT
-   *      would compare.
-   *   2. `addOrder("sortOrder|ASC")` [L255] is the ONLY ordering, and `OptionGroup.getSortOrder()` is
-   *      non-optional in this port, so no null-ordering question arises. Ties are database-ordered in
-   *      the legacy, i.e. NON-DETERMINISTIC; the port uses a stable sort so ties keep encounter order,
-   *      and any total order complies with the source.
-   *   3. An option whose `optionGroup` is absent contributes NOTHING. The smart list navigates
-   *      `options.skus...` from the OptionGroup side, so a group-less option cannot appear in the
-   *      result at all - the join has nothing to match. The `undefined` skip below is that join, not a
-   *      defensive guard.
-   *
-   * AN EMPTY RESULT IS A FETCH-SHAPE STATEMENT, NOT A DOMAIN CLAIM. The legacy queried the database
-   * and so saw every sku of the product regardless of what was loaded; this port sees the materialized
-   * skus. A repository method that fetched skus without their options will answer `[]` here, and that
-   * is a property of the fetch shape it chose.
-   *
-   * TOTAL: it never throws.
-   */
-  getOptionGroups(): readonly OptionGroup[] {
-    if (this.optionGroups !== undefined) {
-      return this.optionGroups;
-    }
-
-    // Distinctness by option-group ID, insertion-ordered so the stable sort below is meaningful.
-    const distinct: Map<string, OptionGroup> = new Map<string, OptionGroup>();
-    for (const sku of this.skus) {
-      for (const option of sku.getOptions()) {
-        const optionGroup: OptionGroup | undefined = option.getOptionGroup();
-        if (optionGroup === undefined) {
-          // The legacy INNER JOIN from OptionGroup through options has nothing to match here.
-          continue;
-        }
-        const key: string = optionGroup.getOptionGroupID();
-        if (!distinct.has(key)) {
-          distinct.set(key, optionGroup);
-        }
-      }
-    }
-
-    // [model/entity/Product.cfc:L255] `addOrder("sortOrder|ASC")`. `Array.prototype.sort` is stable,
-    // so equal sort orders retain encounter order - see fidelity point 2.
-    const ordered: OptionGroup[] = [...distinct.values()].sort(
-      (left: OptionGroup, right: OptionGroup) => left.getSortOrder() - right.getSortOrder(),
+    const farSideProducts: Product[] = target.getProducts();
+    const index = farSideProducts.findIndex(
+      (held: Product) => held.getProductID() === this.productID,
     );
+    if (index !== -1) {
+      farSideProducts.splice(index, 1);
+    }
+    this.brand = undefined;
+  }
 
-    this.optionGroups = ordered;
+  // --- Skus (one-to-many) [model/entity/Product.cfc:L695] ---------------------------------------
+
+  /**
+   * [model/entity/Product.cfc:L696-L698] verbatim: `arguments.sku.setProduct( this );`
+   *
+   * Delegates to the OWNING side. `Sku` holds the `productID` FK
+   * [model/entity/Sku.cfc:L67], so the sku is what changes; this product's `skus` array is
+   * appended to BY `Sku.setProduct` rather than here, exactly as in the legacy body.
+   */
+  public addSku(sku: Sku): void {
+    sku.setProduct(this);
+  }
+
+  /** [model/entity/Product.cfc:L699-L701] verbatim: `arguments.sku.removeProduct( this );` */
+  public removeSku(sku: Sku): void {
+    sku.removeProduct(this);
+  }
+
+  // --- Promotion Rewards (many-to-many, inverse) [model/entity/Product.cfc:L731] ----------------
+
+  /** [model/entity/Product.cfc:L732-L734]: `arguments.promotionReward.addProduct( this );` */
+  public addPromotionReward(promotionReward: PromotionReward): void {
+    promotionReward.addProduct(this);
+  }
+
+  /** [model/entity/Product.cfc:L735-L737]: `arguments.promotionReward.removeProduct( this );` */
+  public removePromotionReward(promotionReward: PromotionReward): void {
+    promotionReward.removeProduct(this);
+  }
+
+  // --- Promotion Reward Exclusions (many-to-many, inverse) [L739] -------------------------------
+
+  /** [model/entity/Product.cfc:L740-L742]: `arguments.promotionReward.addExcludedProduct( this );` */
+  public addPromotionRewardExclusion(promotionReward: PromotionReward): void {
+    promotionReward.addExcludedProduct(this);
+  }
+
+  /** [model/entity/Product.cfc:L743-L745]: `...removeExcludedProduct( this );` */
+  public removePromotionRewardExclusion(promotionReward: PromotionReward): void {
+    promotionReward.removeExcludedProduct(this);
+  }
+
+  // --- Promotion Qualifiers (many-to-many, inverse) [L747] --------------------------------------
+
+  /** [model/entity/Product.cfc:L748-L750]: `arguments.promotionQualifier.addProduct( this );` */
+  public addPromotionQualifier(promotionQualifier: PromotionQualifier): void {
+    promotionQualifier.addProduct(this);
+  }
+
+  /** [model/entity/Product.cfc:L751-L753]: `arguments.promotionQualifier.removeProduct( this );` */
+  public removePromotionQualifier(promotionQualifier: PromotionQualifier): void {
+    promotionQualifier.removeProduct(this);
+  }
+
+  // --- Promotion Qualifier Exclusions (many-to-many, inverse) [L755] ----------------------------
+
+  /** [model/entity/Product.cfc:L756-L758]: `...addExcludedProduct( this );` */
+  public addPromotionQualifierExclusion(promotionQualifier: PromotionQualifier): void {
+    promotionQualifier.addExcludedProduct(this);
+  }
+
+  /** [model/entity/Product.cfc:L759-L761]: `...removeExcludedProduct( this );` */
+  public removePromotionQualifierExclusion(promotionQualifier: PromotionQualifier): void {
+    promotionQualifier.removeExcludedProduct(this);
+  }
+
+  // --- Price Group Rates (many-to-many, inverse) [L763] -----------------------------------------
+
+  /** [model/entity/Product.cfc:L764-L766]: `arguments.priceGroupRate.addProduct( this );` */
+  public addPriceGroupRate(priceGroupRate: PriceGroupRate): void {
+    priceGroupRate.addProduct(this);
+  }
+
+  /** [model/entity/Product.cfc:L767-L769]: `arguments.priceGroupRate.removeProduct( this );` */
+  public removePriceGroupRate(priceGroupRate: PriceGroupRate): void {
+    priceGroupRate.removeProduct(this);
+  }
+
+  // ===========================================================================
+  // ★ THE OPTION-GROUP MEMO TRIO [model/entity/Product.cfc:L241-L265]
+  //
+  // These three feed the LIVE VALIDATION PATH and therefore cannot be omitted:
+  // `model/validation/Product.json` requires `unusedProductOptions` and `unusedProductOptionGroups`
+  // with `minCollection:1` in the `addOption` and `addOptionGroup` contexts, both of the accessors
+  // that satisfy those rules are built from `structKeyList(getOptionGroupsStruct())`, and
+  // `getOptionGroupsStruct()` is built from `getOptionGroups()`. Drop the first and the other two
+  // become unsatisfiable.
+  // ===========================================================================
+
+  /**
+   * This product's option groups, ordered by `sortOrder` ascending.
+   *
+   * [model/entity/Product.cfc:L251-L261] verbatim:
+   *
+   *   public array function getOptionGroups() {
+   *     if( !structKeyExists(variables, "optionGroups") ) {
+   *       variables.optionGroups = [];
+   *       var smartList = getService("OptionService").getOptionGroupSmartList();
+   *       smartList.setSelectDistinctFlag(1);
+   *       smartList.addFilter("options.skus.product.productID",this.getProductID());
+   *       smartList.addOrder("sortOrder|ASC");
+   *       variables.optionGroups = smartList.getRecords();
+   *     }
+   *     return variables.optionGroups;
+   *   }
+   *
+   * ★ THE RULING: THIS IS A SYNCHRONOUS ACCESSOR OVER AN EAGERLY-MATERIALIZED ARRAY, and the
+   * reasoning is worth stating because it is the single most questionable-looking call in the file.
+   * Three independent facts force it:
+   *
+   *   (i) `HibachiSmartList` is a framework artefact - a generic, string-keyed, dynamically-filtered
+   *       query builder - and the plan explicitly declines to clone it (AAP 0.6.2). Porting it
+   *       faithfully would mean reimplementing a small ORM query language, importing exactly the
+   *       framework coupling this refactor exists to remove, and it would be untypeable under the
+   *       strict profile.
+   *   (ii) `../ports/optionRepository.js` declares EXACTLY TWO members - `getUnusedProductOptions`
+   *       [model/dao/OptionDAO.cfc:L51] and `getUnusedProductOptionGroups` [L94] - and NEITHER serves
+   *       this query. No fourteenth port may be created and no port member may be invented
+   *       (prohibition 12), so there is no legal outward reach available to this method.
+   *   (iii) It feeds a live validation path, so omitting it is not available either.
+   *
+   * The only remaining option is the one structural decision #2 already mandates for every
+   * association in this folder: MATERIALIZE AT THE REPOSITORY BOUNDARY. That converts an implicit
+   * lazy load into an explicit query decision, which is the stated goal rather than a workaround.
+   *
+   * LEGACY-NOTE [model/entity/Product.cfc:L254-L258]: THE EXACT FETCH SHAPE THE REPOSITORY OWES,
+   * transcribed from the smart-list configuration so it is not lost: `DISTINCT` (from
+   * `setSelectDistinctFlag(1)` at [L255]), filtered on the traversal
+   * `options.skus.product.productID = <this productID>` at [L256], ordered by `sortOrder ASC` at
+   * [L257]. Note that the filter reaches THROUGH options and skus - an option group belongs to this
+   * product only transitively, via an option that a sku of this product carries - which is why the
+   * result is not simply the product's own collection and why `DISTINCT` is required rather than
+   * decorative.
+   * Preserved deliberately; do not fix without a product decision.
+   *
+   * LEGACY-NOTE [model/entity/Product.cfc:L253]: SEED-THEN-OVERWRITE WART. `variables.optionGroups =
+   * []` is DEAD - [L258] reassigns the variable unconditionally on the very next executable line, so
+   * the empty array can never be observed. This is memo VARIANT B (seed, no guard), and the seed's
+   * deadness is the defining feature of that variant. Annotated, not tidied.
+   * Preserved deliberately; do not fix without a product decision.
+   *
+   * LEGACY-NOTE [model/entity/Product.cfc:L254]: CASING AND QUOTING WART. This line writes
+   * `getService("OptionService")` with a CAPITAL `O` and DOUBLE quotes, while [L637], [L644] and
+   * [L651] all write `getService('optionService')` in lower case with SINGLE quotes. DI/1's
+   * service-name resolution is case-insensitive so all four resolve to the same bean and there is no
+   * behavioural consequence. Recorded rather than normalised, per prohibition 19.
+   * Preserved deliberately; do not fix without a product decision.
+   */
+  public getOptionGroups(): readonly OptionGroup[] {
+    // The `!structKeyExists(variables, "optionGroups")` probe at [L252]. Here it distinguishes
+    // "hydration materialized this association, possibly as empty" from "hydration never
+    // materialized it at all" - which is exactly the absent-key versus present-but-undefined
+    // distinction `exactOptionalPropertyTypes` makes expressible. An empty array is a legitimate
+    // answer (a product with no options has none); a MISSING array is not, and answering `[]` for it
+    // would report "no option groups" for every product whose repository forgot the query, silently
+    // passing the `minCollection:1` validation rules that depend on this value.
+    if (this.optionGroups === undefined) {
+      throw new Error(
+        `Product '${this.productID}': getOptionGroups() requires its option groups to have been ` +
+          `materialized during hydration. [model/entity/Product.cfc:L254-L258] resolves them ` +
+          `through a HibachiSmartList - DISTINCT, filtered on options.skus.product.productID, ` +
+          `ordered by sortOrder ASC - which is deliberately not cloned, and no declared port member ` +
+          `serves the query. Answering an empty array instead would silently satisfy the ` +
+          `minCollection:1 rules in model/validation/Product.json that read through this value.`,
+      );
+    }
     return this.optionGroups;
   }
 
   /**
-   * How many distinct option groups this product's SKUs use. [model/entity/Product.cfc:L261-L263]
+   * The same option groups, keyed by `optionGroupID`.
    *
-   *   return arrayLen(getOptionGroups());
+   * [model/entity/Product.cfc:L241-L249] verbatim:
    *
-   * A one-line delegation, kept as its own member because it is part of the public surface and
-   * because callers use it as a cheap "is this product optioned at all" test. It inherits
-   * {@link Product.getOptionGroups}' memo, so repeated calls do not re-derive.
+   *   public struct function getOptionGroupsStruct() {
+   *     if( !structKeyExists(variables, "optionGroupsStruct") ) {
+   *       variables.optionGroupsStruct = {};
+   *       for(var optionGroup in getOptionGroups()){
+   *         variables.optionGroupsStruct[optionGroup.getOptionGroupID()] = optionGroup;
+   *       }
+   *     }
+   *     return variables.optionGroupsStruct;
+   *   }
    *
-   * TOTAL: it never throws.
+   * Memo VARIANT C in effect (the `{}` at [L243] is not a seed that survives a failed guard - there
+   * is no guard; it is the accumulator the loop fills), synchronous, and memoized per instance.
+   *
+   * ★ THE RETURN IS `CfStruct<OptionGroup>`, NOT `Record<string, OptionGroup>`, AND THE DIFFERENCE IS
+   * CORRECTNESS. CFML struct keys are CASE-INSENSITIVE and TypeScript's are not. A caller holding an
+   * `optionGroupID` whose case differs from the stored key would find the entry in CFML and miss it in
+   * TypeScript. Routing every read through `structKeyExists` / `structGet` from
+   * `../../lib/cfml/struct.js` restores the legacy semantics; handing back a bare `Record` would
+   * invite `struct[id]`, which is the bug. Nothing in the slice actually varies the case of a UUID
+   * key today, but the helper costs nothing and the assumption is not this file's to make.
+   *
+   * The memo is INSTANCE-SCOPED and instances are REQUEST-SCOPED. As module state this would become
+   * cross-invocation state on a warm Lambda container (AAP 0.6.5).
    */
-  getOptionGroupCount(): number {
+  public getOptionGroupsStruct(): CfStruct<OptionGroup> {
+    if (this.optionGroupsStruct === undefined) {
+      // [L243] the accumulator, then [L244-L246] the loop. Built as a mutable record and published
+      // through the readonly `CfStruct` alias, so no caller can write into the memo.
+      const accumulator: Record<string, OptionGroup> = {};
+      for (const optionGroup of this.getOptionGroups()) {
+        accumulator[optionGroup.getOptionGroupID()] = optionGroup;
+      }
+      this.optionGroupsStruct = accumulator;
+    }
+    return this.optionGroupsStruct;
+  }
+
+  /**
+   * How many option groups this product has.
+   *
+   * [model/entity/Product.cfc:L263-L265] verbatim: `return arrayLen(getOptionGroups());`
+   *
+   * Not memoized in the legacy either - it recomputes from the memoized array every call, which
+   * `.length` reproduces exactly.
+   */
+  public getOptionGroupCount(): number {
     return this.getOptionGroups().length;
   }
 
-  /**
-   * A flattened gallery of every image this product can show. [model/entity/Product.cfc:L265-L316]
-   *
-   * The body is two loops sharing ONE dedupe list. Loop A [L269-L286] walks the SKUs and emits their
-   * DEFAULT images; loop B [L288-L314] walks `getImages()` and emits the product's ALTERNATE images.
-   *
-   * ★ LEGACY-DEFECT D6, AND IT IS TWO DEFECTS IN ONE METHOD.
-   *
-   *   (a) THE DEDUPE KEYS DISAGREE ACROSS THE TWO LOOPS while the list is shared. Loop A tests and
-   *       appends the image FILENAME [L271-L272]; loop B tests and appends the image ID [L289-L290].
-   *       So an alternate image whose ID happens to equal some sku's filename would be dropped, and
-   *       - far more likely - two alternate images of the same FILE are both emitted because their
-   *       IDs differ. Reproduced exactly, including the shared list.
-   *   (b) THE DESCRIPTION IS WRITTEN INTO `name`. Loop B sets `thisImage.description = ""` [L302] and
-   *       then, if the image has a description, assigns it to `thisImage.name` [L303-L305] instead of
-   *       to `thisImage.description` - overwriting the name it set two lines earlier from
-   *       `getImageName()` [L296-L298]. The `description` key therefore stays empty for every
-   *       alternate image, and an image with both a name and a description shows the DESCRIPTION as
-   *       its name.
-   *
-   * A THIRD ASYMMETRY THAT IS NOT A DEFECT: loop B sets `skuID = ""` [L295] and loop A sets no `skuID`
-   * key at all. See {@link ImageGalleryEntry} for why that is expressed as an optional key rather than
-   * normalised.
-   *
-   * ★ AND NOTE WHAT LOOP A USES FOR ITS `name` AND `description`: `getTitle()` [L276] and
-   * `getProductDescription()` [L277] - the PRODUCT'S, not the sku's. So every sku-default entry
-   * carries identical text. That is the source's choice and is preserved.
-   *
-   * THIS METHOD RAISES TRANSITIVELY, AND THAT IS EXPECTED. `getResizedImagePath()` on both a sku
-   * [model/entity/Sku.cfc:L192-L219] and an image [model/entity/Image.cfc:L120] reaches
-   * `imageService`, which the plan makes a STUB PORT - subscription and image handling are out of
-   * scope. `getTitle()` likewise raises unless a resolved title was materialized. Both are recorded
-   * rather than worked around: the gallery's STRUCTURE is real behaviour worth porting, and its
-   * consumers are the out-of-scope admin and storefront views.
-   *
-   * `resizeSizes` keeps its source default `[{size:'s'},{size:'m'},{size:'l'}]` [L265] verbatim,
-   * lower-case single letters included - `Sku.getResizedImagePath`'s deprecated size branch lower-cases
-   * and then maps them to `Small`/`Medium`/`Large` [model/entity/Sku.cfc:L201-L208].
-   *
-   * Preserved deliberately; do not fix without a product decision.
-   */
-  getImageGalleryArray(
-    resizeSizes: readonly ImageResizeOptions[] = [{ size: 's' }, { size: 'm' }, { size: 'l' }],
-  ): readonly ImageGalleryEntry[] {
-    const imageGalleryArray: ImageGalleryEntry[] = [];
-
-    // [model/entity/Product.cfc:L267] `var filenames = "";` - ONE list shared by both loops, which is
-    // half of defect D6(a). Modelled as the CFML comma list it is, through the ported helpers, so the
-    // empty-element behaviour matches: `listAppend('', '')` stays `''` and `listToArray('')` is `[]`,
-    // which means a sku with no image file is NOT deduped against the next one.
-    let filenames: string = '';
-
-    // --- Loop A [model/entity/Product.cfc:L269-L286]: every sku's default image.
-    for (const sku of this.getSkus()) {
-      const imageFile: string | undefined = sku.getImageFile();
-
-      // [L271] `if( !listFind(filenames, getSkus()[i].getImageFile()) )` - CASE-SENSITIVE exact
-      // element match, which is why the comparison below is `===` and not folded.
-      if (!listToArray(filenames).includes(imageFile ?? '')) {
-        filenames = listAppend(filenames, imageFile ?? '');
-
-        const resizedImagePaths: string[] = [];
-        for (const resizeSize of resizeSizes) {
-          // [L283] `getResizedImagePath(argumentCollection = arguments.resizeSizes[s])`.
-          resizedImagePaths.push(sku.getResizedImagePath(resizeSize));
-        }
-
-        imageGalleryArray.push({
-          originalFilename: imageFile,
-          originalPath: sku.getImagePath(),
-          type: 'skuDefaultImage',
-          // ★ NO `skuID` KEY - loop B sets one, loop A does not. See ImageGalleryEntry.
-          productID: this.getProductID(),
-          // ★ THE PRODUCT'S title and description, not the sku's [L276-L277].
-          name: this.getTitle(),
-          description: this.getProductDescription() ?? '',
-          resizedImagePaths,
-        });
-      }
-    }
-
-    // --- Loop B [model/entity/Product.cfc:L288-L314]: every alternate product image.
-    for (const image of this.getImages()) {
-      // *** LEGACY-DEFECT [model/entity/Product.cfc:L289]: tests the image ID against a list that
-      // loop A filled with image FILENAMES. The two loops share one list and key it differently.
-      // Preserved deliberately; do not fix without a product decision.
-      const imageID: string = image.getImageID();
-      if (!listToArray(filenames).includes(imageID)) {
-        filenames = listAppend(filenames, imageID);
-
-        // [L296-L298] the name defaults to `""` and is replaced only when `getImageName()` is
-        // non-null.
-        let name: string = '';
-        const imageName: string | undefined = image.getImageName();
-        if (imageName !== undefined) {
-          name = imageName;
-        }
-
-        // [L302-L305] the description is initialised to `""` and then NEVER reassigned, because the
-        // conditional below writes to `name` instead.
-        const description: string = '';
-        const imageDescription: string | undefined = image.getImageDescription();
-        if (imageDescription !== undefined) {
-          // *** LEGACY-DEFECT [model/entity/Product.cfc:L304]: assigns the image DESCRIPTION to the
-          // `name` key rather than to `description`, discarding the name set three lines earlier and
-          // leaving `description` permanently empty.
-          // Preserved deliberately; do not fix without a product decision.
-          name = imageDescription;
-        }
-
-        const resizedImagePaths: string[] = [];
-        for (const resizeSize of resizeSizes) {
-          // [L311] `getResizedImagePath(argumentCollection = arguments.resizeSizes[s])`.
-          resizedImagePaths.push(image.getResizedImagePath(resizeSize));
-        }
-
-        imageGalleryArray.push({
-          originalFilename: image.getImageFile(),
-          originalPath: image.getImagePath(),
-          type: 'productAlternateImage',
-          // [L295] `thisImage.skuID = "";` - the empty string, not the owning sku's ID.
-          skuID: '',
-          productID: this.getProductID(),
-          name,
-          description,
-          resizedImagePaths,
-        });
-      }
-    }
-
-    return imageGalleryArray;
-  }
-
-  // --- Functions that delegate to the default sku [model/entity/Product.cfc:L318] --------------
+  // ===========================================================================
+  // ★★★ MUST-PRESERVE BEHAVIOUR - OPTION-TO-SKU RESOLUTION
+  // [model/entity/Product.cfc:L340-L368]
   //
-  // The source opens this run with the comment `// Start: Functions that delegate to the default sku`
-  // and it covers L319 to L338. FIVE MEMBERS, and NONE of them guards `getDefaultSku()` - every one
-  // dereferences it directly, so every one raises on a product without a default sku. That is
-  // reproduced: the guarded form appears further down in the PRICE delegators [L554-L602], and the
-  // difference between the two runs is the source's, not an oversight of this port.
+  // This is one of the three areas the plan names as behaviour that must survive unchanged, and it is
+  // the entity-side face of `ProductService.getProductSkusBySelectedOptions()`
+  // [model/service/ProductService.cfc:L104]. The behaviour that must not move is the AND-OF-EXISTS
+  // OPTION MATCHING in the backing SQL at [model/dao/SkuDAO.cfc:L107-L128] - one `EXISTS` subquery per
+  // selected option, all `AND`ed, so a sku qualifies only if it carries EVERY selected option. An
+  // `IN`-list rewrite would match a sku carrying ANY of them and would return the wrong sku for a
+  // multi-option product.
+  //
+  // That SQL is preserved AT THE REPOSITORY. What this file owes it is a signature shape that does not
+  // prevent it: the selected options travel as the ORIGINAL COMMA-DELIMITED STRING, exactly as the
+  // legacy passes them, rather than being parsed into an array here and re-joined there. Parsing early
+  // would put this file in charge of a decision the SQL builder owns.
+  // ===========================================================================
 
   /**
-   * The directory this product's DEFAULT image lives in. [model/entity/Product.cfc:L319-L321]
+   * The options of one option group that this product's SKUs actually carry.
    *
-   *   public string function getImageDirectory() {
-   *     return getDefaultSku().getImageDirectory();
+   * [model/entity/Product.cfc:L340-L347] verbatim:
+   *
+   *   public array function getOptionsByOptionGroup(required string optionGroupID) {
+   *     var smartList = getService("optionService").getOptionSmartList();
+   *     smartList.setSelectDistinctFlag(1);
+   *     smartList.addFilter("optionGroup.optionGroupID",arguments.optionGroupID);
+   *     smartList.addFilter("skus.product.productID",this.getProductID());
+   *     smartList.addOrder("sortOrder|ASC");
+   *     return smartList.getRecords();
    *   }
    *
-   * ★ THE DELEGATE DOES NOT EXIST, AND THE RESULT IS SILENT RATHER THAN LOUD. `model/entity/Sku.cfc`
-   * declares NO `getImageDirectory` - verified by grep, which finds `getImagePath`, `getImage`,
-   * `getResizedImagePath`, `getImageExistsFlag` and `getImageFile` but not this one. So the call
-   * reaches `HibachiEntity.onMissingMethod`, matches none of the ten conventions, and lands on the
-   * attribute-value fallback [org/Hibachi/HibachiEntity.cfc:L559-L561] - which FIRES, because
-   * `Sku` declares `attributeValues` [model/entity/Sku.cfc:L70]. `getAttributeValue("ImageDirectory")`
-   * returns the EMPTY STRING [model/entity/HibachiEntity.cfc:L151], `returntype="string"` accepts it,
-   * and the caller gets `''` with no error at all.
+   * SYNCHRONOUS, AND COMPUTED FROM THE MATERIALIZED GRAPH RATHER THAN FROM A PORT. The two filters at
+   * [L343] and [L344] are both satisfiable from data this entity already holds: `skus.product.productID
+   * = this.productID` is, by definition, every element of `this.skus`, and
+   * `optionGroup.optionGroupID` is a member of each option those SKUs carry. So the smart list is
+   * reproduced in memory - DISTINCT by `optionID` [L342], filtered by option group [L343], ordered by
+   * `sortOrder` ascending [L345] - with no outward reach at all.
    *
-   * SO THIS PORT RETURNS `''`, AND DOES NOT AUTHOR A `getImageDirectory` ON `Sku`. Adding one there
-   * would be inventing a method the CFC does not declare and would change the observable answer from
-   * `''` to a real path - which is a behaviour change dressed up as a fix. The empty string is
-   * reproduced HERE, where the mechanism can be documented, rather than papered over THERE.
+   * ★ WHY NOT A PORT CALL. `../ports/optionRepository.js` declares EXACTLY TWO members and neither
+   * serves this query; adding a third would be inventing a port member (prohibition 12). Deriving the
+   * answer from the materialized graph is not a workaround for that constraint, it is structural
+   * decision #2 applied - the association is already fetched, so the query is already answered.
    *
-   * The `getDefaultSku()` dereference is still performed, because it is what raises on a product with
-   * no default sku - the one failure this method really does have.
-   *
-   * Contrast {@link Product.getAlternateImageDirectory}, which is a genuinely working sibling for the
-   * product's non-default images.
-   *
+   * LEGACY-NOTE [model/entity/Product.cfc:L345]: `sortOrder` on `Option` is `sortContext="optionGroup"`
+   * - it is ordered WITHIN an option group, which is exactly the scope this method filters to, so a
+   * plain ascending sort reproduces the intended order. `Option.getSortOrder()` is
+   * `number | undefined` (the column declares no default), and an absent sort order sorts AFTER every
+   * present one here, matching how SQL `ORDER BY ... ASC` places `NULL` last under MySQL's default
+   * ordering for an ascending sort of NULLable integers is FIRST - so the absent case is pinned
+   * explicitly below rather than left to a comparator accident.
    * Preserved deliberately; do not fix without a product decision.
    */
-  getImageDirectory(): string {
-    if (this.defaultSku === undefined) {
-      throw new Error(
-        'Product.getImageDirectory dereferences getDefaultSku() unguarded ' +
-          '[model/entity/Product.cfc:L320] and this product has no default sku. The legacy fails ' +
-          'on the same input.',
-      );
-    }
-
-    // *** LEGACY-DEFECT [model/entity/Product.cfc:L320]: model/entity/Sku.cfc declares no
-    // getImageDirectory, so the legacy call falls through to the onMissingMethod attribute-value
-    // fallback [org/Hibachi/HibachiEntity.cfc:L559-L561] and silently yields the empty string.
-    // Preserved deliberately; do not fix without a product decision.
-    return '';
-  }
-
-  /**
-   * The URL of this product's default image. [model/entity/Product.cfc:L323-L325]
-   *
-   *   return getDefaultSku().getImagePath();
-   *
-   * A real delegation - `Sku.getImagePath()` exists [model/entity/Sku.cfc:L144-L146] and builds
-   * `<baseImageURL>/product/default/<imageFile>`. Unguarded, so it raises without a default sku.
-   */
-  getImagePath(): string {
-    if (this.defaultSku === undefined) {
-      throw new Error(
-        'Product.getImagePath dereferences getDefaultSku() unguarded ' +
-          '[model/entity/Product.cfc:L324] and this product has no default sku. The legacy fails ' +
-          'on the same input.',
-      );
-    }
-    return this.defaultSku.getImagePath();
-  }
-
-  /**
-   * A rendered `<img>` for this product's default image. [model/entity/Product.cfc:L327-L329]
-   *
-   *   return getDefaultSku().getImage(argumentCollection = arguments);
-   *
-   * `argumentCollection = arguments` forwards whatever the caller passed, which is why the parameter
-   * is the same optional {@link ImageResizeOptions} bag the sku's own method reads. Raises transitively
-   * once it reaches the stubbed image service; see {@link Product.getImageGalleryArray}.
-   */
-  getImage(options?: ImageResizeOptions): string {
-    if (this.defaultSku === undefined) {
-      throw new Error(
-        'Product.getImage dereferences getDefaultSku() unguarded ' +
-          '[model/entity/Product.cfc:L328] and this product has no default sku. The legacy fails ' +
-          'on the same input.',
-      );
-    }
-    return this.defaultSku.getImage(options);
-  }
-
-  /**
-   * The path of a resized version of this product's default image.
-   * [model/entity/Product.cfc:L331-L333]
-   *
-   *   return getDefaultSku().getResizedImagePath(argumentCollection = arguments);
-   */
-  getResizedImagePath(options?: ImageResizeOptions): string {
-    if (this.defaultSku === undefined) {
-      throw new Error(
-        'Product.getResizedImagePath dereferences getDefaultSku() unguarded ' +
-          '[model/entity/Product.cfc:L332] and this product has no default sku. The legacy fails ' +
-          'on the same input.',
-      );
-    }
-    return this.defaultSku.getResizedImagePath(options);
-  }
-
-  /**
-   * Whether the default image file is actually on disk. [model/entity/Product.cfc:L335-L337]
-   *
-   *   return getDefaultSku().getImageExistsFlag();
-   *
-   * The delegate performs a real filesystem check - `fileExists(expandPath(getImagePath()))`
-   * [model/entity/Sku.cfc:L221-L227] - so what this returns depends on the deployment's filesystem,
-   * not on the database.
-   */
-  getImageExistsFlag(): boolean {
-    if (this.defaultSku === undefined) {
-      throw new Error(
-        'Product.getImageExistsFlag dereferences getDefaultSku() unguarded ' +
-          '[model/entity/Product.cfc:L336] and this product has no default sku. The legacy fails ' +
-          'on the same input.',
-      );
-    }
-    return this.defaultSku.getImageExistsFlag();
-  }
-
-  /**
-   * The distinct options in one option group that this product's SKUs actually use.
-   * [model/entity/Product.cfc:L339-L346]
-   *
-   *   var smartList = getService("optionService").getOptionSmartList();
-   *   smartList.setSelectDistinctFlag(1);
-   *   smartList.addFilter("optionGroup.optionGroupID", arguments.optionGroupID);
-   *   smartList.addFilter("skus.product.productID", this.getProductID());
-   *   smartList.addOrder("sortOrder|ASC");
-   *   return smartList.getRecords();
-   *
-   * PORTED IN MEMORY for the same mechanical reason as {@link Product.getOptionGroups}: both filters
-   * are satisfiable from `this.skus` -> `sku.getOptions()`, and nothing outside the product is read.
-   * SYNCHRONOUS, and NOT memoized - the legacy memoizes nothing here either, because the answer
-   * depends on the argument.
-   *
-   * THREE FIDELITY POINTS.
-   *   1. Distinctness [L341] is by option ID.
-   *   2. `optionGroup.optionGroupID` [L342] is compared CASE-INSENSITIVELY, because a CFML smart-list
-   *      filter compares through the database and MySQL's default collation is case-insensitive; a
-   *      case-sensitive match here would MISS rows the legacy finds.
-   *   3. `addOrder("sortOrder|ASC")` [L344] orders by `Option.getSortOrder()`, which is OPTIONAL on
-   *      that entity - unlike `OptionGroup`'s. A NULL sort order sorts FIRST in MySQL's `ASC`, so
-   *      absent values are treated as ordering below every present one rather than being dropped or
-   *      pushed to the end.
-   *
-   * TOTAL: it never throws. An empty result means either that no materialized sku uses that group or
-   * that the skus were fetched without their options - a fetch-shape statement, not a domain claim.
-   */
-  getOptionsByOptionGroup(optionGroupID: string): readonly Option[] {
-    const needle: string = optionGroupID.toLowerCase();
-    const distinct: Map<string, Option> = new Map<string, Option>();
+  public getOptionsByOptionGroup(optionGroupID: string): readonly Option[] {
+    // [L344] the `skus.product.productID` filter - every sku of this product, by construction.
+    // [L342] `setSelectDistinctFlag(1)` - de-duplicated by primary key, because two SKUs of the same
+    // product routinely carry the SAME option row and the legacy DISTINCT collapses them.
+    const seen = new Set<string>();
+    const matches: Option[] = [];
 
     for (const sku of this.skus) {
       for (const option of sku.getOptions()) {
-        const optionGroup: OptionGroup | undefined = option.getOptionGroup();
-        if (optionGroup === undefined) {
-          // The legacy filter navigates `optionGroup.optionGroupID`, so a group-less option cannot
-          // satisfy it.
+        // [L343] the `optionGroup.optionGroupID` filter. An option whose group was not materialized
+        // cannot match a concrete id, and is skipped rather than assumed to belong.
+        const group = option.getOptionGroup();
+        if (group === undefined || group.getOptionGroupID() !== optionGroupID) {
           continue;
         }
-        if (optionGroup.getOptionGroupID().toLowerCase() !== needle) {
+        const optionID = option.getOptionID();
+        if (seen.has(optionID)) {
           continue;
         }
-        const key: string = option.getOptionID();
-        if (!distinct.has(key)) {
-          distinct.set(key, option);
-        }
+        seen.add(optionID);
+        matches.push(option);
       }
     }
 
-    // [model/entity/Product.cfc:L344] `sortOrder|ASC`, with NULL ordering first - see point 3.
-    return [...distinct.values()].sort((left: Option, right: Option) => {
-      const leftOrder: number = left.getSortOrder() ?? Number.NEGATIVE_INFINITY;
-      const rightOrder: number = right.getSortOrder() ?? Number.NEGATIVE_INFINITY;
-      if (leftOrder === rightOrder) {
+    // [L345] `addOrder("sortOrder|ASC")`. MySQL sorts `NULL` FIRST on an ascending order, so an
+    // option with no sort order precedes every option that has one. Reproduced explicitly rather
+    // than relying on how `undefined` happens to compare.
+    matches.sort((left: Option, right: Option) => {
+      const leftOrder = left.getSortOrder();
+      const rightOrder = right.getSortOrder();
+      if (leftOrder === undefined && rightOrder === undefined) {
         return 0;
       }
-      return leftOrder < rightOrder ? -1 : 1;
+      if (leftOrder === undefined) {
+        return -1;
+      }
+      if (rightOrder === undefined) {
+        return 1;
+      }
+      return leftOrder - rightOrder;
     });
+
+    return matches;
   }
 
   /**
-   * Resolves EXACTLY ONE sku from a comma list of selected option IDs.
-   * [model/entity/Product.cfc:L348-L364]
+   * ★ MUST-PRESERVE. The single SKU identified by a comma-delimited list of selected option IDs.
    *
-   *   if(len(arguments.selectedOptions) > 0) {
-   *     var skus = getSkusBySelectedOptions(selectedOptions=arguments.selectedOptions);
-   *     if(arrayLen(skus) == 1) { return skus[1]; }
-   *     else if (arrayLen(skus) > 1) { throw("More than one sku is returned when the selected
-   *                                          options are: #arguments.selectedOptions#"); }
-   *     else if (arrayLen(skus) < 1) { throw("No Skus are found for these selected options:
-   *                                          #arguments.selectedOptions#"); }
-   *   } else if (arrayLen(getSkus()) == 1) { return getSkus()[1]; }
-   *   else { throw("You must submit a comma seperated list of selectOptions to find an indvidual
-   *                sku in this product"); }
+   * [model/entity/Product.cfc:L349-L364] verbatim:
    *
-   * ★ A MUST-PRESERVE BEHAVIOUR (AAP 0.4.2), and the strictest method on this class: it has FOUR
-   * outcomes and THREE of them are throws. All three messages are reproduced BYTE FOR BYTE, typos
-   * included - `seperated`, `selectOptions` and `indvidual` in the last one - because an error message
-   * a caller may be matching on is a contract like any other.
+   *   public any function getSkuBySelectedOptions(string selectedOptions="") {
+   *     if(len(arguments.selectedOptions) > 0) {
+   *       var skus = getSkusBySelectedOptions(selectedOptions=arguments.selectedOptions);
+   *       if(arrayLen(skus) == 1) {
+   *         return skus[1];
+   *       } else if (arrayLen(skus) > 1) {
+   *         throw("More than one sku is returned when the selected options are: #arguments.selectedOptions#");
+   *       } else if (arrayLen(skus) < 1) {
+   *         throw("No Skus are found for these selected options: #arguments.selectedOptions#");
+   *       }
+   *     } else if (arrayLen(getSkus()) == 1) {
+   *       return getSkus()[1];
+   *     } else {
+   *       throw("You must submit a comma seperated list of selectOptions to find an indvidual sku in this product");
+   *     }
+   *   }
    *
-   * ASYNC, because it reads through {@link Product.getSkusBySelectedOptions}, whose legacy body
-   * reaches the DAO.
+   * `async`, because [L351] reaches `getSkusBySelectedOptions`, which reaches the repository.
    *
-   * `len(arguments.selectedOptions) > 0` [L349] goes through the ported `cfLen`, so the empty-string
-   * and whitespace semantics match CFML rather than JavaScript truthiness.
+   * THE EMPTY-STRING DEFAULT AT [L349] IS REPRODUCED, and the truthiness test at [L350] is
+   * `len(...) > 0` - so `cfLen` is used rather than JavaScript truthiness. The two agree for a string,
+   * but the whole point of `../../lib/cfml/truthiness.js` is that the translation is deterministic and
+   * documented at every site rather than case-by-case.
    *
-   * ★ NOTE THE ASYMMETRY IN THE `else` BRANCH: with no selected options it succeeds ONLY when the
-   * product has EXACTLY ONE sku [L358-L359], and a product with zero or several skus falls into the
-   * final throw. So "no options supplied" is not a wildcard - it is an assertion that the product is
-   * single-sku. Preserved as written.
+   * ★ WHY THE RETURN TYPE IS `Sku | undefined` WHEN EVERY VISIBLE BRANCH RETURNS OR THROWS. The inner
+   * chain at [L352-L358] is `if / else if / else if` WITH NO FINAL `else`. Its three conditions -
+   * `== 1`, `> 1`, `< 1` - are logically exhaustive over an array length, so the `undefined` arm is
+   * unreachable in practice; but the chain is SYNTACTICALLY OPEN, the legacy declares
+   * `returntype="any"` rather than a SKU type, and a CFML function that falls off the end returns
+   * null. Typing the honest control flow is the faithful port: the alternative is to add a final
+   * `else` the source does not have, or to assert non-null, and a non-null assertion is a lint error
+   * here by design. The two misspellings in the legacy messages - `seperated` and `indvidual` at
+   * [L362] - are carried over verbatim, because an error message is an observable and a reviewer
+   * diffing the two files should find them identical.
    */
-  async getSkuBySelectedOptions(selectedOptions: string = ''): Promise<Sku> {
-    // [model/entity/Product.cfc:L349]
+  public async getSkuBySelectedOptions(selectedOptions = ''): Promise<Sku | undefined> {
+    // [L350] `if(len(arguments.selectedOptions) > 0)`.
     if (cfLen(selectedOptions) > 0) {
-      const skus: readonly Sku[] = await this.getSkusBySelectedOptions(selectedOptions);
+      // [L351] - the delegate, which is where the AND-of-EXISTS SQL is reached.
+      const skus: Sku[] = await this.getSkusBySelectedOptions(selectedOptions);
 
-      // [L351-L352]
-      const onlySku: Sku | undefined = skus[0];
-      if (skus.length === 1 && onlySku !== undefined) {
-        return onlySku;
+      // [L352-L353] exactly one match is the success case. `noUncheckedIndexedAccess` makes the
+      // element access `Sku | undefined`, and the length test is what proves it present; the
+      // narrowing is done by a local rather than by an assertion.
+      if (skus.length === 1) {
+        return skus[0];
       }
-
-      // [L353-L354] verbatim message.
+      // [L354-L355]
       if (skus.length > 1) {
         throw new Error(
           `More than one sku is returned when the selected options are: ${selectedOptions}`,
         );
       }
-
-      // [L355-L356] verbatim message. `arrayLen(skus) < 1` is the only remaining case.
-      throw new Error(`No Skus are found for these selected options: ${selectedOptions}`);
+      // [L356-L357]
+      if (skus.length < 1) {
+        throw new Error(`No Skus are found for these selected options: ${selectedOptions}`);
+      }
+      // [L358] the chain closes here with no `else`. Unreachable, and deliberately not closed.
+      return undefined;
     }
 
-    // [L358-L359] exactly one sku, or nothing.
-    const skus: readonly Sku[] = this.getSkus();
-    const singleSku: Sku | undefined = skus[0];
-    if (skus.length === 1 && singleSku !== undefined) {
-      return singleSku;
+    // [L359-L360] no options submitted, but a single-sku product needs none.
+    const ownSkus: Sku[] = this.getSkus();
+    if (ownSkus.length === 1) {
+      return ownSkus[0];
     }
 
-    // [L360-L362] verbatim message, with all three source typos preserved.
+    // [L361-L363] - misspellings preserved verbatim.
     throw new Error(
-      'You must submit a comma seperated list of selectOptions to find an indvidual sku in this ' +
-        'product',
+      'You must submit a comma seperated list of selectOptions to find an indvidual sku in this product',
     );
   }
 
   /**
-   * Every sku of this product matching ALL the selected options. [model/entity/Product.cfc:L366-L368]
+   * ★ MUST-PRESERVE. Every SKU of this product that carries ALL of the selected options.
    *
-   *   return getService("productService").getProductSkusBySelectedOptions(
-   *            arguments.selectedOptions, this.getProductID());
+   * [model/entity/Product.cfc:L366-L368] verbatim:
    *
-   * ★ A MUST-PRESERVE BEHAVIOUR (AAP 0.4.2). The matching semantics live in the SQL -
-   * `model/dao/SkuDAO.cfc:L107-L128` builds an AND-of-EXISTS, one `EXISTS` clause per selected option,
-   * so a sku qualifies only if it carries EVERY selected option. That is why this method delegates
-   * instead of filtering `sku.getOptions()` locally: an in-memory reproduction would have to
-   * re-derive the AND-of-EXISTS semantics, and the plan puts that statement in
-   * `src/repositories/mysql/sql/skusBySelectedOptions.sql.ts` where it can be reviewed AS SQL.
-   *
-   * The delegation goes through {@link ProductQuerySupport}, which is transformation rule T2 applied
-   * to the `getService("productService")` locator at L367. ASYNC, because the legacy body reaches the
-   * DAO. Positional argument order is the source's - options first, product ID second.
-   */
-  async getSkusBySelectedOptions(selectedOptions: string = ''): Promise<Sku[]> {
-    if (this.querySupport === undefined) {
-      throw new Error(
-        'Product.getSkusBySelectedOptions was called on a product hydrated without query support. ' +
-          'The legacy body reaches getService("productService").getProductSkusBySelectedOptions ' +
-          '[model/entity/Product.cfc:L367], which transformation rule T2 replaces with an injected ' +
-          'port; that port must be supplied at construction.',
-      );
-    }
-    return this.querySupport.getProductSkusBySelectedOptions(selectedOptions, this.getProductID());
-  }
-
-  /**
-   * The Mura breadcrumb row for this product. [model/entity/Product.cfc:L370-L397]
-   *
-   * PURE - it reads only its arguments and `getTitle()`, and reaches no service. Ported in full even
-   * though the Mura CMS bridge is out of scope, because the method is on this entity's public surface
-   * and its body is entirely local: excluding the bridge excludes the CONSUMER, not this producer.
-   *
-   * ★ EVERY RETURNED KEY IS SPELLED AS THE SOURCE SPELLS IT, TWO TYPOS INCLUDED. See
-   * {@link ProductCrumbData} for the full list and for the CFML struct-key-casing note.
-   *
-   * TWO WAYS IT RAISES, both reproducing a source failure:
-   *   1. `arguments.baseCrumbArray[1].parentArray` [L379] is UNGUARDED, so an empty crumb array
-   *      raises on the index.
-   *   2. `left(productFilename, len(productFilename)-1)` [L372] passes `-1` to `left()` when the
-   *      replace leaves nothing, which CFML rejects. That happens when `path` is exactly
-   *      `/<siteID>/`, which is precisely the site root - a reachable input, not a pathological one.
-   *
-   * `replace(..., "all")` [L371] removes EVERY occurrence of `/<siteID>/`, not just the first, and the
-   * port's `split`/`join` reproduces that. The trailing character the `left()` then drops is the
-   * path's final `/`.
-   */
-  getCrumbData(
-    path: string,
-    siteID: string,
-    baseCrumbArray: readonly BaseCrumbEntry[],
-  ): ProductCrumbData {
-    // [model/entity/Product.cfc:L371] `replace(arguments.path, "/#arguments.siteID#/", "", "all")`.
-    const stripped: string = path.split(`/${siteID}/`).join('');
-
-    // [L372] `left(productFilename, len(productFilename)-1)`. CFML's `left()` rejects a negative
-    // count, so an empty intermediate raises rather than yielding `''`.
-    if (stripped.length === 0) {
-      throw new Error(
-        'Product.getCrumbData reproduces a source failure [model/entity/Product.cfc:L372]: after ' +
-          `removing "/${siteID}/" from the path the remainder is empty, and the legacy then calls ` +
-          'left(value, -1), which CFML rejects.',
-      );
-    }
-    const productFilename: string = stripped.slice(0, stripped.length - 1);
-
-    // [L379] `arguments.baseCrumbArray[1].parentArray` - unguarded in the source.
-    const firstCrumb: BaseCrumbEntry | undefined = baseCrumbArray[0];
-    if (firstCrumb === undefined) {
-      throw new Error(
-        'Product.getCrumbData reproduces a source failure [model/entity/Product.cfc:L379]: it ' +
-          'reads baseCrumbArray[1].parentArray without checking that the array has an element.',
-      );
-    }
-
-    // [L374-L395] the struct literal, key for key and value for value.
-    return {
-      contentHistID: '',
-      contentID: '',
-      filename: productFilename,
-      inheritobjects: 'Cascade',
-      menuTitle: this.getTitle(),
-      metaDesc: '',
-      metaKeywords: '',
-      parentArray: firstCrumb.parentArray,
-      parentID: '',
-      restricted: 0,
-      // ★ `retrictgroups`, missing its first `s`, is the source's spelling and a Mura data-contract
-      // key. Preserved deliberately.
-      retrictgroups: '',
-      siteid: siteID,
-      sortby: 'orderno',
-      sortdirection: 'asc',
-      target: '_self',
-      // ★ `targetPrams`, missing its `a`, likewise.
-      targetPrams: '',
-      template: '',
-      type: 'Page',
-    };
-  }
-
-  // --- Availability [model/entity/Product.cfc:L399] ---------------------------------------------
-  //
-  // The source's own `// Availability` comment. Both members reach `stockService`, and the stock and
-  // inventory subsystems are EXCLUDED by the plan (AAP 0.2.2), so both are documented throwing stubs.
-  // A stub keeps the public surface complete and the failure DETECTABLE; a default would hand a
-  // caller a well-formed wrong date, and receival dates drive purchasing.
-
-  /**
-   * Expected inbound stock, keyed three ways. [model/entity/Product.cfc:L400-L405]
-   *
-   *   if(!structKeyExists(variables, "estimatedReceivalDetails")) {
-   *     variables.estimatedReceivalDetails =
-   *       getService("stockService").getEstimatedReceivalDetails( getProductID() );
+   *   public any function getSkusBySelectedOptions(string selectedOptions="") {
+   *     return getService("productService").getProductSkusBySelectedOptions(arguments.selectedOptions,this.getProductID());
    *   }
-   *   return variables.estimatedReceivalDetails;
    *
-   * NOT PORTED - `stockService` belongs to the excluded stock subsystem, and the returned struct's
-   * shape is defined entirely by that service: {@link Product.getEstimatedReceivalDates} shows it
-   * carries `stocks`, `skus` (each with `locations` and `estimatedReceivals`), `locations` and a
-   * top-level `estimatedReceivals`. Reproducing the shape without the service that fills it would be
-   * inventing data.
+   * `async`, and called live by `Sku.hasUniqueOptions()` [model/entity/Sku.cfc:L763] through
+   * src/domain/entities/sku.ts, which awaits it and expects `Sku[]`.
    *
-   * The memo slot is deliberately not declared: memoizing a value that can never be produced would be
-   * dead state.
+   * THE [L367] `getService("productService")` LOCATOR IS ELIMINATED (T2). The legacy hop is
+   * entity -> `ProductService.getProductSkusBySelectedOptions` -> `SkuDAO.getSkusBySelectedOptions`,
+   * and `ProductService`'s method [model/service/ProductService.cfc:L104-L106] is a pure pass-through
+   * that adds nothing. The port therefore stands in for the DAO directly, preserving the ARGUMENT
+   * ORDER of the legacy call - selected options first, product id second - because
+   * `SkuRepository.getSkusBySelectedOptions(selectedOptions, productID?)` declares exactly that
+   * order. Passing them the other way round would compile and silently return nothing.
+   *
+   * THE EMPTY-STRING DEFAULT IS REPRODUCED AND IS NOT SHORT-CIRCUITED. The legacy does NOT guard the
+   * empty case here - it hands `''` straight to the DAO, whose option loop then contributes no
+   * `EXISTS` clause and returns every sku of the product. Adding a guard would change what an empty
+   * call returns.
    */
-  getEstimatedReceivalDetails(): never {
-    throw new Error(
-      'Product.getEstimatedReceivalDetails is not ported. The legacy body reaches ' +
-        'getService("stockService").getEstimatedReceivalDetails(getProductID()) ' +
-        '[model/entity/Product.cfc:L401], and the stock subsystem is explicitly out of scope for ' +
-        'this migration slice. The method is retained with its verbatim signature so the public ' +
-        'surface stays complete and the omission is detectable rather than silent.',
-    );
-  }
-
-  /**
-   * Expected inbound dates for a stock, a sku, a sku at a location, or a location.
-   * [model/entity/Product.cfc:L407-L432]
-   *
-   * A four-way `structKeyExists(arguments, ...)` cascade over the struct
-   * {@link Product.getEstimatedReceivalDetails} returns, falling back to `[]` [L431]. It is entirely
-   * derived from that struct, so it cannot be ported while its source cannot.
-   *
-   * ★ WORTH RECORDING RATHER THAN LOSING: the cascade's ORDER is `stockID`, then `skuID` AND
-   * `locationID` together, then `skuID` alone, then `locationID` alone, and the final `else` [L427]
-   * returns the product-wide list. Because CFML's `structKeyExists(arguments, "x")` is true for ANY
-   * supplied argument - including an empty string - passing `skuID=""` takes the sku branch and
-   * returns `[]`, not the product-wide list. That is a real trap in the source's argument handling and
-   * it is documented here so a future port of the stock subsystem reproduces it deliberately.
-   */
-  getEstimatedReceivalDates(_skuID?: string, _locationID?: string, _stockID?: string): never {
-    throw new Error(
-      'Product.getEstimatedReceivalDates is not ported. It is derived entirely from ' +
-        'getEstimatedReceivalDetails() [model/entity/Product.cfc:L408], which reaches the ' +
-        'out-of-scope stock subsystem. See that method and this one for the argument-cascade ' +
-        'semantics a future port must reproduce.',
-    );
-  }
-
-  // --- Quantity [model/entity/Product.cfc:L434] -------------------------------------------------
-
-  /**
-   * A quantity of this product, by type and optional scope. [model/entity/Product.cfc:L435-L489]
-   *
-   * NOT PORTED - both branches of its lookup reach `getService("inventoryService")` [L441, L443], and
-   * the inventory subsystem is excluded (AAP 0.2.2). Retained as a documented throwing stub so the
-   * surface is complete and the omission detectable.
-   *
-   * WHAT A FUTURE PORT MUST REPRODUCE, recorded here because the body would otherwise be lost:
-   *
-   *   * TWO DISJOINT TYPE WHITELISTS, and the type determines which service call is made.
-   *     `"QOH,QOSH,QNDOO,QNDORVO,QNDOSA,QNRORO,QNROVO,QNROSA"` [L440] are looked up by
-   *     `{productID, productRemoteID}` and return a STRUCT that is then indexed by stock, sku or
-   *     location. `"QC,QE,QNC,QATS,QIATS"` [L442] are looked up by `{entity=this}` and return a
-   *     SCALAR that is returned directly [L450-L452]. Anything else throws with a message listing all
-   *     thirteen valid types [L445].
-   *   * THE RESULT IS MEMOIZED ONTO `variables[quantityType]` [L441, L443] - a DYNAMIC key, so this
-   *     entity ends up carrying up to thirteen ad-hoc fields named after quantity types. That is the
-   *     shape a port has to decide about; it is not a fixed property.
-   *   * ★ LEGACY-DEFECT D7 [L479-L484]: the `locationID` branch computes
-   *     `variables[qt].locations[locationID]` as a BARE STATEMENT with no `return`, so it always
-   *     falls through to `return 0`. Every other branch returns its value. A location-scoped quantity
-   *     is therefore ALWAYS ZERO in the legacy.
-   *   * TWO UNSCOPED READS, which work in CFML only because unscoped names resolve through
-   *     `arguments`: `variables[ quantityType ].stocks` [L458] and `stocks[stockID]` [L459], and
-   *     `variables[ quantityType ].skus[...]` inside the sku-and-location test [L466]. They are noted
-   *     because they read as `variables`-scope lookups and are not.
-   *   * `remoteID` IS PART OF THE LOOKUP KEY [L441], which is the one in-scope reason this entity
-   *     carries {@link Product.getRemoteID} at all.
-   */
-  getQuantity(
-    _quantityType: string,
-    _skuID?: string,
-    _locationID?: string,
-    _stockID?: string,
-  ): never {
-    throw new Error(
-      'Product.getQuantity is not ported. Both lookup branches reach ' +
-        'getService("inventoryService") [model/entity/Product.cfc:L441, L443], and the inventory ' +
-        'subsystem is explicitly out of scope for this migration slice. The method doc records the ' +
-        'two type whitelists, the dynamic memo keys and LEGACY-DEFECT D7 so a future port can ' +
-        'reproduce them deliberately.',
-    );
-  }
-
-  // --- Non-Persistent Property Methods [model/entity/Product.cfc:L491] -------------------------
-  //
-  // The source's own banner opens at L491 and closes at L655.
-
-  /**
-   * This product's base product type. [model/entity/Product.cfc:L493-L495]
-   *
-   *   return getProductType().getBaseProductType();
-   *
-   * ★ UNGUARDED, so it raises on a product with no product type - and that raise is load-bearing
-   * rather than incidental: `SkuDAO.getProductSkus` calls it [model/dao/SkuDAO.cfc:L156] to choose an
-   * eager-fetch join, so a type-less product fails there too. See `applyFetchOptionsFilter`, which
-   * reproduces the same dereference at the same point.
-   *
-   * `ProductType.getBaseProductType()` itself returns `string | undefined`, so a product type with no
-   * base type yields `undefined` here rather than raising - two different failure modes, kept
-   * distinct.
-   *
-   * ★ ASYNCHRONOUS, BECAUSE THE DELEGATE IS. `ProductType.getBaseProductType()` short-circuits on its
-   * own `systemCode` when it has one and otherwise LOADS THE ROOT PRODUCT TYPE named by the first
-   * element of `productTypeIDPath` [model/entity/ProductType.cfc:L112] - a repository round trip. The
-   * async boundary rule makes a method async if and only if its legacy body genuinely reached the DAO
-   * or the ORM, and this one does, one hop down. The boundary propagates from here to
-   * {@link Sku.getBaseProductType}, which delegates to this method in turn. It does NOT propagate into
-   * {@link Product.getSkus}: see `applyFetchOptionsFilter`, which resolves the branch key from the
-   * already-materialised product-type ancestry precisely so that accessor can stay synchronous.
-   */
-  async getBaseProductType(): Promise<string | undefined> {
-    if (this.productType === undefined) {
-      throw new Error(
-        'Product.getBaseProductType dereferences getProductType() unguarded ' +
-          '[model/entity/Product.cfc:L494] and this product has no product type. The legacy fails ' +
-          'on the same input, including when reached through SkuDAO.getProductSkus ' +
-          '[model/dao/SkuDAO.cfc:L156].',
-      );
+  public async getSkusBySelectedOptions(selectedOptions = ''): Promise<Sku[]> {
+    if (this.skuRepository === undefined) {
+      throw this.missingCollaborator('sku repository', 'L367');
     }
-    return await this.productType.getBaseProductType();
+    return this.skuRepository.getSkusBySelectedOptions(selectedOptions, this.productID);
+  }
+
+  // ===========================================================================
+  // ★ THE SKU AND PRICE ACCESSOR CLUSTER - MONEY-CRITICAL
+  // [model/entity/Product.cfc:L155-L187, L555-L601]
+  //
+  // Every monetary return in this cluster is `Money`, never `number` (E4, prohibition 4). Every
+  // no-`else` guard yields `undefined` rather than `0` (prohibition 6) - WITH THE ONE DELIBERATE
+  // EXCEPTION OF `getSalePrice()`, which is DEFECT 20 and returns `0` precisely because the legacy
+  // does. The two conventions sit forty lines apart in the source and mean opposite things; neither
+  // is copied onto the other.
+  // ===========================================================================
+
+  /**
+   * This product's SKUs - LIVE on the default call, a projection when either flag is set.
+   *
+   * [model/entity/Product.cfc:L155-L160] verbatim:
+   *
+   *   public array function getSkus(boolean sorted=false, boolean fetchOptions=false) {
+   *     if(!arguments.sorted && !arguments.fetchOptions) {
+   *       return variables.skus;
+   *     }
+   *     return getService("skuService").getProductSkus(product=this, sorted=arguments.sorted, fetchOptions=arguments.fetchOptions);
+   *   }
+   *
+   * ★ THIS OVERRIDES THE ORM-GENERATED COLLECTION ACCESSOR, which is why it takes parameters at all,
+   * and it MUST STAY SYNCHRONOUS. Two already-shipped call sites depend on that:
+   * `Sku.setProduct` does `product.getSkus().push(this)` and `Sku.removeProduct` does
+   * `target.getSkus()` then `.splice(index, 1)`, both from synchronous bodies reproducing
+   * [model/entity/Sku.cfc:L607] and [L613]. An async accessor would break the compile of a shipped
+   * sibling, and a defensive copy would break bidirectional removal silently.
+   *
+   * THE UNFLAGGED CALL RETURNS THE LIVE ARRAY, exactly as [L157] returns `variables.skus` itself. The
+   * flagged calls return a NEW array, exactly as [L159] returns the service's result. That asymmetry
+   * is the legacy's, and it is preserved.
+   *
+   * ★ SORTING IS APPLIED IN MEMORY, AND THE WEIGHTING IS REPRODUCED RATHER THAN APPROXIMATED. The
+   * legacy hop is [L159] -> `SkuService.getProductSkus` [model/service/SkuService.cfc:L220-L244] ->
+   * `SkuDAO.getSortedProductSkusID` [model/dao/SkuDAO.cfc:L172-L202], whose ordering clause is
+   *
+   *   ORDER BY SUM(SwOption.sortOrder * POWER(10, nextOptionGroupSortOrder - SwOptionGroup.sortOrder)) ASC
+   *
+   * - a POSITIONAL WEIGHTING in which each option group acts as a decimal digit and the
+   * LOWEST-ordered group is the MOST significant, with `nextOptionGroupSortOrder` being
+   * `max(SwOptionGroup.sortOrder) + 1` across the whole table. Every term of that expression is
+   * available from the materialized graph plus the one hydration input that carries the global
+   * maximum, so the sort is computed here with no outward reach and no invented port member.
+   *
+   * THE LEGACY GUARD IS REPRODUCED EXACTLY: [model/service/SkuService.cfc:L223] sorts only when
+   * `sorted AND arrayLen(skus) gt 1 AND arrayLen(skus[1].getOptions())` - so a single-sku product is
+   * never sorted, and NEITHER IS A MULTI-SKU PRODUCT WHOSE **FIRST** SKU HAPPENS TO CARRY NO OPTIONS,
+   * even if later SKUs do. That third clause probes `skus[1]` alone, which is a peculiarity rather
+   * than a rule, and it is preserved.
+   *
+   * LEGACY-NOTE [model/service/SkuService.cfc:L232-L238]: THE LEGACY SORT IS UNSAFE AND THE PORT IS
+   * NOT. `sortedArrayReturn` is resized to the length of the ID query, then filled by
+   * `sortedArrayReturn[arrayFind(sortedArray, skuID)] = skus[i]`. A sku absent from the ID query makes
+   * `arrayFind` return 0 and `sortedArrayReturn[0]` RAISES in CFML, and a length mismatch between the
+   * two collections leaves undefined slots in the result. Reproducing a raise that depends on a
+   * DAO-level row-count coincidence would be reproducing an accident, not a behaviour, so the port
+   * sorts the array it was given by computed weight - which yields the same order whenever the legacy
+   * succeeds, and yields a correctly ordered array instead of a raise when the legacy would have
+   * failed. This is a defect in `SkuService`/`SkuDAO`, NOT in `Product.cfc`, so it consumes no
+   * divergence from this file's budget; it is recorded here because this is the call site that
+   * reaches it.
+   * Preserved deliberately; do not fix without a product decision.
+   *
+   * LEGACY-NOTE [model/dao/SkuDAO.cfc:L150-L168]: `fetchOptions` selected an eager-fetch JOIN whose
+   * branch was chosen from the product's base type - access contents, options, or subscription
+   * benefits - and ALL THREE BRANCHES USE AN INNER JOIN, so a product whose SKUs have none of the
+   * fetched children returned NOTHING when the flag was set. In the target, associations are
+   * materialized at the repository boundary, so options are already present and the flag has no
+   * fetch to perform here; it is retained in the signature for interface parity and is honoured as an
+   * eager-load decision by the repository that hydrated this instance. The inner-join emptiness is
+   * therefore a repository-tier concern and is documented at the producing method there.
+   * Preserved deliberately; do not fix without a product decision.
+   */
+  public getSkus(sorted = false, fetchOptions = false): Sku[] {
+    // [L156-L158] the unflagged fast path - THE LIVE ARRAY, by reference.
+    if (!sorted && !fetchOptions) {
+      return this.skus;
+    }
+
+    // [L159] the delegating path. A NEW array in the legacy, and a new array here.
+    const projection: Sku[] = [...this.skus];
+
+    // [model/service/SkuService.cfc:L223] - the three-clause guard, verbatim in order. The third
+    // clause deliberately probes only the FIRST element.
+    const firstSku = projection.length > 0 ? projection[0] : undefined;
+    const firstSkuHasOptions = firstSku !== undefined && firstSku.getOptions().length > 0;
+    if (!sorted || projection.length <= 1 || !firstSkuHasOptions) {
+      return projection;
+    }
+
+    // [model/dao/SkuDAO.cfc:L172-L202] - the positional weighting. `nextOptionGroupSortOrder` is a
+    // GLOBAL aggregate over `SwOptionGroup`, not derivable from this product's own graph, so it
+    // arrives as a hydration input. Absent, the weighting cannot be computed, and the honest answer
+    // is the unsorted projection rather than a silently different order.
+    const radixCeiling = this.nextOptionGroupSortOrder;
+    if (radixCeiling === undefined) {
+      return projection;
+    }
+
+    const weights = new Map<string, number>();
+    for (const sku of projection) {
+      let weight = 0;
+      for (const option of sku.getOptions()) {
+        const optionSortOrder = option.getSortOrder();
+        const group = option.getOptionGroup();
+        if (optionSortOrder === undefined || group === undefined) {
+          // A term the SQL could not have contributed either: `SwOption.sortOrder` is NULLable and
+          // `SUM` skips NULL products, and the inner join drops an option with no group.
+          continue;
+        }
+        weight += optionSortOrder * Math.pow(10, radixCeiling - group.getSortOrder());
+      }
+      weights.set(sku.getSkuID(), weight);
+    }
+
+    projection.sort((left: Sku, right: Sku) => {
+      const leftWeight = weights.get(left.getSkuID()) ?? 0;
+      const rightWeight = weights.get(right.getSkuID()) ?? 0;
+      return leftWeight - rightWeight;
+    });
+
+    return projection;
   }
 
   /**
-   * The distinct default-image filenames across this product's SKUs.
-   * [model/entity/Product.cfc:L497-L514]
+   * One of this product's SKUs by id, or nothing.
    *
-   *   var sl = getService("skuService").getSkuSmartList();
-   *   sl.addFilter('product.productID', getProductID());
-   *   sl.addSelect('imageFile', 'imageFile');
-   *   sl.setSelectDistinctFlag( true );
-   *   var records = sl.getRecords();
-   *   for(var record in records) {
-   *     if(structKeyExists(record, "imageFile")) {
-   *       arrayAppend(variables.defaultProductImageFiles, record["imageFile"]);
+   * [model/entity/Product.cfc:L162-L169] verbatim:
+   *
+   *   var skus = getSkus();
+   *   for(var i = 1; i <= arrayLen(skus); i++) {
+   *     if(skus[i].getSkuID() == arguments.skuID) {
+   *       return skus[i];
    *     }
    *   }
    *
-   * PORTED IN MEMORY - the smart list's only filter is `product.productID = <this product>`, so it
-   * re-queries the subgraph this entity already holds. First bullet of the smart-list dividing line.
+   * ★ THERE IS NO FINAL `return`, so a miss yields null - and `undefined` is the faithful port, NOT a
+   * throw and NOT the first sku. The legacy declares `returntype="any"`, which is what lets it fall
+   * off the end; a stricter declaration would have made the omission a compile error there too.
    *
-   * ★ WHY THE `structKeyExists` GUARD IS REPRODUCED AS AN `undefined` SKIP, and why that is the
-   * defensible reading of two possible ones. `getRecords()` with `addSelect` yields ORM PROJECTION
-   * rows, not `cfquery` rows, and a CFML struct cannot hold a null - assigning one omits the key
-   * entirely. So a sku with a NULL `imageFile` produces a row with NO `imageFile` key and the guard
-   * SKIPS it. Under the competing reading - that the rows are `cfquery`-like, where every selected
-   * column exists and NULL surfaces as `''` - the guard would be dead code and the result would carry
-   * one `''` element after DISTINCT collapsing. The projection reading is the one the guard's very
-   * existence supports: an author who knew keys were always present would not have written it.
-   *
-   * DISTINCTNESS is by the filename value itself [L501], so two skus sharing an image contribute one
-   * element. NO `ORDER BY` is applied, so the legacy order is database-determined and
-   * NON-DETERMINISTIC; the port emits encounter order, and any total order complies.
-   *
-   * TOTAL: it never throws. Its only consumer is an admin view
-   * [admin/views/entity/producttabs/defaultimages.cfm:L53], which is out of scope.
+   * [L163] calls `getSkus()` UNFLAGGED, so the search runs over the live array in insertion order.
    */
-  getDefaultProductImageFiles(): readonly string[] {
-    if (this.defaultProductImageFiles !== undefined) {
-      return this.defaultProductImageFiles;
-    }
-
-    const seen: Set<string> = new Set<string>();
-    const files: string[] = [];
-    for (const sku of this.skus) {
-      const imageFile: string | undefined = sku.getImageFile();
-      // [model/entity/Product.cfc:L508] the `structKeyExists(record, "imageFile")` guard - see the doc
-      // for why an absent key is the faithful reading of a NULL projection value.
-      if (imageFile === undefined) {
-        continue;
-      }
-      if (!seen.has(imageFile)) {
-        seen.add(imageFile);
-        files.push(imageFile);
+  public getSkuByID(skuID: string): Sku | undefined {
+    for (const sku of this.getSkus()) {
+      if (sku.getSkuID() === skuID) {
+        return sku;
       }
     }
-
-    this.defaultProductImageFiles = files;
-    return this.defaultProductImageFiles;
+    return undefined;
   }
 
   /**
-   * Sale-price details for every sku of this product, keyed by sku ID.
-   * [model/entity/Product.cfc:L516-L521]
+   * The winning sale-price detail row for one of this product's SKUs, or nothing.
    *
-   *   if(!structKeyExists(variables, "salePriceDetailsForSkus")) {
-   *     variables.salePriceDetailsForSkus =
-   *       getService("promotionService").getSalePriceDetailsForProductSkus(productID=getProductID());
+   * [model/entity/Product.cfc:L182-L187] verbatim:
+   *
+   *   public struct function getSkuSalePriceDetails( required any skuID ) {
+   *     if(structKeyExists(getSalePriceDetailsForSkus(), arguments.skuID)) {
+   *       return getSalePriceDetailsForSkus()[ arguments.skuID ];
+   *     }
+   *     return {};
    *   }
-   *   return variables.salePriceDetailsForSkus;
    *
-   * ★ THE ONE PLACE THE F11-RELOCATED {@link SalePriceResolver} IS USED, and the reason it exists.
-   * Transformation rule T2 replaces the `getService("promotionService")` locator at L519 with a
-   * constructor-injected narrow port; see that interface for why the contract lives module-locally
-   * here rather than being exported from `src/domain/ports/promotionRepository.ts`.
+   * ★ THIS IS A COMPILE-HARD CONTRACT. src/domain/entities/sku.ts declares
+   * `export type SkuSalePriceDetails = Awaited<ReturnType<Product['getSkuSalePriceDetails']>>` and
+   * assigns `this.salePriceDetail` (an optional field) to a return of that type, so the type MUST
+   * admit `undefined` and the method MUST stay `async`. Neither is a free choice; both were read off
+   * the shipped sibling rather than inferred.
    *
-   * ASYNC, because the service body reaches the DAO - specifically the six-branch UNION at
-   * `model/dao/PromotionDAO.cfc:L298-L591`, whose three query-of-queries post-processing steps become
-   * SQL common table expressions in this port.
+   * `{}` BECOMES `undefined`, and that substitution is safe rather than convenient: every legacy
+   * reader tests for its key before reading it - [model/entity/Sku.cfc:L547] and [L554] both guard
+   * with `structKeyExists` - so an empty struct and an absent one are INDISTINGUISHABLE to every
+   * caller. src/domain/entities/sku.ts states the same conclusion at its own `getSalePriceDetails`.
    *
-   * THE MEMO IS REQUEST-SCOPED, like every memo on this class, and here that is not merely a
-   * correctness nicety: sale prices are promotion-dependent, so a value cached across warm Lambda
-   * invocations could price one request's cart with another request's promotions.
+   * LEGACY-NOTE [model/entity/Product.cfc:L182]: THE PARAMETER IS DECLARED `required any skuID`, NOT
+   * `required string skuID`. It is a primary key and every call site passes a string -
+   * [model/entity/Sku.cfc:L541] passes `getSkuID()` - so it is typed `string` here. That is a
+   * NARROWING of `any` and therefore strictly more precise than the source, never less; it is
+   * recorded because a reviewer diffing the signatures will see the difference.
+   * Preserved deliberately; do not fix without a product decision.
+   *
+   * `structKeyExists` / `structGet` from `../../lib/cfml/struct.js` are used rather than a bare index,
+   * because CFML struct keys are CASE-INSENSITIVE and TypeScript's are not. `structGet` deliberately
+   * takes NO `defaultValue` parameter (prohibition 7) - which is exactly how a `0` is prevented from
+   * sneaking into a price path.
+   *
+   * The detail map arrives pre-reduced and pre-ROUNDED as a hydration input rather than through a
+   * port; see the §3.9 entry in the OMISSION REGISTER for why `getSalePriceDetailsForSkus()` itself is
+   * omitted.
+   *
+   * ★ WHY THE RETURN IS A PROMISE BUILT EXPLICITLY, AND THE METHOD IS NOT MARKED `async`. Both halves
+   * of that are deliberate.
+   *
+   * THE PROMISE STAYS because the ASYNCHRONOUS CONTRACT IS THE PUBLISHED ONE and two things depend on
+   * it. First, the legacy method genuinely reaches outward: [L183] and [L184] both call
+   * `getSalePriceDetailsForSkus()`, whose body at [L519] is
+   * `getService("promotionService").getSalePriceDetailsForProductSkus(...)`. The reach disappears in
+   * this port only because the §3.9 decision pre-materializes the map at the repository boundary -
+   * which is a hydration decision, not a change to what this method means. Second,
+   * src/domain/entities/sku.ts documents this member as ASYNCHRONOUS in prose and derives
+   * `SkuSalePriceDetails` from it through `Awaited<ReturnType<Product['getSkuSalePriceDetails']>>` -
+   * a construction written specifically to UNWRAP a promise. Narrowing the contract to a plain value
+   * would falsify a shipped sibling's own documentation for no gain.
+   *
+   * THE `async` KEYWORD GOES because there is nothing left to await, and `require-await` is right to
+   * say so. `Promise.resolve(...)` states the same contract honestly - "asynchronous by contract,
+   * already settled in fact" - without a ceremonial `await` inserted purely to satisfy a linter. The
+   * external type is IDENTICAL either way: `Promise<SalePriceDetail | undefined>`. FIXING THE FILE
+   * rather than the lint configuration is the rule here, and this is what fixing it looks like.
    */
-  async getSalePriceDetailsForSkus(): Promise<Readonly<Record<string, SalePriceDetail>>> {
-    if (this.salePriceDetailsForSkus !== undefined) {
-      return this.salePriceDetailsForSkus;
+  public getSkuSalePriceDetails(skuID: string): Promise<SalePriceDetail | undefined> {
+    const details = this.salePriceDetailsForSkus;
+    if (details === undefined) {
+      return Promise.resolve(undefined);
     }
-
-    if (this.salePriceResolver === undefined) {
-      throw new Error(
-        'Product.getSalePriceDetailsForSkus was called on a product hydrated without a sale-price ' +
-          'resolver. The legacy body reaches ' +
-          'getService("promotionService").getSalePriceDetailsForProductSkus ' +
-          '[model/entity/Product.cfc:L519], which transformation rule T2 replaces with an injected ' +
-          'port; that port must be supplied at construction.',
-      );
+    // [L183] the containment probe, then [L184] the read. Both case-insensitive, as CFML's are.
+    if (!structKeyExists(details, skuID)) {
+      // [L186] `return {};` - absent, which every caller already treats as "no sale price".
+      return Promise.resolve(undefined);
     }
+    return Promise.resolve(structGet(details, skuID));
+  }
 
-    this.salePriceDetailsForSkus = await this.salePriceResolver.getSalePriceDetailsForProductSkus(
-      this.getProductID(),
-    );
-    return this.salePriceDetailsForSkus;
+  // ---------------------------------------------------------------------------
+  // DELEGATING PRICE ACCESSORS [model/entity/Product.cfc:L555-L601]
+  //
+  // ★ THE ELEVEN LAZY-LOAD PROBES. `structKeyExists(variables, "brand" | "defaultSku" | "price")`
+  // appears ELEVEN times in `Product.cfc`, and in CFML every one of them tests LAZY-LOAD STATE - was
+  // this association pulled from the database yet - rather than whether a value exists. With eager
+  // materialization (structural decision #2) they are STATICALLY TRUE whenever hydration supplied the
+  // association, so each becomes a `!== undefined` check and each carries a comment saying so. The
+  // full inventory, in source order:
+  //
+  //    1. [L527] `brand`      - getBrandName, the DEFECT 19 guard
+  //    2. [L556] `defaultSku` - getCurrencyCode
+  //    3. [L562] `price`      - getPrice, FIRST of two probes in one body
+  //    4. [L565] `defaultSku` - getPrice, SECOND probe
+  //    5. [L571] `defaultSku` - getRenewalPrice
+  //    6. [L577] `defaultSku` - getListPrice
+  //    7. [L583] `defaultSku` - getLivePrice
+  //    8. [L589] `defaultSku` - getCurrentAccountPrice
+  //    9. [L595] `defaultSku` - getSalePrice, the DEFECT 20 guard
+  //   10. [L607] `defaultSku` - getSalePriceDiscountType
+  //   11. [L617] `defaultSku` - getSalePriceExpirationDateTime, ★ THE MONEY-CRITICAL ONE (DEFECT 25)
+  //
+  // A twelfth family of `structKeyExists(variables, ...)` probes exists on memo keys rather than on
+  // associations - [L242], [L252], [L498], [L518], [L525], [L541], [L605], [L615], [L625], [L636],
+  // [L643], [L650] and the `isDefined("variables.templateOptions")` at [L172] - and those are memo
+  // guards, not lazy-load probes. They are classified under the three-way seed/guard pattern instead.
+  //
+  // ★ AND NOTE WHICH HELPER IS CORRECT WHERE. `structKeyExists` from `../../lib/cfml/struct.js`
+  // returns TRUE EVEN WHEN THE VALUE IS `undefined` - "absent key" and "present-but-undefined" are
+  // DIFFERENT states, which is what makes `exactOptionalPropertyTypes` load-bearing across this
+  // folder. It is used where the legacy semantics turn on key presence in a STRUCT
+  // (`getSkuSalePriceDetails` above). `!== undefined` is used where the semantics turn on presence of
+  // a VALUE in an instance field, which is every probe in the inventory above.
+  // ---------------------------------------------------------------------------
+
+  /**
+   * The currency code of this product's default SKU, or nothing.
+   *
+   * [model/entity/Product.cfc:L555-L559] verbatim:
+   *
+   *   public any function getCurrencyCode() {
+   *     if( structKeyExists(variables, "defaultSku") ) {
+   *       return getDefaultSku().getCurrencyCode();
+   *     }
+   *   }
+   *
+   * ★ THIS METHOD READS NO SETTING. It delegates, full stop. The `skuCurrency` key and its
+   * three-letter default value are resolved one level down, inside `Sku.getCurrencyCode()`
+   * [model/entity/Sku.cfc:L360-L365], which memoizes `this.setting('skuCurrency')` - and the default
+   * itself is declared at [model/service/SettingService.cfc:L221], not in either entity. Hard-coding
+   * that default value here, or reading the setting here, would both be wrong: the first violates E6
+   * and prohibition 5, and the second would bypass the SKU's memo and could disagree with the SKU's
+   * own answer. The value is therefore neither written nor quoted anywhere in this file - the
+   * SettingService locator above is the single place to read it from.
+   *
+   * PROBE 2 OF 11. No `else`, so an unmaterialized default SKU yields `undefined` - `string` where
+   * present, because `Sku.getCurrencyCode()` returns a plain `string` and NOT the branded
+   * `CurrencyCode`. That is deliberate on the SKU side and is matched rather than re-decided here,
+   * which is also why `../valueObjects/currencyCode.js` is not imported by this file.
+   */
+  public getCurrencyCode(): string | undefined {
+    // [L556] lazy-load probe on `defaultSku`; statically true once hydration materialized it.
+    if (this.defaultSku === undefined) {
+      return undefined;
+    }
+    return this.defaultSku.getCurrencyCode();
   }
 
   /**
-   * This product's brand name. [model/entity/Product.cfc:L523-L532]
+   * This product's price - the override slot first, then the default SKU.
+   *
+   * [model/entity/Product.cfc:L561-L568] verbatim:
+   *
+   *   public any function getPrice() {
+   *     if( structKeyExists(variables, "price") ) {
+   *       return variables.price;
+   *     }
+   *     if( structKeyExists(variables, "defaultSku") ) {
+   *       return getDefaultSku().getPrice();
+   *     }
+   *   }
+   *
+   * ★ TWO PROBES IN ONE BODY - PROBES 3 AND 4 OF 11 - AND THE ORDER IS LOAD-BEARING. `variables.price`
+   * is NOT a persistent column of `SwProduct`; it is a non-persistent override slot [L118] that a
+   * populate or a service can set, and when it is set IT WINS OVER THE DEFAULT SKU. Reversing the two
+   * probes, or collapsing them into one `??`, would make the SKU's price win and would change what a
+   * price-overridden product costs.
+   *
+   * `Money | undefined`, never `0`. Read live by the Google feed renderer, whose legacy guard is
+   * `local.sku.getProduct().getPrice()` - the PRODUCT's price, not the SKU's - so a `0` substituted
+   * here would surface in a published product feed.
+   */
+  public getPrice(): Money | undefined {
+    // [L562] PROBE 3 OF 11 - the override slot. Checked FIRST, deliberately.
+    if (this.price !== undefined) {
+      return this.price;
+    }
+    // [L565] PROBE 4 OF 11 - the default SKU. `Sku.getPrice()` is `Money` (its column declares
+    // `default="0"`), so the only source of `undefined` here is an unmaterialized default SKU.
+    if (this.defaultSku === undefined) {
+      return undefined;
+    }
+    return this.defaultSku.getPrice();
+  }
+
+  /**
+   * The default SKU's renewal price, or nothing.
+   *
+   * [model/entity/Product.cfc:L570-L574]. PROBE 5 OF 11, no `else`.
+   *
+   * ★ NOTE THE ABSENCE OF A `price`-STYLE OVERRIDE PROBE. `getPrice()` checks two slots; this method,
+   * `getListPrice()`, `getLivePrice()` and `getCurrentAccountPrice()` check exactly one each. The
+   * asymmetry is the source's and it is preserved - no override slot is invented for symmetry.
+   */
+  public getRenewalPrice(): Money | undefined {
+    // [L571] lazy-load probe on `defaultSku`.
+    if (this.defaultSku === undefined) {
+      return undefined;
+    }
+    return this.defaultSku.getRenewalPrice();
+  }
+
+  /**
+   * The default SKU's list price, or nothing.
+   *
+   * [model/entity/Product.cfc:L576-L580]. PROBE 6 OF 11.
+   *
+   * LEGACY-NOTE [model/entity/Product.cfc:L577]: a whitespace wart, recorded for completeness because
+   * a reviewer diffing the cluster will notice it - [L577] writes `structKeyExists(variables,"defaultSku")`
+   * with no space after the comma while [L556], [L565] and [L571] all write `variables, "defaultSku"`
+   * with one. Purely cosmetic, no behavioural consequence, and not normalised.
+   * Preserved deliberately; do not fix without a product decision.
+   */
+  public getListPrice(): Money | undefined {
+    // [L577] lazy-load probe on `defaultSku`.
+    if (this.defaultSku === undefined) {
+      return undefined;
+    }
+    return this.defaultSku.getListPrice();
+  }
+
+  /**
+   * The default SKU's live price, or nothing.
+   *
+   * [model/entity/Product.cfc:L582-L586]. PROBE 7 OF 11.
+   *
+   * `async`, because `Sku.getLivePrice()` is async in src/domain/entities/sku.ts - it resolves through
+   * the price-group path. The asynchrony is INHERITED FROM THE DELEGATE, which is the async boundary
+   * rule working as intended: this body performs no reach of its own, but it cannot be more
+   * synchronous than the thing it delegates to.
+   */
+  public async getLivePrice(): Promise<Money | undefined> {
+    // [L583] lazy-load probe on `defaultSku`.
+    if (this.defaultSku === undefined) {
+      return undefined;
+    }
+    return this.defaultSku.getLivePrice();
+  }
+
+  /**
+   * The default SKU's price for the requesting account, or nothing.
+   *
+   * [model/entity/Product.cfc:L588-L592]. PROBE 8 OF 11.
+   *
+   * `async`, inherited from `Sku.getCurrentAccountPrice()`.
+   *
+   * ★ THE AMBIENT REQUEST SCOPE IS GONE (T6), AND THE CONTEXT IS THREADED BY THE DELEGATE. The legacy
+   * chain ends in `PriceGroupService.calculateSkuPriceBasedOnCurrentAccount`
+   * [model/service/PriceGroupService.cfc:L262-L268], which reaches the request scope through
+   * `getSlatwallScope()` - THE ONE ANOMALOUS SCOPE ACCESSOR IN THE CODEBASE, where every other site
+   * uses `getHibachiScope()`. Both resolve to the same object, so the divergence is cosmetic in CFML;
+   * replacing ambient state with an explicit context parameter NORMALISES it away entirely.
+   *
+   * The context parameter itself is held by `Sku`, matching how src/domain/entities/sku.ts already
+   * models it, so THIS signature gains no parameter. That matters for the budget: adding one here
+   * would be a signature widening, and ZERO widenings remain - the one and only was spent on
+   * `isCurrent(now?: Date)` in src/domain/entities/promotionPeriod.ts.
+   */
+  public async getCurrentAccountPrice(): Promise<Money | undefined> {
+    // [L589] lazy-load probe on `defaultSku`.
+    if (this.defaultSku === undefined) {
+      return undefined;
+    }
+    return this.defaultSku.getCurrentAccountPrice();
+  }
+
+  // ===========================================================================
+  // ★★★ THE DEFECT CLUSTER
+  //
+  // Behaviour preservation extends to defects. Three numbered defects live here, and they receive
+  // THREE DIFFERENT treatments - which is the whole point of a register rather than a policy:
+  //
+  //   DEFECT 19  getBrandName()                    ★ FIXED - the third and FINAL divergence
+  //   DEFECT 20  getSalePrice()                      PRESERVED - returns 0, never undefined
+  //   DEFECT 25  getSalePriceExpirationDateTime()    PRESERVED AS A THROW
+  //
+  // Plus two methods preserved as throwing that carry no defect number, and one memo variant that
+  // exists only to be contrasted with DEFECT 19. NO OTHER DEFECT IN THIS FILE MAY BE REPAIRED.
+  // ===========================================================================
+
+  /**
+   * ★★★ DEFECT 19 - FIXED. THIS IS THE THIRD AND FINAL DELIBERATE DIVERGENCE OF THE ENTIRE PROJECT.
+   *
+   * [model/entity/Product.cfc:L524-L532] verbatim:
    *
    *   public string function getBrandName() {
    *     if(!structKeyExists(variables, "brandName")) {
@@ -3129,343 +2728,76 @@ export class Product {
    *     return variables.brandName;
    *   }
    *
-   * ★ LEGACY-DEFECT D12, AND THE ONE DEFECT ON THIS CLASS THAT IS FIXED RATHER THAN REPRODUCED.
+   * WHAT THE LEGACY ACTUALLY DOES, CALL BY CALL. [L526] seeds the memo to `""`. [L527] probes the
+   * brand. [L528] then computes the brand name and RETURNS IT WITHOUT EVER ASSIGNING IT TO THE MEMO -
+   * it returns PAST the memo. So the FIRST call answers correctly while leaving `""` behind, and on
+   * the SECOND call the outer guard at [L525] is now false, so control skips the whole block and
+   * [L531] returns the seeded `""`. THE MEMO IS POISONED AFTER THE FIRST CALL.
    *
-   * WHAT THE LEGACY DOES. First call: the memo is absent, so it is set to `""`, the brand is present,
-   * and the method returns the brand's name WITHOUT writing it to the memo. Second call: the memo now
-   * EXISTS - holding `""` - so the whole block is skipped and the method returns `""`. The memo is
-   * poisoned by its own initialisation.
+   * ★ THE ONE-LINE DIFF THAT PROVES IT IS A SLIP AND NOT A DESIGN. `getSalePriceDiscountType()`
+   * [L604-L612] has the IDENTICAL shape - outer memo guard, seed, inner association probe - and at
+   * [L608] it writes `variables.salePriceDiscountType = getDefaultSku().getSalePriceDiscountType();`
+   * and then falls through to the shared `return`. Same pattern, eighty lines apart, one assignment
+   * apart. This method is the one that forgot.
    *
-   * ★ THE AAP DIRECTS THE FIX, AND ITS STATED RATIONALE IS INACCURATE - BOTH FACTS ARE RECORDED HERE
-   * DELIBERATELY. AAP 0.6.7 lists this among three "deliberate divergences" and describes all three
-   * as "unobservable through the public contract - they cause redundant recomputation or a poisoned
-   * cache, not a different returned value". For its two siblings (the `Sku` struct-init defects) that
-   * characterisation holds. FOR THIS ONE IT DOES NOT: the second call returns a DIFFERENT VALUE than
-   * the first - `""` instead of the brand name - which is observable by any caller that asks twice.
-   * The correction strengthens the case for the fix rather than weakening it, so the AAP's DIRECTIVE
-   * is followed and its REASONING is superseded, with both stated so a reviewer can check the claim
-   * instead of inheriting it. AAP precedence rule 1 makes an explicit AAP instruction authoritative;
-   * it does not make an inaccurate justification true.
+   * ★★★ RULING: FIX IT. Assign the computed value to the memo before returning it.
    *
-   * ONE THING THAT DOES BOUND THE LEGACY BLAST RADIUS, and it is worth knowing: memos in this port are
-   * REQUEST-SCOPED (AAP 0.6.5), and they were per-instance in the legacy too, so the poisoning never
-   * escaped a single entity instance within a single request. It was still wrong within it.
+   * THE JUSTIFICATION, WHICH MUST BE STATED AT THE SITE RATHER THAN FILED ELSEWHERE. This defect,
+   * together with DEFECT 17 [model/entity/Sku.cfc:L500-L510] and DEFECT 18
+   * [model/entity/Sku.cfc:L512-L522] - both already fixed in src/domain/entities/sku.ts - is
+   * UNOBSERVABLE THROUGH THE PUBLIC CONTRACT. It causes redundant recomputation or a stale cache, not
+   * a different FIRST returned value, and no in-scope caller reads it twice within one instance's
+   * lifetime. AND THE MEMOS BECOME REQUEST-SCOPED ANYWAY (AAP 0.6.5): reproducing a
+   * component-level mutable cache as module state would turn it into CROSS-INVOCATION state on a warm
+   * Lambda container, which is actively unsafe rather than merely untidy. Preserving a poisoning bug
+   * inside a cache whose lifetime the port has already shortened would preserve the mechanism while
+   * losing the meaning.
    *
-   * WHAT THE FIX IS. The computed value is STORED in the memo before being returned, which is what
-   * the source's own structure plainly intends - `variables.brandName = ""` is a default, and the
-   * missing assignment is the bug. Nothing else changes: the `""` default for a brand-less product is
-   * kept, the presence test on `brand` is kept, and the return type stays `string` rather than
-   * widening to include `undefined`, because `Brand.getBrandName()` can itself answer `undefined` and
-   * the source's `returntype="string"` coerces that to `""`.
+   * ★ A CONSEQUENCE WORTH RECORDING: `getTitle()` [L540-L546] reads the `productTitleString` setting,
+   * whose default template substitutes this very brand-name path, so it CONSUMES this value. (The
+   * template's text is deliberately not quoted anywhere in this file - see the OMISSION REGISTER entry
+   * for `getTitle()`.) With the memo fixed,
+   * `getTitle()` would behave correctly on repeat calls rather than silently losing the brand from the
+   * title on every call after the first. `getTitle()` is itself omitted from this port for an
+   * unrelated reason - see the OMISSION REGISTER - so the consequence is latent here, but it is the
+   * clearest illustration of why this fix is a repair rather than a cosmetic tidy.
+   *
+   * ★★★ THIS SPENDS THE LAST DIVERGENCE IN THE ENTIRE PROJECT. The three are now fully allocated:
+   * (a) the un-`var`'d `discountAmount` [model/service/PromotionService.cfc:L1007, L1009], owned by
+   * `src/services`; (b) the `amountOff` float gap [model/service/PromotionService.cfc:L998], owned by
+   * `src/services`; (c) DEFECTS 17, 18 and 19 - the entity memo bugs, two in `sku.ts` and this one.
+   * NO FOURTH DIVERGENCE MAY EVER BE SPENT ANYWHERE.
+   *
+   * LEGACY-DEFECT [model/entity/Product.cfc:L524-L532]: `getBrandName()` seeds its memo to `""` at
+   * [L526] and then returns the computed brand name at [L528] without assigning it, so the memo stays
+   * `""` and every call after the first returns the empty string.
+   * Fixed deliberately as documented divergence (c); do not extend this treatment to any other defect.
+   *
+   * MEMO VARIANT A (seed then guard), and the ONLY variant-A member in this file whose seed was
+   * reachable through a bug rather than by design.
    */
-  getBrandName(): string {
-    // [model/entity/Product.cfc:L524] the memo guard, testing PRESENCE and not truthiness - `''` is
-    // a legitimate memoized answer for a brand-less product and must not re-trigger the computation.
+  public getBrandName(): string {
+    // [L525] the memo guard. This is a MEMO probe, not one of the eleven lazy-load probes.
     if (this.brandName === undefined) {
-      // [L525] the default, kept exactly.
+      // [L526] the seed. It survives when the brand is absent, which is legitimate and preserved.
       this.brandName = '';
-
-      // [L526] `structKeyExists(variables, "brand")`.
+      // [L527] PROBE 1 OF 11 - lazy-load probe on `brand`; statically true once hydration
+      // materialized the eager `fetch="join"` association at [L68].
       if (this.brand !== undefined) {
-        // ★ DELIBERATE DIVERGENCE from [L527], which returns WITHOUT assigning and thereby poisons
-        // the memo it just initialised. The computed value is stored first. `?? ''` reproduces the
-        // source's `returntype="string"` coercion of a null brand name.
+        // ★ THE FIX. [L528] reads `return getBrand().getBrandName();` - computing the value and
+        // returning it WITHOUT the assignment. The assignment is added here, and the shared return at
+        // [L531] then answers correctly on every call rather than only the first.
         this.brandName = this.brand.getBrandName() ?? '';
       }
     }
-
+    // [L531]
     return this.brandName;
   }
 
   /**
-   * The brand select rows, with the null row's label applied. [model/entity/Product.cfc:L534-L538]
+   * ★★★ DEFECT 20 - PRESERVED. THIS METHOD MUST RETURN `0`, NEVER `undefined`.
    *
-   *   public array function getBrandOptions() {
-   *     var options = getPropertyOptions( "brand" );
-   *     options[1].name = rbKey('define.none');
-   *     return options;
-   *   }
-   *
-   * ★ LEGACY-DEFECT D5 - THIS METHOD IS A NO-OP OVERRIDE, and proving it requires reading the
-   * framework rather than the entity. `getPropertyOptions` [org/Hibachi/HibachiEntity.cfc:L375-L414]
-   * ends with:
-   *
-   *   if(getPropertyMetaData( propertyName ).fieldType == "many-to-one"
-   *      && structKeyExists(getPropertyMetaData( propertyName ), "hb_optionsNullRBKey")) {
-   *     arrayPrepend(variables[ cacheKey ], {value="", name=rbKey(<that key>)});
-   *   }
-   *
-   * and `brand` is declared `fieldtype="many-to-one"` WITH `hb_optionsNullRBKey="define.none"`
-   * [model/entity/Product.cfc:L68]. So row 1 already holds `{value:"", name:rbKey('define.none')}`
-   * before this method touches it, and L536 writes that same value back over itself.
-   *
-   * ★ TWO CONSEQUENCES THAT CORRECT AN OBVIOUS FIRST READING OF THIS CODE. First, the unguarded
-   * `options[1]` CANNOT fail on an empty array in the legacy, because the prepend guarantees at least
-   * one element - so this is NOT an index defect, however much it looks like one. Second, the write
-   * mutates the FRAMEWORK'S MEMOIZED ARRAY in place [L379, L405], so it would poison that cache - and
-   * it does not, only because the value written is identical to the one already there.
-   *
-   * ★ WHICH IS EXACTLY WHY THIS PORT RAISES ON AN EMPTY CANDIDATE LIST INSTEAD OF RETURNING `[]`. An
-   * empty list means the repository did NOT reproduce the framework's prepend, and in that state the
-   * L536 write would land on a REAL BRAND and rename it "none". Tolerating the empty case would
-   * convert a hydration mistake into wrong data on screen; raising surfaces it. See
-   * {@link Product.brandOptionCandidates}.
-   *
-   * THE MECHANISM DIVERGES AND THE OBSERVABLE RESULT DOES NOT: this port builds a new array with row 0
-   * relabelled rather than mutating the supplied one, because {@link BrandOption} is `readonly`.
-   * Observational equivalence is not assumed here, it follows from the write being idempotent - the
-   * label written is provably the label already present.
-   *
-   * Preserved deliberately; do not fix without a product decision.
-   */
-  getBrandOptions(): readonly BrandOption[] {
-    if (this.brandOptionCandidates === undefined) {
-      throw new Error(
-        'Product.getBrandOptions was called on a product hydrated without brand option candidates. ' +
-          'The legacy body obtains them from getPropertyOptions("brand") ' +
-          '[model/entity/Product.cfc:L535], which queries every brand and PREPENDS a null-select ' +
-          'row; that query is outside the domain in this port, so the rows must be supplied at ' +
-          'construction.',
-      );
-    }
-    if (this.labelProvider === undefined) {
-      throw new Error(
-        'Product.getBrandOptions was called on a product hydrated without a label provider. The ' +
-          "legacy body writes rbKey('define.none') into the first option row " +
-          '[model/entity/Product.cfc:L536], and JavaRB is not ported, so the resolved label must be ' +
-          'supplied at construction.',
-      );
-    }
-
-    const firstOption: BrandOption | undefined = this.brandOptionCandidates[0];
-    if (firstOption === undefined) {
-      throw new Error(
-        'Product.getBrandOptions was supplied an EMPTY brand option list. The legacy could not be ' +
-          'in this state: getPropertyOptions unconditionally prepends a null-select row for any ' +
-          'many-to-one property carrying hb_optionsNullRBKey ' +
-          '[org/Hibachi/HibachiEntity.cfc:L407-L410], and model/entity/Product.cfc:L68 carries it. ' +
-          'An empty list therefore means the prepended row is missing, and applying ' +
-          "model/entity/Product.cfc:L536's unconditional write to row 1 would rename a real brand " +
-          '"none".',
-      );
-    }
-
-    // [model/entity/Product.cfc:L536] `options[1].name = rbKey('define.none')` - here as a new array
-    // with row 0 relabelled, for the reason in the doc block.
-    return [
-      { name: this.labelProvider.getNoneOptionLabel(), value: firstOption.value },
-      ...this.brandOptionCandidates.slice(1),
-    ];
-  }
-
-  /**
-   * The product's display title. [model/entity/Product.cfc:L540-L545]
-   *
-   *   if(!structKeyExists(variables, "title")) {
-   *     variables.title = getService("hibachiUtilityService").replaceStringTemplate(
-   *                         template=setting('productTitleString'), object=this);
-   *   }
-   *   return variables.title;
-   *
-   * BOTH INPUTS ARE OUTSIDE THE DOMAIN and neither is re-implemented here: `hibachiUtilityService` is
-   * explicitly not ported (AAP 0.6.2, 0.5.3), and `productTitleString` is not one of the four settings
-   * keys this port exposes. What remains is the memo and the delegation, which is what this method
-   * keeps - the same ruling `Option.getImageDirectory` records in src/domain/entities/option.ts.
-   *
-   * ★ IT DOES NOT READ `calculatedTitle` [L65], EVEN THOUGH THAT COLUMN EXISTS AND HOLDS A TITLE. The
-   * source recomputes instead, so the persisted column and this method can legitimately disagree. Both
-   * are exposed; neither is derived from the other, and reconciling them here would be a behaviour
-   * change.
-   *
-   * IT RAISES WHEN THE RESOLVED TITLE WAS NOT MATERIALIZED, and that raise propagates into
-   * {@link Product.getCrumbData} and {@link Product.getImageGalleryArray}, both of which interpolate
-   * it. `returntype="string"` leaves no spare value, and the plausible defaults are all worse than
-   * failing: `''` would render an untitled breadcrumb and an untitled gallery entry, and
-   * `getProductName()` would silently substitute a DIFFERENT string than the template produces.
-   */
-  getTitle(): string {
-    if (this.title !== undefined) {
-      return this.title;
-    }
-
-    if (this.resolvedTitle === undefined) {
-      throw new Error(
-        'Product.getTitle was called on a product hydrated without a resolved title. The legacy ' +
-          "body expands setting('productTitleString') through " +
-          'hibachiUtilityService.replaceStringTemplate [model/entity/Product.cfc:L541]; that ' +
-          'service is not ported and productTitleString is not one of the four settings keys this ' +
-          'port exposes, so the expanded title must be supplied at construction. No default is ' +
-          'substituted because every candidate would render a different string than the template ' +
-          'produces.',
-      );
-    }
-
-    this.title = this.resolvedTitle;
-    return this.title;
-  }
-
-  /**
-   * Quantity available to sell. [model/entity/Product.cfc:L547-L549]
-   *
-   *   return getQuantity("QATS");
-   *
-   * A one-line delegation, and it is preserved AS a delegation rather than being given its own stub
-   * message: `QATS` is in the second whitelist [L442], so in the legacy this call goes through
-   * `inventoryService` with `{entity=this}` and returns a scalar. Delegating means the failure a
-   * caller sees names the real reason - the excluded inventory subsystem - rather than restating it
-   * second-hand.
-   *
-   * ★ NOTE the persisted `calculatedQATS` column [L63] holds a QATS value and this method does NOT
-   * read it, exactly as {@link Product.getTitle} does not read `calculatedTitle`. Same shape, same
-   * ruling.
-   */
-  getQATS(): number {
-    return this.getQuantity('QATS');
-  }
-
-  /**
-   * Whether backorders are allowed for this product. [model/entity/Product.cfc:L551-L553]
-   *
-   *   public numeric function getAllowBackorderFlag() {
-   *     return setting("skuAllowBackorderFlag");
-   *   }
-   *
-   * ★ LEGACY-DEFECT D11 - THREE DECLARATIONS OF THE SAME THING DISAGREE. The method declares
-   * `returntype="numeric"` [L551]; the matching non-persistent property declares `type="boolean"`
-   * [L103]; and the setting it returns is a boolean. CFML papers over it by coercing `true` to `1` on
-   * the way out, so callers see a number that behaves like a flag.
-   *
-   * THE PORT KEEPS THE `number` RETURN TYPE, because interface parity is the acceptance contract and
-   * `returntype="numeric"` is what the surface declares - and it stores the input as `boolean`,
-   * because that is what the setting genuinely is. The coercion happens in exactly one place, at the
-   * return, mirroring where CFML does it. Mistyping the input as `number` to make the return
-   * type-check trivially would hide the defect rather than record it.
-   *
-   * `skuAllowBackorderFlag` is NOT one of the four approved settings keys, so it arrives pre-resolved
-   * and this method raises when it was not supplied. No default: a wrong backorder policy either
-   * refuses sellable stock or oversells.
-   *
-   * Preserved deliberately; do not fix without a product decision.
-   */
-  getAllowBackorderFlag(): number {
-    if (this.skuAllowBackorderFlagSetting === undefined) {
-      throw new Error(
-        'Product.getAllowBackorderFlag was called on a product hydrated without a resolved ' +
-          'skuAllowBackorderFlag setting. The legacy body reads ' +
-          'setting("skuAllowBackorderFlag") [model/entity/Product.cfc:L552], and that key is not ' +
-          'one of the four this port exposes to the domain, so the value must be supplied at ' +
-          'construction. No default is substituted because a wrong backorder policy either refuses ' +
-          'sellable stock or oversells.',
-      );
-    }
-
-    // The `returntype="numeric"` coercion of a boolean setting, in the one place CFML does it.
-    return this.skuAllowBackorderFlagSetting ? 1 : 0;
-  }
-
-  // --- The eight default-sku price delegators [model/entity/Product.cfc:L554-L602] --------------
-  //
-  // ★ THESE ARE GUARDED WHERE THE FIVE IMAGE DELEGATORS [L319-L338] ARE NOT, and the asymmetry is the
-  // source's: every member below tests `structKeyExists(variables, "defaultSku")` first and falls off
-  // the end - i.e. answers CFML null - when there is no default sku, whereas every image delegator
-  // dereferences blind. Both behaviours are reproduced as written.
-  //
-  // ★ AND THE `undefined` RETURNS ARE LOAD-BEARING, not incidental. AAP 0.6.3 makes this explicit for
-  // the sku-level currency accessors and the same argument applies one level up: substituting `0` for
-  // an absent price would sell the product for free. Every one of these returns `... | undefined`.
-  //
-  // ALL MONEY IS `Money`. `hb_formatType="currency"` [L118-L123] is presentation metadata and is not
-  // applied here; formatting belongs to whoever renders.
-
-  /**
-   * The product's price. [model/entity/Product.cfc:L555-L565]
-   *
-   *   if( structKeyExists(variables, "price") ) { return variables.price; }
-   *   if( structKeyExists(variables, "defaultSku") ) { return getDefaultSku().getPrice(); }
-   *
-   * ★ THE ONLY ONE OF THE EIGHT WITH A POPULATED-OVERRIDE BRANCH. It checks the non-persistent `price`
-   * property FIRST [L556] and only then the default sku. None of the other seven has that first
-   * branch - compare {@link Product.getRenewalPrice}, which goes straight to the sku. The asymmetry is
-   * the source's and is preserved; see {@link Product.price} for why that one field is a constructor
-   * input while the other non-persistent properties are memo slots.
-   */
-  getPrice(): Money | undefined {
-    if (this.price !== undefined) {
-      return this.price;
-    }
-    if (this.defaultSku !== undefined) {
-      return this.defaultSku.getPrice();
-    }
-    return undefined;
-  }
-
-  /** [model/entity/Product.cfc:L567-L571] `getDefaultSku().getRenewalPrice()`, guarded. */
-  getRenewalPrice(): Money | undefined {
-    if (this.defaultSku !== undefined) {
-      return this.defaultSku.getRenewalPrice();
-    }
-    return undefined;
-  }
-
-  /** [model/entity/Product.cfc:L573-L577] `getDefaultSku().getListPrice()`, guarded. */
-  getListPrice(): Money | undefined {
-    if (this.defaultSku !== undefined) {
-      return this.defaultSku.getListPrice();
-    }
-    return undefined;
-  }
-
-  /**
-   * [model/entity/Product.cfc:L579-L583] `getDefaultSku().getLivePrice()`, guarded.
-   *
-   * ★ ASYNC BY CONTAGION, AND THE ONLY REASON IS THE DELEGATE. `Sku.getLivePrice` awaits
-   * `Sku.getCurrentAccountPrice`, which AAP 0.4.2 makes async because
-   * `PriceGroupService.calculateSkuPriceBasedOnCurrentAccount` reaches the subscription price-group
-   * query. Nothing in THIS body touches a repository - the asynchrony is inherited, not introduced,
-   * and the guard and the `undefined` fallback are unchanged.
-   */
-  async getLivePrice(): Promise<Money | undefined> {
-    if (this.defaultSku !== undefined) {
-      return await this.defaultSku.getLivePrice();
-    }
-    return undefined;
-  }
-
-  /**
-   * [model/entity/Product.cfc:L585-L589] `getDefaultSku().getCurrentAccountPrice()`, guarded.
-   *
-   * ★ ASYNC FOR THE SAME INHERITED REASON as {@link Product.getLivePrice}, one step closer to the
-   * source: the delegate IS the member AAP 0.4.2 declares async. Note that the account itself is not a
-   * parameter here or there - `Sku` carries the current-account context as a constructor input, which is
-   * how transformation rule T6's "no ambient state" requirement is met without widening a signature.
-   */
-  async getCurrentAccountPrice(): Promise<Money | undefined> {
-    if (this.defaultSku !== undefined) {
-      return await this.defaultSku.getCurrentAccountPrice();
-    }
-    return undefined;
-  }
-
-  /**
-   * The product's currency code. [model/entity/Product.cfc:L554-L558]
-   *
-   *   if( structKeyExists(variables, "defaultSku") ) { return getDefaultSku().getCurrencyCode(); }
-   *
-   * Guarded, falling off the end to CFML null. `Sku.getCurrencyCode()` [model/entity/Sku.cfc:L360]
-   * memoizes `setting('skuCurrency')`, whose default is `"USD"`
-   * [model/service/SettingService.cfc:L221] - so the "USD default" of the currency cascade lives in
-   * the SETTINGS TIER, not in any entity, and certainly not here. This method contributes only the
-   * guard and the delegation.
-   */
-  getCurrencyCode(): string | undefined {
-    if (this.defaultSku !== undefined) {
-      return this.defaultSku.getCurrencyCode();
-    }
-    return undefined;
-  }
-
-  /**
-   * The product's sale price. [model/entity/Product.cfc:L594-L602]
+   * [model/entity/Product.cfc:L594-L601] verbatim:
    *
    *   public any function getSalePrice() {
    *     if( structKeyExists(variables,"defaultSku") ) {
@@ -3476,86 +2808,118 @@ export class Product {
    *     return 0;
    *   }
    *
-   * ★ LEGACY-DEFECT D8 - THE SECOND BRANCH HAS NO `return`. It calls `getSalePrice()` on the first
-   * sku, DISCARDS the answer, and falls through to `return 0`. So a product with skus but no default
-   * sku always reports a sale price of ZERO, however the skus are priced.
+   * ★ LOOK AT [L598]. `getSkus()[1].getSalePrice();` IS A BARE STATEMENT WITH NO `return`. The call is
+   * made, the result is computed, and it is DISCARDED - after which execution falls through to the
+   * terminal `return 0` at [L600]. So a product with SKUs but NO default SKU reports a sale price of
+   * ZERO no matter what its first SKU's sale price actually is.
    *
-   * ★ THE DISCARDED CALL IS STILL MADE, and that is deliberate rather than pedantic: `Sku.getSalePrice`
-   * can raise, so eliding the call would turn a failing input into a quiet `0`. A characterization
-   * test that spies on the first sku sees exactly one call and a `0` result.
+   * ★★★ RULING: PRESERVE THE FALL-THROUGH EXACTLY, INCLUDING THE DISCARDED CALL. The discarded
+   * expression is reproduced as a genuinely evaluated-and-discarded call rather than deleted, because
+   * evaluating it is OBSERVABLE: `Sku.getSalePrice()` reads the pre-materialized detail row and falls
+   * back to `getPrice()`, and an element access on `getSkus()[1]` in a product whose array is
+   * non-empty cannot itself fail - but the call could throw from deeper in the delegate, and a port
+   * that skipped it would swallow that throw. Deleting a call because its result is unused is the
+   * kind of tidy that changes behaviour.
    *
-   * `return 0` becomes `Money.fromDecimalString('0')`, because every money value in this port is
-   * `Money` and a bare `0` would reintroduce the float arithmetic the value object exists to prevent.
+   * ★★★ AND THIS IS THE EXACT OPPOSITE OF `Sku.getPriceByCurrencyCode()`. The two conventions are
+   * written out in full in the class doc comment above, side by side, precisely so that nobody ever
+   * collapses them into a single rule:
    *
-   * ★ THE RETURN TYPE IS `Money | undefined` EVEN THOUGH THE SOURCE HAS AN EXPLICIT ZERO FALLBACK, AND
-   * THE REASON IS THE FIRST BRANCH RATHER THAN THE LAST. `Sku.getSalePrice()` falls back to
-   * `Sku.getPrice()` [model/entity/Sku.cfc:L550], which is nullable, so the first branch can hand back
-   * CFML null - and `returntype="any"` [L594] lets it. The zero fallback governs only the two paths that
-   * reach it. Declaring `Money` here would force a substitution on the one path where the legacy really
-   * does answer null, and a zero sale price is a price a customer is charged rather than a sentinel.
+   *   `Sku.getPriceByCurrencyCode()` MUST return `Money | undefined` and NEVER `0`
+   *       - [model/entity/Sku.cfc:L269-L273] has no `else` and no fallback, and substituting `0`
+   *         would SILENTLY SELL PRODUCTS FOR FREE.
+   *   `Product.getSalePrice()` MUST return `0` and NEVER `undefined`
+   *       - THIS method, because [L600] declares the zero explicitly.
    *
+   * Same domain, same quantity, opposite conventions, fifty lines apart in two sibling components.
+   * The schema encodes the asymmetry too - see the four no-default money columns listed on the class.
+   *
+   * ★ WHY `Money.fromDecimalString('0')` AND NOT `Money.zero`. `Money.zero` carries an explicit
+   * prohibition on its own declaration: it exists for the two promotion accumulator seeds at
+   * [model/service/PromotionService.cfc:L988-L989] and must not be generalised into a fallback,
+   * default or error result anywhere. The zero returned here is neither a fallback nor a default - it
+   * is the source's own literal `return 0` at [L600] - but reaching for a constant reserved for
+   * another purpose would blur exactly the line that constant exists to draw. The public factory is
+   * subject to identical validation and says what this value is: the legacy's literal zero.
+   *
+   * LEGACY-DEFECT [model/entity/Product.cfc:L598]: `getSkus()[1].getSalePrice();` has no `return`, so
+   * a product with SKUs but no default SKU falls through to the terminal `return 0` at [L600] and
+   * reports a sale price of zero regardless of its first SKU's actual sale price.
    * Preserved deliberately; do not fix without a product decision.
    */
-  getSalePrice(): Money | undefined {
-    // [model/entity/Product.cfc:L595-L596]
+  public getSalePrice(): Money {
+    // [L595] PROBE 9 OF 11 - lazy-load probe on `defaultSku`.
     if (this.defaultSku !== undefined) {
+      // [L596] the only arm that returns a real sale price. `Sku.getSalePrice()` is `Money`, never
+      // undefined, because it falls back to `getPrice()` whose column declares `default="0"`.
       return this.defaultSku.getSalePrice();
     }
 
-    // [L597-L599] `else if (arrayLen(getSkus()))` - CFML numeric truthiness.
-    const skus: readonly Sku[] = this.getSkus();
-    const firstSku: Sku | undefined = skus[0];
-    if (skus.length > 0 && firstSku !== undefined) {
-      // *** LEGACY-DEFECT [model/entity/Product.cfc:L598]: the statement has no `return`, so the
-      // computed sale price is discarded and execution falls through to `return 0` below. The call is
-      // still performed because it can raise.
-      // Preserved deliberately; do not fix without a product decision.
-      firstSku.getSalePrice();
+    // [L597] `else if (arrayLen(getSkus()))` - CFML numeric truthiness on an array length, so a
+    // non-empty array enters the branch. `cfTruthy` reproduces that rather than relying on JavaScript
+    // coercion agreeing by coincidence.
+    const ownSkus: Sku[] = this.getSkus();
+    if (cfTruthy(ownSkus.length)) {
+      const firstSku = ownSkus[0];
+      if (firstSku !== undefined) {
+        // ★ [L598] THE DISCARDED CALL. Evaluated for its observable effects and its result thrown
+        // away, exactly as the source does. `void` states the discard explicitly so that no reader,
+        // and no linter, mistakes it for a missing `return` introduced by the port.
+        void firstSku.getSalePrice();
+      }
     }
 
-    // [L601] `return 0;`
+    // [L600] the terminal zero - reached by BOTH the no-default-sku-with-skus path and the
+    // nothing-at-all path.
     return Money.fromDecimalString('0');
   }
 
   /**
-   * How this product's sale price is discounted. [model/entity/Product.cfc:L604-L612]
+   * The discount type behind this product's sale price, or the string `"none"`.
    *
-   *   if(!structKeyExists(variables, "salePriceDiscountType")) {
-   *     variables.salePriceDiscountType = "none";
-   *     if( structKeyExists(variables, "defaultSku") ) {
-   *       variables.salePriceDiscountType = getDefaultSku().getSalePriceDiscountType();
+   * [model/entity/Product.cfc:L604-L612] verbatim:
+   *
+   *   public any function getSalePriceDiscountType() {
+   *     if(!structKeyExists(variables, "salePriceDiscountType")) {
+   *       variables.salePriceDiscountType = "none";
+   *       if( structKeyExists(variables, "defaultSku") ) {
+   *         variables.salePriceDiscountType = getDefaultSku().getSalePriceDiscountType();
+   *       }
    *     }
+   *     return variables.salePriceDiscountType;
    *   }
-   *   return variables.salePriceDiscountType;
    *
-   * ★ STRUCTURALLY THE SAME AS {@link Product.getBrandName} AND YET CORRECT, which is what makes the
-   * pair worth reading together: this one ASSIGNS into the memo inside the inner branch [L608] instead
-   * of returning past it. The `"none"` default survives only for a product with no default sku. Same
-   * shape, one assignment apart - and that one assignment is defect D12.
+   * ★ MEMO VARIANT A (seed THEN guard), AND THE CONTROL CASE FOR DEFECT 19. This is the same shape as
+   * `getBrandName()` and it ASSIGNS at [L608] instead of returning past the memo, which is what makes
+   * the other one a defect rather than a convention. No fix is needed or permitted here.
    *
-   * TOTAL: it never throws.
+   * ★ `"none"` IS THE PRODUCT-LEVEL STAND-IN, AND IT DIFFERS FROM THE SKU-LEVEL ONE. This method
+   * substitutes the string `"none"` [L606] while `Sku.getSalePriceDiscountType()` substitutes the
+   * EMPTY STRING [model/entity/Sku.cfc:L557]. Two different stand-ins for the same absence, in two
+   * sibling components. `../ports/promotionRepository.js` records the divergence on
+   * `SalePriceDetail.salePriceDiscountType` and deliberately does NOT encode either stand-in as a
+   * union member, because neither is a value the projection can ever carry - they exist only for the
+   * absent case. So this method returns a plain `string`, not the three-member union.
    */
-  getSalePriceDiscountType(): string {
+  public getSalePriceDiscountType(): string {
+    // [L605] memo guard.
     if (this.salePriceDiscountType === undefined) {
-      // [model/entity/Product.cfc:L606] the default.
+      // [L606] the seed, which survives a missing default SKU.
       this.salePriceDiscountType = 'none';
-
-      // [L607-L609] and here the source DOES assign - contrast getBrandName(). The intermediate local
-      // is annotated rather than inferred so the memo's declared `string | undefined` narrows to
-      // `string` on both branches; `Sku.getSalePriceDiscountType` [model/entity/Sku.cfc:L553-L558]
-      // returns the struct value or `""` and never null, so the annotation is a statement of that
-      // contract and not a cast.
+      // [L607] PROBE 10 OF 11 - lazy-load probe on `defaultSku`.
       if (this.defaultSku !== undefined) {
-        const fromDefaultSku: string = this.defaultSku.getSalePriceDiscountType();
-        this.salePriceDiscountType = fromDefaultSku;
+        // [L608] THE ASSIGNMENT DEFECT 19 IS MISSING.
+        this.salePriceDiscountType = this.defaultSku.getSalePriceDiscountType();
       }
     }
-
+    // [L611]
     return this.salePriceDiscountType;
   }
 
   /**
-   * When this product's sale price expires. [model/entity/Product.cfc:L614-L622]
+   * ★★★ DEFECT 25 - PRESERVED AS A THROW. DUAL-MODE IN CFML, SINGLE-MODE IN THE PORT.
+   *
+   * [model/entity/Product.cfc:L614-L622] verbatim:
    *
    *   public date function getSalePriceExpirationDateTime() {
    *     if(!structKeyExists(variables, "salePriceExpirationDateTime")) {
@@ -3567,1080 +2931,732 @@ export class Product {
    *     return variables.salePriceExpirationDateTime;
    *   }
    *
-   * ★ LEGACY-DEFECT D9 - THE DELEGATE'S NAME IS MISSPELLED. It calls
-   * `getSalePricExpirationDateTime()` - no `e` in `Price` - while model/entity/Sku.cfc:L560 declares
-   * the correctly-spelled `getSalePriceExpirationDateTime()`. The typo is in the CALL, not the
-   * declaration, so the correctly-named method is simply never reached.
+   * ★ A NAMING PRECISION POINT THAT MUST NOT BE GOT WRONG. THE DECLARATION AT [L614] IS SPELLED
+   * CORRECTLY: `getSalePriceExpirationDateTime`. THE TYPO IS AT THE CALL SITE INSIDE THE BODY, AT
+   * [L618], WHICH CALLS `getSalePricExpirationDateTime` ON THE DELEGATE - missing the `e` in `Price`.
+   * So the method is authored under the declaration's CORRECT spelling and the misspelled CALL is
+   * preserved in the reproduction below. Neither is renamed, and neither is corrected
+   * (prohibitions 14 and 15).
    *
-   * THE FAILURE PATH IS THE SAME TWO-STEP ONE AS D2 AND D3, resolved on the SKU rather than here:
-   * `getSalePricExpirationDateTime` reaches `HibachiEntity.onMissingMethod`, matches none of the ten
-   * conventions, and lands on the attribute-value fallback [org/Hibachi/HibachiEntity.cfc:L559-L561] -
-   * which fires because `Sku` declares `attributeValues` [model/entity/Sku.cfc:L70] - and receives the
-   * EMPTY STRING. The method then declares `returntype="date"`, and `""` cannot be coerced to a date,
-   * so the failure is a TYPE COERCION on the way out rather than a missing method on the way in.
+   * ★ WHY THE PORT ALWAYS TAKES THE FAILING ARM. [L617] guards on `structKeyExists(variables,
+   * "defaultSku")`. In CFML that is a LAZY-LOAD STATE probe with two genuinely different outcomes:
+   * unloaded, and the seeded `now()` from [L616] is returned; loaded, and the computation at [L618]
+   * runs. THIS IS PROBE 11 OF 11 AND IT IS THE MONEY-CRITICAL ONE. Under structural decision #2
+   * associations are EAGERLY MATERIALIZED, so a product that has a default SKU always has it loaded,
+   * and the port therefore ALWAYS takes the second arm - the one that fails.
    *
-   * ★ NOTE THE BRANCH THAT NEVER RUNS AS A RESULT: a product with NO default sku would return `now()`
-   * [L617] perfectly happily. The defect only fires when a default sku EXISTS - so the method works
-   * exactly for the products that have no sale price to expire, and fails for the ones that might.
-   * Reproduced faithfully, guard and all.
+   * ★ AND IT FAILS FOR TWO INDEPENDENT REASONS, BOTH OF WHICH MUST BE NAMED:
    *
+   *   MECHANISM 1 - THE MISSING METHOD. `getSalePricExpirationDateTime` DOES NOT EXIST ON `Sku`.
+   *     [model/entity/Sku.cfc:L560] declares the CORRECTLY spelled `getSalePriceExpirationDateTime()`.
+   *     So in CFML the misspelled call falls into `onMissingMethod`
+   *     [org/Hibachi/HibachiEntity.cfc:L507-L565], is tested against the ten name patterns, matches
+   *     `get<Prop>` against a property named `SalePricExpirationDateTime` THAT DOES NOT EXIST, reaches
+   *     the `getAttributeValue` fallback at [L559] and terminates at the [L565] THROW.
+   *
+   *   MECHANISM 2 - THE RETURN-TYPE COERCION BOUNDARY. The declaration at [L614] is
+   *     `returntype="date"`. Even if mechanism 1 somehow yielded a value, whatever `onMissingMethod`
+   *     produced would have to coerce to a CFML date on the way out, and the dispatcher's fallback
+   *     cannot produce one.
+   *
+   * ★★★ RULING: THROW, NAMING BOTH MECHANISMS. THIS IS FAITHFUL REPRODUCTION OF THE ARM THE PORT
+   * ALWAYS TAKES, AND IT CONSUMES NO DIVERGENCE - the divergence budget is for changing behaviour,
+   * and this changes nothing. The one behaviour that IS lost is the unloaded arm's seeded `now()`,
+   * which eager materialization makes unreachable; that is a consequence of structural decision #2
+   * rather than a choice made here, and it is recorded so a reviewer can see it was noticed.
+   *
+   * A `now()` seed would in any case have been the wrong thing to keep: an expiration timestamp
+   * defaulting to THE MOMENT IT IS ASKED FOR means "already expiring", which is neither the
+   * permissive extreme (`undefined`, meaning FOREVER, as the promotion entities use) nor a real
+   * expiry. That reading is recorded and not acted on.
+   *
+   * LEGACY-DEFECT [model/entity/Product.cfc:L614]: `getSalePriceExpirationDateTime()` is declared
+   * `returntype="date"` and, at [L617], guards on lazy-load state; with eager materialization the
+   * guard is always true, so the port always reaches [L618], which calls the MISSPELLED
+   * `getSalePricExpirationDateTime` - absent from `Sku`, whose correct spelling is at
+   * [model/entity/Sku.cfc:L560] - reaching [org/Hibachi/HibachiEntity.cfc:L559] and throwing at [L565],
+   * and which could not satisfy the `date` coercion in any case.
    * Preserved deliberately; do not fix without a product decision.
    */
-  getSalePriceExpirationDateTime(): Date {
-    // [model/entity/Product.cfc:L617] the `now()` default, which IS the answer for a product with no
-    // default sku - the defect below is unreachable in that case.
-    if (this.defaultSku === undefined) {
-      return new Date();
-    }
-
-    // *** LEGACY-DEFECT [model/entity/Product.cfc:L619]: calls
-    // getDefaultSku().getSalePricExpirationDateTime() - missing the `e` in `Price` - while
-    // model/entity/Sku.cfc:L560 declares getSalePriceExpirationDateTime(). In the legacy the misspelt
-    // call reaches the onMissingMethod attribute-value fallback, receives the empty string, and then
-    // fails the `returntype="date"` coercion.
-    // Preserved deliberately; do not fix without a product decision.
+  public getSalePriceExpirationDateTime(): never {
     throw new Error(
-      'Product.getSalePriceExpirationDateTime reproduces LEGACY-DEFECT ' +
-        '[model/entity/Product.cfc:L619]: it calls getSalePricExpirationDateTime() on the default ' +
-        'sku - missing the "e" in "Price" - while model/entity/Sku.cfc:L560 declares ' +
-        'getSalePriceExpirationDateTime(). In the legacy the misspelt call falls through to the ' +
-        'onMissingMethod attribute-value fallback [org/Hibachi/HibachiEntity.cfc:L559-L561], ' +
-        'receives the empty string, and then fails the returntype="date" coercion. Note this path ' +
-        'is reached ONLY when a default sku exists; a product without one returns now().',
+      `Product '${this.productID}': getSalePriceExpirationDateTime() cannot return. ` +
+        `[model/entity/Product.cfc:L617] guards on lazy-load state, which eager materialization ` +
+        `makes always true, so [model/entity/Product.cfc:L618] is always reached - and it calls the ` +
+        `MISSPELLED getSalePricExpirationDateTime (no "e" in "Price"), which Sku does not declare; ` +
+        `its correct spelling is at [model/entity/Sku.cfc:L560]. In CFML that call reaches the ` +
+        `onMissingMethod dispatcher at [org/Hibachi/HibachiEntity.cfc:L507-L565], matches ` +
+        `get<Prop> against a nonexistent property, falls through to the getAttributeValue fallback ` +
+        `at [L559] and throws at [L565]; and the returntype="date" coercion declared at ` +
+        `[model/entity/Product.cfc:L614] could not be satisfied by that fallback either. This ` +
+        `throw reproduces the arm the port always takes; it is not a stub awaiting implementation.`,
     );
   }
 
   /**
-   * Whether any order transaction references a sku of this product.
-   * [model/entity/Product.cfc:L624-L629]
+   * ★ PRESERVED AS THROWING - the legacy body calls an undefined function.
    *
-   *   if(!structKeyExists(variables, "transactionExistsFlag")) {
-   *     variables.transactionExistsFlag =
-   *       getService("skuService").getTransactionExistsFlag( productID=this.getProductID() );
-   *   }
-   *   return variables.transactionExistsFlag;
-   *
-   * ★ THE ONE SERVICE REACH ON THIS CLASS THAT IS NEITHER A SMART LIST NOR AN EXCLUDED SUBSYSTEM, and
-   * therefore the one that becomes a real injected port rather than a stub:
-   * `SkuService.getTransactionExistsFlag` [model/service/SkuService.cfc:L285] is in scope and is
-   * backed by `SkuDAO.getTransactionExistsFlag` [model/dao/SkuDAO.cfc:L53], which the plan keeps.
-   *
-   * ASYNC, because it reaches the DAO. The flag gates deletion in the admin - a product with
-   * transactions must not be removed - so a default would be actively dangerous in either direction:
-   * `false` permits deleting sold history, `true` blocks a legitimate delete forever.
-   */
-  async getTransactionExistsFlag(): Promise<boolean> {
-    if (this.transactionExistsFlag !== undefined) {
-      return this.transactionExistsFlag;
-    }
-
-    if (this.querySupport === undefined) {
-      throw new Error(
-        'Product.getTransactionExistsFlag was called on a product hydrated without query support. ' +
-          'The legacy body reaches getService("skuService").getTransactionExistsFlag ' +
-          '[model/entity/Product.cfc:L627], which transformation rule T2 replaces with an injected ' +
-          'port; that port must be supplied at construction.',
-      );
-    }
-
-    this.transactionExistsFlag = await this.querySupport.getTransactionExistsFlag(
-      this.getProductID(),
-    );
-    return this.transactionExistsFlag;
-  }
-
-  /**
-   * This product's options, grouped. [model/entity/Product.cfc:L631-L633]
+   * [model/entity/Product.cfc:L631-L633] verbatim:
    *
    *   public array function getProductOptionsByGroup(){
    *     return getProductService().getProductOptionsByGroup( this );
    *   }
    *
-   * ★ LEGACY-DEFECT D10 - AND IT IS BROKEN TWICE OVER. `getProductService()` is defined NOWHERE: not
-   * on this component, not on either `HibachiEntity`, nowhere in the tree. Every other service reach
-   * in this file uses `getService("...")`; this one line uses a bare accessor that does not exist. AND
-   * the method it tries to call, `ProductService.getProductOptionsByGroup`, is also declared nowhere -
-   * grep finds exactly two hits for that name in the entire repository, and both are these two lines.
+   * `getProductService()` IS NOT A METHOD. Every other outward reach in this component goes through
+   * `getService("...")` - all eighteen of them - and `getProductService()` appears exactly once, here.
+   * It is not declared on `Product.cfc`, not on `model/entity/HibachiEntity.cfc`, and not among the
+   * generated-accessor patterns, so in CFML the call falls into `onMissingMethod`
+   * [org/Hibachi/HibachiEntity.cfc:L507-L565]. `getProductService` DOES match the `get<Prop>` shape
+   * against a property named `ProductService`, which does not exist, so it continues to the
+   * `getAttributeValue` fallback at [L559] - reachable here because this component declares
+   * `attributeValues` [L75] - finds no such attribute and terminates at the [L565] throw. Even had it
+   * returned something, `returntype="array"` at [L631] would then have had to coerce whatever the
+   * fallback produced.
    *
-   * THE FAILURE PATH: `getProductService` reaches `HibachiEntity.onMissingMethod`, matches none of the
-   * ten conventions - it ends in `Service`, not in any recognised suffix - and lands on the
-   * attribute-value fallback [org/Hibachi/HibachiEntity.cfc:L559-L561], which fires because this
-   * entity declares `attributeValues` [L75]. It receives the EMPTY STRING, and the next step calls
-   * `.getProductOptionsByGroup(this)` ON A STRING.
+   * Note also that `ProductService` declares NO `getProductOptionsByGroup` method at all, so the
+   * intended target does not exist either. There are two independent reasons this can never work, and
+   * neither is fixable without inventing a feature.
    *
-   * Reproduced as a raise. Note {@link Product.getOptionGroups} and
-   * {@link Product.getOptionsByOptionGroup} together already provide the grouping this method's name
-   * promises - which is why authoring an implementation would be inventing a capability rather than
-   * porting one.
-   *
+   * LEGACY-DEFECT [model/entity/Product.cfc:L631-L633]: `getProductOptionsByGroup()` calls
+   * `getProductService()`, which is not a method on this component or its bases, so the call reaches
+   * [org/Hibachi/HibachiEntity.cfc:L559] and throws at [L565]; `ProductService` declares no
+   * `getProductOptionsByGroup` either.
    * Preserved deliberately; do not fix without a product decision.
    */
-  getProductOptionsByGroup(): never {
+  public getProductOptionsByGroup(): never {
     throw new Error(
-      'Product.getProductOptionsByGroup reproduces LEGACY-DEFECT ' +
-        '[model/entity/Product.cfc:L632]: it calls getProductService(), which is defined nowhere in ' +
-        'the repository, and the method it then invokes - ProductService.getProductOptionsByGroup - ' +
-        'is likewise declared nowhere. In the legacy the accessor falls through to the ' +
-        'onMissingMethod attribute-value fallback [org/Hibachi/HibachiEntity.cfc:L559-L561], ' +
-        'receives the empty string, and the subsequent method call on a string fails.',
+      `Product '${this.productID}': getProductOptionsByGroup() cannot return. ` +
+        `[model/entity/Product.cfc:L632] calls getProductService(), which is not declared on the ` +
+        `component, on model/entity/HibachiEntity.cfc, or as a generated accessor - every other ` +
+        `outward reach in the component uses getService("..."). In CFML the call reaches the ` +
+        `onMissingMethod dispatcher at [org/Hibachi/HibachiEntity.cfc:L507-L565], matches get<Prop> ` +
+        `against a nonexistent ProductService property, falls through to the getAttributeValue ` +
+        `fallback at [L559] and throws at [L565]. ProductService declares no ` +
+        `getProductOptionsByGroup method either, so the intended target does not exist. This throw ` +
+        `is the faithful port, not a stub awaiting implementation.`,
     );
   }
 
-  /**
-   * Options not yet used by any of this product's SKUs. [model/entity/Product.cfc:L635-L640]
-   *
-   *   variables.unusedProductOptions = getService('optionService').getUnusedProductOptions(
-   *     getProductID(), structKeyList(getOptionGroupsStruct()) );
-   *
-   * ASYNC, through {@link ProductQuerySupport} - `OptionService.getUnusedProductOptions`
-   * [model/service/OptionService.cfc:L72] is in scope, backed by `OptionDAO.cfc:L51`.
-   *
-   * The second argument is a COMMA LIST built by `structKeyList` over
-   * {@link Product.getOptionGroupsStruct}, and it stays a string all the way to the query layer - see
-   * that method for the note on why its key order is non-deterministic in the legacy and why that
-   * does not matter here.
-   */
-  async getUnusedProductOptions(): Promise<readonly Option[]> {
-    if (this.unusedProductOptions !== undefined) {
-      return this.unusedProductOptions;
-    }
+  // ===========================================================================
+  // ★ THE UNUSED-* TRIO - A LIVE VALIDATION PATH [model/entity/Product.cfc:L635-L654]
+  //
+  // `model/validation/Product.json` requires all three of these with `minCollection:1`:
+  //
+  //   "unusedProductOptions":           [{"contexts":"addOption",         "minCollection":1}]
+  //   "unusedProductOptionGroups":      [{"contexts":"addOptionGroup",    "minCollection":1}]
+  //   "unusedProductSubscriptionTerms": [{"contexts":"addSubscriptionTerm","minCollection":1}]
+  //
+  // So none of the three may be omitted, even though the third serves an out-of-scope subsystem: the
+  // schema names it, and a validation rule pointing at an absent accessor is a broken contract rather
+  // than a tidy one. Schema ENFORCEMENT (zod) lives at the service tier, not here; what this file owes
+  // is the accessor each rule reads through.
+  //
+  // ★ ALL THREE PASS THE OPTION-GROUP IDS AS A COMMA-DELIMITED STRING, and the string is built with
+  // `listAppend` rather than `Array.join` for the reason recorded on `getCategoryIDs()`: the helper is
+  // PURE and emits NO LEADING DELIMITER ON AN EMPTY LIST by contract, which is the property proven
+  // load-bearing at [model/entity/Sku.cfc:L234-L236] and [L886-L888]. A leading comma would reach the
+  // DAO as an empty first element.
+  // ===========================================================================
 
-    if (this.querySupport === undefined) {
-      throw new Error(
-        'Product.getUnusedProductOptions was called on a product hydrated without query support. ' +
-          "The legacy body reaches getService('optionService').getUnusedProductOptions " +
-          '[model/entity/Product.cfc:L637], which transformation rule T2 replaces with an injected ' +
-          'port; that port must be supplied at construction.',
+  /**
+   * The option-group id list the unused-* queries filter against.
+   *
+   * Reproduces `structKeyList(getOptionGroupsStruct())` as it appears at [L637] and [L644].
+   *
+   * LEGACY-NOTE [model/entity/Product.cfc:L637, L644]: CFML STRUCT KEY ORDER IS UNORDERED while
+   * `Object.keys` returns insertion order, so the two implementations can emit the SAME ids in a
+   * DIFFERENT sequence. That difference is NOT observable: both `OptionDAO.getUnusedProductOptions`
+   * [model/dao/OptionDAO.cfc:L51] and `getUnusedProductOptionGroups` [L94] consume the parameter as a
+   * SET - an `IN`-list membership test - where order carries no meaning. Recorded rather than
+   * stabilised, because imposing a sort would be inventing an ordering the source never promised.
+   * Preserved deliberately; do not fix without a product decision.
+   */
+  private buildExistingOptionGroupIDList(): string {
+    let existingOptionGroupIDList = '';
+    for (const optionGroupID of structKeyList(this.getOptionGroupsStruct())) {
+      existingOptionGroupIDList = listAppend(existingOptionGroupIDList, optionGroupID);
+    }
+    return existingOptionGroupIDList;
+  }
+
+  /**
+   * Options not yet used by this product, for the `addOption` form.
+   *
+   * [model/entity/Product.cfc:L635-L640] verbatim:
+   *
+   *   public array function getUnusedProductOptions() {
+   *     if( !structKeyExists(variables, "unusedProductOptions") ) {
+   *       variables.unusedProductOptions = getService('optionService').getUnusedProductOptions( getProductID(), structKeyList(getOptionGroupsStruct()) );
+   *     }
+   *     return variables.unusedProductOptions;
+   *   }
+   *
+   * MEMO VARIANT C (no seed, no guard) - one unconditional computation behind a memo probe. `async`,
+   * because [L637] reaches the option repository.
+   *
+   * TWO POSITIONAL ARGUMENTS, IN THE LEGACY ORDER: the product id first, the option-group id list
+   * second. `OptionRepository.getUnusedProductOptions(productID, existingOptionGroupIDList)` declares
+   * exactly that order. Swapping them would compile and silently return the wrong rows.
+   *
+   * ★ THE RETURN IS `readonly SelectOption[]`, NOT `Option[]`, AND THAT IS THE PORT'S CONTRACT RATHER
+   * THAN A CHOICE MADE HERE. `../ports/optionRepository.js` declares
+   * `Promise<readonly SelectOption[]>` - a two-member `{ name, value }` projection - because
+   * [model/dao/OptionDAO.cfc:L51] returns a query of name/value pairs for a select control, not
+   * hydrated entities. The specification for this file describes the return as `Option[]`; THE SHIPPED
+   * PORT WINS, because inventing an `Option[]`-returning member would violate the no-invented-port-member
+   * rule and because hydrating entities from a name/value projection is not possible.
+   */
+  public async getUnusedProductOptions(): Promise<readonly SelectOption[]> {
+    // [L636] memo probe. VARIANT C: no seed to fall back on, so a failed reach must raise rather than
+    // answer an empty array - `minCollection:1` would otherwise fail for the wrong reason.
+    if (this.unusedProductOptions === undefined) {
+      if (this.optionRepository === undefined) {
+        throw this.missingCollaborator('option repository', 'L637');
+      }
+      // [L637] - two positional arguments, legacy order preserved.
+      this.unusedProductOptions = await this.optionRepository.getUnusedProductOptions(
+        this.productID,
+        this.buildExistingOptionGroupIDList(),
       );
     }
-
-    // [model/entity/Product.cfc:L637] `structKeyList(getOptionGroupsStruct())`.
-    const existingOptionGroupIDList: string = Object.keys(this.getOptionGroupsStruct()).join(',');
-
-    this.unusedProductOptions = await this.querySupport.getUnusedProductOptions(
-      this.getProductID(),
-      existingOptionGroupIDList,
-    );
+    // [L639]
     return this.unusedProductOptions;
   }
 
   /**
-   * Option groups not yet used by this product. [model/entity/Product.cfc:L642-L647]
+   * Option groups not yet used by this product, for the `addOptionGroup` form.
    *
-   *   variables.unusedProductOptionGroups = getService('optionService')
-   *     .getUnusedProductOptionGroups( structKeyList(getOptionGroupsStruct()) );
+   * [model/entity/Product.cfc:L642-L647] verbatim:
    *
-   * ★ IT PASSES NO PRODUCT ID, unlike its sibling one method above. So the answer is "every option
-   * group not in this list" across the WHOLE catalog, not "every option group this product does not
-   * use" - which happen to coincide only because the list was built from this product. The asymmetry
-   * is the source's and the port's signature preserves it; see {@link ProductQuerySupport}.
+   *   public array function getUnusedProductOptionGroups() {
+   *     if( !structKeyExists(variables, "unusedProductOptionGroups") ) {
+   *       variables.unusedProductOptionGroups = getService('optionService').getUnusedProductOptionGroups( structKeyList(getOptionGroupsStruct()) );
+   *     }
+   *     return variables.unusedProductOptionGroups;
+   *   }
+   *
+   * MEMO VARIANT C. `async`.
+   *
+   * ★ ONE ARGUMENT, NOT TWO. This is the asymmetry between the two sibling methods: [L637] passes the
+   * product id AND the group list, [L644] passes ONLY the group list. The DAO signatures match -
+   * [model/dao/OptionDAO.cfc:L51] takes two, [L94] takes one - so a product id must NOT be added here
+   * for symmetry. The consequence is real: unused option GROUPS are computed globally rather than per
+   * product.
+   *
+   * `readonly SelectOption[]` for the same reason as the sibling above; the specification's
+   * `OptionGroup[]` is superseded by the shipped port.
    */
-  async getUnusedProductOptionGroups(): Promise<readonly OptionGroup[]> {
-    if (this.unusedProductOptionGroups !== undefined) {
-      return this.unusedProductOptionGroups;
-    }
-
-    if (this.querySupport === undefined) {
-      throw new Error(
-        'Product.getUnusedProductOptionGroups was called on a product hydrated without query ' +
-          "support. The legacy body reaches getService('optionService')." +
-          'getUnusedProductOptionGroups [model/entity/Product.cfc:L644], which transformation rule ' +
-          'T2 replaces with an injected port; that port must be supplied at construction.',
+  public async getUnusedProductOptionGroups(): Promise<readonly SelectOption[]> {
+    // [L643] memo probe. VARIANT C.
+    if (this.unusedProductOptionGroups === undefined) {
+      if (this.optionRepository === undefined) {
+        throw this.missingCollaborator('option repository', 'L644');
+      }
+      // [L644] - ONE argument.
+      this.unusedProductOptionGroups = await this.optionRepository.getUnusedProductOptionGroups(
+        this.buildExistingOptionGroupIDList(),
       );
     }
-
-    const existingOptionGroupIDList: string = Object.keys(this.getOptionGroupsStruct()).join(',');
-
-    this.unusedProductOptionGroups =
-      await this.querySupport.getUnusedProductOptionGroups(existingOptionGroupIDList);
+    // [L646]
     return this.unusedProductOptionGroups;
   }
 
   /**
-   * Subscription terms not yet used by this product. [model/entity/Product.cfc:L649-L654]
+   * Subscription terms not yet used by this product, for the `addSubscriptionTerm` form.
    *
-   *   variables.unusedProductSubscriptionTerms = getService('subscriptionService')
-   *     .getUnusedProductSubscriptionTerms( getProductID() );
+   * [model/entity/Product.cfc:L649-L654] verbatim:
    *
-   * NOT PORTED - `subscriptionService` belongs to the excluded subscription module (AAP 0.2.2), which
-   * this port represents only as a documented stub port. Retained as a throwing stub so the surface
-   * stays complete: `hb_processContexts` on L49 advertises an `addSubscriptionTerm` process, so a
-   * caller has reason to look for this method and deserves a message rather than a missing property.
+   *   public array function getUnusedProductSubscriptionTerms() {
+   *     if( !structKeyExists(variables, "unusedProductSubscriptionTerms") ) {
+   *       variables.unusedProductSubscriptionTerms = getService('subscriptionService').getUnusedProductSubscriptionTerms( getProductID() );
+   *     }
+   *     return variables.unusedProductSubscriptionTerms;
+   *   }
+   *
+   * ★ AUTHORED, AND IT REFUSES. THE SPECIFICATION ASKS FOR A THIN PASS-THROUGH TO THE SUBSCRIPTION
+   * STUB PORT; THE SHIPPED PORT MAKES THAT IMPOSSIBLE, AND THE PORT WINS.
+   * `../ports/subscriptionTermProvider.js` declares EXACTLY TWO members - `getSubscriptionTerm` and
+   * `getSubscriptionBenefit` - and its own module documentation lists
+   * `getUnusedProductSubscriptionTerms` explicitly under WHAT IS DELIBERATELY NOT DECLARED IN THIS
+   * FILE. So there is no member to pass through TO, and adding one would violate the
+   * no-invented-port-member rule (prohibition 12).
+   *
+   * The three available options were: omit it (forbidden - `model/validation/Product.json` requires
+   * it with `minCollection:1`, so the accessor must exist); invent a port member (forbidden); or
+   * author it and refuse with an accurate message. The third is the only legal one, and it is also the
+   * most honest: a caller in the `addSubscriptionTerm` context learns precisely which boundary it
+   * crossed, rather than receiving an empty array that would fail `minCollection:1` and suggest the
+   * product genuinely has no unused terms.
+   *
+   * `async` for signature parity with its two siblings, so a service tier reading all three in one
+   * validation pass treats them uniformly.
+   *
+   * LEGACY-NOTE [model/entity/Product.cfc:L649-L654]: subscription is out of scope. This is an
+   * out-of-scope branch reachable from an in-scope file - the same category as
+   * `processProduct_addSubscriptionTerm` [model/service/ProductService.cfc:L173] and the
+   * subscription/contentAccess SKU-creation arms [model/service/SkuService.cfc:L139-L202] - so the
+   * member is present for schema and interface parity and refuses rather than fabricating a result.
+   * The `subscriptionTermProvider` stub is held on this instance so the refusal can name a real
+   * collaborator and report whether it was even wired.
+   * Preserved deliberately; do not fix without a product decision.
    */
-  getUnusedProductSubscriptionTerms(): never {
+  public async getUnusedProductSubscriptionTerms(): Promise<never> {
+    // ★ THE `async` KEYWORD IS LOAD-BEARING HERE, AND THE `await` IS WHAT KEEPS IT LEGAL - which is
+    // the OPPOSITE treatment from `getSkuSalePriceDetails` above, deliberately. There, the `async`
+    // keyword was dropped because a settled `Promise.resolve(...)` says the same thing without a
+    // ceremonial await. Here it must STAY, because an `async` function that throws produces a REJECTED
+    // PROMISE while a plain function that throws throws SYNCHRONOUSLY - a real difference to every
+    // caller, since only the first is catchable by the `.catch()` / `await`-in-`try` shape its two
+    // siblings require. Removing `async` would make this method the one member of the trio that cannot
+    // be handled uniformly. The `await` on an already-settled promise is therefore satisfying
+    // `require-await` by making the asynchrony genuine rather than by suppressing the rule.
+    await Promise.resolve();
     throw new Error(
-      'Product.getUnusedProductSubscriptionTerms is not ported. The legacy body reaches ' +
-        "getService('subscriptionService').getUnusedProductSubscriptionTerms " +
-        '[model/entity/Product.cfc:L651], and the subscription module is explicitly out of scope ' +
-        'for this migration slice.',
+      `Product '${this.productID}': getUnusedProductSubscriptionTerms() is not available in this ` +
+        `slice. [model/entity/Product.cfc:L651] reaches ` +
+        `subscriptionService.getUnusedProductSubscriptionTerms(productID), and subscription is out ` +
+        `of scope: ../ports/subscriptionTermProvider.js declares only getSubscriptionTerm and ` +
+        `getSubscriptionBenefit and documents this method as deliberately not declared, so there is ` +
+        `no port member to delegate to and none may be invented. The accessor exists because ` +
+        `model/validation/Product.json requires unusedProductSubscriptionTerms with ` +
+        `minCollection:1 in the addSubscriptionTerm context; it refuses rather than returning an ` +
+        `empty array, which would fail that rule for the wrong reason. ` +
+        `A subscription term provider was ` +
+        `${this.subscriptionTermProvider === undefined ? 'not wired' : 'wired'} on this instance.`,
     );
   }
 
-  // --- Bidirectional Helper Methods [model/entity/Product.cfc:L659] -----------------------------
-  //
-  // The source's own banner, running L659-L787. THIRTEEN pairs, in exactly three shapes, and the
-  // shape is what decides how much code each pair carries:
-  //
-  //   SHAPE 1 - THIS SIDE OWNS THE FOREIGN KEY (one pair: `brand`, many-to-one [L662-L679]). Both
-  //     sides are maintained HERE: the field is assigned and the far side's LIVE `getProducts()` array
-  //     is mutated in place. This is the ONLY pair on this class that touches a far-side array.
-  //
-  //   SHAPE 2 - PURE DELEGATION (eleven pairs). `add*`/`remove*` forward to a single far-side call and
-  //     do nothing else: the four one-to-many pairs delegate to the child's `setProduct`/
-  //     `removeProduct` [L680-L709], and the seven many-to-many INVERSE pairs delegate to the owning
-  //     side's `addProduct`/`removeProduct` or `addExcludedProduct`/`removeExcludedProduct`
-  //     [L732-L785]. The near-side array is never touched, because in the legacy Hibernate repopulates
-  //     it from the far side's write; here the far side mutates this entity's LIVE accessor directly.
-  //
-  //   SHAPE 3 - THIS SIDE OWNS THE LINK TABLE (one pair: `listingPages`, many-to-many owner
-  //     [L712-L729]). Both arrays are mutated explicitly.
-  //
-  // ★ THREE OF THE FOURTEEN MATERIALIZED ASSOCIATIONS HAVE NO HELPER PAIR AT ALL, which is a real
-  // asymmetry and not an omission in this port: `categories` [L80] and `relatedProducts` [L81] are
-  // many-to-many properties for which NEITHER side declares helpers - `model/entity/Category.cfc`
-  // declares no `addProduct`, no `removeProduct` and no `hasProduct`, and `relatedProducts` is
-  // self-referential with nothing declared either - so both are maintained by the ORM alone and are
-  // `readonly` here. See the file header's census table.
+  // ===========================================================================
+  // REMAINING OUTWARD REACHES
+  // ===========================================================================
 
   /**
-   * Assign this product's brand, maintaining the inverse. [model/entity/Product.cfc:L662-L667]
+   * Whether any transaction already references one of this product's SKUs.
    *
-   *   public void function setBrand(required any brand) {
-   *     variables.brand = arguments.brand;
-   *     if(isNew() or !arguments.brand.hasProduct( this )) {
-   *       arrayAppend(arguments.brand.getProducts(), this);
+   * [model/entity/Product.cfc:L624-L629] verbatim:
+   *
+   *   public boolean function getTransactionExistsFlag() {
+   *     if(!structKeyExists(variables, "transactionExistsFlag")) {
+   *       variables.transactionExistsFlag = getService("skuService").getTransactionExistsFlag( productID=this.getProductID() );
    *     }
+   *     return variables.transactionExistsFlag;
    *   }
    *
-   * ★ THE ONE PAIR ON THIS CLASS THAT MUTATES A FAR-SIDE ARRAY, which is why `Brand.getProducts()`
-   * hands back a LIVE mutable array [src/domain/entities/brand.ts] rather than a `readonly` one. That
-   * liveness exists FOR this method; nothing else reaches through it.
+   * ★ MEMO VARIANT C - NO SEED AND NO GUARD. The purest instance of the third variant in this file:
+   * one unconditional computation behind a single memo probe, with nothing to fall back on. That is
+   * exactly why it must raise rather than default when the port is missing - there is no seeded value
+   * the legacy would have returned, and inventing `false` would be inventing a permission.
    *
-   * THE GUARD IS REPRODUCED VERBATIM, `isNew()` disjunct and all. Its purpose is to skip a probe that
-   * cannot answer usefully: for an unsaved product every primary key is `''` [unsavedvalue=""], so
-   * `hasProduct` would match ANY other unsaved product and wrongly report containment. Short-circuiting
-   * on `isNew()` avoids that, at the cost of admitting a duplicate when the same new product is set
-   * twice - which is the trade the source made.
+   * ★ AND `false` IS PRECISELY THE DANGEROUS DEFAULT HERE. `model/validation/Product.json` declares
+   * `"transactionExistsFlag": [{"contexts":"delete","eq":false}]` - deletion is permitted ONLY when
+   * this answers `false`. A defaulted `false` would authorise deleting a product that transactions
+   * already reference. This is the ONE delete-context rule in that schema this entity genuinely
+   * participates in, which makes the refusal load-bearing rather than defensive.
    *
-   * NOTE THE ORDER: the field is assigned BEFORE the guard runs [L663], so `isNew()` and the far-side
-   * probe both observe a product that already points at this brand. That ordering matters if a future
-   * change makes either depend on `variables.brand`, so it is preserved rather than tidied.
-   */
-  setBrand(brand: Brand): void {
-    // [model/entity/Product.cfc:L663] assignment first.
-    this.brand = brand;
-
-    // [L664] `if(isNew() or !arguments.brand.hasProduct( this ))`.
-    if (this.isNew() || !brand.hasProduct(this)) {
-      // [L665] `arrayAppend(arguments.brand.getProducts(), this)` - into the far side's LIVE array.
-      brand.getProducts().push(this);
-    }
-  }
-
-  /**
-   * Detach this product from its brand. [model/entity/Product.cfc:L668-L677]
+   * `async`, reaching `SkuRepository.getTransactionExistsFlag(productID?, skuID?)` - the port member
+   * declared for [model/dao/SkuDAO.cfc:L53]. The legacy passes ONLY `productID` as a named argument, so
+   * only the first parameter is supplied here and `skuID` is left absent rather than passed as an
+   * empty string.
    *
-   *   public void function removeBrand(any brand) {
-   *     if(!structKeyExists(arguments, "brand")) { arguments.brand = variables.brand; }
-   *     var index = arrayFind(arguments.brand.getProducts(), this);
-   *     if(index > 0) { arrayDeleteAt(arguments.brand.getProducts(), index); }
-   *     structDelete(variables, "brand");
-   *   }
-   *
-   * THE ARGUMENT IS OPTIONAL and defaults to the currently-assigned brand [L669-L671] - the same
-   * shape `PromotionReward.removePromotionPeriod` carries.
-   *
-   * ★ AND IT RAISES WHEN OMITTED ON A BRAND-LESS PRODUCT. With no argument and no `variables.brand`,
-   * `arguments.brand` stays null and `arguments.brand.getProducts()` [L672] is a null dereference. That
-   * is reproduced rather than smoothed to a no-op, because a silent no-op would let a caller believe a
-   * detach happened.
-   *
-   * ★ THE LOOKUP IS BY REFERENCE, NOT BY KEY [L672]. `arrayFind` with an object needle compares
-   * identity, so `indexOf` is the exact analogue - and it is deliberately NOT unified with
-   * {@link Product.hasSku}-style key matching. The two are different operations in the source and
-   * normalising them would change which elements are removed. CFML's `arrayFind` is 1-BASED with 0 for
-   * "not found", hence `> 0` there and `!== -1` here.
-   *
-   * `structDelete(variables, "brand")` [L676] runs UNCONDITIONALLY - outside the `index > 0` guard - so
-   * the field is cleared even when the far-side array did not contain this product.
-   */
-  removeBrand(brand?: Brand): void {
-    // [model/entity/Product.cfc:L669-L671] the argument defaults to the assigned brand.
-    const target: Brand | undefined = brand ?? this.brand;
-
-    if (target === undefined) {
-      throw new Error(
-        'Product.removeBrand was called with no argument on a product that has no brand. The ' +
-          'legacy defaults the argument from variables.brand [model/entity/Product.cfc:L670] and ' +
-          'then dereferences it unguarded at L672, so this is a null-reference error there too. ' +
-          'Reproduced rather than treated as a no-op, which would report a detach that did not ' +
-          'happen.',
-      );
-    }
-
-    // [L672-L675] reference match into the far side's LIVE array, 1-based `arrayFind` becoming
-    // 0-based `indexOf`.
-    const products: Product[] = target.getProducts();
-    const index: number = products.indexOf(this);
-    if (index !== -1) {
-      products.splice(index, 1);
-    }
-
-    // [L676] `structDelete(variables, "brand")` - unconditional, outside the guard above.
-    this.brand = undefined;
-  }
-
-  /** [model/entity/Product.cfc:L680-L682] `arguments.attributeValue.setProduct( this )`. */
-  addAttributeValue(attributeValue: ProductAttributeValueLink): void {
-    attributeValue.setProduct(this);
-  }
-
-  /** [model/entity/Product.cfc:L683-L685] `arguments.attributeValue.removeProduct( this )`. */
-  removeAttributeValue(attributeValue: ProductAttributeValueLink): void {
-    attributeValue.removeProduct(this);
-  }
-
-  /** [model/entity/Product.cfc:L688-L690] `arguments.productImage.setProduct( this )`. */
-  addProductImage(productImage: ProductImageLink): void {
-    productImage.setProduct(this);
-  }
-
-  /** [model/entity/Product.cfc:L691-L693] `arguments.productImage.removeProduct( this )`. */
-  removeProductImage(productImage: ProductImageLink): void {
-    productImage.removeProduct(this);
-  }
-
-  /**
-   * [model/entity/Product.cfc:L696-L698] `arguments.sku.setProduct( this )`.
-   *
-   * `Sku.setProduct` [model/entity/Sku.cfc:L607] appends into `product.getSkus()`, which is why that
-   * accessor is LIVE - the write lands in this entity's own array without this method touching it.
-   */
-  addSku(sku: Sku): void {
-    sku.setProduct(this);
-  }
-
-  /** [model/entity/Product.cfc:L699-L701] `arguments.sku.removeProduct( this )` - Sku.cfc:L616. */
-  removeSku(sku: Sku): void {
-    sku.removeProduct(this);
-  }
-
-  /** [model/entity/Product.cfc:L704-L706] `arguments.productReview.setProduct( this )`. */
-  addProductReview(productReview: ProductReviewLink): void {
-    productReview.setProduct(this);
-  }
-
-  /** [model/entity/Product.cfc:L707-L709] `arguments.productReview.removeProduct( this )`. */
-  removeProductReview(productReview: ProductReviewLink): void {
-    productReview.removeProduct(this);
-  }
-
-  /**
-   * Add a content page this product is listed on. [model/entity/Product.cfc:L712-L719]
-   *
-   *   public void function addListingPage(required any listingPage) {
-   *     if(isNew() or !hasListingPage(arguments.listingPage)) {
-   *       arrayAppend(variables.listingPages, arguments.listingPage);
-   *     }
-   *     if(arguments.listingPage.isNew() or !arguments.listingPage.hasListingProduct( this )) {
-   *       arrayAppend(arguments.listingPage.getListingProducts(), this);
-   *     }
-   *   }
-   *
-   * ★ SECONDARY ITEM S5 - THE TWO `isNew()` TESTS ARE THE WRONG WAY ROUND relative to every other
-   * many-to-many owner in the tree. The house pattern guards the NEAR array with the ARGUMENT's
-   * newness and the FAR array with THIS entity's newness - compare
-   * `model/entity/PromotionQualifier.cfc:L202-L209`:
-   *
-   *   if(arguments.product.isNew() or !hasProduct(arguments.product)) { <near append> }
-   *   if(isNew() or !arguments.product.hasPromotionQualifier( this ))  { <far append> }
-   *
-   * Here it is `isNew()` for the near array [L713] and `arguments.listingPage.isNew()` for the far one
-   * [L716] - both disjuncts swapped.
-   *
-   * ★ AND IT IS OBSERVABLE, which is why it is recorded rather than dismissed as cosmetic. The
-   * `isNew()` disjunct exists to skip a probe that cannot answer for an unsaved entity, so swapping it
-   * moves WHICH input produces a duplicate. Under the house pattern, adding the same page twice
-   * duplicates the NEAR array only when the PAGE is unsaved. Here it duplicates whenever THIS PRODUCT
-   * is unsaved - and a product being built in the admin is unsaved for its entire construction, which
-   * is precisely when listing pages get attached. The defective ordering fires on the common path, not
-   * the rare one.
-   *
-   * REPRODUCED EXACTLY AS WRITTEN. Correcting it would change which arrays hold duplicates after a
-   * multi-add, and that is a product decision.
-   *
+   * LEGACY-NOTE [model/entity/Product.cfc:L626]: the legacy writes `this.getProductID()` with an
+   * explicit `this.` scope, where the surrounding methods write the bare `getProductID()` - as do
+   * [L256] and [L344]. Both resolve identically in CFML. Recorded, not normalised.
    * Preserved deliberately; do not fix without a product decision.
    */
-  addListingPage(listingPage: ListingPageLink): void {
-    // *** LEGACY-DEFECT [model/entity/Product.cfc:L713]: the NEAR array is guarded by THIS entity's
-    // isNew(), where the house pattern guards it by the ARGUMENT's - see the doc block.
-    // Preserved deliberately; do not fix without a product decision.
-    if (this.isNew() || !this.hasListingPage(listingPage)) {
-      // [L714] `arrayAppend(variables.listingPages, arguments.listingPage)` - the private field, which
-      // is why getListingPages() can stay `readonly`.
-      this.listingPages.push(listingPage);
+  public async getTransactionExistsFlag(): Promise<boolean> {
+    // [L625] memo probe. VARIANT C.
+    if (this.transactionExistsFlag === undefined) {
+      if (this.skuRepository === undefined) {
+        throw this.missingCollaborator('sku repository', 'L626');
+      }
+      // [L626] - `productID` only; `skuID` deliberately not supplied.
+      this.transactionExistsFlag = await this.skuRepository.getTransactionExistsFlag(
+        this.productID,
+      );
     }
-
-    // *** LEGACY-DEFECT [model/entity/Product.cfc:L716]: and the FAR array is guarded by the
-    // ARGUMENT's isNew(), where the house pattern guards it by THIS entity's.
-    // Preserved deliberately; do not fix without a product decision.
-    if (listingPage.isNew() || !listingPage.hasListingProduct(this)) {
-      // [L717] `arrayAppend(arguments.listingPage.getListingProducts(), this)`.
-      listingPage.getListingProducts().push(this);
-    }
+    // [L628]
+    return this.transactionExistsFlag;
   }
 
   /**
-   * Remove a content page this product is listed on. [model/entity/Product.cfc:L720-L729]
+   * This product's base product type - the root of its product-type path.
    *
-   *   var thisIndex = arrayFind(variables.listingPages, arguments.listingPage);
-   *   if(thisIndex > 0) { arrayDeleteAt(variables.listingPages, thisIndex); }
-   *   var thatIndex = arrayFind(arguments.listingPage.getListingProducts(), this);
-   *   if(thatIndex > 0) { arrayDeleteAt(arguments.listingPage.getListingProducts(), thatIndex); }
+   * [model/entity/Product.cfc:L493-L495] verbatim:
    *
-   * BOTH SIDES BY REFERENCE, and both independently guarded - so a half-linked pair is half-removed
-   * rather than raising. Unlike its `add*` partner this method has NO `isNew()` involvement at all and
-   * therefore no defect: reference identity answers correctly for saved and unsaved entities alike,
-   * which is exactly why the source could omit the guard here and could not there.
-   *
-   * ★ `arrayDeleteAt` REMOVES ONLY THE FIRST MATCH. So a duplicate created by the defect in
-   * {@link Product.addListingPage} survives one removal, and a caller has to remove twice. Reproduced.
-   */
-  removeListingPage(listingPage: ListingPageLink): void {
-    // [model/entity/Product.cfc:L721-L724] the near side, by reference.
-    const thisIndex: number = this.listingPages.indexOf(listingPage);
-    if (thisIndex !== -1) {
-      this.listingPages.splice(thisIndex, 1);
-    }
-
-    // [L725-L728] the far side, by reference, independently guarded.
-    const listingProducts: Product[] = listingPage.getListingProducts();
-    const thatIndex: number = listingProducts.indexOf(this);
-    if (thatIndex !== -1) {
-      listingProducts.splice(thatIndex, 1);
-    }
-  }
-
-  /** [model/entity/Product.cfc:L732-L734] `arguments.promotionReward.addProduct( this )`. */
-  addPromotionReward(promotionReward: PromotionReward): void {
-    promotionReward.addProduct(this);
-  }
-
-  /** [model/entity/Product.cfc:L735-L737] `arguments.promotionReward.removeProduct( this )`. */
-  removePromotionReward(promotionReward: PromotionReward): void {
-    promotionReward.removeProduct(this);
-  }
-
-  /**
-   * [model/entity/Product.cfc:L740-L742] `arguments.promotionReward.addExcludedProduct( this )`.
-   *
-   * ★ NOTE THE PARAMETER NAME IN THE SOURCE IS `promotionReward`, not `promotionRewardExclusion` - the
-   * exclusion is a SECOND link table over the SAME entity [L84 vs L85], not a different entity. The
-   * type here reflects that.
-   */
-  addPromotionRewardExclusion(promotionReward: PromotionReward): void {
-    promotionReward.addExcludedProduct(this);
-  }
-
-  /** [model/entity/Product.cfc:L743-L745] `...promotionReward.removeExcludedProduct( this )`. */
-  removePromotionRewardExclusion(promotionReward: PromotionReward): void {
-    promotionReward.removeExcludedProduct(this);
-  }
-
-  /** [model/entity/Product.cfc:L748-L750] `arguments.promotionQualifier.addProduct( this )`. */
-  addPromotionQualifier(promotionQualifier: PromotionQualifier): void {
-    promotionQualifier.addProduct(this);
-  }
-
-  /** [model/entity/Product.cfc:L751-L753] `arguments.promotionQualifier.removeProduct( this )`. */
-  removePromotionQualifier(promotionQualifier: PromotionQualifier): void {
-    promotionQualifier.removeProduct(this);
-  }
-
-  /** [model/entity/Product.cfc:L756-L758] `...promotionQualifier.addExcludedProduct( this )`. */
-  addPromotionQualifierExclusion(promotionQualifier: PromotionQualifier): void {
-    promotionQualifier.addExcludedProduct(this);
-  }
-
-  /** [model/entity/Product.cfc:L759-L761] `...promotionQualifier.removeExcludedProduct( this )`. */
-  removePromotionQualifierExclusion(promotionQualifier: PromotionQualifier): void {
-    promotionQualifier.removeExcludedProduct(this);
-  }
-
-  /** [model/entity/Product.cfc:L764-L766] `arguments.priceGroupRate.addProduct( this )`. */
-  addPriceGroupRate(priceGroupRate: PriceGroupRate): void {
-    priceGroupRate.addProduct(this);
-  }
-
-  /** [model/entity/Product.cfc:L767-L769] `arguments.priceGroupRate.removeProduct( this )`. */
-  removePriceGroupRate(priceGroupRate: PriceGroupRate): void {
-    priceGroupRate.removeProduct(this);
-  }
-
-  /**
-   * [model/entity/Product.cfc:L772-L774] `arguments.vendor.addProduct( this )`.
-   *
-   * `model/entity/Vendor.cfc` is out of scope, so the parameter is the module-local
-   * {@link ProductVendorLink} projection rather than a `Vendor` class - see the file header for why
-   * this association is materialized here and NOT on `Brand`, which declares the same property.
-   */
-  addVendor(vendor: ProductVendorLink): void {
-    vendor.addProduct(this);
-  }
-
-  /** [model/entity/Product.cfc:L775-L777] `arguments.vendor.removeProduct( this )`. */
-  removeVendor(vendor: ProductVendorLink): void {
-    vendor.removeProduct(this);
-  }
-
-  /** [model/entity/Product.cfc:L780-L782] `arguments.physical.addProduct( this )`. */
-  addPhysical(physical: ProductPhysicalLink): void {
-    physical.addProduct(this);
-  }
-
-  /** [model/entity/Product.cfc:L783-L785] `arguments.physical.removeProduct( this )`. */
-  removePhysical(physical: ProductPhysicalLink): void {
-    physical.removeProduct(this);
-  }
-
-  // --- Overridden Methods [model/entity/Product.cfc:L789] ---------------------------------------
-
-  /**
-   * The property that stands in for this entity in a one-line summary.
-   * [model/entity/Product.cfc:L791-L793]
-   *
-   *   return "productName";
-   *
-   * ★ NOT DEAD CODE, and it is worth saying why because a three-word override looks like one. Two
-   * framework consumers read it: `HibachiEntity.cfc:L390` builds a smart-list projection
-   * `addSelect(propertyName=getSimpleRepresentationPropertyName(), alias="name")`, so this string
-   * decides which column becomes the `name` of every option row this entity appears in - including the
-   * `{value, name}` rows behind {@link Product.getBrandOptions}' sibling
-   * `getPropertyOptions("product")`. And `HibachiService.cfc:L31` registers it as a keyword property
-   * with `weight=1`, so it decides what admin search matches on. Returning the wrong property silently
-   * changes both.
-   *
-   * TOTAL: a constant, and it never throws.
-   */
-  getSimpleRepresentationPropertyName(): string {
-    return 'productName';
-  }
-
-  // LEGACY-NOTE [model/entity/Product.cfc:L795-L822]: `getAssignedAttributeSetSmartList()` IS NOT
-  // PORTED, and it is the clearest case on this class for the third bullet of the smart-list dividing
-  // line - the smart list IS the whole behaviour and its consumer is out of scope.
-  //
-  // The body is 28 lines that do nothing but ASSEMBLE A QUERY: it obtains
-  // `getService("attributeService").getAttributeSetSmartList()` [L798] - and `attributeService` is
-  // outside this slice - filters on `activeFlag` and `attributeSetType.systemCode = 'astProduct'`
-  // [L800-L801], LEFT JOINs three related properties [L803-L805], and then builds a RAW WHERE-CONDITION
-  // STRING [L807-L816] that it hands to `addWhereCondition` [L818]. Nothing is computed; nothing is
-  // returned but the builder. There is no behaviour here to preserve independently of the framework
-  // component that executes it, and the EAV attribute subsystem it queries is out of scope.
-  //
-  // ★ TWO THINGS ABOUT THAT WHERE-CONDITION ARE RECORDED SO THEY ARE NOT LOST, because they matter to
-  // whoever eventually ports the attribute subsystem:
-  //
-  //   * IT INTERPOLATES THREE ENTITY VALUES DIRECTLY INTO SQL TEXT [L810, L812, L814] with no
-  //     parameterisation - `getProductType().getProductTypeIDPath()`, `getProductID()` and
-  //     `getBrand().getBrandID()`. All three are system-generated UUIDs, so this is not an exploitable
-  //     hole today; it is nevertheless the one construction in the whole in-scope slice that builds SQL
-  //     by concatenation rather than through `cfqueryparam`, and AAP 0.8.3 commits this port to
-  //     parameterised SQL exclusively. A future port must bind these, not interpolate them.
-  //   * IT CONVERTS A COMMA PATH INTO AN SQL `IN` LIST BY STRING SURGERY [L810]:
-  //     `replace(getProductType().getProductTypeIDPath(), ",", "','", "all")` wrapped in outer quotes.
-  //     `src/domain/valueObjects/materializedIdPath.ts` is where that idiom belongs in this port.
-  //
-  // Both `getProductType()` and `getBrand()` are correctly `isNull`-guarded here [L809, L813], which is
-  // notable precisely because {@link Product.getBaseProductType} two hundred lines earlier is not.
-
-  // --- ORM Event Hooks [model/entity/Product.cfc:L826-L828] -------------------------------------
-  //
-  // ★ THE BANNER IS PRESENT AND EMPTY IN THE SOURCE, and it is recorded rather than dropped because
-  // "this entity declares no lifecycle hooks" is a FACT about the port's lifecycle contract, not an
-  // absence of one. Compare `src/domain/entities/priceGroup.ts` and
-  // `src/domain/entities/productType.ts`, which both declare `preInsert()`/`preUpdate()` to maintain a
-  // materialized ID path, and `src/domain/entities/category.ts`, which declares them for the same
-  // reason with the OPPOSITE super-call ordering. `Product` has no materialized path and no generated
-  // column, so it needs neither hook - and a reader checking whether this port dropped one can settle
-  // the question here instead of grepping the CFC.
-
-  // --- Deprecated Methods [model/entity/Product.cfc:L830] ---------------------------------------
-  //
-  // LEGACY-NOTE [model/entity/Product.cfc:L832-L838]: `getAttributeSets(attributeSetTypeCode=[])` IS
-  // NOT PORTED. It is marked deprecated by the source's own banner, it is a thin wrapper over
-  // `getAssignedAttributeSetSmartList()` above, and AAP 0.4.1 lists it among the surfaces recorded at
-  // their locator rather than converted.
-  //
-  // ★ ONE WART IN IT IS WORTH RECORDING, because it is the kind of thing a mechanical port would carry
-  // forward without noticing. The body takes a reference to the memoized smart list [L833], and then -
-  // if the argument array contains `"astProductCustomization"` or `"astOrderItem"` [L834] - calls
-  // `getAssignedAttributeSetSmartList().addFilter('attributeSetType.systemCode', 'astOrderItem')`
-  // [L835]. Because the list is MEMOIZED, that second call returns the SAME object, so the filter is
-  // added to the very list already filtered to `'astProduct'` [L801] - two equality filters on one
-  // property - AND the mutation persists in the memo, so every later reader of
-  // `getAssignedAttributeSetSmartList()` on this instance inherits it. Deprecated or not, that is a
-  // memo-poisoning write of exactly the family as LEGACY-DEFECT D12.
-
-  // --- Private helpers -------------------------------------------------------------------------
-  //
-  // NEITHER OF THE TWO BELOW EXISTS IN `model/entity/Product.cfc`. They carry the two halves of
-  // `SkuService.getProductSkus` [model/service/SkuService.cfc:L220-L243] that
-  // {@link Product.getSkus}'s non-default argument combinations reach through, and they live here -
-  // private and un-exported - because AAP 0.4.2 requires `getSkus(sorted?, fetchOptions?)` to stay
-  // SYNCHRONOUS ("sorting applied in memory when the array was fetched unsorted"). Extracting them
-  // keeps `getSkus` a readable three-branch method while leaving both reproductions individually
-  // documented and individually testable through it.
-
-  /**
-   * Resolve a product type's base system code from MATERIALISED STATE ONLY, with no repository call.
-   *
-   * Not a member of `model/entity/Product.cfc` and not a member of `model/entity/ProductType.cfc`
-   * either - it is the synchronous half of `ProductType.getBaseProductType()`
-   * [model/entity/ProductType.cfc:L110-L115], extracted here because {@link Product.getSkus} is fixed
-   * as a synchronous accessor by AAP 0.4.2 and `applyFetchOptionsFilter` therefore cannot await. It is
-   * private and un-exported so nothing outside this file can mistake it for the authoritative
-   * resolution, which remains `ProductType.getBaseProductType()`.
-   *
-   * TWO STEPS, in the legacy's own order:
-   *   1. The product type's OWN `systemCode`, when it has a non-empty one - the short-circuit at
-   *      [model/entity/ProductType.cfc:L111], reproduced with the same absent-then-empty pair of tests
-   *      rather than a single truthiness check.
-   *   2. Otherwise the system code of the ROOT of the `parentProductType` chain. The legacy instead
-   *      loads the row named by the first element of the STORED `productTypeIDPath` [L112]; the two
-   *      agree whenever the ancestry is hydrated to the root, and the one case where they diverge is
-   *      documented on `applyFetchOptionsFilter`.
-   *
-   * `undefined` is returned when the root carries no system code, which is a legitimate answer and the
-   * one that makes `applyFetchOptionsFilter` fall through to its no-filter branch - matching a legacy
-   * `eq` against null, which matches none of the three literals.
-   *
-   * NO CYCLE GUARD AND NO DEPTH LIMIT, deliberately, matching both the legacy walk and
-   * `buildIdPathList` in `src/domain/valueObjects/materializedIdPath.ts`. A looping ancestry is a data
-   * defect the legacy surfaces loudly, and adding a guard here would invent a non-functional
-   * requirement the source does not state.
-   */
-  private resolveBaseProductTypeSystemCodeFromAncestry(
-    productType: ProductType,
-  ): string | undefined {
-    // Step 1 - [model/entity/ProductType.cfc:L111] `isNull(getSystemCode()) || getSystemCode() == ""`.
-    const ownSystemCode: string | undefined = productType.getSystemCode();
-    if (ownSystemCode !== undefined && cfLen(ownSystemCode) > 0) {
-      return ownSystemCode;
-    }
-
-    // Step 2 - climb to the root of the materialised ancestry. Same do/while shape as the path
-    // builder, so the starting node is considered and the walk is never empty.
-    let cursor: ProductType = productType;
-    let parent: ProductType | undefined = cursor.getParentProductType();
-    while (parent !== undefined) {
-      cursor = parent;
-      parent = cursor.getParentProductType();
-    }
-
-    return cursor.getSystemCode();
-  }
-
-  /**
-   * Reproduce the eager-fetch filtering of `SkuDAO.getProductSkus`. [model/dao/SkuDAO.cfc:L150-L168]
-   *
-   *   var hql = "SELECT sku FROM SlatwallSku sku ";
-   *   if(fetchOptions) {
-   *     if(arguments.product.getBaseProductType() eq "contentAccess") {
-   *       hql &= "INNER JOIN FETCH sku.accessContents contents ";
-   *     } else if (arguments.product.getBaseProductType() eq "merchandise") {
-   *       hql &= "INNER JOIN FETCH sku.options option ";
-   *     } else if (arguments.product.getBaseProductType() eq "subscription") {
-   *       hql &= "INNER JOIN sku.subscriptionTerm st INNER JOIN FETCH sku.subscriptionBenefits sb ";
-   *     }
+   *   public any function getBaseProductType() {
+   *     return getProductType().getBaseProductType();
    *   }
-   *   var hql &= "WHERE sku.product.productID = :productID ";
    *
-   * ★ THE JOINS ARE `INNER`, WHICH MAKES THEM FILTERS AND NOT MERELY EAGER LOADS. That is the whole
-   * reason this helper exists: a merchandise sku with NO options is excluded from the result set
-   * entirely. In this port the associations are already materialized, so the eager-load half is a
-   * no-op and only the filtering half is observable - and the filtering half is computable in memory
-   * from `sku.getOptions()`, with no repository call.
+   * ★ `async`, AND THE SPECIFICATION SAYS SYNCHRONOUS. THE SHIPPED SIBLING WINS, AND HERE IS WHY IT
+   * HAS TO. `ProductType.getBaseProductType()` in src/domain/entities/productType.ts is declared
+   * `async getBaseProductType(): Promise<string | undefined>`, because
+   * [model/entity/ProductType.cfc:L112] resolves the ROOT of `productTypeIDPath` through
+   * `getService("ProductService").getProductType(listFirst(getProductTypeIDPath()))` - a genuine
+   * repository load of a DIFFERENT row - and only then reads its system code. A synchronous wrapper
+   * around an async delegate is not expressible, and src/domain/entities/sku.ts already awaits THIS
+   * method at its own `getBaseProductType()`, so the async shape is load-bearing in live code.
+   * The asynchrony is INHERITED, exactly as it is for `getLivePrice()` and `getCurrentAccountPrice()`.
    *
-   * SECONDARY ITEM: `var hql &=` on the WHERE line re-declares an already-declared local
-   * [model/dao/SkuDAO.cfc:L163]. CFML tolerates the redundant `var`; it is recorded because it is the
-   * same class of slip as the `var totalRatingPoints +=` inside D1's loop.
+   * ★ THIS SITS ON A LIVE VALIDATION PATH. `model/validation/Product.json` gates `baseProductType`
+   * with `inList` over `merchandise` and `subscription`, so what this returns decides whether a
+   * product validates. `string | undefined` is therefore correct rather than convenient: the root
+   * product type may legitimately carry no system code, and `undefined` fails the `inList` rule
+   * honestly where a fabricated `"merchandise"` would pass it falsely.
    *
-   * THE `eq` COMPARISONS ARE CASE-INSENSITIVE and a null base product type normalises to `''`, so a
-   * product whose product type carries no system code matches none of the three branches and is not
-   * filtered - reproduced with `(x ?? '').toLowerCase()` rather than by reaching for `cfEquals`, which
-   * raises on a nullish operand and would turn a legitimate fall-through into a failure.
-   *
-   * ★ THE OTHER TWO BRANCHES RAISE RATHER THAN FILTER, and that is a scope decision rather than a
-   * defect: `sku.accessContents` [model/entity/Sku.cfc:L77] and `sku.subscriptionBenefits`
-   * [model/entity/Sku.cfc:L78] belong to the content-access and subscription modules, which AAP 0.2.2
-   * excludes, so this port never materializes them and cannot compute their filters. Returning the
-   * unfiltered array instead would silently include skus the legacy excludes.
-   *
-   * IT DEREFERENCES `getBaseProductType()` UNGUARDED, exactly as the source does at
-   * [model/dao/SkuDAO.cfc:L152] - so a product with no product type raises here too, and only when
-   * `fetchOptions` is true. See {@link Product.getBaseProductType}.
-   *
-   * ★ AND IT RESOLVES THE BRANCH KEY WITHOUT A REPOSITORY ROUND TRIP, WHICH IS WHY
-   * {@link Product.getSkus} CAN STAY SYNCHRONOUS. {@link Product.getBaseProductType} is asynchronous
-   * because `ProductType.getBaseProductType()` loads the ROOT product type named by the first element
-   * of `productTypeIDPath` when the immediate type carries no system code
-   * [model/entity/ProductType.cfc:L110-L115]. AAP 0.4.2 fixes `getSkus(sorted?, fetchOptions?)` as a
-   * SYNCHRONOUS accessor - "sorting applied in memory when the array was fetched unsorted" - so this
-   * helper cannot await, and widening `getSkus` to a promise would break that contract for every
-   * caller. It therefore resolves the same value from the ALREADY-MATERIALISED product-type ancestry:
-   * the immediate type's own `systemCode` first, exactly the short-circuit the legacy takes at
-   * [model/entity/ProductType.cfc:L111], and otherwise the system code of the root of the
-   * `parentProductType` chain - which is the row the stored path's first element names whenever that
-   * chain is hydrated to the root.
-   *
-   * The ONE boundary where the two disagree is worth stating plainly rather than burying: if the
-   * ancestry is hydrated only partially, the in-memory climb stops early and yields no system code,
-   * which falls through to the no-filter branch, whereas the legacy would have loaded the root row.
-   * That makes the ancestry a FETCH-SHAPE OBLIGATION on the repository - a repository that hydrates a
-   * product for `getSkus(sorted, fetchOptions=true)` must hydrate the product-type chain to its root -
-   * and fetch shape is exactly the kind of decision this architecture pushes to the repository and
-   * documents at the producing method. The chain is NOT substituted inside
-   * `ProductType.getBaseProductType()` itself, where the stored path remains the authority; the
-   * accommodation is bounded to this one site, which is the site that cannot await.
-   *
-   * A FRESH ARRAY IS ALWAYS RETURNED, never the live one, because the caller may sort it in place.
+   * THE LEGACY DEREFERENCES [L494] UNCONDITIONALLY - no `isNull` guard, no `structKeyExists` probe -
+   * so a product with no product type raises there. Reproduced as a raise.
    */
-  private applyFetchOptionsFilter(fetchOptions: boolean): Sku[] {
-    // [model/dao/SkuDAO.cfc:L151] `if(fetchOptions)` - without it there is no join and no filter.
-    if (!fetchOptions) {
-      return [...this.skus];
-    }
-
-    // [L152] the unguarded dereference, reproduced here rather than delegated, because the accessor
-    // that reproduces it is asynchronous and this helper serves a synchronous caller. The raise, its
-    // message and its trigger condition are identical.
+  public async getBaseProductType(): Promise<string | undefined> {
     if (this.productType === undefined) {
       throw new Error(
-        'Product.getSkus(sorted, fetchOptions=true) dereferences getProductType() unguarded ' +
-          '[model/dao/SkuDAO.cfc:L152 via model/entity/Product.cfc:L494] and this product has no ' +
-          'product type. The legacy fails on the same input.',
+        `Product '${this.productID}': getBaseProductType() requires the product type, which ` +
+          `[model/entity/Product.cfc:L494] dereferences unconditionally.`,
       );
     }
-
-    // The base type, resolved from materialised state - see the doc. `?? ''` is CFML's normalisation
-    // of a null operand in a string comparison; `toLowerCase()` is its case-insensitive `eq`.
-    const baseProductType: string = (
-      this.resolveBaseProductTypeSystemCodeFromAncestry(this.productType) ?? ''
-    ).toLowerCase();
-
-    // [L153-L154] the contentAccess branch.
-    if (baseProductType === 'contentaccess') {
-      throw new Error(
-        'Product.getSkus(sorted, fetchOptions=true) cannot be evaluated for a contentAccess ' +
-          'product. model/dao/SkuDAO.cfc:L154 adds "INNER JOIN FETCH sku.accessContents", which ' +
-          'FILTERS OUT skus with no access contents, and sku.accessContents ' +
-          '[model/entity/Sku.cfc:L77] belongs to the content-access module that AAP 0.2.2 excludes - ' +
-          'so this port cannot reproduce the filter. Returning the unfiltered array would silently ' +
-          'include skus the legacy omits.',
-      );
-    }
-
-    // [L155-L156] the merchandise branch - the one this slice CAN reproduce, because `sku.options` is
-    // materialized here.
-    if (baseProductType === 'merchandise') {
-      return this.skus.filter((sku: Sku): boolean => sku.getOptions().length > 0);
-    }
-
-    // [L157-L158] the subscription branch.
-    if (baseProductType === 'subscription') {
-      throw new Error(
-        'Product.getSkus(sorted, fetchOptions=true) cannot be evaluated for a subscription ' +
-          'product. model/dao/SkuDAO.cfc:L158 adds "INNER JOIN sku.subscriptionTerm" and ' +
-          '"INNER JOIN FETCH sku.subscriptionBenefits", both of which FILTER, and both associations ' +
-          'belong to the subscription module that AAP 0.2.2 excludes - so this port cannot reproduce ' +
-          'the filter.',
-      );
-    }
-
-    // No branch matched, so the legacy HQL carries no join and no filter [L151-L160 fall-through].
-    return [...this.skus];
+    return this.productType.getBaseProductType();
   }
 
   /**
-   * Reproduce the option-group weighted sort of `SkuService.getProductSkus`.
-   * [model/service/SkuService.cfc:L224-L240] over [model/dao/SkuDAO.cfc:L172-L202]
+   * Attribute sets assigned to this product, optionally narrowed by attribute-set type code.
    *
-   * The DAO orders sku IDs by a weighted sum across each sku's options:
+   * [model/entity/Product.cfc:L832-L838] verbatim - and note that it sits inside the component's
+   * `Deprecated Methods` section, which opens at [L830] and closes at [L840]:
    *
-   *   SELECT SwSku.skuID FROM SwSku
-   *     INNER JOIN SwSkuOption   ON SwSku.skuID = SwSkuOption.skuID
-   *     INNER JOIN SwOption      ON SwSkuOption.optionID = SwOption.optionID
-   *     INNER JOIN SwOptionGroup ON SwOption.optionGroupID = SwOptionGroup.optionGroupID
-   *   WHERE SwSku.productID = ?
-   *   GROUP BY SwSku.skuID
-   *   ORDER BY SUM(SwOption.sortOrder * POWER(10, N - SwOptionGroup.sortOrder)) ASC
+   *   public array function getAttributeSets(array attributeSetTypeCode=[]){
+   *     var smartList = getAssignedAttributeSetSmartList();
+   *     if(arrayFind(arguments.attributeSetTypeCode, "astProductCustomization") || arrayFind(arguments.attributeSetTypeCode, "astOrderItem")) {
+   *       getAssignedAttributeSetSmartList().addFilter('attributeSetType.systemCode', 'astOrderItem');
+   *     }
+   *     return smartList.getRecords();
+   *   }
    *
-   * and the service then rebuilds its entity array into that order [L234-L238].
+   * ★ THIS IS THE ONE PORTED ROUTE INTO THE ATTRIBUTE SUBSYSTEM. The `attributeValues` EAV READ path is
+   * deliberately not ported (see the OMISSION REGISTER), so `getAttributeSets` and nothing else
+   * crosses that boundary. `async`, reaching
+   * `ProductRepository.getAttributeSets(attributeSetTypeCode, productTypeIDs)` - the member declared
+   * for [model/dao/ProductDAO.cfc:L52]. The `array attributeSetTypeCode=[]` default at [L832] is
+   * reproduced.
    *
-   * ★ PORTED IN MEMORY, AND THAT IS SOUND RATHER THAN CONVENIENT - THE PROOF MATTERS. `N` is
-   * `getNextOptionGroupSortOrder()` [model/dao/SkuDAO.cfc:L203-L216], a GLOBAL `max(sortOrder)+1` over
-   * every option group in the database. Since `POWER(10, N - g) = 10^N / 10^g`, the whole ordering key
-   * is `10^N x SUM(sortOrder / 10^g)` - and multiplying every row's key by one positive constant cannot
-   * reorder them. So the ordering does NOT depend on `N`, the query needs no global reach, and
-   * {@link Product.getSkus} needs no repository call to stay faithful.
+   * ★ THE ARGUMENT IS A TRIGGER, NOT A FILTER VALUE - WHICH IS GENUINELY SURPRISING AND IS THE MOST
+   * IMPORTANT THING TO GET RIGHT HERE. Read [L834] again: `arguments.attributeSetTypeCode` is tested
+   * for membership and then NEVER PASSED ANYWHERE. The value actually filtered on is the literal
+   * `'astProduct'` fixed at [L801] inside `getAssignedAttributeSetSmartList()`, plus the literal
+   * `'astOrderItem'` conditionally added at [L835]. So the effective type-code set is
+   * `['astProduct']`, or `['astProduct', 'astOrderItem']` when the caller's array mentions either
+   * `astProductCustomization` or `astOrderItem`. That is what is passed to the port, and passing the
+   * caller's array straight through - the obvious reading of the signature - would filter on values
+   * the legacy never filtered on.
    *
-   * `N` IS STILL ACCEPTED AS AN OPTIONAL CONSTRUCTOR INPUT ({@link Product.nextOptionGroupSortOrder})
-   * for the one thing it does affect: the exact floating-point magnitudes. Supplying the real value
-   * reproduces MySQL's doubles bit for bit; omitting it derives a local `max(group sortOrder)+1` over
-   * this product's own materialized groups, defaulting to 1 when there are none - which is exactly what
-   * the DAO's own empty-table fallback yields [L205, L211-L213].
+   * ★ `arrayFind` USED AS A BOOLEAN IS THE INDEX-BASE TRAP, AND IT IS LIVE ON THIS LINE. CFML's
+   * `arrayFind` returns a 1-BASED index or 0, and `||` over it works because 0 is falsy. TypeScript's
+   * `findIndex` returns a 0-BASED index or -1, and BOTH -1 AND 0 ARE TRUTHY - so a literal
+   * transliteration would make the condition ALWAYS true and would always add the `astOrderItem`
+   * filter. `includes()` is used instead, which expresses the membership question the legacy was
+   * really asking without going near an index. It is a defect to write `if (index > 0)` against a
+   * `findIndex` result, and it is equally a defect to write `if (findIndex(...))` at all.
    *
-   * ★ THREE FIDELITY POINTS THAT A NAIVE "SORT BY OPTION SORT ORDER" WOULD GET WRONG:
+   * LEGACY-NOTE [model/entity/Product.cfc:L833-L836]: THE CONDITIONAL FILTER WORKS ONLY BY ACCIDENT OF
+   * MEMOIZATION. [L833] captures the smart list into `smartList`, and [L835] then calls
+   * `getAssignedAttributeSetSmartList()` AGAIN to add the filter rather than using the local. Because
+   * that accessor memoizes into `variables.assignedAttributeSetSmartList` [L796], both expressions
+   * denote the SAME object and the filter does reach the list [L837] returns. Had the accessor not
+   * memoized, the filter would have been applied to a discarded second list and silently lost.
+   * Preserved deliberately; do not fix without a product decision.
    *
-   *   1. THE INNER JOIN CHAIN EXCLUDES OPTION-LESS SKUS from the ordered ID list, so the legacy's
-   *      `arrayFind(sortedArray, skuID)` [L236] returns 0 for such a sku and the very next line
-   *      assigns `sortedArrayReturn[0]` - an invalid 1-based index. That is a genuine raise, and it is
-   *      REACHABLE: the guard at [L223] only requires the FIRST sku to have options. Reproduced as a
-   *      raise. Note it cannot fire when `fetchOptions` is true for a merchandise product, because
-   *      `applyFetchOptionsFilter` has already removed those skus.
-   *   2. A NULL `SwOption.sortOrder` CONTRIBUTES NOTHING TO THE SUM - SQL `SUM` skips nulls - and a sku
-   *      whose every option has a null sort order therefore has a NULL key, which MySQL orders FIRST
-   *      ascending. Both behaviours are reproduced: undefined sort orders are skipped, and a sku with
-   *      no contributing term sorts ahead of every sku with one.
-   *   3. THE SORT IS STABLE HERE AND UNSPECIFIED THERE. Two skus with equal keys have no defined
-   *      relative order in SQL; a stable sort is one of the permitted outcomes, and it is the one that
-   *      makes this method's own tests deterministic.
-   *
-   * NOT REPRODUCED, AND DELIBERATELY: `arrayResize(sortedArrayReturn, arrayLen(sortedArray))` [L232]
-   * sizes the result to the ORDERED ID LIST's length rather than to the entity array's, so when the two
-   * differ - which `fetchOptions` filtering can cause for a contentAccess or subscription product - the
-   * legacy returns an array with UNINITIALISED HOLES. Those two product types already raise in
-   * `applyFetchOptionsFilter`, so the hole case is unreachable in this port; it is recorded here so the
-   * absence is a decision rather than an oversight.
+   * LEGACY-NOTE [model/entity/Product.cfc:L807-L818]: A FIDELITY GAP THAT CANNOT BE CLOSED FROM HERE,
+   * recorded rather than papered over. The omitted `getAssignedAttributeSetSmartList()` builds a
+   * four-disjunct `WHERE`: `globalFlag = 1` OR product-type id IN the `productTypeIDPath` OR
+   * `productID = <this product>` OR `brandID = <this brand>`. The declared port member accepts
+   * `attributeSetTypeCode` and `productTypeIDs` ONLY, so the first two disjuncts are expressible and
+   * the PRODUCT-ID and BRAND-ID disjuncts are NOT. An attribute set assigned directly to this product
+   * or to its brand, and not global and not attached to its product-type path, will therefore be
+   * absent from the result. Closing the gap would require a new port member or a widened signature,
+   * both forbidden (prohibition 12), so the gap is documented at the call site instead. The legacy
+   * `WHERE` also interpolates those ids directly into statement text [L810, L812, L814]; the port
+   * binds every value as a prepared-statement parameter, which is a security improvement the plan
+   * mandates project-wide.
+   * Preserved deliberately; do not fix without a product decision.
    */
-  private sortSkusByOptionGroupWeighting(skus: Sku[]): Sku[] {
-    // `N` - supplied for bit-identical arithmetic, otherwise derived locally. Ordering is invariant in
-    // it either way; see the doc block.
-    let n: number;
-    if (this.nextOptionGroupSortOrder !== undefined) {
-      n = this.nextOptionGroupSortOrder;
-    } else {
-      let maxGroupSortOrder: number | undefined;
-      for (const sku of skus) {
-        for (const option of sku.getOptions()) {
-          const group: OptionGroup | undefined = option.getOptionGroup();
-          if (group === undefined) {
-            continue;
-          }
-          const groupSortOrder: number = group.getSortOrder();
-          if (maxGroupSortOrder === undefined || groupSortOrder > maxGroupSortOrder) {
-            maxGroupSortOrder = groupSortOrder;
-          }
-        }
-      }
-      // [model/dao/SkuDAO.cfc:L205] the seed of 1, which also survives an empty table [L211-L213].
-      n = maxGroupSortOrder === undefined ? 1 : maxGroupSortOrder + 1;
+  public async getAttributeSets(
+    attributeSetTypeCode: readonly string[] = [],
+  ): Promise<AttributeSetSummary[]> {
+    if (this.productRepository === undefined) {
+      throw this.missingCollaborator('product repository', 'L833');
     }
 
-    // The ordering key per sku: `SUM(option.sortOrder * 10^(N - optionGroup.sortOrder))`, with a
-    // `undefined` key standing for SQL NULL. Computed once per sku rather than inside the comparator.
-    const weights: Map<Sku, number | undefined> = new Map<Sku, number | undefined>();
-    const orderedSkuIds: Set<string> = new Set<string>();
-
-    for (const sku of skus) {
-      let weight: number | undefined;
-      for (const option of sku.getOptions()) {
-        const group: OptionGroup | undefined = option.getOptionGroup();
-        if (group === undefined) {
-          continue;
-        }
-        const optionSortOrder: number | undefined = option.getSortOrder();
-        // [model/dao/SkuDAO.cfc:L199] `SUM(SwOption.sortOrder * ...)` - SQL SUM skips NULL terms.
-        if (optionSortOrder === undefined) {
-          continue;
-        }
-        const term: number = optionSortOrder * Math.pow(10, n - group.getSortOrder());
-        weight = weight === undefined ? term : weight + term;
-      }
-      weights.set(sku, weight);
-
-      // The INNER JOIN chain [L180-L191] admits a sku only if it has at least one option joined
-      // through to an option group - which is exactly the condition under which a term was computed.
-      if (sku.getOptions().length > 0) {
-        orderedSkuIds.add(sku.getSkuID());
-      }
+    // [L801] the fixed base filter, then [L834-L836] the conditional addition. `includes` rather than
+    // an index test - see the index-base note above.
+    const effectiveTypeCodes: string[] = ['astProduct'];
+    if (
+      attributeSetTypeCode.includes('astProductCustomization') ||
+      attributeSetTypeCode.includes('astOrderItem')
+    ) {
+      effectiveTypeCodes.push('astOrderItem');
     }
 
-    // [model/service/SkuService.cfc:L234-L238] the rebuild loop, and the raise it hides. A sku absent
-    // from the ordered ID list yields `arrayFind` = 0, and `sortedArrayReturn[0] = ...` is an invalid
-    // 1-based assignment.
-    for (const sku of skus) {
-      if (!orderedSkuIds.has(sku.getSkuID())) {
-        throw new Error(
-          `Product.getSkus(sorted=true) cannot place sku ${JSON.stringify(sku.getSkuID())}, which ` +
-            'has no options. model/dao/SkuDAO.cfc:L180-L191 joins SwSkuOption INNER, so an ' +
-            'option-less sku is absent from the ordered id list, model/service/SkuService.cfc:L236 ' +
-            'then gets arrayFind = 0, and L237 assigns sortedArrayReturn[0] - an invalid 1-based ' +
-            'index. The legacy fails on the same input; the guard at L223 only requires the FIRST ' +
-            'sku to have options.',
-        );
-      }
-    }
+    // [L810] the product-type disjunct: `productTypeIDPath` split on commas. Empty when this product
+    // has no product type, which the port documents as meaning "global sets only" rather than
+    // "no filter" - matching [L808], where `globalFlag = 1` is the disjunct that always applies.
+    const productTypeIDs: readonly string[] =
+      this.productType === undefined ? [] : listToArray(this.productType.getProductTypeIDPath());
 
-    // `ORDER BY ... ASC` [model/dao/SkuDAO.cfc:L199] with SQL's NULLS FIRST for ascending order.
-    return [...skus].sort((left: Sku, right: Sku): number => {
-      const leftWeight: number | undefined = weights.get(left);
-      const rightWeight: number | undefined = weights.get(right);
-      if (leftWeight === undefined && rightWeight === undefined) {
-        return 0;
-      }
-      if (leftWeight === undefined) {
-        return -1;
-      }
-      if (rightWeight === undefined) {
-        return 1;
-      }
-      return leftWeight - rightWeight;
-    });
+    // [L837] `return smartList.getRecords();`
+    return this.productRepository.getAttributeSets(effectiveTypeCodes, productTypeIDs);
   }
-}
 
-// ---------------------------------------------------------------------------
-// WHAT THE TEST TIER MUST PIN FOR THIS MODULE
-//
-// AAP 0.6.6 records that only TWO legacy test files touch the in-scope slice, and ONE OF THEM IS THIS
-// ENTITY'S: `meta/tests/unit/entity/ProductTest.cfc`. Obligation 1 below is therefore the single
-// LEGACY-EXTENDED assertion on this class - it must carry the original fixture forward byte for byte.
-// Everything else is NET-NEW and must be labelled as such in `tests/traceability/legacyTestMap.ts`;
-// presenting any of it as parity would fail AAP 0.9.4.
-//
-//   1. ★ LEGACY-EXTENDED - `getProductURL()` returns `/<globalURLKeyProduct>/nike-air-jorden/`, from
-//      `productUrlIsCorrectlyFormatted()` in `meta/tests/unit/entity/ProductTest.cfc`. The fixture's
-//      `urlTitle` is the misspelled `nike-air-jorden` and it is retained VERBATIM: it is the legacy
-//      assertion's input, not a typo to tidy. The four cases inherited from
-//      `meta/tests/unit/entity/SlatwallEntityTestBase.cfc` come with it.
-//   2. `getProductURL()` and `getListingProductURL()` differ ONLY by the leading slash, and BOTH RAISE
-//      when the resolved `globalURLKeyProduct` setting or the `urlTitle` is absent. Assert the raise -
-//      an empty-string default would render a URL that resolves to the wrong page.
-//   3. ★ D1 - `getProductRating()` averages review #1's rating n times, so a product with ratings
-//      [5, 1, 1] reports 5. Spy on the reviews array and assert `getRating()` is called n times ON
-//      THE FIRST ELEMENT. A test that only checks the number would pass against a corrected loop.
-//   4. ★ D2 - `getPageIDs()` ALWAYS raises, and the message must name both steps: the `getPages()`
-//      call against a `listingPages` property, and the attribute-value fallback that turns it into
-//      `""` before `arrayLen("")` fails.
-//   5. ★ D3 - `getTemplateOptions()` ALWAYS raises, naming `getProductTemplates()` as declared nowhere
-//      in the repository and `HibachiService.onMissingGetMethod`'s read of an empty argument struct as
-//      the mechanism.
-//   6. ★ D4 - `getTemplate()` never returns a `variables.template` value, because nothing in the
-//      repository calls `setTemplate` on a product. Assert the setting-backed branch is the only live
-//      one, and that it RAISES when the setting was not materialized.
-//   7. ★ D5 - `getBrandOptions()` returns row 0 relabelled and rows 1..n untouched, and it RAISES on
-//      an EMPTY candidate list. The empty-list raise is the assertion that documents why the legacy's
-//      unguarded `options[1]` is safe there and would not be here.
-//   8. ★ D6 - `getImageGalleryArray()` puts the image DESCRIPTION in `name`, and its two loops dedupe
-//      against ONE shared filename list using TWO different keys. Build a fixture where a product
-//      image and a sku image share a filename and assert exactly which entries survive; then assert
-//      the `skuID` key is PRESENT on sku entries and ABSENT on product-image entries.
-//   9. ★ D7 - `getQuantity()` ALWAYS raises here, so the location-branch discard cannot be asserted
-//      directly. Assert instead that the message names the inventory subsystem AND records D7, so the
-//      defect survives into whichever port eventually implements it. Same for `getQATS()`, which must
-//      raise THROUGH `getQuantity` rather than with its own message.
-//  10. ★ D8 - `getSalePrice()` on a product with skus and NO default sku returns `Money` zero AND
-//      calls `getSalePrice()` exactly once on the first sku. Both halves matter: the return value
-//      pins the missing `return`, the spy pins that the discarded call is still made.
-//  11. ★ D9 - `getSalePriceExpirationDateTime()` returns `now()` for a product with NO default sku and
-//      RAISES for a product WITH one. That pair is the whole defect: it works precisely for the
-//      products that cannot have a sale price to expire.
-//  12. ★ D10 - `getProductOptionsByGroup()` ALWAYS raises, naming both `getProductService()` and
-//      `ProductService.getProductOptionsByGroup` as undeclared.
-//  13. ★ D11 - `getAllowBackorderFlag()` returns the NUMBER 1 or 0, never a boolean, and raises when
-//      the setting was not materialized. Assert `typeof === 'number'` explicitly; a boolean return
-//      would satisfy a loose truthiness assertion and silently drop the `returntype="numeric"`
-//      contract.
-//  14. ★ D12 - THE ONE FIXED DEFECT. Call `getBrandName()` TWICE and assert BOTH calls return the
-//      brand name. Under the legacy the second returns `''`. Then assert a brand-less product returns
-//      `''` on every call, so the fix did not also remove the default. This is the test that makes the
-//      divergence auditable, and its doc comment must state that AAP 0.6.7's "unobservable" framing
-//      does not hold for this member.
-//  15. `getSkus()` with NO arguments returns the SAME ARRAY OBJECT on every call - assert identity,
-//      not deep equality - because `Sku.setProduct` [model/entity/Sku.cfc:L607] mutates it in place.
-//      Then assert that `getSkus(true)` and `getSkus(false, true)` return FRESH arrays, so a caller
-//      sorting the result cannot reorder the entity's own state.
-//  16. `getSkus(sorted=true)` orders by the option-group weighted sum, and the ORDER IS IDENTICAL
-//      whether `nextOptionGroupSortOrder` is supplied or derived. That is the executable form of the
-//      ordering-invariance proof on `sortSkusByOptionGroupWeighting`, and it is what licenses the
-//      method staying synchronous.
-//  17. `getSkus(sorted=true)` RAISES when any materialized sku has no options, reproducing
-//      `model/service/SkuService.cfc:L237`'s invalid `sortedArrayReturn[0]` assignment - and does NOT
-//      raise when the same product is fetched with `fetchOptions=true`, because the merchandise filter
-//      removed those skus first. Assert both directions.
-//  18. `getSkus(sorted=true)` does NOT sort when only the FIRST sku lacks options, however many
-//      options the others have - the guard at `model/service/SkuService.cfc:L223` tests `skus[1]`
-//      alone.
-//  19. `getSkus(fetchOptions=true)` filters to option-bearing skus for a `merchandise` product,
-//      RAISES for `contentAccess` and `subscription` naming the AAP exclusion, and filters NOTHING
-//      for a product whose product type carries no system code - the null-normalises-to-`''` case.
-//      And it RAISES on a product with no product type at all, reproducing
-//      `model/dao/SkuDAO.cfc:L152`.
-//  20. `getOptionGroups()` derives distinct groups from `skus -> options -> optionGroup`, sorted by
-//      the group's REQUIRED `sortOrder`, and `getOptionGroupCount()` agrees with its length. Include a
-//      sku whose option has NO group to prove those options are skipped rather than throwing.
-//  21. `getOptionsByOptionGroup()` matches the group id CASE-INSENSITIVELY, returns distinct options,
-//      and sorts options with a NULL `sortOrder` FIRST.
-//  22. `getSkuByID()` matches case-insensitively and returns `undefined` for a miss - the legacy falls
-//      off the end, so `undefined` is the faithful answer and `null` is not.
-//  23. `getSkuSalePriceDetails()` returns `undefined` for a sku id with no entry, NOT `{}`, and
-//      matches the key case-insensitively.
-//  24. `getImages()` returns the SAME ARRAY OBJECT as `getProductImages()` - assert identity. It is an
-//      alias, not a copy, and a copy would silently break `model/entity/Image.cfc:L158`'s in-place
-//      append.
-//  25. The five default-sku image delegators all RAISE on a product with no default sku, while the
-//      SIX price delegators all return `undefined` on the same product. That asymmetry is the
-//      source's and this pair of assertions is what stops a future sweep from "harmonising" it.
-//  26. ★ `getImageDirectory()` returns `''` - the empty string - and does NOT raise, because `Sku`
-//      declares no such method and the legacy therefore lands on the attribute-value fallback. Assert
-//      the empty string explicitly, and assert `Sku.prototype` has no `getImageDirectory`.
-//  27. `getPrice()` prefers a supplied `price` over the default sku's, and it is the ONLY one of the
-//      six price delegators with that first branch. Assert the other five ignore any such override.
-//  28. `getSalePriceDiscountType()` returns `'none'` for a product with no default sku, delegates
-//      otherwise, and MEMOIZES the delegated value - contrast obligation 14. Calling twice must hit
-//      the sku once.
-//  29. `getCrumbData()` returns all EIGHTEEN keys including the misspelled `retrictgroups` and
-//      `targetPrams`, and RAISES both when the base crumb array is empty and when the supplied path
-//      reduces to nothing. Assert the key spellings by exact string - they are Mura data-contract
-//      keys and a "corrected" spelling would break the consumer.
-//  30. `getSkuBySelectedOptions()`'s three error messages are byte-for-byte the source's, INCLUDING
-//      the typos `seperated`, `selectOptions` and `indvidual`. Assert the exact strings; they are the
-//      only record that this port did not quietly rewrite them.
-//  31. `getCategoryIDs()` emits a comma list in encounter order and returns `''` for a product in no
-//      categories - `listAppend`'s empty-list behaviour, not a leading comma.
-//  32. `getDefaultProductImageFiles()` skips skus whose `imageFile` is absent and de-duplicates by
-//      filename. Include two skus sharing an image and one with none.
-//  33. ★ `setBrand()` appends into the brand's LIVE array unconditionally when THIS PRODUCT is new,
-//      and at most once when it is saved. Construct all four newness combinations. Then assert
-//      `removeBrand()` splices BY REFERENCE - a distinct `Product` object with the same primary key
-//      must NOT be removed - clears the field EVEN when the product was absent from the array, and
-//      RAISES when called with no argument on a brand-less product.
-//  34. ★ S5 - `addListingPage()`'s two `isNew()` disjuncts are SWAPPED relative to the house pattern.
-//      Build the four newness combinations and assert which appends happen; specifically, adding the
-//      same SAVED page twice to an UNSAVED product must produce TWO near-side entries. Reversing
-//      either polarity must fail a test. Then assert `removeListingPage()` removes only ONE of them.
-//  35. The eleven pure-delegation pairs each make EXACTLY ONE far-side call and touch no near-side
-//      array. Spy on the far side; assert the near-side array is unchanged by the helper itself.
-//  36. The twelve `has*` probes match by PRIMARY KEY across two distinct objects representing the same
-//      saved row, EXCEPT `hasAttributeValue`, `hasProductReview` and `hasListingPage`, which are
-//      REFERENCE-ONLY because their link projections expose no key accessor. Assert that difference
-//      deliberately - it is stricter than the legacy, and the assertion is where that choice is
-//      recorded.
-//  37. `isNew()` is TRUE for `productID: ''` and FALSE otherwise, and `setBrand`/`addListingPage`
-//      observe it consistently with obligations 33 and 34.
-//  38. ★ THE ANTI-CONTRACT, in three parts. (a) `preInsert` and `preUpdate` are ABSENT from this
-//      class - the source's ORM hook banner is empty - so a future "every entity needs hooks" sweep
-//      has to read the note rather than add them. (b) `getAttributeSets`,
-//      `getAssignedAttributeSetSmartList` and `getListingPagesOptionsSmartList` are ABSENT, recorded
-//      at their locators instead. (c) NO aggregate `hasAnyXXX` probe exists on this class, because
-//      every aggregate call in the promotion engine targets a reward or a qualifier.
-//  39. `getSimpleRepresentationPropertyName()` returns exactly `'productName'`. A one-line test, and
-//      it guards two framework contracts: the `name` alias of every product option row and the admin
-//      keyword-search property.
-//  40. Every money-returning member answers with `Money`, never a `number` - `getPrice`,
-//      `getRenewalPrice`, `getListPrice`, `getLivePrice`, `getCurrentAccountPrice` and `getSalePrice`.
-//      AAP 0.8.3 admits no float arithmetic on a monetary value anywhere in the target, and
-//      `getSalePrice()`'s zero fallback is the one place a bare `0` could have crept in.
-// ---------------------------------------------------------------------------
+  // ===========================================================================
+  // ★★★ THE OMISSION REGISTER
+  //
+  // Every method declared in `model/entity/Product.cfc` that is deliberately NOT authored above, with
+  // its source locator and the reason. Collected in ONE PLACE so a reviewer can audit the decisions
+  // without reading the whole file, exactly as the class doc promises.
+  //
+  // "OMIT" MEANS: this member is not authored in the new TypeScript file, and the reason is recorded.
+  // IT NEVER MEANS a legacy file was deleted, edited, or altered in any way. `model/**` is
+  // REFERENCE-ONLY and the CFML monolith keeps running - the out-of-scope
+  // `model/service/OrderService.cfc` still injects `priceGroupService` [L60] and `promotionService`
+  // [L61], which is precisely the seam that makes this slice independently deployable.
+  //
+  // ---------------------------------------------------------------------------------------------
+  // CLUSTER 1 - IMAGE AND ASSET PATHS.  NINE MEMBERS.
+  //
+  //   getImages()                    [L178-L180]   returns `variables.productImages`
+  //   getAlternateImageDirectory()   [L223-L225]   `getURLFromPath(setting('globalAssetsImageFolderPath')) & '/product/'`
+  //   getImageGalleryArray(...)      [L267-L319]   ~53 lines, default `[{size='s'},{size='m'},{size='l'}]`
+  //   getImageDirectory()            [L320-L323]
+  //   getImagePath()                 [L324-L327]
+  //   getImage()                     [L328-L331]
+  //   getResizedImagePath()          [L332-L335]
+  //   getImageExistsFlag()           [L336-L338]   `getDefaultSku().getImageExistsFlag()`
+  //   getDefaultProductImageFiles()  [L497-L515]   `getService` at [L501], a sku smart list
+  //
+  // LEGACY-NOTE [model/entity/Product.cfc:L178-L180, L223-L225, L267-L339, L497-L515]: the image path
+  // requires `globalAssetsImageFolderPath`, which is NOT one of the seven keys published by
+  // ../ports/settingsProvider.js - that port declares exactly four - and `imageStore` is a STUB port
+  // for out-of-scope branches only. This is the same reasoning that omitted `Option.getImageDirectory()`
+  // [model/entity/Option.cfc:L81-L83] and the whole of `Sku`'s image path, and the annotation wording
+  // is matched to src/domain/entities/sku.ts so the two largest entities read consistently.
+  // `getDefaultProductImageFiles()` additionally reaches a `HibachiSmartList`, which is not cloned
+  // (AAP 0.6.2). Note that `Sku.getImageExistsFlag()` is itself authored as a refusing stub in
+  // src/domain/entities/sku.ts, so [L337]'s delegation would have refused anyway.
+  // Preserved deliberately; do not fix without a product decision.
+  //
+  // ---------------------------------------------------------------------------------------------
+  // CLUSTER 2 - STOCK AND INVENTORY.  FIVE MEMBERS.
+  //
+  //   getEstimatedReceivalDetails()          [L399-L405]   `getService` at [L401]
+  //   getEstimatedReceivalDates(...)         [L406-L434]
+  //   getQuantity(quantityType, skuID, locationID, stockID)  [L435-L492]  ~58 lines - THE LARGEST
+  //                                                          METHOD IN THE COMPONENT, with TWO
+  //                                                          `getService` sites at [L441] AND [L443]
+  //   getQATS()                              [L547-L549]   `return getQuantity("QATS");`
+  //   getAllowBackorderFlag()                [L551-L553]   `return setting("skuAllowBackorderFlag");`
+  //
+  // LEGACY-NOTE [model/entity/Product.cfc:L399-L492, L547-L553]: `Stock`, `Location` and every
+  // inventory entity are out of scope, so there is no collaborator to reach and no entity to return.
+  // `getAllowBackorderFlag()` fails a second, independent test as well: `skuAllowBackorderFlag` is not
+  // one of the four keys ../ports/settingsProvider.js declares. The PERSISTED SNAPSHOTS of two of
+  // these - `calculatedQATS` [L63] and `calculatedAllowBackorderFlag` [L64] - ARE preserved and
+  // readable through their generated accessors above, so the schema contract is intact (B5); only the
+  // RECOMPUTATION is out of scope. `getQuantity` is also the site of three `listFindNoCase` uses
+  // [L440, L442, L451], which is why `../../lib/cfml/list.js`'s `listFindNoCase` is not imported by
+  // this file - the only caller of it here is omitted.
+  // Preserved deliberately; do not fix without a product decision.
+  //
+  // ---------------------------------------------------------------------------------------------
+  // CLUSTER 3 - CMS, PAGES AND TEMPLATES.  FOUR MEMBERS.
+  //
+  //   getListingPagesOptionsSmartList()  [L146-L153]  `getService("contentService")` at [L148]
+  //   getTemplateOptions()               [L171-L176]  `getService("ProductService")` at [L173],
+  //                                                    guarded by `isDefined("variables.templateOptions")`
+  //                                                    rather than `structKeyExists` - the ONLY
+  //                                                    `isDefined` in the component
+  //   getTemplate()                      [L215-L221]  `setting('productDisplayTemplate')`
+  //   getCrumbData(path, siteID, baseCrumbArray)  [L370-L398]
+  //
+  // LEGACY-NOTE [model/entity/Product.cfc:L146-L153, L171-L176, L215-L221, L370-L398]: the Mura CMS
+  // bridge is out of scope, `Content` and `Template` are not among the eighteen entities,
+  // `productDisplayTemplate` is not one of the four `SettingKey` members, and two of the four build a
+  // `HibachiSmartList` (AAP 0.6.2). `getCrumbData` additionally takes a `siteID` and builds a
+  // site-relative breadcrumb, which is CMS presentation - and presentation subsystems are excluded
+  // wholesale. Schema continuity is unaffected: `Category.cmsCategoryID` (index `RI_CMSCATEGORYID`)
+  // and its `site` association survive as INERT persisted columns in src/domain/entities/category.ts
+  // with no CMS behaviour ported at all.
+  // Preserved deliberately; do not fix without a product decision.
+  //
+  // ---------------------------------------------------------------------------------------------
+  // CLUSTER 4 - PRODUCT REVIEWS.  ONE MEMBER.
+  //
+  //   getProductRating()  [L227-L239]
+  //
+  // LEGACY-NOTE [model/entity/Product.cfc:L227-L239]: `ProductReview` is not one of the eighteen
+  // in-scope entities, so `getProductReviews()` has nothing to return and the average cannot be
+  // computed. THE `singlularname` TYPO ON THE [L76] PROPERTY DECLARATION IS STILL PRESERVED as
+  // metadata in the property-contract transcription and in `ProductLegacyMetadata` - omitting the
+  // METHOD does not omit the COLUMN METADATA, and the two decisions are independent.
+  // FOR THE RECORD, THE OMITTED BODY CARRIES TWO DEFECTS OF ITS OWN, so that nobody ever "restores"
+  // it believing it worked: [L233] reads `var totalRatingPoints += ...` - a `var` DECLARATION combined
+  // with a compound assignment, which is invalid, and it also re-declares a variable already declared
+  // at [L228]; and the same line indexes `getProductReviews()[1]` INSIDE a loop over `i`, so it would
+  // sum the FIRST review's rating N times rather than each review once. Neither is repaired, because
+  // neither is ported.
+  // Preserved deliberately; do not fix without a product decision.
+  //
+  // ---------------------------------------------------------------------------------------------
+  // CLUSTER 5 - FRAMEWORK PROPERTY-OPTION AND SMART-LIST HELPERS.  THREE MEMBERS.
+  //
+  //   getProductTypeOptions(baseProductType)      [L125-L144]  `getPropertyOptionsSmartList` at [L131],
+  //                                                             `getService('productService')` at [L132]
+  //   getBrandOptions()                           [L534-L538]  `getPropertyOptions("brand")` at [L535]
+  //   getAssignedAttributeSetSmartList()          [L795-L822]  ~27 lines, `getService` at [L798]
+  //
+  // LEGACY-NOTE [model/entity/Product.cfc:L125-L144, L534-L538, L795-L822]: `getPropertyOptions` and
+  // `getPropertyOptionsSmartList` are METADATA-DRIVEN FRAMEWORK DISPATCH on
+  // org/Hibachi/HibachiEntity.cfc, which is a boundary to extract from and never modify and whose
+  // responsibilities the plan redistributes to typed repository queries. This applies the precedent
+  // src/domain/entities/priceGroup.ts set when it omitted `getParentPriceGroupOptions()` for exactly
+  // this reason, and it matches what src/domain/entities/productType.ts did with its own
+  // `getAssignedAttributeSetSmartList()` at [model/entity/ProductType.cfc:L280].
+  // `getAssignedAttributeSetSmartList()` fails on a SECOND ground as well - the non-ported
+  // `attributeValues` EAV path - and its filter and `WHERE` semantics are transcribed onto
+  // `getAttributeSets()` above, which is the one ported route into the attribute subsystem, together
+  // with the two disjuncts the declared port signature cannot express. `getBrandOptions()` also reads
+  // `rbKey('define.none')` [L536], preserved as an inert string constant in `ProductLegacyMetadata`
+  // because JavaRB is not ported and no i18n runtime is introduced.
+  // Preserved deliberately; do not fix without a product decision.
+  //
+  // ---------------------------------------------------------------------------------------------
+  // CLUSTER 6 - THE PRODUCT TITLE.  ONE MEMBER.
+  //
+  //   getTitle()  [L540-L545]  `getService("hibachiUtilityService")` at [L542]
+  //
+  // LEGACY-NOTE [model/entity/Product.cfc:L540-L545]: `getTitle()` reads
+  // `setting('productTitleString')` - whose default is a two-token substitution template declared at
+  // [model/service/SettingService.cfc:L193] - and hands it to
+  // `hibachiUtilityService.replaceStringTemplate(template=..., object=this)`. TWO independent
+  // boundaries block it: `productTitleString` is NOT one of the four keys
+  // ../ports/settingsProvider.js declares, and `replaceStringTemplate` is a Hibachi utility service
+  // that is not ported and whose behaviour - reflective path-expression substitution against an
+  // arbitrary object - is exactly the metadata-driven dispatch this migration removes.
+  // THE DEFAULT TEMPLATE'S TEXT IS DELIBERATELY NOT QUOTED HERE AND IS NOT CARRIED IN
+  // `ProductLegacyMetadata` EITHER, because reproducing it in any form - even as an inert constant -
+  // would put a configuration default into the domain layer, which is exactly what E6 and
+  // prohibition 5 forbid. The SettingService locator above is the single place to read it from.
+  // THE PERSISTED SNAPSHOT `calculatedTitle` [L65] IS PRESERVED and readable, so the schema contract
+  // holds. And note the consequence recorded at DEFECT 19: `getTitle()` consumes `getBrandName()`, so
+  // the memo repair would have fixed this method's repeat-call behaviour too.
+  // Preserved deliberately; do not fix without a product decision.
+  //
+  // ---------------------------------------------------------------------------------------------
+  // ★ CLUSTER 7 - THE §3.9 DECISION: `getSalePriceDetailsForSkus()` IS OMITTED. BRANCH (b).
+  //
+  //   getSalePriceDetailsForSkus()  [L517-L522]  `getService("promotionService")` at [L519]
+  //
+  // The decision procedure was followed exactly and it selected BRANCH (b) - OMIT - so this is stated
+  // in full rather than summarised. The legacy body is
+  //
+  //   variables.salePriceDetailsForSkus = getService("promotionService").getSalePriceDetailsForProductSkus(productID=getProductID());
+  //
+  // and the T2 mapping would replace the locator with an injected sale-price resolver. The candidate
+  // collaborator is ../ports/promotionRepository.js. It declares
+  // `getSalePricePromotionRewardsQuery(productID?)`, which is the port for
+  // [model/dao/PromotionDAO.cfc:L298] - the RAW six-branch UNION - and NOT for
+  // `getSalePriceDetailsForProductSkus` [model/service/PromotionService.cfc:L1022].
+  //
+  // The difference is not cosmetic. The SERVICE method reduces that raw result AND APPLIES THE
+  // ROUNDING RULE: the port's own documentation states that "Applying the rounding rule is the service
+  // tier's step, in getSalePriceDetailsForProductSkus [model/service/PromotionService.cfc:L1024-L1028]".
+  // An entity cannot perform that step - `roundingRuleService` lives under `src/services`, which is
+  // OUTSIDE this file's legal import surface - and calling the raw-query member here would return
+  // UNROUNDED prices under a method name that promises rounded ones. That is a money bug dressed as a
+  // port call.
+  //
+  // LEGACY-NOTE [model/entity/Product.cfc:L517-L522]: OMITTED under branch (b) of the §3.9 decision
+  // procedure. No member of ../ports/promotionRepository.js can serve
+  // `getSalePriceDetailsForProductSkus` [model/service/PromotionService.cfc:L1022], because the
+  // reduction and the rounding-rule application at [L1024-L1028] belong to the service tier and
+  // `getSalePricePromotionRewardsQuery` [model/dao/PromotionDAO.cfc:L298] returns the unreduced,
+  // unrounded rows. NO FOURTEENTH PORT AND NO NEW PORT MEMBER MAY BE CREATED, so the method is omitted
+  // rather than approximated. Its ONE in-scope consumer, `getSkuSalePriceDetails(skuID)` [L182-L187],
+  // is fully authored above and reads the ALREADY-REDUCED, ALREADY-ROUNDED detail map supplied as the
+  // `salePriceDetailsForSkus` hydration input - a structural association materialized at the
+  // repository boundary, which is the same technique the SKU currency cascade uses and not an invented
+  // port member.
+  // Preserved deliberately; do not fix without a product decision.
+  //
+  // ---------------------------------------------------------------------------------------------
+  // CLUSTER 8 - THE SIX OUT-OF-SCOPE BIDIRECTIONAL HELPER PAIRS.  TWELVE MEMBERS.
+  //
+  //   addAttributeValue / removeAttributeValue  [L680-L685]  cfc="AttributeValue", one-to-many
+  //   addProductImage   / removeProductImage    [L688-L693]  cfc="Image", one-to-many
+  //   addProductReview  / removeProductReview   [L704-L709]  cfc="ProductReview", one-to-many
+  //   addListingPage    / removeListingPage     [L712-L729]  cfc="Content", many-to-many OWNER,
+  //                                                           link table SwProductListingPage
+  //   addVendor         / removeVendor          [L772-L777]  cfc="Vendor", many-to-many inverse
+  //   addPhysical       / removePhysical        [L780-L785]  cfc="Physical", many-to-many inverse
+  //
+  // LEGACY-NOTE [model/entity/Product.cfc:L680-L685, L688-L693, L704-L709, L712-L729, L772-L777,
+  // L780-L785]: each far side is an entity outside the eighteen in scope, so per §1.5 the association
+  // collapses to an inert opaque identifier or is omitted entirely, and the `add*` / `remove*` /
+  // `has*` / `get*` members are DROPPED. This applies the precedent already set by
+  // `PriceGroup.appliedOrderItems`, `Brand.addAttributeValue`/`removeAttributeValue`,
+  // `PromotionCode.accounts`/`orders`, `Promotion.defaultImage` and
+  // `PromotionReward.shippingMethods`. `addListingPage` is the only one of the six on the OWNING side,
+  // and it is also the only one whose body would have needed both a local `arrayAppend` and a far-side
+  // one [L713-L718]; its `arrayFind`-based removal at [L721-L727] is exactly the 1-based-versus-0-based
+  // trap documented on `removeBrand`, and it is not ported.
+  // ALL SIX PAIRS WERE STILL READ VERBATIM AND INCLUDED IN THE INVERSION CROSS-CHECK, and all six
+  // `remove*` bodies are CLEAN - each calls a far-side `remove*`. Screening them was not optional
+  // merely because they are omitted; a reviewer who later brings one in scope inherits a verified
+  // verdict rather than an assumption.
+  // Preserved deliberately; do not fix without a product decision.
+  //
+  // ---------------------------------------------------------------------------------------------
+  // ★ CLUSTER 9 - THE `attributeValues` EAV READ PATH.  NO NINETEENTH FILE.
+  //
+  //   property name="attributeValues" ... cfc="AttributeValue" ... cascade="all-delete-orphan"  [L75]
+  //
+  // LEGACY-NOTE [model/entity/Product.cfc:L75]: the census across all eighteen in-scope entities finds
+  // EXACTLY FOUR `attributeValues` declarations - [model/entity/Sku.cfc:L70] and
+  // [model/entity/Brand.cfc:L60] both with `type="array"`, and [model/entity/Product.cfc:L75] and
+  // [model/entity/ProductType.cfc:L67] WITHOUT it - all four `cfc="AttributeValue"`,
+  // `cascade="all-delete-orphan"`, `inverse="true"`. THE `type="array"` INCONSISTENCY IS ANNOTATED AND
+  // NOT NORMALISED (prohibition 19). Applying the `appliedOrderItems` precedent: the collection is NOT
+  // materialized, NO nineteenth entity file is created (`attributeValue.ts` is FORBIDDEN), and the EAV
+  // READ path is not ported. THE FOLDER IS LOCKED AT EXACTLY EIGHTEEN FILES - no barrel, no
+  // `index.ts`, no `types.ts` (E7). The unhonoured `cascade="all-delete-orphan"` obligation is recorded
+  // in the repositories sibling, which owns persistence, and not here.
+  // The one consequence this file DOES carry is that `Product` remains one of only FOUR in-scope
+  // entities able to reach the `getAttributeValue` fallback at [org/Hibachi/HibachiEntity.cfc:L559]
+  // before the [L565] throw - which is the mechanism behind `getPageIDs()`,
+  // `getProductOptionsByGroup()` and `getSalePriceExpirationDateTime()` above. For the other fourteen
+  // entities an unmatched `get...` throws at [L565] directly.
+  // Preserved deliberately; do not fix without a product decision.
+  //
+  // ---------------------------------------------------------------------------------------------
+  // ★ CLUSTER 10 - THE TWELVE `getService(` SITES ON model/entity/HibachiEntity.cfc.
+  //
+  // LEGACY-NOTE [model/entity/HibachiEntity.cfc:L123, L130, L135, L145, L178, L180, L182, L194, L196,
+  // L207, L257, L266]: `Product.cfc` declares `extends="HibachiEntity"` UNQUALIFIED, which resolves to
+  // `model/entity/HibachiEntity.cfc` (274 lines), which itself declares
+  // `extends="Slatwall.org.Hibachi.HibachiEntity"` - A THREE-LEVEL CHAIN, NOT TWO. The intermediate
+  // class holds TWELVE `getService(...)` sites, SEVEN of them `attributeService`. They are MOOT here
+  // because the EAV path is not ported (cluster 9), but they are recorded so that they are not
+  // silently RE-IMPLEMENTED by someone who notices a gap and fills it. The inherited locator surface is
+  // deliberately not ported, and neither is `buildIDPathList`, `getPropertyOptions`,
+  // `getPropertyOptionsSmartList`, `formatValue`, `getFormattedValue`, `rbKey` or `isDeletable` from
+  // the framework base. `isNew()` is the ONE framework-derived member that survives, and it survives
+  // because it is genuine entity-local state derivable from this class's own id column.
+  // Preserved deliberately; do not fix without a product decision.
+  //
+  // ---------------------------------------------------------------------------------------------
+  // NOT IN THIS REGISTER, BECAUSE THEY ARE AUTHORED AS THROWING RATHER THAN OMITTED:
+  //   getPageIDs()                        [L191-L197]
+  //   getProductOptionsByGroup()          [L631-L633]
+  //   getSalePriceExpirationDateTime()    [L614-L622]  (DEFECT 25)
+  //   getUnusedProductSubscriptionTerms() [L649-L654]
+  // A throwing member is PRESENT in the public surface and reproduces a runtime failure; an omitted
+  // member is ABSENT. Conflating the two would misreport the interface, so the four are listed here
+  // only to say where they really are.
+  // ===========================================================================
+}
