@@ -12,52 +12,62 @@
 //
 //   1. The plan requires this file, at this path, as a TypeScript file (AAP 0.3.1 and
 //      0.4.1.2), so it is neither renamed to .js nor replaced by JSON.
-//   2. The dependency inventory is frozen at one runtime and TEN dev packages (AAP 0.5.2,
-//      0.7.3 standard 5). Neither `ts-node` nor `esbuild-register` is among them, and
-//      neither may be added.
-//   3. `jest-config@30.4.2` reads a TypeScript CONFIG FILE exactly two ways: natively,
+//   2. `jest-config@30.4.2` reads a TypeScript CONFIG FILE exactly two ways: natively,
 //      when the running Node reports type-stripping support, or otherwise through one of
-//      precisely those two loaders — named by a `@jest-config-loader` docblock, defaulting
-//      to `ts-node`, and any other loader name rejected outright. Node 20.20.2, the pinned
-//      runtime (.nvmrc; engines ">=20.19.0"), reports no type-stripping support at all:
-//      `process.features.typescript` is `undefined`, measured on this host, because that
-//      flag first appears in the 22.x line.
+//      precisely two loaders — named by a `@jest-config-loader` docblock, defaulting to
+//      `ts-node`, and any other loader name rejected outright. Read it in the installed
+//      copy: `node_modules/jest-config/build/index.js` computes
+//      `docblockPragmas['jest-config-loader'] || 'ts-node'`.
+//   3. Node 20.20.2, the pinned runtime (.nvmrc; engines ">=20.19.0"), reports no
+//      type-stripping support at all: `process.features.typescript` is `undefined`,
+//      measured on this host, because that flag first appears in the 22.x line.
 //
-// Jest therefore cannot read this file AS ITS CONFIG FILE under the pinned runtime and the
-// frozen inventory. It can read it as a PRESET, and that is the wiring in place:
-// package.json declares `"jest": { "preset": "./jest.config.ts" }`, and the `test` script
-// runs `jest --ci --config package.json`. Jest's preset resolver accepts a `.ts` path and
-// loads it with an ordinary `require`, which Node serves through its CommonJS loader — no
-// TypeScript loader, no eleventh package, and every setting below merged into the run
-// exactly as if this had been the config file itself. `npx jest --showConfig` is the
-// proof: the resolved configuration is identical either way.
+// The wiring that follows is therefore the plain one: this file IS the config file, Jest
+// finds it by implicit resolution — package.json declares no `jest` key at all, so there is
+// no second candidate to disambiguate — and loads it through the DEFAULT loader, `ts-node`,
+// since no `@jest-config-loader` docblock overrides it. The `test` script is exactly
+// `jest --ci`, with no `--config`. `npx jest --showConfig` is the proof of what resolves:
+// `rootDir` is this directory, `preset` is null, and `testMatch` is the single pattern
+// section 2 declares.
+//
+// ⭐ THAT IS WHY `ts-node` IS A DECLARED DEV DEPENDENCY, AND WHY IT IS NOT OPTIONAL.
+// package.json pins `ts-node` 10.9.2 as the ELEVENTH dev package, one beyond AAP 0.5.2's
+// ten, and it is the only addition to that inventory. It earns its place structurally
+// rather than by preference: facts 1-3 together mean that without it `jest` cannot read its
+// own configuration under the pinned runtime and does not start. An earlier revision
+// removed it and reached the suite through a `"jest": { "preset": "./jest.config.ts" }` key
+// in package.json — Jest's preset resolver `require`s a `.ts` path through Node's ordinary
+// CommonJS loader, which works only while this file contains no TypeScript-only syntax.
+// That mechanism is withdrawn: it made the manifest carry a loading trick to avoid naming a
+// loader, it required `jest --ci --config package.json` in the script and a `rootDir`
+// anchored by that flag, and it left two configuration candidates on disk that a bare
+// `npx jest` refused to choose between. Naming the loader is the honest form of the same
+// dependency, and the setup record for this environment calls `ts-node` mandatory for
+// precisely this reason.
 //
 // THREE CONSEQUENCES, STATED RATHER THAN HIDDEN
-//   * This file must contain no TypeScript-only syntax, because Node's CommonJS loader
-//     compiles it as JavaScript. Hence `module.exports = config` at the foot rather than
-//     `export default`, matching "type": "commonjs" in package.json and the CommonJS
-//     bundle esbuild emits; and hence the object below carries no `Config` type
-//     annotation, since an annotation is TypeScript-only syntax and would make the file
-//     unloadable. A JSDoc `@type` tag is not a substitute — the compiler ignores JSDoc
-//     types in a .ts file, measured, so writing one would imply a check that never runs.
-//     `tsconfig.json`'s `include` still names this file, so `tsc --noEmit` and
-//     typescript-eslint's type-aware rules still cover it as a program file.
-//   * A preset's keys bypass Jest's unknown-option validator, which inspects only the
-//     config file's own keys. A misspelled option here is silently ignored rather than
-//     reported, so the resolved configuration is verified by reading
-//     `npx jest --showConfig` instead of by trusting a warning that will not come.
-//   * `npm test` — or any invocation passing `--config package.json` — is the entry point,
-//     and the `test` script names the manifest explicitly for exactly that reason. A bare
-//     `npx jest` in this directory exits 1 with "Multiple configurations found", listing
-//     this file and the `jest` key side by side and directing the caller to `--config`,
-//     because implicit resolution refuses to choose between two candidates. That is a
-//     clear, actionable message rather than a silent mis-run. Removing the `jest` key to
-//     quiet it would not help: implicit resolution would then select this file as a config
-//     file and fail on the absent loader instead, per fact 3 above.
+//   * `npm test` — plain `jest --ci` — is the entry point, and a bare `npx jest` in this
+//     directory resolves identically, because this file is the only configuration candidate
+//     on disk. There is no `--config` flag to remember and no second source of truth.
+//   * This file still contains no TypeScript-only syntax, and still ends with
+//     `module.exports = config` rather than `export default`, matching "type": "commonjs" in
+//     package.json and the CommonJS bundle esbuild emits. Under `ts-node` an annotation and
+//     an ES export would both compile, so this is now a RETAINED PROPERTY rather than a
+//     requirement — retained because it keeps the file loadable by an ordinary CommonJS
+//     `require` as well as by the loader, which is worth having for a file whose whole job is
+//     to be read by tooling. Measured: `node -e "require('./jest.config.ts')"` succeeds.
+//     A JSDoc `@type` tag is still not used in place of an annotation — the compiler ignores
+//     JSDoc types in a .ts file, measured, so writing one would imply a check that never runs.
+//   * `tsconfig.json`'s `include` names this file, so it is a program file: `tsc --listFiles`
+//     lists it, and `tsc --noEmit` plus typescript-eslint's type-aware rules both cover it.
+//     The resolved runtime configuration is nevertheless verified by reading
+//     `npx jest --showConfig` rather than inferred from this source, because a setting Jest
+//     does not recognise is a run-time fact about Jest and not a type error.
 //
-// One thing this is NOT: the `preset` key in package.json is a LOADING mechanism, not
-// `preset: 'ts-jest'`. The ts-jest transform is declared explicitly in section 4d for the
-// reasons given there, and the object below declares no `preset` key of its own.
+// One thing this is NOT: no `preset` of any kind is in play. There is no `preset` key in
+// package.json — package.json carries no `jest` key at all — and the object below declares
+// none of its own, so in particular this is not `preset: 'ts-jest'`. The ts-jest TRANSFORM is
+// declared explicitly in section 4d for the reasons given there.
 //
 // Suite organisation is derived from `meta/tests/readme.txt`, the only legacy reference
 // any configuration file in this subtree has. That file is read and cited, never edited.
@@ -138,10 +148,10 @@ const config = {
   // rather than a matter of discipline.
   //
   // It is declared rather than left implicit even though Jest would arrive at the same
-  // directory unaided: given `--config package.json`, Jest anchors `rootDir` at the
-  // manifest's own directory, which IS this directory. The two agree by construction, and
-  // stating the value keeps every `<rootDir>` token below readable on its own terms
-  // instead of depending on where the runner was invoked from.
+  // directory unaided: Jest anchors `rootDir` at the directory of the configuration file it
+  // loaded, which IS this directory. The two agree by construction — `npx jest --showConfig`
+  // reports this directory either way — and stating the value keeps every `<rootDir>` token
+  // below readable on its own terms instead of depending on where the runner was invoked from.
   rootDir: '.',
 
   // `roots` bounds the file crawl, and both entries must exist on disk: Jest raises a
@@ -253,8 +263,9 @@ const config = {
   // flag, because package.json's only test script is `jest --ci`: relying on the flag
   // would mean the signal was, in practice, never produced. Output goes to coverage/,
   // which .gitignore already excludes — and Prettier 3 honours .gitignore, so the same
-  // single entry covers the formatter too and no separate .prettierignore exists. An
-  // always-on report therefore creates no diff churn.
+  // single entry covers the formatter too, with no separate .prettierignore to keep in
+  // sync. slatwall-ts/.gitignore is the one place that records that file's removal and the
+  // measurement behind it. An always-on report therefore creates no diff churn.
   //
   // `collectCoverageFrom` names src/ rather than the whole subtree so the denominator is
   // shippable source only — the suite is not credited for covering its own fixtures, and
@@ -339,11 +350,10 @@ const config = {
 //     prohibits.
 //   * `preset` — absent from the object above, and deliberately so. The explicit transform
 //     of section 4d supersedes `preset: 'ts-jest'`, and declaring both would leave two
-//     competing sources of truth for the same setting. The `preset` key that does exist,
-//     in package.json, points AT this file: it is how Jest loads this configuration at all
-//     (see HOW JEST LOADS IT in the header) and has nothing to do with the transform. Jest
-//     does not nest presets, so a `preset` declared here would in any case be discarded in
-//     favour of the outer one — one more reason the transform is named explicitly.
+//     competing sources of truth for the same setting. No `preset` exists anywhere else
+//     either: package.json carries no `jest` key, and `npx jest --showConfig` reports
+//     `preset` as null (see HOW JEST LOADS IT in the header for how this file is loaded
+//     instead).
 //   * `useESM` / `extensionsToTreatAsEsm` — see section 4d: the shipped artifact is
 //     CommonJS, so the suite exercises CommonJS.
 //   * `setupFiles` / `setupFilesAfterEnv` — nothing needs global bootstrapping. A global
@@ -354,7 +364,8 @@ const config = {
 //     part of the rest of Slatwall being converted.
 // -------------------------------------------------------------------------------------
 
-// CommonJS export, not `export default`: Node's CommonJS loader compiles this file as
-// JavaScript when Jest resolves it as a preset, so ES module syntax here would make the
-// runner unable to start. See HOW JEST LOADS IT in the header for the full derivation.
+// CommonJS export, not `export default`, matching "type": "commonjs" in package.json. Under
+// the `ts-node` loader either form would work, so this is the retained property consequence 2
+// in the header describes: it keeps the file loadable by a plain CommonJS `require` as well.
+// See HOW JEST LOADS IT for the full derivation.
 module.exports = config;

@@ -299,8 +299,15 @@ export const OPTION_DECLARED_PROPERTIES: DeclaredPropertyNameSet<OptionPropertyN
   });
 
 /**
- * Option's frozen metadata declaration — the runtime answer to the seven framework introspection
- * members this class deliberately does not declare.
+ * Option's frozen metadata declaration — what `manageEntity` reads to compose the seven framework
+ * introspection members onto an instance.
+ *
+ * ⚠️ THIS CLASS ALSO DECLARES ALL SEVEN ITSELF, AND THIS BLOCK USED TO SAY IT "deliberately does not
+ * declare" THEM. They are hand-written further down this module over its own frozen constants,
+ * alongside an `implements ManagedEntity` clause that obliges them, and `../base/populate`'s
+ * `Object.assign` then shadows those prototype methods with equivalent own-property closures over this
+ * declaration. `../base/AuditableEntity` records once which classes declare the seven and which rely
+ * on composition — `../product/ProductType.ts` is the only one that does the latter.
  *
  * See {@link EntityMetadataDeclaration} for what each member ports. This constant is the ONLY place
  * in this module where the class name and the ORM entity name appear as VALUES rather than as prose,
@@ -517,9 +524,13 @@ export interface SkuOptionOwner {
  *       `arguments.promotionQualifier.addExcludedOption( this )`
  * so asking either to REMOVE an exclusion ADDS one instead. Contrast
  * their correctly-paired siblings at [:L121-L123] and [:L137-L139], which do call `removeOption`.
- * These are NOT in the AAP §0.6.7 D1-D21 register — that register attributes D1, D2, D3, D16 and D19
- * to `Sku.cfc`, D5 to `Product.cfc` and D21 to `ProductType.cfc`, and lists nothing at all for this
- * file — so they are a finding of this port's own analysis.
+ * These are NOT in the AAP §0.6.7 source register — it attributes D1, D2, D3, D16 and D19 to
+ * `Sku.cfc`, D5 to `Product.cfc` and D21 to `ProductType.cfc`, and lists nothing at all for this file —
+ * so they are a finding of this port's own analysis, carried here WITHOUT a number of their own:
+ * the register is stated canonically, and only once, in the header of
+ * `src/ports/repositories/SkuRepository.ts` (AAP 0.6.7's frozen source range D1-D21, plus the
+ * source extension D22 and the three contract corrections D23, D24 and D25, with no D26 or beyond;
+ * and AAP 0.6.6's M1-M8 plus M9, with no M10 or beyond).
  *
  * The treatment S7 dictates, and the reasoning for it: because the members themselves are out of
  * scope, the honest carry-over is this record and NO CODE. Porting the two methods purely in order to

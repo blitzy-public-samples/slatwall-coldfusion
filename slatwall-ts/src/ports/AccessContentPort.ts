@@ -83,8 +83,11 @@
  * Four findings about the branch. Each is recorded here with its
  * locator because each is behavior a competent engineer would instinctively tidy up, and AAP
  * 0.8.2 Guideline 4 forbids exactly that: do not enhance or optimize business logic beyond what
- * the migration requires. None of them is assigned a defect or mismatch number — the plan's
- * registers are closed, and inventing an entry would misrepresent the artifact trail.
+ * the migration requires. None of them is assigned a defect or mismatch number, and inventing an entry
+ * would misrepresent the artifact trail: the register is stated canonically, and only once, in the
+ * header of `src/ports/repositories/SkuRepository.ts` (AAP 0.6.7's frozen source range D1-D21, plus
+ * the source extension D22 and the three contract corrections D23, D24 and D25, with no D26 or
+ * beyond; and AAP 0.6.6's M1-M8 plus M9, with no M10 or beyond).
  *
  * --------------------------------------------------------------------------------------------
  * TODO(parity) AC-1 — THREE DISTINCT SKU-CODE STRATEGIES LIVE INSIDE ONE METHOD
@@ -236,6 +239,8 @@
  * is, this type is the one place that widens, and it widens by adding members rather than by
  * changing the member below — so every consumer keeps compiling.
  */
+import type { ExactDecimal } from '../util/formatting';
+
 export interface AccessContentReference {
   /**
    * The resolved content's primary-key identifier.
@@ -307,13 +312,24 @@ export interface ContentAccessSkuCreationData {
    * model/service/SkuService.cfc:L193 (per content), hence required.
    *
    * TIGHTENING RECORDED (TR-1): the legacy value arrives inside an untyped structure and is
-   * typed `number` here. The tightening is evidenced, not assumed — `model/validation/Sku.json:L9`
+   * typed here. The tightening is evidenced, not assumed — `model/validation/Sku.json:L9`
    * declares `price` required with data type numeric and a minimum of 0 for the save context, so
    * a non-numeric price could never have survived validation. Enforcing the numeric contract at
    * the boundary is an idiom change; the validation rule itself remains owned by
    * `src/validation/rules/sku.rules.ts`, and this type neither duplicates nor relaxes it.
+   *
+   * ⭐ F07 — THE TYPE IS {@link ExactDecimal}, NOT `number`, AND THE DIRECTION OF FLOW IS WHY. This value
+   * is OUTBOUND: this slice reads it from creation data, hands it here, and persists it to
+   * `SwSku.price`, which is `ormtype="big_decimal"` [model/entity/Sku.cfc:L56]. A double could not
+   * represent every value that column accepts, so binding one would round a legacy-valid price silently.
+   *
+   * Contrast `../ports/PricingPort`'s `salePrice`, which stays `number` and is flagged where it is read
+   * in `../domain/sku/Sku.ts`: that value is INBOUND from the excluded promotion subsystem
+   * (AAP §0.2.2.1), it is never bound to a column, and this slice cannot observe the representation its
+   * producer uses. Tightening an inbound type this port cannot implement would assert a contract nothing
+   * here can honour; tightening this outbound one removes a real loss on a real write.
    */
-  readonly price: number;
+  readonly price: ExactDecimal;
 
   /**
    * The access-content identifiers to attach, in the order supplied.
@@ -415,4 +431,26 @@ export interface AccessContentPort {
    *          discovering it during a SKU write.
    */
   getContent(contentID: string): Promise<AccessContentReference | null>;
+
+  /**
+   * Resolves MANY access-content rows in one boundary call, keyed by identifier.
+   *
+   * ⭐ WHY THIS IS THE SAME QUESTION, NOT A NEW ONE. Both content-access shapes cross this boundary once
+   * PER IDENTIFIER: the bundled path loops the whole `contentAccess` list attaching every row to a
+   * single SKU, and the unbundled path creates one SKU per row. A product published against `k` content
+   * rows therefore crosses the boundary `k` times to ask `k` variations of one question, and this member
+   * asks it once. {@link AccessContentPort.getContent} keeps its single-identifier contract.
+   *
+   * ⚠️ IT MUST NOT REJECT FOR A MISSING IDENTIFIER. An identifier matching no row is ABSENT from the
+   * returned map, mirroring the `null` arm above — and for the same reason that arm exists: the legacy
+   * branch does not check the outcome, so the CONSUMER must decide what an unresolvable identifier
+   * means and at what point in its own walk. A batch that rejected would move that decision earlier and
+   * change which element is reported.
+   *
+   * ⚠️ AND IT MUST NOT CACHE (M7). The map answers one call and is owned by the caller.
+   *
+   * @param contentIDs - The identifiers to resolve. Duplicates are permitted and resolve once.
+   * @returns A map holding an entry ONLY for identifiers that matched a row.
+   */
+  getContentsByIDs(contentIDs: readonly string[]): Promise<Map<string, AccessContentReference>>;
 }

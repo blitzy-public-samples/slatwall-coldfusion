@@ -111,6 +111,15 @@
  * that is the behaviour to preserve: nothing here wraps the loop in one transaction, batches rows, or
  * adds a roll-back-everything path.
  *
+ * ⭐ ONE CONSEQUENCE OF M3 SHAPES WHERE THIS PORT'S ONE IMPORT BOUNDARY IS CHECKED. Preserving per-row
+ * commits means any refusal raised from inside the row body abandons the file half-imported. That is the
+ * correct outcome for a failure the LEGACY also has — a missing heading, a value the engine rejects — and
+ * the wrong outcome for a step the legacy COMPLETES and this port declines to reach: the partial
+ * catalogue would then be an artefact of the port. The content-assignment step at `:L257-L282` is the
+ * only such step, so its refusal is PREFLIGHTED over the whole record set before the first boundary
+ * opens (see {@link MySqlProductRepository.refuseRequestedContentAssignments}). No other check moved,
+ * and M3's shape is unchanged for every import inside the boundary.
+ *
  * M4 — REMOTE RETRIEVAL, AND A CORRECTION TO THE AAP. AAP §0.6.6 describes "a `new http()` fallback at
  * [L88-L90]". That is factually wrong and the locators show it: `/*` opens at
  * `model/dao/ProductDAO.cfc:L89` and `*` + `/` closes at `:L98`, so the block is COMMENTED-OUT DEAD
@@ -167,37 +176,83 @@
  * text and never in a whitelist.
  *
  * =================================================================================================
- * THE MEMBER CENSUS IS CLOSED AT FOUR — THREE PUBLIC, ONE PRIVATE (AAP §0.4.1.7, PHASE 9)
+ * THE PORTED DAO CENSUS IS CLOSED AT FOUR, PLUS THE TWO DATA-ACCESS PRIMITIVES THE SAVE AND DELETE
+ * PATHS REACH DIRECTLY (AAP §0.4.1.7, PHASE 9)
  * =================================================================================================
  * `model/dao/ProductDAO.cfc` is one `<cfscript>` block spanning `:L51-L438`, so — unlike
  * `model/dao/SkuDAO.cfc`, whose two private helpers hide in tag syntax at `:L204` and `:L222` — there
  * are provably no tag-syntax members to overlook. The four are `getAttributeSets` `:L52-L71`,
  * `loadDataFromFile` `:L73-L326`, the PRIVATE `saveImportData` `:L328-L417`, and
- * `searchProductsByProductType` `:L419-L437`.
+ * `searchProductsByProductType` `:L419-L437`. Three of those four are public and constitute the whole
+ * of {@link ProductRepository}.
+ *
+ * ⭐ TWO FURTHER PUBLIC MEMBERS PORT WRITES THE LEGACY DAO NEVER DECLARED, AND THEY ARE ON THE PORT:
+ * `saveProduct` and `removeProduct`. They are not additions to the product DAO's surface — they are the
+ * ports of two `org/Hibachi/HibachiDAO.cfc` primitives that the product paths reach WITHOUT going
+ * through any DAO interface. `model/service/ProductService.cfc:L287` calls
+ * `getHibachiDAO().save( target=arguments.product )` directly, and the delete path reaches
+ * `getHibachiDAO().delete( target=arguments.entity )` at `org/Hibachi/HibachiService.cfc:L64` through
+ * the composed base service. Both primitives are DATA ACCESS, so this file is where they belong.
+ *
+ * ⚠️ THEY ARE DECLARED ON {@link ProductRepository} RATHER THAN ON THIS CLASS ALONE, AND THE REASON IS A
+ * RECORDED FINDING. `src/services/ProductService.ts` requires a `persistProduct: EntityPersister<Product>`
+ * and the only `SwProduct` writes in the adapter layer belonged to `importFromFile` — a per-row column
+ * subset with no update form, no audit stamp and no foreign keys. Nothing could satisfy the persister, so
+ * the whole save path terminated in an unwireable collaborator; the F03 account on
+ * {@link ProductRepository.saveProduct} carries it in full. The service still consumes them through the
+ * one-member `EntityPersister` and `EntityRemover` callbacks `src/services/BaseService.ts` declares, so
+ * no service holds a repository reference and no generic CRUD port is invented.
  *
  * Nothing else is added. `getProduct`, `newProduct` and `getProductSmartList` are synthesized by
  * `org/Hibachi/HibachiService.cfc:L255-L281` and are declared on `ProductService`, not here;
- * `saveProduct` and `deleteProduct` are `ProductService` members at `model/service/ProductService.cfc`
- * `:L264` and `:L317`; `getProductOptionsByGroup` is called at `model/entity/Product.cfc:L631-L633`
+ * the SERVICE-level `saveProduct` and `deleteProduct` — with their populate, URL-title, validation and
+ * null-dance steps — remain `ProductService` members at `model/service/ProductService.cfc` `:L264` and
+ * `:L317`, and only the data-access primitives beneath them live here;
+ * `getProductOptionsByGroup` is called at `model/entity/Product.cfc:L631-L633`
  * against a service method that does not exist (D5, cited not owned) and is not supplied;
- * `integrationServices/google/model/dao/FeedDAO.cfc` is dead code with two independent syntax errors
- * (D12, cited not owned) and is neither ported nor deleted; `model/dao/DataDAO.cfc` is out of scope
+ * `integrationServices/google/model/dao/FeedDAO.cfc` is dead code carrying ONE parse failure — the
+ * `SELECT` list terminated by a comma immediately before `FROM`, `FeedDAO.cfc:L58` — and, separately,
+ * ONE SEMANTIC fault: the `INNER JOIN SwProduct` at `:L62-L63` supplies no `ON` predicate, which MySQL
+ * accepts as a Cartesian product rather than rejecting. Only the first proves the method could never
+ * have run; the second describes what it would have MEANT had it parsed. The itemised evidence and that
+ * classification live in `src/integrations/google/README.md` §9, D12's single home under AAP §0.4.1.10
+ * (D12, cited not owned), and the file is neither ported nor deleted; `model/dao/DataDAO.cfc` is out of scope
  * because AAP §0.6.3.1 narrows the data service to the single URL-title algorithm now living in
  * `src/util/urlTitle.ts`.
  */
 
-import { assertColumnName, assertTableName } from './QueryRunner';
+import {
+  assertColumnName,
+  assertTableName,
+  prepareBoundedRead,
+  settleBoundedRead,
+} from './QueryRunner';
 import { createSlatwallUUID } from '../../util/uuid';
 import { DataIntegrityError, DomainError, NotImplementedError } from '../../errors/DomainError';
+import type { Product } from '../../domain/product/Product';
+import type { DefaultSkuIdReader } from '../../domain/sku/Sku';
+import { applyPreInsertAudit, applyPreUpdateAudit } from '../../domain/base/AuditableEntity';
 import { mapProductSearchRow, mapRows } from './rowMappers';
+/*
+ * F5 — the ONLY cross-family adapter import in this file, and the reason it is here rather than the
+ * value being injected. `DEPRECATED_SETTING_DEFAULTS` is the settings module's table of source-backed
+ * defaults for legacy names the port's closed union deliberately excludes; reading it keeps every
+ * setting value this port uses enumerable from one module. It is safe in both directions that matter:
+ * `../settings/StaticSettingResolver` imports only `../../domain/BaseProductType`,
+ * `../../errors/DomainError` and a type-only port, so nothing reaches back into `./` and no cycle is
+ * possible; and it touches no configuration, so importing it does not put this file on the
+ * `src/config/**` load path that the adapter layer must stay off.
+ */
+import { DEPRECATED_SETTING_DEFAULTS } from '../settings/StaticSettingResolver';
 
 import type { AccountContextPort } from '../../ports/AccountContextPort';
+import type { BoundedReadResult, BoundedReadWindow } from '../../ports/repositories/BoundedRead';
 import type { MySqlRow } from './rowMappers';
-import type { PhysicalTableName, SqlExecutor } from './QueryRunner';
-import type { TransactionScope } from './UnitOfWork';
+import type { PhysicalTableName, SqlMutationExecutor } from './QueryRunner';
+import type { TransactionScope, UnitOfWork } from './UnitOfWork';
 import type {
   AttributeSetRow,
-  ProductImportSource,
+  ProductImportOptions,
   ProductRepository,
   ProductSearchRow,
 } from '../../ports/repositories/ProductRepository';
@@ -250,7 +305,96 @@ const PRODUCT_PRODUCT_TYPE_ID_COLUMN = assertColumnName(PRODUCT_TABLE, 'productT
 /** `SwProduct.defaultSkuID` — the target of the first back-fill, `model/dao/ProductDAO.cfc:L291`. */
 const PRODUCT_DEFAULT_SKU_ID_COLUMN = assertColumnName(PRODUCT_TABLE, 'defaultSkuID');
 
+/* `SwProduct.brandID` — the many-to-one at [`model/entity/Product.cfc:L66`].
+ *
+ * Declared ONCE and used by BOTH groups: the importer's brand lookup below, and the generic entity write
+ * added for F03, whose own column block would otherwise have redeclared it. */
+const PRODUCT_BRAND_ID_COLUMN = assertColumnName(PRODUCT_TABLE, 'brandID');
+
 /** `SwSku.skuID` — the identifier column named at `model/dao/ProductDAO.cfc:L207`. */
+/* ------------------------------------------------------------------------------------------------
+ * THE REMAINING `SwProduct` COLUMNS, ADDED FOR THE GENERIC WRITE (F03)
+ *
+ * The constants above serve the importer's lookups, which touch only the handful of columns a
+ * spreadsheet row supplies. A generic entity write has to name EVERY persistent column, so the rest are
+ * declared here. Sources: `model/entity/Product.cfc:L53-L59` for the scalars, `:L62-L65` for the four
+ * PERSISTED calculated columns, `:L69-L71` for the three foreign keys, `:L93` for the remote identifier
+ * and `:L96-L99` for the audit columns.
+ * ---------------------------------------------------------------------------------------------- */
+
+/** [`model/entity/Product.cfc:L53`] */
+const PRODUCT_ACTIVE_FLAG_COLUMN = assertColumnName(PRODUCT_TABLE, 'activeFlag');
+
+/** [`model/entity/Product.cfc:L57`] */
+const PRODUCT_DESCRIPTION_COLUMN = assertColumnName(PRODUCT_TABLE, 'productDescription');
+
+/** [`model/entity/Product.cfc:L58`] */
+const PRODUCT_PUBLISHED_FLAG_COLUMN = assertColumnName(PRODUCT_TABLE, 'publishedFlag');
+
+/** [`model/entity/Product.cfc:L59`] */
+const PRODUCT_SORT_ORDER_COLUMN = assertColumnName(PRODUCT_TABLE, 'sortOrder');
+
+/** [`model/entity/Product.cfc:L62`] — `ormtype="big_decimal"`. */
+const PRODUCT_CALCULATED_SALE_PRICE_COLUMN = assertColumnName(PRODUCT_TABLE, 'calculatedSalePrice');
+
+/** [`model/entity/Product.cfc:L63`] */
+const PRODUCT_CALCULATED_QATS_COLUMN = assertColumnName(PRODUCT_TABLE, 'calculatedQATS');
+
+/** [`model/entity/Product.cfc:L64`] */
+const PRODUCT_CALCULATED_ALLOW_BACKORDER_FLAG_COLUMN = assertColumnName(
+  PRODUCT_TABLE,
+  'calculatedAllowBackorderFlag',
+);
+
+/** [`model/entity/Product.cfc:L65`] */
+const PRODUCT_CALCULATED_TITLE_COLUMN = assertColumnName(PRODUCT_TABLE, 'calculatedTitle');
+
+/** [`model/entity/Product.cfc:L93`] */
+const PRODUCT_REMOTE_ID_COLUMN = assertColumnName(PRODUCT_TABLE, 'remoteID');
+
+/** [`model/entity/Product.cfc:L96`] */
+const PRODUCT_CREATED_DATE_TIME_COLUMN = assertColumnName(PRODUCT_TABLE, 'createdDateTime');
+
+/** [`model/entity/Product.cfc:L97`] */
+const PRODUCT_CREATED_BY_ACCOUNT_ID_COLUMN = assertColumnName(PRODUCT_TABLE, 'createdByAccountID');
+
+/** [`model/entity/Product.cfc:L98`] */
+const PRODUCT_MODIFIED_DATE_TIME_COLUMN = assertColumnName(PRODUCT_TABLE, 'modifiedDateTime');
+
+/** [`model/entity/Product.cfc:L99`] */
+const PRODUCT_MODIFIED_BY_ACCOUNT_ID_COLUMN = assertColumnName(
+  PRODUCT_TABLE,
+  'modifiedByAccountID',
+);
+
+/**
+ * Every writable `SwProduct` column in one fixed order, excluding the identifier.
+ *
+ * The identifier is handled separately because an insert LISTS it while an update MATCHES on it. The
+ * order is arbitrary but must be stable, because the value array is built by walking the same sequence.
+ */
+const PRODUCT_WRITABLE_COLUMNS: readonly string[] = Object.freeze([
+  PRODUCT_ACTIVE_FLAG_COLUMN,
+  PRODUCT_URL_TITLE_COLUMN,
+  PRODUCT_NAME_COLUMN,
+  PRODUCT_CODE_COLUMN,
+  PRODUCT_DESCRIPTION_COLUMN,
+  PRODUCT_PUBLISHED_FLAG_COLUMN,
+  PRODUCT_SORT_ORDER_COLUMN,
+  PRODUCT_CALCULATED_SALE_PRICE_COLUMN,
+  PRODUCT_CALCULATED_QATS_COLUMN,
+  PRODUCT_CALCULATED_ALLOW_BACKORDER_FLAG_COLUMN,
+  PRODUCT_CALCULATED_TITLE_COLUMN,
+  PRODUCT_BRAND_ID_COLUMN,
+  PRODUCT_PRODUCT_TYPE_ID_COLUMN,
+  PRODUCT_DEFAULT_SKU_ID_COLUMN,
+  PRODUCT_REMOTE_ID_COLUMN,
+  PRODUCT_CREATED_DATE_TIME_COLUMN,
+  PRODUCT_CREATED_BY_ACCOUNT_ID_COLUMN,
+  PRODUCT_MODIFIED_DATE_TIME_COLUMN,
+  PRODUCT_MODIFIED_BY_ACCOUNT_ID_COLUMN,
+]);
+
 const SKU_ID_COLUMN = assertColumnName(SKU_TABLE, 'skuID');
 
 /** `SwSku.productID` — the join column both back-fills use, `model/dao/ProductDAO.cfc:L290`. */
@@ -560,6 +704,188 @@ const PRODUCT_DEFAULTED_HEADINGS: readonly { readonly heading: string; readonly 
 /** The value `model/dao/ProductDAO.cfc:L144` and `:L147` supply for a defaulted flag. */
 const DEFAULTED_FLAG_VALUE = '1';
 
+/* ------------------------------------------------------------------------------------------------
+ * SEC-14 — WHICH COLUMNS AN IMPORTED FILE MAY ASSIGN
+ *
+ * ⚠️ THIS IS A SECOND, DIFFERENT QUESTION FROM THE ONE `assertColumnName` ANSWERS, AND CONFLATING THEM
+ * WAS THE FINDING. The whitelist in `./QueryRunner` answers "is this a real column of this table",
+ * which is an IDENTIFIER-SAFETY question: it exists so that no caller-supplied text can ever become
+ * statement text (D22). It does not, and cannot, answer "may a file uploaded by a remote party WRITE
+ * this column", which is an AUTHORIZATION question about mutation targets — CWE-915, mass assignment.
+ * Because the heading classifier at `model/dao/ProductDAO.cfc:L130-L140` accepts ANY heading whose
+ * first underscore-delimited segment is `product` or `sku`, every column of `SwProduct` and `SwSku`
+ * was reachable from the file: the primary keys, the four audit columns, the four `calculated*`
+ * columns the back-fills own, the integration identifier, and every relationship-control foreign key.
+ * D18 (AAP §0.6.7.7) closed the INJECTION half of this importer by parameterising it; the mutation
+ * half needed its own control, and this is it.
+ *
+ * ⭐ THE TWO CHECKS ARE KEPT SEPARATE ON PURPOSE, AND NEITHER REPLACES THE OTHER. This allowlist is a
+ * strict subset of the schema whitelist, so it would be tempting to fold one into the other. That
+ * would be wrong twice over: the schema whitelist is consulted by statement composition everywhere in
+ * this file, including for columns no import may write (the audit pair, the generated identifier, the
+ * generated URL title), so narrowing it would break those writes; and an authorization rule that
+ * lives inside an identifier-safety helper is a rule the next reader will not know is there.
+ *
+ * WHAT IS REFUSED, AND WHY EACH ONE
+ * ---------------------------------
+ *   • PRIMARY KEYS — `productID`, `skuID`. The archetype of the finding. `:L410` generates the
+ *     identifier for an insert and `:L393-L396` matches on it for an update, so a file-supplied value
+ *     could only ever collide with or hijack an existing row. Note this is also the one refusal the
+ *     legacy could not have honoured even if it wanted to: `:L411-L413` appends the identifier column
+ *     a SECOND time to an insert that already carried it from the file, which MySQL answers with error
+ *     1110 (column specified twice). The legacy path was unusable, so nothing that worked is lost.
+ *   • AUDIT COLUMNS — `createdDateTime`, `createdByAccountID`, `modifiedDateTime`,
+ *     `modifiedByAccountID`. `:L363-L366` sets all four from the server's clock and the acting
+ *     account. A file that could set them could forge provenance, and the insert would carry each
+ *     column twice.
+ *   • CALCULATED COLUMNS — every `calculated*` member. `:L287-L325` back-fills them from the database
+ *     after the import; a file-supplied value is either overwritten or, worse, survives as a figure no
+ *     computation produced. `calculatedQATS` in particular is the availability gate the public feed
+ *     ranges on (`integrationServices/google/controllers/feed.cfc:L72`).
+ *   • RELATIONSHIP CONTROL — `brandID`, `productTypeID`, `defaultSkuID` on the product; `productID`
+ *     and `subscriptionTermID` on the SKU. The importer resolves associations ITSELF, by NAME, and
+ *     supplies them through the insert-only `extraData` path at `:L368-L378`; a heading that wrote a
+ *     foreign key directly would bypass that resolution and could graft a row onto an arbitrary
+ *     parent, including one the file's author cannot see.
+ *   • `urlTitle` on the product. Server-generated at `:L398-L409` on the insert path, so permitting it
+ *     would both override a generated value and append the column twice.
+ *   • `remoteID` ON THE SKU, THOUGH NOT ON THE PRODUCT — see the note below, which is the one
+ *     asymmetry here and the one that shows these lists are per-table rather than copied.
+ *
+ * ⭐ WHY `product_remoteID` IS PERMITTED. It is not an oversight and it is not convenience: a SOURCE
+ * REQUIREMENT demands it. `model/dao/ProductDAO.cfc:L100` lists `product_remoteID` FIRST in the
+ * lookup-priority walk, so an import keyed on the integration identifier is a first-class legacy
+ * behaviour — and matching on a value the import may never store would make that walk permanently
+ * unsatisfiable. The SKU side has no such requirement: `:L109` hard-codes `sku_skucode` as the only
+ * SKU lookup column and consults no remote identifier at all, so `sku_remoteID` is refused under
+ * deny-by-default.
+ *
+ * FAIL-CLOSED, AND POSITIONED BEFORE THE FIRST ROW — the same argument SEC-11 makes for the SKU
+ * combination bound. The check runs in {@link MySqlProductRepository.buildImportPlan}, which completes
+ * BEFORE `:L176` opens the first per-row boundary, so a file naming an unauthorised column imports
+ * NOTHING rather than importing rows until the offending column happens to matter. That matters
+ * especially here, because M3 commits every row independently: a refusal discovered mid-file would
+ * leave a partially imported catalog that no rollback undoes.
+ *
+ * NO NUMBER, NO POLICY OBJECT AND NO CONFIGURATION SWITCH. Unlike SEC-11 and SEC-12 this control
+ * needs no operator figure: the answer is derived entirely from the entity declarations and from the
+ * importer's own source locators above, so it is stated here rather than injected. There is
+ * deliberately no override flag — a switch that re-opens mass assignment is the finding with a
+ * spelling.
+ * --------------------------------------------------------------------------------------------- */
+
+/**
+ * The `SwProduct` columns an imported file may assign, compared case-insensitively.
+ *
+ * Declared in the entity's own casing for readability and normalised on construction, because a
+ * heading's casing is whatever the file's author typed.
+ */
+const IMPORTABLE_PRODUCT_COLUMNS: ReadonlySet<string> = new Set(
+  [
+    // `model/entity/Product.cfc:L52-L59` — the plain persistent scalars.
+    'activeFlag',
+    'publishedFlag',
+    'productName',
+    'productCode',
+    'productDescription',
+    'sortOrder',
+    // `model/entity/Product.cfc:L93`, required by the lookup walk at `model/dao/ProductDAO.cfc:L100`.
+    'remoteID',
+  ].map((column) => column.toLowerCase()),
+);
+
+/**
+ * The `SwSku` columns an imported file may assign, compared case-insensitively.
+ *
+ * `model/entity/Sku.cfc:L52-L59` — the plain persistent scalars, and nothing else. No identifier, no
+ * audit column, no `calculatedQATS`, no `productID`, no `subscriptionTermID` and no `remoteID`.
+ */
+const IMPORTABLE_SKU_COLUMNS: ReadonlySet<string> = new Set(
+  [
+    'activeFlag',
+    'skuCode',
+    'listPrice',
+    'price',
+    'renewalPrice',
+    'imageFile',
+    'userDefinedPriceFlag',
+  ].map((column) => column.toLowerCase()),
+);
+
+/** The deny-by-default answer for any table the importer does not write from file headings. */
+const NO_IMPORTABLE_COLUMNS: ReadonlySet<string> = new Set<string>();
+
+/**
+ * The importable-column allowlist for one table — SEC-14.
+ *
+ * ⚠️ DENY BY DEFAULT. Only the two tables the heading classifier can target have a list. Every other
+ * physical table — the product type, the brand, the option, the option group, the link table and the
+ * alternate SKU code — answers the empty set, so if a future change ever routed file headings at one
+ * of them the refusal would be automatic rather than dependent on someone remembering to add a list.
+ *
+ * @param table - the already-validated physical table.
+ * @returns the normalised set of columns an imported file may assign on that table.
+ */
+function importableColumnsOf(table: PhysicalTableName): ReadonlySet<string> {
+  if (table === PRODUCT_TABLE) {
+    return IMPORTABLE_PRODUCT_COLUMNS;
+  }
+
+  if (table === SKU_TABLE) {
+    return IMPORTABLE_SKU_COLUMNS;
+  }
+
+  return NO_IMPORTABLE_COLUMNS;
+}
+
+/**
+ * Refuses a heading whose column an imported file may not assign — SEC-14.
+ *
+ * The column is the heading's LAST underscore-delimited segment, which is the same derivation
+ * `model/dao/ProductDAO.cfc:L349` uses to turn a heading into a column name, so authorization is asked
+ * about exactly the column that would be written.
+ *
+ * ⚠️ THE REFUSED COLUMN IS NAMED IN THE FAILURE AND THE CELL VALUE IS NOT. An operator has to be able
+ * to see which heading was rejected — a refusal they cannot act on gets worked around — but the row's
+ * DATA is never recorded, because it is remote-supplied content and this failure is destined for a
+ * log. The heading itself came from the file too, so it travels as `context` rather than in the
+ * message, and `../../errors/DomainError` publishes neither to a caller.
+ *
+ * @param table - the physical table the heading is classified onto.
+ * @param heading - the file heading, for example `product_productCode`.
+ * @throws DomainError when the column is not on that table's importable allowlist.
+ */
+function assertImportableColumn(table: PhysicalTableName, heading: string): void {
+  const column = normaliseHeading(listLast(heading, HEADING_DELIMITER));
+
+  if (!importableColumnsOf(table).has(column)) {
+    throw new DomainError(
+      'An imported file named a column that an import may not assign, so the import was refused ' +
+        'before any row was written. Identifiers, audit columns, calculated columns and the columns ' +
+        'that control a record relationship are set by the importer itself and cannot be supplied by ' +
+        'the file.',
+      { context: { table, heading, column } },
+    );
+  }
+}
+
+/**
+ * Refuses an entire classified heading list before the import begins — SEC-14.
+ *
+ * Every heading is checked rather than stopping at the first, so one pass reports the first offender
+ * with the whole list in hand; the refusal is still immediate, because a single unauthorised heading
+ * makes the import as a whole unacceptable.
+ *
+ * @param table - the physical table the list is classified onto.
+ * @param headings - the classified headings for that table.
+ * @throws DomainError on the first heading the allowlist refuses.
+ */
+function assertImportableColumns(table: PhysicalTableName, headings: readonly string[]): void {
+  for (const heading of headings) {
+    assertImportableColumn(table, heading);
+  }
+}
+
 /**
  * The discriminator `model/dao/ProductDAO.cfc:L250` writes into `attributeValueType`.
  *
@@ -586,47 +912,51 @@ const IMAGE_EXTENSION_SEPARATOR = '.';
  * ============================================================================================== */
 
 /**
- * The statement-execution surface this adapter needs.
+ * The statement-execution surface this adapter needs: the read-plus-write pair, under a local name.
  *
- * `SqlExecutor` from `QueryRunner.ts` is deliberately one member wide so a test can substitute a plain
- * object literal, and that width is preserved: this extends it rather than replacing it. It adds
- * exactly one member, and only because the importer WRITES — `SqlExecutor.execute` normalises a driver
- * result into rows through `rowMappers.ts` `toRows`, which RAISES when the driver returns a write
- * acknowledgement instead of a row list, so a read member cannot carry a write. The same shape
- * `MySqlSkuRepository.ts` declares, for the same reason.
+ * ⭐ THIS IS AN ALIAS OF {@link SqlMutationExecutor}, NOT A SECOND DECLARATION OF THE SAME SHAPE. An
+ * earlier revision declared the pair here as its own interface, and `MySqlSkuRepository.ts` and
+ * `MySqlBrandRepository.ts` each declared it again — three private widenings of the read-only
+ * `SqlExecutor`, none of which any transaction scope satisfied, so the only executor that fitted them
+ * was the POOL-BACKED `QueryRunner`. That object borrows a fresh connection per statement, so a write
+ * issued through it lands outside whatever transaction the caller had opened and the read-back AAP
+ * §0.6.2 requires observes nothing. `QueryRunner.ts` now declares the pair ONCE and every scope hands
+ * it out, which is what makes "the write and its read-back run on one connection" a fact the compiler
+ * checks rather than a convention a reader has to notice.
  *
- * ⚠️ ONE executor, not two. `QueryRunner` satisfies this structurally, so the composition root injects a
- * single instance and both members run on the SAME connection. Nothing in this file constructs a
- * connection or a pool, and nothing here commits.
+ * The local name is retained because this file's signatures read in its own vocabulary and because the
+ * alias is the natural place to record WHY the importer needs a writing member at all: the
+ * custom-attribute step at `model/dao/ProductDAO.cfc:L247` branches on the affected-row count, so the
+ * count is load-bearing rather than decoration. The read member could not carry that write in any case
+ * — it normalises a driver result into rows through `rowMappers.ts` `toRows`, which RAISES when the
+ * driver answers with a write acknowledgement instead of a row list.
+ *
+ * ⚠️ ONE executor, not two. The composition root injects a single instance and both members run on the
+ * SAME connection. Nothing in this file constructs a connection or a pool, and nothing here commits.
  */
-export interface ProductStatementExecutor extends SqlExecutor {
-  /**
-   * Run a data-modifying statement and return the number of rows it affected.
-   *
-   * Matches `QueryRunner.executeMutation`. The affected-row count is not decoration: the
-   * custom-attribute step at `model/dao/ProductDAO.cfc:L247` branches on it.
-   */
-  executeMutation(sql: string, params: readonly unknown[]): Promise<number>;
-}
+export type ProductStatementExecutor = SqlMutationExecutor;
 
 /**
  * One per-row transaction's execution surface.
  *
- * `TransactionScope` from `UnitOfWork.ts` types its executor as the read-only `SqlExecutor`, because
- * the executor that file hands out exposes only `execute`. The importer must write inside its per-row
- * transaction, so this narrows the member to {@link ProductStatementExecutor} — legal interface
- * property narrowing, and it states the relationship to `UnitOfWork` explicitly instead of leaving a
- * reader to infer it.
+ * `TransactionScope` from `UnitOfWork.ts` carries a `ReadWriteSqlExecutor` — the read member and the
+ * write member, both bound to the connection the boundary checked out. The importer writes inside its
+ * per-row transaction, so this RE-STATES the member as {@link ProductStatementExecutor}, the
+ * structurally identical pair this file declares for itself. Legal interface property narrowing, and it
+ * states the relationship to `UnitOfWork` explicitly instead of leaving a reader to infer it.
  *
- * ⚠️ THE NARROWING IS A REQUIREMENT ON THE COMPOSITION ROOT, NOT A CLAIM ABOUT `UnitOfWork`. That class
- * builds its scope executor with only `execute`, so it does not satisfy this shape on its own and must
- * not be handed over as though it did. The composition root supplies a boundary whose per-item scope
- * carries BOTH members bound to the connection the boundary checked out — one executor over one
- * connection, which is what makes reads inside a row observe that row's own writes.
+ * ⭐ `UnitOfWork` SATISFIES THIS SHAPE, so the composition root hands that class over directly and there
+ * is no shim, no adapter and no connection to recover: the executor a per-item scope carries is bound to
+ * the connection that boundary is holding, and that connection is never handed out. One executor over
+ * one connection is what makes reads inside a row observe that row's own writes.
+ *
+ * ⚠️ IT IS STILL DECLARED HERE RATHER THAN IMPORTED, for the reason every seam in this folder is: a test
+ * must be able to satisfy exactly what this adapter names, with a plain object literal and without
+ * importing the transaction manager or the driver (AAP §0.7.3 S6). `test/adapters/MySqlProductRepository.test.ts`
+ * does both — it substitutes its own boundary to record what each row did, AND pins at compile time that
+ * the real class remains assignable to {@link ProductImportTransactionBoundary}.
  */
-export interface ProductImportTransactionScope extends TransactionScope {
-  readonly executor: ProductStatementExecutor;
-}
+export type ProductImportTransactionScope = TransactionScope;
 
 /**
  * The transaction boundaries the importer needs, and exactly those two.
@@ -648,21 +978,35 @@ export interface ProductImportTransactionScope extends TransactionScope {
  */
 export interface ProductImportTransactionBoundary {
   /**
-   * Run one independent transaction per item, strictly in order.
+   * Run one independent transaction per item, strictly in order, RETAINING NOTHING.
    *
-   * Matches `UnitOfWork.runPerItem`. Each item gets its own boundary and its own scope; a scope is
-   * never shared, because the transactions are not shared either.
+   * Matches `UnitOfWork.runPerItemWithoutResults`. Each item gets its own boundary and its own scope; a
+   * scope is never shared, because the transactions are not shared either.
+   *
+   * ⭐ THIS IS THE MEMBER THE IMPORTER USES, AND THE ABSENCE OF A RESULT IS THE REASON. The legacy row
+   * body at `model/dao/ProductDAO.cfc:L177-L284` writes the row and moves on — it produces no value at
+   * all — so a boundary that promised one result per item would build an array holding one discarded
+   * entry for every row of the file and hold it until the import finished. Over a large catalog that is
+   * memory proportional to the row count, spent on nothing.
+   *
+   * ⭐ AND THE ITEM SOURCE IS DELIBERATELY LAZY-CAPABLE, WHICH IS WHAT LETS THE IMPORTER STOP HOLDING
+   * THE FILE. A materialised list is still accepted, so nothing that already supplies one changes; an
+   * `AsyncIterable` is accepted alongside it, so {@link MySqlProductRepository.importFromFile} can feed
+   * rows in as they are parsed and keep only the row currently inside its transaction alive.
+   *
+   * ⚠️ SUPPLYING A LAZY SOURCE RELAXES NOTHING. The items must still arrive in the order they are to be
+   * processed — M3 needs the commits ordered and independent, M6 needs the write order — and the source
+   * must issue NO statements of its own, because it is advanced between transactions on the very
+   * connection the previous transaction settled on. `UnitOfWork.PerItemSource` states both obligations.
    *
    * @typeParam TItem - the item type, one per transaction.
-   * @typeParam TResult - what each item's work produces.
-   * @param items - the items in the order they must be processed.
-   * @param work - the per-item unit of work.
-   * @returns one result per item, in item order, for a list that completed in full.
+   * @param items - the items in the order they must be processed: a read-only list or a lazy source.
+   * @param work - the per-item unit of work, whose result is not retained.
    */
-  runPerItem<TItem, TResult>(
-    items: readonly TItem[],
-    work: (item: TItem, scope: ProductImportTransactionScope) => Promise<TResult>,
-  ): Promise<TResult[]>;
+  runPerItemWithoutResults<TItem>(
+    items: readonly TItem[] | AsyncIterable<TItem>,
+    work: (item: TItem, scope: ProductImportTransactionScope) => Promise<void>,
+  ): Promise<void>;
 
   /**
    * Run work with NO transaction at all.
@@ -677,6 +1021,49 @@ export interface ProductImportTransactionBoundary {
    */
   runWithoutTransaction<T>(work: (executor: ProductStatementExecutor) => Promise<T>): Promise<T>;
 }
+
+/**
+ * Proves a type is assignable to another at COMPILE TIME, and costs nothing at run time.
+ *
+ * The constraint does all the work: if `TActual` is not assignable to `TExpected`, the alias itself
+ * fails to type-check. Same helper, same reasoning as in `../../services/ProductService.ts` and its
+ * siblings, restated locally rather than exported from one of them — a shared assertion helper would
+ * make this folder depend on the service layer for a type-level convenience, which standard S4's layer
+ * direction rules out.
+ */
+type AssertAssignable<TActual extends TExpected, TExpected> = TActual;
+
+/**
+ * ⭐ THE F6 GUARANTEE, MADE UNBREAKABLE: `UnitOfWork` SATISFIES THE BOUNDARY THIS FILE REQUIRES.
+ *
+ * This is the whole reason the alias exists. `ProductImportTransactionBoundary` and
+ * `ProductImportTransactionScope` are declared HERE, in this file's vocabulary, while the only
+ * implementation lives in `./UnitOfWork` — so nothing but a wiring attempt in a composition root would
+ * ever have discovered a mismatch between them, and the composition root is deferred. That is exactly
+ * how the two drifted apart in the first place: the scope required an executor that reads and writes
+ * while the boundary's executor only read, and because no module put the two types in contact, the
+ * subtree compiled cleanly with an unsatisfiable requirement sitting in it.
+ *
+ * The alias below puts them in contact permanently. Any future change on either side that breaks
+ * assignability — narrowing the scope executor again, altering an argument position, turning a method
+ * into a function-typed property — now fails `tsc` in THIS file, naming the incompatible member, rather
+ * than surfacing as a run-time "not a function" the first time an import writes a row.
+ *
+ * TYPE-ONLY IMPORT, SO NO MODULE CYCLE IS CREATED. `./UnitOfWork` imports this folder's assertions from
+ * `./QueryRunner` and imports nothing from this file; the reference below is erased entirely at compile
+ * time, so the emitted bundle contains no edge in either direction. The import is of the CLASS as a
+ * type, which is what makes the check meaningful: it is the real implementation being verified, not a
+ * restatement of its shape.
+ *
+ * ⚠️ THE DIRECTION IS DELIBERATE AND MUST NOT BE REVERSED. It asserts that the implementation satisfies
+ * this file's REQUIREMENT, not that the requirement matches the implementation. So a future member added
+ * to `UnitOfWork` — a whole-import transaction, say — does not satisfy anything here, and the note on
+ * {@link ProductImportTransactionBoundary} about what must never be added continues to hold.
+ */
+type _UnitOfWorkSatisfiesProductImportTransactionBoundary = AssertAssignable<
+  UnitOfWork,
+  ProductImportTransactionBoundary
+>;
 
 /**
  * One record of a retrieved delimited file, keyed by its heading.
@@ -726,19 +1113,47 @@ export interface DelimitedImportRecordSet {
  * `:L98` — and the comment above it at `:L88` records why it was abandoned. There is no live fallback,
  * so none is declared and none is implemented.
  *
- * ⚠️ THIS INTERFACE IS THE REASON THIS FILE PERFORMS NO NETWORK INPUT OR OUTPUT, AND IT CARRIES FOUR
- * ADDRESS-LEVEL OBLIGATIONS THAT `validateProductImportSource` CANNOT DISCHARGE, because that function
- * is a pure synchronous string predicate while each of these needs a resolver or a live connection.
- * `src/ports/repositories/ProductRepository.ts` states them in full; they are requirements on whoever
- * implements this interface:
- *   1. Resolve the approved host and REFUSE the import if any resulting address is loopback, private,
- *      link-local, unique-local, unspecified or an instance-metadata address. An approved NAME is not
- *      an approved ADDRESS.
- *   2. Connect to the address that was vetted. Re-resolving between the check and the connect is DNS
- *      rebinding and defeats clause 1 entirely.
- *   3. Re-validate EVERY redirect hop against the same policy — scheme, credentials, host, and clauses
- *      1 and 2 again — rather than merely counting hops.
- *   4. Enforce the byte and time bounds WHILE STREAMING, regardless of any declared content length.
+ * ⚠️ THIS INTERFACE IS THE REASON THIS FILE PERFORMS NO NETWORK INPUT OR OUTPUT — AND IT IMPOSES NO
+ * ADDRESS POLICY OF ITS OWN. An earlier revision declared four address-level obligations on whoever
+ * implements it: resolve-then-vet the host against loopback, private, link-local, unique-local,
+ * unspecified and instance-metadata ranges; connect to the address that was vetted rather than
+ * re-resolving; re-validate every redirect hop; and enforce byte and time bounds while streaming. All
+ * four are WITHDRAWN, and `src/ports/repositories/ProductRepository.ts` carries the withdrawal in full.
+ * The two deciding facts, restated so this file stands on its own:
+ *   1. The legacy performs NO check of any kind. `model/service/ProductService.cfc:L65` delegates to
+ *      `model/dao/ProductDAO.cfc:L73`, which reaches `:L87` and retrieves whatever location arrived.
+ *      There is no scheme test, no host list, no redirect cap and no size cap to port.
+ *   2. Refusing a fetch CHANGES AN OUTCOME. D18 is the one declared departure of AAP §0.6.7.7 precisely
+ *      because parameterising a statement returns exactly the rows the interpolated statement returned;
+ *      a refusal has no such property, so §0.8.2 guideline 4 forbids it, and the five policy figures it
+ *      needed would be invented configuration (§0.7.3 standard 9, IR-12).
+ * The CWE-918 exposure is real and is ALREADY ON THE REGISTER as mismatch M4, "remote file fetch inside
+ * the request" — flagged for the operator to close, not closed here (S8).
+ *
+ * ⛔ NO TRANSPORT IMPLEMENTATION SHIPS, AND THE FOUR CLAUSES ARE THE STATEMENT OF A CONTRACT AN
+ * OPERATOR-SUPPLIED READER MUST MEET — NOT A DESCRIPTION OF SOMETHING IN THIS SUBTREE. The only
+ * implementation delivered here is {@link unresolvableProductImportSourceReader} below, which REFUSES,
+ * and it refuses for a reason stronger than caution: `model/dao/ProductDAO.cfc:L87` retrieves through
+ * `getService("utilityTagService").cfhttp(...)` and NO `utilityTagService` bean is declared anywhere in
+ * the legacy repository — the single occurrence of the name is that call itself — while the `new http()`
+ * fallback at `:L88-L97` is commented out. The legacy import has therefore never been able to retrieve a
+ * file at all, so a working retrieval client would ADD a capability the system being ported does not
+ * have. That is precisely what §0.8.2 guideline 4 forbids, and it is the same conclusion the two
+ * deciding facts above reach from the policy side.
+ *
+ * ⚠️ A CONCRETE READER WAS WRITTEN — TWICE — AND BOTH COPIES ARE REMOVED. `src/adapters/http/` briefly
+ * held two modules, each exporting a class named `HttpProductImportSourceReader` and each implementing
+ * this interface: one carrying a branded import-source gate, the other carrying address vetting,
+ * per-hop redirect revalidation and streaming bounds. Nothing imported either, they disagreed with each
+ * other, and both existed to satisfy the branded-source design that was itself withdrawn from
+ * `../../ports/repositories/ProductRepository` on Minimal Change Clause grounds — the withdrawal that
+ * file records under "SEC-08 IS WITHDRAWN". Keeping either would have re-opened a closed decision and
+ * required the five invented policy figures fact 2 rules out; keeping both would have shipped two
+ * same-named classes side by side. The exposure stays where it belongs, on the register as M4 (S8).
+ *
+ * ⚠️ THE INTERFACE IS STILL DECLARED HERE RATHER THAN MOVED, because relocating it would alter this
+ * ratified file's export surface for a purely cosmetic gain, which the Minimal Change Clause forbids.
+ * This file holds no transport client and imports no network builtin.
  *
  * ⚠️ AND THE PLACEMENT IS DELIBERATELY NOT REPRODUCED. The legacy retrieves inside the same request
  * that carries the transactions, compounding M1 and M3. This file retrieves ONCE, BEFORE the first
@@ -752,17 +1167,151 @@ export interface ProductImportSourceReader {
    * order. The first row of the file is its heading row, as the abandoned block at `:L95` states
    * explicitly.
    *
-   * @param source - the policy-approved location, the branded first argument of the port member.
+   * @param fileURL - the caller's location, passed through unchecked. See the withdrawal note above:
+   *   no scheme, host, redirect or size policy is applied on the way in, because the legacy applies
+   *   none.
    * @param delimiter - the field delimiter resolved from the file type, `''` for an unrecognised type.
    * @param textQualifier - the text qualifier, `''` by default per `model/dao/ProductDAO.cfc:L73`.
    * @returns the parsed record set.
    */
   read(
-    source: ProductImportSource,
+    fileURL: string,
     delimiter: string,
     textQualifier: string,
   ): Promise<DelimitedImportRecordSet>;
+
+  /**
+   * Retrieve the delimited file and expose its headings up front and its records one at a time.
+   *
+   * ⭐ THE STREAMING ALTERNATIVE TO {@link ProductImportSourceReader.read}, AND OPTIONAL BY DESIGN. It is
+   * declared optional so that every reader written against the materialising member keeps satisfying
+   * this interface unchanged; {@link MySqlProductRepository.importFromFile} prefers this member when the
+   * injected reader offers it and falls back to `read` when it does not. Both paths produce the SAME
+   * headings, the SAME records, in the SAME order, and drive the SAME sequence of per-row transactions —
+   * the only difference is how much of the file is alive at once.
+   *
+   * ⚠️ ONE HEADER PASS, THEN RECORDS. `columnList` must be complete and final before the first record is
+   * yielded, because `model/dao/ProductDAO.cfc:L100-L173` classifies every heading BEFORE `:L176` opens
+   * the record loop: the product lookup column is chosen by a four-candidate priority walk over the
+   * heading list, the option-group headings are collected from it, and the option-group pre-pass queries
+   * against them. A reader that discovered a heading mid-file could not support that ordering, and the
+   * legacy — whose heading row is the file's first line, as the abandoned block at `:L95` states — never
+   * needed to.
+   *
+   * ⚠️ THE RECORD ITERATOR MUST NOT QUERY, AND MUST NOT REORDER. It is advanced BETWEEN per-row
+   * transactions, on the connection the previous row's transaction just settled on, so a record source
+   * that issued statements of its own would interleave them with the row boundaries — exactly the
+   * interleaving M6 exists to forbid. Reading bytes, parsing text and yielding parsed records are safe.
+   * Records must be yielded in file order, once each, because the row number the importer reports is
+   * derived from their position (`:L176`) and because M3 commits them in that order.
+   *
+   * ⚠️ AND ABANDONMENT MUST BE CLEAN. The importer stops consuming at the first failing row (M3) and, if
+   * a cancellation signal is supplied, at the next row boundary after it aborts. A generator implementing
+   * this member therefore has its `return()` invoked without having been exhausted, and must release its
+   * connection, handle or buffer in a `finally` rather than only on normal completion.
+   *
+   * @param fileURL - the location, forwarded exactly as the caller supplied it (see the port).
+   * @param delimiter - the field delimiter resolved from the file type, `''` for an unrecognised type.
+   * @param textQualifier - the text qualifier, `''` by default per `model/dao/ProductDAO.cfc:L73`.
+   * @returns the headings, and a lazy source of the records.
+   */
+  readStreaming?(
+    fileURL: string,
+    delimiter: string,
+    textQualifier: string,
+  ): Promise<DelimitedImportRecordStream>;
 }
+
+/**
+ * A retrieved delimited file whose headings are known up front and whose records arrive lazily.
+ *
+ * The streaming counterpart of {@link DelimitedImportRecordSet}: identical `columnList` contract, and
+ * `records` in place of `rows`. It carries no legacy origin, because `model/dao/ProductDAO.cfc:L87`
+ * retrieves the entire file into one CFML query object and has no lazy form to port. What it models is
+ * the port's ability to produce the same rows in the same order without holding the whole catalog file,
+ * which is structural (AAP §0.8.2 Guideline 4).
+ */
+export interface DelimitedImportRecordStream {
+  /**
+   * The headings, in file order and in their original casing — complete before the first record.
+   *
+   * Same contract as {@link DelimitedImportRecordSet.columnList}, including the retention of original
+   * casing, and for the same reason: the legacy classifies and matches on the heading itself.
+   */
+  readonly columnList: readonly string[];
+
+  /** The records, in file order, one at a time. See {@link ProductImportSourceReader.readStreaming}. */
+  readonly records: AsyncIterable<DelimitedImportRecord>;
+}
+
+/**
+ * The production {@link ProductImportSourceReader} — and it REFUSES, because the legacy call it ports
+ * has never been able to resolve.
+ *
+ * ⚠️ THE COLLABORATOR THE LEGACY NAMES DOES NOT EXIST. `model/dao/ProductDAO.cfc:L87` reads
+ * `getService("utilityTagService").cfhttp(...)`. A search of the whole legacy tree for
+ * `utilityTagService` returns exactly ONE hit — that call site. No `UtilityTagService.cfc` exists
+ * anywhere (`*UtilityTag*` matches no file), and no component in the tree declares a `cfhttp` member,
+ * so DI/1's bean lookup cannot answer it.
+ *
+ * The contrast is decisive rather than circumstantial, and it isolates WHICH half is missing: the
+ * sibling bean the SAME file resolves later, `hibachiUtilityService`, DOES exist — at
+ * `model/service/HibachiUtilityService.cfc` and `org/Hibachi/HibachiUtilityService.cfc` — and
+ * `getService` itself resolves fine, being declared on the chain's terminal base at
+ * `org/Hibachi/HibachiObject.cfc`. It is the BEAN that is absent, not the lookup member.
+ *
+ * ⚠️ AND THE ABANDONED FALLBACK CANNOT RESCUE IT. `:L88-L97` holds a `new http()` block that would have
+ * performed the retrieval directly, but every line of it is COMMENTED OUT. Reviving it would be the
+ * opposite of a port: it would supply behaviour the running legacy system does not have.
+ *
+ * So this supplier reproduces the legacy's own outcome — the import cannot proceed — rather than
+ * inventing a retrieval client to make it proceed. That is not discretionary:
+ *
+ *   1. AAP §0.6.7 governs with "preserve and annotate, do not repair", and §0.8.2 guideline 4 forbids
+ *      enhancement "beyond what the migration requires".
+ *   2. Writing a retrieval client here would mint every parameter the withdrawal note on
+ *      {@link ProductImportSourceReader} recorded as un-inventable — a timeout, a redirect count, a byte
+ *      cap, a scheme set — each a figure the legacy never states (S9, IR-12).
+ *   3. It is the treatment three catalogued gaps already receive: defect D4
+ *      (`model/service/SkuService.cfc:L281-L283`, delegating to an absent DAO member), D12 (`FeedDAO`,
+ *      dead and unported) and D15 (`buildSkuCombinations`, unreachable and unported).
+ *
+ * The interface therefore stays the seam and this constant stays a CHOICE: `sourceReader` is a required
+ * member of {@link MySqlProductRepositoryDependencies}, deliberately not defaulted, so an operator who
+ * has a retrieval policy supplies a reader that implements it and nothing in this file changes — while
+ * an operator who has none cannot acquire one by omission. Recorded by locator; no register entry is
+ * minted, because the gap belongs to the legacy source rather than to this port. Residual exposure — a
+ * caller-supplied address reaching whatever retrieval client an operator eventually writes — stays
+ * flagged as register item M4 (S8).
+ */
+export const unresolvableProductImportSourceReader: ProductImportSourceReader = {
+  read(
+    fileURL: string,
+    delimiter: string,
+    textQualifier: string,
+  ): Promise<DelimitedImportRecordSet> {
+    return Promise.reject(
+      new NotImplementedError(
+        'ProductImportSourceReader.read',
+        'model/dao/ProductDAO.cfc:L87 retrieves the import file through ' +
+          'getService("utilityTagService").cfhttp(...), and no utilityTagService bean is declared ' +
+          'anywhere in the legacy repository — the single occurrence of the name is that call ' +
+          'itself — so the legacy import has never been able to retrieve a file; the new http() ' +
+          'fallback at :L88-L97 is commented out, and no retrieval client is invented here',
+        {
+          context: {
+            fileURL,
+            delimiter,
+            textQualifier,
+            locator: 'model/dao/ProductDAO.cfc:L87',
+            absentBean: 'utilityTagService',
+            mismatch: 'M4',
+          },
+        },
+      ),
+    );
+  },
+};
 
 /**
  * Produces a URL title from a product name — the injected replacement for a call to a member that does
@@ -792,36 +1341,68 @@ export interface ProductImportSourceReader {
 export type ImportUrlTitleFilter = (productName: string) => string;
 
 /**
- * Resolves the global image extension the second back-fill needs.
+ * The production {@link ImportUrlTitleFilter} — and it REFUSES, for the same reason the reader above
+ * does, but by a materially different mechanism worth stating precisely.
  *
- * ⚠️ THIS EXISTS BECAUSE OF A GAP, AND THE GAP IS ANNOTATED RATHER THAN FILLED.
- * `model/dao/ProductDAO.cfc:L307`, `:L313` and `:L320` each interpolate
- * `setting("globalImageExtension")` into statement text. It is a VALUE, so in this port it becomes a
- * bound parameter (S2) — but it is NOT one of the eighteen names `src/ports/SettingResolverPort.ts`
- * declares (sixteen literal names plus the two interpolated image-dimension forms), and
- * `config/dbdata/SlatwallSetting.xml.cfm` does not seed it either. Its default, if it has one, lives in
- * the out-of-scope setting service.
+ * ⚠️ HERE THE BEAN EXISTS AND THE MEMBER DOES NOT. `model/dao/ProductDAO.cfc:L399` calls
+ * `getService("hibachiUtilityService").filterFileName(...)`. That bean resolves —
+ * `model/service/HibachiUtilityService.cfc` extends `Slatwall.org.Hibachi.HibachiUtilityService`, which
+ * extends `HibachiService` — so the call does reach the fabrication handler at
+ * `org/Hibachi/HibachiService.cfc:L255-L280`. And there it dies: that handler dispatches on eight
+ * lower-cased prefixes only — `get` (with its `smartlist` sub-branch), `new`, `list`, `save`, `delete`,
+ * `count`, `export`, `process` — and `filter` is none of them, so control falls through to the throw at
+ * `:L280`. A search of the whole legacy tree for `filterFileName` returns exactly ONE hit: the call
+ * site. Nothing declares it.
  *
- * So there are three things this file must NOT do, and does not: mint a nineteenth port name, invent a
- * default such as a hard-coded extension, or quietly drop the back-fill. Instead the value arrives
- * through this one narrow synchronous collaborator, which mirrors the callable `SettingResolver` form
- * that `src/ports/SettingResolverPort.ts` already offers for exactly this kind of dependency, and which
- * matches how `ProductImportSourcePolicy` is supplied — decided at the composition root rather than
- * fabricated in an adapter. Synchronous, per M8.
+ * That is worth generalising, because it bounds a mechanism this port leans on elsewhere:
+ * `onMissingMethod` rescues an undeclared call ONLY when its name carries one of those eight prefixes.
+ * IR-1 concerns the members it DOES fabricate — and this is one it REFUSES. Refusing is therefore the
+ * behaviour to port, not an accident to route around.
  *
- * An empty result is passed through unchanged: the legacy composed `'.#setting(...)#'`, so an
- * unresolved setting produced a bare `'.'` suffix, and that is preserved rather than special-cased.
- *
- * @returns the extension, without a leading separator.
+ * NO ALGORITHM IS INVENTED (S9), and in particular `src/util/urlTitle.ts` is NOT reused — the contract's
+ * own note above records why the two collision strategies are categorically different, a single
+ * unre-probed append here versus an unbounded pre-incremented loop there. Like the reader above, this is
+ * an exported CHOICE rather than a default: `urlTitleFilter` is a required dependency member, so an
+ * operator with a filename policy supplies one, and until then the port reproduces the legacy's own
+ * failure instead of masking it behind a plausible transform.
  */
-export type GlobalImageExtensionResolver = () => string;
+export const unresolvableImportUrlTitleFilter: ImportUrlTitleFilter = (
+  productName: string,
+): string => {
+  throw new NotImplementedError(
+    'ImportUrlTitleFilter',
+    'model/dao/ProductDAO.cfc:L399 derives the URL title through ' +
+      'getService("hibachiUtilityService").filterFileName(...); the bean resolves but the member is ' +
+      'declared nowhere in the legacy repository — the single occurrence of the name is that call ' +
+      'itself — and org/Hibachi/HibachiService.cfc:L255-L280 fabricates only the ' +
+      'get/new/list/save/delete/count/export/process prefixes, so the unmatched "filter" prefix ' +
+      'reaches the throw at :L280; no filename algorithm is invented here',
+    {
+      context: {
+        productName,
+        locator: 'model/dao/ProductDAO.cfc:L399',
+        absentMember: 'hibachiUtilityService.filterFileName',
+        fabricationHandler: 'org/Hibachi/HibachiService.cfc:L255-L280',
+      },
+    },
+  );
+};
 
 /**
  * The collaborators this repository is constructed with.
  *
- * An options object rather than seven positional parameters, because a positional list of that length
+ * An options object rather than six positional parameters, because a positional list of that length
  * is exactly where a composition root silently transposes two same-typed arguments. Every member is
  * readonly and every one is used.
+ *
+ * ⭐ F5 — WHAT IS DELIBERATELY NOT A MEMBER HERE. An earlier revision carried a sixth member, a
+ * `GlobalImageExtensionResolver` callback supplying the value the second derived-column back-fill
+ * needs. It is gone, and its absence is the point: a setting default injected into a MySQL adapter put
+ * key, default and provider accounting outside the settings module and invented a deployment input for
+ * a value the legacy never asked an operator for. The value now comes from
+ * `DEPRECATED_SETTING_DEFAULTS` in `../settings/StaticSettingResolver`, which is the one module that
+ * owns setting defaults in this port — so there is exactly one setting boundary again, and the port's
+ * frozen eighteen-key union is untouched. See {@link MySqlProductRepository.backfillImportDerivedColumns}.
  */
 export interface MySqlProductRepositoryDependencies {
   /**
@@ -846,8 +1427,19 @@ export interface MySqlProductRepositoryDependencies {
   /** The URL-title transform. See {@link ImportUrlTitleFilter}. */
   readonly urlTitleFilter: ImportUrlTitleFilter;
 
-  /** The image-extension resolver. See {@link GlobalImageExtensionResolver}. */
-  readonly globalImageExtension: GlobalImageExtensionResolver;
+  /**
+   * Reads the identifier of a product's default SKU, for the `defaultSkuID` foreign key (F03).
+   *
+   * ⚠️ IT IS A FUNCTION BECAUSE `Product.defaultSku` IS NOT A `Sku`. That field is typed against
+   * `ProductDefaultSkuDelegate` — a nine-member behavioural interface in
+   * `src/domain/product/Product.ts` that deliberately exposes NO identifier accessor, so the SKU type
+   * never has to be imported into the product module. `src/domain/sku/Sku.ts` already declares
+   * {@link DefaultSkuIdReader} for exactly this read and uses it for the mirror-image direction in
+   * `Sku.getDefaultFlag` and `Sku.isNotDefaultSku`, so this reuses that contract rather than widening
+   * the delegate or minting a second one. `src/services/ProductService.ts` holds the same collaborator
+   * for the same reason.
+   */
+  readonly readDefaultSkuId: DefaultSkuIdReader;
 }
 
 /**
@@ -1139,41 +1731,96 @@ interface NormalisedImportRow {
  */
 interface NormalisedImportData {
   readonly columnList: readonly string[];
-  readonly rows: readonly NormalisedImportRow[];
+  readonly rows: AsyncIterable<NormalisedImportRow>;
 }
 
 /**
- * Normalises a retrieved record set once, on ingest.
+ * Normalises ONE record, at the moment it is about to be imported.
  *
  * ⚠️ A DUPLICATE HEADING COLLAPSES, AND SO IT SHOULD. Two headings differing only in case are ONE
  * struct key in CFML, so the later cell wins there too; this reproduces that by writing both into the
  * same map entry in file order.
  *
- * @param recordSet - the record set the reader produced.
- * @returns the normalised form every read below uses.
+ * @param record - one record as the reader produced it.
+ * @param rowNumber - its one-based position, the port of `r` from `model/dao/ProductDAO.cfc:L176`.
+ * @returns the normalised row every read below uses.
  */
-function normaliseRecordSet(recordSet: DelimitedImportRecordSet): NormalisedImportData {
-  const rows: NormalisedImportRow[] = [];
-
-  for (let index = 0; index < recordSet.rows.length; index += 1) {
-    const record = recordSet.rows[index];
-
-    if (record === undefined) {
-      throw new DataIntegrityError(
-        'A retrieved record set reported a row that it does not contain, so it cannot be imported.',
-        { context: { rowNumber: index + 1, rowCount: recordSet.rows.length } },
-      );
-    }
-
-    const cells = new Map<string, string>();
-    for (const [heading, value] of Object.entries(record)) {
-      cells.set(normaliseHeading(heading), value);
-    }
-
-    rows.push({ rowNumber: index + 1, cells });
+function normaliseRecord(record: DelimitedImportRecord, rowNumber: number): NormalisedImportRow {
+  const cells = new Map<string, string>();
+  for (const [heading, value] of Object.entries(record)) {
+    cells.set(normaliseHeading(heading), value);
   }
 
-  return { columnList: [...recordSet.columnList], rows };
+  return { rowNumber, cells };
+}
+
+/**
+ * Normalises records as they arrive, one at a time, numbering them from one in arrival order.
+ *
+ * ⭐ THIS IS WHERE THE SECOND WHOLE-FILE COPY USED TO BE. The previous form walked every record the
+ * reader had produced, built a `Map` for each, pushed all of them into a second array and returned it,
+ * so a file was resident TWICE for the whole import — once as the reader's records and once as the
+ * normalised rows — and every row's `Map` stayed alive until the last row committed. This yields each
+ * normalised row at the point the importer is about to open its transaction, so exactly one row is
+ * alive at a time and the reader's own record is free the moment its row commits.
+ *
+ * ⚠️ NOTHING ABOUT THE ROWS THEMSELVES CHANGES, WHICH IS WHAT MAKES THE CHANGE STRUCTURAL. Same
+ * normalisation, same duplicate-heading collapse, same ONE-BASED numbering in arrival order, same
+ * order, same count. The numbering is assigned here rather than by the source so that a streaming
+ * reader and a materialising one produce identical row numbers for identical files, and so an error
+ * raised while importing row seven still names row seven exactly as the legacy's own `r` would.
+ *
+ * ⚠️ AND THE `undefined` GUARD IS GONE BECAUSE ITS CAUSE IS GONE, NOT BECAUSE IT WAS SUPPRESSED. It
+ * existed to satisfy `noUncheckedIndexedAccess` on `recordSet.rows[index]` — an indexed read into an
+ * array. Iteration yields elements directly, so there is no indexed read left to check and no
+ * unreachable `DataIntegrityError` branch left to carry.
+ *
+ * @param records - the records, in file order.
+ * @returns the normalised rows, in the same order, lazily.
+ */
+/**
+ * Re-presents rows already held in memory as the {@link NormalisedImportData.rows} sequence.
+ *
+ * The single caller is
+ * {@link MySqlProductRepository.refuseRequestedContentAssignments}, which has to walk every row to
+ * decide whether the file can be imported at all and therefore cannot leave the one-pass generator it
+ * walked for the record loop to consume. This exists so that the loop's contract — an async sequence of
+ * normalised rows, pulled one at a time — is identical whether the rows arrive from the retrieval stream
+ * or from that walk's buffer, and so the record loop needs no knowledge of which happened.
+ *
+ * ⚠️ NOT AN `async function*`, DELIBERATELY. There is nothing to await — the rows are already in
+ * memory — and an async generator that awaits nothing is exactly what `require-await` reports. The
+ * iterable is therefore assembled by hand: one iterator is taken ONCE and shared by every
+ * `[Symbol.asyncIterator]()` call, so the sequence is single-pass in the same way a spent generator is,
+ * and `for await` consumes it identically.
+ *
+ * @param rows - the rows collected by the walk, in file order.
+ * @returns those rows, in the same order, as a one-pass async sequence.
+ */
+function replayBufferedRows(
+  rows: readonly NormalisedImportRow[],
+): AsyncIterable<NormalisedImportRow> {
+  const iterator = rows[Symbol.iterator]();
+  return {
+    [Symbol.asyncIterator](): AsyncIterator<NormalisedImportRow> {
+      return {
+        next(): Promise<IteratorResult<NormalisedImportRow>> {
+          return Promise.resolve(iterator.next());
+        },
+      };
+    },
+  };
+}
+
+async function* normaliseRecords(
+  records: AsyncIterable<DelimitedImportRecord> | Iterable<DelimitedImportRecord>,
+): AsyncGenerator<NormalisedImportRow> {
+  let rowNumber = 0;
+
+  for await (const record of records) {
+    rowNumber += 1;
+    yield normaliseRecord(record, rowNumber);
+  }
 }
 
 /**
@@ -1393,14 +2040,36 @@ const OPTION_LOOKUP_STATEMENT = `SELECT
  * The SKU-option existence test — the translation of `model/dao/ProductDAO.cfc:L218-L220`.
  *
  * Bind order is the option identifier then the SKU identifier, matching the legacy text.
+ *
+ * ⚠️ A CONSTANT PROJECTION AND A ONE-ROW STOP, WHERE THE LEGACY PROJECTED `optionID` AND READ THE WHOLE
+ * MATCH SET. Structural, and provably answer-preserving from the legacy body rather than by argument.
+ * `:L218-L220` is `SELECT optionID FROM SlatwallSkuOption WHERE optionID = '#optionID#' AND skuID =
+ * '#skuID#'`; `:L221` binds `var exists = dataQuery.execute().getResult().recordcount`; and `:L230`
+ * `if(!exists)` is the ONLY thing that ever reads `exists`. In CFML `!0` is true and `!n` is false for
+ * every other count, so only non-zeroness ever mattered — and the sibling `else` branch at `:L228`
+ * assigns `var exists = false`, a BOOLEAN, into the same variable, which is the legacy itself
+ * confirming that the value is consumed as a flag rather than as a magnitude. The projected `optionID`
+ * is never read off this result set (the option identifier in hand at `:L216` is the one the insert at
+ * `:L232` uses), so one matching row is complete evidence and every further row was discarded. The
+ * verdict does not rest on the pair being unique — and that is deliberate, because this repository has
+ * no DDL to appeal to (the schema is generated from CFC metadata, which declares only a `many-to-many`
+ * `linktable="SwSkuOption"` at `model/entity/Sku.cfc:L76`). Even where duplicate link rows existed, the
+ * legacy's `!exists` could not have told one from many, so neither shape can diverge from the other.
+ *
+ * The two columns are still named in the predicate and still come from the whitelist, so S2 holds
+ * exactly as before, and the bind order above is untouched (TR-4). The `1` is a projection literal
+ * authored here, not caller data, so it is not a value position requiring a placeholder — the two
+ * placeholders below remain the only ones. `LIMIT 1` invents no ordering (AAP §0.7.3 S9) and cannot
+ * change a verdict that is already "did anything match at all".
  */
 const SKU_OPTION_EXISTENCE_STATEMENT = `SELECT
-    ${SKU_OPTION_OPTION_ID_COLUMN}
+    1
   FROM
     ${SKU_OPTION_TABLE}
   WHERE
     ${SKU_OPTION_OPTION_ID_COLUMN} = ${BIND_PLACEHOLDER}
-    AND ${SKU_OPTION_SKU_ID_COLUMN} = ${BIND_PLACEHOLDER}`;
+    AND ${SKU_OPTION_SKU_ID_COLUMN} = ${BIND_PLACEHOLDER}
+  LIMIT 1`;
 
 /**
  * The option insert — the translation of `model/dao/ProductDAO.cfc:L224-L226`.
@@ -1479,14 +2148,33 @@ const ATTRIBUTE_VALUE_INSERT_STATEMENT = `INSERT INTO ${OUT_OF_SCOPE_TABLE.attri
  * ⚠️ TODO(parity) `model/dao/ProductDAO.cfc:L289-L291` — THE ERROR-1093 EXPOSURE IS FLAGGED, AND WAS
  * MEASURED RATHER THAN ASSUMED. MySQL refuses a subquery that selects from a table the same statement
  * updates, and the subquery here selects from `SwSku` while `SwSku` is one of the two tables the
- * multi-table update names. That looked like it would need a derived-table wrap. It does not: probed
- * against MySQL 8.4.11, this statement is ACCEPTED and produces the correct result, while the classic
- * single-table form of the same mistake — updating a table from a subquery over that same table with no
- * join — is still rejected with `ERROR 1093 (HY000)`, which proves the probe discriminates rather than
- * merely passing everything. A correlated subquery over a table that is JOINED but NOT ASSIGNED is
- * permitted. The statement is therefore preserved as written; a wrap would have been an unannotated
- * rewrite of a statement that runs (S7, Guideline 4). The exposure stays flagged because a different
- * engine or a future version may not agree.
+ * multi-table update names. That looked like it would need a derived-table wrap. It does not.
+ *
+ * F-21 — WHAT WAS ACTUALLY RUN. THIS IS THE ONE PLACE THE PROBE IS RECORDED for both back-fill
+ * statements. Run against MySQL 8.4.11 through `mysql2` 3.23.2 over STAND-IN tables carrying only the
+ * columns these statements reference, in a scratch database that was dropped afterwards — because no
+ * `Sw*` DDL exists in this repository (see the evidence-boundary note in `src/config/database.ts`):
+ *
+ *   1. this statement, as written                              ACCEPTED, 1 row affected,
+ *                                                              `defaultSkuID` set to a real SKU
+ *   2. {@link SKU_IMAGE_FILE_BACKFILL_STATEMENT}, PREPARED
+ *      with the suffix bound                                   ACCEPTED, 2 rows affected,
+ *                                                              values as expected
+ *   3. CONTROL — the classic single-table form of the same
+ *      mistake, `UPDATE T SET c = (SELECT MIN(c) FROM T)`       REJECTED, errno 1093,
+ *                                                              `ER_UPDATE_TABLE_USED`
+ *
+ * Case 3 is what makes cases 1 and 2 evidence rather than coincidence: the probe DISCRIMINATES, so an
+ * acceptance means the shape is permitted and not merely that nothing was checked. A correlated
+ * subquery over a table that is JOINED but NOT ASSIGNED is permitted; a subquery over the very table
+ * being assigned, with no join, is not. Both statements are therefore preserved as written; a wrap
+ * would have been an unannotated rewrite of a statement that runs (S7, Guideline 4).
+ *
+ * THE EXPOSURE STAYS FLAGGED, and the reason is now specific rather than general: the probe settles
+ * the STATEMENT SHAPE against this server version, and the shape is what error 1093 turns on. What it
+ * cannot settle is anything that depends on the authoritative DDL — column types, nullability, index
+ * and engine choices — since that DDL is generated by Hibernate from CFC metadata and no CFML engine
+ * is available here. A different engine or a future version may also not agree.
  *
  * ⚠️ TODO(parity) `model/dao/ProductDAO.cfc:L291` — "FIRST SKU" IS ARBITRARY AND STAYS ARBITRARY. The
  * subquery has `LIMIT 1` and NO `ORDER BY`, so which SKU becomes the default is whatever the engine
@@ -1521,17 +2209,21 @@ const DEFAULT_SKU_BACKFILL_STATEMENT = `UPDATE ${PRODUCT_TABLE}
  * which is why no identifier is interpolated anywhere here.
  *
  * ⚠️ TODO(parity) `model/dao/ProductDAO.cfc:L307`, `:L313` and `:L320` — `globalImageExtension` IS NOT
- * RESOLVABLE THROUGH THE SETTING PORT, AND THE GAP IS ANNOTATED RATHER THAN FILLED. It is absent from
- * the closed name union `src/ports/SettingResolverPort.ts` declares, and
- * `config/dbdata/SlatwallSetting.xml.cfm` does not seed it, so its default — if it has one — lives in
- * the out-of-scope setting service. Minting a nineteenth port name is forbidden and inventing a default
- * extension is forbidden (S9), so the value arrives through {@link GlobalImageExtensionResolver} and
- * this file states no default and no fallback. An empty result is passed through, which reproduces the
- * bare separator the legacy would have produced.
+ * ONE OF THE PORT'S EIGHTEEN NAMES, AND IT MUST NOT BECOME A NINETEENTH. The legacy source marks it
+ * `// DEPRECATED***` at `model/service/SettingService.cfc:L246`, and its three call sites are provably
+ * unresolvable on the DAO's inheritance chain, so promoting it into the port's closed union would
+ * assert a contract the legacy explicitly retired. The value is instead read as data from
+ * `DEPRECATED_SETTING_DEFAULTS` in `../settings/StaticSettingResolver`, whose entry transcribes the
+ * literal `defaultValue="jpg"` at `model/service/SettingService.cfc:L247` with its locator. Nothing is
+ * invented here and nothing is defaulted here (S9): this file states no extension of its own, and the
+ * settings module remains the single boundary that owns setting values. The full four-reason analysis,
+ * and the decision to execute this statement even though the legacy call sites could not have, are
+ * recorded in section 3 of that module's own note.
  *
- * ⚠️ THE SAME ERROR-1093 SHAPE AND THE SAME MEASUREMENT. Probed against MySQL 8.4.11 as a PREPARED
- * statement with the suffix bound, it is accepted and produces the expected values, so it too is
- * preserved as written. See {@link DEFAULT_SKU_BACKFILL_STATEMENT} for the discriminating control.
+ * ⚠️ THE SAME ERROR-1093 SHAPE. This statement is case 2 of the probe recorded on
+ * {@link DEFAULT_SKU_BACKFILL_STATEMENT}: accepted as a PREPARED statement with the suffix bound, and
+ * producing the expected values, so it too is preserved as written. That block also carries the
+ * discriminating control and the evidence boundary; neither is restated here.
  *
  * ⚠️ AND `SwProduct` APPEARS TWICE ON PURPOSE. The subquery's own `FROM` introduces a second reference
  * that shadows the joined one, so the unqualified `productCode` and the `SwProduct.productID` in the
@@ -1550,13 +2242,36 @@ const SKU_IMAGE_FILE_BACKFILL_STATEMENT = `UPDATE ${SKU_TABLE}
   WHERE
     ${SKU_TABLE}.${SKU_IMAGE_FILE_COLUMN} IS NULL`;
 
-/** The URL-title collision probe — the translation of `model/dao/ProductDAO.cfc:L401-L403`. */
+/**
+ * The URL-title collision probe — the translation of `model/dao/ProductDAO.cfc:L401-L403`.
+ *
+ * ⚠️ A CONSTANT PROJECTION AND A ONE-ROW STOP, WHERE THE LEGACY PROJECTED `productID` AND READ THE
+ * WHOLE MATCH SET. Structural, and provably answer-preserving from the legacy body rather than by
+ * argument. `:L401-L403` is `SELECT productID FROM SlatwallProduct WHERE urlTitle = '#fileName#'`, and
+ * `:L404` is the ONLY thing that ever touches its result — `if(dataQuery.execute().getResult()
+ * .recordCount)`, a bare truthiness test. The projected `productID` is never read off that result set,
+ * no row is handed back to any caller, and the magnitude of the count is never consulted, so ONE
+ * matching row is complete evidence and every further row the legacy transferred was discarded. The
+ * port's own reader agrees: {@link MySqlProductRepository.resolveImportUrlTitle} reads nothing but
+ * `collisions.length === 0`.
+ *
+ * The column is still named in the predicate and still comes from the whitelist, so S2 holds exactly
+ * as before. The `1` is a projection literal authored here, not caller data, so it is not a value
+ * position requiring a placeholder — the single placeholder below remains the only one.
+ *
+ * `LIMIT 1` is admissible here and would NOT be admissible on a read whose rows the caller sees: it
+ * invents no ordering (AAP §0.7.3 S9), discards nothing the legacy consulted, and cannot change a
+ * verdict that is already "did anything match at all". It places no ceiling on the CALLER's behaviour
+ * either — `resolveImportUrlTitle` still probes exactly once and appends exactly once, never looping,
+ * because `:L404-L405` does not loop.
+ */
 const URL_TITLE_PROBE_STATEMENT = `SELECT
-    ${PRODUCT_ID_COLUMN}
+    1
   FROM
     ${PRODUCT_TABLE}
   WHERE
-    ${PRODUCT_URL_TITLE_COLUMN} = ${BIND_PLACEHOLDER}`;
+    ${PRODUCT_URL_TITLE_COLUMN} = ${BIND_PLACEHOLDER}
+  LIMIT 1`;
 
 /**
  * The existence lookup of `saveImportData` — the translation of `model/dao/ProductDAO.cfc:L385-L387`,
@@ -1654,6 +2369,16 @@ export function composeImportUpdate(
  * number of bind markers, so a mismatch between the two is a composition error this function refuses
  * rather than a statement the database rejects.
  *
+ * ⚠️ SEC-14 — WHAT THIS FUNCTION DOES AND DOES NOT GUARANTEE ABOUT ITS COLUMN LIST. It guarantees that
+ * every name it emits is a real column of the named table, because it re-validates each one. It does
+ * NOT decide whether a REMOTE FILE was allowed to write that column, and it deliberately must not: the
+ * list it receives legitimately mixes file-derived columns with columns the importer owns — the audit
+ * pair or quartet, the generated URL title, the generated identifier, and the insert-only `extraData`
+ * associations — so a rule applied here would have to refuse the importer's own writes. The
+ * authorization decision therefore lives one layer up, at the two places that decide what may enter
+ * the list: {@link assertImportableColumn} for every file heading, applied both at plan time in
+ * {@link MySqlProductRepository.buildImportPlan} and again in `saveImportData`.
+ *
  * @param table - a validated physical table.
  * @param columns - validated column names on that table, in the legacy's assembly order, ending with
  *   the identifier column exactly as the legacy appends it last.
@@ -1701,6 +2426,51 @@ export function composeImportInsert(table: PhysicalTableName, columns: readonly 
  *   entirely, which is the `:L423` guard's false branch.
  * @returns the statement text.
  */
+/**
+ * Applies the four caller-facing decisions of `model/dao/ProductDAO.cfc:L422-L427` and returns the
+ * statement with its bound values.
+ *
+ * EXTRACTED SO THE UNBOUNDED AND BOUNDED SEARCH MEMBERS SHARE ONE TRANSLATION rather than two copies
+ * that could drift. A drift here would be silent: both members return the same row type, so a
+ * divergent guard or a transposed bind order would compile cleanly and simply answer differently.
+ * Everything below is the original translation, moved rather than rewritten.
+ *
+ * @param term - the bare name fragment. `:L419` declares it optional; `:L422` reads it unguarded.
+ * @param productTypeIDs - the optional comma-delimited product-type identifier list.
+ * @param member - the calling member's qualified name, for the error context only.
+ * @returns the statement text and its bound values, in `:L427` order — term first, list second.
+ * @throws {DomainError} when the term is omitted, reproducing the `:L422` failure.
+ */
+function composeProductSearchCall(
+  term: string | undefined,
+  productTypeIDs: string | undefined,
+  member: string,
+): { readonly sql: string; readonly params: unknown[] } {
+  if (term === undefined) {
+    throw new DomainError(
+      'A product search needs a name fragment to match on, and none was supplied.',
+      { context: { member } },
+    );
+  }
+
+  // `:L422` — the wildcard wrapping, applied here and not by the caller.
+  const params: unknown[] = [`%${term}%`];
+  let productTypeIdCount = 0;
+
+  // `:L423` — the DOUBLE guard, reproduced with its exact strictness. `len()`, not `trim()`.
+  if (productTypeIDs !== undefined && productTypeIDs.length > 0) {
+    // `:L425` — the value passes through BARE, with no interpolation wrapping, split into the
+    // positional values a bound list becomes.
+    const productTypeValues = splitBoundList(productTypeIDs);
+    productTypeIdCount = productTypeValues.length;
+    params.push(...productTypeValues);
+  }
+
+  // `:L427` — `setSQL` is called AFTER both `addParam` calls, which fixes the bind order as the term
+  // FIRST and the product-type list SECOND. Preserved positionally (TR-4).
+  return { sql: composeProductSearch(productTypeIdCount), params };
+}
+
 export function composeProductSearch(productTypeIdCount: number): string {
   const productTypeFilter =
     productTypeIdCount > 0
@@ -1827,14 +2597,108 @@ interface ImportPlan {
   readonly timeStamp: Date;
   /** `:L153` — ONE account identifier for the whole import. */
   readonly administratorID: string;
+  /**
+   * The import's own resolution memory for the three per-row lookups whose answers cannot change
+   * underneath it. See {@link ImportLookupMemory} for the proof, key by key.
+   */
+  readonly lookups: ImportLookupMemory;
 }
+
+/**
+ * The import's memory of lookups it has already resolved, live for exactly one call.
+ *
+ * ⭐ WHY IT EXISTS. `model/dao/ProductDAO.cfc:L179-L186` re-runs the brand lookup and the product-type
+ * lookup FOR EVERY ROW, and `:L212-L215` re-runs the option lookup for every row × every surviving
+ * option group. A catalog file of a thousand rows sharing one brand and one product type issues a
+ * thousand identical brand statements and a thousand identical product-type statements, and a file with
+ * three option columns issues three thousand option statements for perhaps a dozen distinct options.
+ * Nothing about any of those repetitions is load-bearing.
+ *
+ * ⚠️⚠️ ONLY POSITIVE RESOLUTIONS ARE REMEMBERED, AND THAT ASYMMETRY IS THE WHOLE CORRECTNESS ARGUMENT.
+ * A miss is NEVER recorded, so a row whose brand, product type or option was absent re-probes exactly as
+ * the legacy does — which means a row created concurrently between two rows of the import is still seen,
+ * on exactly the row the legacy would first have seen it. What a positive entry asserts is far narrower:
+ * that an identifier already observed for a given name does not become a DIFFERENT identifier later in
+ * the same import. The importer never deletes a brand, a product type or an option, and a row's primary
+ * key does not change, so within one import the only way a remembered answer could go stale is a
+ * concurrent DELETE-and-recreate of the same name — narrower than the "any concurrent insert" window a
+ * naive whole-answer cache would open, and narrower still than it looks, because:
+ *
+ * ⚠️ THE LEGACY IS ALREADY NON-DETERMINISTIC ON THESE READS. Each lookup projects one identifier and the
+ * reader takes the FIRST row (`readFirstRowText`), while none of the three statements declares an
+ * `ORDER BY` — `:L180`, `:L184` and `:L213` order nothing. Where two rows share a name, which identifier
+ * the legacy returns is whatever the engine yields first, and it may differ between two probes in the
+ * same import. Remembering the first observed answer therefore returns a value the legacy could itself
+ * have returned on every row; it cannot return one the legacy could not.
+ *
+ * ⚠️ AN OPTION THE IMPORT ITSELF CREATES IS RECORDED, AND THAT IS SAFE BECAUSE OF FIRST-FAILURE. The
+ * insert at `:L222-L227` happens inside a row's transaction, so a rolled-back row could in principle
+ * leave a remembered identifier that no longer exists. It cannot happen here: the per-row boundary stops
+ * at the FIRST failure (M3), so no later row runs after the row whose transaction rolled back, and no
+ * later row can read the entry. This is not defence in depth — it is the reason the entry is admissible
+ * at all, and if the boundary ever gained a continue-on-error mode this recording would have to go.
+ *
+ * ⚠️ WHAT IS DELIBERATELY *NOT* REMEMBERED, AND WHY EACH WOULD BE WRONG:
+ *   • THE SKU-OPTION LINK PROBE (`:L218-L220`). Its key includes the SKU identifier, which is resolved
+ *     per row, and two file rows CAN resolve to the same SKU — the generated code at `:L200-L203` is
+ *     derived from cell values, so duplicate rows collide. The second such row must observe the link the
+ *     first row inserted, which is precisely the same-connection read-back M6 requires. Remembering it
+ *     would substitute a stale answer for the one read that has to be live.
+ *   • THE PRODUCT/SKU EXISTENCE LOOKUP (`:L385-L387`). Same reason, more sharply: it is the read that
+ *     decides UPDATE versus INSERT, and two rows sharing a product code must have the second see the
+ *     first's insert. Remembering it would turn a re-import into a duplicate insert.
+ *   • THE CUSTOM-ATTRIBUTE UPDATE COUNT (`:L245-L247`). Not a lookup at all — it is an affected-row
+ *     count off a mutation, and the mutation must run for its effect.
+ *
+ * ⚠️ AND IT IS IMPORT-SCOPED, NEVER INSTANCE-SCOPED (M7). It is created inside
+ * {@link MySqlProductRepository.buildImportPlan} and reachable only through the {@link ImportPlan} that
+ * call returns, so it dies with the import. A field on the repository would let a warm container serve
+ * one caller's catalog identifiers to the next caller's import — the exact hazard M7 names.
+ */
+interface ImportLookupMemory {
+  /** Brand name cell → brand identifier, for names already resolved. `:L179-L182`. */
+  readonly brandIdsByName: Map<string, string>;
+  /** Product-type name cell → product-type identifier. `:L183-L186`. */
+  readonly productTypeIdsByName: Map<string, string>;
+  /**
+   * `optionGroupID` + `\u0000` + option code → option identifier. `:L212-L215`, plus the identifier of
+   * an option this import created at `:L222-L227`.
+   *
+   * The key is composite because the legacy statement matches on BOTH the code and the group, and it is
+   * joined on a NUL rather than a printable separator so no pair of real values can collide by
+   * concatenation — an option code is file content and may contain any printable character.
+   */
+  readonly optionIdsByGroupAndCode: Map<string, string>;
+}
+
+/**
+ * Compose the composite key {@link ImportLookupMemory.optionIdsByGroupAndCode} is keyed by.
+ *
+ * @param optionGroupID - the group the option belongs to, as the pre-pass resolved it.
+ * @param optionCode - the option code cell, verbatim and case-sensitive.
+ * @returns the composite key.
+ */
+function optionMemoryKey(optionGroupID: string, optionCode: string): string {
+  return `${optionGroupID}\u0000${optionCode}`;
+}
+
+/*
+ * ⛔ `PRODUCT_MANY_TO_MANY_FIELDS` AND `clearProductManyToManyCollections` WERE REMOVED FROM THIS MODULE.
+ * They existed only to serve a second `removeProduct` implementation that has itself been removed; the
+ * full account, including why the many-to-many concern is NOT lost, sits with the surviving pair at
+ * {@link MySqlProductRepository.saveProduct}. The authority the helper ported,
+ * `org/Hibachi/HibachiService.cfc:L61`, is honoured in `./MySqlProductPersistence.ts`, which draws the
+ * scope split between statement-removable link tables and the excluded-family ones its declared
+ * `ProductDependencyCleanup` collaborator covers.
+ */
 
 /**
  * The MySQL implementation of {@link ProductRepository} — the port of `model/dao/ProductDAO.cfc`.
  *
- * ⚠️ THE MEMBER SET IS CLOSED AT THE PORT'S THREE PUBLIC MEMBERS PLUS ONE PRIVATE HELPER, exactly as
- * the legacy's is. The module header enumerates what is deliberately absent and why; nothing may be
- * added here to "complete" the surface.
+ * ⚠️ THE MEMBER SET IS CLOSED AT THE PORT'S THREE PUBLIC MEMBERS, THE TWO DATA-ACCESS PRIMITIVES THE
+ * PRODUCT SAVE AND DELETE PATHS REACH DIRECTLY, AND THE PRIVATE HELPERS THOSE FIVE NEED. The module
+ * header enumerates what is deliberately absent and why, and records why the persistence pair belongs
+ * to this file rather than to the port; nothing else may be added here to "complete" the surface.
  *
  * ⚠️ M7 — NO MUTABLE STATE. Every field is `readonly` and every one is a collaborator, never a cache.
  * The legacy's own memoised state lives in `model/dao/SkuDAO.cfc:L204-L228`, not here, and this file
@@ -1871,8 +2735,8 @@ export class MySqlProductRepository implements ProductRepository {
   /** The URL-title transform, replacing the call at `:L399` to a member that does not exist. */
   private readonly urlTitleFilter: ImportUrlTitleFilter;
 
-  /** The image-extension resolver, replacing the setting read at `:L307`, `:L313` and `:L320`. */
-  private readonly globalImageExtension: GlobalImageExtensionResolver;
+  /** @see MySqlProductRepositoryDependencies.readDefaultSkuId */
+  private readonly readDefaultSkuId: DefaultSkuIdReader;
 
   /**
    * @param dependencies - the six collaborators, as a named object rather than a positional list.
@@ -1883,7 +2747,41 @@ export class MySqlProductRepository implements ProductRepository {
     this.sourceReader = dependencies.sourceReader;
     this.accountContext = dependencies.accountContext;
     this.urlTitleFilter = dependencies.urlTitleFilter;
-    this.globalImageExtension = dependencies.globalImageExtension;
+    this.readDefaultSkuId = dependencies.readDefaultSkuId;
+  }
+
+  /**
+   * Returns an equivalent {@link MySqlProductRepository} bound to a DIFFERENT statement executor.
+   *
+   * ⭐ THIS IS THE FIX FOR REVIEW FINDING 2, APPLIED HERE AS IT IS APPLIED TO EVERY OTHER
+   * TRANSACTION-SENSITIVE REPOSITORY IN THE FOLDER. While an executor could only be chosen at
+   * construction, it was necessarily the POOL-bound one, so wrapping a call in `UnitOfWork.run` left
+   * every statement running outside the transaction the boundary had just opened. The full account is on
+   * `MySqlSkuRepository.withExecutor`.
+   *
+   * ⚠️ ONLY THE EXECUTOR IS REPLACED, AND `transactions` DELIBERATELY IS NOT. The importer's boundaries
+   * are the thing that OPENS transactions; re-binding is for code running INSIDE one that somebody else
+   * opened. Swapping the boundary collaborator here would let a caller nest the importer's per-row
+   * transactions inside an outer one and quietly destroy M3, whose whole content is that
+   * `model/dao/ProductDAO.cfc:L177` commits once per row. The five non-executor collaborators travel
+   * across unchanged because none of them is connection-bound.
+   *
+   * ⚠️ NOT ON THE PORT INTERFACE. `../../ports/repositories/ProductRepository` declares business
+   * queries; a service may not know a statement executor exists (AAP 0.7.3 S2 inverted). Re-binding is
+   * used only by the layer that already holds concrete adapters.
+   *
+   * @param executor - The executor to bind to, normally a boundary's `scope.executor`.
+   * @returns A new instance identical in every other respect.
+   */
+  public withExecutor(executor: ProductStatementExecutor): MySqlProductRepository {
+    return new MySqlProductRepository({
+      executor,
+      transactions: this.transactions,
+      sourceReader: this.sourceReader,
+      accountContext: this.accountContext,
+      urlTitleFilter: this.urlTitleFilter,
+      readDefaultSkuId: this.readDefaultSkuId,
+    });
   }
 
   /**
@@ -1972,32 +2870,64 @@ export class MySqlProductRepository implements ProductRepository {
     term?: string,
     productTypeIDs?: string,
   ): Promise<ProductSearchRow[]> {
-    if (term === undefined) {
-      throw new DomainError(
-        'A product search needs a name fragment to match on, and none was supplied.',
-        { context: { member: 'MySqlProductRepository.searchByProductType' } },
-      );
-    }
+    const { sql, params } = composeProductSearchCall(
+      term,
+      productTypeIDs,
+      'MySqlProductRepository.searchByProductType',
+    );
 
-    // `:L422` — the wildcard wrapping, applied here and not by the caller.
-    const params: unknown[] = [`%${term}%`];
-    let productTypeIdCount = 0;
-
-    // `:L423` — the DOUBLE guard, reproduced with its exact strictness. `len()`, not `trim()`.
-    if (productTypeIDs !== undefined && productTypeIDs.length > 0) {
-      // `:L425` — the value passes through BARE, with no interpolation wrapping, split into the
-      // positional values a bound list becomes.
-      const productTypeValues = splitBoundList(productTypeIDs);
-      productTypeIdCount = productTypeValues.length;
-      params.push(...productTypeValues);
-    }
-
-    // `:L427` — `setSQL` is called AFTER both `addParam` calls, which fixes the bind order as the term
-    // FIRST and the product-type list SECOND. Preserved positionally (TR-4).
-    const rows = await this.executor.execute(composeProductSearch(productTypeIdCount), params);
+    const rows = await this.executor.execute(sql, params);
 
     // `:L430-L434` — the row-to-`{id, value}` rename, which lives in `rowMappers.ts`.
     return mapRows(rows, mapProductSearchRow);
+  }
+
+  /**
+   * The windowed form of {@link MySqlProductRepository.searchByProductType}.
+   *
+   * ONE TRANSLATION SERVES BOTH MEMBERS. {@link composeProductSearchCall} applies the `:L422` wildcard
+   * wrapping, the `:L423` `len()`-not-`trim()` guard, the `:L425` bare list splitting and the `:L427`
+   * bind order, so neither member can drift from the other's match set. This member appends the window
+   * and nothing else.
+   *
+   * ⚠️ THE GUARD ASYMMETRY IS INHERITED, NOT REPAIRED. A whitespace-only product-type argument still
+   * passes here — and is still discarded on the SKU side, where the guard trims (Discrepancy 6). Making
+   * the bounded pair agree with each other would have meant changing one of the two unbounded members,
+   * which is forbidden.
+   *
+   * ⚠️ THE WINDOW VALUES BIND LAST AND ARE NEVER WRITTEN INTO THE TEXT, so the `:L427` order — term
+   * first, product-type identifiers second — is untouched, and no caller-supplied number reaches the
+   * statement text (S2).
+   *
+   * ⚠️ NO `ORDER BY` IS ADDED. `:L421` declares none and adding one would change the unbounded
+   * member's row order, which is observable output. Successive windows are therefore not guaranteed
+   * disjoint; the window bounds cost, and `BoundedRead` records that limitation once.
+   *
+   * @param window - the caller's ceiling and zero-based offset; validated, never defaulted.
+   * @param term - bare product-name fragment. Omitting it raises, as on the unbounded member.
+   * @param productTypeIDs - optional comma-delimited product-type identifier list.
+   * @returns the window's rows and whether a further match lies past it.
+   * @throws {DomainError} for an unusable window, or an omitted term.
+   */
+  public async searchByProductTypeBounded(
+    window: BoundedReadWindow,
+    term?: string,
+    productTypeIDs?: string,
+  ): Promise<BoundedReadResult<ProductSearchRow>> {
+    const bound = prepareBoundedRead(window, 'MySqlProductRepository.searchByProductTypeBounded');
+    const { sql, params } = composeProductSearchCall(
+      term,
+      productTypeIDs,
+      'MySqlProductRepository.searchByProductTypeBounded',
+    );
+
+    const rows = await this.executor.execute(
+      `${sql}
+  LIMIT ${BIND_PLACEHOLDER} OFFSET ${BIND_PLACEHOLDER}`,
+      [...params, ...bound.boundValues],
+    );
+
+    return settleBoundedRead(mapRows(rows, mapProductSearchRow), bound.limit);
   }
 
   /**
@@ -2038,18 +2968,25 @@ export class MySqlProductRepository implements ProductRepository {
    * here, no chunking is introduced and no queue is created: the mismatch belongs to the handler layer
    * and is flagged rather than silently resolved (S8, S9).
    *
-   * @param source - the policy-approved location, already branded by the port's own validator. This
-   *   adapter never forges one and never re-derives one from caller text.
+   * @param fileURL - the caller's location, unchecked. Nothing here vets it, exactly as nothing in
+   *   `model/dao/ProductDAO.cfc:L73-L87` vets it; the residual CWE-918 exposure is carried as mismatch
+   *   M4 and is the operator's to close. See {@link ProductImportSourceReader}.
    * @param textQualifier - the text qualifier, defaulting to `''` exactly as `:L73` declares.
+   * @param options - optional invocation-scoped controls. Neither field alters what is imported or in
+   *   what order; see {@link ProductImportOptions}.
    * @returns nothing. See the note above: the void return is preserved deliberately.
    */
-  public async importFromFile(source: ProductImportSource, textQualifier?: string): Promise<void> {
+  public async importFromFile(
+    fileURL: string,
+    textQualifier?: string,
+    options?: ProductImportOptions,
+  ): Promise<void> {
     // `:L74` — the file type is the last dot-delimited segment of the location, with NO validation and
     // NO extraction from a URL path. A query string travels with it, exactly as it does in the legacy,
     // which is one reason an unrecognised type is a silent no-delimiter case rather than an error.
     // Normalised for comparison because the `==` tests at `:L76`, `:L78` and `:L83` are
     // case-insensitive.
-    const fileType = normaliseHeading(listLast(source, FILE_TYPE_DELIMITER));
+    const fileType = normaliseHeading(listLast(fileURL, FILE_TYPE_DELIMITER));
 
     // `:L75-L80`.
     const delimiter = resolveDelimiter(fileType);
@@ -2057,8 +2994,40 @@ export class MySqlProductRepository implements ProductRepository {
     // `:L73` — the declared default for the optional second argument.
     const resolvedTextQualifier = textQualifier ?? '';
 
+    /*
+     * ⭐ P17 — CANCELLATION IS OBSERVED, AND NOTHING ABOUT IT IS INVENTED. The signal is supplied by the
+     * caller or it is absent; this member creates none, derives none from a deadline and imposes no
+     * timeout of its own, because AAP §0.6.6 M1 records that the legacy's own budget is a 3600-second
+     * REQUEST TIMEOUT owned by `model/service/ProductService.cfc:L65-L68` and S9 forbids minting a
+     * substitute. When no signal is supplied this is a no-op closure and the import behaves exactly as it
+     * did before.
+     *
+     * IT IS CHECKED ONLY WHERE THE LEGACY ALREADY HAD A BOUNDARY: before the retrieval, after it, and at
+     * each row boundary BETWEEN transactions. Never inside a transaction, never between two statements of
+     * the same row, and never mid-statement — aborting there could leave a row half-written in an open
+     * boundary, whereas aborting between rows produces exactly the M3 partial-import shape a mid-file
+     * failure already produces, with earlier rows committed and no later row attempted.
+     */
+    const cancellation = options?.signal;
+    const throwIfCancelled = (phase: string, rowNumber?: number): void => {
+      if (cancellation?.aborted === true) {
+        throw new DomainError('The product import was cancelled before it completed.', {
+          context:
+            rowNumber === undefined
+              ? { fileURL, phase }
+              : { fileURL, phase, rowNumber, committedRows: rowNumber - 1 },
+        });
+      }
+    };
+
+    throwIfCancelled('beforeRetrieval');
+
     // `:L82` — `queryNew("")`, the empty set the spreadsheet branch leaves in place.
     let recordSet: DelimitedImportRecordSet = EMPTY_RECORD_SET;
+
+    // Set only on the streaming path, and read only there. See the convergence note below.
+    let streamedColumnList: readonly string[] | undefined;
+    let streamedRecords: AsyncIterable<DelimitedImportRecord> | undefined;
 
     if (fileType === SPREADSHEET_FILE_TYPE) {
       /*
@@ -2075,12 +3044,55 @@ export class MySqlProductRepository implements ProductRepository {
        *
        * The two back-fills below still run, because `:L288` and `:L304` sit outside this branch.
        */
+    } else if (this.sourceReader.readStreaming !== undefined) {
+      /*
+       * ⭐ `:L87` — the single retrieval, delegated, in its STREAMING form. One header pass, then records
+       * on demand. Selecting the member the reader actually offers rather than requiring one keeps the
+       * collaborator's contract additive: an existing reader is not broken and a streaming reader is not
+       * mandated.
+       */
+      const stream = await this.sourceReader.readStreaming(
+        fileURL,
+        delimiter,
+        resolvedTextQualifier,
+      );
+
+      streamedColumnList = stream.columnList;
+      streamedRecords = stream.records;
     } else {
-      // `:L87` — the single retrieval, delegated. See M4 above.
-      recordSet = await this.sourceReader.read(source, delimiter, resolvedTextQualifier);
+      // `:L87` — the single retrieval, delegated, in its materialising form. See M4 above.
+      recordSet = await this.sourceReader.read(fileURL, delimiter, resolvedTextQualifier);
     }
 
-    const data = normaliseRecordSet(recordSet);
+    throwIfCancelled('afterRetrieval');
+
+    /*
+     * The two retrieval shapes converge here, and they converge on the LAZY one: a materialised record
+     * set's `rows` array is itself iterable, so both paths hand `normaliseRecords` the same kind of
+     * sequence and neither path builds a second whole-file representation. `columnList` is complete
+     * before the first record is normalised on both paths, which is what `:L100-L173` requires.
+     */
+    let data: NormalisedImportData = {
+      columnList: streamedColumnList ?? recordSet.columnList,
+      rows: normaliseRecords(streamedRecords ?? recordSet.rows),
+    };
+
+    /* ⭐ THE CONTENT-ASSIGNMENT BOUNDARY IS EVALUATED HERE, BEFORE ANYTHING ELSE TOUCHES THE DATABASE.
+     * The step it stands for is the LAST thing each legacy row does (`:L257-L282`), but a boundary
+     * refusal at that position would commit every earlier row and abandon the file half-imported — an
+     * outcome the port would have caused and the legacy does not have, because the legacy completes the
+     * step. Placing the check on this line makes the refusal all-or-nothing: it runs after normalisation,
+     * so it can read headings and cells, and before {@link MySqlProductRepository.buildImportPlan} and
+     * the per-row loop, so not one statement of any kind has been issued when it raises. See
+     * {@link MySqlProductRepository.refuseRequestedContentAssignments} for the three legacy no-op cases
+     * it preserves and the one case it refuses.
+     *
+     * ⚠️ IT RETURNS THE RECORD SEQUENCE RATHER THAN JUST INSPECTING IT, and the returned value must be
+     * the one the record loop reads. Deciding all-or-nothing means walking every row, and `rows` is a
+     * one-pass generator: the walk is only reachable for a file that declares the unportable column, but
+     * where it does happen the rows it pulled come back through here. Ignoring the return value would
+     * hand the loop a spent generator and import nothing at all. */
+    data = await this.refuseRequestedContentAssignments(data, throwIfCancelled);
 
     // `:L100-L173` — everything computed once, before the record loop. M7: local to this call.
     const plan = await this.buildImportPlan(data);
@@ -2092,15 +3104,99 @@ export class MySqlProductRepository implements ProductRepository {
      * "roll everything back on failure" path, and no continue-on-error swallow. The legacy neither
      * batches nor recovers; it commits each row and stops at the first failure, leaving the rows before
      * it in place. Both halves of that are behaviour.
+     *
+     * THE NON-COLLECTING MEMBER, because the row body returns nothing. The collecting member would
+     * accumulate one `undefined` per row of the file and hold the array until the import finished —
+     * memory proportional to the row count, spent on values no caller can observe. The boundary is
+     * otherwise identical: same single connection, same independent transaction per row, same order,
+     * same first-failure semantics, same partial commits.
      */
-    await this.transactions.runPerItem(data.rows, async (row, scope) => {
-      await this.importRow(scope.executor, data, row, plan);
+    await this.transactions.runPerItemWithoutResults(data.rows, async (row, scope) => {
+      /*
+       * P17: checked at the row boundary, BEFORE this row's first statement. Throwing here aborts the
+       * row's own transaction — nothing of it has been written yet — and, by the boundary's first-failure
+       * rule, attempts no later row. Rows already committed stay committed, which is the same partial
+       * outcome a mid-file data failure produces (M3).
+       */
+      throwIfCancelled('row', row.rowNumber);
+
+      await this.importRow(scope.executor, row, plan);
     });
 
-    // `:L287-L325` — the two bulk back-fills, outside every boundary, after the last row commits.
-    await this.backfillDerivedColumns();
+    /*
+     * `:L287-L325` — the two bulk back-fills, outside every boundary, after the last row commits.
+     *
+     * ⭐ P16 — WHETHER THEY RUN HERE IS THE CALLER'S DECISION, AND THE DEFAULT IS THE LEGACY'S BEHAVIOUR.
+     * `:L288` and `:L304` sit past the closing braces of both the transaction and the loop, unguarded by
+     * record count or file type, so running them by default preserves the observable end-to-end shape
+     * exactly — including for an empty file and for the `.xls` no-op. What the option adds is the ability
+     * for the out-of-band M1 workflow to import a catalog in several invocations and run the two
+     * whole-catalog statements ONCE at the end rather than once per invocation, which is a change to
+     * WORKFLOW COMPOSITION and not to either statement.
+     *
+     * ⚠️ WHAT IS DELIBERATELY NOT DONE HERE. Neither statement is guarded on the record count, neither is
+     * restricted to the identifiers this import touched, neither gains a `LIMIT`, and their order is
+     * unchanged. Any of those would narrow which rows are updated — a semantic change Guideline 4 forbids,
+     * and one the review explicitly conditions on a parity exception that is not claimed. The finding is
+     * resolved by letting the caller run the pass once per logical import instead of once per invocation,
+     * not by making the pass touch fewer rows.
+     */
+    if (options?.deferBackfills !== true) {
+      await this.backfillImportDerivedColumns();
+    }
   }
 
+  /* ==============================================================================================
+   * ⛔ THE SECOND PERSISTENCE PAIR WAS REMOVED FROM THIS CLASS, AND `saveProduct`/`removeProduct` BELOW
+   *    ARE THE SURVIVORS
+   * ============================================================================================
+   * A `persistProduct(ManagedEntity<Product>)` / `removeProduct(ManagedEntity<Product>)` pair once stood
+   * here, alongside a private `collectProductValues` and a second `defaultSkuIdReader` field. It was a
+   * SECOND implementation of the two members {@link MySqlProductRepository.saveProduct} and
+   * {@link MySqlProductRepository.removeProduct} already provide, and TypeScript reported the collision
+   * as `Duplicate function implementation` on `removeProduct` — the two could not coexist.
+   *
+   * WHY THIS ONE WENT AND THE LOWER PAIR STAYED. Three independent authorities agree:
+   *
+   *   1. THE PORT DECLARES THE SURVIVORS. `../../ports/repositories/ProductRepository` declares
+   *      `saveProduct(product: Product): Promise<Product>` and `removeProduct(product: Product)`, and
+   *      this class is `implements ProductRepository`. The removed pair was declared on the class only.
+   *   2. EVERY RATIFIED TEST EXERCISES THE SURVIVORS. `test/adapters/MySqlProductRepository.test.ts`
+   *      calls `repository.saveProduct(...)` eight times and pins removal's four-statement order and its
+   *      transient refusal MESSAGE — `/cannot be removed before it has been persisted/`, which is the
+   *      `DomainError` the surviving member throws. The removed member threw a `DataIntegrityError`
+   *      carrying different words, so keeping it would have failed that test.
+   *      `test/adapters/MySqlProductPersistence.test.ts` wires the service's `persistProduct`
+   *      collaborator as `(product) => adapter.saveProduct(product)` in three places — the collaborator
+   *      NAME on the service side is satisfied by the `saveProduct` MEMBER on this side.
+   *   3. THE REMOVED PAIR ARGUED FROM A PORT INVENTORY THAT NO LONGER HOLDS. Its banner read "These two
+   *      members are NOT part of ProductRepository ... AAP §0.4.1.6 closes that port's inventory at
+   *      three members". That was true when it was written and is not true now: the port was widened
+   *      deliberately, with its own recorded finding, because `ProductService` requires a
+   *      `persistProduct: EntityPersister<Product>` and NO adapter supplied one — see the F03 account on
+   *      {@link ProductRepository.saveProduct}. Reinstating the narrower claim would reopen that finding.
+   *
+   * ⚠️ THE ONE REAL DIFFERENCE WAS THE INSERT-VERSUS-UPDATE DECISION, AND `isNew()` IS SOUND HERE.
+   * The removed member chose its branch with an EXISTENCE PROBE — a SELECT before the write — on the
+   * argument that `Product.isNew()` tests `productID === ''` and therefore flips the instant an
+   * identifier is minted. The survivor reads `isNew()` ONCE into a local at entry and mints only inside
+   * the insert arm, and the call pattern makes that safe: `ProductService.saveProduct` invokes the
+   * persister TWICE for a new product — once while it is still transient, which inserts, and once after
+   * `createSkus` has run, which updates a row that by then exists. The probe would issue an extra
+   * statement per save to rediscover what the caller's own sequencing already establishes.
+   *
+   * ⚠️ THE IN-MEMORY MANY-TO-MANY CLEARING WENT WITH IT, AND IT IS NOT A LOST BEHAVIOUR. The removed
+   * `removeProduct` called a module helper that emptied the ten many-to-many collections
+   * `model/entity/Product.cfc:L79-L90` declares, porting
+   * `org/Hibachi/HibachiService.cfc:L61` `removeAllManyToManyRelationships()`. That concern is ALREADY
+   * decided in this folder, one layer over, and decided the other way: `./MySqlProductPersistence.ts`
+   * carries the judgment call in full and splits it on SCOPE — the in-scope link tables are removed with
+   * STATEMENTS, while the nine excluded-family link tables and the three excluded-family cascade
+   * children go behind the declared `ProductDependencyCleanup` collaborator and are FLAGGED, which is
+   * what TR-5 requires. An in-memory sweep in the adapter would be a third mechanism for a question
+   * already answered twice, and it would clear collections `src/domain/product/Product.ts` types with a
+   * deliberately opaque element type precisely so that nothing in the port traverses them.
+   * ============================================================================================ */
   /**
    * Computes everything `model/dao/ProductDAO.cfc:L100-L173` computes before the record loop opens.
    *
@@ -2164,6 +3260,25 @@ export class MySqlProductRepository implements ProductRepository {
     }
 
     /*
+     * ⚠️ SEC-14 — AUTHORIZATION OF THE MUTATION TARGETS, HERE AND NOT LATER.
+     *
+     * This is the one point at which the whole set of columns the file wants to write is known and no
+     * row has been touched yet: `:L176` opens the first per-row boundary after this member returns, and
+     * M3 commits every row on its own, so a refusal discovered later would leave a partially imported
+     * catalog behind. See {@link assertImportableColumn} for what is refused and why each one, and for
+     * why this is a different question from the identifier whitelist that `assertColumnName` answers.
+     *
+     * ⭐ IT ALSO SUBSUMES THE UNKNOWN-COLUMN CASE EARLIER THAN BEFORE, WITHOUT REPLACING IT. Because the
+     * allowlist is a subset of the schema whitelist, a heading such as `product_nonsense` is refused
+     * here rather than by `assertColumnName` on the first row. Nothing that used to import stops
+     * importing — both paths refuse — but the failure now names authorization rather than the schema,
+     * and it arrives before the source file's first row instead of inside the first transaction. The
+     * schema whitelist is still consulted at every statement composition and is not weakened.
+     */
+    assertImportableColumns(PRODUCT_TABLE, productColumns);
+    assertImportableColumns(SKU_TABLE, skuColumns);
+
+    /*
      * `:L142-L148` — the two product-side defaults, supplied only when the heading is ABSENT.
      *
      * A file that carries `product_activeFlag` with an empty cell therefore imports an empty active
@@ -2203,6 +3318,18 @@ export class MySqlProductRepository implements ProductRepository {
       productLookupColumn,
       timeStamp,
       administratorID,
+      /*
+       * Created empty, HERE, so it lives exactly as long as this plan does — one import, never the
+       * instance (M7). Nothing pre-populates it: a pre-fetch of every distinct brand name would need the
+       * whole file up front, which is precisely what this import no longer holds, and it would issue reads
+       * for names no row ever reaches. Filling it on first use costs one statement per distinct value and
+       * zero for names that never appear.
+       */
+      lookups: {
+        brandIdsByName: new Map<string, string>(),
+        productTypeIdsByName: new Map<string, string>(),
+        optionIdsByGroupAndCode: new Map<string, string>(),
+      },
     };
   }
 
@@ -2283,29 +3410,51 @@ export class MySqlProductRepository implements ProductRepository {
    * written, and the option steps read back the SKU identifier the SKU save has just written, so the
    * reads must sit on the same connection as the uncommitted writes.
    *
+   * ⚠️ THE RECORD SET IS NO LONGER A PARAMETER, AND ITS ABSENCE IS DELIBERATE. This member used to
+   * receive the whole normalised set solely to run the content-assignment heading test at
+   * `:L257-L282`; that test is now a preflight in {@link MySqlProductRepository.importFromFile}, so the
+   * row body needs nothing beyond its own row and the shared plan. Keeping an unused parameter would
+   * advertise a dependency this member does not have.
+   *
    * @param executor - the transaction-scoped execution surface for this row alone.
-   * @param data - the normalised record set, needed for the content-assignment heading test.
    * @param row - the row being imported, carrying its one-based number for error context.
    * @param plan - the per-import plan.
    */
   private async importRow(
     executor: ProductStatementExecutor,
-    data: NormalisedImportData,
     row: NormalisedImportRow,
     plan: ImportPlan,
   ): Promise<void> {
-    // `:L179-L182` — the brand lookup. The read is GUARDED here and was not there; see
-    // `readFirstRowText`.
-    const brandRows = await executor.execute(BRAND_LOOKUP_STATEMENT, [
+    /*
+     * `:L179-L182` — the brand lookup, and `:L183-L186` — the product-type lookup. The reads are GUARDED
+     * here and were not there; see `readFirstRowText`.
+     *
+     * ⭐ RESOLVED THROUGH THE IMPORT'S OWN MEMORY, so a thousand rows sharing one brand issue ONE brand
+     * statement rather than a thousand identical ones. {@link ImportLookupMemory} carries the proof that
+     * this is answer-preserving; the two facts that do the work are that only POSITIVE resolutions are
+     * remembered — an absent brand re-probes on every row, exactly as the legacy does — and that neither
+     * statement declares an `ORDER BY`, so the legacy's own answer for a duplicated name is already
+     * whichever row the engine yielded first.
+     *
+     * ⚠️ THE READS STAY ON THE ROW'S OWN TRANSACTION EXECUTOR. A memory miss issues its statement inside
+     * this row's boundary, not on the pool, because that is where the legacy issues it (M6). Moving the
+     * probe to the pool would be a second connection and a different snapshot.
+     */
+    const brandID = await this.resolveRememberedLookup(
+      executor,
+      plan.lookups.brandIdsByName,
       readCell(row, REQUIRED_HEADING.brandName),
-    ]);
-    const brandID = readFirstRowText(brandRows, BRAND_ID_COLUMN);
+      BRAND_LOOKUP_STATEMENT,
+      BRAND_ID_COLUMN,
+    );
 
-    // `:L183-L186` — the product-type lookup, same shape.
-    const productTypeRows = await executor.execute(PRODUCT_TYPE_LOOKUP_STATEMENT, [
+    const productTypeID = await this.resolveRememberedLookup(
+      executor,
+      plan.lookups.productTypeIdsByName,
       readCell(row, REQUIRED_HEADING.productTypeName),
-    ]);
-    const productTypeID = readFirstRowText(productTypeRows, PRODUCT_TYPE_ID_COLUMN);
+      PRODUCT_TYPE_LOOKUP_STATEMENT,
+      PRODUCT_TYPE_ID_COLUMN,
+    );
 
     // `:L188-L191` — the product's extra data: the defaults, then the two resolved identifiers, in that
     // order. Order matters only for the insert's column list, and it is the legacy's order.
@@ -2394,8 +3543,22 @@ export class MySqlProductRepository implements ProductRepository {
       await this.applyCustomAttribute(executor, row, heading, productID);
     }
 
-    // `:L257-L282` — the content assignments, a declared boundary.
-    this.assertNoContentAssignmentRequested(data, row);
+    /* `:L257-L282` — the content assignments, a declared boundary that is NOT checked here.
+     *
+     * ⭐ THE REFUSAL IS PREFLIGHTED, AND THAT PLACEMENT IS THE WHOLE POINT. The step sits LAST in the
+     * legacy row body, after the product, the SKU, every option and every custom attribute have already
+     * been written. Refusing at this position under M3's per-row commits would leave every earlier row
+     * durable and this row's own product and SKU rolled back — a partial import caused by the PORT's
+     * boundary rather than by anything the legacy does, because the legacy completes this step. The
+     * refusal therefore moves to {@link MySqlProductRepository.refuseRequestedContentAssignments},
+     * which runs over the whole record set in `importFromFile` before the first boundary opens.
+     *
+     * ⚠️ NOTHING ABOUT M3 IS WEAKENED BY THAT MOVE. The preflight refuses an import the port cannot
+     * complete; it does not batch rows, wrap the loop, or add a roll-back-everything path for imports it
+     * CAN complete. A file with no content column, or with an empty content cell in every row, reaches
+     * this line exactly as before and still commits one row at a time, stopping at the first failure
+     * with the rows before it in place.
+     */
   }
 
   /**
@@ -2426,6 +3589,35 @@ export class MySqlProductRepository implements ProductRepository {
     const optionCode = readCell(row, heading);
 
     if (optionCode === '') {
+      return;
+    }
+
+    /*
+     * ⭐ THE IMPORT'S MEMORY IS CONSULTED BEFORE THE STATEMENT, so a file with three option columns over a
+     * thousand rows issues one statement per DISTINCT (group, code) pair instead of three thousand. On a
+     * hit the whole block below is skipped: the option is known to exist, so `:L217`'s non-empty branch is
+     * the one the legacy would take, and `:L222-L227` — the creation path — must not run.
+     *
+     * ⚠️ THE LINK PROBE IS STILL ISSUED ON EVERY HIT, and that is not an oversight. Its key includes the
+     * SKU identifier, which is per-row, and two file rows can resolve to the SAME SKU because the code at
+     * `:L200-L203` is derived from cell values. The second such row must see the link the first inserted,
+     * which is the same-connection read-back M6 requires. Only the OPTION resolution is remembered; the
+     * link question is asked afresh every time, exactly as the legacy asks it.
+     */
+    const rememberedOptionKey = optionMemoryKey(optionGroupID, optionCode);
+    const rememberedOptionID = plan.lookups.optionIdsByGroupAndCode.get(rememberedOptionKey);
+
+    if (rememberedOptionID !== undefined) {
+      // `:L218-L221` then `:L230-L234`, with `:L217` known to take its non-empty branch.
+      const knownLink = await executor.execute(SKU_OPTION_EXISTENCE_STATEMENT, [
+        rememberedOptionID,
+        skuID,
+      ]);
+
+      if (knownLink.length === 0) {
+        await executor.executeMutation(SKU_OPTION_INSERT_STATEMENT, [rememberedOptionID, skuID]);
+      }
+
       return;
     }
 
@@ -2477,6 +3669,26 @@ export class MySqlProductRepository implements ProductRepository {
 
       // `:L228` — set to false explicitly, so a newly created option always gets its link row.
       linkExists = false;
+    }
+
+    /*
+     * Remember the resolution, whether it was found at `:L216` or created at `:L223`.
+     *
+     * ⚠️ RECORDING A CREATED OPTION IS SAFE BECAUSE OF FIRST-FAILURE, NOT BECAUSE THE INSERT IS COMMITTED.
+     * The insert above sits inside this row's transaction and is not durable yet. If this row later fails,
+     * its transaction rolls back and the entry would name an option that does not exist — but no later row
+     * can read it, because the per-row boundary stops at the FIRST failure and attempts no further row
+     * (M3). The entry cannot outlive its own transaction's success. {@link ImportLookupMemory} states the
+     * same thing as a standing obligation: were the boundary ever to gain a continue-on-error mode, this
+     * recording would have to be removed with it.
+     *
+     * ⚠️ AND AN EMPTY IDENTIFIER IS NEVER RECORDED. `optionID` is `''` only when `:L216` found no row AND
+     * the creation path did not run — which cannot happen here, since `:L217`'s empty branch always
+     * creates — but the guard is kept so the memory's positive-only invariant is enforced at the write
+     * rather than merely argued at the read.
+     */
+    if (optionID !== '') {
+      plan.lookups.optionIdsByGroupAndCode.set(rememberedOptionKey, optionID);
     }
 
     // `:L230-L234`.
@@ -2543,51 +3755,124 @@ export class MySqlProductRepository implements ProductRepository {
 
   /**
    * The declared boundary for content-page assignments — the port of
-   * `model/dao/ProductDAO.cfc:L257-L282`.
+   * `model/dao/ProductDAO.cfc:L257-L282`, evaluated as a PREFLIGHT over the whole record set.
    *
-   * ⛔ THIS STEP IS A DECLARED BOUNDARY, NOT AN OMISSION, AND THE REASON IS A SCHEMA THE PORT REFUSES TO
+   * ⛔ THE STEP IS A DECLARED BOUNDARY, NOT AN OMISSION, AND THE REASON IS A SCHEMA THE PORT REFUSES TO
    * ADMIT. `:L261-L264` joins `tContent`, which is a Mura CMS table and belongs to a separate
    * application's schema: the module header records why the identifier whitelist deliberately does not
    * carry it, and admitting it would extend this port into an external content-management system whose
    * columns, subtype vocabulary and lifecycle are outside every scope boundary this migration declares.
    * `SwProductContent`, the table the second half of the step writes, has no entity in the in-scope
-   * catalogue either.
+   * catalogue either — AAP §0.2.2.1 excludes the whole `model/**\/Content*.cfc` family, and AAP §0.6.3.1
+   * records that the legacy service's own `contentService` injection has ZERO call sites. There is no
+   * in-scope collaborator to route this through and none may be invented (S5, S9).
    *
-   * ⚠️ THE BOUNDARY IS REACHED ONLY WHEN A CELL ACTUALLY CARRIES CONTENT, WHICH KEEPS THE COMMON CASE
-   * SILENT. `:L258` tests for the HEADING and `:L259` splits the CELL, and `listToArray("")` yields zero
-   * elements, so a file that carries the column with an empty cell runs the loop zero times and does
-   * nothing at all. That case stays a no-op here rather than raising, because raising on it would fail
-   * imports the legacy completes. Only a non-empty cell — a row that genuinely asks for a content
-   * assignment the legacy would have performed — raises, and it raises rather than silently discarding
-   * the assignment so no caller can mistake an unported step for a completed one (TR-5).
+   * ⭐ WHY THIS RUNS BEFORE THE FIRST ROW RATHER THAN INSIDE THE ROW IT CONCERNS. In the legacy the step
+   * is the LAST thing a row does, after that row's product, SKU, options and attributes are written, and
+   * under M3 each row commits on its own. A refusal at the legacy's position would therefore commit every
+   * row before the offending one, roll back only the offending row's own work, and abandon the file
+   * mid-import — a partial catalogue produced by the PORT's boundary, not by any behaviour the legacy
+   * has, because the legacy completes this step successfully. Preflighting converts that into an
+   * all-or-nothing refusal: the caller is told the import cannot be completed, and the catalogue is
+   * exactly as it was. Nothing is written, so there is nothing to reconcile.
    *
-   * @param data - the normalised record set, for the heading test.
-   * @param row - the row being imported.
-   * @throws {NotImplementedError} when a row asks for a content assignment.
+   * ⚠️ WHAT THE PREFLIGHT DOES NOT DO, because either would change behaviour the port CAN reproduce:
+   * it does not wrap the record loop in one transaction, it does not batch rows, and it does not add a
+   * roll-back-everything path for imports that are inside the boundary. M3's per-row commit shape —
+   * including its partial-import outcome on a genuine mid-file failure such as a missing heading or a
+   * rejected value — is untouched.
+   *
+   * ⚠️ THE THREE LEGACY NO-OP CASES ARE PRESERVED EXACTLY, AND ONLY THE FOURTH REFUSES. `:L258` tests
+   * for the HEADING and `:L259` splits the CELL with `listToArray`, which yields zero elements for an
+   * empty string:
+   *   1. Heading absent — `:L258` is false, the block never opens. No-op.
+   *   2. Heading present, this row's cell empty — `:L260` iterates zero times. No-op for that row.
+   *   3. Heading present, EVERY row's cell empty — every row is case 2, so the whole file is a no-op and
+   *      the import proceeds to completion. Raising here would fail an import the legacy completes.
+   *   4. Heading present and at least one cell non-empty — a row genuinely asks for an assignment the
+   *      legacy would have performed. This raises rather than silently discarding the assignment, so no
+   *      caller can mistake an unported step for a completed one (TR-5).
+   *
+   * ⚠️ THE SCAN VISITS EVERY ROW, NOT JUST THE FIRST, and reports the first offender by row number
+   * together with how many rows ask in total. Stopping at the first row would still be correct — one
+   * offending row is enough to refuse — but the count is what tells a caller whether the file needs one
+   * cell cleared or a column removed, and the whole set has to be walked to know that. The walk performs
+   * no input or output of any kind: it reads cells already in memory.
+   *
+   * @param data - the normalised record set, for the heading test and every row's cell.
+   * @throws {NotImplementedError} when any row asks for a content assignment.
    */
-  private assertNoContentAssignmentRequested(
+  private async refuseRequestedContentAssignments(
     data: NormalisedImportData,
-    row: NormalisedImportRow,
-  ): void {
-    // `:L258`.
+    throwIfCancelled: (phase: string, rowNumber?: number) => void,
+  ): Promise<NormalisedImportData> {
+    /* `:L258` — the heading test, hoisted out of the row body. Case 1, and the case that every ordinary
+     * import takes: the record sequence is handed straight back, nothing is buffered, and the streaming
+     * shape described on {@link NormalisedImportData.rows} is preserved byte for byte. The walk below is
+     * reachable only for a file that declares a column this port cannot honour. */
     if (!containsNoCase(data.columnList, CONTENT_PAGE_COLUMN)) {
-      return;
+      return data;
     }
 
-    // `:L259` — the default comma delimiter, and empty tokens dropped. See `listToArray`.
-    const contentPages = listToArray(readCell(row, CONTENT_PAGE_COLUMN), LIST_DELIMITER);
+    let firstOffendingRowNumber: number | undefined;
+    let firstOffendingPageCount = 0;
+    let offendingRowCount = 0;
 
-    if (contentPages.length === 0) {
-      // `:L260` iterates zero times. A no-op in the source is a no-op here.
-      return;
+    /* ⭐ WHY THE ROWS ARE COLLECTED WHILE THEY ARE SCANNED, AND ONLY ON THIS PATH.
+     * `data.rows` is a single-pass async generator, so the scan that makes the refusal all-or-nothing
+     * consumes the very sequence the record loop would import. Draining it and handing the exhausted
+     * generator on would import ZERO rows and report success — so the rows this walk pulls are kept and
+     * replayed to the caller. The cost is bounded to files that declare `productcontent_page`: for the
+     * refusing case the buffer is discarded with the exception, and for the all-empty case it is what
+     * lets the import the legacy completes still complete here. */
+    const bufferedRows: NormalisedImportRow[] = [];
+
+    for await (const row of data.rows) {
+      /* P17 at the same granularity the record loop uses. This phase drives the file's remaining
+       * retrieval I/O on the streamed path, so a cancelled caller must not be made to wait for the whole
+       * file — and nothing has been written, so abandoning here leaves the catalogue untouched. */
+      throwIfCancelled('contentAssignmentPreflight', row.rowNumber);
+
+      bufferedRows.push(row);
+
+      // `:L259` — the default comma delimiter, and empty tokens dropped. See `listToArray`.
+      const contentPages = listToArray(readCell(row, CONTENT_PAGE_COLUMN), LIST_DELIMITER);
+
+      if (contentPages.length === 0) {
+        // Case 2. `:L260` iterates zero times; a no-op in the source is a no-op here.
+        continue;
+      }
+
+      offendingRowCount += 1;
+
+      if (firstOffendingRowNumber === undefined) {
+        firstOffendingRowNumber = row.rowNumber;
+        firstOffendingPageCount = contentPages.length;
+      }
     }
 
+    if (firstOffendingRowNumber === undefined) {
+      /* Case 3 — the column is present and every cell is empty, so the legacy does nothing and so does
+       * this. The import proceeds, reading the rows this walk already pulled: the generator behind
+       * `data.rows` is spent, and replaying the buffer is what keeps an import the legacy completes from
+       * silently becoming an import of nothing. */
+      return { columnList: data.columnList, rows: replayBufferedRows(bufferedRows) };
+    }
+
+    // Case 4.
     throw new NotImplementedError(
       'MySqlProductRepository.importFromFile',
       'assigning content pages to an imported product resolves those pages in a separate ' +
         'content-management application whose schema this catalogue port does not read or write, so ' +
-        'the assignment cannot be completed here',
-      { context: { rowNumber: row.rowNumber, requestedPageCount: contentPages.length } },
+        'the assignment cannot be completed here; the import was refused before any row was written ' +
+        'rather than abandoned part-way through',
+      {
+        context: {
+          rowNumber: firstOffendingRowNumber,
+          requestedPageCount: firstOffendingPageCount,
+          requestingRowCount: offendingRowCount,
+        },
+      },
     );
   }
 
@@ -2701,9 +3986,26 @@ export class MySqlProductRepository implements ProductRepository {
      * The column name is the heading's last segment, whitelisted against this table. A heading naming a
      * column the entity does not declare is refused here; the legacy passed it to the engine, which
      * refused it too, so the failure moves earlier and becomes typed rather than disappearing.
+     *
+     * ⚠️ SEC-14 — TWO CHECKS PER HEADING, ASKING TWO DIFFERENT QUESTIONS, IN THIS ORDER. `assertColumnName`
+     * answers "is this a real column of this table", which is what makes the identifier safe to place in
+     * statement text (D22). {@link assertImportableColumn} answers "may an imported file WRITE it", which
+     * is the mass-assignment question the identifier check cannot answer. Schema first, so a heading
+     * naming nothing is still reported as a schema fault rather than as an authorization one.
+     *
+     * ⭐ THIS IS DEFENCE IN DEPTH, NOT THE PRIMARY CONTROL. The primary control is the plan-time refusal
+     * in {@link MySqlProductRepository.buildImportPlan}, which runs before any row exists — this member
+     * writes rows, so a refusal here has already lost the "nothing was imported" guarantee for every row
+     * that committed before it. It is kept anyway because it is the only check on the path a future
+     * caller would reach if it assembled a `columnList` of its own instead of taking the plan's, and
+     * because a control at the write site is what makes the guarantee true of the write rather than of
+     * one particular caller.
      */
     for (const heading of request.columnList) {
       const column = assertColumnName(request.table, listLast(heading, HEADING_DELIMITER));
+
+      assertImportableColumn(request.table, heading);
+
       const value = readCell(row, heading);
 
       updateColumns.push(column);
@@ -2894,6 +4196,54 @@ export class MySqlProductRepository implements ProductRepository {
   }
 
   /**
+   * Resolve a single-value lookup through the import's memory, issuing the statement only on a miss.
+   *
+   * The shared body of the brand lookup at `model/dao/ProductDAO.cfc:L179-L182` and the product-type
+   * lookup at `:L183-L186`. Both have the identical shape — one bound cell value, one projected
+   * identifier, first row wins, empty string when nothing matched — so they share one implementation
+   * rather than two copies of the same memory discipline.
+   *
+   * ⚠️ A MISS IS NOT REMEMBERED, WHICH IS WHAT KEEPS THIS FAITHFUL. Returning `''` records nothing, so
+   * the next row carrying the same absent name issues the statement again — and therefore observes a row
+   * created concurrently in between, on exactly the row the legacy would first have observed it. Only a
+   * resolved identifier is remembered, and {@link ImportLookupMemory} carries the argument for why that
+   * cannot change within one import.
+   *
+   * ⚠️ THE EMPTY NAME IS NOT SPECIAL-CASED. `:L180` and `:L184` bind the cell whatever it contains,
+   * including the empty string, and the legacy neither guards nor short-circuits it. So neither does this:
+   * an empty cell issues the statement, and if it happens to match a row with an empty name it resolves,
+   * exactly as the legacy would.
+   *
+   * @param executor - the row's transaction-scoped executor. Never the pool-bound one (M6).
+   * @param memory - the import-scoped map for this lookup, mutated in place on a resolution.
+   * @param value - the cell value to bind, verbatim.
+   * @param statement - the lookup statement, whose sole placeholder takes `value`.
+   * @param identifierColumn - the column the statement projects.
+   * @returns the resolved identifier, or `''` when nothing matched — the legacy's own empty-set value.
+   */
+  private async resolveRememberedLookup(
+    executor: ProductStatementExecutor,
+    memory: Map<string, string>,
+    value: string,
+    statement: string,
+    identifierColumn: string,
+  ): Promise<string> {
+    const remembered = memory.get(value);
+    if (remembered !== undefined) {
+      return remembered;
+    }
+
+    const rows = await executor.execute(statement, [value]);
+    const resolved = readFirstRowText(rows, identifierColumn);
+
+    if (resolved !== '') {
+      memory.set(value, resolved);
+    }
+
+    return resolved;
+  }
+
+  /**
    * Runs the two bulk back-fills — the port of `model/dao/ProductDAO.cfc:L287-L325`.
    *
    * ⚠️ OUTSIDE EVERY TRANSACTION, AND THAT IS CONFIRMED FROM THE BRACE STRUCTURE. `:L284` closes
@@ -2907,6 +4257,18 @@ export class MySqlProductRepository implements ProductRepository {
    * spreadsheet upload that imported nothing still executes both, and so does an empty file. See the note
    * on {@link MySqlProductRepository.importFromFile}.
    *
+   * ⭐ AND THAT IS WHY THIS MEMBER IS PUBLIC. It was private, invoked only from the tail of the import,
+   * which meant a whole-catalog pass for every invocation of an out-of-band workflow that necessarily
+   * spans several. Exposing it lets the workflow pass `deferBackfills` on its chunks and invoke this once
+   * at the end, executing exactly the same two statements, in the same order, over the same rows — once
+   * per logical import instead of once per invocation. The import still invokes it by default, so nothing
+   * a pre-existing caller observes changes.
+   *
+   * ⚠️ EXPOSING IT ADDS NO BEHAVIOUR AND NARROWS NOTHING. No record-count guard, no restriction to the
+   * identifiers an import touched, no `LIMIT`, no reordering. Narrowing any of that would change which
+   * rows are updated, which Guideline 4 forbids and which the review conditions on a parity exception that
+   * is deliberately not claimed.
+   *
    * ⚠️ BOTH ARE D22 SITES AND NEITHER IS AN INJECTION SITE. `:L289` and `:L295` interpolate nothing at
    * all; `:L305`, `:L311` and `:L318` interpolate a SETTING, not file content. The only change to the
    * first is the logical-to-physical identifier translation, and the only change to the second is that
@@ -2918,7 +4280,7 @@ export class MySqlProductRepository implements ProductRepository {
    * in sequence is the faithful shape. Their order is not incidental: the first assigns default SKUs and
    * the second derives image file names, and both read rows the row loop has already committed.
    */
-  private async backfillDerivedColumns(): Promise<void> {
+  public async backfillImportDerivedColumns(): Promise<void> {
     await this.transactions.runWithoutTransaction(async (executor) => {
       // `:L288-L302` — back-fill 1. Zero parameters, exactly as `:L302` executes it.
       await executor.executeMutation(DEFAULT_SKU_BACKFILL_STATEMENT, []);
@@ -2934,12 +4296,242 @@ export class MySqlProductRepository implements ProductRepository {
        * and the casing mismatch that proves the branches were never meant to diverge are both recorded on
        * the statement constant.
        *
-       * ⚠️ THE EXTENSION IS RESOLVED HERE AND NOT CACHED. A resolver call per import, never a field:
-       * caching it would make a warm container serve one caller's configuration to the next (M7).
+       * ⚠️ F5 — THE EXTENSION IS A FROZEN SOURCE-BACKED CONSTANT, NOT AN INJECTED CALLBACK AND NOT A
+       * FIELD. `DEPRECATED_SETTING_DEFAULTS.globalImageExtension` transcribes the legacy metadata
+       * default at `model/service/SettingService.cfc:L247`, and it lives in the settings module so that
+       * this port has exactly ONE setting boundary. Reading a frozen module-scope constant raises no M7
+       * question: there is no per-caller configuration to leak across a warm container, because there
+       * is no per-caller configuration at all — the legacy never seeded this name, so every caller gets
+       * the same declared default the legacy engine would have yielded.
        */
       await executor.executeMutation(SKU_IMAGE_FILE_BACKFILL_STATEMENT, [
-        IMAGE_EXTENSION_SEPARATOR + this.globalImageExtension(),
+        IMAGE_EXTENSION_SEPARATOR + DEPRECATED_SETTING_DEFAULTS.globalImageExtension,
       ]);
     });
+  }
+
+  /**
+   * The writable `SwProduct` values, in exactly the order {@link PRODUCT_WRITABLE_COLUMNS} lists them.
+   *
+   * An absent optional field becomes `null` rather than being dropped. Omitting it would let the database
+   * apply its own column default on insert — a different outcome from storing the absence the entity
+   * holds — and on update would silently leave a stale value in place.
+   *
+   * ⚠️ THE THREE FOREIGN KEYS ARE READ FROM THE ASSOCIATIONS, which is the only place they live: the read
+   * mapper resolves no association at all, so the entity's `brand`, `productType` and `defaultSku` links
+   * are the sole source for `brandID`, `productTypeID` and `defaultSkuID`. See the port for why this
+   * write/read asymmetry is deliberate.
+   *
+   * ⚠️ THE FOUR `calculated*` COLUMNS ARE STORED, NEVER COMPUTED. They are persistent at
+   * `model/entity/Product.cfc:L62-L65` while the services that MAINTAIN them are excluded by AAP
+   * §0.2.2.6, so computing one here would import a pricing or inventory rule into the adapter layer.
+   *
+   * ⭐ F07 — `calculatedSalePrice` IS BOUND AS EXACT DECIMAL TEXT. It is `ormtype="big_decimal"` at
+   * `model/entity/Product.cfc:L62`, and the domain type carries it as an `ExactDecimal` rather than a
+   * `number`, so what is bound here is the stored digits at the stored scale. An earlier revision bound a
+   * double and recorded that as a tracked concern, noting correctly that the fix *"belongs to the read and
+   * write paths together rather than to this member alone"* — which is why it was made at both ends at
+   * once: `rowMappers.ts` reads the column into the same representation this member writes back.
+   *
+   * `mysql2` binds a string to a `DECIMAL` column without reinterpreting it, so nothing here rounds,
+   * scales or reformats the value it was given — and now nothing upstream does either.
+   */
+  private collectWritableProductValues(product: Product): readonly unknown[] {
+    return [
+      product.activeFlag ?? null,
+      product.urlTitle ?? null,
+      product.productName ?? null,
+      product.productCode ?? null,
+      product.productDescription ?? null,
+      product.publishedFlag ?? null,
+      product.sortOrder ?? null,
+      product.calculatedSalePrice ?? null,
+      product.calculatedQATS ?? null,
+      product.calculatedAllowBackorderFlag ?? null,
+      product.calculatedTitle ?? null,
+      product.brand?.brandID ?? null,
+      product.productType?.productTypeID ?? null,
+      /* Read through the injected reader: `defaultSku` is a behavioural delegate with no identifier
+       * accessor, by design. `undefined` when the product has no default, which is the state a new
+       * product is inserted in — see the write-order note on `saveProduct`. */
+      product.defaultSku === undefined ? null : this.readDefaultSkuId(product.defaultSku),
+      product.remoteID ?? null,
+      product.createdDateTime ?? null,
+      product.createdByAccount ?? null,
+      product.modifiedDateTime ?? null,
+      product.modifiedByAccount ?? null,
+    ];
+  }
+
+  /**
+   * Write one product. See {@link ProductRepository.saveProduct} for the contract and for why no
+   * importer statement could serve as this member.
+   *
+   * ==================================================================================================
+   * THE WRITE ORDER THE CIRCULAR FOREIGN KEY FORCES (F03 / F04)
+   * ==================================================================================================
+   * `SwProduct.defaultSkuID` references `SwSku`, and `SwSku.productID` references `SwProduct`, so neither
+   * row can be inserted with its reference already populated. The mapping layer resolved this by sorting
+   * the graph itself and emitting a follow-up UPDATE; the explicit sequence a caller must therefore use is:
+   *
+   *   1. `saveProduct(product)` — the product row, with `defaultSkuID` whatever the entity carries, which
+   *      for a new product is null because no SKU exists yet. This satisfies `SwSku.productID`.
+   *   2. `SkuRepository.persistSku(sku)` per SKU, in the odometer order `createSkus` enumerates, each
+   *      write followed by the next SKU's uniqueness read so M6 holds (AAP §0.6.2).
+   *   3. `saveProduct(product)` AGAIN, now that `product.defaultSku` is populated, which takes the UPDATE
+   *      branch and sets `defaultSkuID`.
+   *
+   * ⭐ STEP 3 IS WHY THIS MEMBER IS IDEMPOTENT ON AN ALREADY-PERSISTED PRODUCT and why it decides
+   * insert-against-update from the entity rather than refusing a second call. Calling it twice is not a
+   * caller mistake; it is the only sequence the schema permits. All three steps belong inside ONE
+   * transaction, which is what makes the intermediate null default unobservable — see
+   * `src/adapters/mysql/UnitOfWork.ts` for the boundary and for the re-binding a caller performs.
+   *
+   * ⛔ NO COMMIT, NO CASCADE, NO VALIDATION — all three belong to layers above; the port records why.
+   */
+  public async saveProduct(product: Product): Promise<Product> {
+    const isInsert = product.isNew();
+
+    /* The identifier `generator="uuid"` produced at flush time — assigned only while transient, so an
+     * update keeps the identifier its stored row is keyed on, and so step 3 above updates rather than
+     * inserting a duplicate. */
+    if (isInsert) {
+      product.productID = createSlatwallUUID();
+    }
+
+    /*
+     * ==================================================================================================
+     * THE AUDIT BLOCK IS STAMPED HERE, BECAUSE THIS IS THE FLUSH (F03)
+     * ==================================================================================================
+     * Hibernate invoked `preInsert`/`preUpdate` automatically as part of the flush the framework
+     * triggered at request end — `org/Hibachi/Hibachi.cfc` performs a double `ormFlush()` when the ORM
+     * reports no errors, with `flushAtRequestEnd=false`. A stateless Lambda invocation has no ORM
+     * session, no automatic flush and no request-end hook (mismatch M5, AAP §0.6.6), so nothing fires
+     * the hook unless a write seam calls it. `src/services/BaseService.ts` explicitly declines the job
+     * and places it "behind `EntityPersister`", which is this member.
+     *
+     * ⭐ THE FREE FUNCTIONS ARE CALLED DIRECTLY, RATHER THAN A HOOK ON THE ENTITY, AND THAT ASYMMETRY IS
+     * LEGACY-FAITHFUL. `model/entity/Product.cfc` does NOT override `preInsert`/`preUpdate`, so a product
+     * received only the framework audit block at `org/Hibachi/HibachiEntity.cfc:L598-L649` and
+     * `:L657-L681`; `src/domain/base/AuditableEntity.ts` is the port of exactly that block, so calling it
+     * reproduces what the legacy product write did. `model/entity/ProductType.cfc:L305-L313` DOES
+     * override both, which is why `MySqlProductTypeRepository` calls the entity's own hooks instead of
+     * these functions — there the override additionally refreshes a persisted column.
+     *
+     * ⚠️ THE ORDER IS FIXED: STAMP FIRST, COLLECT SECOND. `collectWritableProductValues` reads the four
+     * audit fields off the entity, so stamping after it would compose the statement from the PREVIOUS
+     * write's values and persist a row whose audit columns lag one save behind — a fault that reports no
+     * error and shows up only as stale data.
+     *
+     * ⚠️ WHICH FIELDS MOVE IS DECIDED INSIDE THE STAMPING FUNCTIONS, NOT HERE. On insert both timestamps
+     * take the identical instant and both account columns are written only for a persisted
+     * administrative actor; on update only `modifiedDateTime` moves and `createdByAccount` is never
+     * touched. Those gates are the legacy gates and are reproduced in
+     * `src/domain/base/AuditableEntity.ts`, so this member neither re-implements nor second-guesses them.
+     *
+     * ⚠️ AN ABSENT ACTOR IS A LEGITIMATE STATE AND IS NOT AN ERROR. `AccountContextPort` answers
+     * `undefined` when nobody is authenticated, the stamping functions accept that, and the legacy
+     * behaved identically: an unauthenticated request stamped the timestamps and left both account
+     * foreign keys unwritten. No system account is substituted (S9).
+     */
+    const auditActor = this.accountContext.getCurrentAccount();
+    if (isInsert) {
+      applyPreInsertAudit(product, auditActor);
+    } else {
+      applyPreUpdateAudit(product, auditActor);
+    }
+
+    const writableValues = this.collectWritableProductValues(product);
+
+    if (isInsert) {
+      const columnList = [PRODUCT_ID_COLUMN, ...PRODUCT_WRITABLE_COLUMNS].join(', ');
+      const placeholders = [PRODUCT_ID_COLUMN, ...PRODUCT_WRITABLE_COLUMNS]
+        .map(() => '?')
+        .join(', ');
+
+      await this.executor.executeMutation(
+        `INSERT INTO ${PRODUCT_TABLE} (${columnList}) VALUES (${placeholders})`,
+        [product.productID, ...writableValues],
+      );
+
+      return product;
+    }
+
+    const assignments = PRODUCT_WRITABLE_COLUMNS.map((column) => `${column} = ?`).join(', ');
+
+    await this.executor.executeMutation(
+      `UPDATE ${PRODUCT_TABLE} SET ${assignments} WHERE ${PRODUCT_ID_COLUMN} = ?`,
+      [...writableValues, product.productID],
+    );
+
+    return product;
+  }
+
+  /**
+   * Remove one product, together with the SKU rows and option links its cascade owns.
+   *
+   * See {@link ProductRepository.removeProduct} for which cascades are expressed, which are deliberately
+   * not, and why the delete guards mean only the SKU cascade can ever have rows to act on.
+   *
+   * ==================================================================================================
+   * THE REMOVAL ORDER, WHICH IS FORCED RATHER THAN CHOSEN
+   * ==================================================================================================
+   *   1. Clear `SwProduct.defaultSkuID`. It references a SKU row that step 3 removes, so the reference has
+   *      to go first or step 3 leaves it dangling. Issued unconditionally: an UPDATE setting a column to
+   *      the value it already holds is harmless, and branching on whether a default exists would read a
+   *      relationship this member has no reason to resolve.
+   *   2. Remove the `SwSkuOption` link rows for every SKU of this product, selected by subquery on
+   *      `SwSku.productID`. They reference `SwSku`, so they precede it.
+   *   3. Remove the `SwSku` rows. They reference `SwProduct`, so they precede it.
+   *   4. Remove the `SwProduct` row.
+   *
+   * Every step is one statement, and none reads anything back: the identifiers are all derivable from the
+   * product identifier by subquery, so no round trip is needed and no intermediate list can go stale.
+   *
+   * ⛔ ALL FOUR STATEMENTS BELONG TO ONE TRANSACTION, AND THIS MEMBER DOES NOT OPEN IT. Between steps 3
+   * and 4 the database is in a state the legacy never exposed — SKUs gone, product present — so a caller
+   * that ran this outside a transaction would make that state durable if step 4 failed. Demarcation stays
+   * with the caller (mismatch M5), exactly as it does for every other write in this folder.
+   *
+   * ⚠️ A TRANSIENT PRODUCT IS REFUSED. An entity reporting itself new carries the empty unsaved value from
+   * `model/entity/Product.cfc:L52`, so every statement above would key on `''` — matching nothing in a
+   * sound table and an arbitrary row in an unsound one. The mapping layer would have raised on the same
+   * input, a transient instance having no persistent identity to remove, so this refuses an input the
+   * legacy could not express rather than one it accepted.
+   */
+  public async removeProduct(product: Product): Promise<void> {
+    if (product.isNew()) {
+      throw new DomainError('A product cannot be removed before it has been persisted.', {
+        context: { productCode: product.productCode },
+      });
+    }
+
+    const productIdentifier = product.productID;
+
+    // 1. Drop the back-reference before the row it points at disappears.
+    await this.executor.executeMutation(
+      `UPDATE ${PRODUCT_TABLE} SET ${PRODUCT_DEFAULT_SKU_ID_COLUMN} = NULL ` +
+        `WHERE ${PRODUCT_ID_COLUMN} = ?`,
+      [productIdentifier],
+    );
+
+    // 2. The link rows, which reference the SKU rows removed next.
+    await this.executor.executeMutation(
+      `DELETE FROM ${SKU_OPTION_TABLE} WHERE ${SKU_OPTION_SKU_ID_COLUMN} IN ` +
+        `(SELECT ${SKU_ID_COLUMN} FROM ${SKU_TABLE} WHERE ${SKU_PRODUCT_ID_COLUMN} = ?)`,
+      [productIdentifier],
+    );
+
+    // 3. The SKU rows, which reference the product row removed last.
+    await this.executor.executeMutation(
+      `DELETE FROM ${SKU_TABLE} WHERE ${SKU_PRODUCT_ID_COLUMN} = ?`,
+      [productIdentifier],
+    );
+
+    // 4. The product itself.
+    await this.executor.executeMutation(
+      `DELETE FROM ${PRODUCT_TABLE} WHERE ${PRODUCT_ID_COLUMN} = ?`,
+      [productIdentifier],
+    );
   }
 }

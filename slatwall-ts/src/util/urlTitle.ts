@@ -20,8 +20,6 @@
  * required is annotated inline with the legacy locator that justifies it (AAP 0.8.2, Guideline 6).
  */
 
-import { DomainError } from '../errors/DomainError';
-
 /**
  * Probes whether a candidate `urlTitle` value is still free on a given table.
  *
@@ -45,74 +43,71 @@ import { DomainError } from '../errors/DomainError';
  * service locator, no container lookup, no module-level singleton (AAP 0.7.3, S3).
  *
  * Two deliberate limits on that abstraction. First, no port module is imported: `src/util/` is a
- * hexagonal leaf, and its ONLY import is the shared error type from `../errors/` (AAP 0.7.3, S4).
+ * hexagonal leaf and this file has NO IMPORTS AT ALL (AAP 0.7.3, S4).
  *
- *   ⚠️ That sentence previously read "stays entirely free of imports", which was true until SEC-13
- *   required a deterministic failure and is corrected rather than left standing. The distinction that
- *   matters for S4 is unchanged and is the one worth stating precisely: NO port, adapter, service,
- *   config, handler or integration module is imported here, and none ever should be — those are the
- *   edges that would make a leaf into a layer. `../errors/` is not one of them; it is a sibling leaf
- *   holding the subtree's error vocabulary, which is exactly why `../validation/Validator` names it as
- *   one of its own two permitted imports and why `../domain/base/populate` imports it too. Raising a
- *   bare `Error` or a `RangeError` instead would have kept the import count at zero at the cost of a
- *   second, unmappable error hierarchy — a worse trade, and one `src/handlers/httpResponse` could not
- *   translate into a stable public failure.
+ *   ⚠️ THAT IS AGAIN LITERALLY TRUE, AND THE ROUND TRIP IS RECORDED RATHER THAN TIDIED AWAY. An
+ *   earlier checkpoint added a finite attempt budget with a deterministic raise, which required
+ *   importing the shared error type and made this sentence read "its ONLY import is `../errors/`".
+ *   The budget has since been removed — see the unbounded-loop note below — so the import went with
+ *   it and the file is once more a pure function of its three arguments. The distinction that matters
+ *   for S4 never changed: NO port, adapter, service, config, handler or integration module is imported
+ *   here, and none ever should be, because those are the edges that would make a leaf into a layer.
+ *   Should this file ever legitimately need to raise, `../errors/` is the one sibling leaf it may
+ *   reach for — `../validation/Validator` and `../domain/base/populate` both name it for the same
+ *   reason — and a bare `Error` would not be an acceptable substitute, because
+ *   `src/handlers/httpResponse` could not translate it into a stable public failure.
  *
- * The wider boundary interface
- * for application-side uniqueness checking is `UniquePropertyPort` (AAP 0.4.1.6, legacy origin
- * `org/Hibachi/HibachiDAO.cfc:L130-L146`, `isUniqueProperty()`, IR-5) and its concrete
- * implementation belongs to `src/adapters/mysql/**`; the narrower probe this particular algorithm
- * actually used is the one cited above. Second, the probe is NOT generalised to an arbitrary
- * column, because both legacy call sites pin that argument to the single literal `"urlTitle"`
- * [`DataService.cfc:L62`, `L67`] — and inventing generality the source does not have is forbidden
- * by AAP 0.7.3, S9.
+ * The wider boundary interface for application-side uniqueness checking is `UniquePropertyPort`
+ * (AAP 0.4.1.6, legacy origin `org/Hibachi/HibachiDAO.cfc:L130-L146`, `isUniqueProperty()`, IR-5),
+ * and its concrete implementation belongs to `src/adapters/mysql/**`; the narrower probe this
+ * particular algorithm actually used is the one cited above. Second, the probe is NOT generalised to
+ * an arbitrary column, because both legacy probe sites pin that argument to the single literal
+ * `"urlTitle"` [`DataService.cfc:L62`, `L67`] — and inventing generality the source does not have is
+ * forbidden by AAP 0.7.3, S9.
  *
  * Statement text and identifier handling stay out of this module altogether. Safe identifier
  * treatment for `tableName` is the adapter's responsibility (AAP 0.4.1.7 and 0.4.3.4).
  */
 export type UniqueValueProbe = (tableName: string, value: string) => Promise<boolean>;
 
-/**
- * The bound on collision probing — SEC-13.
+/* ================================================================================================
+ * TODO(parity) `model/service/DataService.cfc:L64` — THE PROBE LOOP IS UNBOUNDED, AND THAT IS
+ * CARRIED OVER RATHER THAN REPAIRED
+ * ================================================================================================
+ * `:L64` is `while(!unique)` with no ceiling. Every iteration issues a database read through the
+ * injected probe, so a value that keeps colliding keeps issuing round trips — indefinitely. In a
+ * persistent CFML application that was a slow request; in a stateless invocation it is unbounded I/O
+ * against a shared database, and a caller cannot distinguish it from a hang. The exposure is real and
+ * it is recorded here so a reader meets a decision rather than an oversight.
  *
- * =============================================================================================
- * WHY THIS EXISTS, AND WHY THE NUMBER IS NOT WRITTEN DOWN IN THIS FILE
- * =============================================================================================
- * `model/service/DataService.cfc:L64` is `while(!unique)` with no ceiling. Every iteration issues a
- * database read through the injected probe, so a value that keeps colliding keeps issuing round
- * trips — indefinitely. In a persistent CFML application that was a slow request; in a stateless
- * invocation it is unbounded I/O against a shared database, and the caller cannot distinguish it from
- * a hang.
+ * ⛔ IT IS STILL NOT BOUNDED HERE, AND THE HISTORY OF THAT IS WORTH STATING PLAINLY BECAUSE THIS FILE
+ * ONCE DID BOUND IT. A finite attempt budget with a deterministic raise was added at an earlier
+ * checkpoint, on the strength of a review suggestion, and it has been REMOVED. Three authorities
+ * converge against it and none for it:
  *
- * ⭐ THIS IS A DECLARED PARITY DECISION, and the review asked for it in exactly those terms: "Under
- * an explicit parity/product decision, impose a finite attempt budget and deterministic failure ...
- * while preserving the first `-2` suffix." Both halves of that instruction are honoured — the suffix
- * sequence is untouched, and the failure is a raise rather than a fabricated fallback identifier.
+ *   1. This file's own frozen build specification, verbatim: "The loop is unbounded, exactly as at
+ *      L64. Do not add a maximum-attempts ceiling, a retry cap, a timeout, an AbortSignal, or a
+ *      fallback that appends a UUID."
+ *   2. AAP 0.8.2 Guideline 4 — "Do not enhance or optimize business logic beyond what the migration
+ *      requires" — and AAP IR-9, which carries defects across as flagged annotations with EXACTLY ONE
+ *      declared exception: D18, the importer's SQL parameterization, which belongs to
+ *      `../adapters/mysql/MySqlProductRepository` and is the only hardening this port is authorised
+ *      to perform (AAP 0.6.7.7).
+ *   3. AAP 0.7.3 S9 — invent nothing the source does not state. The legacy states no ceiling, so
+ *      every possible value of one is a fabricated number. Passing the fabrication to the caller as a
+ *      required argument relocated the invention; it did not avoid it.
  *
- * THE NUMBER IS OPERATOR POLICY. AAP 0.7.3 S9 forbids inventing values the source does not state, and
- * the legacy states no ceiling, so a literal here would be fabrication. The budget therefore arrives
- * as a REQUIRED argument with NO DEFAULT: the caller states it, and a call site that states none does
- * not compile. This is the same construction used for the population policy in
- * `../services/BaseService` and the combination bound in `../services/SkuService`, and it is what
- * lets this file bound the work without deciding the policy.
+ * WHAT WAS LOST BY REMOVING IT, STATED HONESTLY: a pathologically colliding title now loops as long
+ * as the legacy would have. WHAT WAS REGAINED: a call that succeeds does so for exactly the legacy's
+ * reasons, and no call fails for a reason the legacy had no counterpart for. A bounded loop changed
+ * the failure surface of a member whose contract is `returntype="string"` — it could raise where the
+ * legacy always returned — and that is a behavioural difference, not a neutral safeguard.
  *
- * WHY NOT AN ATOMIC UNIQUENESS STRATEGY, the review's alternative. Because it would replace the
- * algorithm rather than bound it. The suffix sequence produced by the pre-incremented counter is
- * OBSERVABLE OUTPUT — `-2`, `-3`, `-4` — and AAP 0.8.2 Guideline 4 forbids changing it. An atomic
- * insert-and-retry, or a random or hashed suffix, would generate different titles for the same input.
- * Bounding the existing loop changes nothing that succeeds today; only the previously
- * non-terminating case now terminates.
- */
-export interface UrlTitleAttemptBudget {
-  /**
-   * The largest number of availability probes one call may issue, the initial unsuffixed probe
-   * included.
-   *
-   * Must be a positive safe integer. A budget of 1 permits only the unsuffixed candidate, which is
-   * the legacy's own behaviour for a value that collides with nothing.
-   */
-  readonly maximumProbes: number;
-}
+ * IF A BOUND IS EVER WANTED, IT BELONGS OUTSIDE THIS ALGORITHM. An invocation-level deadline, or a
+ * database-side unique constraint the adapter reports, bounds the work without editing the ported
+ * member or fabricating a suffix the legacy never produced. Neither is in scope here, and neither is
+ * implied to be owed.
+ * ============================================================================================== */
 
 /**
  * Derives a URL title for `titleString` and appends a numeric suffix until the value is free.
@@ -127,31 +122,19 @@ export interface UrlTitleAttemptBudget {
  *
  * @param titleString - The human-readable title to derive a URL title out of.
  * @param tableName - The table the candidate value must be unique on.
- * @param isValueAvailable - Uniqueness probe; see {@link UniqueValueProbe} for its polarity.
- * @param attemptBudget - The bound on collision probing (SEC-13). REQUIRED, with no default; see
- *   {@link UrlTitleAttemptBudget} for why the number is the caller's to state and not this file's.
- *   Appended LAST for the same reason `isValueAvailable` was: the legacy positional order
- *   `(titleString, tableName)` at `model/service/DataService.cfc:L53` stays undisturbed.
- * @returns The unique URL title. Always a string, possibly empty; never null or undefined.
- * @throws {DomainError} when the budget is exhausted before a free value is found, and when the
- *   budget itself is not a positive safe integer. Deterministic in both cases: no fallback title is
- *   fabricated, and nothing is returned that was not proven free.
+ * @param isValueAvailable - Uniqueness probe; see {@link UniqueValueProbe} for its polarity. It is
+ *   appended LAST so the legacy positional order `(titleString, tableName)` at
+ *   `model/service/DataService.cfc:L53` stays undisturbed, and it is the LAST parameter this member
+ *   takes: there is deliberately no fourth. See the unbounded-loop note above.
+ * @returns The unique URL title. Always a string, possibly empty; never null or undefined — matching
+ *   the `returntype="string"` the legacy member declares, which is the reason this function has no
+ *   failure path of its own. Whatever the probe rejects with propagates unchanged.
  */
 export async function createUniqueURLTitle(
   titleString: string,
   tableName: string,
   isValueAvailable: UniqueValueProbe,
-  attemptBudget: UrlTitleAttemptBudget,
 ): Promise<string> {
-  const maximumProbes = attemptBudget.maximumProbes;
-  if (!Number.isSafeInteger(maximumProbes) || maximumProbes < 1) {
-    throw new DomainError(
-      `The URL-title attempt budget must be a positive safe integer, so the configured value ` +
-        `cannot bound collision probing.`,
-      { context: { maximumProbes, tableName } },
-    );
-  }
-
   // Collision counter, initialised to 1 at `model/service/DataService.cfc:L55`.
   //
   // TODO(parity): the counter is PRE-incremented. `addon++` at `DataService.cfc:L65` runs BEFORE
@@ -200,41 +183,19 @@ export async function createUniqueURLTitle(
   // probe's result, so they cannot be issued in parallel.
   let unique = await isValueAvailable(tableName, returnTitle);
 
-  // SEC-13 — BOUNDED, exactly as `DataService.cfc:L64` otherwise is.
+  // `DataService.cfc:L64-L68`, reproduced with NO ceiling — see the unbounded-loop note above the
+  // probe type for why the bound that briefly lived here was removed rather than kept.
   //
-  // `probesIssued` counts the initial unsuffixed probe above, so a budget of 1 permits only that
-  // candidate — which is the legacy's behaviour for a value that collides with nothing. The counter
-  // is entirely separate from `addon`: conflating them would tie the bound to the suffix sequence and
-  // change the observable output, which Guideline 4 forbids. `addon` is still pre-incremented, so the
-  // first collision suffix is still `-2`.
-  //
-  // NO FALLBACK TITLE IS FABRICATED on exhaustion. Returning a generated or randomised identifier
-  // would hand back a value the probe never approved, which is the one outcome worse than failing:
-  // `urlTitle` is unique-constrained, so an unapproved value either violates the constraint at the
-  // adapter or silently takes a title the caller did not ask for. Raising is deterministic and leaves
-  // the decision with the caller.
-  let probesIssued = 1;
+  // The body is the legacy's three statements in the legacy's order: pre-increment the counter
+  // [`L65`], build the suffixed candidate [`L66`], probe it [`L67`]. Nothing else belongs in here.
+  // There is no attempt counter, no elapsed-time check, no pause between probes and no fabricated
+  // fallback title, because a value this function returned without the probe approving it would
+  // either violate the unique constraint at the adapter or silently take a title the caller never
+  // asked for.
   while (!unique) {
-    if (probesIssued >= maximumProbes) {
-      throw new DomainError(
-        `No free urlTitle was found for table ${tableName} within ${String(maximumProbes)} ` +
-          `availability probes. model/service/DataService.cfc:L64 probes without a ceiling; this ` +
-          `port bounds it under an explicit parity decision and fabricates no fallback value.`,
-        {
-          context: {
-            tableName,
-            maximumProbes,
-            probesIssued,
-            lastCandidateSuffix: addon,
-            locator: 'model/service/DataService.cfc:L62-L68',
-          },
-        },
-      );
-    }
     addon++;
     returnTitle = `${urlTitle}-${addon}`;
     unique = await isValueAvailable(tableName, returnTitle);
-    probesIssued++;
   }
 
   // `DataService.cfc:L70`. Always a string — never null and never undefined — matching the

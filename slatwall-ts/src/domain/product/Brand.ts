@@ -701,8 +701,9 @@ export class Brand implements AuditableEntity, ManagedEntity {
    * §0.8.2 Guideline 4 forbids "enhancing" business logic, and this changes none — it records a
    * language-level difference and picks the only spelling that compiles. The quirk is documented
    * rather than silently normalised so that a reviewer diffing the two files sees why the letter
-   * changed. It is also NOT one of the twenty-one carried defects: AAP §0.6.7 catalogues D1-D21, the
-   * port's register is closed at D1-D24, and this file introduces no new defect identifier (S7).
+   * changed. It is also NOT one of the twenty-one carried defects: AAP §0.6.7 catalogues D1-D21, and
+   * this file introduces no new defect identifier (S7). The live register bound is stated only at
+   * `src/ports/repositories/SkuRepository.ts`.
    *
    * A pure delegation, like its counterpart: [model/entity/Product.cfc:L668-L677] `removeBrand`
    * splices this product out of the live `products` array and then clears its own back-reference.
@@ -974,7 +975,7 @@ export class Brand implements AuditableEntity, ManagedEntity {
  * invent schema the legacy system does not have, and it would put a phantom into
  * `src/adapters/mysql/rowMappers.ts`'s column mapping. The finding is recorded and left exactly as
  * it is — preserve and annotate, do not repair (S7). It is likewise NOT assigned a defect
- * identifier: §0.6.7 catalogues D1-D21 and the port's register is closed at D1-D24.
+ * identifier: AAP §0.6.7 catalogues D1-D21, and the live bound is stated only at `src/ports/repositories/SkuRepository.ts`.
  *
  * UNIQUENESS IS NOT AN ENTITY CONCERN. The `urlTitle` unique rule is enforced by the application-side
  * existence query of IR-5 — `isUniqueProperty()` [org/Hibachi/HibachiDAO.cfc:L130-L146], ported to
@@ -1192,14 +1193,22 @@ export const BRAND_DECLARED_PROPERTIES: DeclaredPropertyNameSet<BrandPropertyNam
 });
 
 /**
- * Brand's frozen metadata declaration — the runtime answer to the seven framework introspection
- * members this class deliberately does not declare.
+ * Brand's frozen metadata declaration — what `manageEntity` reads to compose the seven framework
+ * introspection members onto an instance.
  *
- * See {@link EntityMetadataDeclaration} for what each member ports and why the surface is composed
- * onto an instance by `../base/manageEntity` rather than hand-written here. This constant is the
- * ONLY place in this module where the class name and the ORM entity name appear as VALUES rather
- * than as prose, and {@link BRAND_PROPERTY_DESCRIPTORS} reads its `className` from here so the
- * literal is written once.
+ * ⚠️ THIS CLASS ALSO DECLARES ALL SEVEN ITSELF, AND THIS BLOCK USED TO SAY THE OPPOSITE. It read "the
+ * runtime answer to the seven framework introspection members this class deliberately does not
+ * declare … composed onto an instance by `../base/manageEntity` rather than hand-written here", and
+ * both halves were wrong. The seven are hand-written further down this module over its own frozen
+ * constants, alongside an `implements ManagedEntity` clause that obliges them; and `../base/manageEntity`
+ * is not a module — `manageEntity` is a FUNCTION exported by `../base/populate`, whose `Object.assign`
+ * shadows those prototype methods with equivalent own-property closures over this declaration.
+ * `../base/AuditableEntity` records once which classes declare the seven and which rely on composition.
+ *
+ * See {@link EntityMetadataDeclaration} for what each member ports. This constant is the ONLY place
+ * in this module where the class name and the ORM entity name appear as VALUES rather than as prose,
+ * and {@link BRAND_PROPERTY_DESCRIPTORS} reads its `className` from here so the literal is written
+ * once.
  *
  * NINETEEN KEYS, WHICH IS EVERY PROPERTY [model/entity/Brand.cfc] DECLARES. The fifteen at
  * [`:L52-L57`], [`:L60`], [`:L63`], [`:L66-L71`] and [`:L74`] plus the four audit properties at

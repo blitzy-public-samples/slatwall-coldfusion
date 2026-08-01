@@ -436,13 +436,17 @@ export function applyPreUpdateAudit<TEntity extends AuditableEntity>(
  *    that are genuinely observable Catalog behaviour, all originating in `model/entity/Product.cfc`
  *    and `model/service/SkuService.cfc`. This message originates in `org/Hibachi/**`, which AAP
  *    §0.8.3.2 describes as a framework "being retired for this slice, not carried forward" and as a
- *    boundary to extract from rather than to modify, and it is not one of the twenty-one carried
- *    defects D1-D21. Adding it would be inventing an artifact
- *    the plan does not list. Neither audit lifecycle function above raises anything at all, and no
- *    framework logging or response-dumping facility is reproduced. The one error this module does
- *    raise belongs to the unrelated concern added below — the property-metadata guard of
- *    {@link requireDeclaredPropertyMetaData}, which reproduces a specific legacy throw at
- *    [org/Hibachi/HibachiTransient.cfc:L746] rather than the framework's flush-time abort.
+ *    boundary to extract from rather than to modify, and it is not one of the carried defects, so
+ *    adding it would be inventing an artifact the plan does not list. No register identifier is
+ *    minted here either: the register is stated canonically, and only once, in the header of
+ *    `src/ports/repositories/SkuRepository.ts` (AAP 0.6.7's frozen source range D1-D21, plus the
+ *    source extension D22 and the three contract corrections D23, D24 and D25, with no D26 or
+ *    beyond; and AAP 0.6.6's M1-M8 plus M9, with no M10 or beyond). Neither audit lifecycle
+ *    function above raises anything at all, and no framework logging or response-dumping facility
+ *    is reproduced. The one error this module does raise belongs to the unrelated concern added
+ *    below — the property-metadata guard of {@link requireDeclaredPropertyMetaData}, which
+ *    reproduces a specific legacy throw at [org/Hibachi/HibachiTransient.cfc:L746] rather than the
+ *    framework's flush-time abort.
  *
  * 2. THE CALCULATED-PROPERTY RECALCULATION CALL — invoked inside GATE 0 on both paths, at
  *    [org/Hibachi/HibachiEntity.cfc:L625] and [org/Hibachi/HibachiEntity.cfc:L673], and defined at
@@ -625,6 +629,37 @@ export type DeclaredPropertyNameSet<TPropertyName extends string> = Readonly<
  * bound position. Conflating them produces a statement that parses and then matches the wrong rows.
  * AAP TR-1 preserves the observed contract; AAP §0.8.1 permits idiom to change freely, but a member
  * name an out-of-scope caller already depends on is contract, not idiom.
+ *
+ * ⭐ WHO DECLARES THESE SEVEN AND WHO HAS THEM COMPOSED ON. The answer is not uniform, and it is
+ * stated here ONCE because this is where the contract is declared and "which classes implement it" is
+ * the question a reader arrives with. Every other file's note on the subject is deliberately LOCAL —
+ * what that class does — with a pointer here for the whole picture.
+ *
+ *   FIVE ENTITY MODULES DECLARE `implements ManagedEntity` AND HAND-WRITE ALL SEVEN as prototype
+ *   methods over their own module constants: `src/domain/sku/Sku.ts`,
+ *   `src/domain/product/Product.ts`, `src/domain/product/Brand.ts`, `src/domain/option/Option.ts` and
+ *   `src/domain/option/OptionGroup.ts`.
+ *
+ *   `src/domain/product/ProductType.ts` ALONE DECLARES NEITHER — no `implements` clause and none of
+ *   the seven methods — so `manageEntity` from `src/domain/base/populate.ts` is the only thing that
+ *   gives a ProductType this surface. That divergence is intentional and its reasoning and revision
+ *   history are recorded in that file; the six are not to be harmonised without deciding to.
+ *
+ *   THE ERROR SURFACE IS UNIFORM, WHICH IS THE CONTRAST WORTH DRAWING: no entity module hand-writes
+ *   any of the six members of `src/domain/base/populate.ts`'s `EntityErrorSurface` — measured, zero
+ *   occurrences in all six classes — so that half arrives by composition for every entity, including
+ *   the five that hand-write this one.
+ *
+ * ⚠️ THE PREVIOUS ACCOUNT SAID NO ENTITY DECLARED THESE SEVEN, AND IT WAS FALSE FOR FIVE OF THE SIX.
+ * It appeared as "the runtime answer to the seven framework introspection members this class
+ * deliberately does not declare" in all six metadata-declaration docs, and in three of them also as
+ * "composed onto an instance by `../base/manageEntity` rather than hand-written here" — which named a
+ * module that does not exist, `manageEntity` being a FUNCTION exported by
+ * `src/domain/base/populate.ts`. That file then generalised the same error a second time, describing
+ * the members as "forbidden as hand-written instance methods by every entity module's own mandate".
+ * All of those are corrected and the correction is recorded rather than quietly applied, because a
+ * claim about WHERE behaviour lives is exactly the kind a reader cannot check by reading the file that
+ * makes it.
  */
 export interface ManagedEntity {
   /**

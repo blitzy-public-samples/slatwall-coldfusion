@@ -135,17 +135,19 @@ import type {
   SubPropertyPopulator,
 } from '../base/populate';
 import type { BaseProductType } from '../BaseProductType';
-import { isBaseProductType } from '../BaseProductType';
+import { resolveBaseProductType } from '../BaseProductType';
 import type { Option } from '../option/Option';
 import type { OptionGroup } from '../option/OptionGroup';
 import type { Product } from '../product/Product';
 import { DomainError, NotImplementedError } from '../../errors/DomainError';
+import { EXACT_DECIMAL_ZERO, exactDecimalFromNumber } from '../../util/formatting';
 /* TYPE-ONLY, and the only `src/ports/**` reference in this file. The two names are branded with a
  * `unique symbol` the port never exports, so neither can be re-declared locally; the reasoning, and why
  * leaving these members on `string` would have left the traversal at [model/entity/Sku.cfc:L222]
  * compiling, is on {@link SkuImagePathResolver}. No runtime value is imported. */
 import type { AccessContentReference } from '../../ports/AccessContentPort';
-import type { ImageFileNameCandidate, ImageWebPath } from '../../ports/ImagePathPort';
+import type { ImageWebPath } from '../../ports/ImagePathPort';
+import type { ExactDecimal } from '../../util/formatting';
 import type { SubscriptionBenefitReference } from '../../ports/SubscriptionTermPort';
 
 /* ================================================================================================
@@ -169,10 +171,24 @@ import type { SubscriptionBenefitReference } from '../../ports/SubscriptionTermP
  *   {@link SkuSalePricingLookup}          <- PricingPort.getSalePriceDetailsForProductSkus
  *   {@link SubscriptionTermRef}           <- SubscriptionTermPort's term reference, widened by one
  *                                            optional member. See the note on that interface.
- *   {@link SkuTransactionExistenceChecker} <- the zero-argument service contract, AAP §0.4.2.2
- *                                            Discrepancy 4
+ *   {@link SkuTransactionExistenceChecker} <- the service contract as corrected by D23: AAP §0.4.2.2
+ *                                            Discrepancy 4 read literally produced a zero-argument
+ *                                            member that discarded this identifier, so the service
+ *                                            declares `(skuID?, productID?)` and satisfies this
+ *                                            interface directly
  *   {@link SkuProductTypeRootResolver}    <- the root-product-type resolver
  *                                            `src/domain/product/ProductType.ts` declares
+ *
+ * ⚠️ THE ONE EXCEPTION, AND EARLIER TEXT HERE RECORDED IT WRONGLY. This list once mapped
+ * {@link SkuTransactionExistenceChecker} onto "the zero-argument service contract, AAP §0.4.2.2
+ * Discrepancy 4". That correspondence is not a narrowing — it is an incompatibility dressed as one.
+ * `SkuService.getTransactionExistsFlag` declares NO arguments, so it cannot carry the identifier this
+ * entity supplies; it merely happens to be assignable, because a lower-arity function satisfies a
+ * higher-arity method. The real backing member is
+ * `SkuRepository.transactionExists(productID?, skuID?)` (AAP §0.4.2.6), whose argument order is the
+ * REVERSE of this contract's, so this is the single shape that genuinely requires an adapter:
+ * `createTransactionExistenceChecker` in `src/adapters/mysql/MySqlSkuRepository.ts`. See that contract's
+ * own block for the compile-time guard that now forbids the mis-binding.
  *
  * Nothing in this block performs work. Each is a shape the composition root fills.
  * ============================================================================================== */
@@ -202,8 +218,9 @@ import type { SubscriptionBenefitReference } from '../../ports/SubscriptionTermP
  * other string, which is the same idiom `src/domain/product/ProductType.ts` uses for its own
  * equivalent alias — declared there, verbatim, as `BaseProductType | (string & {})`, and left
  * un-suppressed because the empty-object-type rule does not fire inside an intersection. Comparison
- * sites use {@link isBaseProductType} as a RUNTIME guard, so no cast is ever needed to narrow one of
- * these values, and this file contains no lint suppression of any kind.
+ * sites route the value through `resolveBaseProductType` from `../BaseProductType`, which answers with
+ * the CANONICAL seeded code after a CFML-equivalent case-insensitive match, so no cast is ever needed
+ * to narrow one of these values and this file contains no lint suppression of any kind.
  */
 export type SkuBaseProductTypeCode = BaseProductType | (string & {});
 
@@ -340,9 +357,9 @@ export interface SkuSettingResolver {
  * `imagePath` and `missingImagePath` are required because [:L217] and [:L216] always set both before
  * delegating; the rest are optional because the legacy only sets each on the branch that computed it.
  *
- * ⭐ `imagePath` IS THE PORT'S BRANDED URL TYPE, NOT A `string` — see the DECISION I-1 note on
- * {@link SkuImagePathResolver}. It is one of only two names imported from `src/ports/**` by this file,
- * and it is imported `import type`.
+ * ⭐ `imagePath` IS THE PORT'S BRANDED URL TYPE, NOT A `string` — see the nominal-label note on
+ * {@link SkuImagePathResolver}. It is the only name imported from `src/ports/**` by this file, and it is
+ * imported `import type`.
  */
 export interface SkuResizedImagePathRequest {
   readonly imagePath: ImageWebPath;
@@ -368,29 +385,28 @@ export interface SkuResizedImagePathRequest {
  * tidiness: this entity is structurally incapable of asking for a file to be WRITTEN, so the whole
  * write path is reachable only from the service layer.
  *
- * ⭐ DECISION I-1 — WHY THE TWO BRANDED PORT TYPES ARE IMPORTED HERE, breaking this file's otherwise
- * unbroken habit of re-declaring every boundary shape locally. The R-C rule above prefers a local
- * structural subset, and the file's own dependency contract admits `src/ports/**` ONLY as `import type`
- * — which is exactly what is used, so the rule is honoured rather than bent.
+ * ⭐ WHY ONE BRANDED PORT TYPE IS IMPORTED HERE, breaking this file's otherwise unbroken habit of
+ * re-declaring every boundary shape locally. The R-C rule above prefers a local structural subset, and
+ * the file's own dependency contract admits `src/ports/**` ONLY as `import type` — which is exactly what
+ * is used, so the rule is honoured rather than bent. A local re-declaration is IMPOSSIBLE:
+ * {@link ImageWebPath} is branded with a `unique symbol` that `src/ports/ImagePathPort.ts` never
+ * exports, so no structural copy of it can be written anywhere.
  *
- * A local re-declaration was IMPOSSIBLE and the reason is worth recording, because it is not obvious:
- * {@link ImageWebPath} and {@link ImageFileNameCandidate} are branded with a `unique symbol` that
- * `src/ports/ImagePathPort.ts` never exports, so no structural copy of them can be written anywhere.
- * Leaving these three members on `string` was the alternative, and it FAILED: method-syntax parameters
- * are bivariant, so a `string` parameter here would still have accepted the real port while letting
- * this entity go on handing a COMPOSED WEB PATH to the existence probe — the precise shape of the
- * traversal at [model/entity/Sku.cfc:L222]. The vulnerable call would have kept compiling, and the
- * finding would have been closed in the port and left open here.
+ * ⚠️ THE BRAND IS A NOMINAL LABEL, NOT A RESTRICTION, AND AN EARLIER REVISION USED IT AS ONE. That
+ * revision also imported an `ImageFileNameCandidate` type so the existence probe could no longer be
+ * handed a composed path — making [model/entity/Sku.cfc:L222]'s own call shape uncompilable. It is
+ * withdrawn along with the port-side gate it served, because refusing a stored value changes an outcome
+ * the legacy produces; `src/ports/ImagePathPort.ts` carries the withdrawal and the flagged residual
+ * exposure. This entity now forwards the composed path to the probe, exactly as [:L222] does.
  *
  * ⛔ NO RUNTIME VALUE IS IMPORTED AND NONE IS NEEDED. This entity never mints a brand: it FORWARDS the
- * {@link ImageWebPath} it received from {@link SkuImagePathResolver.getImagePath}, and it passes the
- * RAW stored file name to the existence probe, which a plain `string` already satisfies. The validator
- * and the tag function stay where their callers are — the service and the feed builder.
+ * {@link ImageWebPath} it received from {@link SkuImagePathResolver.getImagePath}. The tag function
+ * stays where its caller is — the feed builder.
  */
 export interface SkuImagePathResolver {
   getImagePath(imageFile: string): Promise<ImageWebPath>;
   getResizedImagePath(request: SkuResizedImagePathRequest): Promise<ImageWebPath>;
-  getImageExistsFlag(imageFile: ImageFileNameCandidate): Promise<boolean>;
+  getImageExistsFlag(imagePath: ImageWebPath): Promise<boolean>;
 }
 
 /**
@@ -471,6 +487,15 @@ export interface SkuResizedImageOptions {
  * Every member is optional because the legacy reads each defensively:
  * [model/entity/Sku.cfc:L547-L551] falls back to the ordinary price when no sale price is present,
  * and [:L554-L558] and [:L561-L565] each return the empty string when their key is absent.
+ *
+ * ⚠️ F07 — `salePrice` IS THE ONE MONETARY MEMBER IN THIS FILE STILL TYPED `number`, AND IT MIRRORS
+ * `src/ports/PricingPort.ts` DELIBERATELY. This shape exists to match the real pricing port exactly, so
+ * re-typing it here while the port itself declares a double would assert a contract this slice cannot
+ * honour: the promotion subsystem that produces the value is excluded (AAP §0.2.2.1), the port has no
+ * in-scope implementation, and its shape is fixed by AAP §0.2.2.7. The value is INBOUND and is never bound
+ * to a column — {@link Sku.getSalePrice} converts it once, at the single documented boundary, and records
+ * the conversion there. Contrast `src/ports/AccessContentPort.ts`'s `price`, which is OUTBOUND and
+ * persisted, and which F07 therefore DID re-type.
  */
 export interface SkuSalePriceDetails {
   readonly salePrice?: number;
@@ -519,14 +544,46 @@ export interface SkuSalePricingLookup {
  * BLOCKS a legitimate delete and a wrongly-scoped `false` PERMITS a destructive one. Passing the
  * identifier is therefore behaviour preservation, not a correction of legacy behaviour.
  *
- * THE SHAPE MIRRORS THE SERVICE EXACTLY — `(skuID?, productID?)`, both optional, SKU first — so
- * `SkuService.getTransactionExistsFlag` satisfies this interface DIRECTLY, with no adapter in the
- * composition root. That is deliberate: both identifiers are 32-character strings (IR-6), so a
- * wrapper that swapped them would type-check and silently query the wrong column. Structurally
- * identical to the checker `src/domain/product/Product.ts` declares for the same guard on
- * [model/validation/Product.json], so one instance still serves both entities.
+ * THE SHAPE IS CALLER-ORDERED — `(skuID?, productID?)`, both optional, SKU first — because that is the
+ * order the two legacy call sites read in: `Sku.cfc:L594` supplies the first slot and
+ * `Product.cfc:L626` the second. Structurally identical to the checker
+ * `src/domain/product/Product.ts` declares for the same guard on [model/validation/Product.json], so
+ * ONE instance serves both entities.
+ *
+ * ⛔ `SkuService.getTransactionExistsFlag` MUST NEVER BE BOUND HERE, AND EARLIER PROSE IN THIS BLOCK
+ * SAID THE OPPOSITE. That member declares ZERO arguments — AAP 0.4.2.2 Discrepancy 4 freezes it that
+ * way, and `src/services/SkuService.ts` implements it that way. TypeScript accepts a function of lower
+ * arity wherever a higher-arity one is expected, so binding the service here would COMPILE and then
+ * DISCARD both identifiers, leaving the DAO's else-branch to answer a wider question than the caller
+ * asked. That is the destructive direction described above: a wrongly-scoped `true` blocks a
+ * legitimate delete, a wrongly-scoped `false` permits a destructive one, and nothing reports either.
+ *
+ * ⭐ WHICH IS WHY THE CONTRACT CARRIES {@link SkuTransactionExistenceChecker.argumentOrder}. It is the
+ * compile-time guard an earlier revision only claimed to have: a required member the zero-argument
+ * service does not declare, so the mis-binding stops being a silent runtime widening and becomes a
+ * type error at the wiring site. The single correct implementation is
+ * `createTransactionExistenceChecker` in `src/adapters/mysql/MySqlSkuRepository.ts`, which crosses
+ * this caller order onto the repository order `transactionExists(productID?, skuID?)` that AAP 0.4.2.6
+ * pins.
+ *
+ * ⚠️ THE GUARD CANNOT CATCH A CROSSING WRITTEN BACKWARDS, and that limit is stated rather than
+ * papered over: both identifiers are 32-character strings (IR-6), so a swapped adapter type-checks and
+ * would silently query the wrong column. Nothing in the type system can distinguish them. The crossing
+ * therefore lives in EXACTLY ONE place, immediately beside the `transactionExists` implementation whose
+ * order it inverts, and behavioural order assertions — not types — are what hold it.
  */
 export interface SkuTransactionExistenceChecker {
+  /**
+   * Declares which slot means what, and exists to make a mis-binding fail to compile.
+   *
+   * ⛔ NOT A RUNTIME SWITCH. Nothing reads this value to decide anything; an implementation writes the
+   * one permitted literal and the compiler does the rest. Its whole job is to be a member that
+   * `SkuService` does not have: that service declares a `getTransactionExistsFlag` structurally
+   * assignable to this method, so without the brand it would bind here silently even though the entity
+   * collaborator this contract asks for is the repository-side adapter, not the route-level service.
+   */
+  readonly argumentOrder: 'skuID-first-productID-second';
+
   /**
    * @param skuID - The SKU to scope the question to; the legacy `Sku.cfc:L594` argument.
    * @param productID - Accepted so one implementation serves the product-side checker too. The DAO
@@ -887,6 +944,12 @@ export class Sku implements AuditableEntity, ManagedEntity {
    * `createSlatwallUUID()`. Generation belongs to `src/util/uuid.ts`; this entity never generates one
    * and never validates the shape, because the legacy entity does neither.
    *
+   * THE MINTING SITE IS `SkuService.validateNewSku`, and it runs BEFORE the rules do. The uniqueness
+   * rule at [:L756-L769] compares `skus[1].getSkuID() == getSkuID()`, so the subject must already hold
+   * its own key for that clause to mean anything, and `MySqlSkuRepository.persistSku` refuses a SKU
+   * still carrying {@link SKU_UNSAVED_ID_VALUE} rather than inventing one at the boundary. Recorded
+   * here because a reader looking for the assignment will look at this field first.
+   *
    * Defaults to {@link SKU_UNSAVED_ID_VALUE} so {@link Sku.isNew} is true on a fresh instance.
    */
   skuID: string = SKU_UNSAVED_ID_VALUE;
@@ -917,20 +980,31 @@ export class Sku implements AuditableEntity, ManagedEntity {
    * `listPrice` — [model/entity/Sku.cfc:L55], `ormtype="big_decimal" hb_formatType="currency"
    * default="0"`.
    *
-   * THE `big_decimal` -> `number` MAPPING IS A DELIBERATE PRECISION TRADE, made once and applied
-   * to all three money fields. A JavaScript `number` is an IEEE-754 double, so it cannot represent
-   * every decimal a `big_decimal` column can, and repeated arithmetic on money in this
-   * representation can accumulate error. It is chosen anyway for three reasons: nothing in the AAP
-   * calls for a decimal library and adding one would be inventing a dependency (S9, and S5 pins the
-   * manifest to a single runtime package); this entity performs NO arithmetic on these values, it
-   * only stores, returns and compares them; and [model/validation/Sku.json:L4], [:9] and [:10]
-   * constrain them with `dataType: numeric` and `minValue: 0`, which a `number` satisfies directly.
-   * Should a later iteration compute money here, this is the decision to revisit.
+   * ⭐ F07 — `big_decimal` MAPS TO {@link ExactDecimal}, NOT TO `number`, AND THE DECISION IS MADE ONCE
+   * HERE FOR ALL THREE MONEY FIELDS. Hibernate mapped these columns to a Java `BigDecimal`: exact,
+   * arbitrary precision. A JavaScript `number` is an IEEE-754 double, which is neither — so an earlier
+   * revision of this file typed them `number` and defended it as *"a deliberate precision trade"*,
+   * reasoning that no decimal library is available (true — S5 pins the manifest to one runtime package
+   * and S9 forbids inventing a dependency), that this entity performs no arithmetic on the values, and
+   * that [model/validation/Sku.json:L4], [:9] and [:10] constrain them with `dataType: numeric` and
+   * `minValue: 0`, which a double satisfies.
    *
-   * `hb_formatType="currency"` is a DISPLAY concern and is not carried: formatting belongs to
-   * `src/util/formatting.ts`.
+   * Every one of those clauses was accurate, and the conclusion still did not follow. A double does not
+   * merely risk drift under arithmetic; it silently REWRITES a legacy-valid stored value on the way
+   * past. `9007199254740993.01` binds as `9007199254740994`. The trade was not precision for
+   * simplicity — it was correctness for a type annotation.
+   *
+   * {@link ExactDecimal} closes it WITHOUT a new dependency, because it is a branded `string`: the
+   * digits, at the stored scale, carried from the driver through this field to the bind site and back
+   * with no floating-point step anywhere. It satisfies the two validation rules just as directly — the
+   * `numeric` constraint tests the text, and `minValue` compares digit-wise through
+   * `compareExactDecimal` — and it stores, returns and compares exactly, which is all this entity ever
+   * does with the value.
+   *
+   * `hb_formatType="currency"` is still a DISPLAY concern and is still not carried: formatting belongs
+   * to `src/util/formatting.ts`, which is also where the value type itself lives.
    */
-  listPrice: number = 0;
+  listPrice: ExactDecimal = EXACT_DECIMAL_ZERO;
 
   /**
    * `price` — [model/entity/Sku.cfc:L56], `ormtype="big_decimal" hb_formatType="currency"
@@ -940,14 +1014,14 @@ export class Sku implements AuditableEntity, ManagedEntity {
    * `required: true`, which is what makes the inherited "a new instance fails save validation"
    * assertion hold: a fresh SKU has the default `0`, but no `skuCode`, and [:11] requires one.
    */
-  price: number = 0;
+  price: ExactDecimal = EXACT_DECIMAL_ZERO;
 
   /**
    * `renewalPrice` — [model/entity/Sku.cfc:L57], `ormtype="big_decimal" hb_formatType="currency"
    * default="0"`. See {@link Sku.listPrice} for the precision note. Set by the subscription creation
    * branch at [model/service/SkuService.cfc:L157].
    */
-  renewalPrice: number = 0;
+  renewalPrice: ExactDecimal = EXACT_DECIMAL_ZERO;
 
   /**
    * `imageFile` — [model/entity/Sku.cfc:L58], `ormtype="string" length="50"`.
@@ -2099,10 +2173,19 @@ export class Sku implements AuditableEntity, ManagedEntity {
      * The runtime recognition gate. An UNRECOGNISED code matches none of the three legacy arms and
      * leaves the definition empty — the `if` reproduces that outcome directly, and the exhaustive
      * switch inside it is what lets the compiler check the three arms without narrowing the value's
-     * own type (see {@link SkuBaseProductTypeCode}). The guard is the reason no cast is needed.
+     * own type (see {@link SkuBaseProductTypeCode}). Recognition is the reason no cast is needed.
+     *
+     * ⭐ RECOGNITION IS CASE-INSENSITIVE AND SWITCHES ON THE CANONICAL CODE, BECAUSE [:L577], [:L579]
+     * AND [:L584] ARE CFML `==`. A row holding `Merchandise` produced a merchandise definition in the
+     * legacy system. An earlier form of this gate used a `value is BaseProductType` predicate, which
+     * narrowed the OBSERVED text and then let every `case` arm below fail to match it — turning a real
+     * definition into the empty string with no error anywhere. `resolveBaseProductType` returns a NEW
+     * canonical value instead, which is what makes the fold effective; the observed value is not
+     * modified and nothing here writes it back.
      */
-    if (isBaseProductType(baseProductType)) {
-      switch (baseProductType) {
+    const recognisedBaseProductType = resolveBaseProductType(baseProductType);
+    if (recognisedBaseProductType !== undefined) {
+      switch (recognisedBaseProductType) {
         case 'contentAccess':
           /*
            * [:L577-L578] — DELIBERATELY EMPTY, preserved as an explicit no-op arm. The definition of
@@ -2532,36 +2615,31 @@ export class Sku implements AuditableEntity, ManagedEntity {
    *
    * A FILESYSTEM PROBE, hence the port and hence the promise.
    *
-   * ⛔ THIS MEMBER NO LONGER COMPOSES A PATH — SEC-07 / DECISION I-1, and the change is one line with a
-   * long reason. The legacy at [:L222] wraps `getImagePath()` in `expandPath`, which resolves a WEB path
-   * against the application root and lands on a real file system. `imageFile` is a persistent column
-   * ([:L58]) with NO rule in `model/validation/Sku.json`, so a stored `../../../../tmp/payload.jpg`
-   * composed cleanly into that URL and then normalised straight out of the intended directory. The port
-   * now takes the stored NAME instead, typed so that a composed {@link ImageWebPath} is refused at
-   * compile time, and it owns validating that name and resolving it under its own trusted base.
+   * ⚠️ THIS MEMBER COMPOSES THE PATH AND THEN PROBES IT, WHICH IS [:L222] EXACTLY. An earlier revision
+   * did NOT: it passed the stored NAME to a port member narrowed to refuse a composed path, so that a
+   * stored `../../../../tmp/payload.jpg` resolved `false` where the legacy reported on the traversed
+   * file. `imageFile` is a persistent column ([:L58]) with NO rule in `model/validation/Sku.json`, so the
+   * traversal reach is genuine — but it is the legacy's behaviour, and refusing it here changes an
+   * outcome, which AAP §0.8.2 guideline 4 forbids and the D18 precedent (§0.6.7.7) does not license.
+   * `src/ports/ImagePathPort.ts` carries the withdrawal in full and FLAGS the residual CWE-22 exposure at
+   * this locator for the operator to close in whichever adapter implements the port (S8).
    *
-   * ⭐ THE PORT'S TYPE CAUGHT THIS LINE RATHER THAN A REVIEWER RE-READING IT. Before the parameter was
-   * narrowed, `getImagePath(...)` → `getImageExistsFlag(...)` typechecked; afterwards `tsc` rejected
-   * exactly this call. That is the whole argument for closing the contract instead of documenting the
-   * hazard: the previous version of this docblock DESCRIBED the `expandPath` behaviour accurately and
-   * the defect survived anyway.
-   *
-   * ⚠️ OBSERVABLE BEHAVIOUR IS UNCHANGED FOR EVERY LEGITIMATE NAME. The question asked is still "does
-   * this SKU's image file exist", the answers are still only `true` ([:L223]) and `false` ([:L225]), and
-   * an absent `imageFile` still reads as the empty string, which cannot name a file and so resolves
-   * `false` — the same answer the legacy gives for a file that is not there. What changes is that a
-   * traversal name now resolves `false` where the legacy would have reported on the traversed file.
-   * That divergence is the declared hardening, on the D18 precedent (AAP §0.6.7.7).
+   * ⚠️ THE ANSWERS ARE STILL ONLY `true` ([:L223]) AND `false` ([:L225]) — the legacy member yields no
+   * third state and raises nothing, and neither does this one. An absent `imageFile` reads as the empty
+   * string, which is the same scalar-read policy {@link Sku.getImageExtension} and
+   * {@link Sku.getImagePath} apply, and composes the same trailing-segment-less path the legacy composes.
    *
    * Consumed by one of `Product.ts`'s nine default-SKU delegating guards.
    *
-   * @param imagePaths validates the stored name and probes for it
+   * @param imagePaths composes the path and probes for it
    * @returns `true` when the file exists
    */
   async getImageExistsFlag(imagePaths: SkuImagePathResolver): Promise<boolean> {
-    /* [:L222], minus the URL composition. The raw stored value is passed; `''` for an absent one, which
-     * is the same scalar-read policy {@link Sku.getImageExtension} and {@link Sku.getImagePath} apply. */
-    return imagePaths.getImageExistsFlag(this.imageFile ?? '');
+    /* [:L222] — `fileExists(expandPath(getImagePath()))`, in the legacy's own order: compose first,
+     * probe second. The composition is the port's, as it is at [:L146]. */
+    const imagePath = await imagePaths.getImagePath(this.imageFile ?? '');
+
+    return imagePaths.getImageExistsFlag(imagePath);
   }
 
   /**
@@ -2813,9 +2891,9 @@ export class Sku implements AuditableEntity, ManagedEntity {
    * them [model/service/ProductService.cfc:L133] and the sale-price fallback at
    * [model/entity/Sku.cfc:L550].
    *
-   * @returns the price, `0` on a fresh SKU
+   * @returns the price, {@link EXACT_DECIMAL_ZERO} on a fresh SKU
    */
-  getPrice(): number {
+  getPrice(): ExactDecimal {
     return this.price;
   }
 
@@ -2823,9 +2901,9 @@ export class Sku implements AuditableEntity, ManagedEntity {
    * This SKU's list price — the explicit form of the accessor synthesized from
    * [model/entity/Sku.cfc:L55]. Required by `Product.ts`'s default-SKU delegate.
    *
-   * @returns the list price, `0` on a fresh SKU
+   * @returns the list price, {@link EXACT_DECIMAL_ZERO} on a fresh SKU
    */
-  getListPrice(): number {
+  getListPrice(): ExactDecimal {
     return this.listPrice;
   }
 
@@ -2834,9 +2912,9 @@ export class Sku implements AuditableEntity, ManagedEntity {
    * [model/entity/Sku.cfc:L57]. Required by `Product.ts`'s default-SKU delegate, and set by the
    * subscription creation branch at [model/service/SkuService.cfc:L157].
    *
-   * @returns the renewal price, `0` on a fresh SKU
+   * @returns the renewal price, {@link EXACT_DECIMAL_ZERO} on a fresh SKU
    */
-  getRenewalPrice(): number {
+  getRenewalPrice(): ExactDecimal {
     return this.renewalPrice;
   }
 
@@ -2912,12 +2990,27 @@ export class Sku implements AuditableEntity, ManagedEntity {
    * the field is correctly omitted. Returning zero would emit a sale price of nothing for every
    * unpromoted SKU.
    *
+   * ⚠️ F07 — THIS IS THE ONE PLACE A MONETARY VALUE ENTERS THIS PORT AS A DOUBLE, AND THE LOSS HAPPENS
+   * BEFORE IT GETS HERE. `SkuSalePriceDetails.salePrice` is declared `number` by
+   * `src/ports/PricingPort.ts`, an out-of-scope boundary port whose shape AAP §0.2.2.7 forbids this
+   * slice to redefine. So the promoted value has already been rounded to the nearest double by whoever
+   * produced it, and `exactDecimalFromNumber` records exactly what that double denotes rather than
+   * inventing digits it never had.
+   *
+   * The FALLBACK path is unaffected and fully exact: {@link Sku.getPrice} returns stored digits. So a
+   * SKU on no promotion — the overwhelmingly common case, and the only one this slice can actually
+   * resolve, since `PricingPort` has no in-scope implementation — compares and renders exactly.
+   *
+   * TODO(parity): should the pricing boundary ever come into scope, `PricingPort.salePrice` should be
+   * re-declared as an {@link ExactDecimal} and this conversion deleted. It is the last one left.
+   *
    * @param pricing forwarded to {@link Sku.getSalePriceDetails}
    * @returns the sale price, or this SKU's price when no promotion applies
    */
-  async getSalePrice(pricing: SkuSalePricingLookup): Promise<number> {
+  async getSalePrice(pricing: SkuSalePricingLookup): Promise<ExactDecimal> {
     const details = await this.getSalePriceDetails(pricing);
-    return details.salePrice ?? this.getPrice();
+    const promoted = details.salePrice;
+    return promoted === undefined ? this.getPrice() : exactDecimalFromNumber(promoted);
   }
 
   /**
@@ -3440,14 +3533,21 @@ export type SkuPropertyName =
   | AuditPropertyName;
 
 /**
- * Sku's frozen metadata declaration — the runtime answer to the seven framework introspection
- * members this class deliberately does not declare.
+ * Sku's frozen metadata declaration — what `manageEntity` reads to compose the seven framework
+ * introspection members onto an instance.
  *
- * See {@link EntityMetadataDeclaration} for what each member ports and why the surface is composed
- * onto an instance by `../base/manageEntity` rather than hand-written here. This constant is the ONLY
- * place in this module where the class name and the ORM entity name appear as VALUES rather than as
- * prose, and {@link SKU_PROPERTY_DESCRIPTORS} reads its `className` from here so the literal is
- * written once.
+ * ⚠️ THIS CLASS ALSO DECLARES ALL SEVEN ITSELF, AND THIS BLOCK USED TO SAY THE OPPOSITE. It read "the
+ * runtime answer to the seven framework introspection members this class deliberately does not
+ * declare … composed onto an instance by `../base/manageEntity` rather than hand-written here", and
+ * both halves were wrong. The seven are hand-written further down this module over its own frozen
+ * constants, alongside an `implements ManagedEntity` clause that obliges them; and `../base/manageEntity`
+ * is not a module — `manageEntity` is a FUNCTION exported by `../base/populate`, whose `Object.assign`
+ * shadows those prototype methods with equivalent own-property closures over this declaration.
+ * `../base/AuditableEntity` records once which classes declare the seven and which rely on composition.
+ *
+ * See {@link EntityMetadataDeclaration} for what each member ports. This constant is the ONLY place in
+ * this module where the class name and the ORM entity name appear as VALUES rather than as prose, and
+ * {@link SKU_PROPERTY_DESCRIPTORS} reads its `className` from here so the literal is written once.
  *
  * THIRTY-ONE FIELD KEYS — every persistent property [model/entity/Sku.cfc] declares: the eight
  * scalars at [`:L52-L59`], the persisted calculated column at [`:L62`], the two many-to-ones at
@@ -4084,8 +4184,8 @@ export const SKU_PROPERTY_DESCRIPTORS: PropertyDescriptorSet<Sku, SkuPropertyNam
  * 3. THE TWO FULL TWO-SIDED PAIRS — ⭐ NOW PORTED (F04), and a legacy inconsistency preserved
  * ------------------------------------------------------------------------------------------------
  * Unlike section 2 these four members carry real bodies that mutate BOTH arrays, exactly as
- * {@link Sku.setProduct} does. THEY ARE PORTED, contrary to what an earlier revision of this register
- * said: both collections are persistent and `createSkus` writes them, so omitting the members lost
+ * {@link Sku.setProduct} does. THEY ARE PORTED: both collections are persistent and `createSkus`
+ * writes them, so omitting the members would lose
  * data. The two entries below remain here because this register is the file's map of the legacy
  * surface, and because the asymmetry between the two pairs is a genuine finding this port surfaced for
  * which AAP §0.6.7 has no identifier.

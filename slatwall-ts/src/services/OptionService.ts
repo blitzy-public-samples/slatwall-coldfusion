@@ -5,7 +5,7 @@
  * three DECLARED members and §0.4.2.5 fixes the four SYNTHESIZED members that had no declaration
  * anywhere in the legacy tree, so interface parity is checkable member by member (AAP §0.8.3.1).
  *
- * WHY THIS FILE IS SEVEN MEMBERS AND NOT THREE. A reader who opens
+ * WHY THE PARITY SURFACE IS SEVEN MEMBERS AND NOT THREE. A reader who opens
  * `model/service/OptionService.cfc` finds three `public` declarations and might reasonably conclude the
  * port is three methods long. It is not, and the reason is IR-1: `onMissingMethod` at
  * `org/Hibachi/HibachiService.cfc:L255-L281` fabricated an implicit surface by prefix, dispatching a
@@ -18,6 +18,16 @@
  * TypeScript under `strict` has no equivalent facility, so under IR-1 and TR-3 each of those four is an
  * explicitly declared, typed member below. The dispatcher itself is never ported, and `org/Hibachi/**`
  * is read for contract only and never imported (AAP §0.8.3.2).
+ *
+ * ⚠️ AND THE CLASS DECLARES TEN MEMBERS, NOT SEVEN — SEVEN OF PARITY PLUS THREE RECORDED ADDITIONS.
+ * The three are {@link OptionService.getUnusedProductOptionsBounded},
+ * {@link OptionService.getUnusedProductOptionGroupsBounded} and {@link OptionService.getOptionsByIDs};
+ * each carries its own justification at its declaration, each leaves the parity member it accompanies
+ * byte-for-byte untouched, and none of the three is reachable by widening a frozen signature. Earlier
+ * revisions of this header, and of the placement argument further down the class, asserted a flat
+ * SEVEN — which stopped being true once those three landed and, worse, was used as the REASON for a
+ * placement decision it could no longer support. The count is stated here and the additive rule is
+ * stated with it, because a bare arity is a fact that drifts while a rule does not.
  *
  * SYNTHESIS IS REPRODUCED ONLY WHERE IT IS USED. The legacy dispatcher would have answered `newOption`,
  * `saveOption`, `deleteOption`, `countOption`, `listOption`, `exportOption` and `processOption*` just as
@@ -57,7 +67,7 @@
  * `model/service/OptionService.cfc:L58` leaked to on a CFC singleton.
  *
  * TEST PROVENANCE — ENTIRELY NET-NEW. No legacy `OptionServiceTest` exists, and the legacy suite
- * contains no service test for any of the four in-scope services (AAP §0.6.5.2), so all seven members
+ * contains no service test for any of the four in-scope services (AAP §0.6.5.2), so all ten members
  * below are net-new coverage and no parity with a legacy test is implied (AAP §0.8.3.7). The class is
  * deliberately constructible from two plain object literals, so the planned shared test doubles can
  * satisfy both ports by hand — necessary because the legacy repository vendors no mocking library at
@@ -67,7 +77,6 @@
 import type { ProductOptionFinder, ProductOptionGroupFinder } from '../domain/product/Product';
 import type { Option } from '../domain/option/Option';
 import type { OptionGroup } from '../domain/option/OptionGroup';
-import { translateSmartListInput } from '../ports/SmartListQueryPort';
 import type {
   SmartListEntityName,
   SmartListInput,
@@ -76,7 +85,9 @@ import type {
   SmartListQueryPort,
   SmartListResult,
 } from '../ports/SmartListQueryPort';
+import type { BoundedReadResult, BoundedReadWindow } from '../ports/repositories/BoundedRead';
 import type { OptionRepository } from '../ports/repositories/OptionRepository';
+import { translateSmartListInput } from '../util/smartListInput';
 
 /**
  * One entry of a select projection — a display label paired with the value that is submitted.
@@ -203,8 +214,8 @@ const OPTION_GROUP_ID_PROPERTY = 'optionGroupID';
  * WHY THIS SECTION EXISTS AT ALL, STATED UP FRONT BECAUSE IT LOOKS LIKE SCOPE CREEP OTHERWISE. The
  * two synthesized smart-list members are declared by AAP §0.4.2.5 to accept a `SmartListInput` — the
  * typed form of the untyped data structure the legacy passes as the first argument at
- * [org/Hibachi/HibachiService.cfc:L346-L350] — while the only execution member the port exposes,
- * `SmartListQueryPort.execute`, accepts a `SmartListQuery`. Those are two different shapes on
+ * [org/Hibachi/HibachiService.cfc:L346-L350] — while both of the port's execution members,
+ * `SmartListQueryPort.execute` and `executeRecords`, accept a `SmartListQuery`. Those are two shapes on
  * purpose: one is the flat prefix-keyed map a caller submits, the other is the structured
  * description an adapter compiles. Something has to project the first onto the second, and the
  * member whose signature accepts the input is the only place that holds both types. Skipping the
@@ -264,7 +275,7 @@ const OPTION_GROUP_ID_PROPERTY = 'optionGroupID';
  * A LOCAL COPY OF THE ENTIRE `applyData` GRAMMAR USED TO LIVE HERE: the key delimiters and prefix
  * constants, the add/remove filter folding, pattern-value wrapping, range parsing, order-statement and
  * keyword parsing, page-figure acceptance and a query composer. An equivalent copy lived in
- * `./SkuService`, and both restated what `../ports/SmartListQueryPort` already owns.
+ * `./SkuService`, and both restated what `../util/smartListInput` now owns.
  *
  * THE GRAMMAR IS ONE LEGACY BEHAVIOUR — `org/Hibachi/HibachiSmartList.cfc` `applyData` — SO IT IS
  * TRANSLATED ONCE. Both smart lists this service exposes now call `translateSmartListInput`, passing
@@ -272,10 +283,10 @@ const OPTION_GROUP_ID_PROPERTY = 'optionGroupID';
  * diverged before they were consolidated — on the range length gate and on which delimiter the bounds
  * were sliced around — which is precisely the drift a single owner prevents.
  *
- * ⛔ DO NOT REINSTATE A LOCAL TRANSLATOR to add a key or change a precedence rule; extend the port,
- * where every caller gets the change. The port now also resolves every caller-supplied property path
- * against the entity schema (SEC-09), so this service's two smart lists inherit the closed-identifier
- * guarantee without a copy here to keep in step. The branded `SmartListPropertyIdentifier` makes that
+ * ⛔ DO NOT REINSTATE A LOCAL TRANSLATOR to add a key or change a precedence rule; extend
+ * `../util/smartListInput`, where every caller gets the change. That translator also resolves every
+ * caller-supplied property path against the port's entity whitelist (SEC-09), so this service's two
+ * smart lists inherit the closed-identifier guarantee without a copy here to keep in step. The branded `SmartListPropertyIdentifier` makes that
  * self-enforcing: an unresolved path is not assignable to a filter, so a future local copy could not
  * skip the check and still compile.
  * ============================================================================================== */
@@ -287,16 +298,23 @@ const OPTION_GROUP_ID_PROPERTY = 'optionGroupID';
  * [org/Hibachi/HibachiService.cfc:L305-L328] resolves a `get`-prefixed member to
  * `get(entityName, id, isReturnNewOnNotFound)` at [:L326], which delegates through
  * [org/Hibachi/HibachiService.cfc:L22-L24] to [org/Hibachi/HibachiDAO.cfc:L6-L26], where the load
- * itself happens by primary key at [:L13]. Expressed through the one execution member the port
- * offers, that becomes a query filtered on the identifier property — which is why
- * {@link OptionService.getOption} and {@link OptionService.getOptionGroup} need no repository member
- * of their own, and why no statement text, driver reference or query runner is imported here (S2).
+ * itself happens by primary key at [:L13]. Expressed through the port, that becomes a query filtered
+ * on the identifier property — which is why {@link OptionService.getOption} and
+ * {@link OptionService.getOptionGroup} need no repository member of their own, and why no statement
+ * text, driver reference or query runner is imported here (S2).
  *
  * THE UNPAGED COLLECTION IS THE ONE TO READ. `SmartListResult` exposes both the full record set and
  * the current page, mirroring [org/Hibachi/HibachiSmartList.cfc:L751] and [:L759]. A primary-key
  * filter can match at most one row either way, but the unpaged collection is the faithful analogue:
  * the legacy load is a direct primary-key fetch with no paging applied, and reading the paged slice
  * would make the result depend on a page size this member never sets.
+ *
+ * ⭐ AND IT IS THE ONLY ONE EXECUTED, NOT MERELY THE ONLY ONE READ. Both callers run this query through
+ * {@link SmartListQueryPort.executeRecords} rather than {@link SmartListQueryPort.execute}, so the page
+ * query and the count query are never issued — which is what makes the paragraph above true of the
+ * statements as well as of the return value. `entityLoadByPK` at [org/Hibachi/HibachiDAO.cfc:L13] is
+ * ONE statement; selecting one view keeps it one statement. The compiled text, the bound parameters and
+ * the resulting rows are unchanged, because both members compile THIS query through the same plan.
  *
  * @param entityName - The ORM logical entity name to load from.
  * @param propertyIdentifier - The entity's primary-identifier property.
@@ -307,16 +325,19 @@ function buildIdentifierQuery<TEntity extends SmartListEntityName>(
   entityName: TEntity,
   propertyIdentifier: SmartListPropertyIdentifier<TEntity>,
   value: string,
-): SmartListQuery {
+): SmartListQuery<TEntity> {
   return { entityName, whereGroups: [{ filters: [{ propertyIdentifier, value }] }] };
 }
 
 /**
  * The Catalog's option and option-group service.
  *
- * Seven public members: the three declared by `model/service/OptionService.cfc` and the four the
- * legacy synthesized at run time. See the module header for the full provenance, for the dependency
- * untangling that reduced two injected properties to one, and for the M7 statelessness guarantee.
+ * TEN public members: a SEVEN-member parity surface — the three declared by
+ * `model/service/OptionService.cfc` plus the four the legacy synthesized at run time — and THREE
+ * additive companions, each recorded at its own declaration and each leaving the parity member it
+ * accompanies untouched. See the module header for the full provenance, for why a bare arity is not what
+ * the AAP freezes, for the dependency untangling that reduced two injected properties to one, and for
+ * the M7 statelessness guarantee.
  */
 export class OptionService {
   /**
@@ -388,8 +409,12 @@ export class OptionService {
    * concurrent requests, making it the same class of hazard as carried defect D10 in
    * `model/service/ProductService.cfc`. The `for...of` binding here cannot leak: it is scoped to the
    * loop and there is no shared mutable state to leak into (M7). NO NEW DEFECT IDENTIFIER IS MINTED
-   * for this, and none is implied — the carried register of AAP §0.6.7 is closed at its final entry,
-   * D21, and this file introduces nothing beyond it. The change is recorded instead as a deliberate
+   * for this, and none is implied — this file introduces nothing beyond what is already carried, and
+   * the register is stated canonically, and only once, in the header of
+   * `src/ports/repositories/SkuRepository.ts` (AAP 0.6.7's frozen source range D1-D21, plus the
+   * source extension D22 and the three contract corrections D23, D24 and D25, with no D26 or
+   * beyond; and AAP 0.6.6's M1-M8 plus M9, with no M10 or beyond).
+   * The change is recorded instead as a deliberate
    * translation decision in the manner AAP §0.8.2 Guideline 6 requires, exactly as the plan itself
    * treats D10.
    *
@@ -483,6 +508,47 @@ export class OptionService {
   }
 
   /**
+   * The same list, read one explicitly requested window at a time.
+   *
+   * ⭐ P9 — AN ADDITIVE COMPANION, NOT A REPLACEMENT. {@link OptionService.getUnusedProductOptions} is
+   * the AAP §0.4.2.4 parity contract for [model/service/OptionService.cfc:L72] and is untouched: same
+   * name, same argument order, same unbounded return. This member exists because the underlying
+   * statement's result set is bounded only by how many options the deployment has, and a caller that
+   * cannot hold all of them previously had no honest alternative.
+   *
+   * ⛔ NO DEFAULT WINDOW IS EVER APPLIED TO THE UNBOUNDED MEMBER. A caller that asks for the list still
+   * receives all of it. There is no implicit page size and no cap, because introducing one would change
+   * what an existing call returns (S9).
+   *
+   * ⚠️ THE SELECTION IS IDENTICAL — the bound narrows HOW MANY rows arrive, never WHICH. The label
+   * composition of [model/dao/OptionDAO.cfc:L88], which joins the group name and the option name into one
+   * `name`, and the `IS IN` set polarity of [:L68] are both the adapter's and are unchanged; in
+   * particular the empty-list behaviour that resolves to NO rows is preserved, and is NOT rewritten into
+   * an error or into a full listing.
+   *
+   * ⚠️ THE CALLER MUST READ {@link BoundedReadResult.hasMore}, or the bound is a silent truncation.
+   *
+   * TEST PROVENANCE: NET-NEW.
+   *
+   * @param window - The requested window; validated by the adapter, refused rather than clamped.
+   * @param productID - Exactly as the unbounded member declares it.
+   * @param existingOptionGroupIDList - Exactly as the unbounded member declares it. An empty string
+   *   remains a legal input with its own legacy meaning.
+   * @returns The rows inside the window in the statement's own order, plus whether more lie past it.
+   */
+  public getUnusedProductOptionsBounded(
+    window: BoundedReadWindow,
+    productID: string,
+    existingOptionGroupIDList: string,
+  ): Promise<BoundedReadResult<SelectOption>> {
+    return this.optionRepository.findUnusedOptionsBounded(
+      window,
+      productID,
+      existingOptionGroupIDList,
+    );
+  }
+
+  /**
    * Lists the option groups not yet present on a product, as select entries.
    *
    * PORT OF [model/service/OptionService.cfc:L76-L78]:
@@ -520,6 +586,37 @@ export class OptionService {
   }
 
   /**
+   * The same list, read one explicitly requested window at a time.
+   *
+   * ⭐ P9 — AN ADDITIVE COMPANION, NOT A REPLACEMENT. {@link OptionService.getUnusedProductOptionGroups}
+   * is the AAP §0.4.2.4 parity contract for [model/service/OptionService.cfc:L76] and is untouched.
+   *
+   * ⚠️ THIS IS THE WIDEST READ IN THIS SERVICE, WHICH IS PRECISELY WHY IT EARNS A BOUND. Its set polarity
+   * is the INVERSE of the sibling member's — [model/dao/OptionDAO.cfc:L107] keeps rows whose group is NOT
+   * IN the supplied list, against [:L68] which keeps rows that ARE — so an EMPTY list resolves here to
+   * EVERY option group in the deployment. That is correct legacy behaviour and is fully preserved: the
+   * bound gives a caller a way to read that answer incrementally, and it does NOT reject, default or
+   * narrow the empty input, because doing so would suppress the single most useful call the member has.
+   *
+   * ⛔ NO DEFAULT WINDOW IS EVER APPLIED TO THE UNBOUNDED MEMBER, and neither the plain group-name label
+   * of [:L113] nor the ordering changes. The bound narrows HOW MANY rows arrive, never WHICH.
+   *
+   * ⚠️ THE CALLER MUST READ {@link BoundedReadResult.hasMore}, or the bound is a silent truncation.
+   *
+   * TEST PROVENANCE: NET-NEW.
+   *
+   * @param window - The requested window; validated by the adapter, refused rather than clamped.
+   * @param existingOptionGroupIDList - Exactly as the unbounded member declares it, empty string included.
+   * @returns The rows inside the window in the statement's own order, plus whether more lie past it.
+   */
+  public getUnusedProductOptionGroupsBounded(
+    window: BoundedReadWindow,
+    existingOptionGroupIDList: string,
+  ): Promise<BoundedReadResult<SelectOption>> {
+    return this.optionRepository.findUnusedOptionGroupsBounded(window, existingOptionGroupIDList);
+  }
+
+  /**
    * Loads one option by its identifier, or resolves `null` when no such option exists.
    *
    * IR-1 — EXPLICITLY DECLARED, PREVIOUSLY SYNTHESIZED. There is NO declaration of this member
@@ -549,11 +646,11 @@ export class OptionService {
    * @returns The option, or `null` when none matches.
    */
   public async getOption(optionID: string): Promise<Option | null> {
-    const result = await this.smartListQueryPort.execute<Option>(
+    const records = await this.smartListQueryPort.executeRecords(
       buildIdentifierQuery(OPTION_ENTITY_NAME, OPTION_ID_PROPERTY, optionID),
     );
 
-    return result.records[0] ?? null;
+    return records[0] ?? null;
   }
 
   /**
@@ -577,11 +674,88 @@ export class OptionService {
    * @returns The option group, or `null` when none matches.
    */
   public async getOptionGroup(optionGroupID: string): Promise<OptionGroup | null> {
-    const result = await this.smartListQueryPort.execute<OptionGroup>(
+    const records = await this.smartListQueryPort.executeRecords(
       buildIdentifierQuery(OPTION_GROUP_ENTITY_NAME, OPTION_GROUP_ID_PROPERTY, optionGroupID),
     );
 
-    return result.records[0] ?? null;
+    return records[0] ?? null;
+  }
+
+  /**
+   * Loads many options by identifier in ONE statement, keyed by identifier.
+   *
+   * ⭐ WHY THIS EXISTS, AND WHY IT IS NOT A NEW CAPABILITY. `model/service/SkuService.cfc:L73-L79`
+   * walks a comma-delimited option list and calls the dispatcher's `getOption(id)` ONCE PER ELEMENT —
+   * including once per REPEATED element, because that loop deliberately retains duplicates. Every one
+   * of those calls resolves the same way, through `entityLoadByPK` at
+   * [org/Hibachi/HibachiDAO.cfc:L13]. This member answers the same question for the whole list at once
+   * so the odometer pays one statement for the distinct identifiers instead of one per list position.
+   * {@link OptionService.getOption} keeps its single-identifier contract untouched for every other
+   * caller.
+   *
+   * ⚠️ THIS IS NOT A SESSION CACHE AND IT HOLDS NO STATE. The map is constructed, returned and owned by
+   * the caller, so it dies with the invocation (M7). Nothing is memoised on this service.
+   *
+   * ⭐ WHY RETURNING ONE SHARED INSTANCE PER IDENTIFIER IS MORE FAITHFUL THAN LESS. Hibernate's
+   * session-level identity map returns THE SAME OBJECT for two `entityLoadByPK` calls on one primary
+   * key within one request, so a legacy list of `a,a` already bucketed one instance twice. The domain
+   * confirms sharing is inert here regardless: `Sku.addOption` appends to the SKU's own collection and
+   * does not write to the option, so no combination can observe another's option through a shared
+   * reference.
+   *
+   * ⚠️ HYDRATION IS DELIBERATELY IDENTICAL TO THE SINGLE-IDENTIFIER PATH, INCLUDING ITS LIMITS. Both
+   * run through {@link SmartListQueryPort.executeRecords} and therefore through the same `SwOption` row
+   * mapper, so a caller that reaches for a member the mapper does not populate — `optionGroup` is the
+   * one that matters, and `src/adapters/mysql/rowMappers.ts` documents it as deliberately not read —
+   * gets exactly the same outcome it gets today from {@link OptionService.getOption}. Nothing is
+   * hydrated here that was not hydrated there; batching changes HOW MANY statements run, never WHAT
+   * they select.
+   *
+   * ⚠️ AN EMPTY INPUT ISSUES NO STATEMENT AT ALL, and that guard is load-bearing rather than tidy.
+   * The in-filter compiler treats a value that splits to nothing as a single literal and emits
+   * `IN (?)` bound to the raw text, which would match nothing while still costing a round trip. An
+   * empty list means "no identifiers to resolve", so it resolves to an empty map directly.
+   *
+   * ⚠️ NO ELEMENT CAN CONTAIN THE IN-FILTER DELIMITER, WHICH IS WHY JOINING ON `,` IS SAFE. Every
+   * caller derives its identifiers by splitting a CFML list on `,`, so a comma cannot survive into an
+   * element; the join is therefore the exact inverse of the split that produced it.
+   *
+   * TEST PROVENANCE: NET-NEW. No legacy `OptionServiceTest` exists (AAP §0.6.5.2).
+   *
+   * @param optionIDs - The identifiers to resolve. Duplicates are permitted and are resolved once;
+   *   order is irrelevant to the result because the answer is keyed rather than sequential.
+   * @returns A map from identifier to option, holding an entry ONLY for identifiers that matched a row.
+   *   A caller reconstructs its own order, its own duplicates and its own missing-identifier handling
+   *   from this map.
+   */
+  public async getOptionsByIDs(optionIDs: readonly string[]): Promise<Map<string, Option>> {
+    const resolvedOptions = new Map<string, Option>();
+
+    /* First-seen order, duplicates collapsed. Order does not affect the answer, but building the list
+     * deterministically keeps the compiled statement stable for a given input. */
+    const distinctIDs: string[] = [];
+    for (const optionID of optionIDs) {
+      if (!distinctIDs.includes(optionID)) {
+        distinctIDs.push(optionID);
+      }
+    }
+
+    if (distinctIDs.length === 0) {
+      return resolvedOptions;
+    }
+
+    const records = await this.smartListQueryPort.executeRecords({
+      entityName: OPTION_ENTITY_NAME,
+      whereGroups: [
+        { inFilters: [{ propertyIdentifier: OPTION_ID_PROPERTY, value: distinctIDs.join(',') }] },
+      ],
+    });
+
+    for (const option of records) {
+      resolvedOptions.set(option.optionID, option);
+    }
+
+    return resolvedOptions;
   }
 
   /**
@@ -620,7 +794,7 @@ export class OptionService {
    * @returns The records, the current page, and the count and paging figures derived from them.
    */
   public getOptionSmartList(input?: SmartListInput): Promise<SmartListResult<Option>> {
-    return this.smartListQueryPort.execute<Option>(
+    return this.smartListQueryPort.execute(
       translateSmartListInput({ entityName: OPTION_ENTITY_NAME, input }),
     );
   }
@@ -644,7 +818,7 @@ export class OptionService {
    * @returns The records, the current page, and the count and paging figures derived from them.
    */
   public getOptionGroupSmartList(input?: SmartListInput): Promise<SmartListResult<OptionGroup>> {
-    return this.smartListQueryPort.execute<OptionGroup>(
+    return this.smartListQueryPort.execute(
       translateSmartListInput({ entityName: OPTION_GROUP_ENTITY_NAME, input }),
     );
   }
@@ -653,24 +827,49 @@ export class OptionService {
    * PRODUCT'S TWO RELOCATED DISTINCT QUERIES
    * ==============================================================================================
    *
-   * WHY THESE TWO MEMBERS EXIST, AND WHY THEY ARE NOT EXPRESSIBLE THROUGH THE GENERIC PAIR ABOVE.
+   * WHY THESE TWO QUERIES ARE NOT ROUTED THROUGH THE GENERIC PAIR ABOVE.
    * `model/entity/Product.cfc` builds two queries by hand. In the legacy that is unremarkable: the
    * synthesized `get*SmartList` members hand back a MUTABLE SmartList object and the caller configures
    * it before reading. The AAP-declared target signatures instead return an already-executed
    * `SmartListResult`, so a caller cannot configure anything after the fact — and `SmartListInput`,
-   * which is the only thing those signatures accept, declares NO member for the select-distinct flag.
-   * The two product queries are therefore literally inexpressible through {@link
-   * OptionService.getOptionSmartList} and {@link OptionService.getOptionGroupSmartList}. That is the
-   * gap those members' own S8 notes record and deliberately decline to close by widening a parity
-   * signature.
+   * which is the only thing those signatures accept, is the port of the STRING-KEY request protocol
+   * and declares no select-distinct member.
    *
-   * ⭐ THE QUERY DEFINITIONS BELONG IN A NAMED SERVICE OPERATION, NOT IN WIRING. The alternative was
-   * to let whoever assembles the composition root build these queries inline while satisfying
-   * `ProductOptionGroupFinder` and `ProductOptionFinder` with a closure. That would put three pieces of
-   * real business logic — a DISTINCT projection, an exact multi-hop filter path, and an ordering that
-   * other queries depend on — inside dependency wiring, where nothing tests it and no reader looks for
-   * it. Declaring them here keeps `src/config/container.ts` a pure `new` graph and makes the
-   * definitions reviewable, testable and citable against the legacy line that specifies each one.
+   * ⚠️ BE PRECISE ABOUT WHAT IS AND IS NOT EXPRESSIBLE, BECAUSE AN EARLIER REVISION OVERSTATED IT.
+   * It said the two queries were "literally inexpressible", which reads as though the port cannot
+   * describe them at all. It can: `SmartListQuery` in `../ports/SmartListQueryPort` declares
+   * `selectDistinctFlag`, and `src/adapters/mysql/SmartListQueryBuilder.ts` already implements it and
+   * cites `model/entity/Product.cfc:L254` and `:L341` — these very two call sites — as the reason it
+   * exists. The accurate statement is narrower and is the one that matters: the queries are not
+   * expressible through `SmartListInput`, so they are built as `SmartListQuery` values and handed to
+   * {@link SmartListQueryPort.execute} directly. No parity signature is widened to accommodate them.
+   *
+   * ⭐ THE QUERY DEFINITIONS BELONG IN A NAMED, REVIEWABLE PLACE — BUT NOT ON THE SERVICE CLASS.
+   * Two constraints pull in opposite directions and both are satisfied below rather than one being
+   * sacrificed:
+   *   • They must NOT be inlined into `src/config/container.ts`. That would put three pieces of real
+   *     business logic — a DISTINCT projection, an exact multi-hop filter path, and an ordering other
+   *     queries depend on — inside dependency wiring, where nothing tests it and no reader looks for it.
+   *   • They must NOT be public members of {@link OptionService}, and the reason is WHOSE QUESTION THEY
+   *     ANSWER, not how many members the class would then have. Both port ENTITY members —
+   *     `Product.getOptionGroups()` [model/entity/Product.cfc:L251-L261] and
+   *     `Product.getOptionsByOptionGroup()` [:L340-L347] — so the legacy does not put them on this
+   *     service and neither does this port. An earlier revision put them on the class, which is what the
+   *     review flagged.
+   *
+   *     ⚠️ AND THE ARGUMENT THAT SENTENCE ORIGINALLY MADE HAS BEEN WITHDRAWN, because it does not
+   *     survive its own file. It read: "AAP §0.4.2.4 declares THREE public members and AAP §0.4.2.5 adds
+   *     FOUR synthesized ones; that is the whole surface, and an eighth and ninth member would widen a
+   *     parity contract the AAP freezes." An arity budget is not what the AAP freezes — SIGNATURES are.
+   *     Three additive members now sit on this class under the P9 rule, each recorded at its own
+   *     declaration and each leaving its parity sibling untouched, and every sibling service carries
+   *     additive members the same way. Had the budget reading been right, those three would be
+   *     violations; they are not, and keeping the sentence would have made this file argue against its
+   *     own contents.
+   * The resolution is MODULE SCOPE in this file: {@link findProductOptionGroups} and
+   * {@link findProductOptionsByOptionGroup} below, bound together by
+   * {@link createProductOptionFinders}. They stay reviewable, testable and citable against the legacy
+   * line that specifies each one, and they stay out of the wiring.
    *
    * ⭐ THESE BYPASS `SmartListInput` AND BUILD `SmartListQuery` DIRECTLY, and that is the faithful
    * shape rather than a shortcut. `SmartListInput` is the port of the legacy DATA-KEY interpreter at
@@ -691,78 +890,136 @@ export class OptionService {
    * container" — a service-held cache is exactly the module-scope bleed that forbids. The entity keeps
    * ownership of its own lazy caching; these members are plain queries, and each call executes.
    * ============================================================================================ */
+}
 
-  /**
-   * Resolves the option groups in use by a product — the query relocated out of
-   * [model/entity/Product.cfc:L251-L261].
-   *
-   * Implements {@link ProductOptionGroupFinder} for `Product.getOptionGroups`. The three semantics
-   * that travel with it, each carried verbatim from its legacy line:
-   *   1. DISTINCT projection — `setSelectDistinctFlag(1)` at [:L255]. An option group reachable through
-   *      several of the product's SKUs is returned ONCE.
-   *   2. The filter path is `options.skus.product.productID` at [:L256] — THREE hops, from the option
-   *      group out through its options, their SKUs and those SKUs' product. There is no direct
-   *      option-group-to-product relationship, so a shorter path is not a simplification but a
-   *      different question with a different answer.
-   *   3. Ordering is `sortOrder` ASCENDING at [:L257] — the order callers observe, and the order the
-   *      sorted-SKU query at `model/dao/SkuDAO.cfc:L172-L204` independently relies on.
-   *
-   * TEST PROVENANCE: NET-NEW. No legacy `OptionServiceTest` exists (AAP §0.6.5.2).
-   *
-   * @param productID - The product's 32-character identifier (IR-6).
-   * @returns The product's option groups: distinct, ordered by `sortOrder` ascending, unpaginated.
-   */
-  public async getOptionGroupsForProduct(productID: string): Promise<OptionGroup[]> {
-    const result = await this.smartListQueryPort.execute<OptionGroup>({
-      entityName: OPTION_GROUP_ENTITY_NAME,
-      selectDistinctFlag: true,
-      whereGroups: [
-        { filters: [{ propertyIdentifier: PRODUCT_VIA_OPTIONS_PATH, value: productID }] },
-      ],
-      orders: [{ propertyIdentifier: SORT_ORDER_PROPERTY, direction: 'ASC' }],
-    });
-    return [...result.records];
-  }
+/* ================================================================================================
+ * THE TWO PRODUCT-SCOPED OPTION QUERIES — MODULE SCOPE, NOT SERVICE MEMBERS
+ * ================================================================================================
+ * Relocated out of {@link OptionService} because they answer an ENTITY's question rather than the
+ * service's — `Product.getOptionGroups()` and `Product.getOptionsByOptionGroup()` — and not because of
+ * any limit on how many members the service may declare. The reasoning for the placement, and for building
+ * `SmartListQuery` values rather than routing through `SmartListInput`, is recorded once on the
+ * section comment inside the class and is not repeated here.
+ *
+ * ⛔ THESE ARE NOT A NEW CAPABILITY AND NOT A WIDER CONTRACT. Both were already present at this
+ * checkpoint, as public members; only their HOME changed. The queries, the filter paths, the DISTINCT
+ * projection, the ordering and the full-set (non-paginated) read are byte-for-byte what they were, so
+ * `Product.getOptionGroups` and `Product.getOptionsByOptionGroup` observe identical behaviour.
+ *
+ * ⭐ THE PORT ARRIVES AS A PARAMETER, WHICH IS WHY THESE ARE TESTABLE WITHOUT A DATABASE. Each takes
+ * {@link SmartListQueryPort} explicitly (S3 — no service locator, no module-scope singleton, nothing
+ * resolved by name), so a hand-written double satisfies them exactly as it satisfies the service.
+ * ============================================================================================== */
 
-  /**
-   * Resolves the options of one option group that are in use by a product — the query relocated out of
-   * [model/entity/Product.cfc:L340-L347].
-   *
-   * Implements {@link ProductOptionFinder} for `Product.getOptionsByOptionGroup`. The three semantics:
-   *   1. DISTINCT projection — [:L342].
-   *   2. TWO filters in ONE where group, applied in the legacy's order: `optionGroup.optionGroupID` at
-   *      [:L343] then `skus.product.productID` at [:L344]. Both land in the default group, which
-   *      [org/Hibachi/HibachiSmartList.cfc:L590] conjoins — so this is "options of THIS group that are
-   *      used by THIS product", not a union of the two conditions. Note the product path here is TWO
-   *      hops (`skus.product.productID`), one shorter than the option-group query's, because an option
-   *      relates to SKUs directly; the two paths are genuinely different and neither is a typo.
-   *   3. Ordering is `sortOrder` ASCENDING — [:L345].
-   *
-   * TEST PROVENANCE: NET-NEW. No legacy `OptionServiceTest` exists (AAP §0.6.5.2).
-   *
-   * @param optionGroupID - The option group to restrict to; the legacy FIRST filter.
-   * @param productID - The product's 32-character identifier; the legacy SECOND filter.
-   * @returns The matching options: distinct, ordered by `sortOrder` ascending, unpaginated.
-   */
-  public async getOptionsForProductByOptionGroup(
-    optionGroupID: string,
-    productID: string,
-  ): Promise<Option[]> {
-    const result = await this.smartListQueryPort.execute<Option>({
-      entityName: OPTION_ENTITY_NAME,
-      selectDistinctFlag: true,
-      whereGroups: [
-        {
-          filters: [
-            { propertyIdentifier: OPTION_GROUP_ID_PATH, value: optionGroupID },
-            { propertyIdentifier: PRODUCT_VIA_SKUS_PATH, value: productID },
-          ],
-        },
-      ],
-      orders: [{ propertyIdentifier: SORT_ORDER_PROPERTY, direction: 'ASC' }],
-    });
-    return [...result.records];
-  }
+/**
+ * Resolves the option groups in use by a product — the query relocated out of
+ * [model/entity/Product.cfc:L251-L261].
+ *
+ * Supplies {@link ProductOptionGroupFinder.getOptionGroupsForProduct} for `Product.getOptionGroups`,
+ * bound to the port by {@link createProductOptionFinders}. The three semantics
+ * that travel with it, each carried verbatim from its legacy line:
+ *   1. DISTINCT projection — `setSelectDistinctFlag(1)` at [:L255]. An option group reachable through
+ *      several of the product's SKUs is returned ONCE.
+ *   2. The filter path is `options.skus.product.productID` at [:L256] — THREE hops, from the option
+ *      group out through its options, their SKUs and those SKUs' product. There is no direct
+ *      option-group-to-product relationship, so a shorter path is not a simplification but a
+ *      different question with a different answer.
+ *   3. Ordering is `sortOrder` ASCENDING at [:L257] — the order callers observe, and the order the
+ *      sorted-SKU query at `model/dao/SkuDAO.cfc:L172-L204` independently relies on.
+ *
+ * TEST PROVENANCE: NET-NEW. No legacy `OptionServiceTest` exists (AAP §0.6.5.2).
+ *
+ * @param smartListQueryPort - The paginated dynamic-query boundary (AAP §0.2.2.7).
+ * @param productID - The product's 32-character identifier (IR-6).
+ * @returns The product's option groups: distinct, ordered by `sortOrder` ascending, unpaginated.
+ */
+export async function findProductOptionGroups(
+  smartListQueryPort: SmartListQueryPort,
+  productID: string,
+): Promise<OptionGroup[]> {
+  const result = await smartListQueryPort.execute({
+    entityName: OPTION_GROUP_ENTITY_NAME,
+    selectDistinctFlag: true,
+    whereGroups: [
+      { filters: [{ propertyIdentifier: PRODUCT_VIA_OPTIONS_PATH, value: productID }] },
+    ],
+    orders: [{ propertyIdentifier: SORT_ORDER_PROPERTY, direction: 'ASC' }],
+  });
+  return [...result.records];
+}
+
+/**
+ * Resolves the options of one option group that are in use by a product — the query relocated out of
+ * [model/entity/Product.cfc:L340-L347].
+ *
+ * Supplies {@link ProductOptionFinder.getOptionsForProductByOptionGroup` } for
+ * `Product.getOptionsByOptionGroup`, bound to the port by {@link createProductOptionFinders}. The three semantics:
+ *   1. DISTINCT projection — [:L342].
+ *   2. TWO filters in ONE where group, applied in the legacy's order: `optionGroup.optionGroupID` at
+ *      [:L343] then `skus.product.productID` at [:L344]. Both land in the default group, which
+ *      [org/Hibachi/HibachiSmartList.cfc:L590] conjoins — so this is "options of THIS group that are
+ *      used by THIS product", not a union of the two conditions. Note the product path here is TWO
+ *      hops (`skus.product.productID`), one shorter than the option-group query's, because an option
+ *      relates to SKUs directly; the two paths are genuinely different and neither is a typo.
+ *   3. Ordering is `sortOrder` ASCENDING — [:L345].
+ *
+ * TEST PROVENANCE: NET-NEW. No legacy `OptionServiceTest` exists (AAP §0.6.5.2).
+ *
+ * @param smartListQueryPort - The paginated dynamic-query boundary (AAP §0.2.2.7).
+ * @param optionGroupID - The option group to restrict to; the legacy FIRST filter.
+ * @param productID - The product's 32-character identifier; the legacy SECOND filter.
+ * @returns The matching options: distinct, ordered by `sortOrder` ascending, unpaginated.
+ */
+export async function findProductOptionsByOptionGroup(
+  smartListQueryPort: SmartListQueryPort,
+  optionGroupID: string,
+  productID: string,
+): Promise<Option[]> {
+  const result = await smartListQueryPort.execute({
+    entityName: OPTION_ENTITY_NAME,
+    selectDistinctFlag: true,
+    whereGroups: [
+      {
+        filters: [
+          { propertyIdentifier: OPTION_GROUP_ID_PATH, value: optionGroupID },
+          { propertyIdentifier: PRODUCT_VIA_SKUS_PATH, value: productID },
+        ],
+      },
+    ],
+    orders: [{ propertyIdentifier: SORT_ORDER_PROPERTY, direction: 'ASC' }],
+  });
+  return [...result.records];
+}
+
+/**
+ * Binds the two module-scope queries to a port and returns the pair of finder capabilities
+ * `src/domain/product/Product.ts` asks for.
+ *
+ * ⭐ ONE FACTORY RATHER THAN TWO OBJECTS, BECAUSE PRODUCT'S MEMBERS ASK FOR BOTH TOGETHER.
+ * `Product.getUnusedProductOptionGroups` and `Product.getUnusedProductOptions` each take an
+ * option-group finder AND an option finder, so a caller that held two separate objects would pass two
+ * arguments that must agree about which port they read. Returning one frozen object satisfying both
+ * interfaces removes that possibility.
+ *
+ * ⭐ FROZEN, AND WITH NO STATE OF ITS OWN. Nothing is memoised here — per AAP §0.6.6 mismatch M7 a
+ * cache at this level is exactly the module-scope bleed that is forbidden on a warm container, and the
+ * entity keeps ownership of its own lazy caching. Each call executes.
+ *
+ * @param smartListQueryPort - The paginated dynamic-query boundary (AAP §0.2.2.7).
+ * @returns One object satisfying both finder contracts, safe to share for the life of an invocation.
+ */
+export function createProductOptionFinders(
+  smartListQueryPort: SmartListQueryPort,
+): ProductOptionGroupFinder & ProductOptionFinder {
+  return Object.freeze({
+    getOptionGroupsForProduct: (productID: string): Promise<OptionGroup[]> =>
+      findProductOptionGroups(smartListQueryPort, productID),
+    getOptionsForProductByOptionGroup: (
+      optionGroupID: string,
+      productID: string,
+    ): Promise<Option[]> =>
+      findProductOptionsByOptionGroup(smartListQueryPort, optionGroupID, productID),
+  });
 }
 
 /* ================================================================================================
@@ -794,10 +1051,10 @@ export class OptionService {
  * ⭐ WHAT WAS ACTUALLY MEASURED, AND THE ONE THING THESE GUARDS DO NOT CATCH. Each guard was proved to
  * fire by temporarily breaking the implementation and reading the compiler output, then restoring it:
  *
- *   - renaming `getOptionGroupsForProduct`            -> TS2344 on {@link OptionServiceIsProductOptionGroupFinder}
- *   - renaming `getOptionsForProductByOptionGroup`    -> TS2344 on {@link OptionServiceIsProductOptionFinder}
- *   - typing `optionGroupID` as `number`              -> TS2344 on {@link OptionServiceIsProductOptionFinder}
- *   - returning `Promise<Option[]>` from the group finder -> TS2344 on {@link OptionServiceIsProductOptionGroupFinder}
+ *   - renaming `getOptionGroupsForProduct`            -> TS2344 on {@link ProductOptionFindersSatisfyGroupFinder}
+ *   - renaming `getOptionsForProductByOptionGroup`    -> TS2344 on {@link ProductOptionFindersSatisfyOptionFinder}
+ *   - typing `optionGroupID` as `number`              -> TS2344 on {@link ProductOptionFindersSatisfyOptionFinder}
+ *   - returning `Promise<Option[]>` from the group finder -> TS2344 on {@link ProductOptionFindersSatisfyGroupFinder}
  *
  * DROPPING A TRAILING PARAMETER DOES NOT FAIL, and that is correct rather than a hole in the guard: a
  * one-argument function is assignable to a two-argument contract in TypeScript for the same reason it is
@@ -817,11 +1074,11 @@ export class OptionService {
 type SatisfiesContract<TRelation extends true> = TRelation;
 
 /** `OptionService` provides `Product.getOptionGroups`'s injected capability. */
-export type OptionServiceIsProductOptionGroupFinder = SatisfiesContract<
-  OptionService extends ProductOptionGroupFinder ? true : false
+export type ProductOptionFindersSatisfyGroupFinder = SatisfiesContract<
+  ReturnType<typeof createProductOptionFinders> extends ProductOptionGroupFinder ? true : false
 >;
 
 /** `OptionService` provides `Product.getOptionsByOptionGroup`'s injected capability. */
-export type OptionServiceIsProductOptionFinder = SatisfiesContract<
-  OptionService extends ProductOptionFinder ? true : false
+export type ProductOptionFindersSatisfyOptionFinder = SatisfiesContract<
+  ReturnType<typeof createProductOptionFinders> extends ProductOptionFinder ? true : false
 >;

@@ -61,7 +61,10 @@
 // No user-specified rules were provided for this project; the nine enterprise
 // standards of AAP §0.7.3 govern instead, and the bar is not lowered.
 
-import { SEEDED_PRODUCT_TYPES_BY_SYSTEM_CODE } from '../../src/domain/BaseProductType';
+import {
+  resolveBaseProductType,
+  SEEDED_PRODUCT_TYPES_BY_SYSTEM_CODE,
+} from '../../src/domain/BaseProductType';
 import { Option } from '../../src/domain/option/Option';
 import { OptionGroup } from '../../src/domain/option/OptionGroup';
 import { Brand } from '../../src/domain/product/Brand';
@@ -76,9 +79,27 @@ import { Validator } from '../../src/validation/Validator';
 import { ALL_SEEDED_PRODUCT_TYPES, MERCHANDISE_PRODUCT_TYPE_ID } from '../fixtures/productTypes';
 import { createTestMerchandiseProductData } from '../fixtures/testProduct';
 
+import { createTransactionExistenceChecker as createProductionTransactionExistenceChecker } from '../../src/adapters/mysql/MySqlSkuRepository';
 import type { MySqlRow } from '../../src/adapters/mysql/rowMappers';
 import type { PhysicalTableName, SqlExecutor } from '../../src/adapters/mysql/QueryRunner';
-import type { TransactionScope } from '../../src/adapters/mysql/UnitOfWork';
+/*
+ * ⚠️ THE TWO BOUNDED-READ HELPERS ARE IMPORTED FROM THE ADAPTER LAYER ON PURPOSE, AND THAT IS THE ONE
+ * PLACE THIS FILE REACHES FOR ADAPTER BEHAVIOUR RATHER THAN REPLACING IT.
+ *
+ * Neither helper touches a database, composes statement text or knows what a row is:
+ * `prepareBoundedRead` validates a window and derives `limit + 1`, and `settleBoundedRead` splits a
+ * probe result into rows plus a `hasMore` verdict. Re-deriving them here would let a double accept a
+ * window the real adapter refuses, or report `hasMore` from a full window instead of from an observed
+ * extra row — and a test asserting either would be asserting fiction. Sharing the two functions makes
+ * the window semantics of every double identical to production by construction.
+ *
+ * Everything else about these doubles remains a substitute for the adapter, not a wrapper over it.
+ */
+import { prepareBoundedRead, settleBoundedRead } from '../../src/adapters/mysql/QueryRunner';
+import type {
+  TransactionalSqlExecutor,
+  TransactionScope,
+} from '../../src/adapters/mysql/UnitOfWork';
 import type {
   ProductDefaultSkuDelegate,
   ProductSkuMember,
@@ -100,7 +121,6 @@ import type {
   PopulationAuthorizationPort,
 } from '../../src/ports/AccountContextPort';
 import type {
-  ImageFileNameCandidate,
   ImagePathPort,
   ImageWebPath,
   ResizedImagePathRequest,
@@ -113,10 +133,14 @@ import type {
 } from '../../src/ports/PricingPort';
 import type {
   AttributeSetRow,
-  ProductImportSource,
+  ProductImportOptions,
   ProductRepository,
   ProductSearchRow,
 } from '../../src/ports/repositories/ProductRepository';
+import type {
+  BoundedReadResult,
+  BoundedReadWindow,
+} from '../../src/ports/repositories/BoundedRead';
 import type { BrandRepository, ManagedBrand } from '../../src/ports/repositories/BrandRepository';
 import type {
   OptionRepository,
@@ -142,7 +166,9 @@ import type {
 import type {
   SmartListQuery,
   SmartListQueryPort,
+  SmartListRecord,
   SmartListResult,
+  SmartListRootEntityName,
 } from '../../src/ports/SmartListQueryPort';
 import type {
   SubscriptionBenefitReference,
@@ -150,6 +176,9 @@ import type {
   SubscriptionTermReference,
 } from '../../src/ports/SubscriptionTermPort';
 import type { UniquePropertyEntity, UniquePropertyPort } from '../../src/ports/UniquePropertyPort';
+import { toExactDecimal, type ExactDecimal } from '../../src/util/formatting';
+import { createSlatwallUUID } from '../../src/util/uuid';
+import { applyPreInsertAudit, applyPreUpdateAudit } from '../../src/domain/base/AuditableEntity';
 import type {
   EntityCommentCleanupPort,
   EntityPersister,
@@ -203,15 +232,34 @@ function splitIdentifierList(list: string): readonly string[] {
  * ---------------------------------------------------------------------------------------------------
  * 1. The recording SQL executor seam.
  *
- * `src/adapters/mysql/QueryRunner.ts` declares `SqlExecutor` as the ONE interface every repository
- * adapter depends on, deliberately narrower than the concrete `QueryRunner` class. Repositories take
- * the interface, so a test can hand them this double and assert the exact statement text and the exact
- * positional parameter array — which is how AAP §0.7.3 S2 (parameterised SQL) is proved rather than
- * asserted.
+ * `src/adapters/mysql/QueryRunner.ts` declares the TWO execution interfaces every repository adapter
+ * depends on, both deliberately narrower than the concrete `QueryRunner` class: `SqlExecutor`, whose
+ * single `execute` member reads, and `SqlMutationExecutor`, which extends it with `executeMutation` for
+ * the three repositories that also write. Repositories take an interface rather than the class, so a
+ * test can hand them this double and assert the exact statement text and the exact positional parameter
+ * array — which is how AAP §0.7.3 S2 (parameterised SQL) is proved rather than asserted.
+ *
+ * ⭐ THE DOUBLE PUBLISHES THE WIDER OF THE TWO, AND ONE CALL LIST COVERS BOTH MEMBERS. Any read-and-write
+ * executor is assignable wherever a plain `SqlExecutor` is wanted, so one double serves a read-only
+ * repository, a writing repository and the transaction scope of §13 without a second factory.
+ *
+ * ⚠️ THE NAME IT PUBLISHES IS `UnitOfWork`'s `TransactionalSqlExecutor`, NOT `QueryRunner`'s
+ * `SqlMutationExecutor`, AND THE TWO ARE STRUCTURALLY IDENTICAL — each extends `SqlExecutor` with one
+ * `executeMutation`. The choice follows production rather than taste: `UnitOfWork.runWithoutTransaction`
+ * declares its callback parameter as `TransactionalSqlExecutor`, and §13's runner double mirrors
+ * production signatures exactly so a half-matching call cannot typecheck here and fail there.
+ * Reads and writes append to the SAME {@link SqlExecutorCall} list in issue order, which is the whole
+ * point for AAP §0.6.2: the property worth pinning is that an insert is issued BEFORE the uniqueness
+ * read that has to observe it, and two separate lists could not express that ordering at all.
  *
  * There is deliberately NO transaction member here. Transaction demarcation belongs to
- * `UnitOfWork` (§14 below); inventing `begin`/`commit` on the executor would fabricate a contract the
- * real seam does not have.
+ * `UnitOfWork` (§13 below); inventing `begin`/`commit` on the executor would fabricate a contract the
+ * real seam does not have — the production interface declares exactly two members and commits nothing.
+ * The executor DOES carry a mutation member, because the real one does: a
+ * transaction scope publishes `TransactionalSqlExecutor` (`src/adapters/mysql/UnitOfWork.ts`, reached
+ * through `TransactionScope.executor`), and every legacy case a boundary exists for writes
+ * inside it. Reading and writing is capability; beginning and committing is authority, and only the
+ * first belongs on an executor.
  * ---------------------------------------------------------------------------------------------------
  */
 
@@ -229,11 +277,41 @@ export interface SqlExecutorCall {
  */
 export type SqlExecutorOutcome =
   | { readonly kind: 'rows'; readonly rows: readonly MySqlRow[] }
+  | { readonly kind: 'affectedRows'; readonly affectedRows: number }
   | { readonly kind: 'failure'; readonly failure: Error };
 
 /** Build a row outcome. Exported so a test never has to spell the discriminant. */
 export function sqlRows(rows: readonly MySqlRow[]): SqlExecutorOutcome {
   return Object.freeze({ kind: 'rows', rows: Object.freeze([...rows]) });
+}
+
+/**
+ * Build a write-acknowledgement outcome.
+ *
+ * The write counterpart of {@link sqlRows}, and a distinct discriminant rather than a row count
+ * smuggled into a row list, because the real seam narrows the two answers differently: a read goes
+ * through the row-list narrowing and a write through the affected-row acknowledgement reader
+ * (`src/adapters/mysql/QueryRunner.ts`). Encoding a write as rows would let a test pass against a
+ * repository that had routed a write down the read path.
+ */
+export function sqlAffectedRows(affectedRows: number): SqlExecutorOutcome {
+  /*
+   * ⚠️ ZERO IS MEANINGFUL AND REACHABLE; NEGATIVE AND FRACTIONAL ARE NEITHER. `sqlAffectedRows(0)` seeds
+   * "the statement matched nothing", which is a branch production really takes — `MySqlBrandRepository`'s
+   * delete answers `removedRows > 0` — so the guard admits it deliberately. A negative or fractional
+   * count is refused because a count of rows cannot be either, and because the production narrowing at
+   * `src/adapters/mysql/QueryRunner.ts` rejects the same shape rather than coercing it: a double that
+   * accepted what production refuses would let a test pass against an impossible driver answer.
+   */
+  if (!Number.isInteger(affectedRows) || affectedRows < 0) {
+    throw new DomainError(
+      'A queued write acknowledgement must carry a whole, non-negative affected-row count, because ' +
+        'that is the only shape the production narrowing accepts.',
+      { context: { affectedRows } },
+    );
+  }
+
+  return Object.freeze({ kind: 'affectedRows', affectedRows });
 }
 
 /** Build a failure outcome. */
@@ -259,8 +337,14 @@ export interface SqlExecutorDoubleOptions {
 
 /** The executor plus its factory-local observation state. */
 export interface SqlExecutorDouble {
-  /** The seam itself — pass this wherever a repository adapter wants its executor. */
-  readonly executor: SqlExecutor;
+  /**
+   * The seam itself — pass this wherever a repository adapter wants its executor.
+   *
+   * Typed as the mutation-capable `TransactionalSqlExecutor` so it satisfies every executor seam in the
+   * subtree at once: `SqlExecutor`, the three per-adapter `*StatementExecutor` interfaces, and the scope
+   * executor a `UnitOfWork` boundary hands out. One double, every seam.
+   */
+  readonly executor: TransactionalSqlExecutor;
   /** Every call, in issue order. Live view of factory-local state; frozen element by element. */
   readonly calls: readonly SqlExecutorCall[];
   /** Append further outcomes to the tail of the queue. */
@@ -294,13 +378,25 @@ export function createSqlExecutorDouble(options: SqlExecutorDoubleOptions = {}):
   const queue: SqlExecutorOutcome[] = options.outcomes === undefined ? [] : [...options.outcomes];
   const respond = options.respond;
 
-  const executor: SqlExecutor = {
-    execute: (sql: string, params: readonly unknown[]): Promise<MySqlRow[]> => {
-      const call: SqlExecutorCall = Object.freeze({ sql, params: snapshotParams(params) });
-      calls.push(call);
+  /**
+   * Record the call and decide its outcome, for both members.
+   *
+   * One recording path so a test reading `calls` sees reads and writes interleaved in the exact order
+   * the repository issued them — which for the importer IS the assertion, because the row's lookups
+   * and the row's writes have to sit inside the same transaction in the legacy order.
+   */
+  const answer = (sql: string, params: readonly unknown[]): SqlExecutorOutcome | undefined => {
+    const call: SqlExecutorCall = Object.freeze({ sql, params: snapshotParams(params) });
+    calls.push(call);
 
-      const answered = respond === undefined ? undefined : respond(call);
-      const outcome = answered ?? queue.shift();
+    const answered = respond === undefined ? undefined : respond(call);
+
+    return answered ?? queue.shift();
+  };
+
+  const executor: TransactionalSqlExecutor = {
+    execute: (sql: string, params: readonly unknown[]): Promise<MySqlRow[]> => {
+      const outcome = answer(sql, params);
 
       if (outcome === undefined) {
         return Promise.resolve([]);
@@ -308,7 +404,44 @@ export function createSqlExecutorDouble(options: SqlExecutorDoubleOptions = {}):
       if (outcome.kind === 'failure') {
         return Promise.reject(outcome.failure);
       }
+      if (outcome.kind === 'affectedRows') {
+        return Promise.reject(
+          new DataIntegrityError(
+            'A read statement was answered with a write acknowledgement, so the double refused it ' +
+              'rather than reporting no rows.',
+            { context: { sql, affectedRows: outcome.affectedRows } },
+          ),
+        );
+      }
       return Promise.resolve([...outcome.rows]);
+    },
+
+    /*
+     * The write member. An UNCONFIGURED write answers `0`, exactly parallel to an unconfigured read
+     * answering `[]`: the double did nothing, and says so, rather than manufacturing a plausible `1`
+     * that would mask a statement matching no row. A queued ROW outcome is refused for the mirror of
+     * the reason a queued write outcome is refused on the read path — the real seam narrows a write
+     * through the affected-row acknowledgement reader and would raise on a list of rows.
+     */
+    executeMutation: (sql: string, params: readonly unknown[]): Promise<number> => {
+      const outcome = answer(sql, params);
+
+      if (outcome === undefined) {
+        return Promise.resolve(0);
+      }
+      if (outcome.kind === 'failure') {
+        return Promise.reject(outcome.failure);
+      }
+      if (outcome.kind === 'rows') {
+        return Promise.reject(
+          new DataIntegrityError(
+            'A writing statement was answered with rows, so the double refused it rather than ' +
+              'reporting an affected-row count it had not been given.',
+            { context: { sql, rowCount: outcome.rows.length } },
+          ),
+        );
+      }
+      return Promise.resolve(outcome.affectedRows);
     },
   };
 
@@ -643,9 +776,18 @@ export function buildProduct(seed: ProductSeed = {}): Product {
 export interface SkuSeed {
   readonly skuID?: string;
   readonly skuCode?: string;
-  readonly price?: number;
-  readonly listPrice?: number;
-  readonly renewalPrice?: number;
+  /* F07 — THE THREE MONETARY SEEDS ACCEPT EITHER A NUMBER OR EXACT DECIMAL TEXT, and {@link buildSku}
+   * coerces whichever arrives with `toExactDecimal`, because the entity fields are `ExactDecimal`.
+   *
+   * ⚠️ A NUMERIC LITERAL IS STILL A DOUBLE, and that is the caller's choice rather than a defect in this
+   * helper: `price: 9007199254740993.01` has already been rounded by the JavaScript parser before this
+   * object exists, so it is recorded as the double it became. A test that means to exercise exactness must
+   * write the value as TEXT — `price: '9007199254740993.01'` — which is precisely the discrimination F07
+   * turns on, and which is why the string form is admitted rather than forcing every existing numeric
+   * call site to change. */
+  readonly price?: number | string;
+  readonly listPrice?: number | string;
+  readonly renewalPrice?: number | string;
   readonly activeFlag?: boolean;
   readonly imageFile?: string;
   readonly userDefinedPriceFlag?: boolean;
@@ -692,13 +834,13 @@ export function buildSku(seed: SkuSeed = {}): Sku {
     sku.skuCode = seed.skuCode;
   }
   if (seed.price !== undefined) {
-    sku.price = seed.price;
+    sku.price = toExactDecimal(seed.price);
   }
   if (seed.listPrice !== undefined) {
-    sku.listPrice = seed.listPrice;
+    sku.listPrice = toExactDecimal(seed.listPrice);
   }
   if (seed.renewalPrice !== undefined) {
-    sku.renewalPrice = seed.renewalPrice;
+    sku.renewalPrice = toExactDecimal(seed.renewalPrice);
   }
   if (seed.activeFlag !== undefined) {
     sku.activeFlag = seed.activeFlag;
@@ -762,9 +904,11 @@ export function createDefaultSkuDelegate(
   options: DefaultSkuDelegateOptions = {},
 ): ProductDefaultSkuDelegate {
   return {
-    getPrice: (): number => sku.getPrice(),
-    getListPrice: (): number => sku.getListPrice(),
-    getRenewalPrice: (): number => sku.getRenewalPrice(),
+    /* F07 — the three monetary delegations are `ExactDecimal`, matching both the SKU's fields and the
+     * delegate contract in `../../src/domain/product/Product.ts`. */
+    getPrice: (): ExactDecimal => sku.getPrice(),
+    getListPrice: (): ExactDecimal => sku.getListPrice(),
+    getRenewalPrice: (): ExactDecimal => sku.getRenewalPrice(),
     getCurrencyCode: (): string | undefined => options.currencyCode,
     getImageDirectory: (): string => options.imageDirectory ?? '',
     getImagePath: (): string => options.imagePath ?? '',
@@ -895,6 +1039,12 @@ export type SkuRepositoryCall =
       readonly term: string | undefined;
       readonly productTypeID: string | undefined;
     }
+  | {
+      readonly member: 'searchByProductTypeBounded';
+      readonly window: BoundedReadWindow;
+      readonly term: string | undefined;
+      readonly productTypeID: string | undefined;
+    }
   | { readonly member: 'findByProduct'; readonly productID: string; readonly fetchOptions: boolean }
   | { readonly member: 'findSortedSkuIdsByProduct'; readonly productID: string }
   | { readonly member: 'clearOptionGroupSortOrderCache' }
@@ -902,6 +1052,19 @@ export type SkuRepositoryCall =
 
 /** Seed configuration for {@link createInMemorySkuRepository}. */
 export interface InMemorySkuRepositoryOptions {
+  /**
+   * The acting account the write seam stamps into the audit block, or omitted for none.
+   *
+   * ⚠️ MIRRORS THE ADAPTER, WHICH MIRRORS THE LEGACY FLUSH. Hibernate fired `preInsert`/`preUpdate`
+   * during the request-end flush (`org/Hibachi/Hibachi.cfc`); the port has no ORM session and no flush
+   * (mismatch M5), so each MySQL write seam calls the stamping functions in
+   * `src/domain/base/AuditableEntity.ts` itself, resolving the actor from `AccountContextPort`. A double
+   * that skipped the stamp would let a test observe absent audit fields where production writes
+   * timestamps. Omitting this option models an UNAUTHENTICATED request, which is a legitimate legacy
+   * state: both timestamps are still stamped and both account foreign keys are left absent.
+   */
+  readonly auditActor?: AccountReference;
+
   /** The stored SKUs. Real entities, carrying their real `options` and `product` links. */
   readonly skus?: readonly Sku[];
   readonly alternateSkuCodes?: readonly AlternateSkuCodeSeed[];
@@ -1177,6 +1340,36 @@ export function createInMemorySkuRepository(
     },
 
     /*
+     * The windowed form. It DELEGATES to the unbounded member above rather than re-filtering, so the two
+     * cannot disagree about the match set — a double whose bounded answer is not a slice of its own
+     * unbounded answer would be worse than no double at all.
+     *
+     * The window is then applied with the SAME two helpers the real adapter uses, so an unusable window
+     * is refused here exactly as it is there, and `hasMore` is derived from an observed extra row rather
+     * than from a full window.
+     *
+     * The unbounded delegate records its own call, so `calls` shows BOTH members: the bounded entry
+     * first, then the unbounded one it used. That is a property of the double, not of production, and a
+     * test asserting call sequence should expect it.
+     */
+    searchByProductTypeBounded: async (
+      window: BoundedReadWindow,
+      term?: string,
+      productTypeID?: string,
+    ): Promise<BoundedReadResult<SkuSearchRow>> => {
+      calls.push(
+        Object.freeze({ member: 'searchByProductTypeBounded', window, term, productTypeID }),
+      );
+      const bound = prepareBoundedRead(window, 'InMemorySkuRepository.searchByProductTypeBounded');
+      const all = await repository.searchByProductType(term, productTypeID);
+
+      return settleBoundedRead(
+        all.slice(bound.offset, bound.offset + bound.probeLimit),
+        bound.limit,
+      );
+    },
+
+    /*
      * `model/dao/SkuDAO.cfc:L150-L168`.
      *
      * D9, carried not repaired: the DAO declares `fetchOptions` as `required any` at `:L150` and then
@@ -1199,13 +1392,25 @@ export function createInMemorySkuRepository(
         return candidates;
       }
       const baseProductType = await product.getBaseProductType(productTypeRootResolver);
-      if (baseProductType === SEEDED_PRODUCT_TYPES_BY_SYSTEM_CODE.contentAccess.systemCode) {
+      /*
+       * Recognition folds case, matching CFML `==` at `model/dao/SkuDAO.cfc:L154-L161` and the real
+       * adapter. A double that compared with `===` would pass while the adapter it stands for failed on
+       * a differently-cased `systemCode`, which is the one thing a double must never do.
+       */
+      const recognisedBaseProductType = resolveBaseProductType(baseProductType);
+      if (
+        recognisedBaseProductType === SEEDED_PRODUCT_TYPES_BY_SYSTEM_CODE.contentAccess.systemCode
+      ) {
         return candidates.filter((sku) => sku.accessContents.length > 0);
       }
-      if (baseProductType === SEEDED_PRODUCT_TYPES_BY_SYSTEM_CODE.merchandise.systemCode) {
+      if (
+        recognisedBaseProductType === SEEDED_PRODUCT_TYPES_BY_SYSTEM_CODE.merchandise.systemCode
+      ) {
         return candidates.filter((sku) => sku.options.length > 0);
       }
-      if (baseProductType === SEEDED_PRODUCT_TYPES_BY_SYSTEM_CODE.subscription.systemCode) {
+      if (
+        recognisedBaseProductType === SEEDED_PRODUCT_TYPES_BY_SYSTEM_CODE.subscription.systemCode
+      ) {
         return candidates.filter(
           (sku) => sku.subscriptionTerm !== undefined && sku.subscriptionBenefits.length > 0,
         );
@@ -1289,9 +1494,19 @@ export function createInMemorySkuRepository(
     },
 
     /*
-     * The write seam the combination engine drives. `src/adapters/mysql/MySqlSkuRepository.ts` refuses a
-     * SKU with no identifier — it upserts by primary key and then re-links the option rows, neither of
-     * which is possible without one — so this double refuses too.
+     * The write seam the combination engine drives. `src/adapters/mysql/MySqlSkuRepository.ts` GENERATES
+     * the identifier on its insert branch — `model/entity/Sku.cfc:L52` declares
+     * `fieldtype="id" generator="uuid"`, an instruction to the mapping layer to produce the value at
+     * save time, and the legacy generator lives in the data-access layer at `model/dao/HibachiDAO.cfc`
+     * — so this double generates too, with the same `createSlatwallUUID` the adapter uses.
+     *
+     * ⚠️ THE PARITY HERE IS LOAD-BEARING, AND AN EARLIER REVISION GOT IT WRONG IN BOTH PLACES AT ONCE.
+     * This double previously refused a transient SKU because the adapter did. When the adapter's refusal
+     * was corrected — it had made every SKU-creation path unreachable, since nothing above the port
+     * assigns an identifier — a double left refusing would have been STRICTER THAN PRODUCTION, and the
+     * M6 tests below could never have been written. A test double that diverges from its adapter is
+     * worse than no double: it reports a pass for a path production cannot run, which is precisely the
+     * failure mode this file has to avoid.
      *
      * M6 lives here. The upsert lands in the SAME array `findSkusBySelectedOptions` reads, so a SKU
      * persisted inside a transaction becomes visible to the NEXT sibling's uniqueness read in creation
@@ -1301,13 +1516,23 @@ export function createInMemorySkuRepository(
      */
     persistSku: (sku: Sku): Promise<void> => {
       calls.push(Object.freeze({ member: 'persistSku', sku }));
+      /* Mirrors the adapter's insert branch: generate only while the entity is transient, so an
+       * upsert keeps the identifier its stored row is keyed on. */
       if (sku.isNew()) {
-        return Promise.reject(
-          new DomainError(
-            'A SKU cannot be persisted without a primary identifier: the write is an upsert keyed on ' +
-              'it, and the option links are re-established against it.',
-          ),
-        );
+        sku.skuID = createSlatwallUUID();
+      }
+      /*
+       * The audit stamp, mirroring the adapter. `model/entity/Sku.cfc` does not override the ORM hooks,
+       * so a SKU only ever received the framework block — hence the free functions rather than a method
+       * on the entity. The adapter chooses the branch from an existence PROBE rather than `isNew()`,
+       * because the combination engine can hand the same entity back on a later pass; this double has the
+       * stored list in hand, so it asks the same question of that list.
+       */
+      const skuRowAlreadyExists = skus.some((candidate) => candidate.skuID === sku.skuID);
+      if (skuRowAlreadyExists) {
+        applyPreUpdateAudit(sku, options.auditActor);
+      } else {
+        applyPreInsertAudit(sku, options.auditActor);
       }
       persisted.push(sku);
       const existingIndex = skus.findIndex((candidate) => candidate.skuID === sku.skuID);
@@ -1347,23 +1572,34 @@ export function createInMemorySkuRepository(
 }
 
 /**
- * Adapt a {@link SkuRepository} to the SKU-first service surface
+ * Adapt a {@link SkuRepository} to the caller-ordered checker surface
  * {@link SkuTransactionExistenceChecker}, which is what `Sku.getTransactionExistsFlag` and
  * `Product.getTransactionExistsFlag` are handed.
  *
- * This exists to make the D23 layer-order reversal assertable in one place rather than re-derived in
- * every test. The service surface is `(skuID?, productID?)` and the repository surface is
- * `(productID?, skuID?)`; the forwarding below is the ONLY correct mapping, and a test that swaps it
- * will see the identifiers exchanged. `src/domain/product/Product.ts` declares the structurally
- * identical `ProductTransactionExistenceChecker`, so the same object serves both entities.
+ * ⭐ IT NOW DELEGATES TO THE PRODUCTION CROSSING RATHER THAN RESTATING IT, AND THAT IS THE POINT OF THE
+ * CHANGE. This helper once carried the ONLY correct `(skuID?, productID?)` → `(productID?, skuID?)`
+ * mapping in the whole subtree, which meant the tests exercised a crossing that production did not
+ * have: any real wiring had to invent its own, and the only collaborator structurally available to
+ * invent it with — the zero-argument `SkuService.getTransactionExistsFlag` — discarded both identifiers
+ * silently. `createProductionTransactionExistenceChecker` in
+ * `src/adapters/mysql/MySqlSkuRepository.ts` is that crossing, owned by the layer that declares the
+ * repository order it inverts. Re-exporting it through this name keeps every existing call site
+ * unchanged while guaranteeing that what the tests assert is what production runs — a second local copy
+ * could drift from it and no test would notice.
+ *
+ * The argument order is documented at the production factory. The one-line summary: the checker surface
+ * is `(skuID?, productID?)` because `model/entity/Sku.cfc:L594` and `model/entity/Product.cfc:L626` read
+ * that way, the repository surface is `(productID?, skuID?)` because `model/dao/SkuDAO.cfc:L54-L55`
+ * declares that way, and both identifiers are 32-character strings so a swap type-checks.
+ *
+ * @param repository - Any repository implementation; the double from
+ *   {@link createInMemorySkuRepository} is the usual argument.
+ * @returns A checker satisfying BOTH entity contracts, so one instance serves `Sku` and `Product`.
  */
 export function createTransactionExistenceChecker(
   repository: SkuRepository,
 ): SkuTransactionExistenceChecker {
-  return {
-    getTransactionExistsFlag: (skuID?: string, productID?: string): Promise<boolean> =>
-      repository.transactionExists(productID, skuID),
-  };
+  return createProductionTransactionExistenceChecker(repository);
 }
 
 /*
@@ -1394,7 +1630,18 @@ export type OptionRepositoryCall =
       readonly productID: string;
       readonly existingOptionGroupIDList: string;
     }
-  | { readonly member: 'findUnusedOptionGroups'; readonly existingOptionGroupIDList: string };
+  | { readonly member: 'findUnusedOptionGroups'; readonly existingOptionGroupIDList: string }
+  | {
+      readonly member: 'findUnusedOptionsBounded';
+      readonly window: BoundedReadWindow;
+      readonly productID: string;
+      readonly existingOptionGroupIDList: string;
+    }
+  | {
+      readonly member: 'findUnusedOptionGroupsBounded';
+      readonly window: BoundedReadWindow;
+      readonly existingOptionGroupIDList: string;
+    };
 
 /** Seed configuration for {@link createInMemoryOptionRepository}. */
 export interface InMemoryOptionRepositoryOptions {
@@ -1514,6 +1761,33 @@ export function createInMemoryOptionRepository(
     },
 
     /*
+     * The windowed form, delegating to the unbounded member so the IN polarity, the correlated usage
+     * exclusion, the label format and the two-term ordering are decided in exactly one place. The window
+     * is applied with the production helpers, so validation and the `hasMore` verdict match the adapter.
+     */
+    findUnusedOptionsBounded: async (
+      window: BoundedReadWindow,
+      productID: string,
+      existingOptionGroupIDList: string,
+    ): Promise<BoundedReadResult<UnusedOptionRow>> => {
+      calls.push(
+        Object.freeze({
+          member: 'findUnusedOptionsBounded',
+          window,
+          productID,
+          existingOptionGroupIDList,
+        }),
+      );
+      const bound = prepareBoundedRead(window, 'InMemoryOptionRepository.findUnusedOptionsBounded');
+      const all = await repository.findUnusedOptions(productID, existingOptionGroupIDList);
+
+      return settleBoundedRead(
+        all.slice(bound.offset, bound.offset + bound.probeLimit),
+        bound.limit,
+      );
+    },
+
+    /*
      * `model/dao/OptionDAO.cfc:L93-L116`. `optionGroupID` NOT IN the supplied list, ordered by name, and
      * the label is the BARE group name — no prefix, no separator. The row type is kept distinct from
      * {@link UnusedOptionRow} even though the two are structurally identical, because the port declares
@@ -1535,6 +1809,36 @@ export function createInMemoryOptionRepository(
         }),
       );
       return Promise.resolve(rows);
+    },
+
+    /*
+     * The windowed form, delegating to the unbounded member so the NOT-IN polarity stays decided in one
+     * place. This is the pair's asymmetric case: for an empty list the unbounded member yields EVERY
+     * group, so a window here returns the first page of the whole table and reports `hasMore` — which is
+     * exactly the behaviour a caller needs, and exactly what capping the unbounded member would have
+     * hidden.
+     */
+    findUnusedOptionGroupsBounded: async (
+      window: BoundedReadWindow,
+      existingOptionGroupIDList: string,
+    ): Promise<BoundedReadResult<UnusedOptionGroupRow>> => {
+      calls.push(
+        Object.freeze({
+          member: 'findUnusedOptionGroupsBounded',
+          window,
+          existingOptionGroupIDList,
+        }),
+      );
+      const bound = prepareBoundedRead(
+        window,
+        'InMemoryOptionRepository.findUnusedOptionGroupsBounded',
+      );
+      const all = await repository.findUnusedOptionGroups(existingOptionGroupIDList);
+
+      return settleBoundedRead(
+        all.slice(bound.offset, bound.offset + bound.probeLimit),
+        bound.limit,
+      );
     },
   };
 
@@ -1570,13 +1874,45 @@ export type ProductRepositoryCall =
     }
   | {
       readonly member: 'importFromFile';
-      readonly source: ProductImportSource;
+      /**
+       * The location, recorded verbatim as a plain `string`.
+       *
+       * An earlier revision typed this as a branded `ProductImportSource`, which obliged every test to
+       * mint an approved value before it could record a call. That brand is withdrawn — the port takes
+       * an unchecked `string` because `model/dao/ProductDAO.cfc:L73-L87` checks nothing — so the double
+       * records what the port receives.
+       */
+      readonly fileURL: string;
       readonly textQualifier: string | undefined;
+      /** The invocation-scoped controls the caller supplied, recorded verbatim and never interpreted. */
+      readonly options: ProductImportOptions | undefined;
+    }
+  | {
+      /** The two whole-catalog back-fills, invoked as their own step rather than as the import's tail. */
+      readonly member: 'backfillImportDerivedColumns';
     }
   | {
       readonly member: 'searchByProductType';
       readonly term: string | undefined;
       readonly productTypeIDs: string | undefined;
+    }
+  | {
+      readonly member: 'searchByProductTypeBounded';
+      readonly window: BoundedReadWindow;
+      readonly term: string | undefined;
+      readonly productTypeIDs: string | undefined;
+    }
+  | {
+      /** F03 — the product write seam. Recorded so a test can observe write ORDER, which is load-bearing. */
+      readonly member: 'saveProduct';
+      readonly productID: string;
+      /** `true` when the call took the INSERT branch, i.e. the entity was transient on arrival. */
+      readonly inserted: boolean;
+    }
+  | {
+      /** F03 — the product removal seam. */
+      readonly member: 'removeProduct';
+      readonly productID: string;
     };
 
 /**
@@ -1587,12 +1923,26 @@ export type ProductRepositoryCall =
  * observable without parsing anything.
  */
 export type ProductImportHandler = (
-  source: ProductImportSource,
+  fileURL: string,
   textQualifier: string | undefined,
+  options: ProductImportOptions | undefined,
 ) => Promise<void>;
 
 /** Seed configuration for {@link createInMemoryProductRepository}. */
 export interface InMemoryProductRepositoryOptions {
+  /**
+   * The acting account the write seam stamps into the audit block, or omitted for none.
+   *
+   * ⚠️ MIRRORS THE ADAPTER, WHICH MIRRORS THE LEGACY FLUSH. Hibernate fired `preInsert`/`preUpdate`
+   * during the request-end flush (`org/Hibachi/Hibachi.cfc`); the port has no ORM session and no flush
+   * (mismatch M5), so each MySQL write seam calls the stamping functions in
+   * `src/domain/base/AuditableEntity.ts` itself, resolving the actor from `AccountContextPort`. A double
+   * that skipped the stamp would let a test observe absent audit fields where production writes
+   * timestamps. Omitting this option models an UNAUTHENTICATED request, which is a legitimate legacy
+   * state: both timestamps are still stamped and both account foreign keys are left absent.
+   */
+  readonly auditActor?: AccountReference;
+
   /**
    * Returned verbatim by `findAttributeSets`. The port types a row as `unknown` on purpose: the
    * Attribute family is out of scope, so the rows stay opaque and no attribute domain type is invented.
@@ -1608,6 +1958,10 @@ export interface InMemoryProductRepository {
   readonly repository: ProductRepository;
   readonly calls: readonly ProductRepositoryCall[];
   addProduct(product: Product): void;
+  /** Every product handed to `saveProduct`, BY REFERENCE and in write order (F03/F04). */
+  readonly saved: readonly Product[];
+  /** Every product handed to `removeProduct`, BY REFERENCE and in call order (F03). */
+  readonly removed: readonly Product[];
 }
 
 /**
@@ -1644,6 +1998,8 @@ export function createInMemoryProductRepository(
     options.attributeSets === undefined ? [] : [...options.attributeSets];
   const products: Product[] = options.products === undefined ? [] : [...options.products];
   const calls: ProductRepositoryCall[] = [];
+  const saved: Product[] = [];
+  const removed: Product[] = [];
   const onImport = options.onImport;
 
   const repository: ProductRepository = {
@@ -1661,17 +2017,39 @@ export function createInMemoryProductRepository(
       return Promise.resolve([...attributeSets]);
     },
 
-    importFromFile: (source: ProductImportSource, textQualifier?: string): Promise<void> => {
-      calls.push(Object.freeze({ member: 'importFromFile', source, textQualifier }));
+    importFromFile: (
+      fileURL: string,
+      textQualifier?: string,
+      options?: ProductImportOptions,
+    ): Promise<void> => {
+      calls.push(Object.freeze({ member: 'importFromFile', fileURL, textQualifier, options }));
       /*
        * The port returns `Promise<void>` and reports nothing about what it imported, so this double
        * reports nothing either. Everything a test wants to observe about the import lives in the handler
        * it supplied and in the UnitOfWork double the handler drives.
+       *
+       * The options object is RECORDED AND FORWARDED, never interpreted. Whether a caller cancelled or
+       * deferred the back-fills is exactly the kind of thing a handler test needs to assert on, and
+       * deciding it here instead would make the double the authority on a contract the adapter owns.
        */
       if (onImport === undefined) {
         return Promise.resolve();
       }
-      return onImport(source, textQualifier);
+      return onImport(fileURL, textQualifier, options);
+    },
+
+    /*
+     * The two whole-catalog back-fills, as their own invocable step.
+     *
+     * It records the call and does nothing else, deliberately: the statements it stands for are
+     * `model/dao/ProductDAO.cfc:L288-L302` and `:L304-L325`, both UNTRANSACTED bulk `UPDATE`s over the
+     * entire catalog, and this double holds no catalog to update. What a test can assert is exactly what
+     * matters for the finding it resolves — that a deferring workflow invoked it once, at the end, rather
+     * than once per chunk.
+     */
+    backfillImportDerivedColumns: (): Promise<void> => {
+      calls.push(Object.freeze({ member: 'backfillImportDerivedColumns' }));
+      return Promise.resolve();
     },
 
     searchByProductType: (term?: string, productTypeIDs?: string): Promise<ProductSearchRow[]> => {
@@ -1705,11 +2083,111 @@ export function createInMemoryProductRepository(
       }
       return Promise.resolve(rows);
     },
+
+    /*
+     * The windowed form, delegating to the unbounded member so the looser `len()` gate — which ACCEPTS a
+     * whitespace-only product-type list, unlike the SKU side — stays decided in one place. The window is
+     * applied with the production helpers, so validation and the `hasMore` verdict match the adapter.
+     */
+    searchByProductTypeBounded: async (
+      window: BoundedReadWindow,
+      term?: string,
+      productTypeIDs?: string,
+    ): Promise<BoundedReadResult<ProductSearchRow>> => {
+      calls.push(
+        Object.freeze({ member: 'searchByProductTypeBounded', window, term, productTypeIDs }),
+      );
+      const bound = prepareBoundedRead(
+        window,
+        'InMemoryProductRepository.searchByProductTypeBounded',
+      );
+      const all = await repository.searchByProductType(term, productTypeIDs);
+
+      return settleBoundedRead(
+        all.slice(bound.offset, bound.offset + bound.probeLimit),
+        bound.limit,
+      );
+    },
+
+    /*
+     * F03 — the product write seam that `ProductService.saveProduct` reaches through. It mirrors
+     * `src/adapters/mysql/MySqlProductRepository.saveProduct`: the identifier is generated ONLY while the
+     * entity is transient, because `model/entity/Product.cfc:L52` declares
+     * `fieldtype="id" generator="uuid" ormtype="string" length="32"` and the legacy generator lives in
+     * the data-access layer at `model/dao/HibachiDAO.cfc` (IR-6, AAP §0.4.1.11).
+     *
+     * ⚠️ THE MIRROR IS DELIBERATE AND HAS TO BE MAINTAINED. A double more permissive than its adapter
+     * reports a pass for a path production cannot execute; a double stricter than its adapter makes a
+     * legitimate path untestable. Both have already happened once in this file, on the SKU write.
+     *
+     * ⭐ IDEMPOTENT BY DESIGN, BECAUSE THE CIRCULAR FOREIGN KEY FORCES A SECOND CALL.
+     * `model/entity/Product.cfc:L71` points a product at its default SKU while
+     * `model/entity/Sku.cfc:L65` points every SKU back at its product, so a new product's first write
+     * cannot carry `defaultSkuID` — the SKU row does not exist yet. The write order is therefore
+     * product, then SKUs, then the SAME product again to set the back-reference. Deciding the branch
+     * from `isNew()` rather than from a probe is what makes the second call an UPDATE instead of a
+     * duplicate INSERT, and the adapter decides it the same way for the same reason.
+     *
+     * ⛔ NOTHING IS COMMITTED HERE AND NOTHING IS VALIDATED HERE, because the adapter does neither. The
+     * delete guards in `model/validation/Product.json` and the error gate both live above this seam.
+     *
+     * The saved entity is appended to the searchable list so a later `searchByProductType` observes it,
+     * matching the adapter's effect of the row becoming visible to subsequent reads on the same
+     * connection (mismatch M6, AAP §0.6.2).
+     */
+    saveProduct: (product: Product): Promise<Product> => {
+      const inserted = product.isNew();
+      if (inserted) {
+        product.productID = createSlatwallUUID();
+      }
+      /* The audit stamp, mirroring the adapter. `model/entity/Product.cfc` does not override the ORM
+       * hooks, so the framework block is invoked directly. STAMP BEFORE RECORDING, so a recorded call
+       * describes the entity as it was written. */
+      if (inserted) {
+        applyPreInsertAudit(product, options.auditActor);
+      } else {
+        applyPreUpdateAudit(product, options.auditActor);
+      }
+      calls.push(Object.freeze({ member: 'saveProduct', productID: product.productID, inserted }));
+      saved.push(product);
+      if (!products.some((candidate) => candidate.productID === product.productID)) {
+        products.push(product);
+      }
+      return Promise.resolve(product);
+    },
+
+    /*
+     * F03 — the removal seam. Refuses a transient entity exactly as the adapter does, for the same
+     * reason: a removal keyed on the empty unsaved value would compose a predicate matching nothing in a
+     * sound table and an arbitrary row in an unsound one.
+     *
+     * The adapter emits FOUR statements in a forced order — null the back-reference, drop the option
+     * links, drop the SKU rows, drop the product — because each references the row removed after it.
+     * A double holding entities rather than rows has no link table to unwind, so it records the call and
+     * forgets the product; a test that needs to observe the statement ORDER exercises the adapter
+     * against a recording executor instead, which is where that ordering is assertable.
+     */
+    removeProduct: (product: Product): Promise<void> => {
+      if (product.isNew()) {
+        return Promise.reject(
+          new DomainError('A product cannot be removed before it has been persisted.'),
+        );
+      }
+      calls.push(Object.freeze({ member: 'removeProduct', productID: product.productID }));
+      removed.push(product);
+      const existing = products.findIndex((candidate) => candidate.productID === product.productID);
+      if (existing !== -1) {
+        products.splice(existing, 1);
+      }
+      return Promise.resolve();
+    },
   };
 
   return {
     repository,
     calls,
+    saved,
+    removed,
     addProduct: (product: Product): void => {
       products.push(product);
     },
@@ -1741,40 +2219,135 @@ export interface InMemoryProductTypeRepository {
   /** How many times `findAllForTree()` was called. There is no cache, so two calls are two calls. */
   callCount(): number;
   addProductType(seed: ProductTypeTreeSeed): void;
+  /** Every product type handed to `saveProductType`, BY REFERENCE and in write order (F03). */
+  readonly saved: readonly ProductType[];
+  /** Every product type handed to `removeProductType`, BY REFERENCE and in call order (F03). */
+  readonly removed: readonly ProductType[];
+}
+
+/**
+ * Projects one seed into a tree row WITHOUT writing anything to the seed.
+ *
+ * ⭐ MIN-03 — THE SEED IS NEVER MUTATED, AND THAT IS THE WHOLE POINT OF THIS FUNCTION. An earlier
+ * revision merged `isAssigned` and `childCount` straight onto `seed.productType`, so calling
+ * `findAllForTree()` PERMANENTLY attached two projection members to an entity the test owns and shares
+ * — one call could not be undone, and a seed reused by a later case carried the previous case's counts.
+ *
+ * THE CLONE MIRRORS `mapProductTypeTreeRow` RATHER THAN INVENTING A SHAPE.
+ * `src/adapters/mysql/rowMappers.ts` hydrates a FRESH `ProductType` per row and then merges the two
+ * counts onto it; this does the same thing from a seed instead of from a `MySqlRow`. `new ProductType()`
+ * supplies the prototype, so every method the entity declares still resolves on the row — which a plain
+ * object spread would silently lose — and `Object.assign` copies the seed's own fields, so scalar state
+ * is duplicated while reference-typed state (the parent and child wiring a test built) is shared exactly
+ * as it is in the seed graph itself. Preserving that wiring was the one argument for mutating the seed,
+ * and it survives the clone untouched.
+ *
+ * ⚠️ ROW IDENTITY ACROSS CALLS IS DELIBERATELY NOT PRESERVED. Two calls yield two distinct row objects,
+ * which is precisely what the real adapter does — it hydrates per call — so a test that asserted
+ * `rows[0] === seed.productType` would have been asserting a property production never has. No consumer
+ * relies on it: a repository-wide grep finds no use of this factory or of {@link ProductTypeTreeSeed}
+ * outside this module today.
+ */
+function projectProductTypeTreeRow(seed: ProductTypeTreeSeed): ProductTypeTreeRow {
+  const projection = Object.assign(new ProductType(), seed.productType);
+
+  return Object.assign(projection, {
+    isAssigned: seed.isAssigned,
+    childCount: seed.childCount,
+  });
 }
 
 /**
  * Create the in-memory product-type repository.
  *
  * G6. The two projections are attached with `Object.assign`, exactly as
- * `src/adapters/mysql/rowMappers.ts` attaches them in `mapProductTypeTreeRow`. The difference is that
- * the adapter attaches them to a freshly hydrated entity per call while this double attaches them to the
- * SEEDED entity, so the returned rows keep their identity across calls. That is deliberate: it preserves
- * whatever parent/child wiring the test built, and the alternative — a hand-rolled clone of an entity —
- * would be invented behaviour.
+ * `src/adapters/mysql/rowMappers.ts` attaches them in `mapProductTypeTreeRow`, and — like the adapter —
+ * onto a fresh entity per call rather than onto the seed. See {@link projectProductTypeTreeRow}.
  *
  * Nothing is memoised. `findAllForTree()` is observably called every time, because the legacy DAO issues
  * the statement every time.
  */
 export function createInMemoryProductTypeRepository(
   seeds: readonly ProductTypeTreeSeed[] = [],
+  auditActor?: AccountReference,
 ): InMemoryProductTypeRepository {
   const productTypes: ProductTypeTreeSeed[] = [...seeds];
+  const saved: ProductType[] = [];
+  const removed: ProductType[] = [];
   let callCount = 0;
 
   const repository: ProductTypeRepository = {
     findAllForTree: (): Promise<ProductTypeTreeRow[]> => {
       callCount += 1;
-      const rows: ProductTypeTreeRow[] = productTypes.map((seed) =>
-        Object.assign(seed.productType, {
-          isAssigned: seed.isAssigned,
-          childCount: seed.childCount,
-        }),
-      );
+      const rows: ProductTypeTreeRow[] = productTypes.map(projectProductTypeTreeRow);
       rows.sort((left, right) =>
         (left.productTypeName ?? '').localeCompare(right.productTypeName ?? ''),
       );
       return Promise.resolve(rows);
+    },
+
+    /*
+     * F03 — the write seam `ProductService.saveProductType` reaches through
+     * `ProductTypeBaseService`. It mirrors `src/adapters/mysql/MySqlProductTypeRepository`: the
+     * identifier is generated ONLY while the entity is transient, because
+     * `model/entity/ProductType.cfc:L52` declares `fieldtype="id" generator="uuid"` and the legacy
+     * generator lives in the data-access layer at `model/dao/HibachiDAO.cfc`.
+     *
+     * ⚠️ THE MIRROR IS DELIBERATE AND HAS TO BE MAINTAINED. A double more permissive than its adapter
+     * reports a pass for a path production cannot execute; a double stricter than its adapter makes a
+     * legitimate path untestable. Both have already happened once in this file, on the SKU write.
+     *
+     * The saved entity is appended to the seeded list so a later `findAllForTree()` observes it, with
+     * both derived counts at zero: a freshly written product type has no assigned products and no
+     * children, which is what the correlated subqueries at `model/dao/ProductTypeDAO.cfc:L55-L57` would
+     * return for it.
+     */
+    saveProductType: (productType: ProductType): Promise<ProductType> => {
+      const inserted = productType.isNew();
+      if (inserted) {
+        productType.productTypeID = createSlatwallUUID();
+      }
+      /*
+       * The ENTITY'S OWN hooks, not the free stamping functions, exactly as the adapter does.
+       * `model/entity/ProductType.cfc:L305-L313` overrides both and rebuilds `productTypeIDPath` before
+       * delegating to the audit block, so calling only the audit functions would leave a re-parented
+       * product type carrying a stale ancestry path. `preUpdate`'s first parameter is Hibernate's
+       * pre-image, which nothing reads and neither the adapter nor this double has.
+       */
+      if (inserted) {
+        productType.preInsert(auditActor);
+      } else {
+        productType.preUpdate(undefined, auditActor);
+      }
+      saved.push(productType);
+      const existing = productTypes.findIndex(
+        (seed) => seed.productType.productTypeID === productType.productTypeID,
+      );
+      if (existing === -1) {
+        productTypes.push({ productType, isAssigned: 0, childCount: 0 });
+      }
+      return Promise.resolve(productType);
+    },
+
+    /*
+     * F03 — the removal seam. Refuses a transient entity exactly as the adapter does, for the same
+     * reason: a removal keyed on the empty unsaved value would compose a predicate matching nothing in a
+     * sound table and an arbitrary row in an unsound one.
+     */
+    removeProductType: (productType: ProductType): Promise<void> => {
+      if (productType.isNew()) {
+        return Promise.reject(
+          new DomainError('A product type cannot be removed before it has been persisted.'),
+        );
+      }
+      removed.push(productType);
+      const existing = productTypes.findIndex(
+        (seed) => seed.productType.productTypeID === productType.productTypeID,
+      );
+      if (existing !== -1) {
+        productTypes.splice(existing, 1);
+      }
+      return Promise.resolve();
     },
   };
 
@@ -1784,6 +2357,8 @@ export function createInMemoryProductTypeRepository(
     addProductType: (seed: ProductTypeTreeSeed): void => {
       productTypes.push(seed);
     },
+    saved,
+    removed,
   };
 }
 
@@ -1923,6 +2498,19 @@ export type BrandRepositoryCall =
 
 /** Seed configuration for {@link createInMemoryBrandRepository}. */
 export interface InMemoryBrandRepositoryOptions {
+  /**
+   * The acting account the write seam stamps into the audit block, or omitted for none.
+   *
+   * ⚠️ MIRRORS THE ADAPTER, WHICH MIRRORS THE LEGACY FLUSH. Hibernate fired `preInsert`/`preUpdate`
+   * during the request-end flush (`org/Hibachi/Hibachi.cfc`); the port has no ORM session and no flush
+   * (mismatch M5), so each MySQL write seam calls the stamping functions in
+   * `src/domain/base/AuditableEntity.ts` itself, resolving the actor from `AccountContextPort`. A double
+   * that skipped the stamp would let a test observe absent audit fields where production writes
+   * timestamps. Omitting this option models an UNAUTHENTICATED request, which is a legitimate legacy
+   * state: both timestamps are still stamped and both account foreign keys are left absent.
+   */
+  readonly auditActor?: AccountReference;
+
   readonly brands?: readonly ManagedBrand[];
   /** URL titles already held by a row. A seeded title is NOT available. */
   readonly takenUrlTitles?: readonly string[];
@@ -1996,9 +2584,22 @@ export function createInMemoryBrandRepository(
        */
       const existingIndex =
         brand.brandID === '' ? -1 : brands.findIndex((stored) => stored.brandID === brand.brandID);
+      /*
+       * ⚠️ THE IDENTIFIER IS MINTED AND THE AUDIT BLOCK IS STAMPED, BOTH BECAUSE THE ADAPTER DOES.
+       * `MySqlBrandRepository.saveBrand` assigns `createSlatwallUUID()` on its insert branch and then
+       * calls the framework stamping functions — `model/entity/Brand.cfc` does not override the ORM
+       * hooks. An earlier revision of this double did neither, so a test could observe a brand saved with
+       * an empty identifier and absent audit fields, which production never produces. That is the same
+       * class of divergence that let the SKU write seam's refusal survive a green suite.
+       */
       if (existingIndex === -1) {
+        if (brand.brandID === '') {
+          brand.brandID = createSlatwallUUID();
+        }
+        applyPreInsertAudit(brand, options.auditActor);
         brands.push(brand);
       } else {
+        applyPreUpdateAudit(brand, options.auditActor);
         brands[existingIndex] = brand;
       }
       return Promise.resolve(brand);
@@ -2277,9 +2878,13 @@ export function createSettingResolverDouble(
  * an object store. The branded return type is built through the port's own exported `toImageWebPath`
  * factory, so no assertion is needed to produce one.
  *
- * TODO(boundary) — `model/entity/Sku.cfc:L145` and `:L221` pass a value that has already been turned
- * into a WEB path through `expandPath()`, which expects a filesystem path. That mismatch is flagged, not
- * resolved: resolving it would change which file the legacy looked for.
+ * TODO(boundary) — `model/entity/Sku.cfc:L221-L227` hands `expandPath()` a value that `:L146` composed
+ * as a WEB path, and `model/service/SkuService.cfc:L211-L212` hands the same composed value to the WRITE
+ * member as `filePath`. That mismatch is flagged, not resolved: resolving it would change which file the
+ * legacy looked for and which file it wrote. An earlier revision DID resolve it — the port refused a
+ * composed path and validated a basename instead — and that hardening is withdrawn; see
+ * `src/ports/ImagePathPort.ts`. This double therefore keys existence on the composed path and records the
+ * `filePath` it was handed.
  *
  * No `getImageDirectory` member is invented on the SKU side, and no extension is added to the
  * `jpg,jpeg,png,gif` list the upload seam carries — this double records the list it is handed so a test
@@ -2296,7 +2901,7 @@ export function createSettingResolverDouble(
 export type ImagePathCall =
   | { readonly member: 'getImagePath'; readonly imageFile: string }
   | { readonly member: 'getResizedImagePath'; readonly request: ResizedImagePathRequest }
-  | { readonly member: 'getImageExistsFlag'; readonly imageFile: ImageFileNameCandidate }
+  | { readonly member: 'getImageExistsFlag'; readonly imagePath: ImageWebPath }
   | { readonly member: 'saveImageFile'; readonly request: SaveImageFileRequest };
 
 /** Seed configuration for {@link createImagePathDouble}. */
@@ -2305,7 +2910,14 @@ export interface ImagePathDoubleOptions {
   readonly imagePathsByImageFile?: Readonly<Record<string, string>>;
   /** Answer for every resize. Unseeded, the request's own `imagePath` is echoed back. */
   readonly resizedImagePath?: string;
-  /** Image file names that exist. Everything else does not. */
+  /**
+   * Composed image PATHS that exist. Everything else does not.
+   *
+   * The probe receives the composed path, exactly as `model/entity/Sku.cfc:L222` probes with
+   * `expandPath(getImagePath())`. Because the two path members ECHO by default, an unseeded image file
+   * name arrives here unchanged, so a test that seeds neither `imagePathsByImageFile` nor a composed
+   * value may list the bare file name and still match.
+   */
   readonly existingImageFiles?: readonly string[];
   /** Answer for `saveImageFile`. Defaults to `true`. */
   readonly saveSucceeds?: boolean;
@@ -2349,9 +2961,9 @@ export function createImagePathDouble(options: ImagePathDoubleOptions = {}): Ima
         calls.push(Object.freeze({ member: 'getResizedImagePath', request }));
         return Promise.resolve(toImageWebPath(resizedImagePath ?? request.imagePath));
       },
-      getImageExistsFlag: (imageFile: ImageFileNameCandidate): Promise<boolean> => {
-        calls.push(Object.freeze({ member: 'getImageExistsFlag', imageFile }));
-        return Promise.resolve(existingImageFiles.has(imageFile));
+      getImageExistsFlag: (imagePath: ImageWebPath): Promise<boolean> => {
+        calls.push(Object.freeze({ member: 'getImageExistsFlag', imagePath }));
+        return Promise.resolve(existingImageFiles.has(imagePath));
       },
       saveImageFile: (request: SaveImageFileRequest): Promise<boolean> => {
         calls.push(Object.freeze({ member: 'saveImageFile', request }));
@@ -2379,7 +2991,15 @@ export function createImagePathDouble(options: ImagePathDoubleOptions = {}): Ima
 /** One recorded call on the subscription term port. */
 export type SubscriptionTermCall =
   | { readonly member: 'getSubscriptionTerm'; readonly subscriptionTermID: string }
-  | { readonly member: 'getSubscriptionBenefit'; readonly subscriptionBenefitID: string };
+  | { readonly member: 'getSubscriptionBenefit'; readonly subscriptionBenefitID: string }
+  | {
+      readonly member: 'getSubscriptionTermsByIDs';
+      readonly subscriptionTermIDs: readonly string[];
+    }
+  | {
+      readonly member: 'getSubscriptionBenefitsByIDs';
+      readonly subscriptionBenefitIDs: readonly string[];
+    };
 
 /** Seed configuration for {@link createSubscriptionTermDouble}. */
 export interface SubscriptionTermDoubleOptions {
@@ -2417,6 +3037,48 @@ export function createSubscriptionTermDouble(
         return Promise.resolve(
           benefitIDs.has(subscriptionBenefitID) ? { subscriptionBenefitID } : null,
         );
+      },
+      /*
+       * The two BATCH members. Each records the identifier list it was handed, so a test can assert how
+       * many times the branch crossed this boundary rather than only what it ended up with.
+       *
+       * ⛔ NEITHER MAY DELEGATE PER IDENTIFIER TO ITS SINGULAR SIBLING. Doing so would model a
+       * collaborator production does not have and would make the one property these doubles exist to
+       * expose — that a list costs ONE call — unobservable.
+       *
+       * ⚠️ AN UNSEEDED IDENTIFIER IS OMITTED FROM THE MAP rather than present holding `null`, because
+       * that is the port's contract and it is what lets the service fall through to the singular member
+       * and raise the error the legacy raises, for the element its own walk is on.
+       */
+      getSubscriptionTermsByIDs: (
+        subscriptionTermIDs: readonly string[],
+      ): Promise<Map<string, SubscriptionTermReference>> => {
+        calls.push(Object.freeze({ member: 'getSubscriptionTermsByIDs', subscriptionTermIDs }));
+
+        const resolved = new Map<string, SubscriptionTermReference>();
+        for (const subscriptionTermID of new Set(subscriptionTermIDs)) {
+          if (termIDs.has(subscriptionTermID)) {
+            resolved.set(subscriptionTermID, { subscriptionTermID });
+          }
+        }
+
+        return Promise.resolve(resolved);
+      },
+      getSubscriptionBenefitsByIDs: (
+        subscriptionBenefitIDs: readonly string[],
+      ): Promise<Map<string, SubscriptionBenefitReference>> => {
+        calls.push(
+          Object.freeze({ member: 'getSubscriptionBenefitsByIDs', subscriptionBenefitIDs }),
+        );
+
+        const resolved = new Map<string, SubscriptionBenefitReference>();
+        for (const subscriptionBenefitID of new Set(subscriptionBenefitIDs)) {
+          if (benefitIDs.has(subscriptionBenefitID)) {
+            resolved.set(subscriptionBenefitID, { subscriptionBenefitID });
+          }
+        }
+
+        return Promise.resolve(resolved);
       },
     },
   };
@@ -2460,6 +3122,28 @@ export function createAccessContentDouble(
       getContent: (contentID: string): Promise<AccessContentReference | null> => {
         requestedContentIds.push(contentID);
         return Promise.resolve(contentIDs.has(contentID) ? { contentID } : null);
+      },
+      /*
+       * The BATCH member. Every identifier it is handed is appended to the same observation list the
+       * singular member writes to, so a test still sees WHICH contents were asked for — while the number
+       * of CALLS, which is what P15 changed, is visible as the difference between one invocation and one
+       * per identifier.
+       *
+       * ⚠️ An unseeded identifier is omitted from the map, so the service falls through to `getContent`
+       * and raises there, for the element its own arm is on.
+       */
+      getContentsByIDs: (
+        batchContentIDs: readonly string[],
+      ): Promise<Map<string, AccessContentReference>> => {
+        const resolved = new Map<string, AccessContentReference>();
+        for (const contentID of new Set(batchContentIDs)) {
+          requestedContentIds.push(contentID);
+          if (contentIDs.has(contentID)) {
+            resolved.set(contentID, { contentID });
+          }
+        }
+
+        return Promise.resolve(resolved);
       },
     },
   };
@@ -2812,7 +3496,7 @@ export function createUniquePropertyDouble(
 /*
  * 10.8 The smart list query port.
  *
- * `src/ports/SmartListQueryPort.ts` is DECLARATIVE: `execute<T>(query)` takes a whole `SmartListQuery`
+ * `src/ports/SmartListQueryPort.ts` is DECLARATIVE: `execute(query)` takes a whole `SmartListQuery`
  * value, and joins, filters, like-filters, in-filters, ranges, keyword properties, orders and pagination
  * are all DATA on that value. There is no fluent builder to double and — deliberately — no raw where
  * fragment under any name, so this double exposes no such escape hatch either.
@@ -2825,14 +3509,28 @@ export function createUniquePropertyDouble(
  * to a structured lower bound; pipe-delimited order declarations once translated; distinctness; and the
  * string `currentPageDeclaration`. Nothing is sorted, normalised or de-duplicated on the way in.
  *
- * G6 — WHY THE RECORDS COME BACK EMPTY. `execute<T>` is generic at the METHOD level, so an implementation
- * must produce `readonly T[]` for a type parameter it cannot see. The only values that satisfy that
- * without a type assertion are empty, and `readonly never[]` is exactly such a value. The production
- * adapter needs `as T[]` inside its row materialiser for this very reason, and this file forbids
- * assertions — so the double returns an EMPTY page with CONFIGURABLE counts and pagination, which is
- * precisely what a query-description assertion needs. When a test needs typed, non-empty records it builds
- * them at its own concrete type with {@link buildSmartListResult} and hands them to the narrower
- * service-level seam that actually returns them.
+ * G6 — WHY THE RECORDS COME BACK EMPTY. Both execution members are generic at the METHOD level, so an
+ * implementation must produce the record type the ROOT ENTITY pairs with — `SmartListRecord<TEntityName>`
+ * — for an entity name it cannot see. A double holds rows a test configured as plain data, and no such
+ * value is KNOWN to be that record type; the only values that satisfy the signature without a type
+ * assertion are empty, and `readonly never[]` is exactly such a value. So the double returns an EMPTY
+ * page with CONFIGURABLE counts and pagination, which is precisely what a query-description assertion
+ * needs. When a test needs typed, non-empty records it builds them at its own concrete type with
+ * {@link buildSmartListResult} and hands them to the narrower service-level seam that actually returns
+ * them.
+ *
+ * ⭐ THE PRODUCTION ADAPTER NO LONGER FACES THIS AT ALL, and the asymmetry is worth stating so the one
+ * assertion below does not read as a copy of a production one. `SmartListQueryBuilder.materialiseRows`
+ * hydrates rows through `ENTITY_ROW_MAPPERS`, whose entries have their return type tied to their key, so
+ * the element type is INFERRED there and MIN-01 removed its assertion outright. Here the rows are
+ * `unknown` by construction, because only the test that configured them knows what they are.
+ *
+ * BOTH EXECUTION MEMBERS ARE DOUBLED, AND WHICH ONE RAN IS RECORDED. The port declares `execute` for
+ * all three legacy views and `executeRecords` for the unpaged collection alone; the difference is one
+ * statement against three, so it is behaviour a test should be able to pin. Both members log into the
+ * same chronological `queries` array — so an existing assertion on query descriptions is indifferent to
+ * which member a service chose — while {@link SmartListQueryDouble.executions} pairs each call with its
+ * {@link SmartListSelection}. Injected failures apply to both paths.
  */
 
 /** The scalar half of a page, configurable independently of the records. */
@@ -2844,10 +3542,41 @@ export interface SmartListPageMetrics {
   readonly totalPages?: number;
 }
 
-/** What the double should do for one `execute` call. */
+/**
+ * What the double should do for one execution call.
+ *
+ * ⭐ THE `page` ARM CARRIES THE ROWS IT DESCRIBES. An earlier revision configured `metrics` alone and
+ * always answered with an empty collection, so a test could seed `recordsCount: 12` beside zero records
+ * — a page no real query can produce — and no consumer could be exercised against non-empty typed rows
+ * at all. Both collections are optional because most cases genuinely want an empty page; when they are
+ * supplied they are validated against the metrics by {@link composeSmartListPage}, which is the single
+ * composer both entry points route through so the two can never drift.
+ */
 export type SmartListOutcome =
-  | { readonly kind: 'page'; readonly metrics: SmartListPageMetrics }
+  | {
+      readonly kind: 'page';
+      readonly metrics: SmartListPageMetrics;
+      readonly records?: readonly unknown[];
+      readonly pageRecords?: readonly unknown[];
+    }
   | { readonly kind: 'failure'; readonly failure: Error };
+
+/**
+ * Which of the port's two views a call asked for.
+ *
+ * `src/ports/SmartListQueryPort.ts` declares two execution members because the legacy materialises its
+ * three views independently, each on first read: a caller wanting the unpaged collection alone selects
+ * it rather than paying for a page and a total. Recording the selection is what lets a test assert that
+ * a member which returns only a collection ASKED for only a collection — the difference between one
+ * statement and three, and therefore the thing worth pinning.
+ */
+export type SmartListSelection = 'allViews' | 'recordsOnly';
+
+/** One recorded execution: the query exactly as composed, and which view it asked for. */
+export interface SmartListExecution {
+  readonly query: SmartListQuery;
+  readonly selection: SmartListSelection;
+}
 
 /** Decide an outcome from the query itself; `undefined` declines and falls through to the queue. */
 export type SmartListResponder = (query: SmartListQuery) => SmartListOutcome | undefined;
@@ -2865,8 +3594,10 @@ export interface SmartListQueryDoubleOptions {
 /** The port plus its factory-local observation state. */
 export interface SmartListQueryDouble {
   readonly smartList: SmartListQueryPort;
-  /** Every executed query, in order, exactly as composed. */
+  /** Every executed query, in order, exactly as composed, whichever member ran it. */
   readonly queries: readonly SmartListQuery[];
+  /** The same calls, each paired with the view it asked for. */
+  readonly executions: readonly SmartListExecution[];
   /** The most recent query, or `undefined` before the first call. */
   lastQuery(): SmartListQuery | undefined;
   enqueue(...outcomes: readonly SmartListOutcome[]): void;
@@ -2885,10 +3616,64 @@ export function buildSmartListResult<T>(
   records: readonly T[],
   metrics: SmartListPageMetrics = {},
 ): SmartListResult<T> {
+  return composeSmartListPage(records, records, metrics);
+}
+
+/**
+ * Adopts configured rows at the element type the calling member declares.
+ *
+ * ⭐ THE ONE AND ONLY TYPE ASSERTION IN THIS FILE, AND IT HAS NO PRODUCTION COUNTERPART. A test
+ * configures rows as plain data, so what arrives here is `unknown`; the member that must answer is
+ * generic in the ROOT ENTITY and owes its caller the record type that entity pairs with. Nothing this
+ * module can compute relates the two, because the relation is the test's own knowledge of what it
+ * configured — which is why adopting them here is sound and why the assertion is localized to this one
+ * expression rather than spread over the two members that need it. The production builder does NOT need
+ * one: MIN-01 gave `ENTITY_ROW_MAPPERS` a per-key return type, so `SmartListQueryBuilder` infers its
+ * element type from the mapper it selected.
+ */
+function adoptSmartListElementType<T>(rows: readonly unknown[]): readonly T[] {
+  return rows as readonly T[];
+}
+
+/**
+ * Composes one page from configured rows and metrics, validating that the two agree.
+ *
+ * Both {@link buildSmartListResult} and the port response inside {@link createSmartListQueryDouble}
+ * route through here, so a page described one way cannot differ from a page described the other. The
+ * derivation is the production one in `SmartListQueryBuilder.execute`: the count defaults to the
+ * collection length, the page starts at 1, ends at the collection length, and an empty result has zero
+ * pages.
+ *
+ * @throws {DomainError} when a non-empty page is described by a smaller unpaged collection, or when a
+ *   page is described beside a record count that cannot contain it. Refusing is the point: a double
+ *   that accepted an impossible page would let a consumer pass against it and fail against MySQL.
+ */
+function composeSmartListPage<T>(
+  records: readonly T[],
+  pageRecords: readonly T[],
+  metrics: SmartListPageMetrics,
+): SmartListResult<T> {
   const recordsCount = metrics.recordsCount ?? records.length;
+
+  if (pageRecords.length > records.length) {
+    throw new DomainError(
+      'A page was described with more rows than the unpaged collection it is a page of, which no ' +
+        'query can produce, so the double refused it rather than answering with it.',
+      { context: { records: records.length, pageRecords: pageRecords.length } },
+    );
+  }
+
+  if (pageRecords.length > recordsCount) {
+    throw new DomainError(
+      'A page was described beside a record count too small to contain it, so the double refused it ' +
+        'rather than describing a page no query can produce.',
+      { context: { recordsCount, pageRecords: pageRecords.length } },
+    );
+  }
+
   return {
     records,
-    pageRecords: records,
+    pageRecords,
     recordsCount,
     pageRecordsStart: metrics.pageRecordsStart ?? 1,
     pageRecordsEnd: metrics.pageRecordsEnd ?? records.length,
@@ -2902,39 +3687,84 @@ export function createSmartListQueryDouble(
   options: SmartListQueryDoubleOptions = {},
 ): SmartListQueryDouble {
   const queries: SmartListQuery[] = [];
+  const executions: SmartListExecution[] = [];
   const queue: SmartListOutcome[] = options.outcomes === undefined ? [] : [...options.outcomes];
   const respond = options.respond;
   const defaultMetrics = options.defaultMetrics ?? {};
 
+  /**
+   * Records one call and settles the outcome both members share.
+   *
+   * Recording happens for either view, in call order, so `queries` remains the single chronological
+   * log regardless of which member ran; `executions` adds which view was asked for. Injected failures
+   * are honoured on BOTH paths — a records-only read is as capable of failing as a three-view one.
+   */
+  function answer(
+    query: SmartListQuery,
+    selection: SmartListSelection,
+  ): SmartListOutcome | undefined {
+    queries.push(query);
+    executions.push(Object.freeze({ query, selection }));
+    const answered = respond === undefined ? undefined : respond(query);
+    return answered ?? queue.shift();
+  }
+
   const smartList: SmartListQueryPort = {
-    execute<T>(query: SmartListQuery): Promise<SmartListResult<T>> {
-      queries.push(query);
-      const answered = respond === undefined ? undefined : respond(query);
-      const outcome = answered ?? queue.shift();
+    execute<TEntityName extends SmartListRootEntityName>(
+      query: SmartListQuery<TEntityName>,
+    ): Promise<SmartListResult<SmartListRecord<TEntityName>>> {
+      const outcome = answer(query, 'allViews');
       if (outcome !== undefined && outcome.kind === 'failure') {
         return Promise.reject(outcome.failure);
       }
       const metrics = outcome === undefined ? defaultMetrics : outcome.metrics;
+      const configured = outcome === undefined ? undefined : outcome.records;
+      const records = adoptSmartListElementType<SmartListRecord<TEntityName>>(configured ?? []);
+      const configuredPage = outcome === undefined ? undefined : outcome.pageRecords;
+      const pageRecords =
+        configuredPage === undefined
+          ? records
+          : adoptSmartListElementType<SmartListRecord<TEntityName>>(configuredPage);
+
+      try {
+        return Promise.resolve(
+          composeSmartListPage(records, pageRecords, {
+            ...metrics,
+            recordsCount: metrics.recordsCount ?? records.length,
+            pageRecordsEnd: metrics.pageRecordsEnd ?? records.length,
+            totalPages: metrics.totalPages ?? (records.length === 0 ? 0 : 1),
+          }),
+        );
+      } catch (refusal) {
+        /* Every refusal reaching here is a thrown `DomainError`; the guard keeps the rejection reason an
+         * Error even so, because a non-Error reason is unassertable with `rejects.toThrow`. */
+        return Promise.reject(refusal instanceof Error ? refusal : new Error(String(refusal)));
+      }
+    },
+
+    executeRecords<TEntityName extends SmartListRootEntityName>(
+      query: SmartListQuery<TEntityName>,
+    ): Promise<SmartListRecord<TEntityName>[]> {
+      const outcome = answer(query, 'recordsOnly');
+      if (outcome !== undefined && outcome.kind === 'failure') {
+        return Promise.reject(outcome.failure);
+      }
       /*
-       * `readonly never[]` is assignable to `readonly T[]` for every `T`, which is what lets this
-       * implementation satisfy a method-level generic with no assertion at all.
+       * No metrics are consulted, and that is the contract rather than a gap: this view has no page and
+       * no total to configure. The array is MUTABLE, matching the port, so a caller that hands it onward
+       * unchanged is exercised faithfully.
        */
-      const noRecords: readonly never[] = [];
-      return Promise.resolve({
-        records: noRecords,
-        pageRecords: noRecords,
-        recordsCount: metrics.recordsCount ?? 0,
-        pageRecordsStart: metrics.pageRecordsStart ?? 1,
-        pageRecordsEnd: metrics.pageRecordsEnd ?? 0,
-        currentPage: metrics.currentPage ?? 1,
-        totalPages: metrics.totalPages ?? 0,
-      });
+      const configured = outcome === undefined ? undefined : outcome.records;
+      return Promise.resolve([
+        ...adoptSmartListElementType<SmartListRecord<TEntityName>>(configured ?? []),
+      ]);
     },
   };
 
   return {
     smartList,
     queries,
+    executions,
     lastQuery: (): SmartListQuery | undefined => queries[queries.length - 1],
     enqueue: (...outcomes: readonly SmartListOutcome[]): void => {
       queue.push(...outcomes);
@@ -3234,19 +4064,29 @@ export function createEntityRemoverDouble<TEntity>(failure?: Error): EntityRemov
  * object. Three of its behaviours are what tests need to pin, and all three are easy to break silently:
  *
  *   M5 — `run` commits only when the caller's error gate reports clean; when the gate reports errors it
- *        ROLLS BACK and raises, so nothing the work wrote survives, and it releases the connection in a
- *        `finally` on both the success and the failure path.
- *   M3 — `runPerItem` is STRICTLY SEQUENTIAL with one independent transaction per item, which is the
- *        importer's per-row commit at `model/dao/ProductDAO.cfc:L176-L177`. If item two fails, item one
- *        stays committed and items three onward never run. `Promise.all` would break all three properties
- *        at once while still passing a naive "it imported" assertion.
+ *        ROLLS BACK and raises, so nothing the work wrote survives, and it disposes of the connection in
+ *        a `finally` on both the success and the failure path. Production releases only a connection
+ *        whose transaction state is KNOWN and destroys it otherwise; this double's settlement cannot
+ *        fail, so it only ever records a release.
+ *   M3 — `runPerItem` and `runPerItemWithoutResults` are STRICTLY SEQUENTIAL with one independent
+ *        transaction per item, which is the importer's per-row commit at
+ *        `model/dao/ProductDAO.cfc:L176-L177`. If item two fails, item one stays committed and items
+ *        three onward never run. `Promise.all` would break all three properties at once while still
+ *        passing a naive "it imported" assertion. ONE CONNECTION IS ACQUIRED FOR THE WHOLE LIST rather
+ *        than one per item — each item's transaction is still its own, so the per-row commit semantics
+ *        are untouched, and running every item on the same connection makes M6's read-back ordering a
+ *        property of the boundary instead of an accident of a one-connection pool.
  *   M6 — every read and write inside one boundary uses the SAME transaction-scoped executor, which is what
- *        makes an inserted SKU visible to the next SKU's uniqueness read.
+ *        makes an inserted SKU visible to the next SKU's uniqueness read. The executor carries BOTH
+ *        members for that reason: a write forced to travel any other route would be a write outside the
+ *        transaction.
  *
- * `runWithoutTransaction` is the fourth member and exists for the importer's two backfills, which run
- * AFTER every row transaction has committed and therefore deliberately sit outside all of them.
+ * `runWithoutTransaction` exists for the importer's two backfills, which run AFTER every row transaction
+ * has committed and therefore deliberately sit outside all of them. `runPerItemWithoutResults` is the
+ * importer's actual per-row entry point: the row work produces nothing, so the collecting member's
+ * one-result-per-row array would be pure overhead proportional to the file's row count.
  *
- * G6 — WHY A LOCALLY DECLARED INTERFACE. `UnitOfWork` is a CLASS holding `private readonly pool: Pool`.
+ * G6 — WHY A LOCALLY DECLARED INTERFACE. `UnitOfWork` is a CLASS holding a `private readonly` pool field.
  * A private member is nominal in TypeScript, so no object literal can ever be assignable to that class no
  * matter how completely it matches the public surface — and the alternative, constructing a real
  * `UnitOfWork` around a fake pool, would require importing the MySQL driver package, which this file
@@ -3275,16 +4115,44 @@ export interface UnitOfWorkEvent {
  */
 export interface UnitOfWorkTestSupport {
   run<T>(work: (scope: TransactionScope) => Promise<T>, hasErrors: () => boolean): Promise<T>;
+  /**
+   * Mirrors `UnitOfWork.runScoped` — the member the WRITING routes call.
+   *
+   * Present here because this interface mirrors the class member for member, and because a handler test
+   * cannot exercise the SKU-creation boundary without it: the boundary's whole contract is that the graph
+   * is built FROM the scope, so a double that only offered `run` would let a test wire a graph the real
+   * boundary could never receive.
+   */
+  runScoped<TGraph, TResult>(
+    buildGraph: (scope: TransactionScope) => TGraph,
+    work: (graph: TGraph) => Promise<TResult>,
+    reportErrors: (result: TResult) => boolean,
+  ): Promise<TResult>;
   runPerItem<TItem, TResult>(
     items: readonly TItem[],
     work: (item: TItem, scope: TransactionScope) => Promise<TResult>,
   ): Promise<TResult[]>;
-  runWithoutTransaction<T>(work: (executor: SqlExecutor) => Promise<T>): Promise<T>;
+  runPerItemWithoutResults<TItem>(
+    items: readonly TItem[],
+    work: (item: TItem, scope: TransactionScope) => Promise<void>,
+  ): Promise<void>;
+  runWithoutTransaction<T>(work: (executor: TransactionalSqlExecutor) => Promise<T>): Promise<T>;
+  /**
+   * Reads the highest sort-order value in a table.
+   *
+   * ⭐ DECLARED AS THE TWO EXACT PRODUCTION OVERLOADS, WHICH IS THE POINT. `UnitOfWork` publishes
+   * `(executor, tableName)` and `(executor, tableName, contextIDColumn, contextIDValue)` — both scope
+   * arguments REQUIRED together. An earlier revision of this double published one signature with two
+   * OPTIONAL scope arguments, so a half-supplied scope typechecked here and failed against production,
+   * and a scoped call was indistinguishable from an unscoped one because the answer was keyed by table
+   * name alone and neither context argument was read.
+   */
+  getTableTopSortOrder(executor: SqlExecutor, tableName: string): Promise<number>;
   getTableTopSortOrder(
-    executor: SqlExecutor,
+    executor: TransactionalSqlExecutor,
     tableName: string,
-    contextIDColumn?: string,
-    contextIDValue?: string,
+    contextIDColumn: string,
+    contextIDValue: string,
   ): Promise<number>;
 }
 
@@ -3307,6 +4175,29 @@ export interface UnitOfWorkDoubleOptions {
   readonly tableTopSortOrder?: Readonly<Record<string, number>>;
 }
 
+/**
+ * The composite key configured top-sort-order answers are stored under.
+ *
+ * An unscoped read and a scoped read are two different statements against the same table, so keying by
+ * table name alone would make them indistinguishable. `|` cannot occur in a validated identifier, so it
+ * is a safe separator.
+ */
+export function topSortOrderKey(
+  tableName: string,
+  contextIDColumn?: string,
+  contextIDValue?: string,
+): string {
+  return contextIDColumn === undefined
+    ? tableName
+    : `${tableName}|${contextIDColumn}|${String(contextIDValue)}`;
+}
+
+/** One recorded top-sort-order call, with the scope exactly as supplied. */
+export interface TopSortOrderCall {
+  readonly table: string;
+  readonly scope: { readonly contextIDColumn: string; readonly contextIDValue: string } | undefined;
+}
+
 /** The unit of work plus its factory-local observation state. */
 export interface UnitOfWorkDouble {
   readonly unitOfWork: UnitOfWorkTestSupport;
@@ -3319,12 +4210,15 @@ export interface UnitOfWorkDouble {
   transactionsStarted(): number;
   transactionsCommitted(): number;
   transactionsRolledBack(): number;
+  /** Every top-sort-order call, in order, with the scope exactly as it was supplied. */
+  topSortOrderCalls(): readonly TopSortOrderCall[];
 }
 
 /** Create the unit of work double. */
 export function createUnitOfWorkDouble(options: UnitOfWorkDoubleOptions = {}): UnitOfWorkDouble {
   const sqlExecutor = options.sqlExecutor ?? createSqlExecutorDouble();
   const topSortOrders = options.tableTopSortOrder ?? {};
+  const topSortOrderCalls: TopSortOrderCall[] = [];
   const events: UnitOfWorkEvent[] = [];
   let transactionsStarted = 0;
   let transactionsCommitted = 0;
@@ -3334,25 +4228,41 @@ export function createUnitOfWorkDouble(options: UnitOfWorkDoubleOptions = {}): U
     events.push(Object.freeze({ kind, transaction }));
   };
 
-  const run = async <T>(
+  /**
+   * One transaction on an ALREADY-ACQUIRED connection: begin, work, settle. No acquire, no release.
+   *
+   * Split out for the same reason the real boundary splits it: the single-boundary member acquires
+   * once and settles once, while the per-item members acquire ONCE FOR THE WHOLE LIST and settle once
+   * per item on that same connection. Modelling the acquire inside the transaction would make the
+   * double emit an acquire/release pair per row that production no longer emits, and the event log
+   * would then assert the opposite of the behaviour it exists to pin.
+   */
+  const runSettled = async <T>(
     work: (scope: TransactionScope) => Promise<T>,
     hasErrors: () => boolean,
   ): Promise<T> => {
     transactionsStarted += 1;
     const transaction = transactionsStarted;
-    note('acquire', transaction);
-    try {
+    {
       note('begin', transaction);
-      let result: T;
+      let settlement: { readonly decision: 'commit' | 'rollback'; readonly result: T };
       try {
-        result = await work(Object.freeze({ executor: sqlExecutor.executor }));
+        /*
+         * ⭐ THE WORK AND THE ERROR GATE SETTLE INSIDE ONE GUARDED REGION, which is what
+         * `UnitOfWork.runWorkInside` does. An earlier revision evaluated `hasErrors()` AFTER the `try`,
+         * so a gate that THREW escaped the rollback path entirely and left only `begin` recorded — a
+         * consumer whose gate throws would then have looked correct against this double and wrong
+         * against the real boundary. Both now reach the same `catch`, record exactly ONE rollback, and
+         * re-raise the ORIGINAL failure unchanged.
+         */
+        const result = await work(Object.freeze({ executor: sqlExecutor.executor }));
+        settlement = { decision: hasErrors() ? 'rollback' : 'commit', result };
       } catch (failure) {
-        /* The work threw: roll back, then re-raise the ORIGINAL failure unchanged. */
         note('rollback', transaction);
         transactionsRolledBack += 1;
         throw failure;
       }
-      if (hasErrors()) {
+      if (settlement.decision === 'rollback') {
         /*
          * M5's error gate. The real boundary raises rather than returning quietly, because a caller that
          * ignored a silent "nothing was kept" would carry on as though the write had happened. The message
@@ -3368,45 +4278,164 @@ export function createUnitOfWorkDouble(options: UnitOfWorkDoubleOptions = {}): U
       }
       note('commit', transaction);
       transactionsCommitted += 1;
-      return result;
+      return settlement.result;
+    }
+  };
+
+  /**
+   * One acquire, one transaction, one release — the single-boundary shape.
+   *
+   * The release is in a `finally` so it is recorded on BOTH paths, which is the property a leaked
+   * connection would violate. The real boundary DESTROYS rather than releases when a settlement itself
+   * failed, so that a connection of unknown transaction state never re-enters a warm pool; this double
+   * emits only `release` because its commit and roll-back cannot fail, and inventing a `destroy` event
+   * it could never reach would be a contract nothing exercises.
+   */
+  const run = async <T>(
+    work: (scope: TransactionScope) => Promise<T>,
+    hasErrors: () => boolean,
+  ): Promise<T> => {
+    const transaction = transactionsStarted + 1;
+    note('acquire', transaction);
+    try {
+      return await runSettled(work, hasErrors);
     } finally {
-      /* Released on BOTH paths — the property a leaked connection would violate. */
       note('release', transaction);
     }
   };
 
-  const unitOfWork: UnitOfWorkTestSupport = {
-    run,
-    runPerItem: async <TItem, TResult>(
-      items: readonly TItem[],
-      work: (item: TItem, scope: TransactionScope) => Promise<TResult>,
-    ): Promise<TResult[]> => {
-      const results: TResult[] = [];
+  /**
+   * The per-item loop, shared by the collecting and non-collecting members.
+   *
+   * ONE ACQUIRE FOR THE WHOLE LIST, one transaction per item, one release at the end — and an empty
+   * list acquires nothing at all, which the importer legitimately reaches for a header-only file or the
+   * `.xls` branch. M3 is unchanged by the sharing: each item is still its own independent transaction,
+   * settled before the next begins.
+   */
+  const runEachItem = async <TItem, TResult>(
+    items: readonly TItem[],
+    work: (item: TItem, scope: TransactionScope) => Promise<TResult>,
+    collect: ((result: TResult) => void) | undefined,
+  ): Promise<void> => {
+    if (items.length === 0) {
+      return;
+    }
+    const acquisition = transactionsStarted + 1;
+    note('acquire', acquisition);
+    try {
       /*
        * M3. A sequential `for..of` with an `await` inside, never `Promise.all`: one transaction per item,
        * each committed before the next begins, and an exception from item N leaves items 1..N-1 committed
        * while items N+1.. never start.
        */
       for (const item of items) {
-        results.push(
-          await run(
-            (scope) => work(item, scope),
-            () => false,
-          ),
+        const result = await runSettled(
+          (scope) => work(item, scope),
+          () => false,
         );
+        if (collect !== undefined) {
+          collect(result);
+        }
       }
+    } finally {
+      note('release', acquisition);
+    }
+  };
+
+  const unitOfWork: UnitOfWorkTestSupport = {
+    run,
+
+    /*
+     * ⭐ DELEGATES TO `run` RATHER THAN TO `runSettled`, because the real member is `run` with the graph
+     * built from the scope — so the acquire/release accounting a test asserts on must be identical for
+     * both. Building the graph INSIDE the work is the whole of the difference: a double that built it
+     * outside would let a test wire collaborators bound to no transaction, which the real boundary can
+     * never hand out.
+     *
+     * The settled result is read back through a function so the gate can see it without a cast: the gate
+     * runs after the work resolves (see `runSettled`), but control-flow analysis cannot know that about a
+     * value assigned inside a callback.
+     */
+    runScoped: <TGraph, TResult>(
+      buildGraph: (scope: TransactionScope) => TGraph,
+      work: (graph: TGraph) => Promise<TResult>,
+      reportErrors: (result: TResult) => boolean,
+    ): Promise<TResult> => {
+      let settled: { readonly result: TResult } | undefined;
+      const readSettled = (): { readonly result: TResult } | undefined => settled;
+
+      return run(
+        async (scope): Promise<TResult> => {
+          const result = await work(buildGraph(scope));
+          settled = { result };
+          return result;
+        },
+        (): boolean => {
+          const captured = readSettled();
+          return captured !== undefined && reportErrors(captured.result);
+        },
+      );
+    },
+
+    runPerItem: async <TItem, TResult>(
+      items: readonly TItem[],
+      work: (item: TItem, scope: TransactionScope) => Promise<TResult>,
+    ): Promise<TResult[]> => {
+      const results: TResult[] = [];
+      await runEachItem(items, work, (result) => {
+        results.push(result);
+      });
       return results;
     },
-    runWithoutTransaction: async <T>(work: (executor: SqlExecutor) => Promise<T>): Promise<T> => {
+    runPerItemWithoutResults: async <TItem>(
+      items: readonly TItem[],
+      work: (item: TItem, scope: TransactionScope) => Promise<void>,
+    ): Promise<void> => {
+      await runEachItem(items, work, undefined);
+    },
+    runWithoutTransaction: async <T>(
+      work: (executor: TransactionalSqlExecutor) => Promise<T>,
+    ): Promise<T> => {
       note('poolWork', 0);
       return await work(sqlExecutor.executor);
     },
     getTableTopSortOrder: (
-      _executor: SqlExecutor,
+      _executor: TransactionalSqlExecutor,
       tableName: string,
-      _contextIDColumn?: string,
-      _contextIDValue?: string,
-    ): Promise<number> => Promise.resolve(topSortOrders[tableName] ?? 0),
+      contextIDColumn?: string,
+      contextIDValue?: string,
+    ): Promise<number> => {
+      if ((contextIDColumn === undefined) !== (contextIDValue === undefined)) {
+        /*
+         * Unreachable from typed code — the two overloads above require the scope arguments together —
+         * so this refuses an untyped caller. It REJECTS rather than throwing synchronously because the
+         * production member is declared `async`, and a consumer awaiting a rejection must observe the
+         * same failure shape here that it would observe there.
+         */
+        return Promise.reject(
+          new DomainError(
+            'A half-supplied sort-order scope reached the double: the scope column and the scope value ' +
+              'travel together or not at all.',
+            { context: { tableName, contextIDColumn, contextIDValue } },
+          ),
+        );
+      }
+
+      topSortOrderCalls.push(
+        Object.freeze({
+          table: tableName,
+          scope:
+            contextIDColumn === undefined
+              ? undefined
+              : Object.freeze({ contextIDColumn, contextIDValue: String(contextIDValue) }),
+        }),
+      );
+
+      /* Unseeded keys answer the COALESCE 0 that the production statement answers with. */
+      return Promise.resolve(
+        topSortOrders[topSortOrderKey(tableName, contextIDColumn, contextIDValue)] ?? 0,
+      );
+    },
   };
 
   return {
@@ -3417,6 +4446,7 @@ export function createUnitOfWorkDouble(options: UnitOfWorkDoubleOptions = {}): U
     transactionsStarted: (): number => transactionsStarted,
     transactionsCommitted: (): number => transactionsCommitted,
     transactionsRolledBack: (): number => transactionsRolledBack,
+    topSortOrderCalls: (): readonly TopSortOrderCall[] => topSortOrderCalls,
   };
 }
 

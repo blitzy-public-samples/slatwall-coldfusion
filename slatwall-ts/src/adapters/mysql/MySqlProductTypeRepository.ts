@@ -192,8 +192,8 @@
  * so that the absence reads as a verified property rather than an omission.
  *
  * REGISTER DISCIPLINE. This file MINTS NO defect or mismatch identifier. It cites D22, defined in
- * `src/ports/repositories/SkuRepository.ts`, whose finding F27 records that the plan's own defect
- * register is frozen at D1-D21 and that no single file can honestly assert a global closure. It also
+ * `src/ports/repositories/SkuRepository.ts`, which is the single place that records the plan's frozen
+ * D1-D21 range and every entry the port minted beyond it. It also
  * cites M7. Every other finding above is recorded by `path:Lnnn` locator alone, which is the only
  * claim one file can verify. Defect D21 — the unfiltered inherited-assignment read at
  * `model/entity/ProductType.cfc:L92-L98`, which carries one of the three literal legacy TODO
@@ -232,13 +232,121 @@
  * ============================================================================================== */
 
 import { assertColumnName, assertTableName } from './QueryRunner';
+import { createSlatwallUUID } from '../../util/uuid';
+import { DomainError } from '../../errors/DomainError';
 import { mapProductTypeTreeRow, mapRows } from './rowMappers';
 
+import type { ProductType } from '../../domain/product/ProductType';
 import type { SqlExecutor } from './QueryRunner';
 import type {
   ProductTypeRepository,
   ProductTypeTreeRow,
 } from '../../ports/repositories/ProductTypeRepository';
+import type { AccountContextPort } from '../../ports/AccountContextPort';
+
+/**
+ * The statement surface this repository needs, now that it writes as well as reads.
+ *
+ * ⭐ WIDENED FROM `SqlExecutor` TO CLOSE REVIEW FINDING 3. The read-only surface carries `execute`
+ * only, so a write member could not be expressed against it at all. This is the FIFTH declaration of
+ * the same two-member seam — after `SkuStatementExecutor`, `BrandStatementExecutor`,
+ * `ProductStatementExecutor` and `UnitOfWork`'s `TransactionalSqlExecutor` — and it is declared here
+ * for the same reason the others are declared where they are: a repository names the surface IT needs,
+ * so a test can satisfy it with a plain object literal and nothing has to import a sibling adapter.
+ * `QueryRunner` satisfies all five structurally.
+ */
+export interface ProductTypeStatementExecutor extends SqlExecutor {
+  /**
+   * Runs a data-modifying statement and returns the number of rows it AFFECTED.
+   *
+   * Matches `QueryRunner.executeMutation`, the port of the legacy `save()` and `delete()` primitives at
+   * `org/Hibachi/HibachiDAO.cfc:L48-L67` and `:L69-L77`. See `MySqlBrandRepository`'s equivalent
+   * declaration for why an UPDATE's count is not a reliable success signal and is therefore not read as
+   * one here either.
+   */
+  executeMutation(sql: string, parameters: readonly unknown[]): Promise<number>;
+}
+
+/* ================================================================================================
+ * THE WRITE-SIDE TABLE AND COLUMN NAMES
+ *
+ * Separate module constants rather than the locals the tree statement builds at its own point of use,
+ * because these are read by two members and a shared name cannot drift between them. Every one is
+ * validated through `assertColumnName` / `assertTableName`, so an identifier reaches statement text only
+ * after being checked — the same discipline R4 imposes everywhere identifiers cannot be bound.
+ * ============================================================================================== */
+
+const PRODUCT_TYPE_WRITE_TABLE = assertTableName('SwProductType');
+
+/**
+ * Every `SwProductType` column the port writes, keyed by its legacy property name.
+ *
+ * Mirrors `mapProductTypeRow` in `./rowMappers` column for column, with ONE addition: the
+ * `parentProductTypeID` foreign key. The read mapper deliberately resolves no association — RULE 3
+ * there — but a WRITE that omitted the key would silently discard the hierarchy, because the FK column
+ * IS where the parent link lives. The asymmetry is intentional and is the reason it is called out.
+ *
+ * Sources: `model/entity/ProductType.cfc:L52-L59` for the scalars, `:L62` for the parent key, `:L80`
+ * for the remote identifier and `:L83-L86` for the audit columns.
+ */
+const PRODUCT_TYPE_WRITE_COLUMN = Object.freeze({
+  productTypeID: assertColumnName(PRODUCT_TYPE_WRITE_TABLE, 'productTypeID'),
+  productTypeIDPath: assertColumnName(PRODUCT_TYPE_WRITE_TABLE, 'productTypeIDPath'),
+  activeFlag: assertColumnName(PRODUCT_TYPE_WRITE_TABLE, 'activeFlag'),
+  publishedFlag: assertColumnName(PRODUCT_TYPE_WRITE_TABLE, 'publishedFlag'),
+  urlTitle: assertColumnName(PRODUCT_TYPE_WRITE_TABLE, 'urlTitle'),
+  productTypeName: assertColumnName(PRODUCT_TYPE_WRITE_TABLE, 'productTypeName'),
+  productTypeDescription: assertColumnName(PRODUCT_TYPE_WRITE_TABLE, 'productTypeDescription'),
+  systemCode: assertColumnName(PRODUCT_TYPE_WRITE_TABLE, 'systemCode'),
+  parentProductTypeID: assertColumnName(PRODUCT_TYPE_WRITE_TABLE, 'parentProductTypeID'),
+  remoteID: assertColumnName(PRODUCT_TYPE_WRITE_TABLE, 'remoteID'),
+  createdDateTime: assertColumnName(PRODUCT_TYPE_WRITE_TABLE, 'createdDateTime'),
+  createdByAccountID: assertColumnName(PRODUCT_TYPE_WRITE_TABLE, 'createdByAccountID'),
+  modifiedDateTime: assertColumnName(PRODUCT_TYPE_WRITE_TABLE, 'modifiedDateTime'),
+  modifiedByAccountID: assertColumnName(PRODUCT_TYPE_WRITE_TABLE, 'modifiedByAccountID'),
+} as const);
+
+/**
+ * The writable columns, in one fixed order, excluding the identifier.
+ *
+ * The identifier is handled separately because an insert LISTS it while an update MATCHES on it. The
+ * order is arbitrary but must be stable: the value array below is built by walking the same sequence,
+ * so a column added to one list and not the other is a compile error rather than a shifted binding.
+ */
+const PRODUCT_TYPE_WRITABLE_COLUMNS: readonly string[] = Object.freeze([
+  /** `:L53` — the materialised ancestry path, comma-delimited, root first and self last. */
+  PRODUCT_TYPE_WRITE_COLUMN.productTypeIDPath,
+  /** `:L54`. */
+  PRODUCT_TYPE_WRITE_COLUMN.activeFlag,
+  /** `:L55`. */
+  PRODUCT_TYPE_WRITE_COLUMN.publishedFlag,
+  /** `:L56` — `unique="true"`; the constraint is the column's, and IR-5 checks it in code as well. */
+  PRODUCT_TYPE_WRITE_COLUMN.urlTitle,
+  /** `:L57`. */
+  PRODUCT_TYPE_WRITE_COLUMN.productTypeName,
+  /** `:L58`. */
+  PRODUCT_TYPE_WRITE_COLUMN.productTypeDescription,
+  /** `:L59` — the discriminator whose three seeded values IR-7 pins. */
+  PRODUCT_TYPE_WRITE_COLUMN.systemCode,
+  /** `:L62` — the `fkcolumn` of the `parentProductType` many-to-one. */
+  PRODUCT_TYPE_WRITE_COLUMN.parentProductTypeID,
+  /** `:L79`. */
+  PRODUCT_TYPE_WRITE_COLUMN.remoteID,
+  /** `:L82`. */
+  PRODUCT_TYPE_WRITE_COLUMN.createdDateTime,
+  /** `:L83` — field `createdByAccount`, column `createdByAccountID`; the pairing is crossed. */
+  PRODUCT_TYPE_WRITE_COLUMN.createdByAccountID,
+  /** `:L84`. */
+  PRODUCT_TYPE_WRITE_COLUMN.modifiedDateTime,
+  /** `:L85` — field `modifiedByAccount`, column `modifiedByAccountID`. */
+  PRODUCT_TYPE_WRITE_COLUMN.modifiedByAccountID,
+]);
+
+/** The bound-parameter placeholder. `?` binds VALUES only and can never carry an identifier (R4). */
+const PRODUCT_TYPE_BIND_PLACEHOLDER = '?';
+
+/** The separator for a column list and for a `SET` clause. */
+const PRODUCT_TYPE_CLAUSE_JOINER = ', ';
 
 /* ================================================================================================
  * THE TWO DERIVED-COLUMN ALIASES, PINNED TO THE PORT'S FIELD NAMES AT COMPILE TIME
@@ -283,6 +391,38 @@ const CHILD_COUNT_ALIAS = 'childCount' satisfies keyof ProductTypeTreeRow;
  */
 const SELF_REFERENCE_ALIAS = 'spt';
 
+/**
+ * The alias the pre-aggregated assigned-product counts are joined under.
+ *
+ * The legacy had no such alias, because it had no such join: `model/dao/ProductTypeDAO.cfc:L55-L57`
+ * is a correlated scalar subquery evaluated once per outer row. See
+ * {@link composeProductTypeTreeStatement} for why the pre-aggregated form is the same answer, and for
+ * the multiplicity proof that makes it the same SHAPE too.
+ *
+ * Like the three aliases above it names no column and no table, so it does not pass through the
+ * schema whitelist. It is a fixed literal authored here and never derived from caller input — there is
+ * no caller input.
+ */
+const ASSIGNED_COUNT_SOURCE_ALIAS = 'assignedProductCounts';
+
+/**
+ * The alias the pre-aggregated immediate-child counts are joined under. Introduced for the same reason
+ * as {@link ASSIGNED_COUNT_SOURCE_ALIAS}, and likewise a fixed literal rather than an identifier.
+ */
+const CHILD_COUNT_SOURCE_ALIAS = 'childProductTypeCounts';
+
+/**
+ * The column each pre-aggregation projects its count under, inside its own derived table.
+ *
+ * Deliberately NOT the same literal as {@link IS_ASSIGNED_ALIAS} or {@link CHILD_COUNT_ALIAS}. Reusing
+ * either would be legal — a derived table's column names are scoped to that derived table — and it
+ * would make the outer projection read as though it were passing a value straight through when it is
+ * in fact wrapping it in `COALESCE`. One neutral name for both derived tables keeps the two
+ * pre-aggregations symmetrical and keeps the outer aliases meaning exactly what the port's field names
+ * mean.
+ */
+const DERIVED_COUNT_COLUMN = 'matchCount';
+
 /* ================================================================================================
  * THE STATEMENT
  * ============================================================================================== */
@@ -294,17 +434,54 @@ const SELF_REFERENCE_ALIAS = 'spt';
  * logical entity names replaced by the physical ones per the D22 annotation in the file header, and
  * with nothing else changed. What the legacy statement does, this statement does:
  *
- *   - `SELECT *` is PRESERVED AS A WILDCARD, and the decision not to enumerate columns is deliberate.
- *     The wildcard sits over a single `FROM`, so it resolves to every column of the product-type
- *     table and nothing else — the self-reference alias belongs to the inner query and contributes no
- *     column to the outer projection. Enumerating the columns would change nothing observable, but it
- *     would assert a column list this file has no locator for, and the port's own reasoning already
- *     rejects that as fabrication. The row mapper hydrates by column name, so it reads whatever the
- *     wildcard supplies; a mapper that required an enumerated list would have coupled the two.
- *   - BOTH DERIVED COLUMNS STAY CORRELATED SCALAR SUBQUERIES. Rewriting either as an outer join with
- *     grouping would change row multiplicity and the meaning of the counts, and is forbidden by AAP
- *     §0.8.2 Guideline 4. The aliases are preserved exactly.
- *   - THE ORDERING IS THE SINGLE LEGACY SORT TERM. See FALSEHOOD #2 in the file header.
+ *   - THE WILDCARD IS PRESERVED AS A WILDCARD, and the decision not to enumerate columns is
+ *     deliberate. Enumerating them would change nothing observable, but it would assert a column list
+ *     this file has no locator for, and the port's own reasoning already rejects that as fabrication.
+ *     The row mapper hydrates by column name, so it reads whatever the wildcard supplies; a mapper
+ *     that required an enumerated list would have coupled the two.
+ *
+ *     ⚠️ IT IS NOW QUALIFIED — `SELECT SwProductType.*` — AND THE QUALIFICATION IS MANDATORY RATHER
+ *     THAN TIDINESS. The legacy wildcard sat over a single `FROM`, so bare `*` could only ever resolve
+ *     to the product-type table's own columns. Two derived tables are now joined, so a bare `*` would
+ *     additionally project their grouping keys and their count columns: the row mapper would receive a
+ *     second `productTypeID` and a `matchCount` it does not declare. Qualifying the wildcard restores
+ *     the legacy projection EXACTLY — every column of the product-type table, and nothing else.
+ *   - BOTH DERIVED COLUMNS ARE PRE-AGGREGATED ONCE AND JOINED, WHERE THE LEGACY EVALUATED A
+ *     CORRELATED SCALAR SUBQUERY PER OUTER ROW. This is the one structural change in the statement,
+ *     and it is worth being precise about which rewrite is forbidden and which is not, because an
+ *     earlier revision of this comment conflated them:
+ *
+ *       FORBIDDEN, and still forbidden: joining the base tables directly and aggregating in the outer
+ *       query — `LEFT JOIN SwProduct ON ... GROUP BY SwProductType.productTypeID`. That fans the
+ *       product-type row out once per product before grouping, and once two such joins are present
+ *       their fan-outs multiply, so each count is inflated by the other's cardinality. It changes both
+ *       row multiplicity and the values, and AAP §0.8.2 Guideline 4 rules it out.
+ *
+ *       WHAT IS DONE INSTEAD: each count is aggregated inside its OWN derived table, grouped by the
+ *       key it correlates on, and the derived table is then `LEFT JOIN`ed on that key. A `GROUP BY`
+ *       yields at most one row per distinct key, so each join matches at most one row and the outer
+ *       result holds EXACTLY ONE ROW PER PRODUCT TYPE — the same multiplicity the legacy statement
+ *       has, for the same reason a scalar subquery has it. There is no fan-out to multiply, and the
+ *       two pre-aggregations cannot interfere with each other because neither is visible to the other.
+ *
+ *     THE VALUES ARE IDENTICAL ON EVERY INPUT, which is checkable rather than asserted. For a product
+ *     type `X`: the legacy assigned count is `count(SwProduct.productID)` over the products whose
+ *     `productTypeID = X`; the derived table's row for key `X` is `count(SwProduct.productID)` over
+ *     exactly that same set. When no product carries `X` the legacy scalar subquery returns 0 while
+ *     the join matches no row and yields `NULL`, which is why `COALESCE(..., 0)` is REQUIRED and not
+ *     defensive garnish — the row mapper reads both counts as required numbers and would refuse a
+ *     null. Products whose `productTypeID` is null form a null-keyed group that the equi-join can
+ *     never match, which is the same outcome the legacy predicate has, since nothing equals null. The
+ *     child count reasons identically through `parentProductTypeID`, where the null-keyed group is the
+ *     set of root product types. Both aliases are preserved exactly, and `isAssigned` remains the
+ *     count-not-flag misnomer the file header records.
+ *   - THE ORDERING IS THE SINGLE LEGACY SORT TERM, AND IS LEFT UNQUALIFIED. See FALSEHOOD #2 in the
+ *     file header for why the term itself must not be "improved". It stays unqualified because it is
+ *     still unambiguous: each derived table projects only its grouping key and its count, so
+ *     `productTypeName` is contributed by exactly one visible source. A reviewer comparing this line
+ *     against `model/dao/ProductTypeDAO.cfc:L62` therefore sees no difference at all, which is the
+ *     point. Were a derived projection ever widened to expose that name, MySQL would refuse the
+ *     statement outright rather than order by the wrong column — a loud failure, not a silent one.
  *
  * Called once at module evaluation. If the schema whitelist ever stopped recognising one of these
  * seven identifiers the module would fail to load, loudly, at the earliest possible moment — which is
@@ -336,22 +513,42 @@ function composeProductTypeTreeStatement(): string {
   const productId = assertColumnName(productTable, 'productID');
   const productProductTypeId = assertColumnName(productTable, 'productTypeID');
 
-  const assignedProductCount =
-    `(SELECT count(${productTable}.${productId})\n` +
-    `   FROM ${productTable}\n` +
-    `   WHERE ${productTable}.${productProductTypeId} = ${productTypeTable}.${productTypeId})`;
+  /*
+   * `model/dao/ProductTypeDAO.cfc:L55-L57`, pre-aggregated. The counted column, the grouped column and
+   * the correlation key are all the legacy's; only the evaluation point moved, from once per outer row
+   * to once per statement. The grouping key is projected because the join needs it — it is the same
+   * column the legacy predicate compared against.
+   */
+  const assignedProductCounts =
+    `(SELECT ${productTable}.${productProductTypeId},\n` +
+    `          count(${productTable}.${productId}) as ${DERIVED_COUNT_COLUMN}\n` +
+    `     FROM ${productTable}\n` +
+    `    GROUP BY ${productTable}.${productProductTypeId}) ${ASSIGNED_COUNT_SOURCE_ALIAS}`;
 
-  const immediateChildCount =
-    `(SELECT count(${SELF_REFERENCE_ALIAS}.${productTypeId})\n` +
-    `   FROM ${productTypeTable} ${SELF_REFERENCE_ALIAS}\n` +
-    `   WHERE ${SELF_REFERENCE_ALIAS}.${parentProductTypeId} =` +
-    ` ${productTypeTable}.${productTypeId})`;
+  /*
+   * `model/dao/ProductTypeDAO.cfc:L58-L60`, pre-aggregated the same way. The legacy self-reference
+   * alias is carried into the derived table, where it still names the same second reference to the
+   * product-type table that it named in the correlated form.
+   */
+  const childProductTypeCounts =
+    `(SELECT ${SELF_REFERENCE_ALIAS}.${parentProductTypeId},\n` +
+    `          count(${SELF_REFERENCE_ALIAS}.${productTypeId}) as ${DERIVED_COUNT_COLUMN}\n` +
+    `     FROM ${productTypeTable} ${SELF_REFERENCE_ALIAS}\n` +
+    `    GROUP BY ${SELF_REFERENCE_ALIAS}.${parentProductTypeId}) ${CHILD_COUNT_SOURCE_ALIAS}`;
 
   return (
-    `SELECT *,\n` +
-    `  ${assignedProductCount} as ${IS_ASSIGNED_ALIAS},\n` +
-    `  ${immediateChildCount} as ${CHILD_COUNT_ALIAS}\n` +
+    `SELECT ${productTypeTable}.*,\n` +
+    `  COALESCE(${ASSIGNED_COUNT_SOURCE_ALIAS}.${DERIVED_COUNT_COLUMN}, 0)` +
+    ` as ${IS_ASSIGNED_ALIAS},\n` +
+    `  COALESCE(${CHILD_COUNT_SOURCE_ALIAS}.${DERIVED_COUNT_COLUMN}, 0)` +
+    ` as ${CHILD_COUNT_ALIAS}\n` +
     `FROM ${productTypeTable}\n` +
+    `LEFT JOIN ${assignedProductCounts}\n` +
+    `  ON ${ASSIGNED_COUNT_SOURCE_ALIAS}.${productProductTypeId} =` +
+    ` ${productTypeTable}.${productTypeId}\n` +
+    `LEFT JOIN ${childProductTypeCounts}\n` +
+    `  ON ${CHILD_COUNT_SOURCE_ALIAS}.${parentProductTypeId} =` +
+    ` ${productTypeTable}.${productTypeId}\n` +
     `ORDER BY ${productTypeName} ASC`
   );
 }
@@ -399,6 +596,38 @@ export const PRODUCT_TYPE_TREE_STATEMENT: string = composeProductTypeTreeStateme
 export const PRODUCT_TYPE_TREE_BOUND_VALUES: readonly unknown[] = Object.freeze([]);
 
 /* ================================================================================================
+ * A SECOND COPY OF THE PERSISTENCE IDENTIFIERS STOOD HERE AND HAS BEEN REMOVED.
+ * ================================================================================================
+ * It declared `PRODUCT_TYPE_TABLE`, `PRODUCT_TYPE_ID_COLUMN` and a second
+ * `PRODUCT_TYPE_WRITABLE_COLUMNS` listing the same thirteen columns in the same order, spelled as
+ * `assertColumnName(PRODUCT_TYPE_TABLE, ...)` rather than through {@link PRODUCT_TYPE_WRITE_COLUMN}.
+ * Both tables resolved to `assertTableName('SwProductType')`, so the two lists held identical values —
+ * but the duplicate name made the module fail to compile, and `PRODUCT_TYPE_ID_COLUMN` had no reader at
+ * all. The surviving copy is the one above, because {@link PRODUCT_TYPE_WRITE_COLUMN} is independently
+ * read for the primary key by the insert, the update and both `WHERE` clauses, so it cannot be the copy
+ * that goes. The per-column `model/entity/ProductType.cfc` line citations that lived here were the one
+ * thing the survivor lacked, and they have been carried onto it entry by entry.
+ * ============================================================================================== */
+
+/*
+ * ⛔ `PRODUCT_TYPE_MANY_TO_MANY_FIELDS` AND `clearProductTypeManyToManyCollections` WERE REMOVED.
+ * They ported `org/Hibachi/HibachiService.cfc:L61` `removeAllManyToManyRelationships()` as an in-memory
+ * sweep, and nothing called either of them — `removeProductType` below issues its DELETE and does not.
+ *
+ * ✅ THE CONCERN IS OWNED, AND OWNED ONE LAYER OVER. `./MySqlProductPersistence.ts` carries the judgment
+ * call for this exact question and splits it on SCOPE rather than on convenience: link tables inside the
+ * extracted slice are removed with STATEMENTS, while every excluded-family link table and cascade child
+ * goes behind that module's declared `ProductDependencyCleanup` collaborator and is FLAGGED, which is what
+ * TR-5 requires. `removeProductTypeDependencies` is the product-type arm of it.
+ *
+ * A third mechanism here would clear collections `src/domain/product/ProductType.ts` types with a
+ * deliberately opaque element type precisely so that nothing in this port traverses them, and it would do
+ * so without issuing any statement — so it could never have satisfied the foreign-key constraint the
+ * legacy sweep existed to satisfy. The identical removal on the product side is recorded in
+ * `./MySqlProductRepository.ts`.
+ */
+
+/* ================================================================================================
  * THE ADAPTER
  * ============================================================================================== */
 
@@ -415,9 +644,22 @@ export const PRODUCT_TYPE_TREE_BOUND_VALUES: readonly unknown[] = Object.freeze(
  *     run time through the framework's missing-method dispatch (IR-1,
  *     `org/Hibachi/HibachiService.cfc:L255-L281`) and AAP §0.4.2.5 declares the single read on
  *     `ProductService`, not on this repository.
- *   - No save member and no delete member. Both are declared explicitly on `ProductService` at
- *     `model/service/ProductService.cfc:L294`, and persistence goes through the injected base service
- *     rather than through a bespoke member here.
+ *   - No SERVICE-level save or delete. `saveProductType` is declared explicitly on `ProductService` at
+ *     `model/service/ProductService.cfc:L294` with its URL-title derivation, its by-reference payload
+ *     mutation and its parent-inheritance step, and it reaches persistence through the injected base
+ *     service. None of that is duplicated here.
+ *
+ *     ⭐ WHAT *IS* HERE ARE THE TWO DATA-ACCESS PRIMITIVES THAT BASE SERVICE THEN CALLS.
+ *     `model/service/HibachiService.cfc:L86` delegates to `org/Hibachi/HibachiService.cfc`, whose save
+ *     reaches `getHibachiDAO().save()` [`org/Hibachi/HibachiDAO.cfc:L48-L67`] and whose delete reaches
+ *     `getHibachiDAO().delete()` [`:L69-L77`] at `org/Hibachi/HibachiService.cfc:L64`. Those two
+ *     primitives are data access, so this file is where they belong — as
+ *     {@link MySqlProductTypeRepository.persistProductType} and
+ *     {@link MySqlProductTypeRepository.removeProductType}. They are declared on the CLASS and left off
+ *     `ProductTypeRepository`, whose inventory AAP §0.4.1.6 closes at the single tree read, because
+ *     `src/services/BaseService.ts` consumes them through its one-member `EntityPersister` and
+ *     `EntityRemover` callbacks rather than through a repository reference. The port does not change and
+ *     no generic CRUD port is invented.
  *   - Nothing that reads inherited attribute-set assignments. That is defect D21 at
  *     `model/entity/ProductType.cfc:L92-L98`, boundary-stubbed in the domain layer, reaching an
  *     excluded domain family.
@@ -442,7 +684,7 @@ export const PRODUCT_TYPE_TREE_BOUND_VALUES: readonly unknown[] = Object.freeze(
  * @example
  * ```ts
  * // Wired in the composition root, which supplies the executor it already built.
- * const productTypes = new MySqlProductTypeRepository(executor);
+ * const productTypes = new MySqlProductTypeRepository(executor, accountContext);
  * for (const row of await productTypes.findAllForTree()) {
  *   // `row.isAssigned` is how MANY products use this product type, 0..N — never a yes-or-no answer.
  *   report(row.productTypeName, row.isAssigned, row.childCount);
@@ -456,16 +698,71 @@ export class MySqlProductTypeRepository implements ProductTypeRepository {
    * `private readonly`: nothing replaces it and nothing outside can reach around it, so no code path
    * in this class can end up on a connection this repository resolved for itself. Its lifetime belongs
    * to whatever supplied it, which is what preserves connection reuse across warm invocations.
+   *
+   * Typed as the READ-PLUS-WRITE pair `QueryRunner.ts` declares once, because the save and delete
+   * primitives below issue data-modifying statements and the reading member cannot carry them — it
+   * normalises a driver answer into rows and raises when the driver replies with a write
+   * acknowledgement. A `TransactionScope` hands out exactly this shape, which is what lets the probe
+   * and the write inside one save run on one connection (M6).
    */
-  private readonly executor: SqlExecutor;
+  private readonly executor: ProductTypeStatementExecutor;
+
+  /** @see MySqlProductTypeRepository.constructor */
+  private readonly accountContext: AccountContextPort;
 
   /**
    * @param executor - the contract every statement in this folder runs through, supplied by the
    *   composition root. This class never builds a pool, never reads a credential and never resolves a
    *   connection target.
    */
-  public constructor(executor: SqlExecutor) {
+  /**
+   * @param executor - Issues every statement this adapter composes.
+   * @param accountContext - Resolves the acting account for the audit block the write seam stamps.
+   *   Required rather than optional: `model/entity/ProductType.cfc:L305-L313` overrides both ORM
+   *   lifecycle hooks and delegates to the framework audit block, so a write that cannot name an actor
+   *   could not reproduce the legacy write. The port answers `undefined` for an unauthenticated request,
+   *   which the stamping functions accept, so "no actor" is expressed as a legitimate ANSWER rather than
+   *   as a missing collaborator.
+   */
+  public constructor(executor: ProductTypeStatementExecutor, accountContext: AccountContextPort) {
     this.executor = executor;
+    this.accountContext = accountContext;
+  }
+
+  /**
+   * Returns an equivalent {@link MySqlProductTypeRepository} bound to a DIFFERENT statement executor.
+   *
+   * ⭐ THIS IS THE FIX FOR REVIEW FINDING 2, AND THE DEFECT IT CLOSES WAS STRUCTURAL. Every repository
+   * in this folder captures its executor at construction, which is correct — but while that was the ONLY
+   * way to supply one, an executor chosen at construction time was necessarily the POOL-bound one, and
+   * no later act could change it. Wrapping a service call in `UnitOfWork.run` therefore did nothing
+   * useful: the boundary acquired a connection, began a transaction, and handed out a scope executor
+   * that this class had no way to adopt, so every read and write still went to the pool and straight out
+   * of the transaction. Rollback-on-errors and M6's same-connection read-back visibility were
+   * unreachable no matter how the graph was wired.
+   *
+   * Re-binding closes that. Inside a boundary a caller re-binds this repository to `scope.executor` and
+   * uses the result for the duration of the boundary; every statement the returned instance issues then
+   * runs on the connection the boundary owns.
+   *
+   * ⚠️ A NEW INSTANCE, NOT A MUTATION, AND THE DIFFERENCE IS THE POINT. The captured executor stays
+   * `private readonly` and this method never reassigns it, so the pool-bound instance a composition root
+   * built is still valid and still pool-bound after the call. Mutating it in place would make the
+   * repository's connection depend on WHEN it was used rather than on WHICH instance was used — an
+   * ambient current-transaction slot in all but name, which is exactly what
+   * `src/adapters/mysql/UnitOfWork.ts` refuses to keep (M7, AAP 0.7.3 S3). Two concurrent boundaries on
+   * one warm container get two instances and cannot observe each other's connection.
+   *
+   * ⚠️ IT IS NOT ON THE PORT INTERFACE, AND MUST NOT BE PUT THERE. A service may not know that a
+   * statement executor exists at all (AAP 0.7.3 S2 inverted), so re-binding is exposed on the CONCRETE
+   * adapter and used only by the layer that already holds concrete adapters. Adding it to the port would
+   * leak the persistence mechanism into `src/services/**`.
+   *
+   * @param executor - The executor to bind to, normally a boundary's `scope.executor`.
+   * @returns A new instance identical in every other respect.
+   */
+  public withExecutor(executor: ProductTypeStatementExecutor): MySqlProductTypeRepository {
+    return new MySqlProductTypeRepository(executor, this.accountContext);
   }
 
   /**
@@ -537,5 +834,177 @@ export class MySqlProductTypeRepository implements ProductTypeRepository {
     );
 
     return mapRows(rows, mapProductTypeTreeRow);
+  }
+
+  /**
+   * The writable column values, in exactly the order {@link PRODUCT_TYPE_WRITABLE_COLUMNS} lists them.
+   *
+   * An absent optional field becomes `null` rather than being dropped from the statement. Omitting it
+   * would let the database apply its own column default, which is a DIFFERENT outcome from storing the
+   * absence the entity actually holds — and on an update it would silently leave a stale value in place.
+   *
+   * The audit values are written exactly as the entity carries them. Stamping created and modified
+   * values is the entity lifecycle's job, not this adapter's; duplicating it here would give one rule two
+   * disagreeing implementations. Note that `createdByAccount` and `modifiedByAccount` are declared
+   * many-to-one at `model/entity/ProductType.cfc:L84` and `:L86` but are carried on the domain type as
+   * the identifier itself, which is what `assignAuditColumns` in `./rowMappers` reads back.
+   */
+  private collectWritableValues(productType: ProductType): readonly unknown[] {
+    return [
+      productType.productTypeIDPath ?? null,
+      productType.activeFlag ?? null,
+      productType.publishedFlag ?? null,
+      productType.urlTitle ?? null,
+      productType.productTypeName ?? null,
+      productType.productTypeDescription ?? null,
+      productType.systemCode ?? null,
+      /* The hierarchy lives in this key. Read from the association, mirroring the mapping declaration
+       * at `model/entity/ProductType.cfc:L62`.
+       *
+       * ⚠️ AND THIS KEY HAS A KNOWN ROUND-TRIP GAP, RECORDED RATHER THAN CLOSED. `./rowMappers.ts`
+       * leaves `parentProductType` entirely unhydrated under its rule 3, so a product type READ
+       * through that module carries no parent association and this expression stores `NULL`,
+       * detaching it from its parent. The gap is deliberate — an identifier-only parent would make
+       * `ProductType.getSimpleRepresentation` return `undefined` and empty the feed's
+       * `g:product_type` element, which rule 3a forbids. The full account, and the identical gap in
+       * `./MySqlProductPersistence.ts`'s `collectProductTypeValues`, are recorded at the rule 3a
+       * discussion in `./rowMappers.ts`. */
+      productType.parentProductType?.productTypeID ?? null,
+      productType.remoteID ?? null,
+      productType.createdDateTime ?? null,
+      productType.createdByAccount ?? null,
+      productType.modifiedDateTime ?? null,
+      productType.modifiedByAccount ?? null,
+    ];
+  }
+
+  /**
+   * Write one product type. See {@link ProductTypeRepository.saveProductType} for the contract and for
+   * why this member has to exist at all.
+   *
+   * ⚠️ THE INSERT-OR-UPDATE DECISION COMES FROM THE ENTITY, NOT FROM A PROBE, AND THAT DIFFERS
+   * DELIBERATELY FROM `MySqlSkuRepository.persistSku`. That member probes because a SKU can arrive
+   * carrying an identifier for a row that does not exist yet — the combination engine assigns one and
+   * hands the same entity back on a later pass. A product type reaches this member through
+   * `ProductService.saveProductType`, which either populates a freshly constructed instance or one loaded
+   * from a row, so `isNew()` answers the question exactly and a round trip would buy nothing. The
+   * divergence is recorded rather than smoothed over, because two write members in one folder deciding
+   * the same thing two ways is otherwise a reader's trap.
+   *
+   * ⛔ NO COMMIT, NO CASCADE, NO VALIDATION. All three belong to layers above; the port records why.
+   */
+  public async saveProductType(productType: ProductType): Promise<ProductType> {
+    const isInsert = productType.isNew();
+
+    /* The identifier `generator="uuid"` used to produce at flush time — assigned only while the entity
+     * is transient, so an update keeps the identifier its stored row is keyed on. */
+    if (isInsert) {
+      productType.productTypeID = createSlatwallUUID();
+    }
+
+    /*
+     * ==================================================================================================
+     * THE ORM LIFECYCLE HOOK IS INVOKED HERE, WHICH DISCHARGES A DECLARED BOUNDARY ITEM (F03)
+     * ==================================================================================================
+     * `src/domain/product/ProductType.ts` carries a `TODO(boundary)` on these two hooks stating that in
+     * the legacy they fire themselves and here they MUST be called, "immediately before the corresponding
+     * INSERT and UPDATE". This is that call site. Hibernate invoked them as part of the flush the
+     * framework triggered at request end (`org/Hibachi/Hibachi.cfc`, double `ormFlush()` gated on the ORM
+     * reporting no errors, with `flushAtRequestEnd=false`); a stateless Lambda invocation has no ORM
+     * session, no automatic flush and no request-end hook (mismatch M5, AAP §0.6.6), and
+     * `src/services/BaseService.ts` explicitly declines the job and places it "behind `EntityPersister`",
+     * which is this member.
+     *
+     * ⭐ THE ENTITY'S OWN HOOKS ARE CALLED, NOT THE FREE STAMPING FUNCTIONS, AND THE DIFFERENCE IS
+     * MATERIAL RATHER THAN STYLISTIC. `model/entity/ProductType.cfc:L305-L313` OVERRIDES both hooks and
+     * does two things in each: it rebuilds `productTypeIDPath` from the parent chain and only THEN calls
+     * `super.preInsert()` / `super.preUpdate()` for the audit block. `productTypeIDPath` is one of the
+     * columns this member writes, so calling only the audit functions would persist a stale ancestry
+     * path for any product type that has been re-parented — and, as the note on the hooks records,
+     * NOTHING WOULD FAIL LOUDLY. `MySqlProductRepository.saveProduct` calls the free functions instead,
+     * correctly: `model/entity/Product.cfc` does NOT override the hooks, so a product only ever received
+     * the framework block.
+     *
+     * ⚠️ THE ORDER IS FIXED: HOOK FIRST, COLLECT SECOND. `collectWritableValues` reads both
+     * `productTypeIDPath` and the four audit fields off the entity, so invoking the hook afterwards would
+     * compose the statement from pre-hook values and write exactly the stale row the hook exists to
+     * prevent.
+     *
+     * ⚠️ `preUpdate`'s FIRST PARAMETER IS PASSED AS `undefined` DELIBERATELY. Hibernate supplied the
+     * row's pre-image in `struct oldData`; no legacy body reads it, and this adapter has no pre-image to
+     * offer — the update path composes a full-column assignment rather than a diff. Passing `undefined`
+     * is therefore accurate, and fabricating a snapshot would imply a change-detection capability neither
+     * system has.
+     */
+    const auditActor = this.accountContext.getCurrentAccount();
+    if (isInsert) {
+      productType.preInsert(auditActor);
+    } else {
+      productType.preUpdate(undefined, auditActor);
+    }
+
+    const writableValues = this.collectWritableValues(productType);
+
+    if (isInsert) {
+      const columnList = [
+        PRODUCT_TYPE_WRITE_COLUMN.productTypeID,
+        ...PRODUCT_TYPE_WRITABLE_COLUMNS,
+      ].join(PRODUCT_TYPE_CLAUSE_JOINER);
+      const placeholders = [
+        PRODUCT_TYPE_WRITE_COLUMN.productTypeID,
+        ...PRODUCT_TYPE_WRITABLE_COLUMNS,
+      ]
+        .map(() => PRODUCT_TYPE_BIND_PLACEHOLDER)
+        .join(PRODUCT_TYPE_CLAUSE_JOINER);
+
+      await this.executor.executeMutation(
+        `INSERT INTO ${PRODUCT_TYPE_WRITE_TABLE} (${columnList}) VALUES (${placeholders})`,
+        [productType.productTypeID, ...writableValues],
+      );
+
+      return productType;
+    }
+
+    const assignments = PRODUCT_TYPE_WRITABLE_COLUMNS.map(
+      (column) => `${column} = ${PRODUCT_TYPE_BIND_PLACEHOLDER}`,
+    ).join(PRODUCT_TYPE_CLAUSE_JOINER);
+
+    await this.executor.executeMutation(
+      `UPDATE ${PRODUCT_TYPE_WRITE_TABLE} SET ${assignments} ` +
+        `WHERE ${PRODUCT_TYPE_WRITE_COLUMN.productTypeID} = ${PRODUCT_TYPE_BIND_PLACEHOLDER}`,
+      [...writableValues, productType.productTypeID],
+    );
+
+    return productType;
+  }
+
+  /**
+   * Remove one product type. See {@link ProductTypeRepository.removeProductType} for the contract.
+   *
+   * ⚠️ A TRANSIENT PRODUCT TYPE IS REFUSED RATHER THAN TURNED INTO A STATEMENT, on exactly the reasoning
+   * `MySqlBrandRepository.deleteBrand` records: an entity reporting itself new carries the empty unsaved
+   * value from `model/entity/ProductType.cfc:L52`, so a removal keyed on it would compose
+   * `WHERE productTypeID = ''` — a predicate matching nothing in a sound table and an arbitrary row in an
+   * unsound one. The mapping layer would have raised on the same input, since a transient instance has no
+   * persistent identity to remove. This is not a hardening: it refuses an input the legacy could not
+   * express, rather than one it accepted.
+   *
+   * ⚠️ THE AFFECTED-ROW COUNT IS NOT READ. For a removal the count is exact, but the legacy primitive at
+   * `org/Hibachi/HibachiDAO.cfc:L69-L77` is declared `void` and reports nothing, so a caller never learned
+   * whether a row was present. Returning `void` keeps that contract, and it is what `EntityRemover`
+   * declares.
+   */
+  public async removeProductType(productType: ProductType): Promise<void> {
+    if (productType.isNew()) {
+      throw new DomainError('A product type cannot be removed before it has been persisted.', {
+        context: { productTypeName: productType.productTypeName },
+      });
+    }
+
+    await this.executor.executeMutation(
+      `DELETE FROM ${PRODUCT_TYPE_WRITE_TABLE} ` +
+        `WHERE ${PRODUCT_TYPE_WRITE_COLUMN.productTypeID} = ${PRODUCT_TYPE_BIND_PLACEHOLDER}`,
+      [productType.productTypeID],
+    );
   }
 }

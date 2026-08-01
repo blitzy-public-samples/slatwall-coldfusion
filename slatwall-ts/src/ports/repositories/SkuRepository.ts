@@ -14,8 +14,8 @@
  * interface; the memoized sort-order cache becomes explicit request-scoped state" — and AAP §0.4.2.6
  * fixes each target name, which is the authority followed below.
  *
- * SEVEN MEMBERS, NOT SIX (Discrepancy 7). AAP §0.2.1.3 characterises the component as "6 public, 2
- * private"; the declarations read SEVEN public and ONE private, because only
+ * SEVEN PORTED MEMBERS, NOT SIX (Discrepancy 7). AAP §0.2.1.3 characterises the component as "6
+ * public, 2 private"; the declarations read SEVEN public and ONE private, because only
  * `model/dao/SkuDAO.cfc:L204` restricts access while `model/dao/SkuDAO.cfc:L222` declares itself
  * public. AAP §0.4.2.6 enumerates seven target methods, so seven are declared rather than one being
  * dropped. The count is easy to get wrong because the component MIXES BOTH CFML SYNTAXES — tag at
@@ -53,6 +53,59 @@
  * value position.
  *
  * =================================================================================================
+ * EIGHT MEMBERS IN TOTAL — THE EIGHTH IS MINTED DELIBERATELY, AND HERE IS ITS AUTHORITY
+ * =================================================================================================
+ * Seven members port `model/dao/SkuDAO.cfc` one-for-one, as AAP §0.4.2.6 enumerates them. The eighth,
+ * {@link SkuRepository.persistSku}, has NO legacy DAO counterpart in that component and is therefore
+ * an addition to the surface AAP §0.4.1.6 describes. Adding it was a decision; leaving the decision
+ * undocumented would let a reviewer read it as scope creep, so it is reconciled here rather than
+ * inferred.
+ *
+ * ⭐ THE AUTHORITY IS AAP §0.6.2, WHICH ASKS FOR A MECHANISM AND NOT MERELY FOR CARE. That section
+ * calls the validation read-back loop "the single most dangerous thing in the slice" and states the
+ * resolution in imperative terms: `src/adapters/mysql/UnitOfWork.ts` "must make each SKU's insert
+ * visible to the next SKU's uniqueness read WITHIN THE SAME TRANSACTION", and
+ * `test/services/SkuService.test.ts` "must include a combination-batch test that would fail under
+ * either naive ordering". A transaction boundary alone cannot deliver that: something has to be the
+ * per-SKU write that the boundary sequences, and that something has to be reachable from the service
+ * that owns the batch. This member is it.
+ *
+ * ⛔ THE SANCTIONED GENERIC PERSISTENCE BOUNDARY CANNOT CARRY IT, WHICH IS THE WHOLE REASON A NAMED
+ * MEMBER EXISTS. `src/services/BaseService.ts` declares the shared save and delete callbacks
+ * (`EntityPersister<TEntity>` and `EntityRemover<TEntity>`, the port of `model/service/
+ * HibachiService.cfc:L86` and `:L68`), and Brand, Product and ProductType all persist through exactly
+ * that route. A SKU cannot, for two independent reasons:
+ *
+ *   1. A CALLBACK TYPE CANNOT STATE THE VISIBILITY OBLIGATION. `EntityPersister<Sku>` is
+ *      `(entity: Sku) => Promise<Sku>` and says nothing about when the row becomes readable. An
+ *      implementation that queued the write and flushed it at commit would satisfy that type
+ *      perfectly and still break the batch, because the next uniqueness read would observe none of
+ *      its siblings and every SKU would validate as though it were the first — the exact silent
+ *      divergence AAP §0.6.2 warns produces different results with no error anywhere. The obligation
+ *      is expressible only as documented contract on a named member, which is what the ⛔ blocks on
+ *      {@link SkuRepository.persistSku} are.
+ *
+ *   2. A SKU'S WRITE IS NOT ONE ROW, AND THE EXTRA ROWS ARE THE ONES BEING READ BACK.
+ *      `model/entity/Sku.cfc:L76` declares the options as a many-to-many over `SwSkuOption`, so
+ *      persisting a SKU also maintains its link rows — and those link rows are precisely what
+ *      {@link SkuRepository.findSkusBySelectedOptions} tests with one `EXISTS` per selected option.
+ *      Pushing that knowledge through the generic boundary would put a per-entity link table into the
+ *      SHARED save path that every service inherits, which is adapter knowledge leaking into the
+ *      service layer and a straightforward breach of the hexagonal separation AAP §0.7.3 requires.
+ *
+ * ✅ AND THE ASYMMETRY IS PRINCIPLED, NOT AN INCONSISTENCY. The Product, ProductType and Brand
+ * persisters live on their adapter CLASSES and are consumed through the generic callbacks; they are
+ * not admitted to their ports. The difference is not entity importance but coupling: a SKU is the one
+ * entity in the slice whose write is read back by its own validation inside the same batch
+ * (`model/validation/Sku.json` registers `hasUniqueOptions`, and `model/entity/Sku.cfc:L756-L769`
+ * executes a query to answer it). Where no read-back obligation exists, no port member is minted.
+ *
+ * TODO(parity): AAP §0.4.1.6 remains the frozen authority for the SEVEN ported members and is not
+ * amended by this note — the AAP is aligned to, never edited (AAP §0.1.2.1). This block records an
+ * addition made under §0.6.2's explicit instruction, with its reason, so the delta between plan and
+ * port is visible in the port.
+ *
+ * =================================================================================================
  * THE ONE STATEFUL DATA-ACCESS COMPONENT OF THE FOUR (execution-model mismatch M7)
  * =================================================================================================
  * `model/dao/SkuDAO.cfc:L49` declares the component with generated accessors and
@@ -61,9 +114,9 @@
  * cache lifetime to reason about, and the reasoning is recorded on
  * {@link SkuRepository.clearOptionGroupSortOrderCache}: under mismatch M7 the memo becomes EXPLICIT
  * REQUEST-SCOPED state and never module-scope state, because module-scope state survives between
- * warm invocations and would bleed across them. No new mismatch identifier is introduced here —
- * the register is closed at M1-M9 (AAP 0.6.6 catalogues M1-M8; M9 was found during the port and is
- * recorded at `src/services/SkuService.ts`).
+ * warm invocations and would bleed across them. No new mismatch identifier is introduced here; the
+ * register's bounds are stated ONCE, in the F27 block further down this header, and nowhere else in
+ * the subtree.
  *
  * =================================================================================================
  * THE COMPONENT USES TWO NAMING CONVENTIONS FOR THE SAME TABLES (defect D22)
@@ -76,9 +129,9 @@
  * `org/Hibachi/HibachiDAO.cfc:L102-L106`, which is a mapping-layer convenience that native
  * statements do not receive. The conclusion for implementers is unchanged and must be carried:
  * never "fix" mapping-layer entity names to physical ones, and never assume a logical name works in
- * a native statement. Which convention each member's statement uses is stated on that member. No
- * further defect identifier is introduced — the register is closed at D1-D24 (AAP 0.6.7 catalogues
- * D1-D21; D22 is this finding, and D23 and D24 are recorded at `src/services/SkuService.ts`).
+ * a native statement. Which convention each member's statement uses is stated on that member. D22 is
+ * minted here and no further identifier is minted in this paragraph; the register's bounds and every
+ * port-minted entry are enumerated ONCE, in the F27 block immediately below.
  *
  * =================================================================================================
  * ⚠️ F27 — THE REGISTERS ARE NOT "CLOSED", AND SAYING SO WAS A FALSE STATEMENT OF FACT
@@ -93,23 +146,39 @@
  *   TODOs (D8, D20, D21) plus eighteen defects surfaced during analysis. No file in this port may
  *   amend that range, and none does.
  *
- *   THIS PORT HAS MINTED THREE IDENTIFIERS BEYOND IT, each where a verified source-level finding had
- *   no AAP entry. D22 is the one above. D23 and D24 are both in `src/services/SkuService.ts`:
- *   `getTransactionExistsFlag` forwards arguments its signature never declares
- *   (`model/service/SkuService.cfc:L285-L287`), and `processImageUpload` returns a boolean rather
- *   than the `Promise<Sku>` AAP §0.4.2.2 tabulates (`:L210-L218`).
+ *   THIS PORT HAS MINTED FOUR DEFECT IDENTIFIERS BEYOND IT, each where a verified source-level
+ *   finding had no AAP entry. Each is listed with the file that OWNS its annotation, so a reader can
+ *   go and read the finding rather than take the number on trust:
  *
- *   THE MISMATCH REGISTER IS EXTENDED THE SAME WAY. AAP §0.6.6 allocates M1–M8; `SkuService.ts`
- *   mints M9, because CFML specifies no iteration order for a plain struct while the port's `Map`
- *   preserves insertion order.
+ *     D22  this file, the paragraph immediately above — `model/dao/SkuDAO.cfc` mixes logical entity
+ *          names and physical table names inside native statements, intra-file.
+ *     D23  this file, {@link SkuRepository.transactionExists} — `getTransactionExistsFlag` forwards
+ *          an argument its signature never declares (`model/service/SkuService.cfc:L285-L287`). The
+ *          service-side consequence is recorded at `src/services/SkuService.ts` and the entity-side
+ *          reading at `src/domain/sku/Sku.ts`; both CITE this number rather than minting it.
+ *     D24  `src/services/SkuService.ts` — `processImageUpload` returns a boolean rather than the
+ *          `Promise<Sku>` AAP §0.4.2.2 tabulates (`model/service/SkuService.cfc:L210-L218`).
+ *     D25  `src/services/ProductService.ts` — `getFormattedOptionGroups` returns a MAP keyed by
+ *          option-group NAME rather than the array AAP §0.4.2.1 tabulates
+ *          (`model/service/ProductService.cfc:L70-L80`).
  *
- *   THERE IS NO D25 AND NO M10. Nothing in this subtree mints or cites either, so there is no
- *   authoritative D25 classification outstanding to supply: the numbering runs D1–D24 and M1–M9
- *   with no gap and no reservation.
+ *   THE MISMATCH REGISTER IS EXTENDED THE SAME WAY, BY EXACTLY ONE ENTRY. AAP §0.6.6 allocates
+ *   M1–M8; `src/services/SkuService.ts` mints M9, because CFML specifies no iteration order for a
+ *   plain struct while the port's `Map` preserves insertion order.
  *
- * The only honest claim a single file can therefore make is LOCAL — "no new identifier is minted
- * here" — and that is what every register note in this subtree now says. A GLOBAL closure claim is
- * unverifiable by a reviewer reading one file, and as of D22 it is simply untrue.
+ *   THE LIVE NUMBERING THEREFORE RUNS D1–D25 AND M1–M9, with no gap and no reservation, and there is
+ *   no D26 and no M10. An earlier version of this block asserted "THERE IS NO D25 AND NO M10" and was
+ *   half wrong: D25 was minted at `src/services/ProductService.ts` and cited in three further files
+ *   while this block denied its existence. That is the second time a numeric range stated in more
+ *   than one place drifted, which is why the range is now stated in exactly one place — here.
+ *
+ * THE RULE THAT FOLLOWS FROM ALL OF THIS, and the one a future writer should apply. Any file may cite
+ * AAP §0.6.7's frozen D1–D21 or AAP §0.6.6's frozen M1–M8, because a frozen document's range cannot
+ * drift. No file except this one may state the LIVE bound — the one that moves every time an entry is
+ * minted — and every other file's claim is purely LOCAL: "no new identifier is minted here", with a
+ * pointer to this block for the bounds. A global closure claim repeated per file is unverifiable by a reviewer
+ * reading one file, and it goes stale the moment the next entry is minted, which is exactly how the
+ * D1-D22 and D1-D24 variants came to contradict each other.
  *
  * WHAT IS DELIBERATELY NOT HERE. Each omission is identified by its behaviour and its locator, never
  * by its legacy identifier string, so that a documented ABSENCE cannot be mistaken for a declaration
@@ -162,6 +231,7 @@
  * value, a multi-match still raises, and an inert clearing member still exists.
  */
 
+import type { BoundedReadResult, BoundedReadWindow } from './BoundedRead';
 import type { Product } from '../../domain/product/Product';
 import type { Sku } from '../../domain/sku/Sku';
 
@@ -290,16 +360,21 @@ export interface SkuRepository {
    * transacted SKU be deleted. "Both optional" is therefore nominally true and functionally means
    * "at least one".
    *
-   * NO EXCLUSIVE-OR PARAMETER TYPE IS USED, AND THE REASON IS A CALLER. A discriminated union would
-   * express the mutual exclusivity in the type system and is deliberately rejected: it changes the
-   * callable shape, and the zero-argument form the service uses could no longer be forwarded at
-   * all. See the forwarding hazard below.
+   * NO EXCLUSIVE-OR PARAMETER TYPE IS USED, AND THE REASON IS THE PRESERVED FAILURE. A discriminated
+   * union would express the mutual exclusivity in the type system and is deliberately rejected: it
+   * would make the NEITHER case a compile error, and that case must stay callable so the legacy's own
+   * failure at `model/dao/SkuDAO.cfc:L90` is reproduced at run time rather than pre-empted at build
+   * time. It would also make the BOTH case illegal, when the legacy accepts it and resolves it by
+   * precedence [`:L58-L64`]. See the forwarding hazard below.
    *
-   * TODO(parity): Discrepancy 4 — the service member above this one takes NO ARGUMENTS.
-   * `model/service/SkuService.cfc:L285` declares an empty parameter list and forwards its whole
-   * argument scope onward at `L286`. Both contracts are preserved as found: the narrower service
-   * signature belongs to `src/services/SkuService.ts`, and the wider two-argument surface belongs
-   * here per AAP 0.4.2.6. They are not reconciled.
+   * TODO(parity): Discrepancy 4 — the legacy service member DECLARES no arguments while its two real
+   * callers PASS one each. `model/service/SkuService.cfc:L285` declares an empty parameter list and
+   * `:L286` forwards its whole argument scope onward. AAP §0.1.1.3 IR-1 governs that pattern and rules
+   * that it becomes an explicitly declared, typed method, so `src/services/SkuService.ts` declares
+   * `(skuID?, productID?)` and this member keeps the DAO's own `(productID?, skuID?)` order per TR-4.
+   * ⚠️ THE TWO ORDERS DIFFER, AND THE SERVICE PERFORMS THE SWAP ONCE — see the forwarding hazard.
+   * What Discrepancy 4's "narrower service contract" rules out is inheriting this member's argument
+   * ORDER and the DAO's optional-but-effectively-required semantics into the service signature.
    *
    * TODO(parity): THE FORWARDING MECHANISM HAS NO TYPESCRIPT EQUIVALENT, AND THIS IS A TRANSLATION
    * HAZARD RATHER THAN A LEGACY DEFECT. CFML forwards UNDECLARED named arguments through an
@@ -308,9 +383,17 @@ export interface SkuRepository {
    * `model/entity/Sku.cfc:L594` passes a SKU identifier by name, and both land in the argument
    * scope of a function declaring neither. TypeScript offers no such facility, so the two
    * capabilities must be reachable through explicitly declared parameters — which is why this
-   * member keeps both, even though its service caller declares none. Nothing about the legacy
-   * runtime is broken here and the service signature must NOT be "fixed"; what is missing is the
-   * declaration, and this contract supplies it (IR-1, TR-3).
+   * member keeps both, and why `src/services/SkuService.ts` declares the pair as well. Nothing about
+   * the legacy runtime is broken here: what is missing from the legacy is the DECLARATION, and these
+   * two contracts supply it (IR-1, TR-3).
+   *
+   * ⚠️ THE ORDER IS NOT THE SERVICE'S, AND THE DIFFERENCE IS LOAD-BEARING. This member is
+   * `(productID?, skuID?)`, mirroring `model/dao/SkuDAO.cfc:L54-L55` exactly, because TR-4 preserves
+   * legacy parameter order. The service member and both entity checkers are `(skuID?, productID?)`,
+   * SKU first, so one implementation serves both entities with no composition-root adapter. The service
+   * therefore SWAPS the two when it forwards, once, at the single crossing point. Both identifiers are
+   * 32-character strings (IR-6), so a swap performed in the wrong place — or twice — type-checks and
+   * silently queries the wrong column; an implementation of this member must not "helpfully" re-order.
    *
    * ADAPTER OBLIGATION — RESOLVE EVERY ASSOCIATION PATH EXPLICITLY. The existence tests reference
    * unqualified association paths that are never bound to the subquery's own alias: a SKU path at
@@ -617,6 +700,47 @@ export interface SkuRepository {
   searchByProductType(term?: string, productTypeID?: string): Promise<SkuSearchRow[]>;
 
   /**
+   * The same search as {@link SkuRepository.searchByProductType}, restricted to a caller-stated
+   * window.
+   *
+   * ⚠️ THIS IS ADDITIONAL SURFACE, NOT A REPLACEMENT. The unbounded member above is the port of
+   * `model/dao/SkuDAO.cfc:L130-L148` and stays exactly as it is, unbounded, because the legacy
+   * statement is unbounded and capping it would substitute a confidently short answer for a complete
+   * one (AAP §0.8.2 Guideline 4, §0.7.3 S9). This member exists so a caller that CAN state a ceiling
+   * has somewhere to state it, rather than being forced to materialise every match.
+   *
+   * EVERYTHING ABOUT THE MATCH SET IS IDENTICAL. Same predicate, same substring semantics — the
+   * implementation still wraps the term in leading and trailing wildcards itself, so callers still
+   * pass a BARE term — same product-type list splitting, same double guard on the product-type
+   * argument, same bind order of term first then product-type identifiers, and the same failure when
+   * the term is omitted. The window is applied after all of that and changes nothing about WHICH rows
+   * qualify, only how many are returned.
+   *
+   * ⚠️ NO ORDERING IS ADDED, SO SUCCESSIVE WINDOWS ARE NOT GUARANTEED DISJOINT. The underlying
+   * statement declares no `ORDER BY` and none may be introduced — see ROW ORDER IS UNSPECIFIED on the
+   * unbounded member. This window therefore bounds COST rather than delivering stable pagination, and
+   * `./BoundedRead` states the same limitation once for all four bounded members. A caller that
+   * needs stable paging cannot get it from this statement without changing the unbounded member's
+   * output, which is forbidden.
+   *
+   * THE WINDOW COMES FIRST, and that ordering is forced rather than chosen: both search arguments are
+   * optional, and an optional parameter cannot precede a required one. It is the only respect in which
+   * this signature departs from the unbounded member's argument order.
+   *
+   * @param window - the caller's row ceiling and zero-based offset. Both required; neither defaulted.
+   * @param term - partial SKU code, bare. Same contract as the unbounded member, including that
+   *   omitting it raises.
+   * @param productTypeID - comma-delimited product-type identifiers, despite the singular name. Same
+   *   contract as the unbounded member.
+   * @returns the window's rows, plus whether at least one further match lies past it. Never null.
+   */
+  searchByProductTypeBounded(
+    window: BoundedReadWindow,
+    term?: string,
+    productTypeID?: string,
+  ): Promise<BoundedReadResult<SkuSearchRow>>;
+
+  /**
    * Reads the SKUs of one product, with an eager-loading flag that ALSO FILTERS.
    *
    * ===============================================================================================
@@ -667,8 +791,8 @@ export interface SkuRepository {
    * are recorded rather than passed over: the behavioural difference is that the target's flag test
    * is unambiguous. Two nearby reads at `model/dao/SkuDAO.cfc:L88` and `L90` declare a local INSIDE
    * a conditional branch, which is the same scoping category; they are noted here under D9 rather
-   * than given an identifier of their own: AAP §0.6.7 enumerates D1-D21, this port adds only D22
-   * above and D23-D24 in `src/services/SkuService.ts`, and no further number is minted.
+   * than given an identifier of their own, because no further number is minted anywhere for them; the
+   * register is stated canonically in this file's header.
    *
    * TODO(parity): defect D13 is the DOWNSTREAM CONSEQUENCE of this member's companion, and it is
    * recorded here because the cause lives in this contract rather than in the service that fails.
@@ -695,13 +819,37 @@ export interface SkuRepository {
    * ADAPTER OBLIGATION — THE STATEMENT USES MAPPING-LAYER ENTITY NAMES throughout
    * `model/dao/SkuDAO.cfc:L152-L163`; see the D22 note in the file header.
    *
+   * ───────────────────────────────────────────────────────────────────────────────────────────────
+   * F-05 — THE RETURNED SKUs CARRY THEIR `options` COLLECTION, AND THAT IS A CONTRACT, NOT AN EXTRA
+   * ───────────────────────────────────────────────────────────────────────────────────────────────
+   * Every SKU this port hands back has `options` loaded, with each option's `optionGroup` loaded too.
+   * Three callers depend on it, and the third is the reason it is stated at the PORT rather than left as
+   * an adapter detail:
+   *
+   *   • `Sku.getOptionsDisplay` / `getSkuDefinition` / `getOptionsIDList` iterate the collection
+   *     [`model/entity/Sku.cfc:L236`], so an empty one renders an empty definition.
+   *   • `Sku.hasUniqueOptions` and `hasOneOptionPerOptionGroup` — the two METHOD-BASED rules of
+   *     `model/validation/Sku.json` [`model/entity/Sku.cfc:L756-L784`] — walk it, and the second
+   *     dereferences `option.getOptionGroup()`.
+   *   • ⚠️ {@link SkuRepository.persistSku} DELETES every `SwSkuOption` row of a pre-existing SKU and
+   *     re-inserts from `getOptions()`. So a SKU read through this port and then saved would, with an
+   *     unhydrated collection, delete its option links and write none. An implementation that skipped
+   *     hydration would therefore not merely return less data — it would silently destroy rows on a
+   *     read-then-write round trip.
+   *
+   * ⚠️ `fetchOptions` DOES NOT GATE THIS. The flag reproduces the legacy join, whose effect is to
+   * EXCLUDE SKUs lacking the base-type-specific records; it never determined whether a returned SKU's
+   * collection was populated, because in the legacy Hibernate resolved that on access. Making hydration
+   * conditional on the flag would make the round-trip data loss above depend on a caller's argument.
+   *
    * @param product - The product whose SKUs are read. The ENTITY, not an identifier: its base type
    *   selects the join and its identifier supplies the filter.
    * @param fetchOptions - When true, adds the base-type-specific inner join described above, which
    *   both eager-loads the related records AND EXCLUDES SKUs lacking them. REQUIRED, exactly as at
    *   `model/dao/SkuDAO.cfc:L150`; the default lives in the service.
    * @returns The product's SKUs — all of them when the flag is false, and only those carrying the
-   *   base-type-specific related records when it is true. Possibly empty; never null or undefined.
+   *   base-type-specific related records when it is true. Each carries its `options` collection, per the
+   *   note above. Possibly empty; never null or undefined.
    */
   findByProduct(product: Product, fetchOptions: boolean): Promise<Sku[]>;
 
@@ -904,8 +1052,16 @@ export interface SkuRepository {
    * AAP 0.6.2 warns produces different results with no error anywhere: the per-SKU boundary IS the
    * behaviour, because it is what interleaves the writes with the uniqueness reads between them.
    *
-   * @param sku - The SKU to persist. Carries its own 32-character identifier, generated in
-   *   application code per AAP IR-6, so no identifier is returned or assigned by this call.
+   * @param sku - The SKU to persist. MUTATED when it is transient: an implementation assigns its
+   *   32-character identifier here, because `model/entity/Sku.cfc:L52` declares
+   *   `fieldtype="id" generator="uuid"` — an instruction to the MAPPING LAYER to produce the value at
+   *   save time — and the legacy generator `createSlatwallUUID()` lives in the data-access layer at
+   *   `model/dao/HibachiDAO.cfc`. IR-6's "generated in application code" contrasts with DATABASE
+   *   AUTO-INCREMENT; it does not place generation in the domain or the service. Nothing above this
+   *   port assigns an identifier, so an implementation that refused a transient SKU would make every
+   *   SKU-creation path unreachable. The identifier is written onto the instance rather than returned,
+   *   because the option link rows, the `SwProduct.defaultSkuID` back-reference and the uniqueness
+   *   rule's self-exclusion clause at `model/entity/Sku.cfc:L763-L768` all read it from the graph.
    * @returns Nothing, once the SKU is visible to subsequent reads in the same transaction.
    */
   persistSku(sku: Sku): Promise<void>;

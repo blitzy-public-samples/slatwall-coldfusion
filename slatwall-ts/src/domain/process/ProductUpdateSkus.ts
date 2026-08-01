@@ -1,97 +1,124 @@
 /**
  * ProductUpdateSkus — the typed input object for the legacy `updateSkus` process context.
  *
- * Ported from [model/process/Product_UpdateSkus.cfc], a 60-line file whose entire body is twelve
- * lines following a 48-line licence header: the component declaration at [:L49], one injected entity
- * at [:L51-L52], four data properties at [:L54-L58], and the closing brace at [:L60]. Two facts about
- * that body govern everything here.
+ * Ported from [model/process/Product_UpdateSkus.cfc], whose entire body is twelve lines after a
+ * 48-line licence header: the component declaration at [:L49], one injected entity at [:L51-L52],
+ * four data properties at [:L54-L58], and the closing brace at [:L60]. Two facts about that body
+ * govern everything here.
  *
- * FACT ONE — THE COMPONENT DECLARES ZERO FUNCTIONS, so THIS MODULE DECLARES ZERO METHODS. A scan of
- * the file for a function declaration returns nothing at all. There is no behaviour to port because
- * the legacy component has none: it carries five values and does nothing with them. Every rule the
- * `updateSkus` context obeys lives somewhere else, and each of those places is named below, so a
- * reader who comes here looking for the missing logic learns where it went instead of concluding it
- * was lost.
+ * FACT ONE — THE COMPONENT DECLARES ZERO FUNCTIONS, so THIS MODULE DECLARES ZERO METHODS. There is no
+ * behaviour to port: it carries five values and does nothing with them. Per IR-8,
+ * `extends="HibachiProcess"` at [:L49] resolves to the LOCAL base `model/process/HibachiProcess.cfc`,
+ * which is an empty passthrough, so there is no local base behaviour to port either.
  *
- * FACT TWO — NOT ONE OF THE FIVE PROPERTIES CARRIES A `type=` ATTRIBUTE. `property name="product";`,
- * `property name="updatePriceFlag";`, `property name="price" hb_rbKey="entity.sku.price";`,
- * `property name="updateListPriceFlag";` and
- * `property name="listPrice" hb_rbKey="entity.sku.listPrice";` are the complete declarations. Beyond
- * the two resource-bundle keys there is no `hb_`-prefixed attribute anywhere in the file, and no
- * `notNull`, no `fieldtype`, no `cfc` and no `persistent` either — every one of those was checked
- * against the file and every one is absent. CFML asked for no type and the component volunteered
- * none, so the five types below are RECOVERED FROM THE OBSERVED CONTRACT — the single consumer, the
- * component's own rules document, the validation engine that interprets it, and the framework code
- * that constructs and populates the object — rather than guessed. Each recovery is documented at the
- * field it produced.
+ * FACT TWO — NOT ONE OF THE FIVE PROPERTIES CARRIES A `type=` ATTRIBUTE. Beyond two resource-bundle
+ * keys there is no `hb_`-prefixed attribute in the file, and no `notNull`, `fieldtype`, `cfc` or
+ * `persistent` either — each checked against the file and each absent. The five types below are
+ * therefore RECOVERED FROM THE OBSERVED CONTRACT (the single consumer, the rules document, the
+ * validation engine, and the framework code that constructs and populates the object) rather than
+ * guessed, and each recovery is documented at the field it produced.
  *
- * THE ODD ONE OUT OF THREE. The two structural twins in this folder, ProductAddOptionGroup.ts and
- * ProductAddOption.ts, port components that are identical line for line apart from a single property
- * name, and they are deliberately parallel to each other. This module follows the same skeleton, and
- * it should be read alongside them, but it diverges from both in exactly four ways — every one of
- * which is a fact about the source rather than a stylistic choice:
+ * ⚠️ AN `interface`, NOT A `class`, AND THE REASON IS TECHNICAL: A CLASS FIELD WOULD DESTROY THE
+ * ABSENT-VERSUS-UNDEFINED DISTINCTION, AND IN THIS FILE THAT DISTINCTION IS THE WHOLE CONTRACT.
+ * `tsconfig.json` targets ES2022, which makes `useDefineForClassFields` true, so a
+ * declared-but-uninitialised field is emitted as a real `Object.defineProperty` holding `undefined` —
+ * THE KEY WOULD EXIST ON EVERY INSTANCE. The legacy null representation is the opposite:
+ * [org/Hibachi/HibachiTransient.cfc:L196] routes a blank value to the private helper with no value
+ * argument, and that helper at [:L806-L819] implements it as `structDelete(variables, arguments.name)`
+ * — NULL BY DELETION, observed with `structKeyExists` rather than an equality test. An interface has no
+ * emit at all, so `'price' in candidate` and `delete candidate.price` behave exactly like the legacy
+ * pair. (The sibling ENTITY modules are classes because they do carry behaviour, and declare their
+ * optional fields with `declare` to suppress the same emit.) A constructor is impossible anyway: the
+ * injected entity is assigned immediately AFTER construction, so the type must be satisfiable with no
+ * arguments. ALL FIVE MEMBERS ARE THEREFORE OPTIONAL, and because `exactOptionalPropertyTypes` is on,
+ * optional means genuinely ABSENT — a key present holding `undefined` is a compile error rather than a
+ * quiet equivalent of omission. That is the type-level statement of null-by-deletion.
  *
- *   1. FIVE PROPERTIES, NOT TWO. One injected entity plus FOUR data properties, and the four are
- *      declared as two INTERLEAVED FLAG-AND-VALUE PAIRS rather than as two flags followed by two
- *      values. That interleaving is the source's own grouping and it is preserved.
- *   2. IT IS THE ONLY ONE OF THE THREE WITH A RULES DOCUMENT OF ITS OWN.
- *      `model/validation/Product_UpdateSkus.json` exists; there is no equivalent for either sibling
- *      context. See the dedicated block below, because the asymmetry is easy to misread as an
- *      omission in the siblings and is not one.
- *   3. TWO OF ITS PROPERTIES CARRY A RESOURCE-BUNDLE KEY. Those keys are the only `hb_`-prefixed
- *      metadata in any of the three legacy sources, they are carried VERBATIM as annotations on the
- *      fields that declare them, and they are deliberately not exported from this module.
- *   4. ITS SEMANTICS ARE CONDITIONAL, AND THE CONDITION TURNS ON ABSENCE. `price` and `listPrice` are
- *      required only while their paired flag is met, which is why the difference between a key that
- *      is ABSENT and a key that is present holding `undefined` cannot be collapsed here.
+ * THE MEMBER NAMES ARE DERIVED FROM THE FRAMEWORK, NOT CHOSEN. `product` reads like a name a translator
+ * might improve; it cannot be renamed, because nobody picked it.
+ * [org/Hibachi/HibachiEntity.cfc:L172-L182] is the only way an instance ever comes into existence: it
+ * composes the bean name at [:L174], then at [:L175] assigns the owning entity through a SYNTHESISED
+ * SETTER CALL — `invokeMethod("set#getClassName()#", {1=this})`, which for a `Product` IS
+ * `setProduct(this)`. The four data property names are byte-exact against the source —
+ * `updatePriceFlag` [:L55], `price` [:L56], `updateListPriceFlag` [:L57], `listPrice` [:L58] — and are
+ * not merely labels: each is the payload key the population loop looks for
+ * [org/Hibachi/HibachiTransient.cfc:L185] and the property identifier the rules document names, so a
+ * renamed member would silently match no payload key and no rule. Declaration order is population
+ * order, and the source's interleaving of each flag with the value it gates is preserved with it.
  *
- * The three legacy components nevertheless remain INDEPENDENT DECLARATIONS, and so do their ports:
- * nothing here imports, re-exports or derives from either sibling module, not by extension and not
- * through a mapped type, because the legacy components do not derive from each other either — they
- * are three separate files that happen to agree on their first property. Coupling them would
- * manufacture a relationship the source does not have and would make a future divergence in one
- * silently change the others.
+ * THE FOUR DATA PROPERTIES ARE `string | number`, and both arms are demonstrably inhabited, separated
+ * BY MECHANISM rather than by payload type. THE TRIMMED-STRING SHAPE: population assigns
+ * `trim(arguments.data[ currentProperty.name ])` [org/Hibachi/HibachiTransient.cfc:L207] — a trimmed
+ * STRING, never a converted number — and the admin form renders each flag as a yes/no field, so a flag
+ * arriving from a form is the STRING `'1'`. THE NUMERIC SHAPE arrives only by DIRECT ASSIGNMENT:
+ * `model/validation/Product_UpdateSkus.json` states each condition as an equality against the NUMBER
+ * `1`, and the consumer at [model/service/ProductService.cfc:L223] hands `price` straight to a SKU
+ * price setter, untouched. ⚠️ A NUMERIC PAYLOAD DOES NOT STAY NUMERIC — CFML is dynamically typed, so
+ * `trim(100)` yields the STRING `'100'`; the population path can only ever produce the string arm.
+ * Neither arm may be dropped, and no conversion is performed here: population assigned the trimmed
+ * string verbatim and left conversion to the ORM at flush time, whose equivalent is
+ * `src/adapters/mysql/rowMappers.ts`. Narrowing to `boolean`, to a two-literal union, to bare `number`,
+ * to bare `string`, to `unknown` or to a branded price type would each drop a reachable shape or invent
+ * a coercion the source does not have.
  *
- * The legacy tree is REFERENCE-ONLY (AAP §0.4.1.1, TR-6 "Change no existing file"). Nothing under
- * `model/`, `org/`, `config/`, `integrationServices/`, `admin/` or `meta/` is modified, read at
- * runtime or bundled; those paths appear here exclusively as prose citations.
+ * ⚠️ THE FLAGS ARRIVE AS A STRING AND ARE COMPARED AGAINST A NUMBER — the reason the union must not be
+ * collapsed. Four verified links: the admin form posts the character `1`; population assigns the trimmed
+ * STRING [org/Hibachi/HibachiTransient.cfc:L207]; the rules document writes each condition as an
+ * equality against the NUMBER `1`; and the equality constraint at
+ * [org/Hibachi/HibachiValidationService.cfc:L385-L395] compares with CFML's `==` at [:L391], which is
+ * BOTH LOOSE AND CASE-INSENSITIVE — so the legacy system never noticed. THE FAILURE MODE THIS PREVENTS:
+ * a port typing the flags as a number and comparing strictly against the numeric literal would NEVER
+ * FIRE on form input — the runtime value is a string, strict equality across types is false, the
+ * condition would be permanently unmet, and both prices would silently go unvalidated with no compile
+ * error, no runtime error and no test failure. This module makes the discrepancy VISIBLE IN THE TYPE and
+ * does NOT resolve the comparison semantics, which belongs to
+ * `src/validation/rules/productUpdateSkus.rules.ts`.
  *
- * SCOPE. AAP §0.4.1.4 states the whole mandate — CREATE from `model/process/Product_UpdateSkus.cfc`,
- * "The four data properties with their conditional semantics preserved for the validation rule set" —
- * and §0.2.1.4 makes this one of exactly three in-scope process objects, the rest of
- * `model/process/` being out of scope including the product-family siblings §0.2.2.4 excludes. TR-3
- * governs the shape: "Replace framework magic with declarations", so the population metadata this
- * component relied on reflectively at runtime is declared here instead. And per IR-8,
- * `extends="HibachiProcess"` at [:L49] resolves to the LOCAL Slatwall base
- * `model/process/HibachiProcess.cfc`, not the framework one — and that local file is an empty
- * passthrough, its [:L49-L51] being the component declaration and its closing brace with nothing
- * between them. THERE IS NO LOCAL BASE BEHAVIOUR TO PORT, which is why this module declares no base
- * type, extends nothing, and has no sibling base module.
+ * ⚠️ ABSENCE IS BEHAVIOUR: AN ABSENT FLAG LEAVES ITS PRICE UNVALIDATED. Four engine behaviours chain
+ * together. Condition evaluation [org/Hibachi/HibachiValidationService.cfc:L97-L131] skips an undefined
+ * condition name [:L108], ANDs constraints within one condition [:L110-L121], ORs across conditions
+ * [:L124-L126] and defaults to FALSE [:L130]. The equality constraint RETURNS FALSE FOR AN UNSET
+ * PROPERTY [:L385-L395], so an absent flag leaves its condition unmet. That switches off its price's
+ * rule ENTIRELY — not merely "not required" — because the same gate carries both the required constraint
+ * and the numeric one, and the numeric constraint passes on null anyway [:L256-L266]. One further engine
+ * fact, so nobody later simplifies the optionality away: the required constraint [:L240-L245] tests with
+ * `len(trim(...))`, so an empty string FAILS while a ZERO PASSES — a JavaScript falsiness test would
+ * wrongly reject a legitimate price of zero. The rules document is quoted here as CONTEXT ONLY; this
+ * module neither implements it nor imports from `src/validation/**`.
  *
- * WHAT THIS MODULE IS NOT. It is PURE DECLARATION: no data access, no connection, no `Sw*` table in
- * any query-shaped string and no driver import (S2); no environment read, no file system and no
- * logging (S4); synchronous throughout, with no I/O to defer and therefore nothing to make deferred
- * (S6); and NO module-scope mutable binding of any kind, so loading it has no observable effect and
- * nothing can bleed between invocations on a warm container (M7 / S8, expanded below). It imports
- * nothing outside `src/domain/**`, so the hexagonal direction is visible in the import lines
- * themselves (S4). It also generates no identifier: primary keys in this schema are 32-character
- * identifiers minted by the persistence layer (IR-6), never by a domain module, and none of the five
- * members of this object is a primary key in the first place. And although its subject matter is
- * conditional validation, it pulls in no schema-validation library and adds no dependency: the
- * dependency set is closed (S5), the rules themselves belong to `src/validation/rules/**`, and this
- * module encodes not one of them at runtime.
+ * AMBIGUITY, FLAGGED AND DELIBERATELY NOT RESOLVED (AAP 0.8.3.6). The consumer tests each flag with a
+ * BARE truth test — [model/service/ProductService.cfc:L222] `if(arguments.processObject.
+ * getUpdatePriceFlag())` and [:L226] the identical form. With the property unset the accessor returns
+ * null, and CFML's behaviour for a null condition expression is ENGINE-DEPENDENT: Railo and Lucee do not
+ * agree with Adobe ColdFusion. The unset case is genuinely reachable, because nothing makes either flag
+ * required. No default is added, the type is not narrowed to exclude absence, and no engine's semantics
+ * is adopted on the legacy system's behalf. It is a LANGUAGE-SEMANTICS gap rather than a coding defect,
+ * so it is not an AAP 0.6.7 register entry.
  *
- * Standards citations use the AAP §0.7.3 identifiers S1-S9; the ones with teeth here are S1 (no
- * escape-hatch type, no cast used to silence the compiler, no suppression comment, no non-null
- * assertion), S2 and S4 (the negative obligations above), S3 (no locator, no synthesised member, no
- * string-keyed resolution, no decorator), S5 (no dependency added), S6 (satisfiable by the empty
- * object literal, so a test needs no harness, container or database), S7 (preserve and annotate — the
- * untyped, all-optional, defaultless, flag-conditional shape IS the contract, and tightening any part
- * of it would change what the rules layer observes), S8 (two mismatches are flagged rather than
- * solved) and S9 (nothing invented: no sixth member, no default, no third resource-bundle key, no
- * display metadata, no audit field, no branded numeric type, no narrowed literal union). `G6` marks a
- * technology-specific translation decision, which AAP §0.8.2 Guideline 6 requires to be documented
- * where it is made — and this file carries more of them than either sibling, by design.
+ * ⚠️ M7 — THE TRANSIENT LIFECYCLE, AND WHY NOTHING HERE IS MEMOISED.
+ * [org/Hibachi/Hibachi.cfc:L289-L292] registers `"process"` among the container's transients, so process
+ * objects are a FRESH INSTANCE PER RESOLUTION, and this module honours that literally: the exported
+ * value is frozen and stateless, there is no module-scope `let`, map, set, weak map or memoised table,
+ * and importing it is observably inert. THE MISMATCH, FLAGGED RATHER THAN SOLVED: the legacy producer
+ * MEMOISES — [org/Hibachi/HibachiEntity.cfc:L173] only builds when the owning entity has no cached
+ * instance for that context, [:L181] returns the cached one, and [:L199-L201] exists so a caller can
+ * evict it. That cache lives on the OWNING ENTITY, keyed by context, and has no equivalent in a
+ * stateless invocation model: per-request state held in module scope on a warm container leaks across
+ * invocations and therefore across tenants, so reproducing it would be strictly WORSE than the legacy
+ * behaviour, which was at least per-entity and per-request.
+ *
+ * ⚠️ NOTHING IS DEFAULTED, AND NO PRESENTATION METADATA IS ADDED.
+ * [org/Hibachi/HibachiEntity.cfc:L179] invokes a defaults hook on the freshly built process object; for
+ * this component it is a no-op, the hook being declared at [org/Hibachi/HibachiProcess.cfc:L10-L12] with
+ * an empty body reading "Left Blank To Be Done By Each Process Object". THE CONTRAST IS THE PROOF,
+ * TWICE: the EXCLUDED [model/process/Product_AddSubscriptionTerm.cfc] DOES declare lazy product-derived
+ * defaults, for a property of exactly this name, and the EXCLUDED
+ * [model/process/Product_UploadDefaultImage.cfc] DOES carry a form-field-type attribute with accepted
+ * MIME types. Both sit in the same directory and were written by the same authors.
+ * `Product_UpdateSkus.cfc` pointedly does neither. So NO fallback default is invented for `price` or
+ * `listPrice`, and NO field type, widget, label, placeholder or ordering weight is attached to any
+ * member below. The admin view is read here purely as evidence: there is no user interface in scope at
+ * all (AAP 0.3.4).
  */
 
 import type { ColumnPropertyDescriptor, PropertyDescriptorSet } from '../base/populate';
@@ -360,9 +387,12 @@ import type { Product } from '../product/Product';
  * be invisible to the layer that actually performs the test.
  *
  * It is worth being precise about what kind of finding this is: a LANGUAGE-SEMANTICS gap, not a coding
- * defect. It is therefore not an entry in the AAP §0.6.7 register — which is CLOSED at its existing
- * entries and gains no new one from this file — and it carries a plain explanatory comment rather than
- * the plan's parity annotation. This module owns no register entry at all.
+ * defect. It is therefore not an entry in the register — which gains no new one from this file — and it
+ * carries a plain explanatory comment rather than the plan's parity annotation. This module owns no
+ * register entry at all, and the register is stated canonically, and only once, in the header of
+ * `src/ports/repositories/SkuRepository.ts` (AAP 0.6.7's frozen source range D1-D21, plus the
+ * source extension D22 and the three contract corrections D23, D24 and D25, with no D26 or beyond;
+ * and AAP 0.6.6's M1-M8 plus M9, with no M10 or beyond).
  * ============================================================================================== */
 
 /* =================================================================================================
@@ -509,68 +539,30 @@ import type { Product } from '../product/Product';
 /**
  * The declared property names of {@link ProductUpdateSkus}, in source declaration order.
  *
- * Matching the sibling domain modules, the names are a UNION OF LITERALS rather than a bare `string`.
- * That is what makes the descriptor set at the foot of this file typo-proof: a descriptor naming a
- * property this type does not declare is a compile error rather than an entry that silently matches
- * nothing at runtime, which is precisely the failure mode the legacy metadata walk could not detect.
- *
- * All five names are byte-exact against the source — `product` from
- * [model/process/Product_UpdateSkus.cfc:L52], `updatePriceFlag` from [:L55], `price` from [:L56],
- * `updateListPriceFlag` from [:L57] and `listPrice` from [:L58] — including their camel casing, and
- * the union lists them in the order the file declares them: THE INJECTED ENTITY FIRST, THEN EACH FLAG
- * IMMEDIATELY FOLLOWED BY THE VALUE IT GATES. The source interleaves the two pairs rather than
- * grouping both flags together, and that grouping is preserved rather than tidied, because declaration
- * order is population order.
+ * A UNION OF LITERALS rather than a bare `string`, which is what makes the descriptor set at the foot of
+ * this file typo-proof: a descriptor naming a property this type does not declare is a compile error
+ * rather than an entry that silently matches nothing at runtime — precisely the failure mode the legacy
+ * metadata walk could not detect. All five names are byte-exact against the source
+ * [model/process/Product_UpdateSkus.cfc:L52, :L55, :L56, :L57, :L58], and the order is the source's: THE
+ * INJECTED ENTITY FIRST, THEN EACH FLAG IMMEDIATELY FOLLOWED BY THE VALUE IT GATES.
  */
 export type ProductUpdateSkusPropertyName =
   'product' | 'updatePriceFlag' | 'price' | 'updateListPriceFlag' | 'listPrice';
 
 /**
- * The input object for the `updateSkus` process context — a product, plus a flag-and-value pair for
- * each of the two prices that may be applied across every one of its SKUs.
+ * The input object for the `updateSkus` process context — a product, plus a flag-and-value pair for each
+ * of the two prices that may be applied across every one of its SKUs.
  *
- * A PURE CARRIER, BY FIDELITY. Five optional members, zero methods, no defaults, no invariants and no
- * validation, because the legacy component at [model/process/Product_UpdateSkus.cfc:L49-L60] is
- * exactly that and nothing more. The reasoning behind the shape — why an interface rather than a
- * class, why the members are named and ordered as they are, why the four data properties admit both a
- * string and a number, why absence is load-bearing, and why nothing is memoised or defaulted — is
- * documented in the decision blocks above.
+ * A PURE CARRIER, BY FIDELITY: five optional members, zero methods, no defaults, no invariants and no
+ * validation, because [model/process/Product_UpdateSkus.cfc:L49-L60] is exactly that.
  *
- * THE FLAG-AND-VALUE PAIRING IS PRESERVED, NOT HARMONISED. It would be tempting to model each pair as
- * one nullable price and let presence stand in for the flag, and it would be wrong twice over: the
- * rules document names the flag and the price as SEPARATE property identifiers, and the consumer reads
- * them separately too, so collapsing them would leave the conditions unexpressible and would invent a
- * meaning for a present price with an absent flag that the legacy system does not have (S7).
- *
- * IT DELIBERATELY DOES NOT MODEL THE SKUS. The consumer at
- * [model/service/ProductService.cfc:L218-L230] reads the product's SKUs and applies each price to
- * every one of them; how it iterates, and the loop-scoping fact recorded in the parity note above,
- * belong to `src/services/ProductService.ts`. What matters here is the negative design obligation:
- * this type stays a FLAT FIVE-MEMBER CARRIER, with no SKU collection, no default-SKU member and no
- * derived summary of what would change, so that nothing about the input presumes any particular
- * application semantics. Adding such a member would silently take a decision that is not this layer's
- * to take.
- *
- * @example
- * ```ts
- * // Satisfiable with no arguments at all — the producer at
- * // [org/Hibachi/HibachiEntity.cfc:L174-L175] constructs first and assigns second.
- * const processObject: ProductUpdateSkus = {};
- * processObject.product = product;
- *
- * // A form submission delivers the trimmed string form; service code assigns numbers. Both are
- * // legal, and that is the point of the union.
- * processObject.updatePriceFlag = '1';
- * processObject.price = '19.99';
- * processObject.updateListPriceFlag = submittedListPriceFlag;
- * processObject.listPrice = computedListPrice;
- *
- * // Null by deletion, as the legacy `structDelete` did — the key stops existing, so a presence test
- * // answers false and the paired condition is left unmet. Assigning `undefined` instead is rejected
- * // by the compiler.
- * delete processObject.listPrice;
- * delete processObject.updateListPriceFlag;
- * ```
+ * ⚠️ THE FLAG-AND-VALUE PAIRING IS PRESERVED, NOT HARMONISED. Modelling each pair as one nullable price
+ * and letting presence stand in for the flag would be wrong twice over: the rules document names the flag
+ * and the price as SEPARATE property identifiers, and the consumer reads them separately, so collapsing
+ * them would leave the conditions unexpressible and would invent a meaning for a present price with an
+ * absent flag. It also DELIBERATELY DOES NOT MODEL THE SKUS — the consumer at
+ * [model/service/ProductService.cfc:L218-L230] reads the product's SKUs and applies each price to every
+ * one of them, and how it iterates belongs to `src/services/ProductService.ts`.
  */
 export interface ProductUpdateSkus {
   /*
@@ -585,34 +577,23 @@ export interface ProductUpdateSkus {
    * Assigned by the producer at [org/Hibachi/HibachiEntity.cfc:L175] through the synthesised
    * `setProduct(this)` call, which is why the member is named `product` and why it is an ordinary
    * optional field rather than a constructor parameter. The real sibling type is imported rather than
-   * restated: a locally declared structural stand-in would drift from `Product` silently, and the
-   * type-only import keeps the reference free of any runtime edge.
-   *
-   * Optional because the object exists, however briefly, before [L175] runs — and because the legacy
-   * component states no obligation for it to be present.
+   * restated, so it cannot drift from `Product` silently. Optional because the object exists, however
+   * briefly, before [:L175] runs — and because the legacy component states no obligation for it.
    */
   product?: Product;
-
-  /*
-   * Data Properties — the grouping comment at [model/process/Product_UpdateSkus.cfc:L54]. The four
-   * that follow are declared in the source as two interleaved flag-and-value pairs, and that order is
-   * preserved exactly.
-   */
 
   /**
    * Whether the price should be applied to every SKU of the product.
    *
-   * `string | number` because both shapes are inhabited: population assigns the TRIMMED STRING from
-   * request data [org/Hibachi/HibachiTransient.cfc:L207] and the admin control posts the character
-   * form, while the rules document states its condition against the numeric form and programmatic
-   * callers pass numbers. It is NOT a boolean and NOT a two-literal union — see the type-mandate block
-   * above for why each of those, and four others, was rejected.
+   * `string | number` because both shapes are inhabited — population assigns the TRIMMED STRING
+   * [org/Hibachi/HibachiTransient.cfc:L207] and the admin control posts the character form, while the
+   * rules document states its condition against the numeric form and programmatic callers pass numbers.
    *
    * Optional, and frequently ABSENT. An absent flag leaves its condition unmet
    * [org/Hibachi/HibachiValidationService.cfc:L385-L395], which switches off the paired price's rule
-   * entirely rather than merely making it un-required. No default is supplied, and a blank incoming
-   * value deletes the key rather than storing an empty string ([:L196] and [:L806-L819] of
-   * `HibachiTransient`), because this property declares no `notNull` attribute.
+   * entirely rather than merely making it un-required. No default is supplied, and a blank incoming value
+   * DELETES the key rather than storing an empty string ([:L196] and [:L806-L819] of `HibachiTransient`),
+   * because this property declares no `notNull` attribute.
    */
   updatePriceFlag?: string | number;
 
@@ -620,24 +601,15 @@ export interface ProductUpdateSkus {
    * The price to apply to every SKU of the product, when its flag is met.
    *
    * RESOURCE-BUNDLE KEY, CARRIED VERBATIM: `entity.sku.price`, declared on this property at
-   * [model/process/Product_UpdateSkus.cfc:L56]. It is an IDENTIFIER, not display text — it is looked
-   * up, never shown — so it is neither translated into a human-readable label nor paraphrased. It is
-   * recorded here, on the property that declares it, and it is deliberately NOT exported from this
-   * module in any form: the exported form belongs to
-   * `src/validation/rules/productUpdateSkus.rules.ts`, which is the module whose two conditional
-   * groups key off the flags, and duplicating it here would leave two folders claiming ownership of
-   * the same constant.
+   * [model/process/Product_UpdateSkus.cfc:L56]. It is an IDENTIFIER, not display text — looked up, never
+   * shown — so it is neither translated nor paraphrased, and it is deliberately NOT exported from this
+   * module: the exported form belongs to `src/validation/rules/productUpdateSkus.rules.ts`.
    *
-   * `string | number` for the reasons given on the flag above and in the type-mandate block. No
-   * numeric guard, minimum, precision or currency type is attached: none exists on this property in
-   * the source, and the numeric and minimum-value rules that DO exist belong to the SKU rule set
-   * (S9). Note in particular that a price of zero is a legitimate value the legacy required-constraint
-   * accepts [org/Hibachi/HibachiValidationService.cfc:L240-L245], so no falsiness test may stand in
-   * for a presence test on this member.
-   *
-   * Optional, and left ABSENT rather than defaulted — see Contrast Proof 1 above, where the excluded
-   * subscription-term process object supplies a product-derived default for a property of this very
-   * name and this component pointedly does not.
+   * `string | number` for the reasons given on the flag above. No numeric guard, minimum, precision or
+   * currency type is attached: none exists on this property in the source, and the numeric and
+   * minimum-value rules that DO exist belong to the SKU rule set. A price of ZERO is a legitimate value
+   * the legacy required-constraint accepts [org/Hibachi/HibachiValidationService.cfc:L240-L245], so no
+   * falsiness test may stand in for a presence test here.
    */
   price?: string | number;
 
@@ -645,10 +617,9 @@ export interface ProductUpdateSkus {
    * Whether the list price should be applied to every SKU of the product.
    *
    * The second flag, declared at [model/process/Product_UpdateSkus.cfc:L57] and gating its own
-   * condition independently of the first. Same type, same optionality and same absence semantics as
-   * `updatePriceFlag`: the two conditions are ORed only in the sense that the engine evaluates each
-   * rule's own condition list, so one flag being met has no effect whatsoever on the other price's
-   * rule.
+   * condition independently of the first. Same type, optionality and absence semantics as
+   * `updatePriceFlag`: the engine evaluates each rule's own condition list, so one flag being met has
+   * no effect whatsoever on the other price's rule.
    */
   updateListPriceFlag?: string | number;
 
@@ -656,13 +627,10 @@ export interface ProductUpdateSkus {
    * The list price to apply to every SKU of the product, when its flag is met.
    *
    * RESOURCE-BUNDLE KEY, CARRIED VERBATIM: `entity.sku.listPrice`, declared on this property at
-   * [model/process/Product_UpdateSkus.cfc:L58]. As with the key on `price`, it is an identifier rather
-   * than display text, it is not translated or paraphrased, and it is not exported from this module —
-   * only annotated on the property that declares it.
-   *
-   * `string | number`, optional, no default, no numeric guard: identical treatment to `price`, and for
-   * identical reasons. The consumer reads it only inside its own flag's branch
-   * [model/service/ProductService.cfc:L226-L228].
+   * [model/process/Product_UpdateSkus.cfc:L58]. As with the key on `price` it is an identifier rather
+   * than display text, and it is not exported from this module. `string | number`, optional, no
+   * default, no numeric guard: identical treatment to `price`. The consumer reads it only inside its
+   * own flag's branch [model/service/ProductService.cfc:L226-L228].
    */
   listPrice?: string | number;
 }
@@ -672,80 +640,34 @@ export interface ProductUpdateSkus {
  *
  * WHY ALL FIVE ARE COLUMNS. The population branch that claims a property is gated at
  * [org/Hibachi/HibachiTransient.cfc:L193] on `!structKeyExists(currentProperty, "fieldType") ||
- * currentProperty.fieldType == "column"`. Not one of the five properties declares a `fieldtype`
- * attribute — nor a `cfc` attribute, which the relationship branches also require — so all five take
- * the column branch, which is why {@link ColumnPropertyDescriptor} is the descriptor shape and why its
- * `kind` is pinned to the column literal. The `kind` MEMBER is omitted from each entry for exactly
- * that reason: an ABSENT `fieldtype` and an explicit `fieldtype="column"` are equivalent in the
- * source, so omission is the more faithful of the two renderings, and the type already records the
- * kind. Note the consequence for `product`, recorded rather than smoothed over: the legacy gate would
- * accept a SIMPLE value straight into the injected-entity slot.
+ * currentProperty.fieldType == "column"`. Not one of the five declares a `fieldtype` attribute — nor a
+ * `cfc` attribute, which the relationship branches also require — so all five take the column branch.
+ * The `kind` member is omitted because an ABSENT `fieldtype` and an explicit `fieldtype="column"` are
+ * equivalent in the source. ⚠️ Note the consequence for `product`, recorded rather than smoothed over:
+ * the legacy gate would accept a SIMPLE value straight into the injected-entity slot.
  *
- * WHY EVERY VALUE TYPE IS DECLARED AS CARRYING NONE. `valueType` is a REQUIRED member — deliberately,
- * so that an author cannot omit it and silently reinstate a stringification defect — and the honest
- * declaration for a property whose legacy source declares no ORM type is the one that says so. Not one
- * of these five declares a `type=` attribute, verified by scanning the file, so there is nothing to
- * convert towards and none is invented (S9). This is a POSITIVE STATEMENT that no conversion is owed,
- * not an absence of thought, and it is the same declaration both sibling process modules make.
+ * WHY EVERY VALUE TYPE IS DECLARED AS CARRYING NONE. `valueType` is a REQUIRED member — deliberately, so
+ * an author cannot omit it and silently reinstate a stringification defect — and not one of the five
+ * declares a `type=` attribute, so there is nothing to convert towards and none is invented. ⚠️ THAT IS
+ * NOT IN TENSION WITH THE FIELD TYPES ABOVE: the two members answer DIFFERENT QUESTIONS. `valueType`
+ * records what the LEGACY DECLARATION said, and it said nothing; the TypeScript field type records which
+ * SHAPES ARE ACTUALLY INHABITED at run time, a question the declaration never answered.
  *
- * ⚠️ AND THAT IS NOT IN TENSION WITH THE FIELD TYPES ABOVE, though the pairing invites the question:
- * why do the four data properties read as a string-or-number union while every entry here declares no
- * value type at all? Because the two members answer DIFFERENT QUESTIONS. `valueType` describes what
- * the LEGACY DECLARATION said — and it said nothing, so the faithful record is that it said nothing.
- * The TypeScript field type describes which SHAPES ARE ACTUALLY INHABITED at run time, which is a
- * question the legacy declaration never answered and which had to be settled from the producers
- * instead. Declaring a concrete value type here to "match" the union would be the invented conversion
- * the required member exists to prevent; narrowing the union to match this member would erase a shape
- * the system really delivers. Both stay as they are, and the divergence is the honest one.
- *
- * This also explains the one legitimate divergence from the sibling modules, whose corresponding
- * properties are typed as plain strings while these four are not: their two data properties hold
- * IDENTIFIERS, for which only the string shape is ever inhabited, so a union would be invented there.
- * These four hold a numeric flag and a price, for which both shapes are inhabited — so the union is
- * required here and forbidden there, from the same rule applied to different evidence. The descriptor
- * member, by contrast, is identical in all three modules, because all three legacy sources are
- * identically silent about type.
- *
- * WHY EVERY OPTIONAL MEMBER IS OMITTED — FIVE ABSENCES, EACH VERIFIED BY SCANNING THE SOURCE FILE AND
- * EACH MEANINGFUL RATHER THAN LAZY:
- *
- *   populateEnabled — ABSENT. The master gate at [:L185] reads `!structKeyExists(currentProperty,
- *     "hb_populateEnabled") || currentProperty.hb_populateEnabled neq false`, so a property with no
- *     such attribute is POPULATE-ENABLED BY OMISSION. None of the five declares one; the attribute
- *     does not occur in the file at all. It is omitted here and NOT written as the disabling value,
- *     because writing that would disable population and thereby INVENT a protection the legacy
- *     component does not have (S9) — changing what the population and validation layers observe. ⚠️
- *     That applies to `product` too, tempting though it is to "protect" an injected entity from being
- *     overwritten by request data: no such metadata exists in the source, so the omission is RECORDED,
- *     NOT CORRECTED (S7).
- *
- *   notNull — ABSENT, so a blank incoming value DELETES the key rather than assigning an empty string
- *     ([:L196] versus [:L207]). That is precisely what keeps the absence semantics of the conditional
- *     rule set reachable: a cleared flag becomes unset rather than empty, and an unset flag leaves its
- *     condition unmet. The attribute occurs exactly once in the whole in-scope slice, on a persistent
- *     property of another type, and never here.
- *
- *   populateArray — ABSENT, so the array branch at [:L216], which requires the attribute to be present
- *     and truthy, cannot be reached by any of the five.
- *
- *   fileUpload — ABSENT. The column gate at [:L193] ends in a PRESENCE test for it, so declaring it at
- *     all — even with a falsy value — would exclude the property from ordinary population. None of the
- *     five declares it, and none is an upload. (The excluded upload process object cited in Contrast
- *     Proof 2 is where that attribute family actually lives.)
- *
- *   sessionDefault — has no descriptor member to omit, and would have nothing to record if it did: the
- *     attribute that drives [:L210-L211] does not occur in this file either.
+ * FIVE OPTIONAL MEMBERS ARE OMITTED, each absence verified by scanning the source file.
+ * `populateEnabled` — the master gate at [:L185] reads `!structKeyExists(currentProperty,
+ * "hb_populateEnabled") || … neq false`, so a property with no such attribute is POPULATE-ENABLED BY
+ * OMISSION, and writing the disabling value would INVENT a protection the legacy component does not
+ * have. ⚠️ That applies to `product` too, tempting though it is to protect an injected entity from
+ * request data: the omission is RECORDED, NOT CORRECTED. `notNull` — absent, so a blank incoming value
+ * DELETES the key rather than assigning an empty string ([:L196] versus [:L207]), which is what keeps
+ * the absence semantics of the conditional rule set reachable. `populateArray` — absent, so the array
+ * branch at [:L216] is unreachable for all five. `fileUpload` — absent, and the column gate at [:L193]
+ * ends in a PRESENCE test for it, so declaring it at all would exclude the property from ordinary
+ * population. `sessionDefault` — the attribute driving [:L210-L211] does not occur in this file.
  *
  * The declared ORDER is preserved because it is population order: the legacy loop at [:L178] iterates
- * DECLARED PROPERTIES rather than payload keys, never the reverse, so a payload key matching no
- * declared property is silently ignored — and that iteration direction is exactly why this five-entry
- * table is the complete contract.
- *
- * ⚠️ AND NOTHING ELSE IS RECORDED. Neither resource-bundle key appears in this table, and neither does
- * a condition name, a required marker, a data-type marker, a form-field hint or a label. The
- * descriptor model is CLOSED to exactly the attributes the population branches test, and a
- * resource-bundle key is not one of them (S9); it is annotated on its property above, where it belongs,
- * and exported from nowhere in this module.
+ * DECLARED PROPERTIES rather than payload keys, so a payload key matching no declared property is
+ * silently ignored — which is why this five-entry table is the complete contract.
  */
 const PRODUCT_UPDATE_SKUS_COLUMN_DESCRIPTORS: readonly ColumnPropertyDescriptor<ProductUpdateSkusPropertyName>[] =
   Object.freeze([
@@ -760,26 +682,16 @@ const PRODUCT_UPDATE_SKUS_COLUMN_DESCRIPTORS: readonly ColumnPropertyDescriptor<
  * The complete population contract for {@link ProductUpdateSkus} — the declared replacement for the
  * legacy runtime metadata walk.
  *
- * `persistent: false` IS THE CONSEQUENTIAL MEMBER, and it is behaviour rather than bookkeeping. It
- * ports the absence of a `persistent` attribute on the component declaration at
- * [model/process/Product_UpdateSkus.cfc:L49], which makes the legacy persistence predicate answer
- * false for this type. That answer is the FIRST ARM of the authorisation disjunction at
- * [org/Hibachi/HibachiTransient.cfc:L186-L190] —
- * `!isPersistent() || (publicPopulateFlag && … == "public") || authenticateEntityProperty(…)` —
- * so the whole expression SHORT-CIRCUITS immediately and PROCESS OBJECTS POPULATE FREELY, bypassing
- * per-property authorisation entirely. The six persistent catalog entities declare `persistent=true`,
- * so for them the third arm really is consulted. That asymmetry is observable behaviour, and it is
- * DECLARED here as a flag rather than rediscovered by reflection — reflection being the framework
- * machinery TR-3 retires, and something `strict` TypeScript has no equivalent for in any case.
- *
- * THE MODEL IS CLOSED (S9). Five descriptors, one flag, one name, nothing else: no display metadata,
- * no resource-bundle key, no default, no audit property, no rule, no condition and no relationship.
- * Every member the descriptor contract offers is either used above or omitted for a documented reason.
- *
- * Frozen at both levels — the set and its property list — so the contract cannot be mutated at runtime
- * by a caller that receives it. Freezing is the only statement this module makes at load time, and it
- * is not a side effect: it touches nothing but the object literals declared here, so importing this
- * module remains observably inert (M7).
+ * `persistent: false` IS THE CONSEQUENTIAL MEMBER, and it is behaviour rather than bookkeeping. It ports
+ * the absence of a `persistent` attribute on the component declaration at
+ * [model/process/Product_UpdateSkus.cfc:L49], which makes the legacy persistence predicate answer false.
+ * That answer is the FIRST ARM of the authorisation disjunction at
+ * [org/Hibachi/HibachiTransient.cfc:L186-L190] — `!isPersistent() || (publicPopulateFlag && … ==
+ * "public") || authenticateEntityProperty(…)` — so the whole expression SHORT-CIRCUITS and PROCESS
+ * OBJECTS POPULATE FREELY, bypassing per-property authorisation entirely. The six persistent catalog
+ * entities declare `persistent=true`, so for them the third arm really is consulted. That asymmetry is
+ * observable behaviour, DECLARED here as a flag rather than rediscovered by reflection (TR-3). Frozen at
+ * both levels, so importing this module remains observably inert (M7).
  */
 export const PRODUCT_UPDATE_SKUS_PROPERTY_DESCRIPTORS: PropertyDescriptorSet<
   ProductUpdateSkus,
@@ -789,15 +701,9 @@ export const PRODUCT_UPDATE_SKUS_PROPERTY_DESCRIPTORS: PropertyDescriptorSet<
    * The legacy `getClassName()` value [org/Hibachi/HibachiObject.cfc:L135-L137] for
    * [model/process/Product_UpdateSkus.cfc:L49] — the bare component name, UNDERSCORE AND ALL. The CFML
    * file name is `Product_UpdateSkus.cfc`, so `listLast(getClassFullname(), ".")` yields
-   * `Product_UpdateSkus` and NOT the TypeScript class name `ProductUpdateSkus`. The legacy spelling is
-   * carried because it is what ARM 3 of the population gate would have been keyed by
-   * [org/Hibachi/HibachiTransient.cfc:L190].
-   *
-   * ⚠️ IT IS NEVER CONSULTED FOR THIS TYPE, and is declared anyway. `persistent: false` below
-   * short-circuits the authorisation OR on its first arm, so no authorisation question is ever asked
-   * about a process object. The member is required rather than optional precisely so that this fact is
-   * stated per type instead of being inferred from an omission — and so that a type which later
-   * becomes persistent cannot silently acquire a defaulted, mismatched key.
+   * `Product_UpdateSkus` and NOT the TypeScript class name `ProductUpdateSkus`. It is NEVER CONSULTED
+   * for this type — `persistent: false` below short-circuits the authorisation OR on its first arm —
+   * and is declared anyway so the fact is stated per type rather than inferred from an omission.
    */
   entityName: 'Product_UpdateSkus',
 

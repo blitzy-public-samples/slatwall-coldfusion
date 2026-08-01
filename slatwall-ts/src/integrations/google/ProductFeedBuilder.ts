@@ -12,14 +12,15 @@
  *     carrying NO feed logic whatsoever. Its port, `GoogleIntegration.ts`, is therefore nearly
  *     empty BY FAITHFULNESS, not by neglect.
  *   - `integrationServices/google/controllers/feed.cfc` (74 lines) — RECORD SELECTION only: which
- *     SKUs appear. Its port is `ProductFeedQuery.ts` — ⚠️ NOT DELIVERED AT THIS CHECKPOINT (F19);
- *     planned in AAP §0.4.1.10.
+ *     SKUs appear. Its port is `ProductFeedQuery.ts`, which is delivered: it carries the three
+ *     related-property joins, the three activity filters and the availability range, and it resolves
+ *     the relationships this file's sixteen fields dereference.
  *   - `integrationServices/google/views/feed/product.cfm` (66 lines) — ALL of the data shaping.
  *     Its port is THIS FILE.
  *   - `integrationServices/google/model/dao/FeedDAO.cfc` (76 lines) — orphaned dead code with
  *     syntactically broken SQL and zero callers repository-wide. Deliberately NOT ported; the
- *     evidence is carried in `IntegrationContract.ts` and is not restated here, because that finding
- *     is owned there. ⚠️ F19: this previously named an undelivered `README.md`.
+ *     evidence is carried in this folder's `README.md` §9 — the home AAP §0.4.1.10 assigns it — and
+ *     is not restated here, because a carried-defect entry must be findable in exactly one place.
  *
  * A SERIALIZER, NOT A USER-INTERFACE COMPONENT
  * The output is RSS 2.0 XML in the `g:` namespace, consumed by a merchant feed processor rather than
@@ -40,9 +41,9 @@
  *   1. `CGI.HTTP_HOST` (`product.cfm:L14`, `L15`, `L22`, `L23`, `L24`) becomes
  *      {@link ProductFeedRenderContext.host} — a host authority, not a pre-normalised URL. The
  *      literal `http://` concatenation is reproduced exactly: the scheme is not upgraded to HTTPS,
- *      no slash is added or removed, and the host is neither trimmed nor normalised. It is however
- *      VALIDATED and BRANDED rather than raw — see DECISION G-1, which explains why the legacy's
- *      request-supplied host is the one input that could not be carried across unchanged.
+ *      no slash is added or removed, and the host is neither trimmed, normalised nor validated. It is
+ *      a plain `string`, emitted RAW — see DECISION G-1, which records the validated-and-branded form
+ *      an earlier revision used and why it is withdrawn.
  *   2. `now()` (`product.cfm:L30`, read twice) becomes {@link ProductFeedRenderContext.renderTime}.
  *      Nothing in this module constructs a date or reads a clock.
  *   3. `getTimeZoneInfo().utcHourOffset` (`product.cfm:L30`, read twice) becomes
@@ -77,8 +78,10 @@
  * a synchronous HTTP integration in front of it will generally allow, and those integration limits
  * vary by gateway type, region and configuration, so the effective ceiling has to be established
  * where the feed is actually published. Whether the feed is delivered asynchronously or streamed is
- * therefore an UNRESOLVED DECISION belonging to the planned Google feed handler under
- * `src/handlers/`. This builder deliberately sets no budget, no page size, no chunk size, no
+ * therefore an UNRESOLVED DECISION belonging to `src/handlers/googleFeedHandler.ts`, which is
+ * delivered and which carries that flagged decision rather than resolving it — publication topology is
+ * infrastructure, and AAP §0.2.2.5 puts infrastructure as code out of scope. This builder deliberately
+ * sets no budget, no page size, no chunk size, no
  * re-attempt policy and no streaming policy: inventing one would breach AAP §0.7.3 S9, so M2 is CITED
  * here rather than resolved.
  *
@@ -111,31 +114,48 @@
  * never named here, so they are deliberately NOT imported.
  *
  * ------------------------------------------------------------------------------------------------
- * THE ONE PLACE THIS FILE IS STRICTER THAN THE LEGACY, AND WHY THAT IS NOT A BEHAVIOUR CHANGE
+ * THIS FILE IS NOT STRICTER THAN THE LEGACY ANYWHERE, AND AN EARLIER REVISION WAS STRICTER IN THREE
+ * PLACES
  * ------------------------------------------------------------------------------------------------
- * Sixteen fields are emitted per item and only six of them are escaped, because only six are escaped
- * by the legacy view. That asymmetry is preserved exactly — see {@link escapeFeedText}, which explains
- * why blanket-escaping the document would corrupt every URL in it — but preservation alone left the
- * ten unescaped substitutions with NO grammar of any kind, and a `<` or `&` in any of them ends the
- * enclosing element and turns the rest of the value into markup. The legacy shared that exposure, and
- * the most reachable of the values is the host authority, which `product.cfm` takes from
- * `CGI.HTTP_HOST` — a client-supplied header — and feeds into FIVE separate sinks.
+ * Sixteen fields are emitted per item and exactly six of them are escaped, because exactly six are
+ * escaped by the legacy view — `g:id` (`product.cfm:L17`), `title` (`:L18`), `description` (`:L19`),
+ * `g:product_type` (`:L21`), `g:brand` (`:L32`) and `g:item_group_id` (`:L39`), each through
+ * `htmlEditFormat`. The other TEN substitutions are emitted RAW, exactly as `product.cfm` emits them:
+ * the channel `link` (`:L14`) and `description` (`:L15`), the item `link` (`:L22`), `g:image_link`
+ * (`:L23`), every `g:additional_image_link` (`:L24`), `g:price` (`:L27`), `g:sale_price` (`:L29`),
+ * `g:sale_price_effective_date` (`:L30`) and `g:shipping_weight` (`:L58`).
  *
- * Each raw sink therefore gets a POSITIVE, CONTEXT-SPECIFIC GRAMMAR that is enforced FAIL-CLOSED: a
- * conforming value is emitted byte-for-byte untouched, and a non-conforming one raises instead of
- * being escaped, sanitised or truncated. That choice is what keeps the hardening compatible with
- * AAP §0.6.7.7, under which D18 is the ONLY sanctioned departure from byte-for-byte preservation —
- * validating changes no valid byte, whereas escaping would change many. Every grammar is derived from
- * a standard or from repository source rather than chosen here, so AAP §0.7.3 S9 is satisfied and the
- * defect register of AAP §0.6.7 gains no entry. The grammars, their derivations and the reasoning are
- * in RAW-SINK VALIDATION below.
+ * ⛔ AN EARLIER REVISION ADDED THREE HARDENINGS HERE AND ALL THREE ARE WITHDRAWN. It validated the
+ * host authority against a character allowlist and a DNS-label ceiling and RAISED on a miss (G-1); it
+ * validated three URL paths as same-origin relative references and RAISED on a miss (G-2); and it
+ * escaped nine of the ten raw sinks (G-3). Each is a behaviour change: the legacy publishes the
+ * document, and this module refused to, or published different bytes.
+ *   1. AAP §0.8.2 guideline 4 forbids enhancement beyond what the migration requires, and §0.6.7
+ *      governs the register with "preserve and annotate, do not repair".
+ *   2. D18 (§0.6.7.7) is the SOLE declared behaviour-hardening exception, and it is a precedent only
+ *      for a divergence that changes no outcome — parameterised SQL returns exactly the rows
+ *      interpolated SQL returned. A refusal returns nothing; an escape returns different bytes.
+ * The CWE-91 XML-injection and origin-rebasing exposure is real and is FLAGGED at each raw sink by
+ * locator rather than closed, which is the S8 treatment for a divergence this port is not licensed to
+ * make. See WITHDRAWN RAW-SINK VALIDATION below.
  *
- * COVERAGE PROVENANCE — NET-NEW
- * The planned suite for this module extends no legacy coverage, and no parity of coverage is claimed:
- * `meta/tests/` holds no test for `integrationServices/google/views/feed/product.cfm`, for its
- * controller or for its DAO. The legacy suite also ships no mocking library and boots the whole
- * framework application per test, so legacy tests are integration tests where the target's are unit
- * tests — a difference by design rather than a gap. What this module owes its suite in return is
+ * COVERAGE PROVENANCE — NET-NEW, AND THE SUITE IS NAMED
+ * This module's suite is `slatwall-ts/test/integrations/ProductFeedBuilder.test.ts`, the exact path AAP
+ * §0.4.1.12 assigns it, and that row labels it NET-NEW: it extends no legacy coverage and no parity of
+ * coverage is claimed. `meta/tests/` holds no test for
+ * `integrationServices/google/views/feed/product.cfm`, for its controller or for its DAO (AAP §0.6.5.2).
+ *
+ * ⚠️ AND THE LEGACY SIDE OF THAT COMPARISON IS DOCUMENTARY ONLY, WHICH IS A LIMITATION AND NOT A
+ * FORMALITY. AAP §0.5.4 records that MXUnit and CFSelenium are NOT VENDORED in this repository and
+ * §0.8.4.2 concludes that the legacy suite therefore cannot be executed here at all; §0.8.4.1 adds that
+ * the cited `meta/docker/slatwall-local-dev/` does not exist, so no CFML runtime is reproducible either.
+ * The "no legacy test exists" statement above was therefore established by READING legacy test source,
+ * not by running it and comparing output. Nothing in this file's provenance claim rests on an executed
+ * comparison, and saying so is preferable to implying one that never happened (AAP §0.8.3.7).
+ *
+ * The legacy suite also ships no mocking library and boots the whole framework application per test, so
+ * legacy tests are integration tests where the target's are unit tests — a difference by design rather
+ * than a gap (AAP §0.4.3.6). What this module owes its suite in return is
  * testability without a database, a network, a live paginated query, a process environment, a request
  * scope or a filesystem, which is why every collaborator is a narrow interface satisfiable by a plain
  * object and every ambient legacy global is an explicit input.
@@ -155,10 +175,19 @@ import type { Product } from '../../domain/product/Product';
 import type { ProductType } from '../../domain/product/ProductType';
 import type { Sku } from '../../domain/sku/Sku';
 import { DataIntegrityError, DomainError } from '../../errors/DomainError';
-import type { ImagePathPort, ResizedImagePathRequest } from '../../ports/ImagePathPort';
+import type {
+  ImagePathPort,
+  ImageWebPath,
+  ResizedImagePathRequest,
+  SaveImageFileRequest,
+} from '../../ports/ImagePathPort';
+/* `compareExactDecimal` is a RUNTIME import, not a type-only one: `ExactDecimal` is a branded STRING, so
+ * `>` between two of them compiles and silently orders lexicographically — `'9.00' > '10.00'` is true. The
+ * sale-price guard is ordered digit-wise instead; the full account is on the comparison itself. */
+import { compareExactDecimal, type ExactDecimal } from '../../util/formatting';
 /* Runtime import: DECISION I-1's display tag. See the call site in the additional-image loop. */
 import { toImageWebPath } from '../../ports/ImagePathPort';
-import type { PricingPort } from '../../ports/PricingPort';
+import type { PricingPort, SalePriceDetailsBySkuId } from '../../ports/PricingPort';
 import type {
   SettingResolutionContext,
   SettingResolverPort,
@@ -171,163 +200,231 @@ import type {
  * local structural type in the established idiom of this subtree — `util/urlTitle.ts`'s
  * `UniqueValueProbe`, `services/BaseService.ts`'s `EntityPersister` and `OptionService.ts`'s
  * `SelectOption` are the precedents. No barrel, no shared `types` module and no options bag is
- * introduced: the folder is flat, holding four files at this checkpoint and six in AAP §0.4.1.10's
- * plan (F19), and none of them is a shared type bucket.
+ * introduced: the folder is flat, and its six delivered files are exactly the six AAP §0.4.1.10 names
+ * — none of them is a shared type bucket.
  * ============================================================================================= */
 
 /* ------------------------------------------------------------------------------------------------
- * DECISION G-1 — THE FEED HOST IS A VALIDATED CONFIGURATION FACT, NOT A REQUEST VALUE
+ * WITHDRAWN RAW-SINK VALIDATION — DECISIONS G-1 AND G-2 ARE GONE, AND THE RISK IS FLAGGED INSTEAD
  * ------------------------------------------------------------------------------------------------
- * ⚠️ THIS IS A DECLARED HARDENING EXCEPTION, ON THE PRECEDENT OF DEFECT D18 (AAP §0.6.7.7), AND IT
- * IS THE FIRST OF THREE IN THIS FILE. It is recorded here rather than slipped in, so a reviewer
- * diffing this module against `integrationServices/google/views/feed/product.cfm` knows the
- * divergence is intended.
+ * ⛔ WHAT WAS HERE. Two fail-closed gates and their grammars:
+ *   - DECISION G-1 declared a module-private `FEED_HOST_AUTHORITY` symbol, a branded
+ *     `FeedHostAuthority` type, a `FEED_HOST_AUTHORITY_PATTERN` character allowlist, RFC 1035's
+ *     63-octet DNS-label ceiling and a `validateFeedHostAuthority` function that RAISED on a miss. The
+ *     brand was unforgeable, so a raw host became a compile error.
+ *   - DECISION G-2 declared a `URI_EXCLUDED_CHARACTER_PATTERN` derived from RFC 3986 and a
+ *     `requireRelativeFeedPath` function that RAISED when a path was relative, scheme-relative, or
+ *     carried an excluded character. It guarded the item `link`, `g:image_link` and every
+ *     `g:additional_image_link`.
  *
- * WHAT THE LEGACY DID. `product.cfm` interpolates `CGI.HTTP_HOST` into all five of its absolute
- * URLs — `:L14`, `:L15`, `:L22`, `:L23` and `:L24` — with no validation of any kind. On the target
- * platform the equivalent value is the request's own `Host` header, which is supplied by whoever
- * calls the endpoint. Three consequences follow, and none of them needs an unusual deployment:
- *   1. XML STRUCTURE INJECTION. A `Host` header carrying `<`, `>` or `&` lands inside four element
- *      text nodes and can close an element and open new ones, so a caller can add or replace feed
- *      fields. That is the CWE-91 half of the finding.
- *   2. HOST ABUSE. Every product link, image link and additional-image link in the document is
- *      rebased onto whatever authority the caller names, so one request can produce an entire
- *      merchant feed pointing at somebody else's origin.
- *   3. A MALFORMED DOCUMENT. A bare `&` in a text node is not well-formed XML at all, so a single
- *      ampersand in the header makes the whole feed unparseable.
+ * ⛔ WHY BOTH ARE WITHDRAWN. `integrationServices/google/views/feed/product.cfm` validates NOTHING.
+ * `:L14`, `:L15`, `:L22`, `:L23` and `:L24` interpolate `CGI.HTTP_HOST` with no check of any kind, and
+ * `:L22`, `:L23` and `:L24` append `getProductURL()` and `getResizedImagePath()` with no check either.
+ * The legacy renders the document whatever those values contain. Refusing to render is therefore an
+ * OUTCOME CHANGE, and:
+ *   1. AAP §0.8.2 guideline 4 forbids enhancement beyond what the migration requires;
+ *   2. D18 (§0.6.7.7) is the sole declared behaviour-hardening exception and licenses only divergences
+ *      that change no outcome — a refusal is not one;
+ *   3. the "validating changes no valid byte" argument the withdrawn note relied on is beside the
+ *      point: the AAP's bar is behaviour, and a value the legacy published and this module refuses is
+ *      a behaviour difference regardless of how the accepted values are spelled.
  *
- * WHAT HAPPENS INSTEAD. Two mechanisms, and they answer two different questions:
- *   - {@link FeedHostAuthority} answers "can this value break out of its element or change the
- *     origin?" — enforced by the compiler, because {@link validateFeedHostAuthority} is the only
- *     producer of the brand and the branding symbol is module-private and never exported.
- *   - The PROVENANCE obligation below answers "where did the value come from?" — which no type can
- *     enforce, and which is therefore stated as a contract on the caller.
+ * ⚠️ THE EXPOSURE IS REAL AND IS FLAGGED, NOT CLOSED. XML markup in the host or in a path lands inside
+ * an element text node and can add or replace feed fields (CWE-91); a path beginning `//` rebases every
+ * URL in the document onto a foreign authority; a bare `&` leaves the document with no defined XML
+ * parse. All three are properties of `product.cfm` and all three are carried, flagged at each emission
+ * site by locator, for the operator to close outside this port (S8).
  *
- * ⭐ THE PROVENANCE OBLIGATION, STATED ONCE AND OWED BY THE HANDLER LAYER. `GOOGLE_FEED_HOST` is
- * read and validated by `src/config/env.ts` (its DECISION F) and surfaces as
- * `config.googleFeed.host`. The deferred `src/handlers/googleFeedHandler.ts` MUST obtain the host
- * from there, pass it through {@link validateFeedHostAuthority}, and MUST NOT read the request's
- * `Host`, `X-Forwarded-Host` or `:authority` header, nor any other request-supplied value. This
- * module cannot check that — a `string` carries no provenance — so the obligation is recorded here
- * and is the reason the configuration variable exists at all.
- *
- * ⛔ NOT NORMALISED, AND NOT DEFAULTED. The value is emitted exactly as supplied: no case folding,
- * no trimming, no punycode conversion, no default port removal, no scheme upgrade to HTTPS and no
- * fallback host. Normalising would change emitted bytes for a legitimate value, and inventing a
- * default host would be exactly the fabrication AAP §0.7.3 S9 forbids. The `http://` literal stays
- * hardcoded in {@link HTTP_SCHEME_PREFIX} because that is what the legacy hardcodes
- * (AAP §0.8.2 guideline 4).
+ * ⭐ WHAT SURVIVES, AND WHY IT IS NOT A HARDENING. The host arrives as a plain `string` on
+ * {@link ProductFeedRenderContext.host}, and the composition root supplies it from configuration
+ * because the target runtime HAS NO `CGI` SCOPE to read — that is an execution-model adaptation forced
+ * by the platform, not a security control, and it is why no validator is needed for it either: a
+ * configured value is the operator's own to get right. `src/config/env.ts` records the same conclusion
+ * on its side. Nothing in this module reads a request header, because nothing in this module reads a
+ * request at all.
  * ---------------------------------------------------------------------------------------------- */
 
-declare const FEED_HOST_AUTHORITY: unique symbol;
+/*
+ * ⛔ DECISION G-1's TYPE CLUSTER STOOD HERE AND IS REMOVED ALONG WITH THE VALIDATOR IT SERVED: a
+ * module-private `FEED_HOST_AUTHORITY` unique symbol, the branded `FeedHostAuthority` type it keyed, the
+ * `FEED_HOST_AUTHORITY_PATTERN` character allowlist and RFC 1035 §2.3.4's 63-octet DNS-label ceiling.
+ * Each was referenced ONLY by `validateFeedHostAuthority`, so none outlives it; the block immediately
+ * above records why G-1 is withdrawn, and the removal note at the validator's old position records how
+ * the declaration came to survive the decision.
+ *
+ * ⚠️ AND THE VALIDATOR'S OWN DOC COMMENT OUTLIVED THE VALIDATOR, WHICH IS NOW ALSO GONE. A complete
+ * JSDoc block — "Validates a host authority and brands it…", its `@param candidate`, its `@returns the
+ * same string, branded and unmodified` and an `@throws` clause pointing at the deleted
+ * `FEED_HOST_AUTHORITY_PATTERN` — stood immediately below this note, in the present tense, with no
+ * declaration beneath it. It had come to sit directly above the doc comment of the pricing decorator,
+ * so the two read as one block and the withdrawn validator read as a live member. Nothing detected it:
+ * a comment satisfies no compiler, no lint rule and no test, and a `{@link}` to a removed symbol is
+ * only prose. It is deleted rather than rewritten, because the two blocks above already carry the
+ * whole account and a third copy would be one more thing to keep true.
+ */
 
 /**
- * A validated host authority — `host`, `host:port`, an IPv4 literal or a bracketed IPv6 literal —
- * safe to concatenate after `http://` and safe to place in an XML text node.
+ * Wraps a pricing port so that each product's sale-price details are read AT MOST ONCE per document.
  *
- * ⛔ UNFORGEABLE. `FEED_HOST_AUTHORITY` is a module-private `unique symbol` that is never exported,
- * so no plain `string` is assignable here and {@link validateFeedHostAuthority} is the only route in.
- * That is what makes the raw request-header path a COMPILE error rather than a review finding.
+ * ⭐ P7 — WHY A DECORATOR RATHER THAN A CACHE INSIDE THE DOMAIN OR THE PORT.
+ * `PricingPort` declares exactly ONE member, `getSalePriceDetailsForProductSkus(productId)`, and it is
+ * keyed by PRODUCT while its only consumer — `Sku.getSalePriceDetails` at `model/entity/Sku.cfc:L540` —
+ * is one instance PER SKU. Every SKU of a product therefore issues the same product-wide read and keeps
+ * only its own slice of the result. Neither of those two places may hold the shared answer: the SKU's
+ * memo is a faithful port of a per-instance guard and must stay per-instance, and a port is a contract
+ * rather than an implementation. A decorator is the only seam that belongs to the CALLER, which is
+ * exactly whose lifetime the shared answer should have.
+ *
+ * ⚠️ IT MUST BE CONSTRUCTED PER DOCUMENT AND NEVER RETAINED (M7). One instance serves one `build` call
+ * and is unreachable afterwards. Hoisting it to a field or to module scope would publish one request's
+ * prices into another request's feed on a warm Lambda container, which is precisely the class of leak
+ * the mismatch inventory calls out.
+ *
+ * ⚠️ REJECTIONS ARE NOT MEMOISED, matching the same rule in `SkuAssociationReferenceMap`: the promise is
+ * recorded only once it has settled successfully, so a failed read leaves the key clean and the next SKU
+ * re-reads rather than inheriting a permanently poisoned entry.
+ *
+ * ⚠️ AND IT IS NOT A PREFETCH. Nothing is read before the record that needs it asks; the wrapper only
+ * declines to ask twice. No product identifier is enumerated ahead of time, no second port member is
+ * invented, and no concurrency is introduced (S9).
+ *
+ * @param pricing - The real port, called at most once per distinct product identifier.
+ * @returns A port with the same single member and the same answers, backed by a call-scoped memo.
  */
-export type FeedHostAuthority = string & { readonly [FEED_HOST_AUTHORITY]: 'authority' };
-
 /**
- * The complete set of characters a host authority may contain.
+ * The two collaborators a single feed document shares across all of its records.
  *
- * An ALLOWLIST rather than a denylist, because a denylist has to anticipate every hostile character
- * and this has to anticipate none. The set is the union of what the three legal authority forms
- * need: letters and digits and the hyphen for DNS labels, the dot as the label separator, the colon
- * for the port separator and for IPv6 groups, the square brackets that delimit an IPv6 literal, and
- * the underscore, which appears in real internal host names even though it is not a legal DNS
- * hostname character.
+ * ⭐ P7 — ONE PARAMETER RATHER THAN TWO, BECAUSE THEY HAVE ONE LIFETIME. Both members are
+ * repetition-removing wrappers built at the top of {@link ProductFeedBuilder.build} and discarded when
+ * it returns, so grouping them names that shared lifetime instead of leaving two loose arguments whose
+ * scoping a reader has to infer. It is deliberately NOT a class field: a field would outlive the
+ * document and publish one request's answers into the next one on a warm container (M7).
  *
- * ⭐ WHAT THE SET EXCLUDES IS THE SECURITY SUBSTANCE, and every exclusion closes a specific route:
- *   - `<`, `>`, `&` and `"` — XML structure injection into four element text nodes.
- *   - `/` — a path, a scheme-relative authority, or a second URL smuggled in behind the first.
- *   - `@` — userinfo, which relocates the effective host to whatever follows it.
- *   - `?` and `#` — a query string or a fragment appended to every URL in the document.
- *   - `%` — a percent-encoded form of any of the above, decoded later by a consumer.
- *   - `\` — a Windows-style separator some parsers treat as `/`.
- *   - every whitespace and control character, including CR and LF.
- *   - `'` — not XML-significant in a text node, and excluded anyway because no authority form
- *     needs it. This is the one exclusion that is not closing an attack route; it costs nothing and
- *     keeps the set to exactly what the three legal forms require.
+ * ⛔ IT CARRIES NO STATE OF ITS OWN AND NO REQUEST CONTEXT. The host, the clock and the allowed-host
+ * list all continue to travel in {@link ProductFeedRenderContext}; this type exists only so the two
+ * wrapped ports reach {@link ProductFeedBuilder.buildItem} together.
  */
-const FEED_HOST_AUTHORITY_PATTERN = /^[A-Za-z0-9._:[\]-]+$/;
+interface FeedDocumentScope {
+  /** {@link ProductFeedBuilder}'s pricing port, wrapped by {@link memoisePricingByProduct}. */
+  readonly pricing: PricingPort;
 
-/** RFC 1035 §2.3.4 — the per-label octet ceiling {@link validateFeedHostAuthority} enforces. */
-const MAXIMUM_DNS_LABEL_OCTETS = 63;
-
-/**
- * Validates a host authority and brands it for use as {@link ProductFeedRenderContext.host}.
- *
- * ⛔ IT VALIDATES SYNTAX, NOT PROVENANCE. A caller that hands it the request's `Host` header will
- * get a branded value back whenever that header happens to be syntactically ordinary. The brand
- * closes the injection and origin-rebasing routes; it does NOT and cannot certify that the value
- * came from configuration. See the PROVENANCE OBLIGATION in DECISION G-1 above — that half is owed
- * by `src/handlers/googleFeedHandler.ts`.
- *
- * ⚠️ THE MESSAGE NAMES THE RULE AND NEVER ECHOES THE CANDIDATE, matching the reporting discipline
- * `src/config/env.ts` applies to every environment value it rejects: a diagnostic that quotes a
- * rejected value back into a log is a disclosure channel, and the rule is what an operator needs in
- * order to fix the configuration.
- *
- * @param candidate the configured host authority, unvalidated
- * @returns the same string, branded and unmodified
- * @throws {DomainError} when the value is empty, or contains any character outside
- *   {@link FEED_HOST_AUTHORITY_PATTERN}
- */
-export function validateFeedHostAuthority(candidate: string): FeedHostAuthority {
-  if (candidate.length === 0) {
-    throw new DomainError(
-      'The Google product feed host is empty. It must name the host authority the feed URLs are ' +
-        'built on, supplied by configuration through GOOGLE_FEED_HOST.',
-    );
-  }
-
-  if (!FEED_HOST_AUTHORITY_PATTERN.test(candidate)) {
-    throw new DomainError(
-      'The Google product feed host contains a character that is not permitted in a host ' +
-        'authority. Letters, digits, the dot, the hyphen, the underscore, the colon and square ' +
-        'brackets are accepted; a scheme, a path, userinfo, a query, a fragment, a percent ' +
-        'escape, whitespace and any XML markup character are all refused.',
-    );
-  }
-
-  /* THE DNS LABEL CEILING, CARRIED OVER FROM THE VALIDATOR THIS ONE REPLACED.
-   *
-   * A second host validator was declared beside this one, reasoning identically but expressed as a
-   * single regular expression over DNS labels. This gate is the survivor because it is BRANDED:
-   * `FeedHostAuthority` is unforgeable, so the compiler — not a convention — guarantees every host
-   * reaching a sink came through here. The withdrawn pattern was nonetheless stronger on exactly one
-   * count, the 63-octet per-label limit of RFC 1035 §2.3.4, and that check is reproduced here rather
-   * than lost with it.
-   *
-   * ⛔ IT IS REPRODUCED AS A LENGTH TEST, NOT BY ADOPTING THE WITHDRAWN PATTERN, BECAUSE THAT PATTERN
-   * ALSO REJECTED THE UNDERSCORE. An underscore is illegal in a hostname under RFC 1123 but is
-   * routine in internal DNS, and `internal_store.example.com` is a host this gate accepts on purpose.
-   * Swapping the grammars wholesale would have narrowed the accepted set and failed a render on such a
-   * deployment, so the two properties are kept separately: the character set here, the length ceiling
-   * below. Verified against both the accepted and the hostile host sets: no hostile value passes
-   * either form, and no accepted value is newly refused.
-   *
-   * A bracketed IPv6 literal carries no DNS labels and is skipped; the grammar above has already
-   * confined what may appear inside the brackets. */
-  if (!candidate.startsWith('[')) {
-    const [hostWithoutPort = ''] = candidate.split(':');
-
-    for (const label of hostWithoutPort.split('.')) {
-      if (label.length === 0 || label.length > MAXIMUM_DNS_LABEL_OCTETS) {
-        throw new DomainError(
-          'The Google product feed host has a label that is empty or longer than the ' +
-            '63-octet limit RFC 1035 places on a DNS label, so it cannot name a reachable host.',
-        );
-      }
-    }
-  }
-
-  return candidate as FeedHostAuthority;
+  /** {@link ProductFeedBuilder}'s image port, wrapped by {@link memoiseResizedImagePaths}. */
+  readonly imagePaths: ImagePathPort;
 }
+
+/**
+ * Wraps an image port so that each DISTINCT resized-rendition request is resolved AT MOST ONCE per
+ * document.
+ *
+ * ⭐ P7 — THE ADDITIONAL-IMAGE RESOLUTIONS ARE PRODUCT-WIDE AND WERE PAID FOR PER SKU.
+ * `integrationServices/google/views/feed/product.cfm:L24` loops
+ * `local.sku.getProduct().getProductImages()` — a collection belonging to the PRODUCT — and resolves a
+ * resized path for every element. A product with `i` images and `n` SKUs in the feed therefore issued
+ * `i * n` resolutions for `i` distinct answers. The primary `g:image_link` at `:L23` is genuinely
+ * per-SKU and is unaffected; it flows through the same wrapper and simply never hits a repeat.
+ *
+ * ⚠️ THE KEY IS THE WHOLE REQUEST, NOT THE PRODUCT. All six fields of
+ * {@link ResizedImagePathRequest} are folded into the key in a fixed order, so two requests share an
+ * answer only when they are identical in every field a resolver could read — including the
+ * missing-image fallback, the size token and all three resize arguments. Keying on anything narrower
+ * would be assuming which fields the resolver consults, and that assumption is not this file's to make.
+ * Absent optional fields key as `null`, which `exactOptionalPropertyTypes` makes unambiguous: the
+ * declarations forbid an explicitly-`undefined` field, so absent and `null` cannot collide with a real
+ * value.
+ *
+ * ⚠️ ONLY THE READ MEMBER IS WRAPPED. {@link ImagePathPort.getImagePath} composes rather than resolves,
+ * {@link ImagePathPort.getImageExistsFlag} probes the file system, and
+ * {@link ImagePathPort.saveImageFile} WRITES — memoising any of the three would be caching something
+ * other than a repeated read. All three are delegated verbatim, through arrow functions rather than a
+ * spread, so a class-based implementation keeps its receiver.
+ *
+ * ⚠️ REJECTIONS ARE NOT MEMOISED, for the same reason {@link memoisePricingByProduct} does not memoise
+ * them: a failed resolution must leave its key clean rather than poison every later record that shares
+ * it.
+ *
+ * ⛔ INVOCATION-LOCAL (M7), AND NOT A PREFETCH. Built per `build` call and unreachable afterwards;
+ * nothing is resolved before the record that needs it asks, no request is reordered, and no concurrency
+ * is introduced (S9).
+ *
+ * @param imagePaths - The real port, whose resized member is called at most once per distinct request.
+ * @returns A port with the same four members and the same answers, backed by a call-scoped memo.
+ */
+function memoiseResizedImagePaths(imagePaths: ImagePathPort): ImagePathPort {
+  const pathByRequest = new Map<string, ImageWebPath>();
+
+  return {
+    getImagePath: async (imageFile: string): Promise<ImageWebPath> =>
+      imagePaths.getImagePath(imageFile),
+
+    getResizedImagePath: async (request: ResizedImagePathRequest): Promise<ImageWebPath> => {
+      /* Every field, in a fixed order, so no two distinct requests can share a key. */
+      const key = JSON.stringify([
+        request.imagePath,
+        request.missingImagePath,
+        request.size ?? null,
+        request.width ?? null,
+        request.height ?? null,
+        request.resizeMethod ?? null,
+      ]);
+
+      const remembered = pathByRequest.get(key);
+      if (remembered !== undefined) {
+        return remembered;
+      }
+
+      /* Awaited BEFORE recording, so only a successful answer is remembered. */
+      const resolved = await imagePaths.getResizedImagePath(request);
+      pathByRequest.set(key, resolved);
+      return resolved;
+    },
+
+    getImageExistsFlag: async (imagePath: ImageWebPath): Promise<boolean> =>
+      imagePaths.getImageExistsFlag(imagePath),
+
+    saveImageFile: async (request: SaveImageFileRequest): Promise<boolean> =>
+      imagePaths.saveImageFile(request),
+  };
+}
+
+function memoisePricingByProduct(pricing: PricingPort): PricingPort {
+  const detailsByProductId = new Map<string, SalePriceDetailsBySkuId>();
+
+  return {
+    getSalePriceDetailsForProductSkus: async (
+      productId: string,
+    ): Promise<SalePriceDetailsBySkuId> => {
+      const remembered = detailsByProductId.get(productId);
+      if (remembered !== undefined) {
+        return remembered;
+      }
+
+      /* Awaited BEFORE recording, so only a successful answer is remembered. */
+      const details = await pricing.getSalePriceDetailsForProductSkus(productId);
+      detailsByProductId.set(productId, details);
+      return details;
+    },
+  };
+}
+
+/*
+ * ⛔ `validateFeedHostAuthority` STOOD HERE AND IS REMOVED, WHICH MAKES THE CODE AGREE WITH THE FIVE
+ * PLACES THAT ALREADY DESCRIBED DECISION G-1 AS WITHDRAWN — the WITHDRAWN RAW-SINK VALIDATION block
+ * above, three separate notes in `../../handlers/googleFeedHandler.ts`, `../../config/env.ts` where it
+ * reads the host, and `test/integrations/ProductFeedBuilder.test.ts`, which states outright that the
+ * function no longer exists and imports nothing from it. Only the declaration itself disagreed, and
+ * `export` is why: an exported symbol with no consumer raises no unused-symbol warning, so nothing
+ * reported the divergence.
+ *
+ * IT HAD NO CALLER AND COULD NOT HAVE ACQUIRED ONE. {@link ProductFeedRenderContext.host} is a plain
+ * `string`, so the branded value this function existed to mint was assignable nowhere, and
+ * `../../config/env.ts` reads the host with `requireNonBlankValue` alone.
+ *
+ * ⚠️ THE ESCAPING THAT REMAINS IS A DIFFERENT MECHANISM AND IS UNAFFECTED. Six feed fields are escaped
+ * and ten are emitted raw, faithfully to `integrationServices/google/views/feed/product.cfm`; that split
+ * is recorded where the escaping helper is declared. Withdrawing a fail-closed grammar for the RAW sinks
+ * does not touch the sinks that are escaped, and the exposure the withdrawal leaves open stays flagged
+ * at each emission site exactly as the block above requires.
+ */
 
 /* ------------------------------------------------------------------------------------------------
  * DECISION G-2 — A URL PATH MAY NOT INTRODUCE AN AUTHORITY OR BREAK OUT OF ITS ELEMENT
@@ -344,154 +441,59 @@ export function validateFeedHostAuthority(candidate: string): FeedHostAuthority 
  * nominal display tag — `src/ports/ImagePathPort.ts` says so explicitly: "It asserts nothing about
  * the value". So a settings row or a `urlTitle` carrying `"><g:price>0</g:price><x>` reaches an
  * element text node, and a path beginning `//` rebases the whole URL onto a foreign authority even
- * though the host itself is validated. Both are closed here.
+ * though the host itself is validated.
  *
- * ⛔ VALIDATION MEANS REFUSAL, AND REFUSAL IS A REAL DIVERGENCE. The legacy emitted a malformed or
- * hostile URL and completed the render; this module raises instead. That is deliberate: a merchant
- * feed is consumed by machine, so publishing a document whose links point somewhere else is worse
- * than publishing none. The alternative — escape it and emit it anyway — would leave the
- * origin-rebasing route open, and the report's remediation says to validate.
+ * ⛔ NEITHER IS CLOSED, AND THAT IS THE DECISION. Both routes stay open, because closing them means
+ * REFUSING a path, and refusal is a real divergence: the legacy emitted a malformed or hostile URL and
+ * completed the render. An earlier revision raised instead, on the reasoning that a machine-consumed
+ * feed whose links point elsewhere is worse than no feed. That reasoning is withdrawn, because it is not
+ * this port's call to make — AAP §0.8.2 guideline 4 forbids enhancing behaviour beyond what the
+ * migration requires, and §0.6.7 licenses exactly ONE deliberate divergence in the whole subtree (D18,
+ * the importer's SQL parameterization). Escaping instead of refusing was no better: it would have left
+ * the origin-rebasing route open while still changing bytes wherever a legitimate path contains `&`.
+ * The risk is therefore FLAGGED and carried, exactly as `src/ports/ImagePathPort.ts` records it under
+ * SEC-07, and the withdrawal regressions in `test/integrations/ProductFeedBuilder.test.ts` pin the raw
+ * emission so it cannot be silently re-hardened.
  *
- * ⛔ NO PERCENT-ENCODING IS PERFORMED. Encoding would rewrite the path separators, and a
+ * ⛔ NO PERCENT-ENCODING IS PERFORMED EITHER. Encoding would rewrite the path separators, and a
  * conservative "encode everything except `/`" pass would still change bytes for legitimate values
- * that already contain a valid escape. The path is validated and emitted, never rewritten.
+ * that already contain a valid escape. The path is emitted exactly as resolved, never rewritten.
  * ---------------------------------------------------------------------------------------------- */
-
-/**
- * The characters RFC 3986 excludes from a URI outright, in the range this module can test for.
- *
- * `\u0000-\u0020` covers every C0 control character and the space; `\u007F` is DELETE. The named
- * characters are the specification's own excluded set: the double quote, the angle brackets, the
- * backslash, the caret, the grave accent and the three brace-and-bar characters.
- *
- * ⭐ IT IS A PUBLISHED STANDARD'S SET, NOT AN INVENTED ONE, which is what keeps it clear of
- * AAP §0.7.3 S9 — the same latitude `src/config/env.ts` takes for the TCP port field width.
- *
- * ⚠️ `&`, `?`, `#`, `%` AND `'` ARE DELIBERATELY ABSENT FROM THIS SET. All five are legal in a URI
- * reference, and a query string legitimately contains `&`, so refusing them would break real links.
- * They are handled by escaping at the emission site instead (DECISION G-3), which is the correct
- * treatment: `&amp;` is the well-formed XML spelling of a literal ampersand and a conforming
- * consumer hands `&` back.
- *
- * ⚠️ NON-ASCII CHARACTERS ARE NOT REFUSED EITHER. The specification requires them percent-encoded,
- * but an internationalised path is a legitimate deployment and this module does not rewrite paths
- * (see DECISION G-2). None of them is XML-significant, and each is escaped at emission like any
- * other text.
- */
-const URI_EXCLUDED_CHARACTER_PATTERN = /["<>\\^`{|}]|[\u0000-\u0020\u007F]/;
-
-/**
- * Validates that a path is a same-origin relative reference, and returns it unmodified.
- *
- * THE THREE CLAUSES, in the order they are applied:
- *   1. THE EMPTY PATH IS LEGAL AND IS RETURNED UNCHANGED. It yields `http://<host>` with nothing
- *      appended, which is exactly what the legacy emits when the underlying accessor resolves
- *      empty — the missing-image setting is unseeded, so this is a reachable state rather than a
- *      theoretical one.
- *   2. A NON-EMPTY PATH MUST BEGIN WITH EXACTLY ONE SLASH. `model/entity/Product.cfc:L207-L209`
- *      composes a leading slash and the image constructions do too, so this refuses nothing the
- *      legacy produced. Beginning with two slashes is the origin-rebasing route and is refused;
- *      beginning with no slash would silently graft the path onto the host authority.
- *   3. NO CHARACTER MAY COME FROM {@link URI_EXCLUDED_CHARACTER_PATTERN}.
- *
- * @param fieldName the feed element being built, named verbatim in the failure message so the
- *   offending field is identifiable without echoing the value
- * @param skuId the SKU being rendered, for the same reason — the diagnostic idiom
- *   {@link ProductFeedBuilder.requireProduct} already uses
- * @param candidate the path, exactly as the domain or the image adapter produced it
- * @returns the same string, unmodified
- * @throws {DomainError} when the path is relative, scheme-relative, or carries an excluded
- *   character
- */
-function requireRelativeFeedPath(fieldName: string, skuId: string, candidate: string): string {
-  if (candidate.length === 0) {
-    return candidate;
-  }
-
-  const skuLabel = skuId === '' ? '(unsaved)' : skuId;
-
-  if (!candidate.startsWith('/')) {
-    throw new DomainError(
-      `The ${fieldName} path for sku ${skuLabel} is not an absolute path within this origin, so ` +
-        `the Google product feed will not publish it. A feed path must begin with a single slash.`,
-    );
-  }
-
-  if (candidate.startsWith('//')) {
-    throw new DomainError(
-      `The ${fieldName} path for sku ${skuLabel} begins with two slashes, which would rebase the ` +
-        `URL onto a different host, so the Google product feed will not publish it.`,
-    );
-  }
-
-  if (URI_EXCLUDED_CHARACTER_PATTERN.test(candidate)) {
-    throw new DomainError(
-      `The ${fieldName} path for sku ${skuLabel} contains a character RFC 3986 excludes from a ` +
-        `URI, so the Google product feed will not publish it.`,
-    );
-  }
-
-  return candidate;
-}
 
 /**
  * The ambient state the legacy view read from its request, made explicit.
  *
- * THREE OF THE FOUR MEMBERS REPLACE ONE LEGACY GLOBAL EACH, and together they are the reason a
- * render is reproducible: the same records and the same context always produce the same bytes. The
- * fourth, {@link ProductFeedRenderContext.allowedHosts}, has NO legacy counterpart — it is the
- * configured-host half of the declared security divergence in this file's header, and it is present
- * precisely because the legacy trusted its host global unconditionally. That asymmetry is stated
- * here rather than left for a reader to notice.
+ * EVERY MEMBER REPLACES ONE LEGACY GLOBAL, and together they are the reason a render is reproducible:
+ * the same records and the same context always produce the same bytes.
+ *
+ * ⛔ A FOURTH MEMBER, `allowedHosts`, IS WITHDRAWN WITH THE GATE IT FED. It had no legacy counterpart
+ * — it was a configured allowlist the render was refused against — and refusing a render is a
+ * behaviour change; see WITHDRAWN RAW-SINK VALIDATION above.
  */
 export interface ProductFeedRenderContext {
   /**
-   * The VALIDATED host authority, replacing `CGI.HTTP_HOST`
+   * The host authority, replacing `CGI.HTTP_HOST`
    * (`integrationServices/google/views/feed/product.cfm:L14`, `L15`, `L22`, `L23`, `L24`).
    *
-   * ⚠️ NO LONGER A PLAIN `string` — SEE DECISION G-1. The legacy interpolated the request's own host
-   * header into five absolute URLs with no validation, which on the target platform is a
-   * caller-supplied value: it could inject XML markup into four text nodes, rebase every link in
-   * the document onto a foreign origin, or make the document unparseable with a single ampersand.
-   * {@link FeedHostAuthority} is unforgeable, so the only way to populate this member is
-   * {@link validateFeedHostAuthority}, and the value must come from `config.googleFeed.host`.
+   * ⚠️ A PLAIN, UNVALIDATED `string`. An earlier revision typed it as an unforgeable
+   * `FeedHostAuthority` that only a raising validator could produce; that gate is withdrawn, because
+   * the legacy interpolates this value into five absolute URLs with no check of any kind and refusing
+   * to render is a behaviour change. See WITHDRAWN RAW-SINK VALIDATION above for the full argument and
+   * for the CWE-91 and origin-rebasing exposure that is flagged rather than closed.
    *
-   * CONCATENATED RAW, AND STILL NOT NORMALISED. The legacy writes the literal text `http://`
-   * immediately followed by this value in all five places, so that is what happens here. The scheme
-   * is not made configurable and not upgraded to HTTPS, the value is not trimmed, no trailing slash
-   * is added or stripped, and no URL parser is involved — a parser would normalise, and normalising
-   * would change emitted bytes for no stated reason (AAP §0.7.3 S9).
+   * ⭐ WHERE IT COMES FROM, AND WHY THAT IS NOT A HARDENING. The target runtime has no `CGI` scope, so
+   * the value cannot be read the way `product.cfm` reads it. The composition root supplies it from
+   * configuration and this module never reads a request — an execution-model adaptation forced by the
+   * platform, not a security control. Because the value is configuration rather than a caller-supplied
+   * header, it is the operator's own to get right, which is a second reason no validator is needed.
+   *
+   * CONCATENATED RAW, AND NOT NORMALISED. The legacy writes the literal text `http://` immediately
+   * followed by this value in all five places, so that is what happens here. The scheme is not made
+   * configurable and not upgraded to HTTPS, the value is not trimmed, no trailing slash is added or
+   * stripped, and no URL parser is involved — a parser would normalise, and normalising would change
+   * emitted bytes for no stated reason (AAP §0.7.3 S9).
    */
-  readonly host: FeedHostAuthority;
-
-  /**
-   * The canonical host authorities this deployment is permitted to advertise — the "configured
-   * canonical host" half of the declared security divergence documented in this file's header.
-   *
-   * ⚠️ REQUIRED, AND DEFAULT-DENY WHEN EMPTY. It is not optional, for the same reason
-   * `BaseServiceCollaborators.populationAuthorization` in `src/services/BaseService.ts` is not
-   * optional: an omittable security control is a control that gets omitted. An empty array admits no
-   * host at all, so a caller that has nothing configured renders nothing rather than rendering an
-   * unvalidated header.
-   *
-   * Membership is tested case-insensitively, because DNS names are case-insensitive and the grammar
-   * gate has already restricted both sides to ASCII by the time the comparison runs. Every entry is
-   * itself validated against {@link HOST_AUTHORITY_PATTERN}, so a mis-configured entry cannot
-   * smuggle markup into the feed through configuration either.
-   *
-   * MEASURED: omitting this member raises `TS2741 Property 'allowedHosts' is missing`, and supplying
-   * it as an explicit `undefined` raises `TS2322 Type 'undefined' is not assignable to type
-   * 'readonly string[]'` under `exactOptionalPropertyTypes`. Both were produced from a throwaway probe
-   * and read from the compiler rather than assumed, so "required" is a compile-enforced fact and not a
-   * comment. No structural guard type is added for it, because there is no cross-file relation to
-   * assert — the required property IS the enforcement.
-   *
-   * This member has NO legacy counterpart. The legacy view trusted `CGI.HTTP_HOST` unconditionally;
-   * that trust is the flaw, and this is the control that removes it. Configuration flows in from
-   * `src/config/` through the handler layer, which is why it arrives as render-call data rather
-   * than being read here — this file reads no process environment (AAP §0.7.3 S4).
-   */
-  readonly allowedHosts: readonly string[];
+  readonly host: string;
 
   /**
    * The render instant, replacing `now()`
@@ -542,6 +544,40 @@ export interface ProductFeedRenderContext {
  * the SKU segment, so it cannot express the directory-driven form. That is exactly why this type
  * carries an already-constructed path rather than a file name.
  */
+/**
+ * Optional invocation-scoped controls for one {@link ProductFeedBuilder.build} call.
+ *
+ * ⚠️ SEPARATE FROM {@link ProductFeedRenderContext} ON PURPOSE. That type is the set of REQUEST GLOBALS
+ * the legacy view read while rendering — the host, the instant, the offset — and every one of its
+ * fields is required because omitting one would change the emitted document. Nothing here changes a
+ * single byte of the output, so it is optional, it is a second parameter, and a caller that supplies
+ * none renders exactly what it rendered before.
+ *
+ * ⛔ NO TIMEOUT, NO DEADLINE AND NO BUDGET IS DECLARED HERE OR ANYWHERE BELOW. AAP §0.6.6 M2 records
+ * that the legacy's own budget is the `requesttimeout="360"` at
+ * `integrationServices/google/views/feed/product.cfm:L9`, that it exceeds a synchronous API Gateway
+ * integration, and that the DELIVERY DECISION IS DELIBERATELY LEFT OPEN. Minting a substitute timeout
+ * here would settle that decision by accident and invent a number the source does not state (S9). What
+ * this type adds is the ability to OBSERVE a cancellation the caller already has — never to originate
+ * one.
+ */
+export interface ProductFeedRenderOptions {
+  /**
+   * A cancellation signal owned by the caller.
+   *
+   * Checked ONLY at a record boundary — after a complete `item` element has been appended and before
+   * the next record is started — so an abort never interrupts a half-rendered element and never lands
+   * between two awaits of the same record. When it is already aborted at the first boundary, no record
+   * is rendered at all.
+   *
+   * ⚠️ A CANCELLED RENDER RAISES; IT DOES NOT RETURN A SHORTER FEED. Returning the lines accumulated so
+   * far would publish a silently truncated catalog as if it were complete, which is the one outcome
+   * worse than failing. The rejection is a {@link DomainError}, which is what every other refusal in
+   * this file raises, so a caller's existing failure mapping already covers it.
+   */
+  readonly signal?: AbortSignal;
+}
+
 export interface ProductFeedImage {
   /**
    * This image's own path, as `model/entity/Image.cfc:L79-L81` constructs it from the image's
@@ -663,59 +699,255 @@ const INDENT_UNIT = '\t';
 const SALE_PRICE_EFFECTIVE_DATE_TRAILING_TAB = '\t';
 
 /* ================================================================================================
- * ESCAPING — the legacy's own escaper, extended to the fields the legacy forgot
+ * ESCAPING — the legacy's own escaper, applied to exactly the legacy's own six fields
  *
  * ------------------------------------------------------------------------------------------------
- * DECISION G-3 — EVERY DYNAMIC TEXT NODE IS ESCAPED, EXACTLY ONCE, AT ITS EMISSION SITE
+ * DECISION G-3 IS WITHDRAWN — SIX FIELDS ARE ESCAPED, TEN ARE EMITTED RAW, AS IN `product.cfm`
  * ------------------------------------------------------------------------------------------------
- * ⚠️ THE THIRD AND LAST DECLARED HARDENING EXCEPTION IN THIS FILE, same D18 precedent
- * (AAP §0.6.7.7). It replaces an earlier reading of this file that treated the legacy's UNESCAPED
- * fields as behaviour to preserve. They are not: they are the CWE-91/CWE-79 defect, and a runtime
- * probe confirmed both halves of it — a crafted value inserted new XML elements, and a bare
- * ampersand made the document unparseable.
+ * ⛔ WHAT AN EARLIER REVISION DID. It applied {@link escapeFeedText} to NINE further dynamic values —
+ * the channel `link` and `description` (`product.cfm:L14`, `:L15`), the item `link` (`:L22`),
+ * `g:image_link` (`:L23`), each `g:additional_image_link` (`:L24`), `g:price` (`:L27`),
+ * `g:sale_price` (`:L29`), `g:sale_price_effective_date` (`:L30`) and `g:shipping_weight` (`:L58`) —
+ * on the ground that the legacy's unescaped fields were "the CWE-91/CWE-79 defect" rather than
+ * behaviour to preserve.
  *
- * ⭐ NO NEW ESCAPING SEMANTICS ARE INVENTED. {@link escapeFeedText} is unchanged, character for
- * character and in ordering; the hardening is simply that the legacy's OWN escaper is now applied to
- * the nine dynamic values the legacy omitted it from. That is the smallest possible change that
- * closes the finding, and it is why there is exactly one escaper in this module rather than a second
- * one with a different character set.
+ * ⛔ WHY IT IS WITHDRAWN. The escaping is a BYTE CHANGE, and the AAP's bar is behaviour:
+ *   1. §0.8.2 guideline 4 forbids enhancement beyond what the migration requires, and §0.6.7 governs
+ *      the register with "preserve and annotate, do not repair".
+ *   2. D18 (§0.6.7.7) is the SOLE declared behaviour-hardening exception, and it licenses only a
+ *      divergence that changes no outcome — parameterised SQL returns exactly the rows interpolated
+ *      SQL returned. Escaping changes the emitted document for precisely the values that matter.
+ *   3. The withdrawn note's own defence — "for `&` and `<` the legacy document was not well-formed
+ *      XML at all, so no conforming consumer could read it" — concedes the point rather than settling
+ *      it: an unparseable document IS the legacy's observable output, and replacing it with a
+ *      parseable one is a different outcome, however much better an outcome it is.
  *
- * ⭐ THE SIX LEGACY FIELDS ARE BYTE-IDENTICAL TO BEFORE. Nothing about their escaping changed, so no
- * parity claim about them is weakened — including the deliberate double-escape of the product type's
- * `&raquo;` separator, which still emits `&amp;raquo;`.
+ * ⚠️ THE EXPOSURE IS FLAGGED, NOT CLOSED. XML markup reaching any of the ten raw substitutions can
+ * close an element and open new ones (CWE-91), and a bare `&` leaves the document with no defined
+ * parse. Every one of those ten sites carries a locator note saying so. Closing it is an operator
+ * decision outside this port (S8), and it is recorded here so a reviewer diffing this module against
+ * `product.cfm` sees a deliberate carry rather than an oversight.
  *
- * WHERE BYTES NOW DIFFER FROM THE LEGACY, STATED PRECISELY. For any value containing none of the
- * four escaped characters — which is every legitimate host, path, price, offset and setting — the
- * emitted bytes are unchanged. They differ only for a value that contains one of the four, and then:
- *   - for `&` and `<`, the legacy document was NOT WELL-FORMED XML at all, so no conforming consumer
- *     could read it; the escaped form is the only spelling a parser accepts;
- *   - for `>` and `"`, the legacy document was well-formed, and the escaped form is EQUIVALENT after
- *     parsing — a consumer receives the identical characters.
- * So no consumer that could previously read a field reads anything different now.
+ * ⭐ THE SIX LEGACY FIELDS ARE UNCHANGED AND STAY ESCAPED, because the legacy escapes them: `g:id`
+ * (`:L17`), `title` (`:L18`), `description` (`:L19`), `g:product_type` (`:L21`), `g:brand` (`:L32`)
+ * and `g:item_group_id` (`:L39`) each pass through `htmlEditFormat`. That includes the deliberate
+ * double-escape of the product type's `&raquo;` separator, which still emits `&amp;raquo;`.
  *
- * ⛔ THE OLD WARNING ABOUT URLS WAS WRONG, AND IS RETRACTED HERE RATHER THAN QUIETLY DELETED. This
- * file previously argued that escaping a URL "rewrites every `&` in its query string and corrupts
- * every link in the feed". It does not: `&amp;` IS the well-formed XML spelling of a literal
- * ampersand inside a text node, and every conforming XML consumer unescapes it back to `&` before
- * the URL is ever used. Leaving the ampersand bare is what corrupts the feed, because the document
- * then has no defined parse at all.
- *
- * ⛔ WHAT IS STILL NOT DONE, AND WHY. Control characters are NOT stripped or replaced. XML 1.0
- * forbids most C0 controls outright, so they cannot be escaped — the only options are removing them
- * or substituting something else, and both ALTER DATA rather than encode it. The finding's
- * remediation is to encode every dynamic text node, which is discharged in full; silently mangling
- * a stored value goes beyond it and beyond AAP §0.8.2 guideline 4. The residual is recorded here
- * rather than left implicit. Note that the two paths and the host cannot carry a control character
- * at all — DECISION G-1's allowlist and DECISION G-2's excluded set both refuse them — so the
- * residual is confined to the six legacy text fields and the three setting-derived values, exactly
- * where the legacy also carried it.
+ * ⛔ CONTROL CHARACTERS ARE STILL NOT STRIPPED OR REPLACED. XML 1.0 forbids most C0 controls outright,
+ * so they cannot be escaped — the only options are removing them or substituting something else, and
+ * both ALTER DATA rather than encode it. The legacy alters nothing, and neither does this.
  * ============================================================================================= */
+
+/* ------------------------------------------------------------------------------------------------
+ * THE LEGAL-CHARACTER BOUNDARIES — transcribed from the XML 1.0 `Char` production, not chosen here
+ *
+ * `Char ::= #x9 | #xA | #xD | [#x20-#xD7FF] | [#xE000-#xFFFD] | [#x10000-#x10FFFF]`
+ *
+ * Every constant below is one endpoint of that production. None is a tuning parameter, a threshold or
+ * a capacity, so naming them invents nothing (AAP §0.7.3 S9) — they are named rather than inlined for
+ * the same reason every DOCUMENT LITERAL above is: so one definition cannot drift from the rule it
+ * transcribes, and so a reader can check each boundary against the specification by name.
+ * --------------------------------------------------------------------------------------------- */
+
+/** `#x9` — tab, the first of the three whitespace characters legal below U+0020. */
+const XML_TAB_CODE_POINT = 0x9;
+
+/** `#xA` — line feed. */
+const XML_LINE_FEED_CODE_POINT = 0xa;
+
+/** `#xD` — carriage return. An XML parser normalises it to a line feed; it is still legal input. */
+const XML_CARRIAGE_RETURN_CODE_POINT = 0xd;
+
+/** `#x20` — the lower bound of the first contiguous legal range, so every OTHER C0 code is illegal. */
+const XML_FIRST_GRAPHIC_CODE_POINT = 0x20;
+
+/** `#xD7FF` — the upper bound of that range, immediately below the surrogate block. */
+const XML_LAST_CODE_POINT_BELOW_SURROGATES = 0xd7ff;
+
+/** `#xE000` — the lower bound of the next range, immediately above the surrogate block. */
+const XML_FIRST_CODE_POINT_ABOVE_SURROGATES = 0xe000;
+
+/** `#xFFFD` — the upper bound of that range, which is why U+FFFE and U+FFFF are illegal. */
+const XML_LAST_LEGAL_BMP_CODE_POINT = 0xfffd;
+
+/** `#x10000` — the lower bound of the supplementary range. */
+const XML_FIRST_SUPPLEMENTARY_CODE_POINT = 0x10000;
+
+/** `#x10FFFF` — the upper bound of Unicode itself, and of the production's last range. */
+const XML_LAST_UNICODE_CODE_POINT = 0x10ffff;
+
+/**
+ * Answers whether one code point may appear in an XML 1.0 document at all.
+ *
+ * DECISION G-4. This is a direct, ordered transcription of the `Char` production above: the three
+ * legal sub-U+0020 whitespace characters first, then each range boundary in turn. It is written as a
+ * ladder rather than as a regular expression on purpose — a character class spanning the surrogate
+ * block cannot express "unpaired surrogate" without lookaround, and a subtly wrong class would fail
+ * silently on exactly the inputs this policy exists for.
+ *
+ * DENY BY DEFAULT: every branch that admits a character does so from a cited range, and anything the
+ * ladder does not reach is illegal.
+ *
+ * @param codePoint a Unicode code point, which for a lone surrogate is the surrogate's own value
+ * @returns true when the code point is legal in an XML 1.0 document
+ */
+function isLegalXmlCharacter(codePoint: number): boolean {
+  if (
+    codePoint === XML_TAB_CODE_POINT ||
+    codePoint === XML_LINE_FEED_CODE_POINT ||
+    codePoint === XML_CARRIAGE_RETURN_CODE_POINT
+  ) {
+    return true;
+  }
+  if (codePoint < XML_FIRST_GRAPHIC_CODE_POINT) {
+    return false;
+  }
+  if (codePoint <= XML_LAST_CODE_POINT_BELOW_SURROGATES) {
+    return true;
+  }
+  if (codePoint < XML_FIRST_CODE_POINT_ABOVE_SURROGATES) {
+    return false;
+  }
+  if (codePoint <= XML_LAST_LEGAL_BMP_CODE_POINT) {
+    return true;
+  }
+  if (codePoint < XML_FIRST_SUPPLEMENTARY_CODE_POINT) {
+    return false;
+  }
+  return codePoint <= XML_LAST_UNICODE_CODE_POINT;
+}
+
+/**
+ * Whether a UTF-16 code unit is outside the XML 1.0 `Char` production, ignoring surrogates.
+ *
+ * Surrogates are handled by the scanner rather than here, because whether a surrogate is legal depends
+ * on its NEIGHBOUR: a well-formed pair encodes a perfectly legal supplementary character, while a lone
+ * surrogate encodes nothing and cannot be serialised at all.
+ *
+ * ⚠️ DECISION G-4 AND SEC-02 ARE THE SAME PRODUCTION, ASKED IN TWO DIRECTIONS, AND THIS IS THE ONE
+ * PLACE THEY MEET. Two remedies were written for the same defect: one REFUSES a value carrying a code
+ * point XML 1.0 cannot represent, the other STRIPPED those code points and emitted the remainder. They
+ * cannot both hold at the choke point, and refusal is what stands, for three reasons recorded here
+ * rather than left to inference:
+ *
+ *   1. STRIPPING SILENTLY ALTERS MERCHANDISING DATA. This document is a product feed; a title or
+ *      description that loses characters on the way out is wrong data delivered confidently, whereas a
+ *      refusal surfaces the bad value. AAP §0.6.7 and §0.8.3.4 both prefer surfacing to silent repair.
+ *   2. WHERE THE GATE REACHES, AND WHERE IT DOES NOT — STATED EXACTLY, BECAUSE AN EARLIER WORDING
+ *      OVERSTATED IT. {@link assertRepresentableInXml} runs first, on the raw text, inside
+ *      {@link escapeFeedText}, so it covers that function's SIX call sites and nothing else. It does
+ *      NOT cover the TEN raw substitutions, which bypass `escapeFeedText` entirely — DECISION G-3's
+ *      withdrawal is what put them beyond it, and each of the ten carries its own locator note saying
+ *      the exposure is open. So an XML-illegal code point remains REACHABLE through those ten, and the
+ *      earlier claim that "in this tree they are not reachable … at the single choke point all fifteen
+ *      sinks already call" was false in both particulars once G-3 came out: there is no fifteen-sink
+ *      choke point, and unreachability was never established for the raw ten.
+ *
+ *      ⚠️ THAT DOES NOT REINSTATE THE STRIP, and the reason is the same one that withdrew G-3.
+ *      Stripping the ten would alter emitted data at exactly the sites the legacy emits verbatim, which
+ *      is the enhancement §0.8.2 guideline 4 forbids; gating the ten with a refusal would replace the
+ *      legacy's unparseable document with no document at all, which is a larger divergence than the one
+ *      being avoided. The residual exposure is therefore carried on the register alongside G-3's
+ *      CWE-91 carry — same ten sites, same operator decision (S8) — rather than closed here. Reasons 1
+ *      and 3 below are unaffected by any of this: they are about WHICH remedy belongs at a gate, not
+ *      about how many sinks reach one.
+ *   3. A TEST PINS THE DIFFERENCE DELIBERATELY. `test/integrations/ProductFeedBuilder.test.ts` asserts
+ *      "refuses rather than sanitises: no stripped, replaced or substituted output is ever produced",
+ *      so sanitising here would not be a silent divergence — it would be a contradiction in the suite.
+ *
+ * What the sanitising remedy contributed IS kept, because it is the better statement of the grammar:
+ * legality is decided by {@link isLegalXmlCharacter}, an ordered, deny-by-default transcription of the
+ * `Char` production with every endpoint named and cited, instead of by hex literals inlined here. The
+ * two answers agree by construction for every non-surrogate code unit — that is exactly the range this
+ * predicate is asked about — so the refusal's behaviour is unchanged and its authority is now explicit.
+ *
+ * @param codeUnit - the code unit to classify. Never a surrogate; the scanner filters those first.
+ * @returns `true` when XML 1.0 forbids it outright.
+ */
+function isForbiddenXmlCodeUnit(codeUnit: number): boolean {
+  return !isLegalXmlCharacter(codeUnit);
+}
+
+/**
+ * Refuses a value that cannot appear in an XML 1.0 document, before any of it is emitted.
+ *
+ * Read DECISION G-4 above first: this is a REFUSAL, not a sanitiser. It removes nothing and replaces
+ * nothing, so a value that passes reaches the document byte-identical apart from the four legacy
+ * metacharacter substitutions.
+ *
+ * ⚠️ THE OFFENDING CHARACTER IS NOT ECHOED, AND NEITHER IS THE VALUE. The message names the condition
+ * and the diagnostic payload carries the code point and its offset, which is what a maintainer needs;
+ * the stored text stays out of both. `src/handlers/httpResponse.ts` answers a `DataIntegrityError` with
+ * the neutral service-data presentation at 500 and reads neither the message nor the payload, so
+ * nothing about the stored row reaches a caller either way.
+ *
+ * @param text - the fully composed element text, already stringified by the caller.
+ * @throws {DataIntegrityError} when any code point falls outside the XML 1.0 `Char` production, or when
+ *   the text carries a lone surrogate.
+ */
+function assertRepresentableInXml(text: string): void {
+  for (let index = 0; index < text.length; index += 1) {
+    const codeUnit = text.charCodeAt(index);
+
+    /* A high surrogate is legal only when a low surrogate follows it; together they encode a
+     * supplementary character, which the `Char` production admits. */
+    if (codeUnit >= 0xd800 && codeUnit <= 0xdbff) {
+      const following = index + 1 < text.length ? text.charCodeAt(index + 1) : 0;
+
+      if (following >= 0xdc00 && following <= 0xdfff) {
+        index += 1;
+        continue;
+      }
+
+      throw new DataIntegrityError(
+        'A feed value carries an unpaired high surrogate, which encodes no character and cannot be ' +
+          'serialised into an XML document.',
+        { context: { codePoint: describeCodeUnit(codeUnit), offset: index } },
+      );
+    }
+
+    if (codeUnit >= 0xdc00 && codeUnit <= 0xdfff) {
+      throw new DataIntegrityError(
+        'A feed value carries an unpaired low surrogate, which encodes no character and cannot be ' +
+          'serialised into an XML document.',
+        { context: { codePoint: describeCodeUnit(codeUnit), offset: index } },
+      );
+    }
+
+    if (isForbiddenXmlCodeUnit(codeUnit)) {
+      throw new DataIntegrityError(
+        'A feed value carries a code point that XML 1.0 forbids in a document, so it can be neither ' +
+          'emitted nor escaped. It is refused rather than stripped or substituted, because altering ' +
+          'stored data is not this port to do.',
+        { context: { codePoint: describeCodeUnit(codeUnit), offset: index } },
+      );
+    }
+  }
+}
+
+/**
+ * Renders a code unit as its `U+XXXX` notation for a diagnostic payload.
+ *
+ * @param codeUnit - the offending code unit.
+ * @returns the notation, upper-cased and zero-padded to at least four digits.
+ */
+function describeCodeUnit(codeUnit: number): string {
+  return `U+${codeUnit.toString(16).toUpperCase().padStart(4, '0')}`;
+}
 
 /**
  * Escapes a value for element content, character-for-character compatibly with the legacy
- * `htmlEditFormat`.
+ * `htmlEditFormat`, after proving it is representable in XML 1.0 at all.
  *
- * SEMANTICS, MATCHED DELIBERATELY RATHER THAN IMPROVED:
+ * TWO STEPS, IN THIS ORDER, AND BOTH INSIDE THIS ONE FUNCTION:
+ *   1. {@link assertRepresentableInXml} REFUSES a value carrying a code point no XML 1.0 document may
+ *      contain in any spelling — SEC-02 with DECISION G-4. It runs FIRST, on the raw text, and it
+ *      removes and replaces nothing, so it cannot disturb step 2's ordering invariant and it cannot
+ *      change a single emitted byte of a value the legacy could have emitted as XML at all. Why this
+ *      refuses rather than sanitises is recorded above {@link isForbiddenXmlCodeUnit}.
+ *   2. The legacy's own four substitutions, unchanged, below.
+ *
+ * SEMANTICS OF STEP 2, MATCHED DELIBERATELY RATHER THAN IMPROVED:
  *   - EXACTLY FOUR characters are escaped: `&`, `<`, `>` and `"`.
  *   - `&` IS PROCESSED FIRST, so an ampersand introduced by a later substitution cannot be escaped a
  *     second time within one call.
@@ -724,52 +956,41 @@ const SALE_PRICE_EFFECTIVE_DATE_TRAILING_TAB = '\t';
  *     safe to leave: this document has no dynamic ATTRIBUTE anywhere, and an apostrophe needs no
  *     escaping in element content.
  *
+ * ⚠️ IT ALSO REFUSES A CODE POINT XML 1.0 CANNOT REPRESENT, WHICH IS THE ONE THING IT DOES THAT THE
+ * LEGACY `htmlEditFormat` DID NOT. See DECISION G-4 above for why refusing is the only response that
+ * neither alters stored data nor emits an unparseable document. The four substitutions themselves are
+ * untouched, so every value the legacy could represent is escaped byte-identically to before.
+ *
  * ⚠️ EXACTLY ONCE PER VALUE, AT THE EMISSION SITE. Because `&` is processed first, one call is safe
  * and two calls are not — a second pass would turn `&amp;` into `&amp;amp;`. Every call is therefore
  * made where the field is pushed, and no helper in this module escapes on a caller's behalf:
- * {@link ProductFeedBuilder.selectDescription} returns RAW text and
- * {@link renderEffectiveDateEndpoint} returns a RAW endpoint, each escaped once by its emitter.
+ * {@link ProductFeedBuilder.selectDescription} returns RAW text, escaped exactly once by its
+ * emitter. {@link renderEffectiveDateEndpoint} also returns RAW text and its emitter escapes NOTHING,
+ * because `product.cfm:L30` escapes nothing — see DECISION G-3 above.
  *
- * THE SIX LEGACY CALL SITES, unchanged: the SKU identifier (`product.cfm:L17`), the title (`:L18`),
- * the selected description (`:L19`), the product type (`:L21`), the brand name (`:L32`) and the item
- * group identifier (`:L39`).
- *
- * THE NINE HARDENED CALL SITES, added by DECISION G-3 above: the channel link and the channel
- * description (`:L14`, `:L15`), the item link (`:L22`), the primary image link (`:L23`), each
- * additional image link (`:L24`), the price (`:L27`), the sale price (`:L29`), the sale-price
- * effective-date range (`:L30`) and the shipping weight (`:L58`).
+ * ⛔ THERE ARE EXACTLY SIX CALL SITES, AND THE LEGACY CHOSE THEM: the SKU identifier
+ * (`product.cfm:L17`), the title (`:L18`), the selected description (`:L19`), the product type
+ * (`:L21`), the brand name (`:L32`) and the item group identifier (`:L39`). Nine further call sites
+ * were added and are WITHDRAWN — see DECISION G-3 above. Do not add a tenth, an eleventh or any of
+ * those nine back: the ten raw substitutions are raw in `product.cfm`.
  *
  * The two fixed values — `g:condition` and `g:availability` — are module constants rather than
  * dynamic text, so they are emitted directly and are not routed through here; and
  * `g:google_product_category` is emitted empty with no value at all.
  *
- * THE NINE HARDENED CALL SITES, added by DECISION G-3 above: the channel link and the channel
- * description (`:L14`, `:L15`), the item link (`:L22`), the primary image link (`:L23`), each
- * additional image link (`:L24`), the price (`:L27`), the sale price (`:L29`), the sale-price
- * effective-date range (`:L30`) and the shipping weight (`:L58`).
- *
- * The two fixed values — `g:condition` and `g:availability` — are module constants rather than
- * dynamic text, so they are emitted directly and are not routed through here; and
- * `g:google_product_category` is emitted empty with no value at all.
- *
- * ONCE, NOT TWICE. Escaping is applied to the fully composed text of an element, never to a fragment
- * that is then composed with another escaped fragment. Escaping a value that already contains
- * `&amp;` would produce `&amp;amp;`, and because `&` is processed first within a single call there is
- * no way for one call to double-escape itself — so the invariant to protect is simply "one call per
- * element", which is why the URL prefix and the path are joined BEFORE the call and not after.
- *
- * WHY THIS IS UNIFORM RATHER THAN LEGACY-SHAPED. The legacy escaped six of its values and
- * interpolated the rest raw; that asymmetry was not a design, it was the injection and
- * well-formedness flaw declared in this file's header. For the six values the legacy did escape, this
- * helper is byte-identical to it, so those fields are unchanged. For the rest, output differs from
- * the legacy only when the value actually contains one of the four characters.
- *
- * @param value the text to escape; numbers are accepted and stringified, because several feed fields
- *   are numeric and a uniform rule must not require the call site to convert first
+ * @param value the text to escape; numbers are accepted and stringified, because the field the legacy
+ *   escapes are all textual but the parameter stays permissive rather than forcing a call-site cast
  * @returns the escaped text
  */
 function escapeFeedText(value: string | number): string {
-  return String(value)
+  const text = String(value);
+
+  /* DECISION G-4 — the representability gate runs FIRST, on the raw text. Running it after the
+   * substitutions would be equivalent for the four metacharacters, which are all legal, but it would
+   * report an offset into a string the caller never supplied. It removes and replaces nothing. */
+  assertRepresentableInXml(text);
+
+  return text
     .replaceAll('&', '&amp;')
     .replaceAll('<', '&lt;')
     .replaceAll('>', '&gt;')
@@ -780,106 +1001,38 @@ function escapeFeedText(value: string | number): string {
  * {@link escapeFeedText}, which covers those THREE PLUS `"`. Two escapers for one document is a
  * correctness hazard rather than a choice — a future sink would be escaped by whichever one the author
  * happened to reach for, and the weaker one leaves an attribute-delimiter character unescaped. The
- * stronger, already-wired helper is the survivor and every sink in this file calls it. */
-
-/* THERE IS EXACTLY ONE HOST VALIDATOR, AND IT IS {@link validateFeedHostAuthority} ABOVE.
- *
- * Two were declared at one point, reasoning identically — `CGI.HTTP_HOST` is the caller-supplied
- * `Host` header, so escaping alone would keep the document well formed while still publishing an
- * attacker-chosen authority inside every `link` and `g:image_link`; validation is what closes the
- * redirect surface, and the value must be rejected rather than repaired. One had to go, and the
- * BRANDED one is the survivor: `FeedHostAuthority` is unforgeable, so the compiler guarantees every
- * host reaching a sink was validated, where a plain-string helper relied on every call site
- * remembering to call it.
- *
- * ⭐ THE WITHDRAWN VALIDATOR'S ONE GENUINELY STRONGER PROPERTY WAS CARRIED ACROSS RATHER THAN LOST:
- * its 63-octet DNS label ceiling now lives in `validateFeedHostAuthority` as an explicit length gate.
- * It was NOT adopted wholesale, because its DNS-label grammar also rejected the underscore, and
- * `internal_store.example.com` is a host this feed accepts on purpose. Both grammars were checked
- * against the accepted and the hostile host sets before the merge: neither admitted any hostile
- * value, so the choice cost no coverage. Neither validator normalised, trimmed, lower-cased or
- * defaulted the value, and neither disclosed it: a rejected authority is recorded internally only. */
+ * stronger, already-wired helper is the survivor and every escaped sink in this file calls it. */
 
 /* ================================================================================================
- * RAW-SINK VALIDATION — the two defences ESCAPING CANNOT PROVIDE
+ * THERE IS NO RAW-SINK VALIDATION, AND THE WHOLE SECTION THAT HELD IT IS WITHDRAWN
+ * ==============================================================================================
+ * This section once declared a fail-closed grammar for every substitution the legacy emits raw. The
+ * inventory, so that nothing is quietly reinstated:
+ *
+ *   - `validateFeedHostAuthority` and its branded `FeedHostAuthority` — WITHDRAWN. See WITHDRAWN
+ *     RAW-SINK VALIDATION above the render context.
+ *   - `requireRelativeFeedPath` and its RFC 3986 excluded-character set — WITHDRAWN, same place.
+ *   - `SHIPPING_WEIGHT_PATTERN`, `SHIPPING_WEIGHT_UNIT_CODES`, `assertFeedShippingWeight` and
+ *     `assertFeedShippingWeightUnitCode` — retired earlier, and the evidence stands independently of
+ *     this withdrawal: `model/service/SettingService.cfc:L233` declares `skuShippingWeight` as
+ *     `{fieldType="text", defaultValue=1}`, so `1.5 lbs` is a legitimate stored value; and
+ *     `:L338-L343` builds the `skuShippingWeightUnitCode` options from a LIVE
+ *     `getMeasurementUnitSmartList()` query over the user-editable `SwMeasurementUnit`, so the five
+ *     rows in `config/dbdata/SlatwallMeasurementUnit.xml.cfm:L10-L14` are SEED data and not an
+ *     enumeration. The values came from the repository; the CLOSEDNESS was invented, which AAP §0.7.3
+ *     S9 forbids.
+ *   - `rejectRawFeedValue` — existed only to raise for those two grammars.
+ *   - `assertFeedUriReference` — a weaker duplicate of the withdrawn path gate.
+ *   - `assertFeedUtcHourOffset` — a second, weaker statement of a constraint {@link readUtcHourOffset}
+ *     already enforces for a stronger reason: the offset's NUMERIC VALUE computes the timestamp
+ *     components its own label describes (F15), so a value that cannot be read as hours cannot be
+ *     rendered at all. That constraint is ARITHMETIC, not encoding, and it stays where the arithmetic
+ *     is. It is the one surviving constraint on a raw sink, and it survives because the legacy's own
+ *     `dateFormat`/`timeFormat` composition at `product.cfm:L30` cannot be performed without it.
+ *
+ * NOTHING IS INVENTED (AAP §0.7.3 S9), and nothing is refused. The register of AAP §0.6.7 gains no
+ * entry from this file.
  * ============================================================================================= */
-
-/**
- * WHY THIS SECTION STILL EXISTS NOW THAT EVERY TEXT NODE IS ESCAPED.
- *
- * This section once held a fail-closed grammar for EVERY substitution the legacy emitted raw — the
- * host, the three URI references, the UTC offset, the shipping weight and the weight unit code — and
- * its stated premise was that "ESCAPING THESE VALUES IS THE WRONG FIX, AND IS DELIBERATELY NOT DONE",
- * on the ground that escaping rewrites bytes for valid data.
- *
- * ⚠️ THAT PREMISE WAS WRONG ON ITS OWN TERMS, AND IS WITHDRAWN. Escaping only changes bytes for a value
- * that contains `&`, `<`, `>` or `"` — and for exactly those values the legacy emitted a document with
- * no defined parse, so there was no valid feed whose bytes could change. For every value the legacy
- * rendered as well-formed XML, {@link escapeFeedText} is the identity. The byte-parity concern the
- * grammars were built to protect is therefore protected by escaping too, and the reason to prefer a
- * grammar had to be something else.
- *
- * ✅ WHAT SURVIVED, AND THE TEST THAT DECIDED IT. A grammar earns its place only where escaping leaves a
- * real hole. Two do:
- *
- *   1. {@link validateFeedHostAuthority} — DECISION G-1. Escaping the host would keep the document
- *      well-formed while still letting a request header REBASE every absolute URL in the feed onto a
- *      foreign origin. Well-formedness is not the property at risk; the origin is. The value is also
- *      genuinely closed: it is deployment CONFIGURATION, not catalogue data.
- *   2. {@link requireRelativeFeedPath} — DECISION G-2. A path is concatenated after `http://<host>`,
- *      so `//evil.example.com/x` relocates the origin and a scheme-bearing value replaces it outright.
- *      Escaping cannot see either problem, because neither needs an XML metacharacter.
- *
- * ⛔ WHAT WAS RETIRED, AND WHY IT WAS NOT MERELY REDUNDANT BUT WRONG. The shipping-weight grammar and
- * the weight-unit allowlist are gone, and the evidence is in the legacy settings engine rather than in
- * a preference:
- *
- *   - `model/service/SettingService.cfc:L233` declares `skuShippingWeight` as `{fieldType="text",
- *     defaultValue=1}`. It is FREE TEXT by design, so an operator may legitimately store `1.5 lbs` or
- *     `approx 2`. A "non-negative decimal or empty" grammar refuses values the legacy settings UI
- *     accepts and the legacy view renders.
- *   - `model/service/SettingService.cfc:L338-L343` builds the `skuShippingWeightUnitCode` options with
- *     a LIVE query — `getMeasurementUnitSmartList()` filtered to `measurementType = 'weight'` — over
- *     `SwMeasurementUnit`, a user-editable table. The five rows in
- *     `config/dbdata/SlatwallMeasurementUnit.xml.cfm:L10-L14` are SEED data, not an enumeration. The
- *     retired constant restated those five codes as a closed set, which would refuse a unit an operator
- *     had legitimately added: the VALUES came from the repository, but the CLOSEDNESS was invented, and
- *     inventing a closed set is exactly what AAP §0.7.3 S9 forbids.
- *   - Availability matters here in a way it does not for the host: a single operator-typed setting must
- *     not be able to suppress the entire catalogue's feed, and escaping neutralises the injection vector
- *     (the whole of the finding) without that consequence.
- *
- * ⛔ AND WHAT IS NOT A GRAMMAR EVEN THOUGH IT LOOKS LIKE ONE. The UTC offset is constrained — see
- * {@link readUtcHourOffset} — but not for encoding reasons: its NUMERIC VALUE computes the wall clock
- * its own label describes (F15), so a value that cannot be read as hours cannot be rendered at all. The
- * constraint is arithmetic, and escaping is applied on top of it at the emission site regardless.
- *
- * NOTHING IS INVENTED (AAP §0.7.3 S9). The surviving grammars derive from the DNS label rules and the
- * bracketed-literal form a `Host` header may carry, and from RFC 3986's excluded characters. No length
- * limit, rate, budget or threshold is introduced, and the register of AAP §0.6.7 gains no entry.
- */
-
-/* THERE IS NO `SHIPPING_WEIGHT_PATTERN` and NO `SHIPPING_WEIGHT_UNIT_CODES`, and no
- * `assertFeedShippingWeight` or `assertFeedShippingWeightUnitCode` that consumed them. Both settings are
- * escaped at their single emission site instead, for the reasons recorded above. They must not be
- * reinstated on the argument that a feed field "should" be numeric: Google's own rejection of a
- * malformed weight is a merchant-visible outcome, whereas refusing to render the catalogue is not, and
- * the legacy imposed no such constraint at any layer. */
-
-/* THERE IS NO `rejectRawFeedValue`. It existed only to raise for the two retired shipping grammars; the
- * two surviving grammars each raise with a message naming their own rule, and neither echoes the
- * rejected value into the message. */
-
-/* THERE IS NO `assertFeedUriReference`. It validated the three URI references this document emits
- * unescaped; {@link requireRelativeFeedPath} now guards all three and is strictly stronger, because it
- * also refuses an ABSOLUTE reference and names the offending sku in its internal context. The three
- * call sites moved to it and the weaker helper is gone rather than left beside it. */
-
-/* THERE IS NO `assertFeedUtcHourOffset`. Its signed-numeric pattern was a SECOND, weaker statement of a
- * constraint {@link readUtcHourOffset} already enforces for a stronger reason — the offset's numeric
- * value computes the timestamp components the label describes (F15) — so the shape check now lives with
- * the arithmetic that depends on it, and the emission site escapes the text as well. Two independent
- * gates on one value is how they drift apart. */
 
 /* ================================================================================================
  * TIME OF DAY — hand-built, because it is this file's responsibility and nobody else's
@@ -929,10 +1082,9 @@ function formatTimeOfDay(value: Date): string {
  * MONETARY RENDERING (F21)
  * ============================================================================================== */
 
-/**
- * Matches JavaScript's exponential number form, so it can be expanded into plain decimal text.
- */
-const EXPONENTIAL_NUMBER_PATTERN = /^(-?)(\d+)(?:\.(\d+))?[eE]([+-]?\d+)$/;
+/* F07 — the exponential-form pattern that used to live here is gone with the expansion it served; see
+ * {@link renderFeedMoney}. Its remaining home is `../../util/formatting`, at the coercion boundary where
+ * a value can still arrive in that form. */
 
 /**
  * Renders a monetary value as PLAIN decimal text for `g:price` and `g:sale_price` (F21).
@@ -952,40 +1104,30 @@ const EXPONENTIAL_NUMBER_PATTERN = /^(-?)(\d+)(?:\.(\d+))?[eE]([+-]?\d+)$/;
  * either field. Choosing two decimal places would be a fabricated constant, which AAP §0.7.3 S9
  * forbids — so this function rounds nothing, pads nothing and truncates nothing.
  *
- * ⚠️ AND THE TRAILING-ZERO HALF OF F21 CANNOT BE FIXED HERE, WHICH IS STATED RATHER THAN GLOSSED. A
- * stored `100.00` is already the JavaScript number `100` by the time it reaches this function: the
- * scale was lost at HYDRATION, because the entity's price members are typed `number`. Restoring it
- * would mean carrying exact decimal TEXT on the entity itself — a change to
- * `src/domain/sku/Sku.ts`, `src/domain/product/Product.ts` and every price consumer in the port, well
- * beyond this field pair. `src/adapters/mysql/rowMappers.ts` already reads those columns EXACTLY and
- * refuses any lossy conversion, so no precision is silently corrupted on the way in; what is lost is
- * only the presentational scale, and `canonicaliseDecimalText` there records that same
- * scale-is-presentation split. Recorded here so the residue is visible rather than implied.
+ * ⭐ F07 CLOSED THE TRAILING-ZERO HALF OF F21, WHICH AN EARLIER REVISION OF THIS BLOCK RECORDED AS
+ * UNFIXABLE HERE — AND IT WAS RIGHT ABOUT THAT. It said a stored `100.00` had already become the
+ * JavaScript number `100` by the time it arrived, because the scale was lost at HYDRATION, and that
+ * restoring it *"would mean carrying exact decimal TEXT on the entity itself — a change to
+ * `src/domain/sku/Sku.ts`, `src/domain/product/Product.ts` and every price consumer in the port"*.
  *
- * @param value the monetary value
- * @returns plain decimal text, never exponential
+ * That is exactly the change F07 required, and it has been made. The monetary members of both entities
+ * are now `ExactDecimal`: the stored digits, at the stored scale, unconverted. So `100.00` arrives here
+ * as `'100.00'` and is emitted as `100.00`, and the residue is gone rather than merely disclosed.
+ *
+ * ⚠️ THE EXPONENTIAL-EXPANSION MACHINERY IS GONE TOO, BECAUSE ITS INPUT CANNOT OCCUR ANY MORE. It
+ * existed because `String(1e-7)` yields `"1e-7"`, which is not legal feed money. An `ExactDecimal` is
+ * plain decimal text by construction — its grammar admits an optional minus, digits and at most one
+ * point — so there is no exponent left to expand. The expansion itself was not deleted, only moved to
+ * where a value can still arrive in that form: `../../util/formatting`'s coercion path.
+ *
+ * ⛔ NO SCALE IS STILL IMPOSED, AND THE REASON IS UNCHANGED — see the block above. Emitting the STORED
+ * scale is not the same as choosing one: the database supplied it, this function did not invent it.
+ *
+ * @param value the monetary value, as exact decimal text
+ * @returns the same digits, at the same scale, never exponential
  */
-function renderFeedMoney(value: number): string {
-  const text = String(value);
-  const match = EXPONENTIAL_NUMBER_PATTERN.exec(text);
-  if (match === null) {
-    return text;
-  }
-
-  const sign = match[1] ?? '';
-  const integerDigits = match[2] ?? '';
-  const fractionDigits = match[3] ?? '';
-  const exponent = Number(match[4] ?? '0');
-  const digits = `${integerDigits}${fractionDigits}`;
-  const pointPosition = integerDigits.length + exponent;
-
-  if (pointPosition <= 0) {
-    return `${sign}0.${'0'.repeat(-pointPosition)}${digits}`;
-  }
-  if (pointPosition >= digits.length) {
-    return `${sign}${digits}${'0'.repeat(pointPosition - digits.length)}`;
-  }
-  return `${sign}${digits.slice(0, pointPosition)}.${digits.slice(pointPosition)}`;
+function renderFeedMoney(value: ExactDecimal): string {
+  return value;
 }
 
 /**
@@ -1094,10 +1236,17 @@ function renderEffectiveDateEndpoint(value: Date | '', utcHourOffset: string): s
    * two counts. It makes the check STRUCTURAL rather than order-dependent: the offset is emitted on
    * BOTH endpoints, including the absent one whose date and time collapse to empty, so validating it
    * only on the branch that needs it for arithmetic would leave the empty endpoint publishing an
-   * unchecked context value. And it is what keeps the offset F13-safe without a second escaper — a
-   * string `Number()` converts to a finite value cannot contain `&`, `<` or `>`, so validation alone
-   * establishes that the verbatim text is legal XML character data. {@link readUtcHourOffset} is pure,
-   * so calling it on both endpoints costs nothing and can raise nothing the first call would not. */
+   * unchecked context value.
+   *
+   * ⭐ AND THE ARITHMETIC READING IS NOT A HARDENING, WHICH IS WHY IT SURVIVED THE SEC-06 WITHDRAWAL.
+   * `product.cfm:L30` reads the offset from `getTimeZoneInfo().utcHourOffset`, a CFML built-in whose
+   * value is machine-generated and always numeric, so a non-numeric offset is not a state the legacy
+   * can reach and refusing one forecloses no legacy outcome. The target has no such built-in and must
+   * shift an absolute `Date` into the labelled zone itself (F15), so it cannot render this endpoint at
+   * all without a numeric reading — an execution-model necessity, not a security control. The text is
+   * still emitted VERBATIM and is NOT escaped, exactly as `:L30` interpolates it.
+   * {@link readUtcHourOffset} is pure, so calling it on both endpoints costs nothing and can raise
+   * nothing the first call would not. */
   const offsetHours = readUtcHourOffset(utcHourOffset);
   const wallClock = value === '' ? '' : shiftToOffsetWallClock(value, offsetHours);
   const datePart = wallClock === '' ? '' : formatOffsetWallClockDate(wallClock);
@@ -1119,8 +1268,8 @@ function renderEffectiveDateEndpoint(value: Date | '', utcHourOffset: string): s
  * ```ts
  * const builder = new ProductFeedBuilder(imagePaths, pricing, settings);
  * const xml = await builder.build(records, {
- *   // DECISION G-1: from `config.googleFeed.host`, NEVER from a request header.
- *   host: validateFeedHostAuthority(config.googleFeed.host),
+ *   // From `config.googleFeed.host`, NEVER from a request header — see the member's own note.
+ *   host: config.googleFeed.host,
  *   renderTime: requestStartedAt,
  *   utcHourOffset: '5',
  * });
@@ -1162,62 +1311,42 @@ export class ProductFeedBuilder {
    * field's CONTENT is padded, trimmed or reflowed — the legacy view's exact interior whitespace is a
    * template artifact, whereas every element's text is byte-exact.
    *
-   * ⭐ THE HOST GATE RUNS ONCE PER RENDER, BEFORE ANY BYTE IS PRODUCED. {@link resolveCanonicalHost}
-   * is called here rather than per item so that one document can never mix an accepted host into some
-   * elements and a rejected one into others, and so that a refused render produces NO partial feed at
-   * all. The accepted, configured spelling is then the only host value that exists downstream: it is
-   * handed to {@link ProductFeedBuilder.buildItem} as a finished prefix, which is why that method
+   * ⛔ THERE IS NO HOST GATE, AND AN EARLIER REVISION RAN ONE HERE ONCE PER RENDER. It refused the
+   * whole document when the requested host was not a member of a configured allowlist. Both the gate
+   * and the `allowedHosts` member that fed it are withdrawn, because `product.cfm:L14`, `:L15`,
+   * `:L22`, `:L23` and `:L24` interpolate `CGI.HTTP_HOST` with no test of any kind and a refusal is
+   * therefore an outcome change (AAP §0.8.2 guideline 4). See WITHDRAWN RAW-SINK VALIDATION.
+   *
+   * ⭐ THE `http://<host>` PREFIX IS STILL COMPOSED EXACTLY ONCE, HERE, BEFORE ANY BYTE IS PRODUCED.
+   * That is a de-duplication, not a gate: one document can never assemble the prefix two different
+   * ways, and {@link ProductFeedBuilder.buildItem} receives it finished, which is why that method
    * never reads {@link ProductFeedRenderContext.host} itself.
    *
    * @param records the already-materialised SmartList records, rendered in the order given
    * @param context the render-time replacements for the legacy request globals
+   * @param options optional invocation-scoped controls that change no emitted byte; see
+   *   {@link ProductFeedRenderOptions}
    * @returns the complete RSS document
-   * @throws {DomainError} when the requested host is not a canonical, configured feed host — see
-   *   {@link resolveCanonicalHost}
    * @throws {DomainError} when a record's SKU carries no product, reproducing the legacy null
    *   dereference — see {@link ProductFeedBuilder.buildItem}
    */
   public async build(
     records: readonly ProductFeedRecord[],
     context: ProductFeedRenderContext,
+    options?: ProductFeedRenderOptions,
   ): Promise<string> {
-    /* DECISION G-3: the two channel-level dynamic values, each escaped exactly once here. The host
-     * is already unforgeable by DECISION G-1, so for any value that reaches this point these two
-     * calls are provably no-ops — they are made anyway, because "every dynamic text node is escaped
-     * at its emission site" is an invariant a reviewer can check by reading the emission sites,
-     * whereas "escaped except where a brand makes it unnecessary" is one that has to be reasoned
-     * about at every one of them. The channel title is a module constant and is not routed through
-     * the escaper. */
-    /* THE CONFIGURED-HOST MEMBERSHIP GATE, ENFORCED BEFORE THE HOST REACHES ANY SINK.
+    /* ⛔ THERE IS NO HOST GATE HERE, AND AN EARLIER REVISION HAD ONE. It refused the whole render when
+     * `context.host` was absent from a configured `allowedHosts` list, fail-closed on an empty list.
+     * Both the member and the gate are withdrawn: `product.cfm:L14`, `:L15`, `:L22`, `:L23` and `:L24`
+     * interpolate `CGI.HTTP_HOST` unconditionally, so refusing to render is an outcome change that AAP
+     * §0.8.2 guideline 4 forbids and that D18 does not license. See WITHDRAWN RAW-SINK VALIDATION.
      *
-     * {@link ProductFeedRenderContext.allowedHosts} documents itself as the control that removes the
-     * legacy's unconditional trust in `CGI.HTTP_HOST`, and it is REQUIRED rather than optional
-     * precisely so a wiring site cannot omit it. It was declared and documented but never actually
-     * read — every caller had to supply it and nothing consulted it — which is the one failure mode
-     * worse than not having the control at all, because the type implied a guarantee that did not
-     * exist. It is consulted here.
-     *
-     * FAIL CLOSED. An empty list admits no host, so a deployment with nothing configured renders
-     * nothing rather than rendering an unvalidated authority. Comparison is case-insensitive because
-     * DNS names are, and the grammar gate has already confined both sides to ASCII by the time this
-     * runs; each configured entry is trimmed on the configuration side of the comparison only, so a
-     * stray space in configuration cannot silently admit a host, and the incoming value is never
-     * rewritten. The rejected authority is NOT echoed, matching every other refusal in this file. */
-    const requestedHost = context.host.toLowerCase();
-
-    if (!context.allowedHosts.some((allowed) => allowed.trim().toLowerCase() === requestedHost)) {
-      throw new DomainError(
-        'The Google product feed refused to render: the requested host authority is not among the ' +
-          'hosts this deployment is configured to publish feed URLs for.',
-      );
-    }
-
-    /* Composed ONCE per render from the already-gated host, then reused: `buildItem` takes the RAW
-     * prefix because it escapes each URL itself at the point of emission, while the channel link is
-     * escaped here. Deriving both from this one expression is what keeps them from drifting. */
+     * ⚠️ AND THE TWO CHANNEL VALUES ARE EMITTED RAW, because `:L14` and `:L15` emit them raw. Any XML
+     * markup in the configured host lands in these two text nodes; that is flagged, not closed (S8).
+     * The channel title is a module constant. */
     const absoluteUrlPrefix = `${HTTP_SCHEME_PREFIX}${context.host}`;
-    const channelLink = escapeFeedText(absoluteUrlPrefix);
-    const channelDescription = escapeFeedText(`${CHANNEL_DESCRIPTION_PREFIX}${context.host}`);
+    const channelLink = absoluteUrlPrefix;
+    const channelDescription = `${CHANNEL_DESCRIPTION_PREFIX}${context.host}`;
 
     const lines: string[] = [
       XML_DECLARATION,
@@ -1228,10 +1357,77 @@ export class ProductFeedBuilder {
       `${INDENT_UNIT.repeat(2)}<description>${channelDescription}</description>`,
     ];
 
+    /*
+     * ⭐ P7 — THE PRODUCT-WIDE SALE-PRICE READ IS RESOLVED ONCE PER PRODUCT, NOT ONCE PER SKU.
+     * `Sku.getSalePriceDetails` calls `PricingPort.getSalePriceDetailsForProductSkus(productID)` — a read
+     * keyed by PRODUCT that returns every one of that product's SKUs' details — and then memoises only
+     * THIS SKU's slice in its own private field, faithfully reproducing the per-instance guard at
+     * `model/entity/Sku.cfc:L540`. A feed containing `n` SKUs of one product therefore issued the same
+     * product-wide read `n` times and discarded `n-1` of every result. Under Hibernate each SKU was a
+     * separate instance, so the legacy repeated it too; the repetition is faithful, and it is also pure
+     * waste on the one path that renders a whole catalog.
+     *
+     * ⚠️ THE FIX IS A DECORATOR, WHICH IS WHY NEITHER THE DOMAIN NOR THE PORT CHANGES. Nothing is added
+     * to `Sku`, whose per-instance memo stays exactly as the legacy declares it, and nothing is added to
+     * `../../ports/PricingPort`, whose single member keeps its contract. The SKUs simply receive a
+     * pricing reference that has already answered this product once.
+     *
+     * ⚠️ THE ANSWER CANNOT DIFFER. Within one invocation the read is a function of `productID` alone, so
+     * two calls with one identifier are two calls for one answer — every SKU of a product still selects
+     * its own slice by its own `skuID` from the identical map, and a SKU whose product is absent still
+     * takes the empty-details branch without any read at all. Rejections are NOT memoised, for the same
+     * reason `SkuAssociationReferenceMap` does not memoise them: a failed read must not poison the key.
+     *
+     * ⚠️ INVOCATION-LOCAL, AND THAT IS THE M7 REQUIREMENT RATHER THAN A STYLE CHOICE. It is constructed
+     * HERE, per `build` call, and dies with the document. A field on this class or a module-scope map
+     * would let one request's prices be emitted into another request's feed on a warm container.
+     *
+     * ⛔ NOT CONCURRENCY, NOT A BATCH, NOT A PREFETCH. No read is hoisted ahead of the record that needs
+     * it, no second port member is invented to fetch many products at once, and the loop below still
+     * awaits one item at a time in record order. Only repetition is removed.
+     */
+    /*
+     * ⭐ P7 — THE ADDITIONAL-IMAGE RESOLUTIONS ARE PRODUCT-WIDE TOO, AND WERE PAID FOR PER SKU.
+     * `product.cfm:L24` loops the PRODUCT's image collection, so every SKU of a product re-resolved the
+     * same set of resized renditions. {@link memoiseResizedImagePaths} removes the repeat on exactly the
+     * same terms as the pricing wrapper above — same answers, same order, nothing hoisted, keyed on the
+     * whole request so no assumption is made about which fields a resolver reads. The primary
+     * `g:image_link` at `:L23` is genuinely per-SKU and simply never hits a repeat.
+     */
+    const scope: FeedDocumentScope = {
+      pricing: memoisePricingByProduct(this.pricing),
+      imagePaths: memoiseResizedImagePaths(this.imagePaths),
+    };
+
+    /*
+     * ⭐ P17 — THE RENDER CAN NOW BE STOPPED, AND NOTHING ABOUT THE STOPPING IS INVENTED. The signal is
+     * the caller's or it is absent; this method creates none, derives none from a deadline and imposes
+     * no budget of its own, for the reason {@link ProductFeedRenderOptions} states in full. With no
+     * signal supplied the closure is a no-op and this loop behaves exactly as it did before.
+     *
+     * IT IS CHECKED AT THE RECORD BOUNDARY ONLY — between two complete `item` elements, which is the
+     * one place in this method where nothing is half-built. Never inside {@link buildItem}, because a
+     * check between two of a record's awaits could abandon an element with some of its sixteen fields
+     * emitted; never after the loop, because a check there would stop nothing. The count of records
+     * already rendered is reported so a caller can see where it stopped, and it is reported as a COUNT
+     * rather than as an identifier so no catalog data travels in a failure.
+     */
+    const cancellation = options?.signal;
+    const throwIfCancelled = (renderedRecords: number): void => {
+      if (cancellation?.aborted === true) {
+        throw new DomainError('The Google product feed render was cancelled before it completed.', {
+          context: { renderedRecords },
+        });
+      }
+    };
+
     /* `for...of` rather than an index loop: it needs no bounds arithmetic and yields a defined
      * element on every iteration, so `noUncheckedIndexedAccess` is satisfied without narrowing. */
+    let renderedRecords = 0;
     for (const record of records) {
-      lines.push(await this.buildItem(record, context, absoluteUrlPrefix));
+      throwIfCancelled(renderedRecords);
+      lines.push(await this.buildItem(record, context, absoluteUrlPrefix, scope));
+      renderedRecords += 1;
     }
 
     lines.push(`${INDENT_UNIT}</channel>`, '</rss>');
@@ -1246,16 +1442,14 @@ export class ProductFeedBuilder {
    * The order is preserved field for field because a merchant processor reads a positional document
    * and because it is the only way a reader can diff this method against the view line by line.
    *
-   * EVERY DYNAMIC TEXT BELOW IS ESCAPED EXACTLY ONCE, at its own `fields.push` call — see
-   * {@link escapeFeedText} for the single rule and why there is no exemption list. The per-field
-   * comments say which values the LEGACY escaped, because that is the parity fact worth recording;
-   * they no longer describe this file's own behaviour as asymmetric, because it is not.
+   * ⚠️ SIX OF THE SIXTEEN FIELDS ARE ESCAPED AND TEN ARE RAW, exactly as `product.cfm` emits them —
+   * see {@link escapeFeedText} for which six and why the nine that an earlier revision added are
+   * withdrawn. Each raw site carries its own locator note.
    *
    * @param record the SKU and its product's images
    * @param context the render-time replacements for the legacy request globals
-   * @param absoluteUrlPrefix the already-gated `http://<configured host>` prefix, produced once per
-   *   render by {@link ProductFeedBuilder.build}; this method never reads the untrusted
-   *   {@link ProductFeedRenderContext.host} itself
+   * @param absoluteUrlPrefix the `http://<host>` prefix, composed once per render by
+   *   {@link ProductFeedBuilder.build} from {@link ProductFeedRenderContext.host}
    * @returns the rendered `item` element
    * @throws {DomainError} when the SKU carries no product
    */
@@ -1263,13 +1457,14 @@ export class ProductFeedBuilder {
     record: ProductFeedRecord,
     context: ProductFeedRenderContext,
     absoluteUrlPrefix: string,
+    scope: FeedDocumentScope,
   ): Promise<string> {
     const sku = record.sku;
     const product = this.requireProduct(sku);
-    /* The host was validated once by {@link ProductFeedBuilder.build}, this method's only caller, which
-     * also composed `absoluteUrlPrefix` from the gated value and passes it in — so this method never
-     * reads the untrusted `context.host`. The PER-RECORD values below are validated individually at
-     * each sink, because each one comes from different data. */
+    /* `absoluteUrlPrefix` is composed once by {@link ProductFeedBuilder.build}, this method's only
+     * caller, and passed in — so the `http://<host>` text is assembled in exactly one place. Nothing
+     * here validates it, and nothing validates the per-record paths appended to it, because
+     * `product.cfm:L22-L24` validates neither. */
     const fields: string[] = [];
 
     /* ---- 1. `g:id` — ESCAPED (`product.cfm:L17`). ------------------------------------------- */
@@ -1320,7 +1515,7 @@ export class ProductFeedBuilder {
         `</g:product_type>`,
     );
 
-    /* ---- 6. item `link` — RAW IN THE LEGACY, ESCAPED HERE (`product.cfm:L22`). ---------------
+    /* ---- 6. item `link` — RAW (`product.cfm:L22`). ----------------------------------------
      * `model/entity/Product.cfc:L207-L209` builds the path as `"/#setting('globalURLKeyProduct')#/`
      * `#getURLTitle()#/"`, carrying BOTH a leading and a trailing slash, so the emitted URL is
      * `http://<host>/<globalURLKeyProduct>/<urlTitle>/`. NEITHER SLASH IS TRIMMED and the two
@@ -1333,18 +1528,14 @@ export class ProductFeedBuilder {
      * `model/entity/Product.cfc:L211-L213`'s `getListingProductURL()` is the no-leading-slash sibling
      * and is NOT what the feed uses.
      *
-     * SEC-06 / DECISION G-2 and G-3: the composed path is validated as a same-origin relative
-     * reference before it is concatenated, then the finished URL is escaped once. Both are needed and
-     * neither substitutes for the other — one of the path's two segments is a SETTING value and the
-     * other is a persisted COLUMN, so it is neither a constant nor trusted. */
-    const itemLinkPath = requireRelativeFeedPath(
-      'link',
-      sku.skuID,
-      product.getProductURL(this.settings),
-    );
-    fields.push(`<link>${escapeFeedText(`${absoluteUrlPrefix}${itemLinkPath}`)}</link>`);
+     * ⚠️ RAW, AND FLAGGED. `:L22` neither validates the path nor escapes the finished URL, and neither
+     * does this. One of the path's two segments is a SETTING value and the other is a persisted COLUMN,
+     * so a `<` or `&` in either lands in this text node — the CWE-91 exposure carried from `:L22` and
+     * flagged for the operator (S8). An earlier revision validated the path as a same-origin relative
+     * reference and escaped the URL; both are withdrawn (WITHDRAWN RAW-SINK VALIDATION, DECISION G-3). */
+    fields.push(`<link>${absoluteUrlPrefix}${product.getProductURL(this.settings)}</link>`);
 
-    /* ---- 7. `g:image_link` — RAW IN THE LEGACY, ESCAPED HERE (`product.cfm:L23`). ------------
+    /* ---- 7. `g:image_link` — RAW (`product.cfm:L23`). ---------------------------------------
      * TR-5: {@link ImagePathPort} is the ONLY route to a resized image path. Nothing here imports a
      * file-system, path or URL built-in, probes for existence, reconstructs the hardcoded SKU image
      * segment or reads the image-folder setting directly.
@@ -1358,19 +1549,22 @@ export class ProductFeedBuilder {
      * them as a `scale` resize method, a `center` crop location and an empty canvas colour. No size
      * token is invented to fill the gap: the size segment is an open string rather than a closed set,
      * and fabricating a value would change which setting keys are read. */
-    /* SEC-06 / DECISION G-2 and G-3. {@link ImageWebPath} is a nominal DISPLAY tag that
-     * `src/ports/ImagePathPort.ts` says "asserts nothing about the value", so the resolved path is
-     * validated here exactly like the item link's, then escaped once. */
-    const resizedImagePath = requireRelativeFeedPath(
-      'g:image_link',
-      sku.skuID,
-      await sku.getResizedImagePath(this.imagePaths, this.settings),
-    );
-    fields.push(
-      `<g:image_link>${escapeFeedText(`${absoluteUrlPrefix}${resizedImagePath}`)}</g:image_link>`,
-    );
+    /* ⚠️ RAW AND UNVALIDATED, as `:L23` emits it. DECISIONS G-2 and G-3 are WITHDRAWN here: an earlier
+     * revision ran the resolved path through a `requireRelativeFeedPath` guard and then escaped it. Both
+     * are gone. `src/ports/ImagePathPort.ts` says {@link ImageWebPath} is a purely NOMINAL label that
+     * "asserts nothing about the value", and the legacy interpolates whatever the image service returned
+     * straight into the element — so refusing a path, or rewriting `&` to `&amp;` in one, is a BEHAVIOUR
+     * change at exactly the values that matter. AAP §0.8.2 guideline 4 forbids it and D18 does not
+     * license it. The residual risk is FLAGGED, not closed; `ImagePathPort` records it under SEC-07.
+     *
+     * ⭐ THE READ STILL GOES THROUGH `scope.imagePaths`, NOT `this.imagePaths`, AND THAT IS NOT A
+     * BEHAVIOUR CHANGE. `scope` carries the same port wrapped by `memoiseResizedImagePaths` for the life
+     * of ONE document, so a product whose SKUs share a rendition resolves it once. Same values, fewer
+     * calls, and nothing survives the document — which is what keeps it M7-safe on a warm container. */
+    const resizedImagePath = await sku.getResizedImagePath(scope.imagePaths, this.settings);
+    fields.push(`<g:image_link>${absoluteUrlPrefix}${resizedImagePath}</g:image_link>`);
 
-    /* ---- 8. repeated `g:additional_image_link` — RAW IN THE LEGACY, ESCAPED HERE (`:L24`). ----
+    /* ---- 8. repeated `g:additional_image_link` — RAW (`product.cfm:L24`). --------------------
      * One element per product image, IN THE EXISTING ARRAY ORDER: no sort, no de-duplication, no
      * filtering, no existence probe. Zero images yields zero elements.
      *
@@ -1408,21 +1602,18 @@ export class ProductFeedBuilder {
         imagePath: toImageWebPath(image.imagePath),
         missingImagePath: image.missingImagePath ?? this.settings.setting('imageMissingImagePath'),
       };
-      /* SEC-06 / DECISION G-2 and G-3, per image. The missing-image SETTING can be the value that
-       * ends up here, so this path is no more trusted than the primary one. */
-      const additionalImagePath = requireRelativeFeedPath(
-        'g:additional_image_link',
-        sku.skuID,
-        await this.imagePaths.getResizedImagePath(request),
-      );
-      const additionalImageUrl = escapeFeedText(`${absoluteUrlPrefix}${additionalImagePath}`);
+      /* ⚠️ RAW AND UNVALIDATED, as `:L24` emits it — the same withdrawal as the primary image above, and
+       * for the same reason. The missing-image SETTING can be the value that ends up here, so this path is
+       * no more trusted than the primary one; it is also no more guarded, because the legacy guards
+       * neither. Still read through the memoised `scope.imagePaths`. */
+      const additionalImagePath = await scope.imagePaths.getResizedImagePath(request);
+      const additionalImageUrl = `${absoluteUrlPrefix}${additionalImagePath}`;
       fields.push(`<g:additional_image_link>${additionalImageUrl}</g:additional_image_link>`);
     }
 
     /* ---- 9 and 10. fixed `g:condition` and `g:availability` (`:L25`, `:L26`). ----------------
-     * The only two element texts in this method that are NOT escaped, because both are module
-     * constants holding no metacharacter — see {@link escapeFeedText} for why compile-time literals
-     * are the one exception and why a test asserts that property instead of trusting the reading. */
+     * Module constants, not dynamic text, so there is nothing to escape and nothing to flag. A test
+     * asserts they hold no metacharacter rather than trusting the reading. */
     fields.push(`<g:condition>${CONDITION_VALUE}</g:condition>`);
     fields.push(`<g:availability>${AVAILABILITY_VALUE}</g:availability>`);
 
@@ -1438,17 +1629,20 @@ export class ProductFeedBuilder {
      * possibly-absent number, and the empty case is reproduced here. Substituting zero would
      * advertise every unpriced product as free; omitting the element would drop a field the legacy
      * always emits; raising would abort a render the legacy completes. None of those is done. */
-    /* SEC-06 / DECISION G-3. A `number` cannot render an XML-significant character, so this call is
-     * provably a no-op for every well-typed value — it is made so that the emission-site invariant
-     * holds without exception and so that a future widening of the member's return type cannot
-     * silently reopen the finding. */
+    /* ⚠️ RAW, as `:L27` emits it. An earlier revision escaped this field; it is withdrawn with
+     * DECISION G-3. The value is exact decimal text (F07), whose grammar admits only digits, an
+     * optional leading minus and at most one point, so it cannot carry an XML-significant character
+     * any more than the `number` it replaced could — which is why withdrawing the escape here changes
+     * no emitted byte for any well-typed value. */
     const productPrice = product.getPrice();
-    /* F21 — RENDERED THROUGH {@link renderFeedMoney}, NOT `String(...)`. `String(1e-7)` yields
-     * `"1e-7"`, which is not legal feed money and which no consumer will parse as a price. The helper
-     * expands exponential notation to plain decimal text and rounds, pads and truncates nothing. The
-     * empty case stays empty: the legacy emits `<g:price></g:price>` when the price is absent. */
+    /* F21 / F07 — RENDERED THROUGH {@link renderFeedMoney}, which now emits the STORED digits at the
+     * STORED scale and rounds, pads and truncates nothing. Exponential notation was the original
+     * defect here — `String(1e-7)` yields `"1e-7"`, which no feed consumer parses as a price — and it
+     * is now structurally impossible rather than repaired, because an `ExactDecimal` cannot be in that
+     * form. The empty case stays empty: the legacy emits `<g:price></g:price>` when the price is
+     * absent. */
     fields.push(
-      `<g:price>${escapeFeedText(productPrice === undefined ? '' : renderFeedMoney(productPrice))}</g:price>`,
+      `<g:price>${productPrice === undefined ? '' : renderFeedMoney(productPrice)}</g:price>`,
     );
 
     /* ---- 12 and 13. conditional `g:sale_price` and `g:sale_price_effective_date` (`:L28-L31`). -
@@ -1468,13 +1662,31 @@ export class ProductFeedBuilder {
      * cannot be forgotten here. TODO(boundary): both values cross the excluded calculated-property
      * boundary of AAP §0.2.2.6 into the out-of-scope promotion subsystem; TR-5 — {@link PricingPort}
      * is the declared crossing and is handed to the domain member as its lookup collaborator. */
+    /* ⚠️⚠️ F07 — THE COMPARISON GOES THROUGH `compareExactDecimal`, AND WRITING IT AS `skuPrice >
+     * salePrice` WOULD NOW BE A SILENT DEFECT RATHER THAN A COMPILE ERROR. Both operands became
+     * `ExactDecimal`, which is a branded STRING, and `>` between two strings is perfectly legal
+     * TypeScript — it just compares them LEXICALLY. Lexically `'9'` is greater than `'10'`, so a
+     * nine-unit SKU discounted to ten would have been advertised as on sale and a `'100.00'` price
+     * would not have compared equal to a `'100'` sale price. The typechecker cannot catch it, so the
+     * comparison is named instead: `compareExactDecimal` orders digit-wise — sign, then integer-digit
+     * count, then digits, then the fraction over the longer scale — and is exact at every magnitude.
+     *
+     * `=== 1` PRESERVES THE STRICTNESS the legacy `gt` at `product.cfm:L28` requires, and it preserves
+     * the omit-on-equal behaviour the block above explains at length.
+     *
+     * AN UNORDERABLE OPERAND OMITS THE PAIR. `compareExactDecimal` returns `undefined` rather than a
+     * silent `false` when either side is non-numeric, and `=== 1` therefore omits — which is the same
+     * choice this file makes for every other absent or unresolvable value in the render, and which
+     * cannot advertise a bogus sale. It is unreachable in practice: `rowMappers.ts` guarantees
+     * well-formed digits on the way in and the `numeric` rule gates the way out. */
     const skuPrice = sku.getPrice();
-    const salePrice = await sku.getSalePrice(this.pricing);
-    if (skuPrice > salePrice) {
-      /* SEC-06 / DECISION G-3 — a `number`, so provably a no-op, escaped for the same reason the
-       * product price is. */
+    const salePrice = await sku.getSalePrice(scope.pricing);
+    if (compareExactDecimal(skuPrice, salePrice) === 1) {
+      /* ⚠️ RAW, as `:L29` emits it. An earlier revision escaped this field; the escape is withdrawn
+       * with DECISION G-3. Like `g:price` above the value is exact decimal text, so no emitted byte
+       * changes. */
       // F21 — the same plain-decimal rendering as `g:price` above; see the note there.
-      fields.push(`<g:sale_price>${escapeFeedText(renderFeedMoney(salePrice))}</g:sale_price>`);
+      fields.push(`<g:sale_price>${renderFeedMoney(salePrice)}</g:sale_price>`);
 
       /* The eleven-part range of `product.cfm:L30`, in the legacy's own order: render date, `T`,
        * render time, `-`, raw offset, `/`, expiration date, `T`, expiration time, `-`, the SAME raw
@@ -1483,16 +1695,19 @@ export class ProductFeedBuilder {
        * the offset's own sign. TODO(boundary): the expiration crosses the same excluded boundary as
        * the sale price and arrives through the same port (TR-5); it may legitimately be absent, and
        * {@link renderEffectiveDateEndpoint} documents how that is carried. */
-      const expiration = await sku.getSalePriceExpirationDateTime(this.pricing);
+      const expiration = await sku.getSalePriceExpirationDateTime(scope.pricing);
       const effectiveFrom = renderEffectiveDateEndpoint(context.renderTime, context.utcHourOffset);
       const effectiveTo = renderEffectiveDateEndpoint(expiration, context.utcHourOffset);
-      /* SEC-06 / DECISION G-3 — NOT a no-op, and the reason this field is on the hardened list.
-       * {@link ProductFeedRenderContext.utcHourOffset} is deliberately typed as arbitrary TEXT so
-       * that it can be emitted unmodified, and it appears TWICE in this range. It is the one
-       * caller-supplied string in the item that carries no brand and no allowlist, so escaping is
-       * the whole of its defence. The two date parts come from {@link formatDate} and the digits,
-       * hyphens, `T` and `/` around them are literals. */
-      const effectiveDate = escapeFeedText(`${effectiveFrom}/${effectiveTo}`);
+      /* ⚠️ RAW, as `:L30` emits it, AND HERE THE WITHDRAWAL IS NOT A NO-OP.
+       * {@link ProductFeedRenderContext.utcHourOffset} is arbitrary TEXT emitted unmodified, and it
+       * appears TWICE in this range, so an XML-significant character in the configured offset reaches
+       * the document. An earlier revision escaped the whole range for exactly that reason; the escape
+       * is withdrawn because `product.cfm:L30` interpolates every part of this range with no
+       * `htmlEditFormat` call, so adding one changes bytes the legacy does not change (AAP §0.8.2
+       * guideline 4). The residual exposure is flagged in WITHDRAWN RAW-SINK VALIDATION, not closed
+       * here. The two date parts come from {@link formatDate}; the digits, hyphens, `T` and `/` around
+       * them are literals. */
+      const effectiveDate = `${effectiveFrom}/${effectiveTo}`;
       /* The legacy leaves a single TAB after this element's closing tag at
        * `product.cfm:L30`, and it is reproduced — see {@link SALE_PRICE_EFFECTIVE_DATE_TRAILING_TAB}
        * for why a dropped byte is a departure from byte-for-byte preservation even when it is only
@@ -1534,7 +1749,7 @@ export class ProductFeedBuilder {
      * and `g:shipping` wrapping `g:country`, `g:region`, `g:service` and `g:price`. Names retained,
      * nothing emitted. */
 
-    /* ---- 16. `g:shipping_weight` — RAW IN THE LEGACY, ESCAPED HERE (`product.cfm:L58`). ------
+    /* ---- 16. `g:shipping_weight` — RAW (`product.cfm:L58`). ---------------------------------
      * TWO SETTINGS JOINED BY EXACTLY ONE LITERAL SPACE. Neither value is trimmed and the result is
      * not trimmed, so a value that resolves empty still leaves the space in place — precisely what
      * CFML interpolation produces.
@@ -1548,27 +1763,29 @@ export class ProductFeedBuilder {
      *
      * NO DEFAULT IS INVENTED, AND NO GRAMMAR IS IMPOSED. Neither key is seeded in
      * `config/dbdata/SlatwallSetting.xml.cfm`, and defaults belong to the settings adapter, which this
-     * layer may not import. Whatever the resolver returns is emitted, escaped and otherwise untouched —
+     * layer may not import. Whatever the resolver returns is emitted verbatim and otherwise untouched —
      * including the empty string, which is why the unseeded case keeps rendering
      * `<g:shipping_weight> </g:shipping_weight>`, the lone separator space and nothing else.
      *
-     * ⛔ THE TWO GRAMMARS THAT USED TO GUARD THIS SITE ARE GONE ON PURPOSE. `skuShippingWeight` is
-     * declared `fieldType="text"` and the unit code's options are a LIVE query over a user-editable
-     * table, so neither value is a closed set; the full evidence is in the RAW-SINK VALIDATION note
-     * above. Escaping is the whole of the defence here, and it is sufficient because the risk at this
-     * sink is document corruption rather than origin relocation. */
+     * ⛔ THE TWO GRAMMARS THAT USED TO GUARD THIS SITE ARE GONE ON PURPOSE, AND SO IS THE ESCAPE.
+     * `skuShippingWeight` is declared `fieldType="text"` and the unit code's options are a LIVE query
+     * over a user-editable table, so neither value is a closed set; the full evidence is in the
+     * WITHDRAWN RAW-SINK VALIDATION note above. `product.cfm:L58` interpolates both values with no
+     * `htmlEditFormat` call, so nothing guards this sink in the legacy and nothing guards it here —
+     * the residual exposure is flagged (S8), not closed. */
     const settingContext: SettingResolutionContext = { entityName: 'Sku', entityId: sku.skuID };
     const shippingWeight = this.settings.setting('skuShippingWeight', settingContext);
     const shippingWeightUnitCode = this.settings.setting(
       'skuShippingWeightUnitCode',
       settingContext,
     );
-    /* SEC-06 / DECISION G-3 — NOT a no-op either. Both values come from the settings store, which is
-     * operator- and database-supplied text with no allowlist, so both are escaped. The join is
-     * escaped once rather than each value separately: the single literal space between them is not in
-     * the escaped set, so one call preserves the exact legacy spacing — including the case where one
-     * value resolves empty and the space survives on its own. */
-    const shippingWeightText = escapeFeedText(`${shippingWeight} ${shippingWeightUnitCode}`);
+    /* ⚠️ RAW, as `:L58` emits it, AND HERE TOO THE WITHDRAWAL IS NOT A NO-OP. Both values come from
+     * the settings store, which is operator- and database-supplied text with no allowlist, so an
+     * XML-significant character in either reaches the document. An earlier revision escaped the join
+     * for exactly that reason; the escape is withdrawn because the legacy performs none. The single
+     * literal space between the two values is the legacy's own separator at `:L58` and survives on its
+     * own when one value resolves empty. */
+    const shippingWeightText = `${shippingWeight} ${shippingWeightUnitCode}`;
     fields.push(`<g:shipping_weight>${shippingWeightText}</g:shipping_weight>`);
 
     /* Field disabled in the legacy source after `:L58` — `g:online_only` (`product.cfm:L59-L61`),
@@ -1670,8 +1887,8 @@ export class ProductFeedBuilder {
    * them is undiagnosable in any log that prints `error.message` without the context object. The
    * identifier stays in the structured context as well — RAW there, because context is machine-read
    * and the empty string is the more precise statement — so nothing was traded away to restore it.
-   * Naming the subject is also this file's dominant idiom: {@link requireRelativeFeedPath} and
-   * {@link ProductFeedBuilder.requireProductType} both do it, and the inconsistency was this member's.
+   * Naming the subject is also this file's dominant idiom: {@link ProductFeedBuilder.requireProductType}
+   * does it too, and the inconsistency was this member's.
    *
    * @param sku the SKU whose product is required
    * @returns the associated product

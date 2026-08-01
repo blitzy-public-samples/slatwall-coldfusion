@@ -341,24 +341,26 @@ export const brandNamePropertyValidation = Object.freeze({
  * THE URL PREDICATE ITSELF BELONGS TO `../Validator`. This file only declares the constraint; it
  * does not implement, inline, approximate or supplement the check.
  *
- * ⭐ THE POLICY THIS DECLARATION SELECTS — `urlPolicy: 'webAddress'`.
- * `../Validator` splits the `url` data type into two policies and requires every declaration to name
- * one. This declaration selects `'webAddress'`: a normalised HTTP(S) address, rejecting non-web
- * schemes, embedded credentials and control characters. It does NOT select `'cfmlAnyProtocol'`, the
- * retained approximation of the engine's six documented protocols — HTTP, HTTPS, FTP, FILE, MAILTO
- * and NEWS — under which `file:///etc/passwd` satisfies this very rule.
+ * ⛔ THIS DECLARATION SELECTS NO POLICY, BECAUSE THERE IS NO POLICY TO SELECT — SEC-15 IS WITHDRAWN.
+ * An earlier revision split `../Validator`'s `url` data type into two policies, required every
+ * declaration to name one, and had this declaration name `'webAddress'`: a normalised HTTP(S) address
+ * admitting only `http` and `https` and additionally rejecting embedded credentials and ASCII control
+ * characters. It was declared as a departure from byte-for-byte preservation on the D18 precedent.
  *
- * That is a DECLARED departure from byte-for-byte preservation, on the D18 precedent (AAP 0.6.7.7),
- * and DECISION V-2 in `../Validator` carries the full argument: what the legacy accepted, why a
- * website field has no use for the four non-web schemes, the bar applied ("does it reject anything the
- * legacy accepted AND MEANT?"), and why the policy is a required member rather than a default. It is
- * recorded at both ends deliberately — the engine owns the predicate, this file owns the choice, and
- * a reviewer reading either one should not have to find the other to know a choice was made.
+ * That departure is withdrawn. D18 (AAP 0.6.7.7) is the SOLE declared behaviour-hardening exception,
+ * and it is a precedent only for a divergence that removes a flaw class WITHOUT changing an outcome.
+ * A REJECTION is a different outcome: the engine's six documented `url` protocols include FTP, FILE,
+ * MAILTO and NEWS, so a brand carrying `file:///etc/passwd` SAVED under `:L259` and failed validation
+ * under the withdrawn policy. AAP 0.8.2 guideline 4 forbids enhancement beyond what the migration
+ * requires, AAP 0.6.7 mandates "preserve and annotate, do not repair", and AAP 0.2.1.5 states this
+ * document's contract as `brandWebsite` "typed as a URL" with no narrowing to web schemes. THE
+ * SIX-PROTOCOL URL CHECK IS THE WHOLE CHECK in `../Validator` carries the full record, including the
+ * flagged residual exposure and the reason this slice's own output does not reach it.
  *
- * THE MESSAGE KEY IS UNAFFECTED. It is composed from `constraintValue`, which is still `'url'`, so
- * this rule continues to emit `validate.save.Brand.brandWebsite.dataType.url` byte-for-byte. The
- * alternative of introducing a new `constraintValue` was rejected precisely because it would have
- * changed that key and broken comparability with legacy output.
+ * THE MESSAGE KEY WAS UNAFFECTED BY EITHER STATE. It is composed from `constraintValue`, which is
+ * `'url'`, so this rule emits `validate.save.Brand.brandWebsite.dataType.url` byte-for-byte before and
+ * after the withdrawal. Introducing a new `constraintValue` such as `'webUrl'` would have changed that
+ * key and broken comparability with legacy output, and was rejected for that reason at the time.
  *
  * NOTHING ELSE IS INFERRED FROM THE PROPERTY. `model/entity/Brand.cfc:L57` carries no `required`, no
  * pattern and no `length`, so no presence rule is added — an unset website is legal and the data-type
@@ -380,7 +382,6 @@ export const brandWebsitePropertyValidation = Object.freeze({
         Object.freeze({
           constraintType: 'dataType',
           constraintValue: 'url',
-          urlPolicy: 'webAddress',
         } as const),
       ] as const),
     } as const),

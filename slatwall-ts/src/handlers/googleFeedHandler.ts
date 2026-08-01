@@ -39,7 +39,7 @@
  *                                     Ported to `../integrations/google/ProductFeedQuery`. THIS FILE
  *                                     COMPOSES NONE OF IT: no join, no filter, no range, no
  *                                     smart-list input and no entity name appears here.
- *   `views/feed/product.cfm` (65)     ALL OF THE DATA SHAPING — the entire RSS 2.0 field-mapping
+ *   `views/feed/product.cfm` (66)     ALL OF THE DATA SHAPING — the entire RSS 2.0 field-mapping
  *                                     surface. Ported to `../integrations/google/ProductFeedBuilder`.
  *                                     THIS FILE EMITS NO ELEMENT: not the XML declaration, not the
  *                                     root element, not the namespace binding, not the channel, not
@@ -51,9 +51,11 @@
  *                                     of its statement, and no table or column identifier from it,
  *                                     appears anywhere in this file. That is register entry D12, whose
  *                                     itemised evidence is carried by
- *                                     `../integrations/google/IntegrationContract` and by the folder
- *                                     documentation AAP §0.4.1.10 plans, and it is cited from here
- *                                     rather than restated so the finding has ONE home.
+ *                                     `../integrations/google/README.md` §9 — the home AAP §0.4.1.10
+ *                                     assigns it — and it is cited from here rather than restated so
+ *                                     the finding has ONE home. (`IntegrationContract.ts` transcribed
+ *                                     that evidence while the README was still undelivered and now
+ *                                     explicitly does not, so it is not the place to read it.)
  *
  * ------------------------------------------------------------------------------------------------
  * ⚠️ M2 (AAP §0.6.6) — THE RENDER BUDGET MISMATCH IS FLAGGED HERE AND DELIBERATELY LEFT OPEN
@@ -64,12 +66,19 @@
  *     <cfsetting requesttimeout="360" />
  *
  * 360 seconds sits inside the target platform's published 15-minute maximum function timeout, so the
- * work itself is expressible as one invocation. It far exceeds the roughly 29-second synchronous
- * integration budget published for an HTTP gateway in front of that function, so a synchronously
- * delivered feed of any real catalogue size can be cut off by the gateway while the function is still
- * running. Both figures are PUBLISHED PLATFORM LIMITS, cited as such; neither is a service level this
- * port invented, and the source states no latency, throughput, uptime or capacity figure anywhere
- * (AAP IR-12).
+ * work itself is expressible as one invocation. It nevertheless far exceeds what a synchronous HTTP
+ * integration in front of that function will generally allow by default, so a synchronously delivered
+ * feed of any real catalogue size can be cut off in front of the function while the function is still
+ * running.
+ *
+ * ⚠️ NO SINGLE NUMBER IS ASSERTED FOR THAT SECOND CEILING, BECAUSE THERE IS NOT ONE. Synchronous
+ * integration limits vary by gateway type, by region and by configuration, and for some gateway types
+ * they are themselves configurable. This deliverable selects no gateway at all — infrastructure as code
+ * is out of scope (AAP §0.2.2.5) and no route exists yet — so naming one figure as "the" limit would
+ * state as settled a fact that the deployment, not this file, decides. The 15-minute function maximum
+ * is a published platform limit cited as such and the 360 is a source-declared value with a locator;
+ * neither is a service level this port invented, and the source states no latency, throughput, uptime
+ * or capacity figure anywhere (AAP IR-12).
  *
  * ⛔ THE CHOICE BETWEEN AN ASYNCHRONOUS AND A STREAMED DELIVERY MODEL IS DELIBERATELY LEFT OPEN. It
  * is a deployment decision that has to be taken where the feed is actually published, because the
@@ -78,12 +87,14 @@
  * forbidden one (AAP §0.8.2 guideline 4). Consequently this file sets, caps, re-times or invents NO
  * budget, NO page size, NO chunk size, NO batch size, NO cursor, NO continuation token, NO streaming
  * threshold, NO concurrency limit, NO re-attempt count, NO backoff schedule, NO queue, NO object-store
- * hand-off and NO cache lifetime. The 360 is not silently re-timed to fit and it is not capped at 29.
+ * hand-off and NO cache lifetime. The 360 is not silently re-timed to fit, and it is not capped at any
+ * gateway figure.
  *
- * This statement is deliberately worded to AGREE with the M2 notes already carried by
- * `../integrations/google/ProductFeedBuilder` and `../integrations/google/ProductFeedQuery`: same
- * source value, same locator, same open decision, and both of those files name THIS file as the owner
- * of the decision. Two comments that contradicted each other would be worse than one.
+ * This statement is deliberately worded to AGREE with the M2 notes carried by
+ * `../integrations/google/ProductFeedBuilder`, `../integrations/google/ProductFeedQuery` and
+ * `../integrations/google/README.md`: same source value, same locator, same open decision, the same
+ * refusal to name a single gateway ceiling, and each of those files names THIS file as the owner of the
+ * decision. Comments that contradicted each other would be worse than one.
  *
  * M1 IS NOT DUPLICATED HERE. The importer's one-hour budget at
  * `model/service/ProductService.cfc:L65-L68` is the other mismatch this folder owns, and it belongs
@@ -178,10 +189,11 @@
  * module-scope mutable state: there is no cache, no memo, no counter and no accumulated document, and
  * THE FEED IS NOT CACHED — not per container, not per host, not at all.
  *
- * What IS captured, once, when {@link createGoogleFeedHandler} runs: the validated host authority and
- * the frozen single-entry list of hosts this deployment may publish. Both are derived purely from
- * DEPLOYMENT CONFIGURATION, which is identical for every invocation of the container, so capturing
- * them cannot leak one caller's state into another. That is the distinction `./brandHandler` draws
+ * What IS captured, once, when {@link createGoogleFeedHandler} runs: the configured host authority,
+ * and nothing else. It is derived purely from DEPLOYMENT CONFIGURATION, which is identical for every
+ * invocation of the container, so capturing it cannot leak one caller's state into another. (A second
+ * captured value, a frozen allowlist of publishable hosts, is WITHDRAWN with the serializer's own host
+ * gate — see judgment (c).) That is the distinction `./brandHandler` draws
  * when it insists a PRINCIPAL be resolved per invocation: a principal varies by request, configuration
  * does not. Everything that genuinely varies per request — the render instant and the offset — is read
  * inside the operation, on every invocation. See judgment (c) and {@link ProductFeedRenderClock}.
@@ -273,21 +285,28 @@
  *     `:L22`, `:L23` and `:L24` — with no validation of any kind. A stateless invocation HAS NO `CGI`
  *     SCOPE, so the value has to come from somewhere else, and the choice of source is the judgment.
  *
- *     ⛔ IT IS NOT TAKEN FROM THE REQUEST. `../integrations/google/ProductFeedBuilder`'s DECISION G-1
- *     states the obligation this file owes and explains why no type can enforce it: on this platform
- *     the equivalent of `CGI.HTTP_HOST` is a caller-supplied header, so honouring the legacy source
- *     would let one request inject XML structure into four element text nodes, rebase every product,
- *     image and additional-image link in the document onto a foreign origin, or make the whole feed
- *     unparseable with a single ampersand. This file therefore reads NO header — not `Host`, not
- *     `X-Forwarded-Host`, not `:authority`, not any other — and takes the host from deployment
- *     configuration instead. That is the one place this port deliberately declines to reproduce the
- *     legacy's own source of a value, declared here on the precedent of AAP §0.6.7.7's D18 rather
- *     than slipped in, so a reviewer diffing against the view knows the divergence is intended.
+ *     THE SOURCE IS CONFIGURATION, AND THAT IS AN EXECUTION-MODEL ADAPTATION RATHER THAN A CONTROL.
+ *     {@link GoogleFeedHandler}'s operation takes NO PARAMETER AT ALL, so it has no invocation event to
+ *     read and no header is available to it — `Host`, `X-Forwarded-Host`, `:authority` or any other.
+ *     The value therefore comes from deployment configuration, which is the only ambient source a
+ *     stateless invocation of this shape has. It is recorded here in the same register as the M-series
+ *     mismatches of AAP §0.6.6: the difference is stated, not resolved by guesswork (IR-10).
  *
- *     ⭐ AND THE OBLIGATION IS DISCHARGED STRUCTURALLY, NOT BY PROMISE. {@link GoogleFeedHandler}'s
- *     operation TAKES NO PARAMETER AT ALL, so it has no access to an invocation event and therefore
- *     no way to read a request-supplied value even by accident. What DECISION G-1 could only state as
- *     a contract on the caller, this file makes a property of its own signature.
+ *     ⚠️ AND THE DIFFERENCE IS REAL, SO IT IS FLAGGED RATHER THAN CLAIMED AS A BENEFIT. Under the
+ *     legacy, two requests carrying two different host headers produce two different documents; here
+ *     every invocation produces the configured host. A configured host is also the operator's own to
+ *     get right, which is why nothing downstream validates it.
+ *
+ *     ⛔ AN EARLIER REVISION CLAIMED THIS AS A SECURITY DIVERGENCE ON D18's PRECEDENT, AND THAT CLAIM
+ *     IS WITHDRAWN. D18 (AAP §0.6.7.7) is the SOLE declared behaviour-hardening exception, and it is a
+ *     precedent only for a divergence that removes a flaw class WITHOUT changing an outcome —
+ *     parameterised SQL returns exactly the rows interpolated SQL returned. Refusing a host changes an
+ *     outcome, so it is not licensed by D18 and AAP §0.8.2 guideline 4 forbids it. The two controls
+ *     that rested on that claim are gone with it: the serializer's `validateFeedHostAuthority` grammar
+ *     check and the `allowedHosts` membership gate this file supplied it. The residual origin-rebasing
+ *     and CWE-91 exposure carried from `product.cfm:L14`, `:L15`, `:L22`, `:L23` and `:L24` is FLAGGED
+ *     for the operator (S8), and the serializer's WITHDRAWN RAW-SINK VALIDATION note carries the full
+ *     argument.
  *
  *     ⛔ THE PROCESS ENVIRONMENT IS NOT READ HERE EITHER. `src/config/env.ts` is the only module in
  *     the subtree permitted to read it; it validates `GOOGLE_FEED_HOST` for presence and
@@ -295,11 +314,10 @@
  *     {@link GoogleFeedHostConfiguration} is declared structurally so that `config.googleFeed`
  *     satisfies it directly, which keeps the arrow pointing one way and adds no import (S4).
  *
- *     The value is then passed through {@link validateFeedHostAuthority} — the serializer's only
- *     producer of the branded host type — and the branded result is handed to the render context. It
- *     is NOT normalised on the way: not trimmed, not case-folded, not punycoded, not stripped of a
- *     default port and not upgraded to a secure scheme, because normalising would change emitted
- *     bytes for a legitimate value. No host, domain, endpoint, region, account identifier or URL is
+ *     The value is handed to the render context UNCHANGED and UNCHECKED. It is not validated, not
+ *     trimmed, not case-folded, not punycoded, not stripped of a default port and not upgraded to a
+ *     secure scheme, because every one of those would change emitted bytes for a legitimate value and
+ *     the legacy performs none of them. No host, domain, endpoint, region, account identifier or URL is
  *     literal anywhere in this file (AAP §0.8.3.9); the plain scheme prefix the legacy hardcodes
  *     immediately before the host at each of those five sites belongs to the serializer's own string
  *     assembly and is not restated here.
@@ -353,23 +371,22 @@
 
 /* IMPORTS — three modules, all relative and extensionless.
  *
- * Three values are imported and six names are type-only. The type-only form is not cosmetic: the
+ * Two values are imported and six names are type-only. The type-only form is not cosmetic: the
  * bundler has no type information, so a value import of the serializer class would add a real module
  * edge for a class this file never constructs. The serializer and the record source arrive as
- * INJECTED INSTANCES (S3), so only `validateFeedHostAuthority` — a pure function this file must
- * actually call, and the serializer's only producer of the branded host type — is imported as a
- * value from that module.
+ * INJECTED INSTANCES (S3), and NOTHING is imported as a value from the serializer module at all — the
+ * one value this file used to take from it, `validateFeedHostAuthority`, is withdrawn with the host
+ * gate (judgment (c)), which leaves that edge type-only in its entirety.
  *
  * The platform result type comes from ./httpResponse's single re-export site rather than from the
  * typings directly, which is the convention that gives the whole folder's platform coupling exactly
  * one declaration point (AAP §0.5.5).
  */
-import {
-  validateFeedHostAuthority,
-  type ProductFeedBuilder,
-  type ProductFeedImage,
-  type ProductFeedRecord,
-  type ProductFeedRenderContext,
+import type {
+  ProductFeedBuilder,
+  ProductFeedImage,
+  ProductFeedRecord,
+  ProductFeedRenderContext,
 } from '../integrations/google/ProductFeedBuilder';
 import type { ProductFeedQuery } from '../integrations/google/ProductFeedQuery';
 import { errorResponse, xmlResponse } from './httpResponse';
@@ -407,6 +424,16 @@ import type { APIGatewayProxyResult } from './httpResponse';
  *
  * The member takes no argument, because the legacy call at feed.cfc:L63 passes none — see judgment
  * (f).
+ *
+ * ⭐ THE SELECTION ARRIVES WITH ITS ASSOCIATIONS LOADED, AND THIS FILE PERFORMS NONE OF THAT EITHER.
+ * `src/adapters/mysql/rowMappers.ts` hydrates scalar columns and attaches an IDENTIFIER-ONLY reference
+ * for the four foreign keys the feed traverses (its RULE 3a), and
+ * `../integrations/google/ProductFeedQuery` turns those references into loaded entities before the
+ * result leaves it — its decision F-3, which explains why the fetched graph Hibernate delivered to
+ * `product.cfm` has to be assembled explicitly here and why the assembly belongs to the SELECTION
+ * rather than to this layer. Consequently this handler resolves no relationship, issues no query and
+ * knows nothing about how many statements a resolution takes; step 3 below pairs records with images
+ * and nothing more.
  */
 export type ProductFeedRecordSource = Pick<ProductFeedQuery, 'getFeedSkus'>;
 
@@ -433,9 +460,10 @@ export type ProductFeedSerializer = Pick<ProductFeedBuilder, 'build'>;
  * composition root reads `config.googleFeed` and passes it in; this file adds no import and reads no
  * environment variable. See judgment (c).
  *
- * ⛔ IT IS CONFIGURATION, NEVER A REQUEST VALUE. That is the whole substance of the serializer's
- * DECISION G-1 provenance obligation, and {@link createGoogleFeedHandler} discharges it structurally
- * by giving the operation no access to an invocation event at all.
+ * IT IS CONFIGURATION RATHER THAN A REQUEST VALUE because a stateless invocation of this shape has no
+ * request to read: {@link createGoogleFeedHandler}'s operation takes no parameter and therefore has no
+ * invocation event. That is an execution-model adaptation, not a control — see judgment (c), which
+ * records the withdrawn claim to the contrary.
  */
 export interface GoogleFeedHostConfiguration {
   /**
@@ -443,10 +471,11 @@ export interface GoogleFeedHostConfiguration {
    * five `CGI.HTTP_HOST` reads at `integrationServices/google/views/feed/product.cfm:L14`, `:L15`,
    * `:L22`, `:L23` and `:L24`.
    *
-   * Typed as a plain string because it arrives unvalidated: `src/config/env.ts` checks presence and
-   * non-blankness only, and the authority-syntax rule that closes the injection and origin-rebasing
-   * routes lives in exactly one place, {@link validateFeedHostAuthority}. This handler is the layer
-   * that runs it — see {@link createGoogleFeedHandler}.
+   * Typed as a plain string because it STAYS unvalidated. `src/config/env.ts` checks presence and
+   * non-blankness only, and no authority-syntax rule exists anywhere downstream: the grammar check that
+   * used to run here and the membership gate that used to run in the serializer are both withdrawn,
+   * because `product.cfm` interpolates this value into five absolute URLs with no test of any kind.
+   * See judgment (c).
    */
   readonly host: string;
 }
@@ -474,8 +503,8 @@ export interface GoogleFeedHostConfiguration {
  * outside this slice. A deployment that has no implementation to supply returns an empty list, which
  * emits no additional-image elements — the same output `product.cfm:L24` produces for a product with
  * no images. That consequence is stated here rather than hidden: it is a boundary being crossed
- * honestly, not a field being dropped. No defect number is minted for it (S7 — AAP §0.6.7 closes its
- * register at D1-D25).
+ * honestly, not a field being dropped. No defect number is minted for it (S7 — AAP §0.6.7 is frozen at
+ * D1-D21 and none of its entries covers this; `src/ports/repositories/SkuRepository.ts` states the live bound).
  *
  * ⛔ SYNCHRONOUS, MATCHING THE LEGACY TRAVERSAL. `product.cfm:L24` reads the collection inline while
  * rendering; nothing there awaits anything. Declaring this asynchronous would invent an I/O boundary
@@ -592,24 +621,53 @@ export interface GoogleFeedHandlerCollaborators {
  * The returned object is frozen by {@link createGoogleFeedHandler}, so the surface is provably closed
  * at run time as well as in the type system.
  */
+/**
+ * Optional invocation-scoped controls for one {@link GoogleFeedHandler.product} call.
+ *
+ * ⭐ P17 — INVOCATION-SCOPED, NOT CONSTRUCTION-SCOPED, AND THAT IS AN M7 REQUIREMENT RATHER THAN A
+ * PREFERENCE. A signal belongs to ONE request. Placing it in {@link GoogleFeedHandlerCollaborators}
+ * would capture one caller's cancellation in the container closure and let it abort a later caller's
+ * feed on a warm Lambda container — the same distinction this file already draws when it insists a
+ * principal be resolved per invocation while deployment configuration may be captured once.
+ *
+ * ⛔ NO TIMEOUT, NO DEADLINE, NO BUDGET AND NO DEFAULT. AAP §0.6.6 M2 records that the legacy budget is
+ * the `requesttimeout="360"` at `integrationServices/google/views/feed/product.cfm:L9`, that it exceeds
+ * a synchronous API Gateway integration, and that THE DELIVERY DECISION IS DELIBERATELY LEFT OPEN.
+ * Deriving a signal from a platform remaining-time value, or defaulting one, would settle that open
+ * decision by accident and invent a number the source does not state (S9). This type only carries a
+ * cancellation the caller already owns.
+ */
+export interface GoogleFeedInvocationOptions {
+  /**
+   * A cancellation signal owned by the caller.
+   *
+   * ⚠️ FORWARDED, NEVER INSPECTED HERE. This file does not read `aborted`, does not subscribe to the
+   * signal and does not construct a failure for it — consistent with its standing rule that
+   * `../errors/DomainError` is deliberately not imported and that every failure is classified by
+   * ./httpResponse alone. The two collaborators that own a boundary honour it and raise their own
+   * refusal, and that refusal funnels through the same single catch as every other failure.
+   */
+  readonly signal?: AbortSignal;
+}
+
 export interface GoogleFeedHandler {
-  readonly product: () => Promise<APIGatewayProxyResult>;
+  readonly product: (options?: GoogleFeedInvocationOptions) => Promise<APIGatewayProxyResult>;
 }
 
 /**
  * Binds the feed collaborators to the one platform-facing operation they back.
  *
- * ⭐ THE HOST IS VALIDATED ONCE, HERE, AND NOT ON EVERY REQUEST. `src/config/env.ts` already fails at
- * load with the offending variable named when the host is missing or blank, and this is the matching
- * half of that fail-fast contract for its SYNTAX: a deployment whose configured host cannot be a host
- * authority fails while its container is initialising, loudly, rather than answering every request
- * with a failure response that a caller would reasonably read as being about the request. The
- * validator is pure and the host does not change between invocations, so calling it once produces the
- * same verdict as calling it on every request — only sooner, and only louder.
+ * ⛔ THE HOST IS NOT VALIDATED HERE, AND AN EARLIER REVISION VALIDATED IT ONCE AT CONSTRUCTION. That
+ * check — a host-authority grammar whose miss RAISED while the container was initialising — is
+ * withdrawn with the serializer's `validateFeedHostAuthority`, because `product.cfm:L14`, `:L15`,
+ * `:L22`, `:L23` and `:L24` interpolate `CGI.HTTP_HOST` with no test of any kind and refusing a host is
+ * an outcome change that AAP §0.8.2 guideline 4 forbids and D18 does not license. The only remaining
+ * fail-fast on this value is `src/config/env.ts`'s presence-and-non-blankness check, which predates the
+ * withdrawal and is a configuration-completeness rule rather than a security control. See judgment (c).
  *
- * ⭐ WHAT THAT CAPTURES IS CONFIGURATION, WHICH M7 PERMITS — AND THE DISTINCTION MATTERS. The two
- * values computed below are derived purely from deployment configuration, identical for every
- * invocation of the container, so holding them cannot leak one caller's state into another. This is
+ * ⭐ WHAT IS CAPTURED IS CONFIGURATION, WHICH M7 PERMITS — AND THE DISTINCTION MATTERS. The one
+ * value read below is derived purely from deployment configuration, identical for every
+ * invocation of the container, so holding it cannot leak one caller's state into another. This is
  * precisely the line `./brandHandler` draws when it insists a PRINCIPAL be resolved per invocation
  * instead: a principal varies by request, deployment configuration does not. Everything that does vary
  * per request — the render instant and the offset — is read INSIDE the operation. Neither captured
@@ -622,11 +680,10 @@ export interface GoogleFeedHandler {
  * @param collaborators the wiring, named rather than positional; see
  *   {@link GoogleFeedHandlerCollaborators}
  * @returns the one routed operation, frozen
- * @throws at construction time, and never at request time, when
- *   {@link GoogleFeedHostConfiguration.host} is empty or is not a syntactically valid host authority.
- *   The rejection is {@link validateFeedHostAuthority}'s own — this file neither catches, wraps,
- *   re-classifies nor re-words it, so the message an operator reads is the one that names the broken
- *   rule, and it never echoes the rejected value back into a log
+ *
+ * THIS FACTORY THROWS NOTHING. It reads one configured string and closes over it; there is no
+ * validation, no probe and no I/O at construction time. The `@throws` that recorded a construction-time
+ * host-authority rejection is withdrawn with the check itself — see judgment (c).
  *
  * @example
  * ```ts
@@ -634,7 +691,7 @@ export interface GoogleFeedHandler {
  * const googleFeedHandler = createGoogleFeedHandler({
  *   feedQuery,
  *   feedSerializer,
- *   // DECISION G-1: from `config.googleFeed`, NEVER from a request header.
+ *   // From `config.googleFeed`, because a stateless invocation has no request to read — judgment (c).
  *   hostConfiguration: config.googleFeed,
  *   readProductImages,
  *   clock,
@@ -642,6 +699,8 @@ export interface GoogleFeedHandler {
  *
  * // Mounted for the route the legacy reached as `?slatAction=google:feed.product`
  * // (integrationServices/google/views/main/default.cfm:L50). The route itself is router.ts's.
+ * // Invoked with no arguments, exactly as before P17; a caller that holds a cancellation may
+ * // forward it instead — `await googleFeedHandler.product({ signal })` — and nothing else changes.
  * const response = await googleFeedHandler.product();
  * ```
  */
@@ -650,45 +709,30 @@ export function createGoogleFeedHandler(
 ): GoogleFeedHandler {
   const { feedQuery, feedSerializer, hostConfiguration, readProductImages, clock } = collaborators;
 
-  /* Judgment (c). The branded type is unforgeable and this validator is its only producer, so a host
-   * that reaches a feed URL provably came through here. The value is returned unmodified — the
-   * validator checks syntax and brands, it does not normalise — so nothing about the emitted bytes
-   * changes for a legitimate host. */
-  const host = validateFeedHostAuthority(hostConfiguration.host);
-
-  /* The canonical authorities this deployment may advertise, which the serializer's render context
-   * requires and consults FAIL-CLOSED before it produces a single byte.
+  /* Judgment (c). Read once from configuration and passed to the render context unmodified: not
+   * validated, not branded, not normalised. It is bound here rather than inside the operation because
+   * it cannot vary between invocations of one container (M7), and because binding it once means the
+   * `http://<host>` text is sourced from exactly one place.
    *
-   * ⭐ ONE ENTRY, BECAUSE THE DEPLOYMENT STATES ONE HOST — AND NO VALUE IS INVENTED HERE. The
-   * configuration surface declares exactly one feed host, so the set of authorities this deployment is
-   * configured to publish feed URLs for is exactly that one host. This restates the single configured
-   * fact in the shape the render context demands; it does not supply a default, a fallback, a wildcard
-   * or an additional authority, any of which would be the fabrication S9 forbids. Because
-   * `src/config/env.ts` refuses to load a blank host, the list can never be empty in a working
-   * deployment — and were it ever empty, the serializer would refuse to render rather than emit an
-   * unvalidated authority, which is the correct direction to fail.
-   *
-   * The gate is consequently satisfied by construction on this path, since both members derive from
-   * the same configured value. That is not a reason to omit it: it remains meaningful for any other
-   * caller of the serializer, and a control that is required rather than optional cannot be forgotten
-   * at a wiring site. Frozen, so it is provably immutable at run time as well as in the type system
-   * (M7). A deployment that genuinely publishes under several authorities widens
-   * `GoogleFeedConfig` in `src/config/env.ts` — the parent-owned configuration surface — rather than
-   * anything in this file. */
-  const allowedHosts: readonly string[] = Object.freeze([hostConfiguration.host]);
+   * ⛔ AND NOTHING BETWEEN HERE AND THE DOCUMENT CHECKS IT. The grammar validator that used to wrap
+   * this read and the `allowedHosts` membership gate that used to be computed immediately below are
+   * both withdrawn; the serializer's WITHDRAWN RAW-SINK VALIDATION note carries the argument and the
+   * flagged residual exposure (S8). */
+  const host = hostConfiguration.host;
 
   /**
    * Renders and returns the Google product feed — the port of `product(rc)` at feed.cfc:L58.
    *
    * ⚠️ M2 (AAP §0.6.6) — THIS OPERATION INHERITS THE 360-SECOND RENDER BUDGET, AND THE MISMATCH IS
    * LEFT OPEN. `integrationServices/google/views/feed/product.cfm:L9` asks for `requesttimeout="360"`.
-   * That fits inside the platform's published 15-minute maximum function timeout but far exceeds the
-   * roughly 29-second synchronous integration budget published for an HTTP gateway in front of it, so
-   * a synchronously delivered feed can be cut off by the gateway while this function is still running.
-   * The choice between an asynchronous and a streamed delivery model is DELIBERATELY LEFT OPEN,
-   * because it depends on the gateway, region and configuration where the feed is actually published.
+   * That fits inside the platform's published 15-minute maximum function timeout but far exceeds what a
+   * synchronous HTTP integration in front of it will generally allow by default, so a synchronously
+   * delivered feed can be cut off in front of this function while it is still running. NO SINGLE FIGURE
+   * IS NAMED FOR THAT SECOND CEILING: those limits vary by gateway type, region and configuration, and
+   * this deliverable selects no gateway. The choice between an asynchronous and a streamed delivery
+   * model is DELIBERATELY LEFT OPEN for exactly that reason — it is settled where the feed is published.
    * Nothing below pages, chunks, batches, streams, caches, compresses, re-attempts, defers or re-times
-   * anything to make the number smaller, and the number is not capped at 29 either. Flagging is the
+   * anything to make the number smaller, and the number is not capped to fit either. Flagging is the
    * required response; solving is the forbidden one (AAP §0.8.2 guideline 4). The module header states
    * this in full, and the notes in `../integrations/google/**` agree with it.
    *
@@ -696,13 +740,31 @@ export function createGoogleFeedHandler(
    *   1. Read the two ambient render values for THIS invocation (M7 — never captured).
    *   2. Delegate the selection, whose seven legacy lines live behind {@link ProductFeedRecordSource}.
    *   3. Pair each selected SKU with its product's images — the only assembly this file performs.
-   *   4. Delegate the serialization, with the validated host and the gated authority list.
+   *   4. Delegate the serialization, with the configured host and the two per-invocation values.
    *   5. Return the document as a raw body through ./httpResponse — judgment (b).
    *
+   * @param options optional invocation-scoped controls; see {@link GoogleFeedInvocationOptions}.
+   *   Nothing in it changes a single emitted byte, and omitting it renders exactly what this
+   *   operation rendered before it existed.
    * @returns the feed document as the response body, or the failure ./httpResponse decides on
    */
-  const product = async (): Promise<APIGatewayProxyResult> => {
+  const product = async (options?: GoogleFeedInvocationOptions): Promise<APIGatewayProxyResult> => {
     try {
+      /*
+       * ⭐ P17 — THE CANCELLATION IS FORWARDED TO THE TWO LAYERS THAT OWN A BOUNDARY, AND THIS FILE
+       * HONOURS NONE OF IT ITSELF. The selection owns one boundary — the single catalog-wide read —
+       * and the serializer owns the other — the record boundary between two complete `item` elements.
+       * Both raise their own refusal, which reaches the one catch below like every other failure, so
+       * this module still inspects no error and constructs none.
+       *
+       * ⛔ NOT FORWARDED TO THE BOUNDARY PORTS. `../ports/PricingPort` and `../ports/ImagePathPort`
+       * declare contracts to domains AAP §0.2.2 excludes, and no adapter in this subtree implements
+       * either one; widening them for a collaborator nobody supplies would be inventing contract, and
+       * the serializer's record boundary already bounds every read they perform. Stated so the omission
+       * reads as a decision.
+       */
+      const cancellation = options?.signal;
+
       /* Step 1 — judgment (c). Read per invocation, and read from the injected clock so this module
        * contains no clock access of its own. Both values are taken BEFORE any work begins, so the two
        * endpoints of the sale-price effective-date range are computed against one instant and one
@@ -711,11 +773,17 @@ export function createGoogleFeedHandler(
       const utcHourOffset = clock.utcHourOffset();
 
       /* Step 2 — judgment (f). One call, no arguments, and no selection composed here. */
-      const selection = await feedQuery.getFeedSkus();
+      const selection = await feedQuery.getFeedSkus(
+        cancellation === undefined ? undefined : { signal: cancellation },
+      );
 
       /* Step 3 — the UNPAGED collection, which is the one the feed consumes: `product.cfm:L16` loops
-       * the smart list's records rather than its page records, and the record source hands both back
-       * untouched. Reading the page here would silently truncate the feed to one page.
+       * the smart list's records rather than its page records, and the record source hands exactly that
+       * collection back untouched. Reading a page here would silently truncate the feed to one page.
+       *
+       * ⭐ P7 — THE SOURCE NOW HANDS BACK THE ONE COLLECTION RATHER THAN A THREE-VIEW RESULT, so there
+       * is no page array and no total to ignore, and this step no longer reaches into a wrapper to find
+       * the view it wanted. The mapping below is unchanged; only what it maps over is narrower.
        *
        * Assembly is a pair per record and nothing more: the SKU exactly as selected, in exactly the
        * order selected — not re-sorted, re-keyed, filtered, de-duplicated or trimmed, because the
@@ -724,10 +792,20 @@ export function createGoogleFeedHandler(
        * rejected here: the serializer raises for it, reproducing the legacy null dereference at
        * `product.cfm:L18`, and duplicating that guard would put the same rule on both sides of a layer
        * boundary. */
-      const records: readonly ProductFeedRecord[] = selection.records.map((sku) => ({
+      const records: readonly ProductFeedRecord[] = selection.map((sku) => ({
         sku,
         productImages: readProductImages(sku),
       }));
+
+      /* ⛔ P7 — THE IMAGE READER IS DELIBERATELY NOT MEMOISED BY PRODUCT, AND THE REASON IS THE SEAM'S
+       * OWN TYPE. {@link ProductFeedImageReader} takes a SKU, so keying a memo on the SKU's product
+       * would assume the supplied reader is a pure function of the product — an assumption the contract
+       * does not make and that this file is not entitled to make on an implementor's behalf. The
+       * assumption would also buy almost nothing: the reader is SYNCHRONOUS by contract and performs no
+       * I/O, so a repeat is an in-memory collection read. The product-wide cost that actually mattered
+       * is the RESIZED-PATH RESOLUTION for each of those images, and the serializer removes that repeat
+       * at its own port wrapper, where the memo key is the whole request and identity is therefore
+       * exact. Recorded so the absence reads as a decision rather than an omission. */
 
       /* Step 4 — judgment (h). Every element name, every field mapping and both conditional branches
        * belong to the serializer; this call contributes only the four render-context values, and the
@@ -735,17 +813,35 @@ export function createGoogleFeedHandler(
        * inside the argument. */
       const renderContext: ProductFeedRenderContext = {
         host,
-        allowedHosts,
         renderTime,
         utcHourOffset,
       };
 
-      const feed = await feedSerializer.build(records, renderContext);
+      const feed = await feedSerializer.build(
+        records,
+        renderContext,
+        cancellation === undefined ? undefined : { signal: cancellation },
+      );
 
       /* Step 5 — judgment (b). The document becomes the body verbatim: no layout, no envelope, no
        * wrapper, no encoding step and nothing prepended or trimmed, so the XML declaration stays the
        * literal first bytes exactly as at `product.cfm:L1`. The content type, the reason no charset
-       * parameter is attached, and the status all belong to ./httpResponse. */
+       * parameter is attached, and the status all belong to ./httpResponse.
+       *
+       * ⚠️ "VERBATIM" IS A STATEMENT ABOUT THIS LAYER, NOT ABOUT THE DOCUMENT BEING UNCHECKED. Every
+       * well-formedness guarantee the body carries is established INSIDE the serializer, at the single
+       * point where each dynamic value is emitted: the four legacy substitutions reach every dynamic
+       * text node (its DECISION G-3), and every code point XML 1.0 forbids in any spelling — the C0
+       * controls other than tab, line feed and carriage return, every unpaired surrogate, U+FFFE and
+       * U+FFFF — is removed from that value before it is escaped (its DECISION G-4). Those are
+       * character-level rules about a value's provenance and its element, so they belong where the
+       * value is written and nowhere else.
+       *
+       * ⛔ WHICH IS EXACTLY WHY THIS LAYER ADDS NO ENCODING, RE-ENCODING OR SANITISING STEP, AND MUST
+       * NOT. A second pass here would double-escape every entity the serializer already emitted, and
+       * it could not distinguish a `<` the serializer wrote as markup from one it escaped as data. The
+       * body is published unchanged because the guarantee is already in it, not because none was
+       * required. */
       return xmlResponse(feed);
     } catch (error) {
       /* EVERY FAILURE FUNNELS THROUGH ONE MAPPING, AND THIS FILE INSPECTS NOTHING.
@@ -758,7 +854,7 @@ export function createGoogleFeedHandler(
        *
        * ⛔ NO STATUS IS CHOSEN HERE, NO MESSAGE IS READ, MATCHED, TRIMMED OR REWRITTEN, AND NO FAILURE
        * IS RESHAPED, CLASSIFIED, SWALLOWED OR PARTIALLY RENDERED. The caught value is not inspected in
-       * any way — which is also why a serializer that refuses a host, a record with no product or an
+       * any way — which is also why a serializer that refuses a record with no product or an
        * uninterpretable offset produces no partial feed: the document is built whole or not at all,
        * and there is no fallback document, retry, backoff or degraded response (S9). The caught
        * binding is typed `unknown` under the compiler's catch-variable checking, and it is passed

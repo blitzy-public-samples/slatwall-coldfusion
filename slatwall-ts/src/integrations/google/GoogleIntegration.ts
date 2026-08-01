@@ -18,9 +18,9 @@
  * The work is split three ways and not one of the three is this file. This file is the
  * interface-conformant stub only. Record selection — the related-property joins, the activity and
  * publication filters and the availability range filter that choose which records the feed contains
- * — is ported from `integrationServices/google/controllers/feed.cfc:L49-L74` into a planned
+ * — is ported from `integrationServices/google/controllers/feed.cfc:L49-L74` into
  * `ProductFeedQuery.ts`. All RSS field shaping is ported from
- * `integrationServices/google/views/feed/product.cfm:L1-L65` into `ProductFeedBuilder.ts`, which is
+ * `integrationServices/google/views/feed/product.cfm:L1-L66` into `ProductFeedBuilder.ts`, which is
  * where the real work of the feed lands.
  *
  *   GoogleIntegration.ts   (this file) the interface-conformant stub only. The legacy
@@ -28,22 +28,24 @@
  *   ProductFeedQuery.ts    owns record selection, ported from
  *                          integrationServices/google/controllers/feed.cfc:L49-L74 — the related-
  *                          property joins, the activity and publication filters and the
- *                          availability range filter that choose which records the feed contains.
- *                          ⚠️ NOT DELIVERED AT THIS CHECKPOINT (F19).
+ *                          availability range filter that choose which records the feed contains,
+ *                          plus the explicit assembly of the relationships the serializer reads.
  *   ProductFeedBuilder.ts  owns all RSS field shaping, ported from
- *                          integrationServices/google/views/feed/product.cfm:L1-L65. This is where
+ *                          integrationServices/google/views/feed/product.cfm:L1-L66. This is where
  *                          the real work of the feed lands.
  *
  * A fourth candidate was rejected outright: integrationServices/google/model/dao/FeedDAO.cfc is
  * unreachable, syntactically broken code with zero callers across the repository, and it is
- * deliberately not ported. Its register entry D12 and the evidence behind it are carried in
- * `IntegrationContract.ts` — see REGISTER DISCIPLINE below.
+ * deliberately not ported. Its register entry D12 and the evidence behind it are carried in this
+ * folder's `README.md` §9 — see REGISTER DISCIPLINE below.
  *
- * ⚠️ F19 — THIS FOLDER IS NOT "CLOSED AT EXACTLY SIX FILES", AND SAYING SO WAS A FALSE STATEMENT OF
- * FACT. It holds FOUR: IntegrationContract.ts, BaseIntegration.ts, GoogleIntegration.ts and
- * ProductFeedBuilder.ts. AAP §0.4.1.10 plans six, adding ProductFeedQuery.ts and README.md, and both
- * remain planned — but a reader was being told they could open them today. The PROHIBITION the sentence
- * existed to carry is unaffected and still holds: no barrel, no registry, no discovery module, no
+ * ⭐ F19 — THE FOLDER IS NOW COMPLETE AT EXACTLY SIX FILES, AND THIS NOTE RECORDS BOTH CORRECTIONS.
+ * An earlier revision asserted the six-file closure before two of them existed; the correction that
+ * followed asserted the folder "holds FOUR". Both statements are now false. It holds the six AAP
+ * §0.4.1.10 names — IntegrationContract.ts, BaseIntegration.ts, GoogleIntegration.ts,
+ * ProductFeedQuery.ts, ProductFeedBuilder.ts and README.md — so every pointer above resolves to a file
+ * a reader can open. The PROHIBITION the original sentence existed to carry is unaffected and still
+ * holds: no barrel, no registry, no discovery module, no
  * shared type bucket, no subfolder, no handler and no second adapter belongs in this folder, because
  * the discovery mechanism such a file would serve was retired rather than translated (AAP §0.8.3.2).
  *
@@ -105,10 +107,11 @@
  * -------------------
  * This file owns exactly ONE entry of the plan's carried-defect register: the display-name
  * copy-paste artifact, annotated at getDisplayName() below with its exact locator. The folder's
- * other entry — D12, the dead, syntactically broken feed DAO — is carried in
- * `IntegrationContract.ts` and is deliberately not restated here, because a register entry must be
- * findable in exactly one place. ⚠️ F19: this pointer previously named an undelivered `README.md`, so
- * that entry was findable in NO place; it now names the module that actually holds it.
+ * other entry — D12, the dead, syntactically broken feed DAO — is carried in this folder's `README.md`
+ * §9 and is deliberately not restated here, because a register entry must be findable in exactly one
+ * place. ⭐ F19: this pointer was briefly redirected to `IntegrationContract.ts` while `README.md` was
+ * undelivered; the README now exists and AAP §0.4.1.10 assigns the entry to it, so the pointer names
+ * the AAP-designated home again.
  *
  * This file mints NO new defect number and NO new execution-mismatch number. The two mismatches
  * recorded at getSettingOptions() below are therefore deliberately UNNUMBERED: they record a stale

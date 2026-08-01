@@ -66,10 +66,13 @@ import { Product, PRODUCT_ENTITY_METADATA } from '../../domain/product/Product';
 import { ProductType, PRODUCT_TYPE_ENTITY_METADATA } from '../../domain/product/ProductType';
 import { Sku, SKU_ENTITY_METADATA } from '../../domain/sku/Sku';
 import { manageEntity } from '../../domain/base/populate';
+import { parseExactDecimal } from '../../util/formatting';
 import { DataIntegrityError, DomainError } from '../../errors/DomainError';
 
 import type { AuditableEntity } from '../../domain/base/AuditableEntity';
+import type { ExactDecimal } from '../../util/formatting';
 import type { ManagedEntity } from '../../domain/base/populate';
+import type { ProductDefaultSkuDelegate } from '../../domain/product/Product';
 import type {
   UnusedOptionGroupRow,
   UnusedOptionRow,
@@ -111,16 +114,16 @@ import type { SkuSearchRow } from '../../ports/repositories/SkuRepository';
  * names the logical entities. Deciding what to emit for it belongs to `MySqlProductTypeRepository.ts`
  * and not here; the finding takes no new register number, because it is already covered by D22 above.
  *
- * THE AUTHORITATIVE REGISTER BOUNDS ARE D1-D24 AND M1-M9. AAP 0.6.7 catalogues D1-D21 and AAP 0.6.6
- * catalogues M1-M8; the three defects and one mismatch beyond those were found during the port and
- * are each recorded once, at the file that owns the behaviour: D22 here and in
- * `src/ports/repositories/SkuRepository.ts` (the logical-versus-physical name vocabulary), D23 at
- * `src/services/SkuService.ts` (`getTransactionExistsFlag` declares no arguments yet forwards an
- * argument collection), D24 at the same file (`processImageUpload` returns a boolean rather than the
- * SKU), and M9 at the same file (CFML struct iteration is unordered where the target's is not).
- * Within M1-M9, M5 is the request-end implicit transaction demarcation and M6 is the validation
- * read-back loop; those two are adjacent, easy to transpose, and must not be swapped, because
- * `src/adapters/mysql/UnitOfWork.ts` is answerable for both and for different reasons.
+ * THE REGISTER BOUNDS ARE NOT STATED HERE. This file cites D22 above and mints nothing, and `src/ports/repositories/SkuRepository.ts`
+ * is the single place that enumerates AAP §0.6.7's frozen D1-D21, AAP §0.6.6's frozen M1-M8 and every
+ * entry the port minted beyond them. This note used to declare itself "THE AUTHORITATIVE REGISTER
+ * BOUNDS" at a figure that had already moved on, which is precisely why a second copy is no longer
+ * kept here.
+ *
+ * ONE ADJACENCY IS WORTH REPEATING, because it is a naming hazard rather than a bound: M5 is the
+ * request-end implicit transaction demarcation and M6 is the validation read-back loop. The two are
+ * adjacent, easy to transpose, and must not be swapped, because `src/adapters/mysql/UnitOfWork.ts` is
+ * answerable for both and for different reasons.
  *
  * THIS FILE ITSELF NAMES NO TABLE IN ANY EXECUTABLE POSITION. The block above is documentation.
  * =============================================================================================== */
@@ -170,6 +173,41 @@ function isMySqlRow(value: unknown): value is MySqlRow {
 }
 
 /**
+ * Narrows a whole driver array to a list of rows, in place, without copying it.
+ *
+ * An ASSERTION function rather than a boolean predicate, and that is the entire point: it lets
+ * {@link toRows} hand the driver's own array straight back once every element has been checked,
+ * instead of building a second array whose only purpose was to carry the narrowed type. The old shape
+ * allocated one array per result set — on a catalog-wide read, one array the size of the catalog —
+ * purely so the compiler could see a type the elements already had.
+ *
+ * The indexed loop is kept rather than collapsed into `every`, because the diagnostics are part of
+ * this port's contract: a malformed result names the exact position that failed and that entry's
+ * runtime type, and `every` would report only that something, somewhere, was wrong.
+ *
+ * IT RAISES INSTEAD OF ANSWERING `false`. An assertion function's contract is "return or throw", and
+ * that matches what the caller needs here: there is no recovery from a driver result that is not a
+ * result set, and degrading to an empty array would silently report "no rows found" for a genuine
+ * fault at the call site.
+ *
+ * @param candidate - An array the driver returned, not yet known to hold rows.
+ * @throws {DomainError} When any element is not a row object. The failing index and that entry's
+ *   runtime type travel on `context`.
+ */
+function assertRowList(candidate: readonly unknown[]): asserts candidate is MySqlRow[] {
+  for (let index = 0; index < candidate.length; index += 1) {
+    const element = candidate[index];
+
+    if (!isMySqlRow(element)) {
+      throw new DomainError(
+        'The database driver returned a list whose entries are not all rows, so it cannot be read as a result set.',
+        { context: { index, entryType: typeof element } },
+      );
+    }
+  }
+}
+
+/**
  * Narrows a driver result to the rows it carries.
  *
  * This is the one place the driver's heterogeneous result shape is dealt with. `mysql2` types the first
@@ -184,8 +222,13 @@ function isMySqlRow(value: unknown): value is MySqlRow {
  * statement routed into a read path, or a multi-statement result handed in whole — so it raises rather
  * than degrading to an empty array, which would silently report "no rows found".
  *
+ * IT VALIDATES AND RETURNS THE SAME ARRAY, IT DOES NOT COPY ONE. See {@link assertRowList}: the
+ * narrowing is an in-place assertion, so this function allocates nothing at all. Every result set in
+ * the slice passes through here, so a copy here is a copy of every result set the service ever reads.
+ *
  * @param result - The value a driver returned for a statement, unnarrowed.
- * @returns The rows, in the order the driver produced them.
+ * @returns The driver's own array, in the order the driver produced it, once every element is known
+ *   to be a row.
  * @throws {DomainError} When `result` is not an array, or when any element is not a row object.
  *
  * @example
@@ -202,18 +245,19 @@ export function toRows(result: unknown): MySqlRow[] {
     );
   }
 
-  const rows: MySqlRow[] = [];
-  for (let index = 0; index < result.length; index += 1) {
-    const element = result[index];
-    if (!isMySqlRow(element)) {
-      throw new DomainError(
-        'The database driver returned a list whose entries are not all rows, so it cannot be read as a result set.',
-        { context: { index, entryType: typeof element } },
-      );
-    }
-    rows.push(element);
-  }
-  return rows;
+  /*
+   * Validated IN PLACE and handed straight back. The driver's array is already exactly the list this
+   * function's callers want, and every element has just been checked, so copying it would allocate a
+   * second array of the same length for no reason other than to satisfy the compiler — once per
+   * statement, and on a catalog-wide read that is a second copy of the catalog.
+   *
+   * No aliasing hazard is introduced, because the driver's array is not retained anywhere: both driver
+   * call sites in this port (`./QueryRunner` and `./UnitOfWork`) destructure the result, pass it here
+   * and keep no other reference to it, so the array this returns has exactly one owner.
+   */
+  assertRowList(result);
+
+  return result;
 }
 
 /**
@@ -228,6 +272,11 @@ export function toRows(result: unknown): MySqlRow[] {
  * array because the domain collections it feeds are live by contract: `model/entity/Option.cfc:L95`,
  * `:L102` and `:L104` mutate the array they are handed in place, so a frozen or read-only result
  * would break option mutation several layers up with no error anywhere.
+ *
+ * ONE PASS AND ONE ALLOCATION, WHICH IS THE RESULT ITSELF. Paired with {@link toRows} — which now
+ * validates the driver's array in place rather than copying it — a read costs exactly one array per
+ * result set instead of two: the mapped domain values, which the caller asked for. There is nothing
+ * further to remove here without refusing to return a collection.
  *
  * @typeParam T - What each row maps to.
  * @param rows - The rows to map, typically from {@link toRows}.
@@ -704,37 +753,7 @@ function integrityError(message: string, context: Record<string, unknown>): Data
 }
 
 /**
- * The MySQL DECIMAL wire form: an optional sign, digits, and an optional fractional part. No exponent,
- * no whitespace, no grouping separators — MySQL never emits any of those for a DECIMAL column.
- */
-const EXACT_DECIMAL_PATTERN = /^[+-]?\d+(?:\.\d+)?$/;
-
-/**
- * Strips the presentational parts of a decimal string so two spellings of the SAME NUMBER compare
- * equal: `'100.00'`, `'+100'` and `'100'` all normalise to `'100'`, and `'-0.10'` to `'-0.1'`.
- *
- * Scale is presentation, not value. A DECIMAL(19,2) holding one hundred is numerically identical to
- * the integer one hundred, so treating the lost trailing zeros as a data-integrity failure would
- * reject nearly every well-formed monetary column. Trailing-zero RENDERING is a separate concern and
- * belongs to the feed layer, which formats to an explicit scale.
- *
- * @param decimalText - A string already matched by {@link EXACT_DECIMAL_PATTERN}.
- * @returns The canonical spelling of the same numeric value.
- */
-function canonicaliseDecimalText(decimalText: string): string {
-  const negative = decimalText.startsWith('-');
-  const unsigned = decimalText.replace(/^[+-]/, '');
-  const [rawWhole = '', rawFraction = ''] = unsigned.split('.');
-  const whole = rawWhole.replace(/^0+(?=\d)/, '');
-  const fraction = rawFraction.replace(/0+$/, '');
-  const magnitude = fraction.length > 0 ? `${whole}.${fraction}` : whole;
-  // Negative zero is the one value whose sign is not meaningful for equality here.
-  return negative && /[1-9]/.test(magnitude) ? `-${magnitude}` : magnitude;
-}
-
-/**
- * Reads an EXACT-DECIMAL (`ormtype="big_decimal"`) column, converting it to a number ONLY when the
- * conversion provably loses nothing.
+ * Reads an EXACT-DECIMAL (`ormtype="big_decimal"`) column, keeping its digits as digits.
  *
  * ⚠️⚠️ F16 — WHY THIS EXISTS SEPARATELY FROM {@link readOptionalNumber}. The catalog's monetary
  * columns are declared `big_decimal`: `listPrice`, `price` and `renewalPrice` at
@@ -745,75 +764,65 @@ function canonicaliseDecimalText(decimalText: string): string {
  * A price that changes in the fourth digit produces no error, no warning and no failing test; it
  * produces a wrong number in a feed, an invoice or a comparison.
  *
- * WHY THE DOMAIN FIELD REMAINS A NUMBER. The three Sku fields stay `number` deliberately rather than
- * becoming a decimal string, because arithmetic and ORDER COMPARISON are performed on them: the feed's
- * sale-price gate at [integrationServices/google/views/feed/product.cfm:L28] is a strict
- * greater-than, and the value it compares against arrives from `PricingPort`, an out-of-scope
- * boundary port this slice may not redefine (AAP §0.2.2.7). Changing the field type alone would not
- * make that comparison exact; it would only move the conversion somewhere less visible. So the
- * decision taken here is the honest one: KEEP the double, and REFUSE to produce one when it would be
- * wrong.
+ * ⭐ F07 — WHY THE DOMAIN FIELD IS NO LONGER A NUMBER, AND WHAT THIS FUNCTION USED TO DO INSTEAD.
+ * An earlier revision returned a `number` and defended that choice at length: it argued that because
+ * arithmetic and ORDER COMPARISON are performed on these fields — the feed's sale-price gate at
+ * [integrationServices/google/views/feed/product.cfm:L28] is a strict greater-than against a value from
+ * `../../ports/PricingPort`, whose shape AAP §0.2.2.7 forbids this slice to redefine — a decimal field
+ * type "would only move the conversion somewhere less visible". So it kept the double and REFUSED to
+ * produce one when the round trip proved lossy.
  *
- * THE LOSSLESSNESS TEST IS A ROUND TRIP, NOT A RANGE CHECK. The exact digits are converted to a
- * double and the double is converted back to its shortest decimal spelling; the two are compared
- * after {@link canonicaliseDecimalText} removes purely presentational differences. `'1.15'` passes:
- * although 1.15 has no exact binary representation, `String(1.15)` returns `'1.15'`, so no digit of
- * the stored value is lost. `'12345678901234567890.12'` fails: it returns `'12345678901234568000'`,
- * five digits away from what the database holds. That is precisely the discrimination a magnitude
- * check would get wrong in both directions.
+ * That reasoning was half right, and the half it got wrong mattered more. Refusing an unrepresentable
+ * value did protect the READ path. But the WRITE path performed the very conversion this function
+ * refused to accept, so the two disagreed: a legacy-valid price could be written lossily and then
+ * rejected on the way back. The comparison argument was also weaker than it looked, because an exact
+ * decimal can be ordered EXACTLY without any arithmetic — which is what
+ * `../../util/formatting`'s `compareExactDecimal` does, digit-wise.
  *
- * A JAVASCRIPT NUMBER IS REFUSED OUTRIGHT. With `../../config/env.ts`'s pool configured as
- * `../../config/database.ts` specifies — `decimalNumbers: false`, `supportBigNumbers` and
- * `bigNumberStrings` both true — a `big_decimal` column ALWAYS arrives as an exact string. If one
- * arrives as a number then the driver has already done the lossy conversion and the exact digits are
- * gone beyond recovery, so accepting it would be accepting a value that is possibly already wrong.
- * Refusing turns a silent configuration regression into a loud, classified fault.
+ * So the field type changed, and this function now returns {@link ExactDecimal}: the stored digits, at
+ * the stored scale, carried unconverted to the bind site and back. Exactly ONE lossy projection remains
+ * in the whole port, at the single point where an out-of-scope port types its value `number`, and it is
+ * named `exactDecimalToNumber` so it cannot happen without saying so.
+ *
+ * ⚠️ THE ROUND-TRIP LOSSLESSNESS TEST IS GONE, BECAUSE IT NO LONGER HAS ANYTHING TO TEST. It existed to
+ * decide whether a double could stand in for the stored value. Nothing stands in for the stored value
+ * now, so `'12345678901234567890.12'` — which that test correctly rejected, and which the legacy system
+ * stored and read back without complaint — is simply read. Removing a refusal the legacy never performed
+ * also removes a divergence: AAP §0.6.7 governs with *"preserve and annotate, do not repair"*, and
+ * §0.6.7.7 makes D18 the SOLE declared behaviour-hardening exception.
+ *
+ * ⚠️ WHAT IS KEPT: WELL-FORMEDNESS, AND THE DRIVER-NUMBER REFUSAL. Malformed text still raises, because
+ * it means the column is not the type this mapper was told it is. And a JavaScript `number` is still
+ * refused outright: with the pool configured as `../../config/database.ts` specifies —
+ * `decimalNumbers: false`, `supportBigNumbers` and `bigNumberStrings` both true — a `big_decimal` column
+ * ALWAYS arrives as an exact string. If one arrives as a number then the driver has already done the
+ * lossy conversion and the exact digits are gone beyond recovery. That refusal is not a hardening of
+ * legacy behaviour; it is a regression detector for this port's own configuration, and it turns a silent
+ * misconfiguration into a loud, classified fault.
  *
  * @param row - The row being read.
  * @param columnName - The column or projection alias to read.
- * @returns The exact value as a number, or `undefined` when the column is absent or NULL.
- * @throws {DataIntegrityError} When the value cannot be represented exactly, when the text is not a
- *   well-formed decimal, or when the driver delivered a pre-converted number.
+ * @returns The exact value as decimal text, or `undefined` when the column is absent or NULL.
+ * @throws {DataIntegrityError} When the text is not a well-formed decimal, or when the driver delivered
+ *   a pre-converted number.
  */
-function readOptionalExactDecimal(row: MySqlRow, columnName: string): number | undefined {
+function readOptionalExactDecimal(row: MySqlRow, columnName: string): ExactDecimal | undefined {
   const value = row[columnName];
   if (value === null || value === undefined) {
     return undefined;
   }
 
-  if (typeof value === 'string') {
-    const decimalText = value.trim();
-    if (!EXACT_DECIMAL_PATTERN.test(decimalText)) {
+  if (typeof value === 'string' || typeof value === 'bigint') {
+    const decimalText = typeof value === 'bigint' ? value.toString() : value.trim();
+    const exact = parseExactDecimal(decimalText);
+    if (exact === undefined) {
       throw integrityError(
         `Column "${columnName}" holds ${JSON.stringify(decimalText)}, which is not a well-formed ` +
           `exact-decimal value.`,
         { columnName },
       );
     }
-    const converted = Number(decimalText);
-    if (
-      Number.isFinite(converted) &&
-      canonicaliseDecimalText(String(converted)) === canonicaliseDecimalText(decimalText)
-    ) {
-      return converted;
-    }
-    throw integrityError(
-      `Column "${columnName}" holds the exact decimal ${decimalText}, which cannot be represented ` +
-        `exactly as a JavaScript number (nearest is ${String(converted)}).`,
-      { columnName, exactValue: decimalText, nearestDouble: String(converted) },
-    );
-  }
-
-  if (typeof value === 'bigint') {
-    const converted = Number(value);
-    if (BigInt(converted) === value) {
-      return converted;
-    }
-    throw integrityError(
-      `Column "${columnName}" holds the exact integer ${value.toString()}, which cannot be ` +
-        `represented exactly as a JavaScript number.`,
-      { columnName, exactValue: value.toString() },
-    );
+    return exact;
   }
 
   if (typeof value === 'number') {
@@ -891,11 +900,14 @@ function assignAuditColumns(entity: AuditableEntity, row: MySqlRow): void {
  * RULE 3 — ASSOCIATIONS ARE NOT HYDRATED HERE, AND THAT IS A DECISION THIS FILE WAS ASKED TO MAKE.
  * `src/domain/product/Product.ts` states it explicitly: *"`fetch="join"` is a Hibernate fetch
  * strategy with no target analogue — eager-versus-lazy loading is `src/adapters/mysql/rowMappers.ts`'s
- * decision now."* The decision is that a row mapper hydrates scalar columns only. Every optional
- * many-to-one field — `Product.brand`, `Product.productType`, `Product.defaultSku`,
- * `ProductType.parentProductType`, `Sku.product`, `Sku.subscriptionTerm`, `Option.optionGroup` — is
- * left UNRESOLVED, meaning this module writes nothing to it whatsoever, and every collection keeps
- * the empty array its own class initialised.
+ * decision now."* The decision is that a row mapper hydrates scalar columns only: it resolves no
+ * association to a LOADED entity, issues no second statement, and every collection keeps the empty
+ * array its own class initialised.
+ *
+ * THREE OF THE SEVEN OPTIONAL MANY-TO-ONE FIELDS ARE LEFT ENTIRELY UNRESOLVED — this module writes
+ * nothing to them whatsoever: `ProductType.parentProductType`, `Sku.subscriptionTerm` and
+ * `Option.optionGroup`. The other four carry an IDENTIFIER-ONLY REFERENCE, under the bounded RULE 3a
+ * below. Which four, and why exactly those four, is the whole of the sub-rule.
  *
  *   WHAT "UNRESOLVED" LOOKS LIKE AT RUNTIME IS NOW UNIFORM ACROSS THE DOMAIN LAYER, and the
  *   uniformity is deliberate rather than incidental. Every association field on every in-scope entity
@@ -942,13 +954,90 @@ function assignAuditColumns(entity: AuditableEntity, row: MySqlRow): void {
  *   column routes through, and why it must not be simplified into a conditional assignment.
  *
  *   Why not populate a stub carrying just the foreign key, in imitation of a lazy proxy? Because a
- *   stub answers non-identifier reads with class defaults instead of failing. `Sku.generateImageFileName`
+ *   stub CAN answer non-identifier reads with class defaults instead of failing. `Sku.generateImageFileName`
  *   reads `option.getOptionGroup().getImageGroupFlag()` at `model/entity/Sku.cfc:L134`, and against a
  *   stub that read would quietly return the declared `false` — a wrong answer with no error anywhere,
- *   which is precisely the silent-failure class this module exists to eliminate. An absent field is
- *   typed, visible and impossible to misread: a caller either resolves the association through the
- *   repository or gets a compile error. The foreign-key value is not lost either — the repository
- *   holds the same row and reads the `*ID` column itself when it needs to resolve the other side.
+ *   which is precisely the silent-failure class this module exists to eliminate. That objection is
+ *   sound, and it is what BOUNDS rule 3a rather than what forbids it: a reference is admitted only
+ *   where it provably cannot answer a non-identifier read with a plausible-looking value.
+ *
+ * RULE 3a — FOUR FOREIGN KEYS CARRY AN IDENTIFIER-ONLY REFERENCE, AND THE BOUND IS "A REFERENCE MAY
+ * NOT LIE".
+ *
+ *   THE TWO OBLIGATIONS THAT FORCE IT. Neither is a preference, and both were latent defects before
+ *   this rule existed.
+ *
+ *     (i) THE GOOGLE FEED'S SIXTEEN FIELDS TRAVERSE THE GRAPH, AND THE LEGACY JOIN-FETCHED IT.
+ *         `integrationServices/google/controllers/feed.cfc:L64-L66` registers three related-property
+ *         joins — `SlatwallSku` -> `product`, `SlatwallProduct` -> `defaultSku` and
+ *         `SlatwallProduct` -> `brand` — for no purpose other than letting
+ *         `integrationServices/google/views/feed/product.cfm` dereference those associations
+ *         unguarded at `:L18`, `:L19`, `:L21`, `:L27` and `:L32`. Hibernate therefore delivered a
+ *         POPULATED graph to that view. `SmartListQueryBuilder.execute` hands its rows to a mapper
+ *         and then DISCARDS them, so the escape hatch the paragraph above relies on — *"the
+ *         repository holds the same row and reads the `*ID` column itself"* — does not exist for a
+ *         smart-list consumer: after mapping, the foreign key is simply gone and nothing downstream
+ *         can recover it. Without rule 3a the feed's first field requirement raises for EVERY record.
+ *
+ *    (ii) THE THREE PERSISTERS READ THESE EXACT FIELDS BACK, SO DROPPING THEM WAS DATA LOSS.
+ *         `MySqlSkuRepository.persistSku` writes `sku.product?.productID ?? null`, and
+ *         `MySqlProductRepository.saveProduct` writes `product.brand?.brandID ?? null`,
+ *         `product.productType?.productTypeID ?? null` and the default SKU's identifier through the
+ *         injected reader. Hydrating a row and writing it back therefore NULLED all four foreign
+ *         keys — silently, with no error and no failing type. Rule 3a closes that round trip.
+ *
+ *   THE FOUR, AND WHY EACH CANNOT LIE. Three of them are entity references carrying ONLY the primary
+ *   key, and the fourth is not an entity at all:
+ *
+ *     `Sku.product`         -> {@link productReference}      identifier-only `Product`
+ *     `Product.productType` -> {@link productTypeReference}  identifier-only `ProductType`
+ *     `Product.brand`       -> {@link brandReference}        identifier-only `Brand`
+ *     `Product.defaultSku`  -> {@link defaultSkuReference}   a RAISING nine-member delegate
+ *
+ *     Measured, not assumed: across `Product`, `ProductType` and `Brand` the ONLY field this module
+ *     ever writes with {@link assignDefaulted} is the primary key. Every other scalar goes through
+ *     {@link assignOptional}, and every one of those three classes declares its optional scalars in a
+ *     form that leaves them ABSENT on a fresh instance. So every non-identifier read of one of these
+ *     three references yields `undefined` — the same answer an absent field gives — and never a
+ *     plausible-looking default. There is no `false`-shaped lie available for them to tell.
+ *
+ *     `Sku` IS DIFFERENT, WHICH IS EXACTLY WHY `defaultSku` IS NOT A `Sku`. `model/entity/Sku.cfc:L52-L57`
+ *     declares defaults for `activeFlag`, `listPrice`, `price`, `renewalPrice` and
+ *     `userDefinedPriceFlag`, so an identifier-only `Sku` would report a price of ZERO — and
+ *     `Product.getPrice` falls back to the default SKU's price for the feed's `g:price` field, so that
+ *     zero would advertise every product in a merchant feed as free. Nothing about it would fail. The
+ *     field is typed against the nine-member delegate rather than against `Sku` anyway, so the
+ *     reference is a delegate whose every member RAISES until it is replaced. A surviving reference
+ *     there is a loud failure by construction.
+ *
+ *   AND `ProductType.parentProductType` IS DELIBERATELY NOT IN THE LIST, though BOTH product-type
+ *   write paths round-trip it the same way — `MySqlProductTypeRepository.saveProductType` through its
+ *   `collectWritableValues`, and `MySqlProductPersistence.saveProductType` through its
+ *   `collectProductTypeValues`. Each reads `parentProductType?.productTypeID ?? null`, so a product
+ *   type that was READ through this module and then written back stores `NULL` in
+ *   `parentProductTypeID` and is detached from its parent. Both sites are named because the gap is
+ *   auditable from either one, and naming only the first would leave the second looking clean.
+ *   `ProductType.getSimpleRepresentation` walks the parent chain and
+ *   returns `undefined` as soon as any link's name is absent, so a parent reference would turn the
+ *   feed's `g:product_type` from `Parent &raquo; Child` into an EMPTY element — a reference that lies,
+ *   which is the one thing rule 3a forbids. Its round-trip gap is therefore recorded here and left
+ *   alone rather than closed with a mechanism that would corrupt a rendered field. `Option.optionGroup`
+ *   stays out for the original reason: `OptionGroup` declares a defaulted scalar, so a reference could
+ *   answer `getImageGroupFlag()` with the class default, which is the very example above.
+ *
+ *   ⛔ A REFERENCE IS NOT A LOADED ENTITY AND MUST NOT BE TREATED AS ONE. Rule 3's guarantee still
+ *   holds for every field a reference does not carry: it is genuinely absent. A consumer that needs a
+ *   LOADED association resolves it — `createCatalogAggregateLoaders` in `./catalogAggregates` does
+ *   exactly that, batching one statement per related entity and raising a `DataIntegrityError` when a
+ *   reference cannot be resolved, so no reference reaches the serializer.
+ *
+ *   ⚠️ THIS PARAGRAPH NAMED A CLASS THAT NO LONGER EXISTS. It cited
+ *   `ProductFeedRelationshipAssembler` in `src/integrations/google/ProductFeedQuery.ts` as the
+ *   resolving consumer. That class was withdrawn — the feed assembled relationships a second time
+ *   over records `SmartListQueryBuilder` already projects, and its removal record stands at
+ *   `src/integrations/google/ProductFeedQuery.ts:L392` with the capability's new home at `:L413`. The
+ *   mechanism this rule depends on is unchanged and the guarantee still holds; only the address moved,
+ *   and a `{@link}` to a withdrawn symbol resolves to nothing while still reading as a live example.
  *
  * RULE 4 — COLLECTIONS ARE LEFT LIVE. Nothing here freezes, copies, spreads or slices a collection,
  * and no entity collection field is typed read-only. `model/entity/Option.cfc:L95`, `:L102` and
@@ -1049,6 +1138,173 @@ function assignAuditColumns(entity: AuditableEntity, row: MySqlRow): void {
  * the domain declaration rather than being restated here.
  * =============================================================================================== */
 
+/* ================================================================================================
+ * RULE 3a — THE FOUR FOREIGN-KEY REFERENCES
+ * ================================================================================================
+ * Every factory below mints an association slot value carrying NOTHING BUT the identifier the row's
+ * foreign-key column supplied. The module header states the two obligations that force them and the
+ * "a reference may not lie" bound that limits them to these four; this section is the mechanism.
+ *
+ * ⚠️ EACH IS A REAL INSTANCE OF ITS OWN CLASS, WITH THE RULE 5 SURFACE ATTACHED. A plain object
+ * literal would type-check for the three entity references and then fail the moment anything called
+ * `getClassName()` or `getPrimaryIDValue()` on it, which `src/validation/Validator.ts`,
+ * `src/ports/UniquePropertyPort.ts` and `src/services/BaseService.ts` all do. Construction therefore
+ * goes through {@link manageEntity} with the same frozen declaration the corresponding mapper uses,
+ * so a reference is indistinguishable in KIND from a hydrated entity and differs only in CONTENT.
+ *
+ * ⚠️ THE IDENTIFIER IS WRITTEN DIRECTLY RATHER THAN THROUGH {@link assignDefaulted}, because there is
+ * no column read to guard: the caller has already narrowed the value to a present string. Writing the
+ * field directly is also what RULE 1 requires — no accessor pair exists in `domain/`.
+ * ============================================================================================== */
+
+/**
+ * A `Product` reference carrying only `productID` — the resolved form of the `productID` foreign key
+ * at `model/entity/Sku.cfc:L65`.
+ *
+ * @param productID - The foreign-key value, already narrowed to a present string.
+ * @returns A managed product whose ONLY populated field is its primary key. Every other read yields
+ *   `undefined`; every collection is its own fresh empty array.
+ */
+export function productReference(productID: string): ManagedEntity<Product> {
+  const product = manageEntity(new Product(), PRODUCT_ENTITY_METADATA);
+  product.productID = productID;
+  return product;
+}
+
+/**
+ * A `ProductType` reference carrying only `productTypeID` — the resolved form of the `productTypeID`
+ * foreign key at `model/entity/Product.cfc:L69`.
+ *
+ * @param productTypeID - The foreign-key value, already narrowed to a present string.
+ * @returns A managed product type whose ONLY populated field is its primary key. Its own
+ *   `parentProductType` is left absent, so `getSimpleRepresentation()` reports `undefined` rather
+ *   than walking into a second reference.
+ */
+export function productTypeReference(productTypeID: string): ManagedEntity<ProductType> {
+  const productType = manageEntity(new ProductType(), PRODUCT_TYPE_ENTITY_METADATA);
+  productType.productTypeID = productTypeID;
+  return productType;
+}
+
+/**
+ * A `Brand` reference carrying only `brandID` — the resolved form of the `brandID` foreign key at
+ * `model/entity/Product.cfc:L68`.
+ *
+ * @param brandID - The foreign-key value, already narrowed to a present string.
+ * @returns A managed brand whose ONLY populated field is its primary key.
+ */
+export function brandReference(brandID: string): ManagedEntity<Brand> {
+  const brand = manageEntity(new Brand(), BRAND_ENTITY_METADATA);
+  brand.brandID = brandID;
+  return brand;
+}
+
+/**
+ * A `defaultSku` slot value that also reports the identifier the delegate interface hides.
+ *
+ * `ProductDefaultSkuDelegate` declares nine price, currency and image reads and DELIBERATELY no
+ * identifier accessor — `src/domain/sku/Sku.ts` records why, and supplies
+ * {@link DefaultSkuIdReader} as the injected read for that reason. A reference has to carry the
+ * identifier somehow, so it is carried as an own `skuID` property: exactly the shape a
+ * `(defaultSku: object) => string` reader was designed to consume, and readable here through
+ * {@link readProductDefaultSkuId} without a cast.
+ */
+export interface IdentifiedProductDefaultSku extends ProductDefaultSkuDelegate {
+  readonly skuID: string;
+}
+
+/**
+ * Raises for a member of an UNRESOLVED default-SKU reference.
+ *
+ * One helper rather than nine bodies, so the message is stated once and every member fails
+ * identically. The member name is reported so a log reader learns WHICH read escaped the assembler,
+ * and the identifier is reported so the row is findable.
+ */
+function refuseUnresolvedDefaultSku(skuID: string, member: string): never {
+  throw new DomainError(
+    "A product's default SKU was read before the reference to it had been resolved, so no value " +
+      'could be produced for it.',
+    { context: { skuID, member } },
+  );
+}
+
+/**
+ * A `defaultSku` reference carrying only `skuID` — the resolved form of the `defaultSkuID` foreign
+ * key at `model/entity/Product.cfc:L70`.
+ *
+ * ⛔ EVERY ONE OF THE NINE MEMBERS RAISES, AND THAT IS THE POINT. An identifier-only `Sku` would
+ * report `price` as the `0` that `model/entity/Sku.cfc:L55` declares as its default, and
+ * `Product.getPrice` falls back to the default SKU's price — so the Google feed's `g:price` would
+ * advertise a free product with nothing failing anywhere. Raising converts that silent wrong answer
+ * into a diagnosable one. The reference is replaced by the aggregate-loader resolution
+ * `createCatalogAggregateLoaders` in `./catalogAggregates` performs, before any consumer reads it.
+ * (This sentence previously pointed at `ProductFeedRelationshipAssembler`, which was withdrawn; see
+ * the rule 3a account above.)
+ *
+ * @param skuID - The foreign-key value, already narrowed to a present string.
+ * @returns A frozen delegate reporting the identifier and refusing every value read.
+ */
+export function defaultSkuReference(skuID: string): IdentifiedProductDefaultSku {
+  return Object.freeze({
+    skuID,
+    getCurrencyCode: (): never => refuseUnresolvedDefaultSku(skuID, 'getCurrencyCode'),
+    getPrice: (): never => refuseUnresolvedDefaultSku(skuID, 'getPrice'),
+    getRenewalPrice: (): never => refuseUnresolvedDefaultSku(skuID, 'getRenewalPrice'),
+    getListPrice: (): never => refuseUnresolvedDefaultSku(skuID, 'getListPrice'),
+    getImageDirectory: (): never => refuseUnresolvedDefaultSku(skuID, 'getImageDirectory'),
+    getImagePath: (): never => refuseUnresolvedDefaultSku(skuID, 'getImagePath'),
+    getImage: (): never => refuseUnresolvedDefaultSku(skuID, 'getImage'),
+    getResizedImagePath: (): never => refuseUnresolvedDefaultSku(skuID, 'getResizedImagePath'),
+    getImageExistsFlag: (): never => refuseUnresolvedDefaultSku(skuID, 'getImageExistsFlag'),
+  });
+}
+
+/*
+ * ⛔ `resolvedProductDefaultSku` WAS REMOVED FROM THIS MODULE, AND THE CAPABILITY IS INJECTED INSTEAD.
+ * A companion to {@link defaultSkuReference} once stood here: given a LOADED `Sku` it returned a
+ * delegate whose three price members forwarded and whose other six RAISED. It had no caller anywhere in
+ * `src/` or `test/` — inside this module or outside it — and it could not have acquired one honestly,
+ * because the six it could not answer are the whole difficulty. `Sku.getCurrencyCode` needs a
+ * `SettingResolverPort`, and the five image members are ASYNCHRONOUS on `Sku` and take an `ImagePathPort`,
+ * while the delegate declares them synchronous and argument-free.
+ *
+ * ✅ `./catalogAggregates.ts` ALREADY OWNS THIS ADAPTATION AND DECLARES IT AS A DEPENDENCY, for exactly
+ * that reason: `CatalogAggregateDependencies.bindDefaultSkuDelegate` is `(sku: Sku) => ProductDefaultSkuDelegate`,
+ * and its own note says assembling one "needs the setting, pricing and image ports, none of which belong
+ * to this layer, so it arrives as the function it is". That is the same judgement, made one layer up where
+ * the ports are reachable. A second, half-capable copy here would be a competing mechanism for a question
+ * the folder has already answered, and the raising members would surface as runtime failures rather than
+ * as the declared boundary they are.
+ *
+ * The reference factory above stays because it serves rule 3a: it keeps a foreign key ALIVE through
+ * hydration without pretending to resolve anything, and every one of its value reads refuses.
+ */
+
+/**
+ * Reads the identifier off a `defaultSku` slot value, whether it is a reference or a resolved wrapper.
+ *
+ * THE CANONICAL READ FOR THE `DefaultSkuIdReader` SEAM. `src/domain/sku/Sku.ts` declares that seam as
+ * `(defaultSku: object) => string` precisely because the delegate interface exposes no identifier, and
+ * `MySqlProductRepository.saveProduct` and `MySqlProductPersistence.saveProduct` consume it when writing
+ * the `defaultSkuID` column. Both
+ * factories above populate an own `skuID` property, so this function serves both.
+ *
+ * The `in` test is what keeps this module free of assertions: it narrows the argument to one carrying
+ * an `unknown` `skuID`, which the `typeof` test then narrows to `string`. No cast, no non-null
+ * operator and no `any` appears here (S1).
+ *
+ * @param defaultSku - A `defaultSku` slot value.
+ * @returns The identifier, or `undefined` when the value carries none — which is the state of a
+ *   delegate assembled by some other collaborator, not an error this module can adjudicate.
+ */
+export function readProductDefaultSkuId(defaultSku: object): string | undefined {
+  if ('skuID' in defaultSku) {
+    const candidate: unknown = defaultSku.skuID;
+    return typeof candidate === 'string' && candidate.length > 0 ? candidate : undefined;
+  }
+  return undefined;
+}
+
 /**
  * Hydrates a `SwProduct` row into a {@link Product}.
  *
@@ -1056,13 +1312,18 @@ function assignAuditColumns(entity: AuditableEntity, row: MySqlRow): void {
  * `model/entity/Product.cfc:L51-L58`; the four persisted calculated columns at `:L62-L65`; the remote
  * identifier at `:L93`; and the four audit columns at `:L96-L99` via {@link assignAuditColumns}.
  *
- * Not read, and deliberately so: the three many-to-one foreign keys at `:L68-L70`
- * (`brandID`, `productTypeID`, `defaultSkuID`) and every collection at `:L73-L89`, per RULE 3 above;
- * and the twenty non-persistent properties at `:L102-L123`, which have no column, per AAP 0.2.2.6.
+ * ALSO READ, AS RULE 3a IDENTIFIER-ONLY REFERENCES: the three many-to-one foreign keys at `:L68-L70`
+ * — `brandID`, `productTypeID` and `defaultSkuID`. Each becomes a reference carrying nothing but the
+ * identifier, and each is OMITTED ENTIRELY when its column is absent or NULL, so an unassociated
+ * product still reports a genuinely absent field rather than one present holding `undefined`.
+ *
+ * Not read, and deliberately so: every collection at `:L73-L89`, per RULE 3 above; and the twenty
+ * non-persistent properties at `:L102-L123`, which have no column, per AAP 0.2.2.6.
  *
  * @param row - One `SwProduct` row.
- * @returns A MANAGED product (RULE 5) carrying every persistent column the row supplied, with its
- *   associations unresolved and its collections empty and live.
+ * @returns A MANAGED product (RULE 5) carrying every persistent column the row supplied, its three
+ *   many-to-one fields holding RULE 3a references where the row carried the foreign key, and its
+ *   collections empty and live.
  * @throws {DomainError} When a column holds a value whose runtime type does not match its field.
  * @throws {DataIntegrityError} When an exact-decimal column holds a value a JavaScript number
  *   cannot carry without loss, or the driver delivered it pre-converted (F16).
@@ -1072,6 +1333,7 @@ function assignAuditColumns(entity: AuditableEntity, row: MySqlRow): void {
  * const product = mapProductRow({ productID: 'a'.repeat(32), productName: 'Test Product' });
  * product.productName; // 'Test Product'
  * 'urlTitle' in product; // false — the column was absent, so the field is too
+ * 'brand' in product; // false — the foreign key was absent, so no reference was attached
  * ```
  */
 export function mapProductRow(row: MySqlRow): ManagedEntity<Product> {
@@ -1112,6 +1374,25 @@ export function mapProductRow(row: MySqlRow): ManagedEntity<Product> {
   assignOptional(product, 'remoteID', readOptionalString(row, 'remoteID'));
   assignAuditColumns(product, row);
 
+  /* RULE 3a — the three many-to-one foreign keys at [model/entity/Product.cfc:L68-L70], each read as
+   * an identifier and attached as a reference. `assignOptional` is not used: these are not scalar
+   * fields, so the presence test is written out and the field is simply left untouched — and therefore
+   * absent, since all three are declared with `declare` — when the column supplies nothing. */
+  const brandID = readOptionalString(row, 'brandID');
+  if (brandID !== undefined) {
+    product.brand = brandReference(brandID);
+  }
+
+  const productTypeID = readOptionalString(row, 'productTypeID');
+  if (productTypeID !== undefined) {
+    product.productType = productTypeReference(productTypeID);
+  }
+
+  const defaultSkuID = readOptionalString(row, 'defaultSkuID');
+  if (defaultSkuID !== undefined) {
+    product.defaultSku = defaultSkuReference(defaultSkuID);
+  }
+
   return product;
 }
 
@@ -1131,19 +1412,25 @@ export function mapProductRow(row: MySqlRow): ManagedEntity<Product> {
  * is computed and no path setting is read: the derived path members at `:L145`, `:L192` and `:L221`
  * are served by `ImagePathPort`.
  *
- * Not read: the two many-to-one foreign keys at `:L63-L64` (`productID`, `subscriptionTermID`), the
- * five collections at `:L67-L71`, and the four owned and six inverse many-to-many collections at
- * `:L74-L86` — including `options`, whose rows live in the `SwSkuOption` link table and are resolved
- * by `MySqlSkuRepository.ts`. The twenty-three non-persistent properties at `:L99-L121` have no
- * column.
+ * ALSO READ, AS A RULE 3a IDENTIFIER-ONLY REFERENCE: the `productID` foreign key at `:L63`. It becomes
+ * a `Product` reference carrying nothing but that identifier, and the field is left ABSENT when the
+ * column is absent or NULL. This is what `MySqlSkuRepository.persistSku` reads back when it writes the
+ * `productID` column, and what the Google feed's assembler resolves into a loaded product.
+ *
+ * Not read: the `subscriptionTermID` foreign key at `:L64`, whose related component is out of scope by
+ * AAP 0.2.2.1; the five collections at `:L67-L71`; and the four owned and six inverse many-to-many
+ * collections at `:L74-L86` — including `options`, whose rows live in the `SwSkuOption` link table and
+ * are resolved by `MySqlSkuRepository.ts`. The twenty-three non-persistent properties at `:L99-L121`
+ * have no column.
  *
  * Note that the return type is also what `SkuRow` denotes: the SKU port declares `SkuRow` as an alias
  * of the entity precisely so that no second description of the physical row exists to drift from this
  * one.
  *
  * @param row - One `SwSku` row.
- * @returns A MANAGED SKU (RULE 5) carrying every persistent column the row supplied, with its
- *   associations unresolved and its options collection empty and live.
+ * @returns A MANAGED SKU (RULE 5) carrying every persistent column the row supplied, its `product`
+ *   field holding a RULE 3a reference where the row carried the foreign key, and its options
+ *   collection empty and live.
  * @throws {DomainError} When a column holds a value whose runtime type does not match its field.
  * @throws {DataIntegrityError} When an exact-decimal column holds a value a JavaScript number
  *   cannot carry without loss, or the driver delivered it pre-converted (F16).
@@ -1170,6 +1457,15 @@ export function mapSkuRow(row: MySqlRow): ManagedEntity<Sku> {
 
   assignOptional(sku, 'remoteID', readOptionalString(row, 'remoteID'));
   assignAuditColumns(sku, row);
+
+  /* RULE 3a — the `productID` foreign key at [model/entity/Sku.cfc:L63]. `setProduct` is deliberately
+   * NOT called: the legacy many-to-one population branch assigned through the framework's own property
+   * writer rather than through the hand-written bidirectional helper, so the product's own `skus`
+   * collection was NOT updated by a hydration pass either. */
+  const productID = readOptionalString(row, 'productID');
+  if (productID !== undefined) {
+    sku.product = productReference(productID);
+  }
 
   return sku;
 }

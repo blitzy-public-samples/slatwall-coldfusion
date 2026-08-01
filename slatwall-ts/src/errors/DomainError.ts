@@ -38,7 +38,7 @@
  *       unresolvable in the source repository, and because several in-scope members terminate
  *       at an explicitly out-of-scope collaborator. See that class.
  *   (e) Every error in this hierarchy carries a PUBLIC-SAFE PRESENTATION, and it is DENY BY
- *       DEFAULT: {@link DomainError.getPublicError} yields a neutral text and a service-fault
+ *       DEFAULT: {@link DomainError.getPublicError} yields a neutral text and a request-rejected
  *       code unless a subclass explicitly declares otherwise. See PUBLIC-SAFE PRESENTATION
  *       below for why a `message` written for a maintainer must never be the text a caller
  *       receives, and {@link LegacyParityError} for the one family whose text is disclosed.
@@ -88,7 +88,7 @@
  *
  * DENY BY DEFAULT
  * ---------------
- * The base implementation returns a neutral service-fault presentation. A subclass discloses its
+ * The base implementation returns a neutral request-rejected presentation. A subclass discloses its
  * `message` only by overriding the member and saying so, which means a new thrower cannot leak a
  * maintainer-facing message by omission — the unsafe direction requires an explicit act. Exactly
  * one family is disclosed, and it is recognised by TYPE rather than by an override:
@@ -126,8 +126,10 @@
  * REQUEST-ATTRIBUTABLE — the caller can act on these:
  *   - `VALIDATION_FAILED` — a declarative validation rule set rejected the submitted values. The
  *     resource-bundle keys travel separately and unmodified; see `./ValidationError`.
- *   - `CATALOG_REQUEST_REJECTED` — a ported Catalog rule refused the request. This is the code
- *     that accompanies a disclosed legacy message; see {@link LegacyParityError}.
+ *   - `CATALOG_REQUEST_REJECTED` — a ported Catalog rule refused the request on grounds the caller
+ *     can act on. A subclass declares it by overriding {@link DomainError.getPublicError}; the base
+ *     does NOT return it by default, because the base is raised overwhelmingly for conditions no
+ *     caller can provoke. See the note on the base presentation below.
  *   - `REQUEST_INVALID` — the request itself could not be read: a required parameter was absent,
  *     or the body was absent, unparseable or not an object.
  *   - `RESOURCE_NOT_FOUND` — no route matched, or the addressed record does not exist.
@@ -140,8 +142,17 @@
  *     behavior, but the fault is the service's; see {@link LegacyParityError}.
  *   - `SERVICE_CONFIGURATION` — a value the deployment must supply is missing or unusable.
  *   - `SERVICE_DATA` — stored data or a driver result could not be read as its declared shape.
- *   - `SERVICE_FAULT` — the default. Every failure that declares no presentation of its own, and
- *     every thrown value this port did not raise, reports as this and discloses nothing.
+ *   - `SERVICE_FAULT` — the deny-by-default classification, carried BOTH by a thrown value this
+ *     port did not raise and cannot classify, AND by a plain {@link DomainError} the port raised
+ *     without classifying further. Both are failures of this service and both answer 500, so the
+ *     one-code-one-status rule holds; the response layer keeps them apart in the log rather than in
+ *     the status. See the note on the base presentation below.
+ *
+ * ⭐ EVERY CODE ABOVE MAPS TO EXACTLY ONE HTTP STATUS, AND NO CODE IS EVER SERIALIZED. The mapping
+ * lives in one total, exhaustive switch in `../handlers/httpResponse.ts`; this vocabulary exists so
+ * that switch has something to be exhaustive over, not so a response body can publish a taxonomy.
+ * AAP 0.7.3 S9 forbids inventing a public error-code registry, so the code stays internal and the
+ * status carries the machine-readable half of the answer.
  */
 export const PUBLIC_ERROR_CODE = Object.freeze({
   VALIDATION_FAILED: 'VALIDATION_FAILED',
@@ -187,7 +198,7 @@ export interface PublicErrorPresentation {
  * Each is terse by design and names nothing: no member, no property, no identifier, no column,
  * no setting, no file, no locator, no defect identifier and no reason.
  */
-const SERVICE_FAULT_PUBLIC_MESSAGE = 'The request could not be completed';
+const UNDISCLOSED_FAILURE_PUBLIC_MESSAGE = 'The request could not be completed';
 const NOT_IMPLEMENTED_PUBLIC_MESSAGE = 'This operation is not available';
 const SERVICE_CONFIGURATION_PUBLIC_MESSAGE = 'The service is not correctly configured';
 const SERVICE_DATA_PUBLIC_MESSAGE = 'The request could not be completed from the stored data';
@@ -200,9 +211,45 @@ const SERVICE_DATA_PUBLIC_MESSAGE = 'The request could not be completed from the
  * consumer will read. A presentation that interpolates a message — the legacy-message family —
  * cannot be shared and is built in its own accessor instead.
  */
+/*
+ * ⭐ THE BASE PRESENTATION CLASSIFIES AS A SERVICE FAULT, NOT AS A REQUEST REJECTION, AND THE
+ * CLASSIFICATION IS DERIVED FROM WHAT THE THROW SITES ACTUALLY SAY.
+ *
+ * An earlier revision moved it to `CATALOG_REQUEST_REJECTED` on the reasoning that a `DomainError`
+ * raised by this port IS a deliberate refusal of the request, and that keeping `SERVICE_FAULT` here
+ * put one code at two statuses — because the response branch answering a plain `DomainError`
+ * hard-coded 400 while the code→status map placed `SERVICE_FAULT` at 500. That premise no longer
+ * holds: `../handlers/httpResponse.ts` now DERIVES the status from this presentation instead of
+ * hard-coding one, so the contradiction it was resolving does not exist, and resolving it by moving
+ * the code left every server-side failure reported to callers as though their request were at fault.
+ *
+ * ⛔ THE THROW SITES DECIDE IT, AND THEY ARE NOT REFUSALS. The base constructor is raised in 142
+ * places in this subtree, and the great majority describe conditions no caller can act on or even
+ * provoke: blank statement text reaching an execution boundary, a placeholder count that disagrees
+ * with the bound values, a bound parameter that is not a scalar the driver accepts, a projected
+ * column whose value is not text, a smart list rooted at an entity with no hydration mapping, a
+ * property-scoped smart list naming a collection with no inverse association, and a SKU reaching a
+ * write before it has an identifier. Those are faults in this service. Answering them with 400 tells
+ * a caller to change a request that was never the problem and hides the fault from every monitor
+ * watching the 5xx rate — which is the more dangerous of the two misclassifications, because a
+ * mislabelled server fault is invisible while a mislabelled client error is merely rude.
+ *
+ * ⚠️ ONE CODE STILL MAPS TO ONE STATUS, so the invariant the earlier revision was protecting is
+ * intact. `SERVICE_FAULT` maps to 500 wherever it appears, whether it arrives from this base
+ * presentation or from the unrecognised-value branch, and the two remain distinguishable in the log
+ * because those branches record different phrases. What is NOT retained is the claim that
+ * `SERVICE_FAULT` is reserved for foreign values only; see {@link PUBLIC_ERROR_CODE}.
+ *
+ * ⛔ AND THIS IS STILL NOT A WEAKENING OF THE DISCLOSURE RULE. The presentation carries the same
+ * neutral text and discloses nothing — not `message`, not `context`, not `cause`, not `stack`. Only
+ * the classification changed, and no code is ever serialized into a response body.
+ *
+ * A subclass whose situation genuinely IS attributable to the caller should override this member and
+ * return `CATALOG_REQUEST_REJECTED`, which is what that code remains available for.
+ */
 const SERVICE_FAULT_PRESENTATION: PublicErrorPresentation = Object.freeze({
   code: PUBLIC_ERROR_CODE.SERVICE_FAULT,
-  message: SERVICE_FAULT_PUBLIC_MESSAGE,
+  message: UNDISCLOSED_FAILURE_PUBLIC_MESSAGE,
 });
 
 const NOT_IMPLEMENTED_PRESENTATION: PublicErrorPresentation = Object.freeze({
@@ -300,7 +347,7 @@ export class DomainError extends Error {
    * caller. See PUBLIC-SAFE PRESENTATION in the module header for the reasoning in full.
    *
    * THIS IMPLEMENTATION IS DENY BY DEFAULT, AND THAT IS THE SECURITY PROPERTY. A plain
-   * `DomainError` raised anywhere in the port reports a neutral service fault and discloses
+   * `DomainError` raised anywhere in the port reports a neutral rejection and discloses
    * nothing at all — not its `message`, not its `context`, not its `cause`, not its `stack`.
    * Ported members raise messages that name legacy locators, defect identifiers, entity
    * identifiers, database columns and environment-variable names, and none of that may reach a
@@ -540,18 +587,95 @@ export class NotImplementedError extends DomainError {
  * answered 400. It is not adopted, for two reasons that both point the same way. It would give this
  * class a `code` member, and "adds no member, no code, no category, no severity and no taxonomy" is
  * the property above that makes the class checkable rather than a taxonomy in disguise. And the
- * uniform status is the TESTED one: `test/services/SkuService.test.ts` asserts 400 for the
- * fallthrough string alongside the other three, and asserts the body carries the single key
- * `message`, which a status-varying design cannot satisfy without publishing the code that chose it.
- * `statusForPublicErrorCode` still maps `CATALOG_STATE_UNEXPECTED` to 500 for the internal
- * classifications that do carry a code, so the vocabulary loses nothing.
+ * uniform status is the TESTED one: the four parity cases in `test/services/SkuService.test.ts` —
+ * `:1218` (the `createSkus` fallthrough), `:1227` and `:1236` (the two interpolated messages) and
+ * `:1246` (both legacy misspellings) — each resolve 400 and each pin the body with
+ * `toStrictEqual({ message })`. A status-varying design would have to answer 500 for one of those four
+ * while the assertions demand 400 for all of them, so it cannot satisfy them at all.
+ *
+ * ⚠️ AND THE EMITTED BODY CARRIES NO `code` AT ALL, WHICH STRENGTHENS THE ARGUMENT RATHER THAN
+ * WEAKENING IT. An earlier revision of this paragraph claimed the body carried `code` beside
+ * `message` and cited assertions to that effect; both are wrong now. `ErrorResponseBody` in
+ * `src/handlers/httpResponse.ts` is `{ message; errors? }`, that file's own contract note records why,
+ * and `test/services/SkuService.test.ts:1507-1509` walks every error family asserting
+ * `Object.keys(body)` is exactly `['message']` and that neither `SERVICE_FAULT` nor
+ * `CATALOG_REQUEST_REJECTED` appears anywhere in the serialized text. So the classification never
+ * leaves the process: `statusForPublicErrorCode` reads it to CHOOSE a status and nothing publishes it,
+ * which is precisely why a rival design giving this class its own `code` member would buy nothing a
+ * caller could observe. `CATALOG_STATE_UNEXPECTED` still maps to 500 there, so the internal
+ * vocabulary loses nothing.
  *
  * @example
  * ```ts
  * throw new LegacyParityError(moreThanOneSkuReturnedMessage(selectedOptions));
  * ```
  */
-export class LegacyParityError extends DomainError {}
+export class LegacyParityError extends DomainError {
+  /**
+   * @param message - one of the four verbatim legacy texts, and nothing else. The parameter is typed
+   *   {@link LegacyParityMessage} rather than `string`, so the four exports below are the ONLY values
+   *   that satisfy it and an authored diagnostic cannot be passed here at all. See
+   *   {@link LegacyParityMessage} for why the narrowing exists and what it caught.
+   * @param options - the ordinary diagnostic payload. A parity message may carry a `context` for the
+   *   log exactly as any other error may; the payload never reaches a response body.
+   */
+  public constructor(message: LegacyParityMessage, options?: DomainErrorOptions) {
+    super(message, options);
+  }
+}
+
+/**
+ * A string that IS one of the four verbatim legacy texts, as a type the compiler can check.
+ *
+ * WHY THIS EXISTS. `src/handlers/httpResponse.ts` publishes a thrown message verbatim on exactly one
+ * branch, and it selects that branch by TYPE: an error is `LegacyParityError` or it is not. That makes
+ * the type a disclosure authorisation, and while the type was satisfied by any `string` the
+ * authorisation was effectively "whatever the throw site felt like". It was in fact misused — a
+ * maintainer-facing diagnostic in `src/services/ProductService.ts`, naming internal CFML argument
+ * names, a legacy source locator and the identifiers of two internal guards, was raised as a
+ * `LegacyParityError` and therefore published to the caller word for word (CWE-209). Nothing about
+ * that throw was ill-intentioned; the type simply did not say what it meant.
+ *
+ * So the authorisation is narrowed to the four texts it was always meant to cover. Because the four
+ * exports below are the only values of this type, and because {@link LegacyParityError}'s constructor
+ * accepts nothing else, "this message is legacy behaviour" is now a claim the compiler verifies rather
+ * than a convention a reviewer has to notice.
+ *
+ * ⚠️ IT IS A BRAND, NOT A VALIDATOR. The type carries no run-time representation whatsoever: a branded
+ * message is the same string at run time, so nothing is allocated, nothing is wrapped, and the four
+ * texts stay byte-identical to the CFML source — which is the one property this whole section exists to
+ * protect. The brand's only effect is at compile time.
+ *
+ * ⛔ DO NOT WIDEN IT, AND DO NOT ADD AN ESCAPE HATCH. There is deliberately no exported minting
+ * function, no `asLegacyParityMessage` helper and no overload taking a plain string. Any of those would
+ * restore precisely the hole this closes, and would do so in a form that looks sanctioned. A genuinely
+ * new legacy text is added by adding a fifth export to the inventory below, with its file-and-line
+ * locator, which is the review step that matters.
+ */
+export type LegacyParityMessage = string & { readonly [LEGACY_PARITY_BRAND]: true };
+
+/**
+ * The brand key. Declared, never defined, and never emitted — it exists only in the type system.
+ *
+ * A `unique symbol` is used rather than a string literal key so no object type declared anywhere else,
+ * by accident or by construction, can be assignable to {@link LegacyParityMessage}.
+ */
+declare const LEGACY_PARITY_BRAND: unique symbol;
+
+/**
+ * Applies the brand. THE ONE PLACE IN THE SUBTREE WHERE THE ASSERTION IS MADE, AND IT IS NOT EXPORTED.
+ *
+ * The assertion is unavoidable — a brand has no run-time value, so it cannot be produced by any
+ * operation — and the whole design consists of making it occur exactly once, in this file, applied only
+ * to a literal that carries a legacy locator. Every other file names one of the four exports instead.
+ *
+ * @param text - a legacy text quoted verbatim from the CFML source, with its locator recorded on the
+ *   export that calls this function.
+ * @returns the same string, branded.
+ */
+function legacyParityMessage(text: string): LegacyParityMessage {
+  return text as LegacyParityMessage;
+}
 
 /* ==========================================================================================
  * VERBATIM LEGACY MESSAGE INVENTORY — exactly four strings, byte-identical to the CFML source
@@ -571,8 +695,10 @@ export class LegacyParityError extends DomainError {}
  * Homogenising them into four factories or four constants would obscure which strings actually
  * carry a value, and is exactly the kind of unrequested tidying AAP 0.8.2 Guideline 4 forbids.
  *
- * ⚠️ EVERY THROW OF ONE OF THESE FOUR STRINGS MUST RAISE {@link LegacyParityError}, and this is the
- * one obligation a new throw site is most likely to miss. `src/handlers/httpResponse.ts` WITHHOLDS a
+ * ⚠️ EVERY THROW OF ONE OF THESE FOUR STRINGS MUST RAISE {@link LegacyParityError}, and the converse
+ * is now enforced: {@link LegacyParityError} accepts NOTHING BUT one of these four, because its
+ * constructor takes {@link LegacyParityMessage}. The obligation below is the half a compiler cannot
+ * check, and it is the one a new throw site is most likely to miss. `src/handlers/httpResponse.ts` WITHHOLDS a
  * domain message from the response body unless the error's TYPE says it is legacy behaviour, so a
  * throw that passes one of these strings on a plain {@link DomainError} would keep parity in the log
  * and silently lose it at the boundary — the caller would receive a neutral body where the CFML
@@ -624,8 +750,10 @@ export class LegacyParityError extends DomainError {}
  * @param selectedOptions the raw comma-delimited option-ID list exactly as passed in
  * @returns the legacy message text, byte-identical to the CFML original
  */
-export function moreThanOneSkuReturnedMessage(selectedOptions: string): string {
-  return `More than one sku is returned when the selected options are: ${selectedOptions}`;
+export function moreThanOneSkuReturnedMessage(selectedOptions: string): LegacyParityMessage {
+  return legacyParityMessage(
+    `More than one sku is returned when the selected options are: ${selectedOptions}`,
+  );
 }
 
 /**
@@ -641,8 +769,8 @@ export function moreThanOneSkuReturnedMessage(selectedOptions: string): string {
  * @param selectedOptions the raw comma-delimited option-ID list exactly as passed in
  * @returns the legacy message text, byte-identical to the CFML original
  */
-export function noSkusFoundForSelectedOptionsMessage(selectedOptions: string): string {
-  return `No Skus are found for these selected options: ${selectedOptions}`;
+export function noSkusFoundForSelectedOptionsMessage(selectedOptions: string): LegacyParityMessage {
+  return legacyParityMessage(`No Skus are found for these selected options: ${selectedOptions}`);
 }
 
 /**
@@ -665,8 +793,10 @@ export function noSkusFoundForSelectedOptionsMessage(selectedOptions: string): s
  * TODO(parity): the two misspellings and the mismatched embedded argument name are retained
  * from the legacy source and are intentionally NOT repaired.
  */
-export const NO_SINGLE_SKU_WITHOUT_SELECTED_OPTIONS_MESSAGE =
-  'You must submit a comma seperated list of selectOptions to find an indvidual sku in this product';
+export const NO_SINGLE_SKU_WITHOUT_SELECTED_OPTIONS_MESSAGE: LegacyParityMessage =
+  legacyParityMessage(
+    'You must submit a comma seperated list of selectOptions to find an indvidual sku in this product',
+  );
 
 /**
  * MESSAGE 4 — the fallthrough of the three-way base-product-type discriminator in
@@ -683,5 +813,6 @@ export const NO_SINGLE_SKU_WITHOUT_SELECTED_OPTIONS_MESSAGE =
  * value through the `context` payload of {@link DomainError} instead, which adds diagnostic
  * detail without altering the observable message.
  */
-export const UNEXPECTED_ERROR_CREATING_PRODUCT_MESSAGE =
-  'There was an unexpected error when creating this product';
+export const UNEXPECTED_ERROR_CREATING_PRODUCT_MESSAGE: LegacyParityMessage = legacyParityMessage(
+  'There was an unexpected error when creating this product',
+);

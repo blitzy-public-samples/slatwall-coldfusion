@@ -38,8 +38,8 @@
  * `GoogleIntegration.ts` is nearly empty by faithfulness, not by neglect: the legacy
  * `integrationServices/google/Integration.cfc` carries no feed logic at all, only two fixed strings
  * and an empty structure. Record selection is ported from
- * `integrationServices/google/controllers/feed.cfc` into a planned `ProductFeedQuery.ts`, and all
- * RSS field shaping is ported from `integrationServices/google/views/feed/product.cfm` into
+ * `integrationServices/google/controllers/feed.cfc` into `ProductFeedQuery.ts`, and all RSS field
+ * shaping is ported from `integrationServices/google/views/feed/product.cfm` into
  * `ProductFeedBuilder.ts`, which is where the real work of the feed lands.
  *
  * TYPES ONLY, AND NO IMPORTS
@@ -53,27 +53,26 @@
  *                          integrationServices/google/Integration.cfc carries no feed logic
  *                          whatsoever — its contract members return two fixed strings and an
  *                          empty structure.
+ *   ProductFeedQuery.ts    owns record SELECTION, ported from
+ *                          integrationServices/google/controllers/feed.cfc — the three related-property
+ *                          joins, the three activity filters and the availability range.
  *   ProductFeedBuilder.ts  owns all RSS field shaping, ported from
  *                          integrationServices/google/views/feed/product.cfm. This is where the
  *                          real work of the feed lands.
+ *   README.md              records the route `?slatAction=google:feed.product` and the FeedDAO
+ *                          dead-code finding (D12).
  *
- * ⚠️ F19 — TWO FILES THIS SPLIT USED TO LIST ARE NOT DELIVERED AT THIS CHECKPOINT. `ProductFeedQuery.ts`
- * (record selection, from integrationServices/google/controllers/feed.cfc) and `README.md` (the feed
- * route `?slatAction=google:feed.product`) are both named in AAP §0.4.1.10 and both remain planned, but
- * neither exists here — this folder currently holds FOUR files. They were previously described in the
- * present tense, as though a reader could open them. The forward references are kept, explicitly marked
- * as not yet delivered, because the SPLIT is the architectural finding worth recording (AAP §0.6.4:
- * the interface implementation carries no feed logic at all); what is corrected is the implication that
- * the split is already realised in full.
- *
- * ⚠️ F19 — TWO FILES THIS SPLIT USED TO LIST ARE NOT DELIVERED AT THIS CHECKPOINT. `ProductFeedQuery.ts`
- * (record selection, from integrationServices/google/controllers/feed.cfc) and `README.md` (the feed
- * route `?slatAction=google:feed.product`) are both named in AAP §0.4.1.10 and both remain planned, but
- * neither exists here — this folder currently holds FOUR files. They were previously described in the
- * present tense, as though a reader could open them. The forward references are kept, explicitly marked
- * as not yet delivered, because the SPLIT is the architectural finding worth recording (AAP §0.6.4:
- * the interface implementation carries no feed logic at all); what is corrected is the implication that
- * the split is already realised in full.
+ * ⭐ F19 — THE SPLIT IS NOW REALISED IN FULL, AND THIS NOTE RECORDS THE CORRECTION RATHER THAN
+ * DELETING IT. An earlier revision of this header described `ProductFeedQuery.ts` and `README.md` in
+ * the present tense before either existed, and the correction that followed overshot: it asserted that
+ * "this folder currently holds FOUR files" and that neither was delivered. Both statements are now
+ * false. The folder holds SIX files — `IntegrationContract.ts`, `BaseIntegration.ts`,
+ * `GoogleIntegration.ts`, `ProductFeedQuery.ts`, `ProductFeedBuilder.ts` and `README.md` — which is
+ * exactly the inventory AAP §0.4.1.10 names, so every forward reference above resolves to a file a
+ * reader can open. The history is kept in one sentence because the SPLIT is the architectural finding
+ * worth recording (AAP §0.6.4: the interface implementation carries no feed logic at all), and because
+ * a header that has twice misdescribed its own folder should say so once rather than silently agree
+ * with whatever is on disk today.
  *
  * NO SUPERTYPE, AND NO SIXTH MEMBER
  * The legacy base component extends a Hibachi framework object
@@ -89,20 +88,20 @@
  * -------------------
  * This folder owns exactly two entries of the plan's carried-defect register (AAP §0.6.7): the
  * display-name copy-paste artifact D11, annotated in `GoogleIntegration.ts`, and the dead feed DAO
- * D12. The principle that a register entry must be findable in exactly ONE place is kept — but it was
- * being VIOLATED rather than honoured for D12, whose evidence was said to live in an undelivered
- * `README.md`.
+ * D12, recorded in `README.md`. The principle that a register entry must be findable in exactly ONE
+ * place is honoured by that placement, and AAP §0.4.1.10 assigns it there explicitly: the README row
+ * documents "the finding that `model/dao/FeedDAO.cfc` is orphaned dead code with broken SQL (defect
+ * D12) and is deliberately not ported".
  *
- * ⚠️ F19 — THE D12 EVIDENCE IS CARRIED HERE, BECAUSE THE FILE THAT CLAIMED TO HOLD IT DOES NOT EXIST.
- * Every reference to `README.md` in this folder pointed at an undelivered file, so the evidence for the
- * dead feed DAO was findable in NO place at all rather than in exactly one. It is stated here, verified
- * against the source: `integrationServices/google/model/dao/FeedDAO.cfc:L52-L74` builds a query whose
- * select list ends `SwProduct.calculatedTitle,` — a TRAILING COMMA immediately before `FROM` — joins
- * `INNER JOIN SwProduct` with NO `ON` clause, and assigns an UNSCOPED `rs` variable. It therefore could
- * never have executed successfully. A repository-wide search finds ZERO callers. It is deliberately not
- * ported: repairing unreachable code would add behaviour the legacy has never had (AAP §0.6.4).
+ * ⭐ F19 — THE D12 EVIDENCE IS NOT RESTATED HERE, AND THAT IS THE CORRECTION. A revision written while
+ * `README.md` was still undelivered transcribed the whole evidence chain — the trailing comma, the
+ * `ON`-less join, the unscoped result variable, the zero callers — into this header so the finding would
+ * be findable somewhere. `README.md` now exists and carries it, so keeping a second copy here would
+ * violate the one-place rule in the opposite direction and leave two texts to keep in step by hand.
+ * The evidence lives in `README.md` §9; this header states only that D12 exists, that it belongs to
+ * this folder, and where to read it.
  *
- * This module still mints no new defect number and no new execution-mismatch number, so the two parity
+ * This module mints no new defect number and no new execution-mismatch number, so the two parity
  * notes below are deliberately UNNUMBERED: they record stale legacy documentation, they do not extend
  * the register.
  */
@@ -239,8 +238,8 @@ export interface IntegrationContract {
  * would be invention (AAP §0.7.3 S9).
  *
  * It is declared in this module, rather than in a shared type bucket, because this is the
- * producing module for the contract's types and because the folder contains no such bucket (F19: four
- * files at this checkpoint, six planned in AAP §0.4.1.10 — neither count includes a type bucket).
+ * producing module for the contract's types and because the folder contains no such bucket — its six
+ * delivered files are exactly the six AAP §0.4.1.10 names, and none of them is a type bucket.
  * It is exported because `GoogleIntegration.ts` needs it for the adapter-only settings member that
  * this contract deliberately does not declare.
  */

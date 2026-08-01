@@ -6,21 +6,24 @@
 # here rather than there keeps the root file, and the whole CFML tree, byte-for-byte unchanged,
 # so this port stays a single additive diff.
 #
-# The list is deliberately short — exactly three patterns and nothing else: every entry
-# names a generated directory this subtree actually produces, and speculative boilerplate
-# is omitted rather than copied in (AAP 0.7.3 standard 9, guideline 0.8.2/1). The three
-# directory names are shared with tsconfig.json "exclude", tsconfig.build.json "outDir"
-# and "exclude", eslint.config.mjs "ignores", jest.config.ts "coverageDirectory" and
-# "testPathIgnorePatterns", and the output directory in build/esbuild.mjs. All six must
-# keep saying the same three words, or a build product ends up tracked.
+# The list is deliberately short — FOUR patterns and nothing else. The count is spelled
+# out because an earlier version of this note said three and then listed four: the three
+# generated directories node_modules/, dist/ and coverage/, plus the single file pattern
+# .env at the end. Speculative boilerplate is omitted rather than copied in (AAP 0.7.3
+# standard 9, guideline 0.8.2/1). The three DIRECTORY names are shared with tsconfig.json
+# "exclude", tsconfig.build.json "outDir" and "exclude", eslint.config.mjs "ignores",
+# jest.config.ts "coverageDirectory" and "testPathIgnorePatterns", and the output directory
+# in build/esbuild.mjs. Every one of those must keep saying the same three words, or a
+# build product ends up tracked.
 #
-# Nothing else belongs here, and the omissions are decisions rather than oversights. No
-# credential file is listed: the plan's contract for this file is exactly the three
-# directories above (AAP 0.3.1, 0.4.1.2, 0.5.6.2), configuration reaches the service only
-# through the process environment (AAP 0.4.3.5, 0.8.3.9), no file in this subtree holds a
-# credential, and the committed .env.example carries variable names with empty values and
-# is therefore tracked on purpose. No editor, OS or tool-cache pattern is listed either:
-# each would be boilerplate for an artifact this subtree never emits.
+# Nothing else belongs here, and the omissions are decisions rather than oversights. The
+# fourth pattern is the only credential-bearing entry, and it is deliberate: a real .env
+# may hold live database credentials, whereas configuration otherwise reaches the service
+# only through the process environment (AAP 0.4.3.5, 0.8.3.9) and no file in this subtree
+# holds a credential. The committed .env.example carries variable names with empty values
+# and is therefore tracked on purpose — see the note on the .env entry below. No editor, OS
+# or tool-cache pattern is listed: each would be boilerplate for an artifact this subtree
+# never emits.
 
 # Installed dependency tree, materialised by `npm ci` from package-lock.json. The
 # lockfile itself is deliberately NOT ignored: a committed lockfile is what makes the
@@ -35,19 +38,38 @@ dist/
 # Jest coverage reports (jest.config.ts, coverageDirectory: 'coverage').
 coverage/
 
-# THIS FILE IS ALSO PRETTIER'S IGNORE LIST, SO NO .prettierignore EXISTS (F20).
-# Prettier's CLI defaults `--ignore-path` to `[.gitignore, .prettierignore]` — its own
-# `prettier --help` on 3.9.6 says so verbatim — and it skips whichever of the two is
-# absent. So the three directories above are already excluded from
-# `npx prettier --check .` without a second list to keep in sync.
+# THIS FILE IS ALSO PRETTIER'S IGNORE LIST, AND IT IS NOW THE ONLY ONE: no .prettierignore
+# exists in this subtree. Prettier's CLI defaults `--ignore-path` to
+# `[.gitignore, .prettierignore]` — its own `prettier --help` on 3.9.6 says so verbatim —
+# and it skips whichever of the two is absent, so the directories above are already
+# excluded from `npx prettier --check .` without a second list to keep in sync.
 #
-# A .prettierignore did exist and was DELETED: it appears in no AAP inventory (0.2.1.7
-# and 0.4.1.2 declare .prettierrc.json and this file, not it), and removing it was
-# verified not to change the result. `npx prettier --check .` passes with dist/ present,
-# and package-lock.json — the one tracked file the deleted list also named — is
-# byte-identical to Prettier's own JSON output, so checking it is a no-op rather than a
-# churn risk. Do not re-add the file to silence a hypothetical: measure first, exactly
-# as this note did.
+# HISTORY, READ OUT OF `git log --follow --name-status` RATHER THAN RECALLED, because every
+# earlier version of this note got some of it wrong. The file's whole life is three commits:
+#
+#   c747b7455  A  added by the setup commit, alongside eleven other toolchain files
+#   ef7f10c79  D  deleted — the commit that also wrote the "no .prettierignore exists" notes
+#                 here, in eslint.config.mjs, in jest.config.ts and in build/esbuild.mjs
+#   1c93bd295  A  RE-ADDED, carrying a header arguing it was "kept rather than deleted"
+#
+# So those four notes were TRUE when they were written and were falsified afterwards by a
+# commit that restored the file without revisiting them. That is the failure mode worth
+# remembering: the notes were not careless, they were duplicated — four copies of one claim,
+# and re-adding one file made all four wrong at once. The review recorded the resulting
+# disagreement between configuration and repository state as a scope finding. The file has
+# now been removed again, and this file — the owning declaration for what is ignored — is the
+# single place that records it, so the three sibling notes point here rather than restating
+# anything that a future commit could falsify a second time.
+#
+# WHY REMOVAL IS SAFE, MEASURED RATHER THAN ASSUMED. With the file absent, deliberately
+# mis-formatted probe files were written to dist/, to coverage/ and to src/, and then
+# `npx prettier --check .` was run once: it reported ONLY the src/ probe. That single run
+# proves both halves of the claim — that the two generated directories really are excluded,
+# and that the scan really was happening rather than silently matching nothing. The removed
+# list named one further path, package-lock.json, and `npx prettier package-lock.json`
+# output is byte-identical to the file on disk, so checking the lockfile is a no-op rather
+# than a churn risk. Do not re-add the file to silence a hypothetical: measure first,
+# exactly as this note did.
 
 # A real .env is a local developer convenience that may hold live database credentials,
 # so it never enters git; configuration reaches the service through the environment and

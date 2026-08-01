@@ -139,8 +139,8 @@
  * END banner, in a file whose other five sections are correctly paired. It is a copy-paste artefact
  * of the component template, it delimits nothing (the section is empty), and it has no behaviour.
  * It is recorded here and NOT reproduced. No register identifier is minted for it: AAP 0.6.7
- * catalogues D1-D21, the port's register is closed at D1-D24, and none of those numbers belongs to
- * this file.
+ * catalogues D1-D21, none of those numbers belongs to this file, and the live bound is stated only at
+ * `src/ports/repositories/SkuRepository.ts`.
  *
  * =============================================================================================
  * M7 — STATELESS BY CONSTRUCTION
@@ -185,7 +185,6 @@ import type {
   ManagedBrand as PortManagedBrand,
 } from '../ports/repositories/BrandRepository';
 import { createUniqueURLTitle } from '../util/urlTitle';
-import type { UrlTitleAttemptBudget } from '../util/urlTitle';
 import type { ValidationContext } from '../validation/Validator';
 import type { BrandValidationSubject } from '../validation/rules/brand.rules';
 import type { BaseService, BaseServiceEntity } from './BaseService';
@@ -238,14 +237,15 @@ const BRAND_NAME_DATA_KEY = 'brandName';
  * populating a persistent entity unchecked; `../services/BaseService` records that reasoning on the
  * collaborator itself, and the port records the default-deny obligation on its implementer.
  *
- * ⚠️ THIS SERVICE'S OWN THIRD CONSTRUCTOR ARGUMENT IS `urlTitleAttemptBudget`, AND IT HAS NO IN-SCOPE
- * PROVIDER EITHER — for a different reason, worth distinguishing. `populationAuthorization` replaces a
- * legacy facility that exists and is out of scope; this one replaces a legacy safeguard that DOES NOT
- * EXIST AT ALL. `model/service/DataService.cfc:L64` probes for a free `urlTitle` in an unbounded
- * `while(!unique)` loop, so there is no legacy number to carry across, and AAP 0.7.3 S9 forbids
- * inventing one. The composition root must therefore state the maximum, and a wiring site that states
- * none does not compile. `../util/urlTitle` records the parity decision behind the bound and why an
- * atomic-uniqueness rewrite was rejected in favour of bounding the existing algorithm.
+ * ⚠️ THIS SERVICE TAKES EXACTLY TWO CONSTRUCTOR ARGUMENTS, AND THE THIRD THAT BRIEFLY EXISTED IS GONE.
+ * An earlier checkpoint added `urlTitleAttemptBudget`, a required bound on the collision-probe loop, and
+ * it has been REMOVED. The distinction from `populationAuthorization` is what makes the two cases end
+ * differently: that one replaces a legacy facility which EXISTS and is out of scope, so a port is owed.
+ * The budget replaced a legacy safeguard that DOES NOT EXIST AT ALL —
+ * `model/service/DataService.cfc:L64` probes in an unbounded `while(!unique)` loop — so there was no
+ * legacy number to carry across, and requiring the composition root to state one relocated the
+ * invention AAP 0.7.3 S9 forbids rather than avoiding it. `../util/urlTitle` records the removal, the
+ * three authorities behind it, and what it costs.
  *
  * `Brand` supplies the persistent property surface, the audit block it declares through
  * `AuditableEntity`, and the population target every `BrandPropertyName` key needs.
@@ -426,9 +426,30 @@ function renderSimpleDataValue(value: string | number | boolean | Date): string 
  * and structs yield their element and key counts, which `Object.keys` gives for both.
  *
  * TODO(parity): CFML raises on `len()` of a value that is none of those shapes; this returns zero,
- * reading it as "not supplied". Reproducing the raise would mean inventing a message string, and
+ * reading it as "not supplied". The divergence is confined to `null`, `undefined` and function-valued
+ * payload entries.
+ *
+ * ⚠️ THE REASON THIS TODO USED TO GIVE FOR NOT RAISING WAS FALSE, AND THE DIVERGENCE IT DESCRIBES IS
+ * WIDER THAN ONE FILE. It said "reproducing the raise would mean inventing a message string, and
  * `../errors/DomainError` closes its inventory at the four catalog strings the slice actually
- * declares. The divergence is confined to `null`, `undefined` and function-valued payload entries.
+ * declares." That is not the case: `src/` constructs a `DomainError` at 114 sites, and TWO SIBLING
+ * SERVICES ALREADY RAISE ON EXACTLY THIS INPUT CLASS with message strings of their own —
+ * `requirePayloadSimpleText` in `./ProductService` (for `len()` at
+ * `model/service/ProductService.cfc:L295-L296`) and `requireCfmlSimpleText` in `./SkuService` (for the
+ * list reads). So the port answers ONE CFML BUILTIN TWO WAYS: this file measures an array or struct
+ * and reads anything else as absent, while the two siblings refuse a non-simple value outright.
+ *
+ * ⭐ WHY THE BEHAVIOUR IS LEFT AS IT IS RATHER THAN ALIGNED TO THE MAJORITY. Choosing a side means
+ * choosing a CFML ENGINE. `len()` of a complex value is exactly where the two engines this application
+ * supports disagree — `readme.md:L6` and `:L8` name ColdFusion 9.0.1+ AND Railo 4.1+, the Railo/Lucee
+ * lineage accepts arrays and structs and returns a count, and the ACF lineage refuses. Neither
+ * behaviour is "the" legacy behaviour, and `config/configORM.cfm:L8-L14` shows the application picking
+ * engine-dependent behaviour at RUN time rather than declaring one. AAP §0.8.3.6 directs that a
+ * mismatch of this kind be FLAGGED rather than silently resolved, and AAP §0.7.3's invent-nothing
+ * standard forbids picking an engine here on the port's own authority. It is therefore recorded at all
+ * three sites, with the divergence named, for a decision that carries an engine choice with it — which
+ * is a product decision and not this file's to make. The one thing that was not defensible was the
+ * false premise, and that is gone.
  */
 function dataValueLength(data: Record<string, unknown>, key: string): number {
   if (!dataKeyExists(data, key)) {
@@ -540,7 +561,6 @@ export class BrandService {
   public constructor(
     private readonly brandRepository: BrandRepository,
     private readonly baseService: BrandBaseService,
-    private readonly urlTitleAttemptBudget: UrlTitleAttemptBudget,
   ) {}
 
   /**
@@ -759,20 +779,16 @@ export class BrandService {
    * @param titleString - The human-readable source title, passed through untouched. Every
    * transformation belongs to `createUniqueURLTitle`.
    * @returns A URL title free on `SwBrand`, suffixed `-2`, `-3`, … on successive collisions.
-   * @throws {DomainError} when the injected attempt budget is exhausted before a free title is found
-   *   (SEC-13). Nothing is fabricated in that case: a generated fallback would hand back a title the
-   *   uniqueness probe never approved, and `urlTitle` is unique-constrained.
+   *
+   * THREE ARGUMENTS, AND THERE IS DELIBERATELY NO FOURTH. The utility's collision loop is unbounded,
+   * exactly as `model/service/DataService.cfc:L64` is; the attempt budget an earlier checkpoint passed
+   * through here has been removed, and `../util/urlTitle` records why. Whatever the probe rejects with
+   * propagates unchanged — this member adds no failure of its own, matching the legacy member's
+   * `returntype="string"`.
    */
   private createUniqueBrandUrlTitle(titleString: string): Promise<string> {
-    return createUniqueURLTitle(
-      titleString,
-      BRAND_TABLE_NAME,
-      (_tableName, candidateUrlTitle) =>
-        this.brandRepository.isUrlTitleAvailable(candidateUrlTitle),
-      /* SEC-13 — the collision-probe bound, passed through rather than decided here. This service
-       * states no number of its own: AAP 0.7.3 S9 forbids inventing one, so the value travels from the
-       * composition root through the constructor to the utility unchanged. */
-      this.urlTitleAttemptBudget,
+    return createUniqueURLTitle(titleString, BRAND_TABLE_NAME, (_tableName, candidateUrlTitle) =>
+      this.brandRepository.isUrlTitleAvailable(candidateUrlTitle),
     );
   }
 }

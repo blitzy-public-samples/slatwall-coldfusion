@@ -722,17 +722,13 @@ function cfStructCount(value: object): number {
  * approximation in this file. Every other predicate here is a transcription of CFML source or of
  * documented CFML operator semantics.
  *
- * ⚠️ RETAINED BUT NOT SELECTED. This predicate no longer governs any rule. It is the
- * `'cfmlAnyProtocol'` policy of {@link UrlDataTypePolicy}, and NO in-scope rule set selects it: the
- * one `url` rule in the slice — the website format check at `model/validation/Brand.json:L4` — now
- * selects `'webAddress'` and is evaluated by {@link isWebAddress} instead. DECISION V-2 on
- * {@link UrlDataTypePolicy} records that departure, its justification and the bar applied to it.
- *
- * It is kept, rather than deleted, for the same reason the context gate at
- * {@link legacyContextDisablesValidation} is kept: the legacy behaviour remains expressible and
- * annotated, so a reviewer can see exactly what was replaced instead of inferring it from an
- * absence. Removing it would also make the departure invisible in this file, which is the opposite
- * of what AAP 0.8.2 guideline 6 requires of a translation decision.
+ * ⭐ THIS IS THE ONLY URL PREDICATE IN THE SUBTREE, AND SEC-15 IS WITHDRAWN. An earlier revision
+ * demoted this function to one arm of a two-policy split and routed the slice's single `url` rule —
+ * the website format check at `model/validation/Brand.json:L4` — to a stricter `isWebAddress`
+ * predicate that admitted only `http` and `https` and additionally rejected embedded credentials and
+ * control characters. That predicate, the policy union and the required per-declaration policy member
+ * are all gone; see THE SIX-PROTOCOL URL CHECK IS THE WHOLE CHECK below. This function governs the
+ * rule again, unconditionally, exactly as `:L259` does.
  */
 function isCfUrlAnyProtocol(value: unknown): boolean {
   if (typeof value !== 'string') {
@@ -743,66 +739,6 @@ function isCfUrlAnyProtocol(value: unknown): boolean {
     return false;
   }
   return /^(?:(?:https?|ftp|file):\/\/|(?:mailto|news):)[^\s]+$/i.test(candidate);
-}
-
-/**
- * A normalised HTTP(S) web address — the `'webAddress'` policy of {@link UrlDataTypePolicy}.
- *
- * This is the predicate the one in-scope `url` rule evaluates against, and DECISION V-2 on
- * {@link UrlDataTypePolicy} records why it replaces {@link isCfUrlAnyProtocol} there, what it
- * newly rejects and why none of that is behaviour the slice depended on.
- *
- * WHAT IT REQUIRES, each clause for a stated reason:
- *   1. A string. Anything else is not an address.
- *   2. No ASCII control character anywhere, checked on the RAW value BEFORE trimming. Trimming first
- *      would strip a leading or trailing `\n` or `\t` and let the value through, and an embedded
- *      control character in a link position is how a stored value smuggles a second line into
- *      whatever later consumes it. The C0 range, DEL and the C1 range are all rejected.
- *   3. No internal whitespace, which {@link URL} would otherwise tolerate in some positions.
- *   4. A scheme of exactly `http` or `https`, case-insensitively — this is where the four non-web
- *      legacy protocols are excluded.
- *   5. No embedded credentials. `URL` exposes them as `username` and `password`, and a
- *      `https://user:pass@host/` value in a brand-website field has no legitimate reading.
- *   6. A non-empty host. `http://` alone parses in some engines and is not an address.
- *
- * Parsing is delegated to the WHATWG {@link URL} constructor rather than done with a hand-written
- * pattern, because the scheme, authority, credential and host boundaries are exactly what a URL
- * parser exists to get right, and a regular expression that appears to agree with it on the happy
- * path tends to disagree on the inputs that matter. `URL` is a Node built-in and a global under the
- * configured ES2022 lib, so this adds no dependency (AAP 0.7.3 S5) and no import.
- *
- * It is a PREDICATE ONLY: it reports validity and never returns a rewritten value. The stored value
- * stays exactly what the caller supplied, so this constraint cannot silently change data — which
- * matters because `dataType` is a format check in the legacy engine too, never a normaliser.
- */
-function isWebAddress(value: unknown): boolean {
-  if (typeof value !== 'string') {
-    return false;
-  }
-  // Clause 2 — checked on the RAW value, before any trimming.
-  if (/[\u0000-\u001F\u007F-\u009F]/.test(value)) {
-    return false;
-  }
-  const candidate = value.trim();
-  if (candidate.length === 0 || /\s/.test(candidate)) {
-    return false;
-  }
-  let parsed: URL;
-  try {
-    parsed = new URL(candidate);
-  } catch {
-    // `URL` reports an unparseable address by throwing. A malformed value is simply invalid here;
-    // nothing is logged and nothing is rethrown, because this is a predicate and the caller's
-    // failure path is the validation message, not an exception.
-    return false;
-  }
-  if (parsed.protocol !== 'http:' && parsed.protocol !== 'https:') {
-    return false;
-  }
-  if (parsed.username.length > 0 || parsed.password.length > 0) {
-    return false;
-  }
-  return parsed.hostname.length > 0;
 }
 
 /* ==============================================================================================
@@ -996,69 +932,49 @@ export interface UniqueConstraint<TSubject extends ValidationSubject> {
   readonly uniqueTarget: UniqueTargetResolver<TSubject>;
 }
 
-/**
- * Format checking, restricted to the two types the seven documents use.
+/* ==============================================================================================
+ * THE SIX-PROTOCOL URL CHECK IS THE WHOLE CHECK — SEC-15 IS WITHDRAWN
  *
- * PASSES on an absent value (`org/Hibachi/HibachiValidationService.cfc:L259`), which is why the
- * money properties pair it with a presence rule when the value is mandatory — as
- * `model/validation/Sku.json:L9` does and `:L4` deliberately does not.
- */
-/**
- * Which URL policy a `dataType: 'url'` constraint evaluates against — requirement V-2.
+ * ⛔ WHAT AN EARLIER REVISION DID. It declared a `UrlDataTypePolicy` union of `'webAddress'` and
+ * `'cfmlAnyProtocol'`, made naming one a REQUIRED member of every `dataType: 'url'` declaration, and
+ * pointed the slice's single such declaration — `src/validation/rules/brand.rules.ts`, transcribing
+ * `model/validation/Brand.json:L4` — at `'webAddress'`: a WHATWG-parsed predicate admitting only
+ * `http` and `https`, and additionally rejecting embedded credentials and ASCII control characters.
+ * It was declared as DECISION V-2, "a declared departure from byte-for-byte preservation", on the
+ * D18 precedent.
  *
- * There are two, and the difference between them is the whole of SEC-15:
+ * ⛔ WHY IT IS WITHDRAWN. D18 (AAP §0.6.7.7) is the SOLE declared behaviour-hardening exception in
+ * this port, and it is a precedent only for a divergence that removes a flaw class WITHOUT changing
+ * an outcome: parameterised SQL returns exactly the rows interpolated SQL returned. A REJECTION is a
+ * different outcome. `org/Hibachi/HibachiValidationService.cfc:L259` evaluates the rule as
+ * `isNull(propertyValue) || isValid(arguments.constraintValue, propertyValue)`, and the engine's
+ * documented `url` protocols are HTTP, HTTPS, FTP, FILE, MAILTO and NEWS — so a brand carrying
+ * `file:///etc/passwd`, `mailto:hello@acme.test`, `ftp://files.test/x`, `news:acme.group` or
+ * `https://user:pass@acme.test/` SAVED in the legacy system, and under the withdrawn policy it
+ * failed validation instead. That is a save the legacy performed and the port refused.
  *
- *   - `'webAddress'` — a normalised HTTP(S) web address, and nothing else. Rejects every non-web
- *     scheme, embedded credentials, control characters and whitespace. This is what every in-scope
- *     rule set selects.
- *   - `'cfmlAnyProtocol'` — the legacy six-protocol approximation, retained so the original
- *     behaviour stays expressible and annotated rather than silently deleted. NO in-scope rule set
- *     selects it, and none should.
+ * AAP §0.8.2 guideline 4 forbids enhancement "beyond what the migration requires" and AAP §0.6.7
+ * mandates "preserve and annotate, do not repair". The narrowing was also not one of the accepted
+ * D23-D25 source-contract corrections. And the bar the withdrawn decision applied to itself — "does
+ * the change reject anything the legacy ACCEPTED AND MEANT?" — is a judgment about intent, not a
+ * parity test; AAP §0.2.1.5 states this document's contract as `brandWebsite` "typed as a URL", with
+ * no narrowing to web schemes anywhere.
  *
- * =============================================================================================
- * ⭐ DECISION V-2 — A DECLARED DEPARTURE FROM BYTE-FOR-BYTE PRESERVATION
- * =============================================================================================
- * Declared on the D18 precedent (AAP 0.6.7.7), which is the plan's one worked example of a
- * deliberate, documented hardening that does NOT preserve legacy behaviour exactly. As there, the
- * divergence is stated here rather than left for a reviewer to discover by diffing outputs.
+ * ⚠️ THE RESIDUAL EXPOSURE IS FLAGGED, NOT CLOSED. `Brand.brandWebsite` can hold a non-web scheme,
+ * embedded credentials or a control character, and it is a value a later renderer or client may put
+ * in a link position (CWE-601-adjacent, and CWE-79-adjacent once rendered). It is NOT reachable
+ * through this slice's own output: the Google feed emits `getBrandName()` at
+ * `integrationServices/google/views/feed/product.cfm:L32` and never the website, and no other
+ * in-scope member reads `brandWebsite` at all. Closing it belongs to whoever owns the rendering
+ * surface, which is outside the AAP scope, and to a schema-level or policy-level decision the
+ * operator makes — not to a silent narrowing inside a ported format check.
  *
- * WHAT THE LEGACY DID. `org/Hibachi/HibachiValidationService.cfc:L259` delegates to the CFML
- * engine's own URL validity check, whose documented protocols are HTTP, HTTPS, FTP, FILE, MAILTO and
- * NEWS. `file:///etc/passwd` therefore satisfies the website rule at `model/validation/Brand.json:L4`
- * — verified at runtime against this port before the change.
- *
- * WHY THAT IS NOT ACCEPTABLE TO CARRY FORWARD UNCHANGED. The one rule this predicate governs is a
- * WEBSITE field, `Brand.brandWebsite`, and its stored value flows onward: it is a link a later
- * renderer or client may follow, and the Google feed in this same slice already emits stored catalog
- * values into a document consumed by an external processor. A stored `file://` or `mailto:` value in
- * a field whose only meaning is "this brand's website" is not a URL the domain has any use for, so
- * accepting it buys no behaviour anyone depends on while leaving an unsafe scheme in a link
- * position.
- *
- * THE BAR APPLIED, the same one used for the typed-coercion departure in
- * `../domain/base/populate.ts`: does the change reject anything the legacy ACCEPTED AND MEANT? For
- * the four non-web schemes the answer is no — no in-scope rule, entity member, service method or
- * feed field reads `brandWebsite` expecting a file path, a mail address or a newsgroup. For HTTP and
- * HTTPS, which is what the field is for, this predicate is STRICTER ONLY on inputs the legacy
- * approximation would also have had no use for: credentials embedded in the authority, and control
- * characters. Nothing that is genuinely a web address is newly rejected.
- *
- * WHY THE POLICY IS A REQUIRED MEMBER rather than a default. An optional member defaulting to the
- * safe policy would leave the safe behaviour implicit, and a rule set could then acquire the loose
- * policy by omission. Requiring it means every `url` declaration in the subtree states its policy at
- * the declaration site, where a reviewer reads it, and adding a new one forces the choice to be made
- * rather than inherited. There is exactly one such declaration today —
- * `src/validation/rules/brand.rules.ts` — so the cost of requiring it is one word.
- *
- * WHAT DOES NOT CHANGE, and this is load-bearing. The message key is composed from
- * {@link DataTypeConstraint.constraintValue}, not from this member, so the key stays
- * `validate.save.Brand.brandWebsite.dataType.url` exactly as
- * `org/Hibachi/HibachiValidationService.cfc:L226` composes it. The error bag's key structure is
- * therefore untouched and remains comparable to legacy output, which is a requirement in its own
- * right. Introducing a new `constraintValue` such as `'webUrl'` would have changed that key, and was
- * rejected for precisely that reason.
- */
-export type UrlDataTypePolicy = 'webAddress' | 'cfmlAnyProtocol';
+ * ⭐ WHAT IS LEFT. One predicate, {@link isCfUrlAnyProtocol}, evaluated unconditionally for every
+ * `dataType: 'url'` constraint. The message key is unchanged either way — it was composed from
+ * {@link DataTypeConstraint.constraintValue} both before and after, so
+ * `validate.save.Brand.brandWebsite.dataType.url` is byte-identical to what
+ * `org/Hibachi/HibachiValidationService.cfc:L226` composes.
+ * ============================================================================================ */
 
 /**
  * The `numeric` arm of `dataType`. Six of the seven in-scope `dataType` rules are this one.
@@ -1069,27 +985,34 @@ export interface NumericDataTypeConstraint {
 }
 
 /**
- * The `url` arm of `dataType`, carrying its required {@link UrlDataTypePolicy}.
+ * The `url` arm of `dataType`. Exactly one in-scope rule is this one, at
+ * `model/validation/Brand.json:L4`.
  *
- * Exactly one in-scope rule is this one, at `model/validation/Brand.json:L4`.
+ * ⛔ IT CARRIES NO POLICY MEMBER, AND THAT IS THE WHOLE OF THE SEC-15 WITHDRAWAL AT THIS END. An
+ * earlier revision required a `urlPolicy` here so that each declaration selected between a strict
+ * web-address predicate and the legacy six-protocol approximation. There is one predicate now, so
+ * there is nothing left to select — see THE SIX-PROTOCOL URL CHECK IS THE WHOLE CHECK above. The arm
+ * survives as a distinct interface only because `constraintValue` discriminates the union; adding a
+ * member back here would reintroduce the choice this withdrawal removed.
  */
 export interface UrlDataTypeConstraint {
   readonly constraintType: 'dataType';
   readonly constraintValue: 'url';
-
-  /**
-   * Which URL policy to evaluate against. Required — see DECISION V-2 on
-   * {@link UrlDataTypePolicy} for why this is not an optional member with a safe default.
-   */
-  readonly urlPolicy: UrlDataTypePolicy;
 }
 
 /**
- * A `dataType` constraint, discriminated on {@link DataTypeConstraintValue}.
+ * Format checking, restricted to the two types the seven documents use, discriminated on
+ * {@link DataTypeConstraintValue}.
  *
- * The union is what lets the `url` arm require a policy member that would be meaningless on the
- * `numeric` arm, while keeping `constraintType: 'dataType'` — and therefore the dispatch in
- * `evaluateConstraint` and the message-key composition — exactly as they were.
+ * PASSES on an absent value (`org/Hibachi/HibachiValidationService.cfc:L259`), which is why the
+ * money properties pair it with a presence rule when the value is mandatory — as
+ * `model/validation/Sku.json:L9` does and `:L4` deliberately does not.
+ *
+ * The two arms differ only in `constraintValue`, and `constraintType: 'dataType'` is common to both,
+ * so the dispatch in `evaluateConstraint` and the message-key composition are exactly what they were
+ * before the arms were split apart. This paragraph previously belonged to a doc comment left orphaned
+ * — attached to no declaration at all — when the withdrawn SEC-15 policy split was inserted between
+ * it and this union; it is restored here.
  */
 export type DataTypeConstraint = NumericDataTypeConstraint | UrlDataTypeConstraint;
 
@@ -2242,11 +2165,12 @@ function satisfiesDataType(
   }
   if (constraint.constraintValue === 'url') {
     /*
-     * The policy split of SEC-15. `'webAddress'` is what every in-scope rule selects;
-     * `'cfmlAnyProtocol'` preserves the legacy six-protocol approximation and is selected by
-     * nothing. DECISION V-2 on `UrlDataTypePolicy` carries the reasoning.
+     * ⛔ THERE IS NO POLICY SELECTION HERE, AND SEC-15 IS WITHDRAWN. An earlier revision branched on a
+     * required `urlPolicy` member between a strict web-address predicate and the legacy six-protocol
+     * approximation. `org/Hibachi/HibachiValidationService.cfc:L259` performs one check, so this
+     * performs one check. THE SIX-PROTOCOL URL CHECK IS THE WHOLE CHECK carries the full record.
      */
-    return constraint.urlPolicy === 'webAddress' ? isWebAddress(value) : isCfUrlAnyProtocol(value);
+    return isCfUrlAnyProtocol(value);
   }
   /*
    * EXHAUSTIVENESS. Both arms of `DataTypeConstraint` are handled above, so this branch is
@@ -2264,6 +2188,20 @@ function satisfiesDataType(
  * PASSES on an absent value, and FAILS on a value that is present but NOT NUMERIC — so it enforces
  * numericality as well as the floor. All three in-scope rules declare a floor of zero, on the SKU
  * money properties at `model/validation/Sku.json:L4`, `:L9` and `:L10`.
+ *
+ * ⚠️ F07 — THE `toCfNumber` CONVERSION HERE IS LOSSY, AND IT PROVABLY CANNOT CHANGE AN OUTCOME. The three
+ * values it judges are now `ExactDecimal` (exact digits as text), and this function converts one to a
+ * double before comparing. For a value beyond 2^53 that conversion rounds — but ALL THREE in-scope floors
+ * are ZERO, and rounding to the nearest double never crosses zero: it preserves the sign exactly, and it
+ * maps a non-zero magnitude to a non-zero one. So `numeric >= 0` returns what an exact comparison would
+ * return for every input, and the rule's verdict is unaffected.
+ *
+ * It is stated rather than pre-emptively rewritten because the alternative — routing this through
+ * `../util/formatting`'s `compareExactDecimal` — would require this generic engine to assume its subject
+ * is exact-decimal text, which it is not: `minValue` is declared against a `number` floor read out of a
+ * JSON document and is applied to whatever the subject carries. THE MOMENT A NON-ZERO FLOOR IS INTRODUCED
+ * this reasoning lapses and the comparison must become exact; that is the trigger to watch for, and it is
+ * recorded here rather than left to be rediscovered.
  */
 function satisfiesMinValue(value: unknown, minimum: number): boolean {
   if (isAbsent(value)) {

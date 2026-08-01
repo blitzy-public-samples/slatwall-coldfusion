@@ -264,8 +264,15 @@ export const OPTION_GROUP_DECLARED_PROPERTIES: DeclaredPropertyNameSet<OptionGro
   });
 
 /**
- * OptionGroup's frozen metadata declaration — the runtime answer to the seven framework
- * introspection members this class deliberately does not declare.
+ * OptionGroup's frozen metadata declaration — what `manageEntity` reads to compose the seven
+ * framework introspection members onto an instance.
+ *
+ * ⚠️ THIS CLASS ALSO DECLARES ALL SEVEN ITSELF, AND THIS BLOCK USED TO SAY IT "deliberately does not
+ * declare" THEM. They are hand-written further down this module over its own frozen constants,
+ * alongside an `implements ManagedEntity` clause that obliges them, and `../base/populate`'s
+ * `Object.assign` then shadows those prototype methods with equivalent own-property closures over this
+ * declaration. `../base/AuditableEntity` records once which classes declare the seven and which rely
+ * on composition — `../product/ProductType.ts` is the only one that does the latter.
  *
  * See {@link EntityMetadataDeclaration} for what each member ports. This constant is the ONLY place
  * in this module where the class name and the ORM entity name appear as VALUES rather than as prose,

@@ -59,9 +59,9 @@
  * None of AAP §0.6.6's eight mismatches applies to this module, so no new identifier is minted, and
  * this file mints no defect identifier either — so findings recorded below that carry no register
  * number carry none deliberately. ⚠️ F27: this previously claimed the mismatch register "is closed at
- * M1-M8" and the defect register "likewise closed at D1-D22". NEITHER IS CLOSED, and D1-D22 was not
- * even the AAP's range: §0.6.7 is frozen at D1–D21 and §0.6.6 at M1–M8, while this port has minted
- * D22, D23, D24 and M9. See `src/ports/repositories/SkuRepository.ts`, which defines D22.
+ * M1-M8" and the defect register "likewise closed at D1-D22", and neither figure was even the AAP's
+ * range. No live bound is restated here; `src/ports/repositories/SkuRepository.ts` is the one place
+ * that states it.
  *
  * WHAT IS DELIBERATELY NOT HERE:
  *   - Any paginated or dynamic-query member. The legacy component inherits that surface from
@@ -152,8 +152,8 @@ import type { ProductType } from '../../domain/product/ProductType';
  * conclusion the adapter author must carry is: never "fix" HQL entity names to the physical form,
  * and never assume a logical name works in native statement text. No signature in this module
  * changes as a result — table and column identifiers never appear in these declarations at all
- * (AAP 0.7.3, S2) — and the finding takes no new register number because this file mints none (F27:
- * the register is not closed — see `src/ports/repositories/SkuRepository.ts`).
+ * (AAP 0.7.3, S2) — and the finding takes no new register number because this file mints none; the
+ * canonical register statement is quoted in this file's header.
  *
  * Both derived fields are `readonly`. They are query-computed values with no column of their own,
  * so nothing downstream has any business assigning to them; the entity's own fields keep whatever
@@ -272,4 +272,73 @@ export interface ProductTypeRepository {
    *   one read — nothing here caches it, and nothing here promises that two calls agree.
    */
   findAllForTree(): Promise<ProductTypeTreeRow[]>;
+
+  /**
+   * Write one product type — insert when it is transient, update when it is not.
+   *
+   * ==================================================================================================
+   * THE MEMBER THAT MAKES `ProductService.saveProductType` REACH THE DATABASE (F03)
+   * ==================================================================================================
+   * ⭐ THIS PORT PREVIOUSLY DECLARED NO WRITE AT ALL, AND THAT WAS A GAP RATHER THAN A BOUNDARY.
+   * `src/services/ProductService.ts` requires a `ProductTypeBaseService` — a `Pick<…, 'save'>` of the
+   * base service — whose construction needs an `EntityPersister<ProductType>`. Nothing in the adapter
+   * layer supplied one: the only `SwProductType` statements anywhere were the tree projection on this
+   * port and the importer's lookup-and-insert composers, and an import-time composer is not generic
+   * entity persistence — it writes the two columns a spreadsheet row supplies and cannot express an
+   * update, an audit stamp or the parent reference. So `saveProductType` had no way to persist anything.
+   *
+   * WHY THE LEGACY DECLARES NO SUCH DAO MEMBER, AND WHY THAT IS NOT AN ARGUMENT AGAINST THIS ONE.
+   * `model/dao/ProductTypeDAO.cfc` declares one member, the tree query. It needs no write member
+   * because the mapping layer performed every insert and update implicitly at flush time from the
+   * property metadata at `model/entity/ProductType.cfc:L52-L86`. AAP §0.4.1.7 assigns that vanished
+   * behaviour to the adapter layer — "explicit column-to-field mapping replacing Hibernate hydration" —
+   * and hydration's counterpart is dehydration. Declaring it here is therefore the port of a real legacy
+   * behaviour, not an addition to the legacy surface: the alternative is a service whose save path
+   * cannot be wired at all.
+   *
+   * ⛔ IT DOES NOT COMMIT. Demarcation belongs to the caller, exactly as
+   * `src/ports/repositories/SkuRepository.ts` records for `persistSku`: the legacy committed once,
+   * implicitly, at request end and only when the ORM reported no errors (mismatch M5). An
+   * implementation that committed here would make a validation-failing graph permanent.
+   *
+   * ⛔ THE DELETE AND UNIQUENESS GUARDS RUN ABOVE THIS MEMBER. `model/validation/ProductType.json`
+   * declares the required fields and the four delete guards; they are ported as a typed rule set under
+   * `src/validation/rules/**` and evaluated by the service before it ever reaches a repository, exactly
+   * as `model/service/HibachiService.cfc:L86` gates its own save. Nothing here re-checks them.
+   *
+   * ⚠️ `productTypeIDPath` IS WRITTEN AS THE ENTITY CARRIES IT, NOT RECOMPUTED. The path is a
+   * persistent column at `model/entity/ProductType.cfc:L53`, and the legacy maintained it in the entity
+   * lifecycle rather than in the DAO. Recomputing it during the write would put a second, disagreeing
+   * implementation of one rule in the layer least able to see the hierarchy.
+   *
+   * @param productType - The product type to write. MUTATED when transient: it receives its
+   *   32-character identifier, because `model/entity/ProductType.cfc:L52` declares
+   *   `fieldtype="id" generator="uuid"` — an instruction to the mapping layer to produce the value at
+   *   save time — and the legacy generator lives in the data-access layer at `model/dao/HibachiDAO.cfc`.
+   * @returns The same product type, so the member satisfies `EntityPersister<ProductType>` directly.
+   */
+  saveProductType(productType: ProductType): Promise<ProductType>;
+
+  /**
+   * Remove one product type.
+   *
+   * Replaces the `delete` branch at `org/Hibachi/HibachiService.cfc:L270`, which reached `delete()` at
+   * `org/Hibachi/HibachiDAO.cfc:L69-L77`. Declared because constructing a `BaseService<ProductType>`
+   * requires an `EntityRemover<ProductType>` alongside its persister — the base service's collaborator
+   * set takes both — so a port offering only the write would still leave the graph unwireable.
+   *
+   * ⛔ THE FOUR DELETE GUARDS RUN ABOVE THIS MEMBER, NOT INSIDE IT. `model/validation/ProductType.json`
+   * bounds products and child product types at zero and guards `systemCode`; a blocked removal never
+   * arrives here. That is why the result carries no validation outcome.
+   *
+   * ⚠️ NO CASCADE IS EXPRESSED HERE. `model/entity/ProductType.cfc:L65-L66` declares `cascade="all"` on
+   * both `childProductTypes` and `products`, but the delete guards make a product type with either one
+   * non-empty unreachable, so the cascade the mapping layer would have run has nothing to act on by the
+   * time a removal is permitted. Emitting child deletes anyway would delete rows the guards exist to
+   * protect.
+   *
+   * @param productType - The product type to remove. Must carry a persistent identifier.
+   * @returns Nothing, so the member satisfies `EntityRemover<ProductType>` directly.
+   */
+  removeProductType(productType: ProductType): Promise<void>;
 }

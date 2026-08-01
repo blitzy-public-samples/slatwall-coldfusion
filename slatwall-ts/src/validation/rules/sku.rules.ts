@@ -86,10 +86,9 @@
  *      in the target must be request-scoped rather than module-scoped, because nothing may bleed between
  *      invocations on a warm container; the choice taken here is NONE AT ALL.
  *
- * M6 IS SURFACED HERE, NOT SOLVED HERE (AAP §0.7.3 S8). The mismatch register is CLOSED at M1 through
- * M9: AAP §0.6.6 catalogues and allocates M1 through M8, and M9 — CFML struct iteration being unordered
- * where the target's is not — was found during the port and is recorded at `src/services/SkuService.ts`.
- * No TENTH is invented, and none is invented here.
+ * M6 IS SURFACED HERE, NOT SOLVED HERE (AAP §0.7.3 S8). AAP §0.6.6 catalogues and allocates M1 through
+ * M8, and the mismatches the port added beyond that are enumerated in one place, `src/ports/repositories/SkuRepository.ts`;
+ * no bound is restated here, and nothing is invented here.
  *
  * WHY THERE IS NO MODULE-SCOPE ASSEMBLED RULE SET, UNLIKE THE OTHER SIX DOCUMENTS. `./brand.rules`,
  * `./product.rules` and `./productType.rules` each export a fully assembled rule set as a frozen
@@ -712,8 +711,12 @@ export function createHasUniqueOptionsConstraint(
  * `model/entity/Option.cfc:L59` declares the option-to-group relationship WITHOUT a required marker and
  * `:L106` genuinely removes it, so an in-memory option can lack a group and this chained read would fail
  * on one. Requiredness is enforced only at save time, by `model/validation/Option.json`. Surfaced as an
- * observation, not a carried defect and not assigned a register number: the register is closed and this
- * is documented legacy structure rather than a fault introduced by the port.
+ * observation, not a carried defect and not assigned a register number: this is documented legacy
+ * structure rather than a fault introduced by the port, and no new number is minted for it — the
+ * register is stated canonically, and only once, in the header of
+ * `src/ports/repositories/SkuRepository.ts` (AAP 0.6.7's frozen source range D1-D21, plus the
+ * source extension D22 and the three contract corrections D23, D24 and D25, with no D26 or beyond;
+ * and AAP 0.6.6's M1-M8 plus M9, with no M10 or beyond).
  *
  * S7 NOTE, UNNUMBERED BY DESIGN — THE DOCUMENTATION HINT ABOVE THIS METHOD IS A COPY-PASTE ARTEFACT.
  * `model/entity/Sku.cfc:L771` repeats `:L755`, so it describes this method as validating a unique option

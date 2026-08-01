@@ -44,15 +44,17 @@
  * image bytes. The moment it started returning image data it would have stopped being a boundary
  * and started being an implementation.
  *
- * ⭐ PLUS THREE VALUE TYPES AND TWO PURE FUNCTIONS, and their presence in a port module is reasoned
- * rather than convenient. DECISION I-1 below splits the single `string` that used to serve as both a
- * display URL and a write destination into {@link ImageWebPath}, {@link ImageFileName} and
- * {@link ImageFileNameCandidate}, minted by {@link validateImageFileName} and {@link toImageWebPath}.
- * They belong HERE, not in an adapter, for three reasons: the types ARE the contract, so an adapter
- * declaring them would leave the contract open; {@link validateImageFileName} is the sole gate to the
- * write path and a boundary cannot delegate its own gate to the thing it is guarding; and both
- * functions are pure string predicates that perform no I/O, import nothing and touch no environment, so
- * neither weakens the "contracts here, I/O there" rule this section states.
+ * ⭐ PLUS ONE NOMINAL TYPE AND ONE PURE TAG FUNCTION — {@link ImageWebPath} and
+ * {@link toImageWebPath}. It belongs HERE, not in an adapter, because the type IS part of the contract:
+ * an adapter declaring it would leave the contract open. The tag function performs no I/O, imports
+ * nothing and touches no environment, so it does not weaken the "contracts here, I/O there" rule this
+ * section states.
+ *
+ * ⛔ AN EARLIER REVISION DECLARED THREE TYPES AND TWO FUNCTIONS HERE, AND THE EXTRA TWO ARE WITHDRAWN.
+ * They were `ImageFileName`, `ImageFileNameCandidate` and a seven-clause `validateImageFileName` gate,
+ * and together they refused stored values the legacy accepts. See DECISION I-1 below for the withdrawal
+ * in full: the legacy validates NOTHING on this path, so refusing a value changes an outcome, which AAP
+ * §0.8.2 guideline 4 forbids and the D18 precedent does not license.
  *
  * ASYNCHRONY, AND WHY IT DIFFERS FROM `SettingResolverPort`
  * --------------------------------------------------------
@@ -77,7 +79,9 @@
  *     nonetheless absolute.
  *   - No file-system, path or URL built-in is imported. An adapter does that work.
  *   - No third-party image-processing library is referenced. AAP 0.7.3 S5 freezes the dependency
- *     set at one runtime package plus ten development packages, and this file adds nothing to it.
+ *     set at one runtime package plus AAP 0.5.2's ten development packages — eleven on disk, the
+ *     extra being the `ts-node` the test runner cannot start without, as `jest.config.ts` derives —
+ *     and this file adds nothing to either count.
  *   - No database driver, statement text, table name or column name appears anywhere (AAP 0.7.3 S2).
  *   - The process environment is never read here. Configuration flows one way through
  *     `src/config/` (AAP 0.4.3.5), and nothing below the config layer reads it.
@@ -152,15 +156,16 @@
  * very same ambiguity as the existence flag — a value that is a URL by construction and a file path
  * by use.
  *
- * ⭐ THAT AMBIGUITY IS NOW RESOLVED IN THE TYPES, AND ONLY THE UNIMPLEMENTABILITY REMAINS A MISMATCH.
- * DECISION I-1 below splits URL semantics from file-system semantics, so neither file-system member
- * accepts a composed path any longer: the existence flag takes the stored NAME
- * ({@link ImageFileNameCandidate}) and the save member takes a VALIDATED BASENAME
- * ({@link ImageFileName}) with no destination at all. What survives as a mismatch is narrower and
- * genuinely unresolvable here — that a Lambda runtime has no `expandPath` equivalent and no persistent
- * product-image directory to resolve against. The two questions were tangled together in the legacy and
- * are deliberately separated now: one was a defect and has been fixed, the other is an execution-model
- * gap and is still flagged.
+ * ⚠️ THAT AMBIGUITY IS CARRIED, NOT RESOLVED, AND AN EARLIER REVISION RESOLVED IT IN ERROR. Both
+ * file-system members accept the COMPOSED PATH, because that is precisely what the legacy hands them:
+ * `model/entity/Sku.cfc:L222` passes `getImagePath()` to `expandPath`, and
+ * `model/service/SkuService.cfc:L211-L212` passes the same composed value as `filePath`. The earlier
+ * revision narrowed the existence flag to a stored NAME and the save member to a validated BASENAME with
+ * no destination, which made a stored `../../../../tmp/payload.jpg` resolve `false` and raise
+ * respectively where the legacy reported on, and wrote to, the traversed file. That is a behaviour
+ * change, and AAP §0.8.2 guideline 4 forbids it; DECISION I-1 below records the withdrawal and where the
+ * residual risk is registered instead. What remains a mismatch is exactly what it always was — a Lambda
+ * runtime has no `expandPath` equivalent and no persistent product-image directory to resolve against.
  *
  * WHAT IS DECIDED HERE, AND WHAT IS NOT:
  *   - DECIDED: `getImageExistsFlag` REMAINS a member of this interface. TR-5 (AAP 0.1.2.2) is
@@ -172,13 +177,13 @@
  *     all defensible, and they differ in observable behavior. That choice belongs to whichever
  *     adapter implements this interface, and this contract deliberately does not prejudge it.
  *
- * NO MISMATCH NUMBER IS CLAIMED. The mismatch register is CLOSED at M1 through M9, and every one of
- * the nine is already allocated: M1, M3 and M4 to the product importer, M2 to the feed handler, M5 to
- * the unit of work for the request-end implicit transaction demarcation, M6 to the validation
- * read-back loop, M7 to the repository ports, M8 to `SettingResolverPort`, and M9 — CFML struct
- * iteration being unordered where the target's is not, found during the port rather than catalogued
- * in AAP 0.6.6 — to `src/services/SkuService.ts`. This one is an additional, unnumbered mismatch,
- * and inventing a TENTH number would violate AAP 0.7.3 S9.
+ * NO MISMATCH NUMBER IS CLAIMED, AND NO RANGE IS RESTATED HERE. Every mismatch the port recognises is
+ * already allocated to an owner elsewhere — M1, M3 and M4 to the product importer, M2 to the feed
+ * handler, M5 to the unit of work for the request-end implicit transaction demarcation, M6 to the
+ * validation read-back loop, M7 to the repository ports, M8 to `SettingResolverPort`, and M9 to
+ * `src/services/SkuService.ts` — so the gap recorded above is an additional, UNNUMBERED mismatch.
+ * Minting a number for it would violate AAP 0.7.3 S9. The register's bounds are stated in exactly one
+ * place, `src/ports/repositories/SkuRepository.ts`, and deliberately not repeated here.
  */
 
 /**
@@ -399,103 +404,70 @@ export const IMAGE_UPLOAD_ALLOWED_EXTENSIONS = 'jpg,jpeg,png,gif';
  */
 
 /* ================================================================================================
- * SEC-07 — DECISION I-1: URL SEMANTICS AND FILESYSTEM SEMANTICS ARE DIFFERENT TYPES
+ * SEC-07 / DECISION I-1 IS WITHDRAWN — THE PATH TYPE IS NOMINAL, AND THE RISK IS FLAGGED, NOT CLOSED
  *
- * ⛔ THE LEGACY CONFLATES THEM, AND THAT CONFLATION IS THE VULNERABILITY. `model/entity/Sku.cfc:L146`
- * composes a WEB URL by interpolating the stored column value:
+ * ⛔ WHAT THE LEGACY DOES, VERBATIM, AND IT VALIDATES NOTHING. `model/entity/Sku.cfc:L146` composes a
+ * WEB URL by interpolating the stored column value:
  *     "#getHibachiScope().getBaseImageURL()#/product/default/#getImageFile()#"
- * Two consumers then feed that URL-shaped string to the FILESYSTEM:
+ * and two consumers hand that URL-shaped string to the FILESYSTEM:
  *   - `model/entity/Sku.cfc:L222` — `fileExists(expandPath(getImagePath()))`
- *   - `model/service/SkuService.cfc:L211-L212` — the same value is passed as `filePath` to
- *     `saveImageFile`, which WRITES.
+ *   - `model/service/SkuService.cfc:L211-L212` — `var imagePath = arguments.Sku.getImagePath();` then
+ *     the same value as `filePath` to `saveImageFile`, which WRITES.
  * `imageFile` is a persistent `SwSku` column (`model/entity/Sku.cfc:L58`) with NO validation rule in
- * `model/validation/Sku.json`, so a stored value of `../../../../tmp/payload.jpg` — the review's own
- * runtime vector — normalises straight out of the intended directory on both paths. Arbitrary file
- * placement and overwrite follow.
+ * `model/validation/Sku.json`, so a stored `../../../../tmp/payload.jpg` normalises straight out of the
+ * intended directory on both paths. That exposure is real. It is nonetheless the legacy's OBSERVABLE
+ * BEHAVIOUR, and this port preserves it.
  *
- * ⭐ THE SPLIT IS THE FIX, AND IT COSTS NO DISPLAY BEHAVIOUR. Three types replace one `string`:
- *   - {@link ImageWebPath} — what `getImagePath` and `getResizedImagePath` return. Display only.
- *     Composed exactly as the legacy composes it, from whatever is stored, so NOTHING about the
- *     rendered feed or admin markup changes. It is branded solely so that it CANNOT be handed to a
- *     filesystem operation; that single restriction removes the traversal reach at compile time
- *     without touching a single rendered character.
- *   - {@link ImageFileName} — a validated BASENAME. Minted only by
- *     {@link validateImageFileName}, which is the only route by which any filesystem-facing member
- *     can be reached.
- *   - {@link ImageStorageBase} — the trusted directory a write is confined to. INJECTED, never
- *     written down here: report finding 8 requires that path-hardening policy be a product decision
- *     rather than silently invented in code, and AAP §0.7.3 standard 9 forbids minting the value.
+ * ⛔ WHAT AN EARLIER REVISION DID, AND WHY EVERY BEHAVIOUR-CHANGING PART OF IT IS WITHDRAWN. It
+ * declared an `ImageFileName` brand, an `ImageFileNameCandidate` direction type, an `ImageStorageBase`
+ * containment directory and a seven-clause `validateImageFileName` gate, then narrowed
+ * `getImageExistsFlag` to a stored NAME and replaced the save request's `filePath` with a validated
+ * basename and no destination at all. The consequences were that a traversal name resolved `false` where
+ * the legacy reported on the traversed file, and that a store RAISED where the legacy wrote. Both are
+ * outcome changes:
+ *   1. AAP §0.8.2 guideline 4 forbids enhancement "beyond what the migration requires", and §0.6.7
+ *      governs the whole register with "preserve and annotate, do not repair".
+ *   2. D18 (AAP §0.6.7.7) is the SOLE declared behaviour-hardening exception, and it is a precedent for
+ *      a divergence that removes a flaw class WITHOUT changing an outcome — parameterised SQL returns
+ *      exactly the rows interpolated SQL returned. A refusal has no such property.
+ *   3. `ImageStorageBase` had no legacy counterpart at all — the earlier note said so itself — so its
+ *      value would have been invented configuration, which AAP §0.7.3 standard 9 and IR-12 forbid.
  *
- * ⭐ THE FAILURE MODES ARE DELIBERATELY ASYMMETRIC, because the two consumers are asymmetric:
- *   - DISPLAY never fails. An unvalidated stored value still composes a path, exactly as before. A
- *     malformed name in a URL is not a filesystem risk, and raising here would break the Google feed
- *     for one bad row — a behaviour change in the opposite direction.
- *   - EXISTENCE resolves `false`. A value that cannot be a filename cannot name a stored file, and
- *     `false` is precisely what `model/entity/Sku.cfc:L225` already answers for a file that is not
- *     there, so the observable contract is unchanged and no third state is introduced.
- *   - STORING RAISES. See {@link SaveImageFileRequest} for why a boolean cannot carry this refusal.
+ * ⚠️ WHERE THE RISK IS RECORDED INSTEAD. The CWE-22 traversal reach and the CWE-434 unrestricted-upload
+ * reach are properties of the legacy design, both flowing from an unvalidated `SwSku.imageFile` column.
+ * They are FLAGGED here by locator, at the two consumers above, and left for the operator to close in
+ * whichever adapter implements this port — which is the S8 treatment the AAP prescribes for a
+ * divergence the port is not licensed to make. No adapter is authored in this checkpoint (AAP §0.4.1.7
+ * enumerates none), so no policy is decided anywhere in the deliverable.
  *
- * ⚠️ THIS IS A DECLARED HARDENING EXCEPTION, THE SECOND IN THE PORT, ON THE PRECEDENT OF DEFECT D18
- * (AAP §0.6.7.7). The legacy would have written outside the directory; this contract refuses to. That
- * is a real behavioural divergence and it is declared here rather than slipped in, so a reviewer
- * comparing the port against CFML knows it is intended. It is confined to the filesystem members: no
- * display output, no URL, no error key and no rendered field changes.
+ * ⭐ WHAT SURVIVES, AND IT CHANGES NOTHING. {@link ImageWebPath} remains, as a purely NOMINAL label for
+ * "a path this slice composed for an image". EVERY member that consumes a path accepts it — the
+ * existence probe and the save request both do — so it refuses nothing, gates nothing and alters no
+ * outcome. It is documentation the compiler can carry, not a restriction: {@link toImageWebPath} tags
+ * any string on request and no member demands a tag a caller cannot obtain.
  * ============================================================================================== */
 
 declare const IMAGE_WEB_PATH: unique symbol;
-declare const IMAGE_FILE_NAME: unique symbol;
 
 /**
- * A web-URL-shaped image path, for DISPLAY only.
+ * A web-URL-shaped image path — the value `model/entity/Sku.cfc:L146` composes.
  *
- * Composed as `model/entity/Sku.cfc:L146` composes it. ⛔ It is NOT a filesystem path and no member
- * of this port accepts it as one — that is the entire reason it carries a brand. `expandPath` on a
- * value of this shape is what `model/entity/Sku.cfc:L222` did, and it is the reach this type removes.
+ * ⚠️ A NOMINAL LABEL, NOT A RESTRICTION. The legacy treats this single value as BOTH a display URL and
+ * a filesystem path — `model/entity/Sku.cfc:L222` wraps it in `expandPath`, and
+ * `model/service/SkuService.cfc:L211-L212` passes it as `filePath` to a member that writes — so both
+ * file-system members of this port accept it, exactly as the legacy does. The brand records what the
+ * value IS; it refuses nothing. An earlier revision used it to make those two call shapes uncompilable,
+ * which changed two outcomes; see the withdrawal block above.
  */
 export type ImageWebPath = string & { readonly [IMAGE_WEB_PATH]: 'web' };
-
-/**
- * A validated image BASENAME — never a path.
- *
- * ⛔ UNFORGEABLE. `IMAGE_FILE_NAME` is a module-private `unique symbol` that is never exported, so no
- * `string` is assignable here and {@link validateImageFileName} is the only producer.
- */
-export type ImageFileName = string & { readonly [IMAGE_FILE_NAME]: 'basename' };
-
-/**
- * Anything that is NOT a composed web path: a raw stored column value, or a validated
- * {@link ImageFileName}.
- *
- * ⭐ THIS IS THE TYPE THAT REMOVES THE `expandPath` REACH, and it does so without requiring any caller
- * to mint a brand. The optional-`never` member is the mechanism: a plain `string` carries no
- * `IMAGE_WEB_PATH` property and so satisfies it, an {@link ImageFileName} carries a different brand
- * key and so satisfies it, but an {@link ImageWebPath} declares `IMAGE_WEB_PATH: 'web'` — which is not
- * assignable to `never` — and is therefore REJECTED AT COMPILE TIME.
- *
- * ⭐ WHY THAT ASYMMETRY IS EXACTLY WHAT WAS NEEDED HERE. The one consumer of the existence member is
- * `src/domain/sku/Sku.ts`, whose dependency contract admits `src/ports/**` only as `import type`. A
- * parameter of type {@link ImageFileName} would have forced that entity to call a runtime validator it
- * is not permitted to import; a parameter of plain `string` would have kept accepting the composed URL
- * that is the defect. This type accepts the raw stored value the entity already holds while making the
- * URL form unrepresentable, so the vulnerable call shape stops compiling with no new import at all.
- *
- * ⚠️ IT IS A DIRECTION, NOT A PROOF. Satisfying it means "this is not a web path"; it does NOT mean
- * "this is a safe basename". An implementation that touches a file system MUST still run
- * {@link validateImageFileName} — the obligation is stated on {@link ImagePathPort.getImageExistsFlag}.
- */
-export type ImageFileNameCandidate = string & { readonly [IMAGE_WEB_PATH]?: never };
 
 /**
  * Labels an already-composed image URL as an {@link ImageWebPath}.
  *
  * ⚠️ A NOMINAL TAG, NOT A VALIDATION, and deliberately so. It asserts nothing about the value; it
- * records that the value is a URL rather than a file-system path. That single distinction is what the
- * type system then enforces, because no member that touches a file system accepts an
- * {@link ImageWebPath} — see {@link ImageFileNameCandidate} and {@link SaveImageFileRequest}.
- *
- * ⛔ IT CANNOT WIDEN A CALLER'S REACH. The only brand it produces is the DISPLAY brand; there is no
- * route from here to an {@link ImageFileName}, so no amount of tagging lets a caller reach the file
- * system. {@link validateImageFileName} remains the sole entrance to the write path.
+ * records that the value is a path this slice composed for an image. Nothing is enforced on the back of
+ * it — every member of this port that consumes a path accepts an {@link ImageWebPath}, exactly as the
+ * legacy hands the composed value to both of its file-system consumers. See the withdrawal block above.
  *
  * Two producers exist in the slice, and both compose rather than validate: the adapter behind
  * {@link ImagePathPort.getImagePath}, mirroring `model/entity/Sku.cfc:L146`, and
@@ -508,118 +480,6 @@ export type ImageFileNameCandidate = string & { readonly [IMAGE_WEB_PATH]?: neve
 export function toImageWebPath(composedPath: string): ImageWebPath {
   return composedPath as ImageWebPath;
 }
-
-/**
- * The trusted directory that image writes are confined to.
- *
- * ⛔ NO DEFAULT AND NO LITERAL. The value is an operator decision travelling from the composition
- * root; report finding 8 requires exactly that, and AAP §0.7.3 standard 9 forbids inventing it. The
- * legacy has no equivalent — it derived a destination from the stored column value — so there is no
- * source value to carry, and a fabricated one would be the invention the AAP prohibits.
- *
- * ⭐ IT IS THE ADAPTER'S CONSTRUCTION-TIME CONFIGURATION, NOT A REQUEST MEMBER, and the placement is
- * the point. Putting a trusted absolute directory on {@link SaveImageFileRequest} would oblige
- * `src/services/SkuService.ts` to hold file-system configuration in order to ask for a store, which
- * inverts the hexagonal separation AAP §0.7.3 standard 4 requires and would let a caller choose the
- * base it is supposed to be confined to. The shape is declared here so the composition root has a
- * typed value to inject into whichever adapter implements {@link ImagePathPort}; AAP §0.4.1.7
- * enumerates no image adapter, so none is authored in this checkpoint.
- */
-export interface ImageStorageBase {
-  /**
-   * An absolute, already-canonical directory under which every stored image must land.
-   *
-   * The adapter MUST canonicalise the joined destination and re-verify containment after doing so;
-   * see {@link SaveImageFileRequest}. Declaring the base canonical here does not discharge that
-   * obligation, because canonicalisation of the JOIN is what defeats symlink and normalisation
-   * tricks that a basename check alone cannot see.
-   */
-  readonly absoluteDirectory: string;
-}
-
-/**
- * Accepts a stored image file name if — and only if — it is a safe basename with an allowed
- * extension, and reports rejection rather than repairing the value.
- *
- * ⛔ NOTHING IS SANITISED, STRIPPED OR REWRITTEN. A rejected value is rejected; it is never turned
- * into an accepted one. Sanitising is what makes traversal filters defeatable — `....//` and
- * percent- or overlong-encoded separators survive one pass of stripping — and it would also silently
- * change which file a caller addressed. Membership is decided; the value is returned unchanged.
- *
- * The clauses, each independent:
- *   1. non-empty, and no longer than the column allows — `ormtype="string" length="50"` at
- *      `model/entity/Sku.cfc:L58`, so a longer value could never have been stored anyway;
- *   2. no ASCII control character and no NUL, tested on the RAW value before anything else, because a
- *      NUL truncates the path in some filesystem layers below this one;
- *   3. no path separator of either flavour, `/` or `\`, so the value cannot address a directory;
- *   4. not `.` or `..`, and no `..` segment anywhere;
- *   5. no drive-letter or UNC prefix, so it cannot be absolute on any platform;
- *   6. exactly one extension separator, positioned so that both a non-empty stem and a non-empty
- *      extension exist — which also rejects a leading-dot name with no stem;
- *   7. the extension, case-insensitively, is a member of `allowedExtensions`. The four legacy values
- *      arrive verbatim in {@link IMAGE_UPLOAD_ALLOWED_EXTENSIONS} from
- *      `model/service/SkuService.cfc:L212`; no extension is added to that set here.
- *
- * ⚠️ AN EXTENSION IS NOT CONTENT. Clause 7 checks a NAME. Verifying that the bytes are actually an
- * image is a distinct obligation and it belongs to the adapter, which is the only layer that holds
- * them; it is stated as a requirement on {@link SaveImageFileRequest} rather than pretended to here.
- *
- * @param candidate the stored value, as read from the entity. Never mutated.
- * @param allowedExtensions the comma-delimited list from `model/service/SkuService.cfc:L212`.
- * @returns the same string, branded, or `undefined` when any clause fails.
- */
-export function validateImageFileName(
-  candidate: string,
-  allowedExtensions: string,
-): ImageFileName | undefined {
-  // 1 — length. 50 is the declared column width at `model/entity/Sku.cfc:L58`, not a chosen bound.
-  if (candidate.length === 0 || candidate.length > SKU_IMAGE_FILE_COLUMN_LENGTH) {
-    return undefined;
-  }
-  // 2 — control characters and NUL, on the raw value.
-  if (/[\u0000-\u001F\u007F]/.test(candidate)) {
-    return undefined;
-  }
-  // 3 — separators of either flavour.
-  if (candidate.includes('/') || candidate.includes('\\')) {
-    return undefined;
-  }
-  // 4 — relative-traversal spellings. Clause 3 already removed `../`, so this catches the bare forms.
-  if (candidate === '.' || candidate === '..' || candidate.includes('..')) {
-    return undefined;
-  }
-  // 5 — absolute forms: a Windows drive letter, or a UNC prefix that clause 3 would already reject.
-  if (/^[a-zA-Z]:/.test(candidate)) {
-    return undefined;
-  }
-  // 6 — exactly one separator, with a non-empty stem and a non-empty extension on either side.
-  const separatorIndex = candidate.indexOf('.');
-  if (
-    separatorIndex <= 0 ||
-    separatorIndex !== candidate.lastIndexOf('.') ||
-    separatorIndex === candidate.length - 1
-  ) {
-    return undefined;
-  }
-  // 7 — extension membership, case-insensitive, against the caller's list.
-  const extension = candidate.slice(separatorIndex + 1).toLowerCase();
-  const permitted = allowedExtensions
-    .split(',')
-    .map((entry) => entry.trim().toLowerCase())
-    .filter((entry) => entry.length > 0);
-  if (!permitted.includes(extension)) {
-    return undefined;
-  }
-  return candidate as ImageFileName;
-}
-
-/**
- * The declared width of the `imageFile` column — `ormtype="string" length="50"` at
- * `model/entity/Sku.cfc:L58`.
- *
- * A source-declared figure carrying its locator, not a chosen limit (AAP §0.7.3 standard 9).
- */
-const SKU_IMAGE_FILE_COLUMN_LENGTH = 50;
 
 /**
  * The argument set that crosses into the image service when a resized image PATH is requested.
@@ -768,28 +628,20 @@ export interface SaveImageFileRequest {
   readonly uploadResult: Readonly<Record<string, unknown>>;
 
   /**
-   * WHICH FILE is being stored — a validated basename, never a destination.
+   * WHERE the file is stored — the legacy `filePath` argument, under its own name.
    *
-   * ⛔ THIS MEMBER REPLACES THE LEGACY `filePath` ARGUMENT, AND THE RENAME IS THE FIX RATHER THAN
-   * TIDYING. `model/service/SkuService.cfc:211` obtained the legacy value from the SKU's own
-   * `getImagePath()` and `model/service/SkuService.cfc:212` passed it as `filePath`, so a WEB URL
-   * composed from an unvalidated persistent column arrived at a member that WRITES. Because
-   * `imageFile` (`model/entity/Sku.cfc:L58`) carries no rule in `model/validation/Sku.json`, a stored
-   * `../../../../tmp/payload.jpg` — the review's own runtime vector — resolved clean out of the
-   * intended directory. Keeping the name while changing nothing else would have preserved a defect
-   * that a comment cannot mitigate.
+   * `model/service/SkuService.cfc:L211` obtains the value from the SKU's own `getImagePath()` and
+   * `model/service/SkuService.cfc:L212` passes it as `filePath`, so a composed WEB URL is what actually
+   * crosses this boundary. Typed {@link ImageWebPath} to record exactly that, and NOT narrowed further:
+   * see the withdrawal block above for the revision that replaced this member with a validated basename
+   * and no destination, and for why that outcome change is not the port's to make. The residual CWE-22
+   * and CWE-434 exposure is flagged at the two legacy locators rather than closed here.
    *
-   * ⭐ THE CALLER NO LONGER CHOOSES A DESTINATION AT ALL. It names a file; the adapter decides where
-   * that file lands, by joining this basename under its injected {@link ImageStorageBase}. Removing
-   * the destination from the request is what makes arbitrary placement unrepresentable rather than
-   * merely discouraged — there is no longer a member through which a directory can be expressed.
-   *
-   * ⛔ UNFORGEABLE BY CONSTRUCTION. {@link ImageFileName} is branded with a module-private
-   * `unique symbol`, so no `string` — however carefully assembled — is assignable here, and
-   * {@link validateImageFileName} is the only producer. A caller that holds an unvalidated value
-   * cannot reach this member without first passing that gate and handling its rejection.
+   * The name is the boundary's name, not the caller's, exactly as `uploadResult` is: the enclosing
+   * legacy member holds the value in a local called `imagePath` at `:L211` and passes it as `filePath`
+   * at `:L212`.
    */
-  readonly imageFileName: ImageFileName;
+  readonly filePath: ImageWebPath;
 
   /**
    * The comma-delimited list of acceptable file extensions.
@@ -883,33 +735,23 @@ export interface ImagePathPort {
    * boundary member, and how to answer the question is left to the adapter as an explicit,
    * documented decision rather than being prejudged by this contract.
    *
-   * ⛔ THE URL-TO-FILE-SYSTEM CONVERSION IS GONE FROM THIS CONTRACT ENTIRELY — DECISION I-1. The
-   * parameter was the composed path, which is precisely the value `model/entity/Sku.cfc:222` fed to
-   * `expandPath`, so a stored `../../../../tmp/payload.jpg` reached a file-system probe outside the
-   * intended directory. It is now the stored NAME, typed {@link ImageFileNameCandidate} so that an
-   * {@link ImageWebPath} is rejected at compile time. The member therefore receives nothing it could
-   * traverse with, and an implementation has no path to un-compose.
+   * ⚠️ THE PARAMETER IS THE COMPOSED PATH, BECAUSE THAT IS WHAT `:L222` PROBES WITH. An earlier
+   * revision narrowed it to the stored NAME and imposed three obligations on an implementation —
+   * validate the basename, join it under an injected containment directory, canonicalise the join and
+   * probe only that. All of it is withdrawn: it made a traversal name resolve `false` where the legacy
+   * reported on the traversed file, which is an outcome change, and the containment directory had no
+   * legacy counterpart to derive a value from. See the withdrawal block above; the residual CWE-22
+   * exposure is flagged at `model/entity/Sku.cfc:L222` for the operator to close in an adapter.
    *
-   * ⭐ THREE OBLIGATIONS ON AN IMPLEMENTATION, in this order, none of them optional:
-   *   1. run {@link validateImageFileName} on the argument, with the extension policy the deployment
-   *      serves, and resolve `false` when it rejects — see the return contract below;
-   *   2. join the accepted basename under the injected {@link ImageStorageBase}, then CANONICALISE the
-   *      joined result and re-verify that it is still inside that base. Canonicalising the join is what
-   *      defeats symlink and encoding tricks a name check alone cannot see;
-   *   3. probe only that canonical destination.
-   *
-   * @param imageFile the SKU's stored image file name — the persistent property at
-   *   `model/entity/Sku.cfc:L58`. A raw `string` and a validated {@link ImageFileName} both satisfy the
-   *   parameter; a composed {@link ImageWebPath} does not.
+   * @param imagePath the composed path, as `model/entity/Sku.cfc:L222` supplies it — the result of
+   *   {@link ImagePathPort.getImagePath}, which is what `expandPath` receives there. Accepted
+   *   unvalidated, exactly as the legacy accepts it.
    * @returns `true` when the image exists, mirroring `model/entity/Sku.cfc:223`; `false` otherwise,
    *   mirroring `model/entity/Sku.cfc:225`. The legacy member never raises and never yields a third
    *   state, so an implementation that cannot determine existence must resolve one of these two and
-   *   say in its own documentation which it chose and why. A NAME THAT FAILS VALIDATION RESOLVES
-   *   `false`, and that is parity rather than a new state: a value that cannot be a file name cannot
-   *   name a stored file, and `false` is already what `model/entity/Sku.cfc:225` answers for a file
-   *   that is not there.
+   *   say in its own documentation which it chose and why.
    */
-  getImageExistsFlag(imageFile: ImageFileNameCandidate): Promise<boolean>;
+  getImageExistsFlag(imagePath: ImageWebPath): Promise<boolean>;
 
   /**
    * Stores an uploaded image against a SKU image path.
@@ -923,45 +765,23 @@ export interface ImagePathPort {
    * inspection is part of this contract — the port trades in paths and flags, and AAP 0.7.3 S9 forbids
    * inventing capability the source does not state.
    *
-   * ⭐ FOUR OBLIGATIONS ON AN IMPLEMENTATION — DECISION I-1. The type system delivers the request to
-   * the adapter already holding a validated basename and holding NO destination; discharging the rest
-   * is the adapter's, because it is the only layer that holds the bytes and the trusted base:
-   *   1. RESOLVE, never accept, the destination: join {@link SaveImageFileRequest.imageFileName} under
-   *      the injected {@link ImageStorageBase} and treat that join as the only candidate;
-   *   2. CANONICALISE the joined path and RE-VERIFY containment within the base afterwards. The
-   *      basename check upstream cannot see symlinks, mount tricks or platform-specific normalisation,
-   *      and only canonicalising the join can;
-   *   3. VERIFY CONTENT, not just the name. {@link SaveImageFileRequest.allowedExtensions} constrains a
-   *      NAME; an extension is not evidence of type. Confirm the bytes are an image of a permitted type
-   *      before they are written, so a renamed executable is refused. This is the CWE-434 half of the
-   *      finding and it cannot be discharged by any type;
-   *   4. resolve `false` rather than raising when any of the above refuses, per the return contract
-   *      below.
+   * ⛔ NO OBLIGATION IS IMPOSED ON AN IMPLEMENTATION BEYOND STORING THE BYTES, AND AN EARLIER REVISION
+   * IMPOSED FOUR. It required the adapter to resolve the destination by joining a validated basename
+   * under an injected containment directory, to canonicalise that join and re-verify containment, to
+   * verify that the bytes really are an image of a permitted type, and to resolve `false` rather than
+   * raise when any of those refused. Every one of them is withdrawn, because the legacy imposes none:
+   * `model/service/SkuService.cfc:L211-L212` names a path composed from an unvalidated column and passes
+   * bytes, and nothing between there and the write inspects either. See the withdrawal block above. The
+   * residual CWE-22 and CWE-434 exposure is FLAGGED at that locator for the operator to close, which is
+   * the S8 treatment for a divergence the port is not licensed to make. This block appeared TWICE in the
+   * same doc comment before the withdrawal; the duplicate is gone with it.
    *
    * ⚠️ NO OVERWRITE, RETENTION, PERMISSION OR NAMING POLICY IS STATED HERE, deliberately. The legacy
    * declares none — `model/service/SkuService.cfc:212` names a path and passes bytes — and AAP §0.7.3
-   * standard 9 forbids inventing one. An adapter that needs such a policy receives it the way
-   * {@link ImageStorageBase} is received: injected, as a product decision.
-   *
-   * ⭐ FOUR OBLIGATIONS ON AN IMPLEMENTATION — DECISION I-1. The type system delivers the request to
-   * the adapter already holding a validated basename and holding NO destination; discharging the rest
-   * is the adapter's, because it is the only layer that holds the bytes and the trusted base:
-   *   1. RESOLVE, never accept, the destination: join {@link SaveImageFileRequest.imageFileName} under
-   *      the injected {@link ImageStorageBase} and treat that join as the only candidate;
-   *   2. CANONICALISE the joined path and RE-VERIFY containment within the base afterwards. The
-   *      basename check upstream cannot see symlinks, mount tricks or platform-specific normalisation,
-   *      and only canonicalising the join can;
-   *   3. VERIFY CONTENT, not just the name. {@link SaveImageFileRequest.allowedExtensions} constrains a
-   *      NAME; an extension is not evidence of type. Confirm the bytes are an image of a permitted type
-   *      before they are written, so a renamed executable is refused. This is the CWE-434 half of the
-   *      finding and it cannot be discharged by any type;
-   *   4. resolve `false` rather than raising when any of the above refuses, per the return contract
-   *      below.
-   *
-   * ⚠️ NO OVERWRITE, RETENTION, PERMISSION OR NAMING POLICY IS STATED HERE, deliberately. The legacy
-   * declares none — `model/service/SkuService.cfc:212` names a path and passes bytes — and AAP §0.7.3
-   * standard 9 forbids inventing one. An adapter that needs such a policy receives it the way
-   * {@link ImageStorageBase} is received: injected, as a product decision.
+   * standard 9 forbids inventing one. An adapter that needs such a policy receives it the way any other
+   * storage-shaped decision reaches this port: injected, as a product decision. (This sentence used to
+   * cite `ImageStorageBase`, one of the three symbols the withdrawal recorded above removed, so it
+   * named an analogy that no longer existed.)
    *
    * @param request the boundary argument set assembled at `model/service/SkuService.cfc:L212`.
    * @returns `true` when the image was stored. The legacy method narrows the image service's result

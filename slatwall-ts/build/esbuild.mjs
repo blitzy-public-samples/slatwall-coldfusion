@@ -40,9 +40,14 @@
  * delete the acceptance criterion itself and break a validation gate, which is the opposite of
  * what a scope correction should achieve.
  *
- * The other file F20 named, `slatwall-ts/.prettierignore`, appears in NO AAP inventory, was not
- * needed for `npx prettier --check .` to pass, and was therefore DELETED rather than defended.
- * `slatwall-ts/.gitignore` records why Prettier needs no ignore file of its own.
+ * The other file that scope finding named, `slatwall-ts/.prettierignore`, appears in NO AAP inventory
+ * and was not needed for `npx prettier --check .` to pass, so it was removed rather than defended.
+ * This sentence was already true once: commit ef7f10c79 deleted the file and wrote this note, and
+ * commit 1c93bd295 then RE-ADDED the file without revisiting the note, which is exactly the
+ * disagreement the later review picked up. `slatwall-ts/.gitignore` is now the single place that
+ * records the file's three-commit history, its removal, the measurement behind that removal, and why
+ * Prettier needs no ignore file of its own; this note deliberately restates none of it, so one
+ * future commit cannot falsify four copies of the same claim again.
  */
 import { build } from 'esbuild';
 import { readdir, rm, mkdir, writeFile } from 'node:fs/promises';

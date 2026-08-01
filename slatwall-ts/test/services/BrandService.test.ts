@@ -1,5 +1,5 @@
 /**
- * `BrandService` — the bound on URL-title collision probing, and the suffix sequence it preserves.
+ * `BrandService` — URL-title derivation, and the UNBOUNDED collision-probe sequence it preserves.
  *
  * AAP authority: AAP 0.4.1.12 lists `slatwall-ts/test/services/BrandService.test.ts` | CREATE |
  * "**NET-NEW**", and the AAP 0.4.4 wildcard row authorises `slatwall-ts/test/**` | CREATE.
@@ -7,22 +7,35 @@
  * =============================================================================================
  * WHY THE `src/util/urlTitle` CASES LIVE IN A SERVICE TEST FILE
  * =============================================================================================
- * SEC-13's finding site is `src/util/urlTitle.ts`, and a reader would reasonably expect
+ * The utility under test is `src/util/urlTitle.ts`, and a reader would reasonably expect
  * `test/util/urlTitle.test.ts`. No such file is enumerated anywhere in AAP 0.4.1.12, and inventing
  * one would be exactly the un-enumerated addition SCOPE-01 was raised about. This file is the
  * AAP-enumerated home instead, and it is the RIGHT home on the merits rather than merely the
  * permitted one:
  *
- *   - `BrandService.createUniqueBrandUrlTitle` at `src/services/BrandService.ts:700` is the utility's
- *     ONLY production caller anywhere in the subtree, verified by grep.
- *   - `BrandService` is where the `urlTitleAttemptBudget` collaborator is injected, so the budget's
- *     wiring contract belongs to this service's tests.
+ *   - `BrandService.createUniqueBrandUrlTitle` is the utility's ONLY production caller anywhere in
+ *     the subtree, verified by grep.
+ *   - `BrandService` is where the uniqueness probe is supplied, so the wiring contract between the
+ *     service, its repository and the utility belongs to this service's tests.
  *   - The suffix sequence is only observable end-to-end, through the `data.urlTitle` mutation at
  *     `model/service/BrandService.cfc:L70`/`:L72`.
  *
- * The utility is therefore covered twice on purpose: directly, where the probe sequence and the
- * failure shape are cleanest to assert, and through `saveBrand`, which proves the budget actually
- * reaches it and that the derived title lands where the legacy put it.
+ * The utility is therefore covered twice on purpose: directly, where the probe sequence is cleanest
+ * to assert, and through `saveBrand`, which proves the probe actually reaches it and that the derived
+ * title lands where the legacy put it.
+ *
+ * =============================================================================================
+ * THERE IS NO ATTEMPT BOUND LEFT TO TEST, AND THAT IS THE POINT (MAJ-04)
+ * =============================================================================================
+ * An earlier revision gave the utility a fourth parameter — a required `UrlTitleAttemptBudget` — and
+ * `BrandService` a third constructor argument to carry it, and this file asserted the resulting
+ * refusals. All of it is gone. `model/service/DataService.cfc:L64` loops `while(!unique)` with no
+ * ceiling, the utility's own frozen build specification forbids adding one in terms ("do not add a
+ * maximum-attempts ceiling, a retry cap, a timeout, an AbortSignal, or a fallback that appends a
+ * UUID"), and AAP §0.8.2 Guideline 4 with IR-9 admits exactly ONE declared hardening exception, which
+ * is D18 and not this. The unbounded loop is carried as a flagged `TODO(parity)` in the utility, and
+ * the case below pins the behaviour that replaced the refusals: the probe sequence continues for as
+ * long as candidates keep colliding.
  *
  * TEST PROVENANCE: every case below is **NET-NEW**. AAP 0.6.5.2 verified that no legacy
  * `BrandServiceTest` exists. The legacy signal for the brand slice is `meta/tests/unit/entity/
@@ -31,19 +44,20 @@
  *
  * WHAT THIS FILE DOES NOT COVER: `saveBrand`'s two-part guard, the payload-over-entity name
  * preference and the by-reference mutation are exercised only incidentally, as the vehicle for the
- * SEC-13 assertions. The full `saveBrand` matrix the AAP envisions for this file — and `newBrand`,
+ * URL-title assertions. The full `saveBrand` matrix the AAP envisions for this file — and `newBrand`,
  * `getBrand` and `deleteBrand` — remain to be covered. Stating that is preferable to implying a
  * completeness this file does not have.
  */
 import { BRAND_ENTITY_METADATA, Brand } from '../../src/domain/product/Brand';
 import { manageEntity } from '../../src/domain/base/populate';
 import { Product } from '../../src/domain/product/Product';
-import { DomainError } from '../../src/errors/DomainError';
+/* `DomainError` is deliberately NOT imported. Every case in this file that asserted a thrown
+ * `DomainError` was asserting a removed refusal — the URL-title attempt budget (MAJ-04) — and the
+ * import went with them. Nothing on the brand path raises on collision depth any more. */
 import { BRAND_ACCESS_MATRIX, createBrandHandler } from '../../src/handlers/brandHandler';
 import { BrandService } from '../../src/services/BrandService';
 import type { ManagedBrand } from '../../src/services/BrandService';
 import { createUniqueURLTitle } from '../../src/util/urlTitle';
-import type { UrlTitleAttemptBudget } from '../../src/util/urlTitle';
 import type {
   BrandAuthorizationEvent,
   BrandHandler,
@@ -56,9 +70,6 @@ import type {
   EntityAuthorizationRequest,
   RequestAuthorizationResolver,
 } from '../../src/ports/AccountContextPort';
-
-/** A budget literal, so each case reads as the one number it is varying. */
-const budget = (maximumProbes: number): UrlTitleAttemptBudget => ({ maximumProbes });
 
 /**
  * A principal, defaulting to the one shape the gate admits: logged in, non-admin, no groups needed.
@@ -112,49 +123,42 @@ function probeTaking(takenCount: number): {
   };
 }
 
-describe('createUniqueURLTitle — the suffix sequence SEC-13 had to preserve', () => {
+describe('createUniqueURLTitle — the suffix sequence the port had to preserve', () => {
   it('NET-NEW — model/service/DataService.cfc:L62 — no collision means one probe and NO suffix', async () => {
     const { probe, candidates } = probeTaking(0);
 
-    await expect(createUniqueURLTitle('My Brand', 'SwBrand', probe, budget(1))).resolves.toBe(
-      'my-brand',
-    );
+    await expect(createUniqueURLTitle('My Brand', 'SwBrand', probe)).resolves.toBe('my-brand');
     expect(candidates).toEqual(['my-brand']);
   });
 
   it('NET-NEW — model/service/DataService.cfc:L65 — the FIRST collision suffix is -2, never -1', async () => {
     // The counter is PRE-incremented, so the first suffix skips -1 entirely. AAP 0.4.1.11 calls this
-    // out specifically. It is observable output, which is why the bound could not be implemented as
-    // an atomic uniqueness strategy that renumbers.
+    // out specifically. It is observable output, which is why the port may not substitute an atomic
+    // uniqueness strategy that renumbers.
     const { probe, candidates } = probeTaking(1);
 
-    await expect(createUniqueURLTitle('My Brand', 'SwBrand', probe, budget(5))).resolves.toBe(
-      'my-brand-2',
-    );
+    await expect(createUniqueURLTitle('My Brand', 'SwBrand', probe)).resolves.toBe('my-brand-2');
     expect(candidates).toEqual(['my-brand', 'my-brand-2']);
   });
 
   it('NET-NEW — the sequence continues -2, -3, -4 with no gaps', async () => {
     const { probe, candidates } = probeTaking(3);
 
-    await expect(createUniqueURLTitle('My Brand', 'SwBrand', probe, budget(10))).resolves.toBe(
-      'my-brand-4',
-    );
+    await expect(createUniqueURLTitle('My Brand', 'SwBrand', probe)).resolves.toBe('my-brand-4');
     expect(candidates).toEqual(['my-brand', 'my-brand-2', 'my-brand-3', 'my-brand-4']);
   });
 
-  it('NET-NEW — the slug transformation is untouched by the bound', async () => {
+  it('NET-NEW — model/service/DataService.cfc:L57-L58 — the slug transformation, in order', async () => {
     const { probe } = probeTaking(0);
-    const slug = (input: string): Promise<string> =>
-      createUniqueURLTitle(input, 'SwBrand', probe, budget(1));
+    const slug = (input: string): Promise<string> => createUniqueURLTitle(input, 'SwBrand', probe);
 
     await expect(slug('A & B')).resolves.toBe('a-b');
     // Leading and trailing hyphens are RETAINED — the legacy trims whitespace, not punctuation.
     await expect(slug('! Foo')).resolves.toBe('-foo');
     await expect(slug('Foo !')).resolves.toBe('foo-');
     // FOUR hyphens: the two originals survive, and each of the two single-space runs becomes one
-    // more. The docblock in `src/util/urlTitle.ts` previously claimed three; it was arithmetically
-    // wrong and was corrected rather than left standing.
+    // more. The docblock in `src/util/urlTitle.ts` once claimed three; it was arithmetically wrong and
+    // was corrected rather than left standing.
     await expect(slug('A -- B')).resolves.toBe('a----b');
     // An all-punctuation title legitimately slugs to the empty string. `urlTitle` is `required` in
     // `model/validation/Brand.json:L5`, so validation — not this utility — is what reports it.
@@ -162,77 +166,58 @@ describe('createUniqueURLTitle — the suffix sequence SEC-13 had to preserve', 
   });
 });
 
-describe('createUniqueURLTitle — SEC-13, the attempt bound', () => {
-  it('NET-NEW — the probe count is bounded and the failure is deterministic', async () => {
-    // Every candidate is taken, which is the unbounded case: the legacy loop at
-    // `model/service/DataService.cfc:L64` has no ceiling and would probe forever.
-    const { probe, candidates } = probeTaking(Number.MAX_SAFE_INTEGER);
+describe('createUniqueURLTitle — SEC-13 WITHDRAWN, the loop is unbounded', () => {
+  /* ⛔ THESE ARE WITHDRAWAL REGRESSIONS. Six cases here asserted the retired attempt budget: a bounded
+   * probe count, a deterministic raise, a budget of 1 permitting only the unsuffixed candidate, no
+   * fabricated fallback, a disclosure-safe failure context, and rejection of a malformed budget. All
+   * six are gone with the budget. What replaces them pins the legacy loop at
+   * `model/service/DataService.cfc:L62-L67`, so a future revision cannot reinstate a ceiling silently.
+   *
+   * The one assertion that survives in substance is "no fallback title is fabricated" — it is now
+   * automatic rather than defended, because there is no failure path left on which to fabricate one. */
 
-    await expect(
-      createUniqueURLTitle('My Brand', 'SwBrand', probe, budget(4)),
-    ).rejects.toBeInstanceOf(DomainError);
+  it('NET-NEW — probes far past any plausible ceiling and still terminates on the free value', async () => {
+    /* WITHDRAWAL REGRESSION. 500 taken candidates is two orders of magnitude beyond the four-probe
+     * budget the withdrawn cases used, so any reinstated ceiling short of 501 fails here. A finite
+     * count is used rather than an unbounded probe for the obvious reason: a genuinely endless loop
+     * cannot be asserted on. `:L64` carries NO ceiling, so the only thing that stops this loop is a
+     * free value. */
+    const { probe, candidates } = probeTaking(500);
 
-    // Exactly four probes: the unsuffixed candidate plus three suffixed. The budget counts PROBES,
-    // deliberately not suffixes — conflating the two would tie the bound to the suffix sequence and
-    // change the observable output the cases above pin.
-    expect(candidates).toEqual(['my-brand', 'my-brand-2', 'my-brand-3', 'my-brand-4']);
+    await expect(createUniqueURLTitle('My Brand', 'SwBrand', probe)).resolves.toBe('my-brand-501');
+    // 501 probes: the unsuffixed candidate plus 500 suffixed ones, `-2` through `-501`.
+    expect(candidates).toHaveLength(501);
+    expect(candidates[0]).toBe('my-brand');
+    expect(candidates[1]).toBe('my-brand-2');
+    expect(candidates[500]).toBe('my-brand-501');
   });
 
-  it('NET-NEW — a budget of 1 permits only the unsuffixed candidate', async () => {
-    const { probe, candidates } = probeTaking(Number.MAX_SAFE_INTEGER);
+  it('NET-NEW — the suffix and the probe count stay in step, so neither is derived from a budget', async () => {
+    /* The withdrawn budget counted PROBES while `addon` counted SUFFIXES, and keeping the two apart
+     * was the whole reason the bound could not be expressed on the suffix. With the budget gone the
+     * relationship is the legacy's own and is asserted directly: probe N carries suffix N + 1. */
+    for (const takenCount of [0, 1, 2, 7]) {
+      const { probe, candidates } = probeTaking(takenCount);
 
-    await expect(createUniqueURLTitle('X', 'SwBrand', probe, budget(1))).rejects.toThrow(
-      /within 1 availability probes/,
-    );
-    expect(candidates).toEqual(['x']);
-  });
+      const resolved = await createUniqueURLTitle('X', 'SwBrand', probe);
 
-  it('NET-NEW — exhaustion fabricates NO fallback title', async () => {
-    // A generated fallback would hand back a title the probe never approved, against a column the
-    // legacy declares unique. Failing is the only correct outcome.
-    const { probe } = probeTaking(Number.MAX_SAFE_INTEGER);
-
-    await expect(
-      createUniqueURLTitle('My Brand', 'SwBrand', probe, budget(2)),
-    ).rejects.toBeInstanceOf(DomainError);
-  });
-
-  it('NET-NEW — the failure reports declaration facts and discloses no candidate value', async () => {
-    const { probe } = probeTaking(Number.MAX_SAFE_INTEGER);
-
-    let raised: unknown;
-    try {
-      await createUniqueURLTitle('super-secret-brand', 'SwBrand', probe, budget(2));
-    } catch (error: unknown) {
-      raised = error;
+      expect(candidates).toHaveLength(takenCount + 1);
+      expect(resolved).toBe(takenCount === 0 ? 'x' : `x-${String(takenCount + 1)}`);
     }
-
-    expect(raised).toBeInstanceOf(DomainError);
-    const domainError = raised as DomainError;
-    expect(domainError.context).toEqual({
-      tableName: 'SwBrand',
-      maximumProbes: 2,
-      probesIssued: 2,
-      lastCandidateSuffix: 2,
-      locator: 'model/service/DataService.cfc:L62-L68',
-    });
-    expect(domainError.message).not.toContain('super-secret-brand');
   });
 
-  it('NET-NEW — a malformed budget is rejected before any probe is issued', async () => {
-    for (const invalid of [0, -1, 1.5, Number.NaN, Number.POSITIVE_INFINITY]) {
-      const { probe, candidates } = probeTaking(0);
+  it('NET-NEW — the function has no rejection path at all, so no fallback can be fabricated', async () => {
+    /* `model/service/DataService.cfc:L53-L71` raises on no input, and neither does this. The
+     * withdrawn budget was the only throw site in the module, which is also why the module no longer
+     * imports `../errors/DomainError`. */
+    const { probe } = probeTaking(3);
 
-      await expect(
-        createUniqueURLTitle('X', 'SwBrand', probe, budget(invalid)),
-      ).rejects.toBeInstanceOf(DomainError);
-      // Nothing was asked of the database: a wiring error must not look like a data error.
-      expect(candidates).toEqual([]);
-    }
+    await expect(createUniqueURLTitle('My Brand', 'SwBrand', probe)).resolves.toBe('my-brand-4');
+    await expect(createUniqueURLTitle('', 'SwBrand', probe)).resolves.toBe('');
   });
 });
 
-describe('BrandService.saveBrand — SEC-13 end to end', () => {
+describe('BrandService.saveBrand — the URL-title derivation end to end', () => {
   interface Harness {
     readonly service: BrandService;
     readonly candidates: string[];
@@ -240,7 +225,7 @@ describe('BrandService.saveBrand — SEC-13 end to end', () => {
     readonly savedPayloads: Record<string, unknown>[];
   }
 
-  function makeService(takenCount: number, maximumProbes: number): Harness {
+  function makeService(takenCount: number): Harness {
     const { probe, candidates } = probeTaking(takenCount);
     const savedPayloads: Record<string, unknown>[] = [];
 
@@ -258,12 +243,14 @@ describe('BrandService.saveBrand — SEC-13 end to end', () => {
     return {
       candidates,
       savedPayloads,
-      service: new BrandService(brandRepositoryDouble, baseServiceDouble, { maximumProbes }),
+      // TWO ARGUMENTS. The third that briefly carried a probe budget is gone (MAJ-04), so this
+      // construction is also the compile-time proof that it has not crept back.
+      service: new BrandService(brandRepositoryDouble, baseServiceDouble),
     };
   }
 
   it('NET-NEW — the derived title reaches the payload, suffixed, and the save proceeds', async () => {
-    const { service, savedPayloads } = makeService(1, 5);
+    const { service, savedPayloads } = makeService(1);
     const brand = managedBrand();
     brand.brandName = 'My Brand';
 
@@ -275,23 +262,28 @@ describe('BrandService.saveBrand — SEC-13 end to end', () => {
     expect(savedPayloads[0]?.['urlTitle']).toBe('my-brand-2');
   });
 
-  it('NET-NEW — an exhausted budget rejects and the brand is never saved', async () => {
-    // The failure has to stop the save. Swallowing it would persist a brand with no URL title
-    // against a unique-constrained column.
-    const { service, savedPayloads, candidates } = makeService(Number.MAX_SAFE_INTEGER, 3);
+  it('NET-NEW — WITHDRAWAL REGRESSION: a long collision run still reaches the save', async () => {
+    /* This case asserted the opposite: it drove the probe to report every candidate taken, expected
+     * `saveBrand` to REJECT, and asserted the brand was never saved. That rejection was the withdrawn
+     * budget's, and `model/service/BrandService.cfc:L67-L77` has no failure path of its own — `:L76`
+     * returns `super.save(...)` unconditionally. The save now proceeds with the title the probe
+     * approved, however many probes that took. */
+    const { service, savedPayloads, candidates } = makeService(40);
     const brand = managedBrand();
     brand.brandName = 'My Brand';
 
-    await expect(service.saveBrand(brand, {})).rejects.toBeInstanceOf(DomainError);
+    await expect(service.saveBrand(brand, {})).resolves.toBe(brand);
 
-    expect(savedPayloads).toEqual([]);
-    expect(candidates).toEqual(['my-brand', 'my-brand-2', 'my-brand-3']);
+    expect(savedPayloads).toHaveLength(1);
+    expect(savedPayloads[0]?.['urlTitle']).toBe('my-brand-41');
+    expect(candidates).toHaveLength(41);
   });
 
   it('NET-NEW — model/service/BrandService.cfc:L68 — an explicit payload title bypasses probing entirely', async () => {
-    // The two-part guard means no probe is issued at all, so the budget is irrelevant on this path.
-    // A budget of 1 would fail immediately if the guard were not honoured.
-    const { service, savedPayloads, candidates } = makeService(Number.MAX_SAFE_INTEGER, 1);
+    // The two-part guard means no probe is issued at all. `probeTaking(0)` would report the first
+    // candidate free, so a guard that failed to honour the payload would still succeed — which is why
+    // the assertion is on `candidates` being EMPTY rather than on the resolved title alone.
+    const { service, savedPayloads, candidates } = makeService(0);
     const brand = managedBrand();
     brand.brandName = 'My Brand';
 
@@ -304,7 +296,7 @@ describe('BrandService.saveBrand — SEC-13 end to end', () => {
   it('NET-NEW — model/service/BrandService.cfc:L73 — with no usable name, nothing is derived and the save still proceeds', async () => {
     // `urlTitle` being `required` in `model/validation/Brand.json:L5` means the base collaborator's
     // validation reports the failure, exactly as the legacy did. No probe, and no throw here.
-    const { service, savedPayloads, candidates } = makeService(0, 5);
+    const { service, savedPayloads, candidates } = makeService(0);
     const brand = managedBrand();
 
     await service.saveBrand(brand, {});
@@ -412,10 +404,7 @@ describe('brandHandler — SEC-03, the gate `setupRequest()` ran', () => {
 
     for (const result of results) {
       expect(result.statusCode).toBe(401);
-      expect(JSON.parse(result.body)).toStrictEqual({
-        code: 'CATALOG_REQUEST_REJECTED',
-        message: 'Authentication is required',
-      });
+      expect(JSON.parse(result.body)).toStrictEqual({ message: 'Authentication is required' });
     }
 
     // Refused BEFORE the service, so nothing was read, saved or deleted.
@@ -447,10 +436,7 @@ describe('brandHandler — SEC-03, the gate `setupRequest()` ran', () => {
 
     for (const result of results) {
       expect(result.statusCode).toBe(403);
-      expect(JSON.parse(result.body)).toStrictEqual({
-        code: 'CATALOG_REQUEST_REJECTED',
-        message: 'Not authorized',
-      });
+      expect(JSON.parse(result.body)).toStrictEqual({ message: 'Not authorized' });
     }
 
     expect(probe.serviceCalls).toStrictEqual([]);
@@ -513,10 +499,7 @@ describe('brandHandler — SEC-03, the gate `setupRequest()` ran', () => {
     });
 
     expect(result.statusCode).toBe(403);
-    expect(JSON.parse(result.body)).toStrictEqual({
-      code: 'CATALOG_REQUEST_REJECTED',
-      message: 'Not authorized',
-    });
+    expect(JSON.parse(result.body)).toStrictEqual({ message: 'Not authorized' });
   });
 
   it('NET-NEW — no refusal carries a WWW-Authenticate header or names any scheme', async () => {

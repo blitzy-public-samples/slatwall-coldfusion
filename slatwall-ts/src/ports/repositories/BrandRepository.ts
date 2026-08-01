@@ -30,9 +30,9 @@
  * Worth recording, because a reader checking those locators will notice it: the pass-through
  * section's opening banner is duplicated — `:L57` and `:L59` carry the identical START text where
  * the second should have read END. That is an observation about the source, NOT a carried defect.
- * The register for this slice runs D1 to D24 and is CLOSED (AAP 0.6.7 catalogues D1-D21 under AAP
- * 0.7.3, S7; D22 through D24 were found during the port); no identifier is minted here, and nothing
- * in the legacy tree is corrected (TR-6).
+ * No register identifier is minted here, and nothing in the legacy tree is corrected (AAP 0.7.3 S7;
+ * TR-6). The register's bounds are stated once, in `src/ports/repositories/SkuRepository.ts`, and are
+ * deliberately not restated here.
  *
  * =================================================================================================
  * WHAT FABRICATES THE SURFACE INSTEAD, AND WHY THAT MAKES THIS FILE NECESSARY (IR-1)
@@ -132,9 +132,9 @@
  * opens no transaction, performs no flush and commits nothing; the legacy commit happens implicitly
  * at request end, which is execution-model mismatch M5 (AAP 0.6.6). Its owner in the target is
  * `src/adapters/mysql/UnitOfWork.ts`, so this port declares no begin, commit, flush or
- * scope-a-transaction member. M5 is cited here, not claimed here, and the mismatch register is CLOSED
- * at M1 to M9 (AAP 0.6.6 catalogues M1-M8 and M9 was found during the port; AAP 0.7.3, S8) — no new
- * identifier is introduced.
+ * scope-a-transaction member. M5 is cited here, not claimed here, and no new identifier is introduced
+ * (AAP 0.7.3, S8); the register's bounds live in `src/ports/repositories/SkuRepository.ts` and are not
+ * repeated here.
  *
  * =================================================================================================
  * REFERENCE-ONLY SOURCES, AND WHICH HALF OF "MINIMAL CHANGE" APPLIES
@@ -179,7 +179,8 @@ import type { Brand } from '../../domain/product/Brand';
  * `src/domain/product/Brand.ts` declares `class Brand implements AuditableEntity, ManagedEntity` — the
  * NON-generic entity-side contract in `src/domain/base/AuditableEntity.ts` — and
  * implements all seven members directly, so `Brand` ALREADY satisfies this alias and
- * {@link _BrandSatisfiesManagedBrand} proves it at compile time. Wrapping it would add a second
+ * the two guards below — `_BrandSatisfiesEntitySideContract` and `_ManagedBrandIsUsableAsBrand` — prove it
+ * at compile time. Wrapping it would add a second
  * object identity for one entity and buy nothing. The alias therefore tightens what the contract SAYS
  * without changing what any implementation must DO (AAP 0.4.2, TR-1 — a tightening to the observed
  * contract, recorded rather than made silently).
@@ -536,8 +537,8 @@ export interface BrandRepository {
    * table: it derives a filtered file name and, on collision, appends the product code rather than a
    * counter. Harmonising the two would change observable output on one path or the other, so the
    * divergence is documented and CARRIED, not reconciled (AAP 0.7.3 S7; AAP 0.8.2 Guideline 4). No
-   * product-shaped variant is added to this brand interface, and no register identifier is minted —
-   * D1 to D24 is closed.
+   * product-shaped variant is added to this brand interface, and no register identifier is minted here
+   * (the bounds are stated once, in `src/ports/repositories/SkuRepository.ts`).
    *
    * @param urlTitle - The candidate URL-title value to test. Required and positional. Bound as a
    * placeholder parameter, exactly as `model/dao/DataDAO.cfc:L123` binds it and nothing else.

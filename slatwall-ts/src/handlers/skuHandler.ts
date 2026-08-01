@@ -24,15 +24,15 @@
  * -------------------------------------------------------------------------------------------
  * Every signature this handler calls was read from ../services/SkuService rather than from a table,
  * and where AAP 0.4.2.2's target column and that file disagree, the file wins. Two of those
- * divergences are carried defects and are recorded below as judgments (a) and (b); a third — the
- * zero-arity of `getTransactionExistsFlag` — is the one place the plan's own two sections disagree
- * with each other, and judgment (a) records how it was adjudicated. Nothing here "corrects" the
- * service (AAP 0.8.2 Guideline 4).
+ * divergences are carried defects and are recorded below as judgments (a) and (b). The first of them —
+ * the declared-versus-passed arity of `getTransactionExistsFlag` — is the one place the plan's own two
+ * sections read as though they disagree, and judgment (a) records how AAP §0.1.1.3 IR-1 adjudicates it.
+ * Nothing here "corrects" the service (AAP 0.8.2 Guideline 4).
  *
  * NINE ROUTED MEMBERS OVER A TEN-MEMBER SERVICE, AND BOTH COUNTS ARE THE POINT
  * ---------------------------------------------------------------------------
  * model/service/SkuService.cfc declares NINE public functions across 334 lines, and the port adds
- * exactly one more that the legacy fabricated at run time (IR-1). The injected SERVICE seam
+ * exactly one more that the legacy fabricated at run time (IR-1). The PARITY seam
  * {@link SkuSurface} is therefore ten members, because the parity check can only check what is
  * declared. The ROUTED surface {@link SkuHandler} is nine, because `newSku` has no legacy action
  * behind it and is consumed only from INSIDE `createSkus`' own combination engine. That is the same
@@ -46,6 +46,15 @@
  * fabricated every one of them on demand. The slice calls none of them, and adding one because the
  * dispatcher COULD have produced it is precisely the enhancement AAP 0.8.2 Guideline 4 forbids.
  *
+ * ⭐ THE INJECTED SEAM IS NARROWER THAN THE PARITY SEAM, AND THAT GAP IS DELIBERATE
+ * {@link createSkuHandler} does NOT receive {@link SkuSurface}. It receives
+ * {@link RoutedSkuSurface} — the same ten-member projection with `createSkus` REMOVED — plus a
+ * separate {@link ProductSkuCreationBoundary}. The parity count is unaffected, because `Omit` of a
+ * projection is still a projection of the same service and {@link SkuSurface} remains declared and
+ * checkable above. What the narrowing buys is that the one WRITING member cannot be called from a
+ * route without first crossing a transaction boundary: the seam simply does not carry it. See
+ * "THE WRITING BOUNDARY" below for why that had to be structural rather than conventional.
+ *
  * EVERY ROUTED MEMBER IS AUTHORISED BEFORE IT DOES ANYTHING
  * --------------------------------------------------------
  * The legacy authorised every request in one place, before any controller method ran —
@@ -58,11 +67,11 @@
  * TECHNOLOGY-SPECIFIC TRANSLATION DECISIONS (AAP 0.8.2 Guideline 6)
  * ----------------------------------------------------------------
  * Guideline 6 requires every technology-specific judgment to be documented where it is made. The
- * seven groups the file's own brief mandates are (a) to (g); (h) to (n) are the judgments this file
+ * seven groups the file's own brief mandates are (a) to (g); (h) to (o) are the judgments this file
  * makes on its own account. Each is restated at the declaration or member that makes it.
  *
- * (a) TODO(parity) D23 — `getTransactionExistsFlag` TAKES NO ARGUMENTS, AND THE LEGACY IS BOTH
- *     ZERO-ARG AND EFFECTIVELY TWO-ARG AT ONCE. The declaration at
+ * (a) TODO(parity) D23 — `getTransactionExistsFlag` DECLARES NO ARGUMENTS AND IS PASSED TWO, SO THE
+ *     LEGACY IS ZERO-ARG AND EFFECTIVELY TWO-ARG AT ONCE. The declaration at
  *     model/service/SkuService.cfc:L285 is literally `public boolean function
  *     getTransactionExistsFlag()`, with no formal parameter of any kind, yet its body at [:L286]
  *     forwards `argumentCollection=arguments` to a DAO member that
@@ -73,14 +82,21 @@
  *         model/entity/Sku.cfc:L594      -> getTransactionExistsFlag( skuID = this.getSkuID() )
  *         model/entity/Product.cfc:L626  -> getTransactionExistsFlag( productID = this.getProductID() )
  *
- *     The plan's own two sections then part company: AAP 0.4.2.2 Discrepancy 4 rules that "The
- *     narrower service contract is preserved", while AAP 0.4.2.6 puts the FILTERED capability on a
- *     separately named member, `SkuRepository.transactionExists(productID?, skuID?)`.
- *     ../services/SkuService adjudicates it by following both at once — the service member declares
- *     ZERO arguments and the repository member keeps the pair — and this handler matches the service
- *     rather than guessing from prose. The identifier reaches the query through the entity-level
- *     checker interfaces the domain modules declare, never through this member. See
- *     {@link SkuHandler.getTransactionExistsFlag} for what a caller therefore observes.
+ *     ADJUDICATION. AAP §0.1.1.3 IR-1 governs every place CFML's metaprogramming passes something a
+ *     declaration does not name, and rules that it "becomes an explicitly declared, typed method"
+ *     because strict TypeScript has no equivalent facility. So ../services/SkuService declares
+ *     `(skuID?, productID?)` and forwards both, and this handler binds both from the query string.
+ *     AAP §0.4.2.2's Discrepancy 4 sentence ("The narrower service contract is preserved") is honoured
+ *     rather than overridden: what the service does NOT inherit from the DAO is its REQUIREDNESS —
+ *     both parameters remain optional and no caller must supply either. AAP §0.4.2.6 keeps the
+ *     separately named `SkuRepository.transactionExists(productID?, skuID?)`, which is where the
+ *     argument order flips to the DAO's own sequence; ../services/SkuService performs that swap once.
+ *
+ *     ⚠️ AN EARLIER REVISION DECLARED THE SERVICE MEMBER WITH ZERO PARAMETERS AND FORWARDED NOTHING.
+ *     That was not a narrower contract but a non-functional one: the repository raises when neither
+ *     identifier is supplied, reproducing [model/dao/SkuDAO.cfc:L90], so the two
+ *     `transactionExistsFlag` delete guards could never be evaluated and no product or SKU could be
+ *     deleted. See {@link SkuHandler.getTransactionExistsFlag}.
  *
  * (b) TODO(parity) D24 — `processImageUpload` RETURNS A BOOLEAN, NEVER A SKU. AAP 0.4.2.2's target
  *     column says `Promise<Sku>`, and the body at model/service/SkuService.cfc:L210-L218 disagrees
@@ -170,6 +186,15 @@
  * (n) `createSkus` ALWAYS ANSWERS `true`, AND THAT IS REPORTED RATHER THAN REINTERPRETED. Recorded at
  *     {@link SkuHandler.createSkus}.
  *
+ * (o) M5 — THE IMPLICIT REQUEST-END COMMIT BECOMES ONE EXPLICIT, INJECTED BOUNDARY AROUND EXACTLY ONE
+ *     MEMBER. The legacy flushed the ORM session once per request and only when the session carried no
+ *     errors [org/Hibachi/Hibachi.cfc:L455-L459]; a stateless invocation has no request-end hook, so
+ *     AAP 0.6.6 M5 requires the boundary to be made explicit. It is drawn around `createSkus` alone —
+ *     the file's only member that writes — and it is drawn around BOTH the product resolution and the
+ *     service call, because AAP 0.6.2's read-back loop is only faithful if the read and the write share
+ *     one connection. Recorded at {@link SkuWriteGraph}, {@link TransactionalWriteRunner} and
+ *     {@link SkuHandler.createSkus}.
+ *
  * TEST PROVENANCE: NET-NEW, IN FULL — NO PARITY WITH ANY LEGACY TEST IS CLAIMED OR IMPLIED
  * ---------------------------------------------------------------------------------------
  * AAP 0.6.5.2 is decisive and is stated here rather than softened, because AAP 0.8.3.7 exists to
@@ -177,9 +202,10 @@
  * `SkuTest` entity test exists, no `SkuDAOTest` exists, and there is no legacy controller test of any
  * kind. Everything about this file is therefore net-new coverage. AAP 0.4.1.12 defines no
  * test/handlers/ directory, so S6 manifests here as testability-by-design instead: every member is a
- * pure function of its arguments and its three injected collaborators, so a plain object literal is a
- * sufficient double — which matters because the legacy repository vendors no mocking library at all
- * and its suite boots the whole FW/1 application (AAP 0.4.3.6).
+ * pure function of its arguments and its four injected collaborators, so a plain object literal is a
+ * sufficient double — even for the write runner, whose contract a two-line pass-through satisfies —
+ * which matters because the legacy repository vendors no mocking library at all and its suite boots the
+ * whole FW/1 application (AAP 0.4.3.6).
  */
 
 import type { Sku } from '../domain/sku/Sku';
@@ -190,7 +216,26 @@ import type {
   RequestAuthorizationResolver,
 } from '../ports/AccountContextPort';
 import type { SmartListInput, SmartListResult } from '../ports/SmartListQueryPort';
+import type { TransactionalWriteRunner } from '../ports/TransactionalWritePort';
 import type { ProductWithErrorState, SkuService } from '../services/SkuService';
+import { collectSkuBatchErrors, skuBatchHasErrors } from '../services/SkuService';
+
+/*
+ * A TYPE-ONLY REFERENCE TO THE TRANSACTION BOUNDARY, AND THE ONE REASON IT IS HERE.
+ *
+ * The commit gate this file supplies must be the same shape `UnitOfWork.run` demands of its commit gate, and
+ * the honest way to state "the same shape" is to have the compiler check it rather than to restate the
+ * signature and hope. The guard below {@link TransactionalWriteRunner} does exactly that.
+ *
+ * ⛔ IT IS NOT A DEPENDENCY. The import is `import type`, so it is erased entirely: nothing in the
+ * emitted bundle resolves src/adapters/mysql/UnitOfWork.ts, this file never constructs one, never calls
+ * one, and never reaches src/config/database.ts through it — which is what keeps the boundary class's own
+ * configuration-time failure modes out of this module. Nor is there a cycle: UnitOfWork imports no
+ * handler.
+ */
+import type { UnitOfWork } from '../adapters/mysql/UnitOfWork';
+
+import { ValidationError } from '../errors/ValidationError';
 
 import {
   errorResponse,
@@ -199,15 +244,17 @@ import {
   messageResponse,
   notFoundResponse,
   okResponse,
+  readBoundedReadWindow,
   readJsonObjectBody,
   readPathParameter,
   readQueryStringParameter,
+  readSmartListInput,
   unauthorizedResponse,
   HTTP_STATUS,
   type APIGatewayProxyEvent,
   type APIGatewayProxyResult,
 } from './httpResponse';
-import { PUBLIC_ERROR_CODE } from '../errors/DomainError';
+import type { ExactDecimal } from '../util/formatting';
 
 /* ================================================================================================
  * REQUEST PARAMETER NAMES
@@ -280,6 +327,28 @@ const TERM_QUERY_PARAMETER = 'term';
  * carried across rather than reconciled.
  */
 const PRODUCT_TYPE_ID_QUERY_PARAMETER = 'productTypeID';
+
+/**
+ * The query parameter carrying the SKU identifier that scopes the transaction-existence question.
+ *
+ * A QUERY PARAMETER RATHER THAN A PATH PARAMETER, and the distinction is behavioural rather than
+ * stylistic. A path parameter ADDRESSES a resource, which is why {@link readSkuIdentifier} treats the
+ * unsaved sentinel as "nothing addressed". This value FILTERS a question instead: it is the identifier
+ * `model/entity/Sku.cfc:L594` passes as a named argument, both identifiers are optional at
+ * [model/dao/SkuDAO.cfc:L53-L55], and either may be supplied alone or with the other. Spelled exactly as
+ * the legacy names the argument, so the wire name and the legacy name cannot drift.
+ */
+const SKU_ID_QUERY_PARAMETER = 'skuID';
+
+/**
+ * The query parameter carrying the product identifier that scopes the transaction-existence question.
+ *
+ * The twin of {@link SKU_ID_QUERY_PARAMETER}; the identifier `model/entity/Product.cfc:L626` passes.
+ * ⚠️ SUPPLYING BOTH IS LEGAL AND `skuID` WINS — the branch test at [model/dao/SkuDAO.cfc:L58-L64] takes
+ * the SKU path whenever a SKU identifier is present, and the product path only at its `<cfelse>` [:L61].
+ * That precedence belongs to the repository, which ports it; this layer neither enforces nor pre-empts it.
+ */
+const PRODUCT_ID_QUERY_PARAMETER = 'productID';
 
 /**
  * The identifier value that means "this record has never been persisted".
@@ -360,53 +429,23 @@ const CFML_TRUE_LITERALS: readonly string[] = Object.freeze(['true', 'yes', '1']
 const CFML_FALSE_LITERALS: readonly string[] = Object.freeze(['false', 'no', '0']);
 
 /* ================================================================================================
- * THE SMART LIST DATA VOCABULARY — org/Hibachi/HibachiSmartList.cfc:L85-L136
+ * THE SMART LIST DATA VOCABULARY — MOVED, NOT DELETED
  *
- * G6 TRANSLATION DECISION (l), part one. `getSkuSmartList(struct data={}, currentURL="")`
- * [model/service/SkuService.cfc:L309] was called with the FW/1 request context — the whole bag of
- * query and form values — and `applyData` then walked that bag and acted on RECOGNISED keys only,
- * ignoring every other member of the struct. The two lists below reproduce that recognition set
- * exactly, key for key, so forwarding on their basis is faithful translation rather than an invented
- * request contract.
+ * G6 TRANSLATION DECISION (l), part one. The recognition set `applyData`
+ * [org/Hibachi/HibachiSmartList.cfc:L85-L136] walked — seven exact names and seven prefixes, each with
+ * the branch that recognises it — now lives in ./httpResponse beside the other event readers and is
+ * consumed here through its exported `readSmartListInput`. Every locator, the mutual-exclusivity
+ * argument for the prefix test, and the "nothing is added, defaulted or normalised" statement are
+ * carried verbatim at the new site.
  *
- * Each entry cites the branch that recognises it:
- *   savedStateID  [:L93-L96]      keyword    [:L136-L138]   keywords  [:L145]
- *   OrderBy       [:L118-L122]    P:Show     [:L123-L128]   P:Start   [:L129-L130]
- *   P:Current     [:L131-L132]
- *   F:  [:L100-L101]   FR: [:L102-L103]   FI: [:L104-L105]   FIR: [:L106-L107]
- *   FK: [:L108-L113]   FKR:[:L114-L115]   R:  [:L116-L117]
- *
- * ⚠️ THE PREFIXES ARE MUTUALLY EXCLUSIVE, WHICH IS WHY A PREFIX TEST IS SOUND HERE. The legacy tests
- * them with explicit lengths — `left(i,2) == "F:"`, `left(i,3) == "FR:"`, `left(i,4) == "FIR:"` — and
- * each candidate carries the colon, so `FR:x` does not match `F:` and `FIR:x` does not match `FI:`.
- * The same mutual exclusivity is what lets `SmartListInput`'s template index signatures type them.
- *
- * ⛔ NOTHING IS ADDED. There is no page size, no default limit, no maximum, no ordering default and no
- * filter this file supplies of its own accord (AAP 0.7.3 S9, restated for this member by
- * ../services/SkuService: "No pagination default, filter or ordering is invented").
+ * ⭐ WHY IT MOVED. It is ONE vocabulary, belonging to the legacy interpreter rather than to either
+ * boundary, and TWO routed members receive that struct: `getSkuSmartList`
+ * [model/service/SkuService.cfc:L309] here, and `getProductSmartList`
+ * [model/service/ProductService.cfc:L342] on ./productHandler. A second private copy could drift from
+ * this one, and a drifted copy does not fail loudly — it silently stops forwarding a key the smart
+ * list would have acted on, or starts forwarding one it would have ignored. Declaring it once is the
+ * same reasoning that put `readBoundedReadWindow` in ./httpResponse.
  * ============================================================================================== */
-
-/** The smart list data keys recognised by exact name. */
-const SMART_LIST_NAMED_KEYS: readonly string[] = Object.freeze([
-  'savedStateID',
-  'keyword',
-  'keywords',
-  'OrderBy',
-  'P:Show',
-  'P:Start',
-  'P:Current',
-]);
-
-/** The smart list data keys recognised by prefix. */
-const SMART_LIST_KEY_PREFIXES: readonly string[] = Object.freeze([
-  'F:',
-  'FR:',
-  'FI:',
-  'FIR:',
-  'FK:',
-  'FKR:',
-  'R:',
-]);
 
 /* ================================================================================================
  * BAD-REQUEST TEXTS
@@ -467,7 +506,7 @@ const FETCH_OPTIONS_NOT_BOOLEAN_MESSAGE = `The "${FETCH_OPTIONS_QUERY_PARAMETER}
  *   getSortedProductSkus      [:L246] carries D13
  *   searchSkusByProductType   [:L271] BOTH arguments optional — Discrepancy 3; SINGULAR — judgment (f)
  *   getSkuStocksDeletableFlag [:L281] delegates to an absent DAO member — judgment (c), D4
- *   getTransactionExistsFlag  [:L285] ZERO arguments — judgment (a), Discrepancy 4 / D23
+ *   getTransactionExistsFlag  [:L285] ZERO declared, TWO passed — judgment (a), Discrepancy 4 / D23
  *   getSkuBySkuCode           [:L289] optional argument, `null` on a miss
  *   getSkuSmartList           [:L309] entity, three joins, five keyword properties
  *   newSku                    no legacy declaration at all — IR-1; DECLARED HERE, NOT ROUTED
@@ -486,12 +525,32 @@ export type SkuSurface = Pick<
   | 'getProductSkus'
   | 'getSortedProductSkus'
   | 'searchSkusByProductType'
+  | 'searchSkusByProductTypeBounded'
   | 'getSkuStocksDeletableFlag'
   | 'getTransactionExistsFlag'
   | 'getSkuBySkuCode'
   | 'getSkuSmartList'
   | 'newSku'
 >;
+
+/**
+ * What {@link createSkuHandler} is actually GIVEN: the parity seam minus the writing member.
+ *
+ * ⭐ THE OMISSION IS THE ENFORCEMENT, AND IT IS THE POINT. `createSkus` is the file's only writing
+ * member, and it must run inside a transaction whose scope also built the product read it depends on —
+ * see {@link ProductSkuCreationBoundary} for why. While the factory was handed a seam that DECLARED
+ * `createSkus`, the untransacted call was one line away and nothing but prose discouraged it; the review
+ * that prompted this change found exactly that call in place. Dropping the member from what the factory
+ * receives makes the mistake a type error instead of a habit.
+ *
+ * ⛔ AND IT DOES NOT WEAKEN THE PARITY STATEMENT. {@link SkuSurface} still names all ten members and is
+ * still a `Pick` of the real class, so a rename, an added argument or a changed return type in
+ * ../services/SkuService still breaks this file immediately. `Omit` of a projection is still a projection:
+ * it has no independent declaration to drift from. The two counts stay distinct exactly as this file's
+ * header says — ten DECLARED for parity, nine ROUTED, and now nine INJECTED because the tenth is reached
+ * through the boundary that owns its transaction rather than through this seam.
+ */
+export type RoutedSkuSurface = Omit<SkuSurface, 'createSkus'>;
 
 /**
  * Resolves an addressed product identifier into the product entity three service members require.
@@ -532,6 +591,202 @@ export type SkuSurface = Pick<
  * typing it at the narrower shape would have made `createSkus` unreachable.
  */
 export type ProductResolver = (productID: string) => Promise<ProductWithErrorState | null>;
+
+/**
+ * The transaction-scoped capabilities {@link SkuHandler.createSkus} runs against.
+ *
+ * ⭐ IT RESTATES `resolveProduct` AND `createSkus` RATHER THAN REUSING THE CAPTURED ONES, AND THAT
+ * DUPLICATION IS THE ENTIRE POINT. A service holds its repository and a repository holds its executor from
+ * construction, so the `skuService` and `resolveProduct` this handler captured are bound to the POOL.
+ * Calling them inside an open transaction would run their statements on a DIFFERENT connection — the
+ * writes would succeed, sit outside the unit being committed, and survive a roll-back. Nothing would
+ * report a problem. The members here are the ones built FOR the transaction, and they are the only ones
+ * the write path may touch.
+ *
+ * ⚠️ THE PRODUCT READ IS INSIDE THE TRANSACTION DELIBERATELY, NOT INCIDENTALLY. AAP §0.6.2 is explicit
+ * that `Sku.hasUniqueOptions` is a validation rule that EXECUTES A QUERY against the sibling SKUs the same
+ * operation is writing, and AAP §0.6.6 M6 names that read-back as the likeliest place for the port to
+ * diverge silently. If the product and its existing SKUs were read on the pool while the new SKUs were
+ * written in the transaction, the uniqueness rule would interrogate a sibling set that does not include
+ * them, and the batch would validate against the wrong world. Reading the aggregate through the same
+ * scope that writes it is what makes the rule observe what the legacy's ORM session showed it.
+ */
+export interface SkuWriteGraph {
+  /** Loads the aggregate the batch mutates, through the transaction's own scope. */
+  readonly resolveProduct: ProductResolver;
+
+  /** The one write member this graph exists for — see {@link SkuSurface} for the full service surface. */
+  readonly skuService: Pick<SkuSurface, 'createSkus'>;
+}
+
+/* ================================================================================================
+ * COMPILE-TIME GUARDS — TWO PAIRINGS THAT A COMMENT COULD ONLY ASSERT
+ * ================================================================================================ */
+type AssertAssignable<TActual extends TExpected, TExpected> = TActual;
+
+/*
+ * The concrete service must satisfy the surface this boundary mounts. Without this, dropping or
+ * renaming a member on `SkuService` would not be caught here — the boundary would simply mount a
+ * narrower surface and the parity claim in the header would quietly stop being true.
+ */
+type _SkuServiceSatisfiesSkuSurface = AssertAssignable<SkuService, SkuSurface>;
+
+/*
+ * The write runner's commit gate must be EXACTLY what `UnitOfWork.run` demands of its own gate. The
+ * runner is injected as a port, so nothing else in this module forces the two to agree; if the unit
+ * of work ever changed the shape of its gate, every handler that supplies one would keep compiling
+ * against the stale shape and the divergence would surface only at run time.
+ */
+type _WriteRunnerGateMatchesUnitOfWork = AssertAssignable<
+  Parameters<TransactionalWriteRunner<SkuWriteGraph>['runWrite']>[1],
+  Parameters<UnitOfWork['run']>[1]
+>;
+
+/* ================================================================================================
+ * THE WRITING BOUNDARY — ONE TRANSACTION PER SKU-CREATION INVOCATION (M5, M6)
+ *
+ * ⚠️ THIS SECTION EXISTS BECAUSE THE WRITING ROUTE PREVIOUSLY HAD NO TRANSACTION AT ALL. It resolved
+ * the product through the injected resolver and then called `createSkus` on the injected service — two
+ * collaborators the composition root had already bound to whatever executor it built them with. Nothing
+ * in that arrangement made the product read, the sibling SKU inserts and the uniqueness read-back share
+ * one connection, and nothing could roll a failed batch back as a unit. AAP 0.6.2 calls that read-back
+ * "the single most dangerous thing in the slice" precisely because the divergence is silent: the wrong
+ * arrangement compiles, runs, and produces a different set of SKUs with no error anywhere.
+ *
+ * ⭐ SO THE ROUTE NO LONGER HOLDS THE WRITING COLLABORATORS AT ALL. It is given ONE function,
+ * {@link ProductSkuCreationBoundary}, and that function is the only way it can create anything. The
+ * collaborators live inside the boundary, built from the transaction's own scope, so "every read and
+ * write in this unit of work shares one executor" is a property of who holds what rather than of a
+ * convention someone has to remember. The service seam this file is given is narrowed to match
+ * ({@link RoutedSkuSurface}), which makes the old direct call unwritable rather than merely discouraged.
+ *
+ * ⛔ AND NO TRANSACTION VOCABULARY CROSSES INTO THIS LAYER. `src/adapters/mysql/**` is not among this
+ * file's permitted dependencies, so the runner is declared here STRUCTURALLY and GENERICALLY over its
+ * scope type: the real `UnitOfWork` satisfies it without this file importing it, naming it, or knowing
+ * what an executor is. That is the same technique ../domain/sku/Sku uses for its boundary contracts, and
+ * it is a scope rule rather than a preference (AAP 0.7.3 S4).
+ * ============================================================================================== */
+
+/**
+ * The transaction runner this boundary needs, declared structurally so no adapter is imported.
+ *
+ * Mirrors `UnitOfWork.runScoped` exactly — the member that builds the collaborator graph FROM the
+ * transaction scope, rather than wrapping a graph that was built elsewhere. The distinction is the whole
+ * point: every repository in `src/adapters/mysql/**` takes its executor at construction, so a graph
+ * captured from outside a boundary runs on a different connection than the boundary owns, and M6's
+ * visibility guarantee silently does not hold.
+ *
+ * @typeParam TScope - The runner's scope type, left open so this file never names one. The real
+ *   implementation supplies `TransactionScope`; a test supplies whatever its double hands out.
+ */
+export interface ScopedTransactionRunner<TScope> {
+  runScoped<TGraph, TResult>(
+    buildGraph: (scope: TScope) => TGraph,
+    work: (graph: TGraph) => Promise<TResult>,
+    reportErrors: (result: TResult) => boolean,
+  ): Promise<TResult>;
+}
+
+/**
+ * The two collaborators SKU creation needs, both bound to one transaction's scope.
+ *
+ * Deliberately the SMALLEST graph that can serve the route: the product read, and the one service member
+ * that writes. Adding anything else here would widen what runs inside the transaction without a legacy
+ * step calling for it.
+ */
+export interface SkuCreationGraph {
+  /** Scope-bound product read — the same bridge {@link ProductResolver} describes, inside the boundary. */
+  readonly resolveProduct: ProductResolver;
+  /** Scope-bound writing service, narrowed to the single member the boundary invokes. */
+  readonly skuService: Pick<SkuSurface, 'createSkus'>;
+}
+
+/**
+ * What one SKU-creation transaction produced, and the object the M5 gate is asked about.
+ *
+ * ⚠️ THE PRODUCT IS CARRIED OUT OF THE BOUNDARY FOR ONE REASON ONLY: the gate. `[:L207]` returns an
+ * unconditional `true` even after `[:L143]`, `[:L148]` and `[:L176]` have recorded findings ON THE
+ * PRODUCT, so the boolean says nothing about whether the work should be kept and the product's own error
+ * bag is the only thing that does. That is the same re-read `model/service/ProductService.cfc:L286-L288`
+ * performs after SKU creation has had its chance to add findings.
+ */
+export interface SkuCreationOutcome {
+  /** The resolved product, or `null` when no row matched the addressed identifier. */
+  readonly product: ProductWithErrorState | null;
+  /** The service's unconditional `true`, or `null` when no product was found and nothing was attempted. */
+  readonly created: boolean | null;
+}
+
+/**
+ * The route's only route to a write: one product identifier and one unreshaped payload in, one settled
+ * transaction out.
+ *
+ * `null` means NO SUCH PRODUCT, exactly as {@link ProductResolver} does, and is answered with a not-found
+ * response rather than upgraded into a creation. Anything else the boundary can do — a roll-back on
+ * accumulated findings, the fallthrough throw at `[model/service/SkuService.cfc:L204]` — arrives as a
+ * rejection and is shaped by {@link errorResponse}.
+ */
+export type ProductSkuCreationBoundary = (
+  productID: string,
+  data: Record<string, unknown>,
+) => Promise<boolean | null>;
+
+/**
+ * Compose the writing boundary: one transaction per invocation, over collaborators built for it.
+ *
+ * ⭐ WHAT IS AND IS NOT DECIDED HERE. This function fixes the SEQUENCE and the GATE — resolve the
+ * product, then create its SKUs, then keep the work only if the product is still clean — because those
+ * are behaviour, ported from `model/service/ProductService.cfc:L273-L288` and from the three branch
+ * preconditions `SkuService.createSkus` records at `[:L143]`, `[:L148]` and `[:L176]`. It fixes NOTHING
+ * about which repositories exist or how they are constructed: `buildGraph` is supplied by the composition
+ * root, which is the only layer that may name a concrete adapter (AAP 0.4.1.3).
+ *
+ * ⛔ THE ORDER OF THE TWO STEPS IS NOT AN IMPLEMENTATION DETAIL. The product must be resolved INSIDE the
+ * boundary, not before it: resolving outside would put the read on a different connection from the
+ * writes, which is the M6 divergence this whole section exists to remove.
+ *
+ * ⛔ A MISSING PRODUCT COMMITS AN EMPTY TRANSACTION RATHER THAN ROLLING BACK, and that is deliberate.
+ * Nothing was written, so there is nothing to undo; reporting a roll-back would describe a failure that
+ * did not occur, and raising would turn the legacy's "no such row" answer into a fault. The gate below
+ * reads `false` on that path for exactly that reason.
+ *
+ * ⛔ NO RETRY, NO TIMEOUT, NO ISOLATION LEVEL AND NO BATCH LIMIT IS INTRODUCED (AAP 0.7.3 S9). The
+ * settle sequence belongs entirely to the runner.
+ *
+ * @typeParam TScope - The runner's scope type; inferred, never named in this file.
+ * @typeParam TGraph - The concrete graph the composition root builds. Constrained to
+ *   {@link SkuCreationGraph} so the boundary can use it while the root stays free to build more.
+ * @param runner - The transaction runner, structurally `UnitOfWork.runScoped`.
+ * @param buildGraph - Builds the scope-bound collaborators. It MUST pass the scope's executor to every
+ *   repository it constructs; that single obligation is what M6's visibility guarantee rests on.
+ * @returns The boundary {@link createSkuHandler} requires.
+ */
+export function createProductSkuCreationBoundary<TScope, TGraph extends SkuCreationGraph>(
+  runner: ScopedTransactionRunner<TScope>,
+  buildGraph: (scope: TScope) => TGraph,
+): ProductSkuCreationBoundary {
+  return async (productID: string, data: Record<string, unknown>): Promise<boolean | null> => {
+    const outcome = await runner.runScoped(
+      buildGraph,
+      async (graph): Promise<SkuCreationOutcome> => {
+        const product = await graph.resolveProduct(productID);
+
+        if (product === null) {
+          return { product: null, created: null };
+        }
+
+        /* M6: the payload reaches the service unreshaped, and the call runs on the same executor the
+         * read above used, so each insert is visible to the next SKU's uniqueness read (AAP 0.6.2). */
+        return { product, created: await graph.skuService.createSkus(product, data) };
+      },
+      /* The M5 gate — `model/service/ProductService.cfc:L286-L288` re-read, on the product itself. */
+      (settled: SkuCreationOutcome): boolean =>
+        settled.product !== null && settled.product.hasErrors(),
+    );
+
+    return outcome.created;
+  };
+}
 
 /* ================================================================================================
  * EVENT SLICES
@@ -589,6 +844,18 @@ export type SortedProductSkusEvent = Pick<APIGatewayProxyEvent, 'pathParameters'
 export type SearchSkusEvent = Pick<APIGatewayProxyEvent, 'queryStringParameters' | 'headers'>;
 
 /**
+ * The slice the bounded search needs — the same one, because the window travels in the query string too.
+ *
+ * Declared as its own alias rather than reusing {@link SearchSkusEvent} so the two routes' contracts can
+ * diverge later without one silently widening the other, and so a reader sees at the type that the
+ * bounded route reads more from the same container.
+ */
+export type BoundedSearchSkusEvent = Pick<
+  APIGatewayProxyEvent,
+  'queryStringParameters' | 'headers'
+>;
+
+/**
  * The slice {@link SkuHandler.getSkuStocksDeletableFlag} reads: the SKU identifier from the path.
  */
 export type SkuIdentifierEvent = Pick<APIGatewayProxyEvent, 'pathParameters' | 'headers'>;
@@ -599,14 +866,23 @@ export type SkuIdentifierEvent = Pick<APIGatewayProxyEvent, 'pathParameters' | '
 export type SkuCodeEvent = Pick<APIGatewayProxyEvent, 'pathParameters' | 'headers'>;
 
 /**
- * The slice {@link SkuHandler.getTransactionExistsFlag} reads: NOTHING beyond the headers the
- * authorisation resolver is given.
+ * The slice {@link SkuHandler.getTransactionExistsFlag} reads: the query string, for the two optional
+ * identifiers that scope the question, plus the headers the authorisation resolver is given.
  *
- * That emptiness is the observable consequence of judgment (a), expressed in the type system rather
- * than only in a comment: the legacy declaration at [model/service/SkuService.cfc:L285] has no formal
- * parameter, so there is no input for a route to bind and no container for this member to read.
+ * ⚠️ THIS SLICE PREVIOUSLY EXCLUDED THE QUERY STRING, AND THE EXCLUSION WAS A DEFECT RATHER THAN A
+ * FAITHFUL NARROWING. It rested on reading [model/service/SkuService.cfc:L285]'s empty parameter list as
+ * "there is no input to bind", but [:L286] forwards the whole `arguments` scope with
+ * `argumentCollection=arguments`, and CFML places an UNDECLARED named argument into that scope, so both
+ * real callers' identifiers do reach the query — `skuID` from [model/entity/Sku.cfc:L594] and `productID`
+ * from [model/entity/Product.cfc:L626]. With nothing bound the query has no identifier at all and the
+ * DAO's else-branch dereferences an undefined key at [model/dao/SkuDAO.cfc:L90], so every request failed.
+ * AAP §0.1.1.3 IR-1 requires exactly this correction: what CFML passed implicitly becomes an explicit
+ * declaration. ../services/SkuService carries the full account under D23.
  */
-export type TransactionExistsEvent = Pick<APIGatewayProxyEvent, 'headers'>;
+export type TransactionExistsEvent = Pick<
+  APIGatewayProxyEvent,
+  'queryStringParameters' | 'headers'
+>;
 
 /**
  * The slice {@link SkuHandler.getSkuSmartList} reads: the whole query-string container, which stands in
@@ -709,9 +985,21 @@ export type SkuAuthorizationEvent = Pick<APIGatewayProxyEvent, 'headers'>;
 export interface SkuResponse {
   readonly skuID: string;
   readonly skuCode?: string;
-  readonly price: number;
-  readonly listPrice: number;
-  readonly renewalPrice: number;
+  /* ⭐ F07 — THE THREE PRICES SERIALISE AS JSON STRINGS, AND THAT IS THE POINT. They are
+   * {@link ExactDecimal}: `ormtype="big_decimal"` [model/entity/Sku.cfc:L55-L57], carried as exact digits
+   * everywhere else in this port. Declaring them `number` here would put the rounding back at the very
+   * last step, because `JSON.stringify` would emit a bare numeric literal and every mainstream JSON
+   * parser reads one as an IEEE-754 double — so `9007199254740993.01` would reach the client as
+   * `9007199254740994` after surviving the database, the mapper, the domain and the service intact.
+   *
+   * NO LEGACY JSON CONTRACT IS BROKEN BY THIS, because none exists: the legacy exposes FW/1
+   * `?slatAction=` routes rendering CFML views, not this envelope, and this handler layer is net-new in
+   * its entirety (AAP §0.4.1.9). The choice is therefore free, and exactness is the only defensible one.
+   * A consumer needing arithmetic parses the string with a decimal library of its own choosing — which is
+   * the same decision this port made internally, for the same reason. */
+  readonly price: ExactDecimal;
+  readonly listPrice: ExactDecimal;
+  readonly renewalPrice: ExactDecimal;
   readonly activeFlag: boolean;
   readonly userDefinedPriceFlag: boolean;
   readonly imageFile?: string;
@@ -928,6 +1216,10 @@ export const SKU_ACCESS_MATRIX: Readonly<Record<keyof SkuHandler, SkuAccessRequi
     getProductSkus: SECURE_SKU_READ_REQUIREMENT,
     getSortedProductSkus: SECURE_SKU_READ_REQUIREMENT,
     searchSkusByProductType: SECURE_SKU_READ_REQUIREMENT,
+    /* ⭐ P9 — THE SAME CLASSIFICATION AS THE UNBOUNDED ROUTE, AND IT MUST BE. A bound narrows how
+     * many rows arrive, never which; classifying the bounded door more loosely would make the bound
+     * a way around the gate rather than a way to read within it. */
+    searchSkusByProductTypeBounded: SECURE_SKU_READ_REQUIREMENT,
     getSkuStocksDeletableFlag: SECURE_SKU_READ_REQUIREMENT,
     getTransactionExistsFlag: SECURE_SKU_READ_REQUIREMENT,
     getSkuBySkuCode: SECURE_SKU_READ_REQUIREMENT,
@@ -1055,6 +1347,27 @@ export interface SkuHandler {
   readonly searchSkusByProductType: (event: SearchSkusEvent) => Promise<APIGatewayProxyResult>;
 
   /**
+   * The same search, read one explicitly requested window at a time.
+   *
+   * ⭐ P9 — AN ADDITIVE SECOND DOOR, NOT A REPLACEMENT. {@link SkuHandler.searchSkusByProductType} keeps
+   * its route, its arguments and its unbounded result, so no existing caller is narrowed and nothing is
+   * ever silently truncated. This route exists for a caller that must read a `%term%` scan over an
+   * arbitrarily large catalog without holding all of it, and it obliges that caller to STATE the window:
+   * `limit` and `offset` are both required, neither is defaulted and neither is clamped
+   * ({@link readBoundedReadWindow}).
+   *
+   * ⚠️ THE SUBSTRING SEMANTICS ARE UNCHANGED. `term` is still forwarded untrimmed, unfolded and
+   * unwrapped, and `productTypeID` is still SINGULAR and still second — the bound is the only difference.
+   *
+   * Responses: the window and its `hasMore` flag at an OK status; a bad request naming which bound was
+   * unusable; unauthorised or forbidden per {@link SKU_ACCESS_MATRIX}, asked with the SAME requirement as
+   * the unbounded route.
+   */
+  readonly searchSkusByProductTypeBounded: (
+    event: BoundedSearchSkusEvent,
+  ) => Promise<APIGatewayProxyResult>;
+
+  /**
    * Reports whether a SKU's stock records may be deleted — and never actually answers.
    *
    * The AWS-facing face of `getSkuStocksDeletableFlag` at [model/service/SkuService.cfc:L281], whose
@@ -1069,21 +1382,22 @@ export interface SkuHandler {
   /**
    * Reports whether any transaction references a SKU or product.
    *
-   * The AWS-facing face of `getTransactionExistsFlag` at [model/service/SkuService.cfc:L285], which
-   * declares NO arguments — judgment (a), AAP 0.4.2.2 Discrepancy 4 and carried defect D23. This member
-   * therefore reads NOTHING from the request: no path parameter, no query parameter and no body.
+   * The AWS-facing face of `getTransactionExistsFlag` at [model/service/SkuService.cfc:L285]. That
+   * declaration names no formal parameter, but [:L286] forwards the whole `arguments` scope to the DAO,
+   * which declares `string productID, string skuID` [model/dao/SkuDAO.cfc:L53-L55] — so the member is
+   * two-argument in behaviour and zero-argument in declaration. That is carried defect D23, and AAP
+   * §0.1.1.3 IR-1 makes the implicit passing explicit: this boundary binds BOTH optional identifiers from
+   * the query string, in the service's own order.
    *
-   * ⚠️ AND THAT MEANS IT RAISES, WHICH IS PARITY RATHER THAN A GAP. With no identifier bound, the DAO's
-   * else-branch dereferences `arguments.productID` at [model/dao/SkuDAO.cfc:L90] after the
-   * `structKeyExists` test at [:L58] has already failed, so a genuinely argument-free legacy invocation
-   * fails too. The port reproduces that at the same layer, and this boundary does NOT pre-empt it with a
-   * guard: pre-empting would move a legacy failure to a new place and invent a message the legacy never
-   * had. The identifier-scoped capability lives where AAP 0.4.2.6 puts it — on
-   * `SkuRepository.transactionExists(productID?, skuID?)`, reached by the entity-level checkers that
-   * `Sku.cfc:L594` and `Product.cfc:L626` stand for — and not on this member.
+   * ⚠️ EITHER, BOTH OR NEITHER IS A LEGAL REQUEST, and the three outcomes differ. One identifier scopes
+   * the question to that SKU or that product. Both is legal and `skuID` wins, per the branch test at
+   * [model/dao/SkuDAO.cfc:L58-L64]. NEITHER still raises, because the legacy raises: the else-branch
+   * dereferences `arguments.productID` at [:L90] after the `structKeyExists` test at [:L58] has failed.
+   * That failure is left to surface from the repository rather than pre-empted here, since pre-empting
+   * would move a legacy failure to a new place and invent a message the legacy never had.
    *
-   * Responses: unauthorised or forbidden per {@link SKU_ACCESS_MATRIX}; otherwise whatever the service
-   * produces, which on the current repository is a failure.
+   * Responses: unauthorised or forbidden per {@link SKU_ACCESS_MATRIX}; a bad request when neither
+   * identifier is supplied, surfaced from the layer that owns the failure; otherwise the flag.
    */
   readonly getTransactionExistsFlag: (
     event: TransactionExistsEvent,
@@ -1240,102 +1554,14 @@ function readCfmlBoolean(
   return null;
 }
 
-/**
- * One key `SmartListInput` accepts — either a recognised name or a recognised prefixed form.
+/*
+ * THE SMART-LIST QUERY-STRING READER LIVES IN ./httpResponse, NOT HERE.
  *
- * Derived from the port's own declaration with `keyof` rather than written out a second time, so the
- * accepted key set and the type can never drift apart. `Extract<…, string>` drops the numeric and symbol
- * halves `keyof` always includes, which is what makes the result usable as a narrowing target for a
- * `string` parameter.
+ * Both smart-list routes on this boundary and ./productHandler's own smart-list route need the same
+ * recognised query-string vocabulary, so the reader and the two key lists it consults are declared
+ * ONCE in ./httpResponse and imported. A second private copy here is what would let the two
+ * boundaries drift apart on which parameters the legacy interpreter would have acted on.
  */
-type SmartListInputKey = Extract<keyof SmartListInput, string>;
-
-/**
- * A writable view of `SmartListInput`, used only while one is being assembled.
- *
- * The port declares every member `readonly`, which is right for a value being consumed and impossible for
- * a value being built. A homomorphic mapped type with `-readonly` removes exactly that modifier and
- * PRESERVES the seven template index signatures, so the accumulated object is still checked against the
- * real vocabulary rather than degenerating into a bare record. The assembled value is returned as the
- * readonly `SmartListInput` again, so nothing downstream can write through it.
- */
-type MutableSmartListInput = { -readonly [K in keyof SmartListInput]: SmartListInput[K] };
-
-/**
- * Reports whether a query-parameter name is one the legacy smart list would have acted on.
- *
- * The two lists it consults, and the line of org/Hibachi/HibachiSmartList.cfc that recognises each entry,
- * are documented above {@link SMART_LIST_NAMED_KEYS}. The prefix test is sound because the legacy's own
- * tests are colon-terminated and therefore mutually exclusive.
- *
- * @param name the query-parameter name as the client supplied it
- * @returns true when the name belongs to the smart list's data vocabulary
- */
-function isSmartListInputKey(name: string): name is SmartListInputKey {
-  if (SMART_LIST_NAMED_KEYS.includes(name)) {
-    return true;
-  }
-
-  for (const prefix of SMART_LIST_KEY_PREFIXES) {
-    if (name.startsWith(prefix)) {
-      return true;
-    }
-  }
-
-  return false;
-}
-
-/**
- * Assembles the smart list `data` struct from the query string.
- *
- * G6 TRANSLATION DECISION (l), part two. `getSkuSmartList(struct data={}, currentURL="")`
- * [model/service/SkuService.cfc:L309] received the FW/1 request context — the whole bag of query and form
- * values — and `applyData` [org/Hibachi/HibachiSmartList.cfc:L85-L136] then walked that bag and acted on
- * recognised keys only, ignoring every other member. This function is that walk, over the container the
- * request actually carries.
- *
- * ⚠️ THIS IS THE ONE PLACE THE FILE READS AN EVENT CONTAINER DIRECTLY RATHER THAN THROUGH A NAMED READER,
- * AND THE REASON IS STRUCTURAL. ./httpResponse's readers answer "what is the value of THIS name"; the
- * legacy behavior being reproduced is "enumerate every name supplied". No single-name reader can express
- * that, and adding an enumerating reader to ./httpResponse is not this file's to do — that module is
- * parent-owned (AAP 0.4.1.2) and is neither edited nor extended from here. The two obligations the readers
- * exist to discharge are therefore discharged inline and explicitly: the container is declared nullable, so
- * the null is narrowed before it is touched; and enumeration uses `Object.entries`, which yields OWN
- * enumerable entries only, so an inherited member such as `toString` can never be mistaken for a supplied
- * parameter. That is the same technique `readHeader` uses internally, for the same reason.
- *
- * ⛔ NOTHING IS ADDED, DEFAULTED OR NORMALISED. No page size, no limit, no maximum, no ordering, no filter
- * and no keyword is supplied by this function (AAP 0.7.3 S9, and ../services/SkuService's own statement
- * that "No pagination default, filter or ordering is invented"). Values are forwarded byte for byte —
- * never trimmed, case-folded, coerced to numbers or de-duplicated — because the interpreter's own
- * numeric-and-bounds tests at [:L123-L132] and its wildcard wrapping at [:L108-L113] are the port's
- * business, one layer down, and doing any of it twice would change results. An empty result is a legal and
- * meaningful input: it is exactly the `data={}` default at [:L309], and it is what all six in-repository
- * callers effectively pass — `integrationServices/google/controllers/feed.cfc:L63` among them.
- *
- * @param event the proxy event, or any object carrying its query-string-parameters member
- * @returns the recognised subset of the query string, as the smart list's own input type
- */
-function readSmartListInput(
-  event: Pick<APIGatewayProxyEvent, 'queryStringParameters'>,
-): SmartListInput {
-  const input: MutableSmartListInput = {};
-  const parameters = event.queryStringParameters;
-
-  if (parameters === null) {
-    return input;
-  }
-
-  for (const [name, value] of Object.entries(parameters)) {
-    if (value === undefined || !isSmartListInputKey(name)) {
-      continue;
-    }
-
-    input[name] = value;
-  }
-
-  return input;
-}
 
 /* ================================================================================================
  * RESPONSE PROJECTION
@@ -1353,9 +1579,10 @@ function readSmartListInput(
  *
  * Values are copied exactly as the entity holds them — never trimmed, re-cased, formatted, rounded,
  * localised or defaulted — following the pass-through rule ./httpResponse sets for this layer. In
- * particular the three price members are the STORED numbers and no currency formatting is applied: that is
- * `../util/formatting`'s and the feed serializer's business, and the settings it would need reach an
- * out-of-scope resolver.
+ * particular the three price members are the STORED DIGITS AT THE STORED SCALE (F07) and no currency
+ * formatting is applied: that is the feed serializer's business, and the settings it would need reach an
+ * out-of-scope resolver. `../util/formatting` owns the value type itself, but it is asked to render
+ * nothing here — an `ExactDecimal` already IS its own textual form, so the pass-through is literal.
  *
  * An absent optional member is OMITTED rather than emitted as a null, which `exactOptionalPropertyTypes`
  * makes the compiler check: [model/entity/Sku.cfc:L54] and [:L58] declare no default, so "absent" and
@@ -1406,9 +1633,50 @@ function toSkuResponses(skus: readonly Sku[]): readonly SkuResponse[] {
  * @returns the same page, with both record collections projected
  */
 function toSkuSmartListResponse(result: SmartListResult<Sku>): SkuSmartListResponse {
+  /*
+   * ⭐ P12 — EACH SKU IS PROJECTED ONCE, NOT ONCE PER COLLECTION IT APPEARS IN. `pageRecords` is a
+   * WINDOW OVER `records` — `../adapters/mysql/SmartListQueryBuilder` derives both from one selection —
+   * so projecting the two collections independently built a second, identical `SkuResponse` for every
+   * SKU inside the current page and threw one of the two away. The memo below is filled on first
+   * encounter and read on every later one.
+   *
+   * ⚠️ KEYED BY INSTANCE IDENTITY, NOT BY `skuID`, AND THAT IS DELIBERATE. A `skuID` key would assume
+   * the two collections cannot carry two distinct instances bearing one identifier — an assumption this
+   * layer is not entitled to make about a hydration path it does not own, and one that would silently
+   * substitute one SKU's projection for another's if it were ever false. Instance identity is exact and
+   * assumes nothing.
+   *
+   * ⚠️ THE EMITTED BODY IS BYTE-IDENTICAL. A shared reference is not observable in JSON: `JSON.stringify`
+   * has no reference syntax and writes every occurrence out in full, so a SKU present in both collections
+   * still appears in both, with the same fields, in the same order. Order and cardinality are preserved
+   * by construction because both collections are still mapped positionally and totally.
+   *
+   * ⛔ NOT A DE-DUPLICATION AND NOT A SHAPE CHANGE. Both collections remain present, both remain complete,
+   * and the five paging numbers cross untouched — `SkuSmartListResponse` still declares the smart list's
+   * own seven members. Introducing a page-only response, or replacing `pageRecords` with index ranges into
+   * `records`, would be a NEW contract; if that is ever wanted it must be versioned explicitly rather than
+   * arrived at here.
+   *
+   * ⛔ AND NOTHING IS RETAINED BEYOND THIS CALL (M7). The memo is a local, built per response and
+   * unreachable once the body is shaped, so no projection survives into another invocation on a warm
+   * container.
+   */
+  const projectionBySku = new Map<Sku, SkuResponse>();
+  const project = (sku: Sku): SkuResponse => {
+    const remembered = projectionBySku.get(sku);
+
+    if (remembered !== undefined) {
+      return remembered;
+    }
+
+    const projection = toSkuResponse(sku);
+    projectionBySku.set(sku, projection);
+    return projection;
+  };
+
   return {
-    records: toSkuResponses(result.records),
-    pageRecords: toSkuResponses(result.pageRecords),
+    records: result.records.map(project),
+    pageRecords: result.pageRecords.map(project),
     recordsCount: result.recordsCount,
     pageRecordsStart: result.pageRecordsStart,
     pageRecordsEnd: result.pageRecordsEnd,
@@ -1426,17 +1694,29 @@ function toSkuSmartListResponse(result: SmartListResult<Sku>): SkuSmartListRespo
  *
  * ⭐ IT CONSTRUCTS NOTHING AND RESOLVES NOTHING BY NAME, WHICH IS THE WHOLE OF AAP 0.7.3 S3 —
  * "Constructor injection only. No service locator, no dynamic method synthesis, no string-keyed runtime
- * resolution." All three collaborators arrive as parameters, from src/handlers/router.ts, which obtains
+ * resolution." All four collaborators arrive as parameters, from src/handlers/router.ts, which obtains
  * them from the memoized composition root. There is no `new` in this file, no `getService("name")`, no
  * `Proxy`, no `Reflect`, no decorator, no container import and no indexer dispatch over a name — because
  * re-creating `onMissingMethod` [org/Hibachi/HibachiService.cfc:L255-L281] in a new idiom would defeat
  * the exercise rather than complete it (TR-3).
  *
  * ⭐ EVERY COLLABORATOR IS REQUIRED, SO "MOUNTED WITHOUT A POLICY" IS NOT A REACHABLE STATE. None of the
- * three parameters is optional and none has a default, so a caller cannot omit the authorisation
- * resolver and silently get an open boundary. That is the structural default-deny discipline
- * ../ports/AccountContextPort states for its own ports and that ./brandHandler and ./optionHandler apply
- * to their factories: a missing policy is a compile error rather than a permissive default.
+ * four parameters is optional and none has a default, so a caller cannot omit the authorisation resolver
+ * and silently get an open boundary, nor omit the write runner and silently get an unbounded commit.
+ * That is the structural default-deny discipline ../ports/AccountContextPort states for its own ports
+ * and that ./brandHandler and ./optionHandler apply to their factories: a missing policy is a compile
+ * error rather than a permissive default.
+ *
+ * ⚠️ THE FOURTH PARAMETER IS PRESENT HERE AND ABSENT FROM ./brandHandler AND ./optionHandler, AND THE
+ * ASYMMETRY IS EVIDENCE-LED RATHER THAN AN OVERSIGHT. A transaction boundary belongs where a write can
+ * leave the database in a state the legacy could not reach, and only two of the four catalog boundaries
+ * can: this one, through `createSkus`, whose combination batch is read back mid-flight by its own
+ * validation (AAP 0.6.2); and ./productHandler, whose eleven writing members include the three
+ * `Product` mutations. `saveBrand` [model/service/BrandService.cfc:L67] and the option members write a
+ * single row through the base collaborator with no read-back and no multi-statement sequence, so
+ * wrapping them would add a boundary the legacy's request-scoped flush already subsumed — and it would
+ * change two factory signatures that ../../test/services/BrandService.test.ts and
+ * ../../test/services/OptionService.test.ts already call with two arguments.
  *
  * ⛔ NO STATE AT EITHER SCOPE (AAP 0.6.6 M7). The returned object is created per call and frozen; the
  * nine closures capture only the three injected values. Nothing is memoized, cached, counted, batched or
@@ -1452,37 +1732,59 @@ function toSkuSmartListResponse(result: SmartListResult<Sku>): SkuSmartListRespo
  *
  * ⭐ THE SERVICE IS IMPORTED TYPE-ONLY, SO THE CLASS IS UNREACHABLE FROM HERE AT RUN TIME. Nothing in
  * this module calls its constructor, the import is erased at compile time, and the parameter is narrowed
- * to {@link SkuSurface} — so the boundary can reach the ten declared members and nothing else. That also
- * keeps the bundled artifact free of service code this entry point does not itself execute.
+ * to {@link RoutedSkuSurface} — so the boundary can reach the nine READ-AND-PROCESS members and nothing
+ * else. That also keeps the bundled artifact free of service code this entry point does not itself
+ * execute.
  *
- * STRANGLER-FIG INDEPENDENCE (AAP 0.8.3.8). Because all three parameters are types, this module builds,
+ * ⛔ AND THE WRITING MEMBER IS NOT AMONG THEM, BY CONSTRUCTION. `createSkus` arrives as
+ * {@link ProductSkuCreationBoundary} instead, because it must run inside a transaction whose scope also
+ * built the product read it depends on (M5, M6, AAP 0.6.2). Handing this factory a seam that declared
+ * `createSkus` is what allowed the untransacted call the review found here; {@link RoutedSkuSurface}
+ * removes the possibility rather than warning about it.
+ *
+ * STRANGLER-FIG INDEPENDENCE (AAP 0.8.3.8). Because all four parameters are types, this module builds,
  * type-checks, bundles and can be exercised with no unconverted Slatwall code present at all: "new
  * TypeScript services must be callable and deployable without requiring the rest of Slatwall to be
  * converted." This folder is where "callable" is realised.
  *
  * TEST PROVENANCE: NET-NEW, in full. No legacy controller test of any kind exists (AAP 0.6.5.2).
  *
- * @param skuService - The SKU service to delegate to, narrowed to its ten declared members. A full
- *        service instance satisfies it, and so does a ten-member object literal — which is what makes
- *        every member below assertable without a repository, a database, a network call or an AWS
- *        runtime, in a repository that vendors no mocking library (AAP 0.4.3.6).
- * @param resolveProduct - Turns an addressed product identifier into the entity three service members
+ * @param skuService - The SKU service to delegate to, narrowed to the nine members this boundary reads
+ *        or processes through. A full service instance satisfies it, and so does an object literal —
+ *        which is what makes every member below assertable without a repository, a database, a network
+ *        call or an AWS runtime, in a repository that vendors no mocking library (AAP 0.4.3.6).
+ * @param createProductSkus - The writing boundary: one transaction per invocation, over collaborators
+ *        built from that transaction's scope. Required, and the ONLY way this handler can create
+ *        anything; see {@link createProductSkuCreationBoundary}.
+ * @param resolveProduct - Turns an addressed product identifier into the entity the two READ members
  *        require. Required; see {@link ProductResolver} for why this is a parameter and not an import.
+ *        ⚠️ It is NOT the resolver the writing path uses — that one is built inside the boundary, on the
+ *        transaction's own executor.
  * @param resolveAuthorization - Resolves this invocation's principal and its entity-authorisation
  *        verdict from the request. Required: there is no unauthorised construction of this handler.
+ * @param runWrite - Runs `createSkus` inside a transaction boundary, against collaborators bound to the
+ *        checked-out connection. Required; see {@link TransactionalWriteRunner} and {@link SkuWriteGraph} for why
+ *        it is a parameter, why it takes BOTH collaborators, and why the other eight members do not use
+ *        it.
  * @returns The nine request-shaped members, frozen.
  *
  * @example
  * ```ts
  * // In router.ts, which owns every route:
- * const skuHandler = createSkuHandler(container.skuService, resolveProduct, resolveAuthorization);
+ * const skuHandler = createSkuHandler(
+ *   container.skuService,
+ *   createProductSkuCreationBoundary(container.unitOfWork, container.buildSkuCreationGraph),
+ *   resolveProduct,
+ *   resolveAuthorization,
+ * );
  * const result = await skuHandler.getSkuSmartList(event);
  * ```
  */
 export function createSkuHandler(
-  skuService: SkuSurface,
+  skuService: RoutedSkuSurface,
   resolveProduct: ProductResolver,
   resolveAuthorization: RequestAuthorizationResolver<SkuAuthorizationEvent>,
+  writeRunner: TransactionalWriteRunner<SkuWriteGraph>,
 ): SkuHandler {
   /**
    * Runs the gate `setupRequest()` [org/Hibachi/Hibachi.cfc:L188] ran, for one routed member.
@@ -1598,14 +1900,24 @@ export function createSkuHandler(
    * serialised as the boolean it is: not translated into a status code, not inverted, not wrapped in an
    * invented envelope, and not replaced by a synthesised outcome. A caller learns what happened the way
    * the legacy caller did — from the product's error state, which the service records where [:L143],
-   * [:L148] and [:L176] put it. The one genuinely exceptional path, the fallthrough
-   * `throw("There was an unexpected error when creating this product")` at [:L204], travels out as a
-   * failure through {@link errorResponse} with its message preserved by the service.
+   * [:L148] and [:L176] put it. The one genuinely exceptional path is the discriminator fallthrough at
+   * [model/service/SkuService.cfc:L204]; its text is owned by `../errors/DomainError` as
+   * `UNEXPECTED_ERROR_CREATING_PRODUCT_MESSAGE` and is deliberately NOT restated here, so verbatim
+   * fidelity stays checkable with a single search per string and no second copy can drift from the
+   * first. It travels out as a failure through {@link errorResponse} with its message preserved by the
+   * service, which raises it as `LegacyParityError` so the pass-through applies.
    *
    * ⛔ THE GATE RUNS BEFORE THE IDENTIFIER IS READ AND BEFORE THE BODY IS PARSED. This is the file's
    * one WRITING row and the only one that asks about `Product` ({@link SKU_ACCESS_MATRIX}); refusing
    * first reproduces the legacy order and means an unauthorised caller cannot use the distinct
    * bad-request texts below to discover the request shape, nor learn whether a product exists.
+   *
+   * ⭐ AND IT IS THE ONE MEMBER THAT RUNS INSIDE A TRANSACTION BOUNDARY — judgment (o), MISMATCH M5.
+   * The product resolution and the service call BOTH run against the connection the injected
+   * {@link TransactionalWriteRunner} checked out, because the batch is read back by its own validation while it is
+   * still being written (AAP 0.6.2); the commit is gated on the product's error bag, because [:L207]
+   * answers `true` even when [:L143], [:L148] or [:L176] have rejected the batch. The eight other
+   * members take no boundary: seven are reads, and `processImageUpload` reaches no table.
    *
    * @param event the proxy event, or any object carrying its body, path-parameters and headers members
    * @returns the service's unconditional `true`, or the response describing why it was not attempted
@@ -1620,11 +1932,7 @@ export function createSkuHandler(
     const productID: string | undefined = readProductIdentifier(event);
 
     if (productID === undefined) {
-      return messageResponse(
-        HTTP_STATUS.BAD_REQUEST,
-        PUBLIC_ERROR_CODE.REQUEST_INVALID,
-        PRODUCT_ID_REQUIRED_MESSAGE,
-      );
+      return messageResponse(HTTP_STATUS.BAD_REQUEST, PRODUCT_ID_REQUIRED_MESSAGE);
     }
 
     const body = readJsonObjectBody(event);
@@ -1633,17 +1941,89 @@ export function createSkuHandler(
       return invalidRequestBodyResponse(body.problem);
     }
 
-    try {
-      const product = await resolveProduct(productID);
+    /*
+     * ⭐ THE BATCH RUNS INSIDE ONE TRANSACTION, AND AN EARLIER REVISION CALLED THE CAPTURED SERVICE
+     * DIRECTLY INSTEAD.
+     *
+     * ../services/SkuService states the requirement in its own words: the persist is unconditional and
+     * "the enclosing transaction — opened and closed by the caller, never here — is what discards a
+     * failed batch". There was no such caller. Every SKU was written on the pool and every write was
+     * already durable by the time validation had an opinion, so an invalid batch COMMITTED: `createSkus`
+     * returns `true` unconditionally [model/service/SkuService.cfc:L207], the product's own bag stays
+     * empty when the findings are per-SKU, and nothing anywhere rolled anything back. That is the legacy's
+     * request-end gate (AAP §0.6.6 M5) simply missing.
+     *
+     * ⚠️ `batchProduct` IS CAPTURED SO THE GATE CAN SEE WHAT THE WORK BUILT. `runWrite` evaluates the gate
+     * after the work settles, and the graph the work used is out of scope by then. The product is the root
+     * of everything the batch touched, so holding it is enough to reach both error bags.
+     */
+    let batchProduct: ProductWithErrorState | null = null;
 
-      if (product === null) {
-        return notFoundResponse();
+    /*
+     * READ THROUGH A FUNCTION, NOT DIRECTLY, AND THE REASON IS TYPE-SYSTEM RATHER THAN STYLISTIC.
+     * `batchProduct` is assigned only INSIDE the work callback, so at the `catch` below the compiler's
+     * control-flow analysis still holds the initialiser's `null` and narrows any direct test against it
+     * to `never`. Reading it through a function body — where the declared type applies rather than the
+     * narrowed one — recovers the real type with no cast and no assertion, which is what the strict
+     * settings this package pins are there to force.
+     */
+    const capturedBatch = (): ProductWithErrorState | null => batchProduct;
+
+    try {
+      const created: boolean | null = await writeRunner.runWrite(
+        async (graph: SkuWriteGraph): Promise<boolean | null> => {
+          /* Read through the TRANSACTION's scope, never the captured resolver — see {@link SkuWriteGraph}
+           * for why the sibling set the uniqueness rule observes depends on it (M6). */
+          const product = await graph.resolveProduct(productID);
+
+          if (product === null) {
+            /* A missing product is NOT a failed batch. Nothing has been written, so the gate below finds
+             * no findings and the empty transaction commits; the 404 is shaped after it returns. */
+            return null;
+          }
+
+          batchProduct = product;
+
+          /* M6: `body.value` is passed straight through. Do not interpose a transformation here — see the
+           * warning above this member. Judgment (n): the boolean is serialised exactly as returned. */
+          return graph.skuService.createSkus(product, body.value);
+        },
+        /*
+         * ⛔ THE COMPLETE PREDICATE, NOT `product.hasErrors()`. `skuBatchHasErrors` reads the product's bag
+         * AND every SKU's, because per-SKU rule findings deliberately never merge upward — its own contract
+         * carries the full reasoning. Narrowing this to the product alone would silently reinstate exactly
+         * the defect above for the commonest failure there is: a batch whose SKU codes collide.
+         */
+        () => batchProduct !== null && skuBatchHasErrors(batchProduct),
+      );
+
+      return created === null ? notFoundResponse() : okResponse(created);
+    } catch (error) {
+      /*
+       * THE ERROR SURFACE IS ASYMMETRIC AND BOTH HALVES CONVERGE HERE. When the gate reports findings
+       * the boundary REJECTS, because declining to commit is the only way a boundary can express the
+       * legacy's "settled as a rollback" branch — but the findings themselves live on the product, not
+       * on the rejection. They are lifted into a ../errors/ValidationError so a caller sees the keys the
+       * rule sets declare, copied UNCHANGED as AAP 0.4.1.11 requires. Any other rejection, including
+       * the fallthrough `throw("There was an unexpected error when creating this product")` at
+       * [model/service/SkuService.cfc:L204], travels out untouched with its message preserved.
+       */
+      const failedBatch = capturedBatch();
+
+      if (failedBatch !== null && skuBatchHasErrors(failedBatch)) {
+        const failure = new ValidationError();
+
+        /*
+         * THE COMPLETE BAG, MATCHING THE COMPLETE GATE. `skuBatchHasErrors` above refuses on a finding
+         * that lives on a SKU rather than on the product, so lifting `failedBatch.getErrors()` alone
+         * would publish an EMPTY `errors` member for exactly that case — a refusal with nothing said
+         * about what was refused. The collector merges the product's bag with every SKU's.
+         */
+        failure.addErrors(collectSkuBatchErrors(failedBatch));
+
+        return errorResponse(failure);
       }
 
-      /* M6: `body.value` is passed straight through. Do not interpose a transformation here — see the
-       * warning above this member. Judgment (n): the boolean is serialised exactly as returned. */
-      return okResponse(await skuService.createSkus(product, body.value));
-    } catch (error) {
       return errorResponse(error);
     }
   };
@@ -1706,11 +2086,7 @@ export function createSkuHandler(
     const skuCode: string | undefined = readSkuCode(event);
 
     if (skuCode === undefined) {
-      return messageResponse(
-        HTTP_STATUS.BAD_REQUEST,
-        PUBLIC_ERROR_CODE.REQUEST_INVALID,
-        SKU_CODE_REQUIRED_MESSAGE,
-      );
+      return messageResponse(HTTP_STATUS.BAD_REQUEST, SKU_CODE_REQUIRED_MESSAGE);
     }
 
     const body = readJsonObjectBody(event);
@@ -1784,11 +2160,7 @@ export function createSkuHandler(
     const productID: string | undefined = readProductIdentifier(event);
 
     if (productID === undefined) {
-      return messageResponse(
-        HTTP_STATUS.BAD_REQUEST,
-        PUBLIC_ERROR_CODE.REQUEST_INVALID,
-        PRODUCT_ID_REQUIRED_MESSAGE,
-      );
+      return messageResponse(HTTP_STATUS.BAD_REQUEST, PRODUCT_ID_REQUIRED_MESSAGE);
     }
 
     /* Discrepancy 2: `sorted` is REQUIRED, so absence is refused rather than defaulted. The reader's
@@ -1796,19 +2168,11 @@ export function createSkuHandler(
     const sorted: boolean | null | undefined = readCfmlBoolean(event, SORTED_QUERY_PARAMETER);
 
     if (sorted === undefined) {
-      return messageResponse(
-        HTTP_STATUS.BAD_REQUEST,
-        PUBLIC_ERROR_CODE.REQUEST_INVALID,
-        SORTED_REQUIRED_MESSAGE,
-      );
+      return messageResponse(HTTP_STATUS.BAD_REQUEST, SORTED_REQUIRED_MESSAGE);
     }
 
     if (sorted === null) {
-      return messageResponse(
-        HTTP_STATUS.BAD_REQUEST,
-        PUBLIC_ERROR_CODE.REQUEST_INVALID,
-        SORTED_NOT_BOOLEAN_MESSAGE,
-      );
+      return messageResponse(HTTP_STATUS.BAD_REQUEST, SORTED_NOT_BOOLEAN_MESSAGE);
     }
 
     const fetchOptions: boolean | null | undefined = readCfmlBoolean(
@@ -1819,11 +2183,7 @@ export function createSkuHandler(
     /* Present but unrecognised is refused; ABSENT is forwarded as absence, so the service's own
      * `fetchOptions = false` default at [:L220] remains the single place that default lives. */
     if (fetchOptions === null) {
-      return messageResponse(
-        HTTP_STATUS.BAD_REQUEST,
-        PUBLIC_ERROR_CODE.REQUEST_INVALID,
-        FETCH_OPTIONS_NOT_BOOLEAN_MESSAGE,
-      );
+      return messageResponse(HTTP_STATUS.BAD_REQUEST, FETCH_OPTIONS_NOT_BOOLEAN_MESSAGE);
     }
 
     try {
@@ -1883,11 +2243,7 @@ export function createSkuHandler(
     const productID: string | undefined = readProductIdentifier(event);
 
     if (productID === undefined) {
-      return messageResponse(
-        HTTP_STATUS.BAD_REQUEST,
-        PUBLIC_ERROR_CODE.REQUEST_INVALID,
-        PRODUCT_ID_REQUIRED_MESSAGE,
-      );
+      return messageResponse(HTTP_STATUS.BAD_REQUEST, PRODUCT_ID_REQUIRED_MESSAGE);
     }
 
     try {
@@ -1963,6 +2319,47 @@ export function createSkuHandler(
   };
 
   /**
+   * Ports the bounded companion of the same search — see {@link SkuHandler.searchSkusByProductTypeBounded}.
+   *
+   * The gate runs first and asks the SAME requirement as the unbounded route, for the reason recorded on
+   * that matrix row. The window is read next and a refusal is returned before the service is reached, so
+   * a malformed window never becomes a statement.
+   */
+  const searchSkusByProductTypeBounded = async (
+    event: BoundedSearchSkusEvent,
+  ): Promise<APIGatewayProxyResult> => {
+    const refusal = refuseUnauthorized(event, 'searchSkusByProductTypeBounded');
+
+    if (refusal !== undefined) {
+      return refusal;
+    }
+
+    const requested = readBoundedReadWindow(event);
+
+    if (!requested.present) {
+      return requested.response;
+    }
+
+    /* Read exactly as the unbounded route reads them, and forwarded exactly as it forwards them. */
+    const term: string | undefined = readQueryStringParameter(event, TERM_QUERY_PARAMETER);
+    const productTypeID: string | undefined = readQueryStringParameter(
+      event,
+      PRODUCT_TYPE_ID_QUERY_PARAMETER,
+    );
+
+    try {
+      /* The result carries `rows` and `hasMore` and is forwarded WHOLE. Returning only the rows would
+       * hand back a truncated collection indistinguishable from a complete one, which is the exact
+       * failure the bounded members exist to avoid. */
+      return okResponse(
+        await skuService.searchSkusByProductTypeBounded(requested.window, term, productTypeID),
+      );
+    } catch (error) {
+      return errorResponse(error);
+    }
+  };
+
+  /**
    * Ports the boundary for [model/service/SkuService.cfc:L281]
    * `public boolean function getSkuStocksDeletableFlag( required string skuID )`.
    *
@@ -2011,11 +2408,7 @@ export function createSkuHandler(
     const skuID: string | undefined = readSkuIdentifier(event);
 
     if (skuID === undefined) {
-      return messageResponse(
-        HTTP_STATUS.BAD_REQUEST,
-        PUBLIC_ERROR_CODE.REQUEST_INVALID,
-        SKU_ID_REQUIRED_MESSAGE,
-      );
+      return messageResponse(HTTP_STATUS.BAD_REQUEST, SKU_ID_REQUIRED_MESSAGE);
     }
 
     try {
@@ -2031,32 +2424,54 @@ export function createSkuHandler(
    * Ports the boundary for [model/service/SkuService.cfc:L285]
    * `public boolean function getTransactionExistsFlag()`.
    *
-   * ⚠️⚠️ TODO(parity) D23 — ZERO ARGUMENTS, SO THIS MEMBER READS NOTHING FROM THE REQUEST: no path
-   * parameter, no query parameter, no header and no body. Judgment (a) carries the whole account, and
-   * the short version is that the legacy declaration at [:L285] has no formal parameter of any kind
-   * while its body at [:L286] forwards `argumentCollection=arguments` to a DAO member that declares two
-   * [model/dao/SkuDAO.cfc:L54-L55] — so the legacy is zero-arg and effectively two-arg at once, and the
-   * two callers [model/entity/Sku.cfc:L594] and [model/entity/Product.cfc:L626] exploit the second half.
-   * ../services/SkuService ratified the ZERO-ARGUMENT form, AAP 0.4.2.2 Discrepancy 4 rules that "The
-   * narrower service contract is preserved", and this handler matches the service rather than the prose.
+   * ⚠️⚠️ TODO(parity) D23 — ZERO ARGUMENTS DECLARED, TWO ARGUMENTS PASSED. Judgment (a) carries the
+   * whole account. The short version is that [:L285] declares no formal parameter of any kind while
+   * [:L286] forwards `argumentCollection=arguments` to a DAO member that DOES declare two
+   * [model/dao/SkuDAO.cfc:L54-L55], and CFML puts an undeclared named argument into that scope — so both
+   * real callers' identifiers reach the query: `skuID` from [model/entity/Sku.cfc:L594] and `productID`
+   * from [model/entity/Product.cfc:L626]. AAP §0.1.1.3 IR-1 is the governing rule for exactly this
+   * situation ("each such call site becomes an explicitly declared, typed method"), so
+   * ../services/SkuService declares `(skuID?, productID?)` and this boundary binds both from the query
+   * string. AAP §0.4.2.2's Discrepancy 4 sentence is not amended by that: both parameters stay OPTIONAL,
+   * which is what its "narrower service contract" rules out inheriting from the DAO.
    *
-   * ⚠️ AND THAT MEANS THE ROUTE FAILS ON THE CURRENT REPOSITORY, WHICH IS PARITY RATHER THAN A GAP. With
-   * no identifier bound, the DAO's else-branch dereferences `arguments.productID`
-   * [model/dao/SkuDAO.cfc:L90] after the `structKeyExists` test at [:L58] has already failed, so a
-   * genuinely argument-free legacy invocation fails too. THIS BOUNDARY DOES NOT PRE-EMPT THAT WITH A
-   * GUARD, and does not invent a parameter to satisfy it: pre-empting would move a legacy failure to a
-   * new place and invent a message the legacy never had. The identifier-scoped capability lives where
-   * AAP 0.4.2.6 puts it — on `SkuRepository.transactionExists(productID?, skuID?)`, reached by the
-   * entity-level checkers, each of which declares its own zero-argument contract — and NOT on this
-   * member. Adding `productID` or `skuID` here would widen a preserved signature and put a second,
-   * competing spelling of the same capability on the wire.
+   * ⚠️ THE PREVIOUS REVISION OF THIS BOUNDARY READ NOTHING FROM THE REQUEST, AND THAT WAS A DEFECT
+   * RATHER THAN PARITY. With neither identifier bound, every request reached the DAO's else-branch,
+   * which dereferences `arguments.productID` [model/dao/SkuDAO.cfc:L90] after the `structKeyExists` test
+   * at [:L58] has failed — so the route could only ever fail, and the `transactionExistsFlag` delete
+   * guards in `model/validation/Sku.json` and `model/validation/Product.json` could never be evaluated.
+   * A neither-identifier request STILL fails, for that same legacy reason, and that failure is still not
+   * pre-empted with a guard here; what changed is that a request CARRYING an identifier now answers.
    *
-   * ⛔ THE GATE STILL RUNS, AND IT IS THE ONLY THING THIS MEMBER READS THE EVENT FOR. `read` on `Sku`
+   * ⛔ THIS IS NOT A SECOND SPELLING OF THE REPOSITORY MEMBER. The filtered capability AAP §0.4.2.6 puts
+   * on `SkuRepository.transactionExists(productID?, skuID?)` is still reached by the entity-level
+   * checkers for the entity-driven delete guards; this route is the AWS-facing face of the SERVICE
+   * member, and it forwards to the same service the checkers use. One capability, one implementation.
+   *
+   * ⛔ THE ORDER IS THE SERVICE'S, NOT THE REPOSITORY'S, AND GETTING IT WRONG IS DESTRUCTIVE RATHER THAN
+   * MERELY WRONG. `(skuID?, productID?)` here and in ../services/SkuService, matching both entity checker
+   * contracts; `(productID?, skuID?)` on the repository per AAP §0.4.2.6, with the service performing that
+   * swap itself in one visible place. Both identifiers are 32-character strings (IR-6), so an inverted
+   * forward TYPE-CHECKS and silently interrogates the wrong column — and because this flag gates a DELETE,
+   * a wrongly-scoped `false` PERMITS a destructive delete the legacy blocks.
+   *
+   * ⛔ THE GATE RUNS BEFORE EITHER IDENTIFIER IS READ, WHICH IS THE ANTI-ENUMERATION PROPERTY. Because
+   * the refusal is decided without consulting the query string or the repository, an unauthorised caller
+   * receives the SAME response for an identifier that exists and one that does not. `read` on `Sku`
    * ({@link SKU_ACCESS_MATRIX}).
    *
-   * @param event the invocation's event, or any object carrying its headers member — consulted for
-   *        authorisation only
-   * @returns whatever the service produces, which on the current repository is a failure, or the refusal
+   * ⚠️ BOTH VALUES ARE FORWARDED BYTE FOR BYTE, AND AN EMPTY ONE IS NOT COLLAPSED TO ABSENCE — which is
+   * the opposite of what {@link readSkuIdentifier} and {@link readProductIdentifier} do, deliberately.
+   * Those two ADDRESS a record, so the `unsavedvalue=""` sentinel cannot name one. Here the empty string
+   * is a VALUE the legacy genuinely binds: [model/entity/Product.cfc:L626] passes
+   * `this.getProductID()`, which is `''` for an unpersisted product, and the query then matches no row
+   * and answers `false`. Collapsing it would turn that answer into the neither-identifier failure, which
+   * is a different outcome. ../httpResponse's pass-through rule applies unchanged: nothing is trimmed,
+   * case-folded or validated here.
+   *
+   * @param event the invocation's event, or any object carrying its query-string-parameters and headers
+   *        members
+   * @returns the flag, the refusal, or the failure the service raises when neither identifier is supplied
    */
   const getTransactionExistsFlag = async (
     event: TransactionExistsEvent,
@@ -2067,9 +2482,25 @@ export function createSkuHandler(
       return refusal;
     }
 
+    /* D23: the two identifiers CFML forwards through `argumentCollection=arguments`, declared explicitly
+     * per IR-1. SKU first — the service's order and both entity checkers' order; the swap to the
+     * repository's `(productID, skuID)` happens inside ../services/SkuService, once. */
+    const skuID: string | undefined = readQueryStringParameter(event, SKU_ID_QUERY_PARAMETER);
+    const productID: string | undefined = readQueryStringParameter(
+      event,
+      PRODUCT_ID_QUERY_PARAMETER,
+    );
+
     try {
-      /* D23: called with NO arguments, matching [:L285] and ../services/SkuService. Do not add one. */
-      return okResponse(await skuService.getTransactionExistsFlag());
+      /*
+       * ⛔ SKU FIRST, PRODUCT SECOND — the SERVICE's order, which is the INVERSE of the repository's.
+       * ../services/SkuService declares `getTransactionExistsFlag(skuID?, productID?)` to match the two
+       * entity checker contracts and performs the swap to the repository's `(productID?, skuID?)`
+       * itself. Both identifiers are 32-character strings (IR-6), so passing them the wrong way round
+       * here would type-check and silently ask about the wrong column. When a caller supplies both, the
+       * SKU wins, exactly as [model/dao/SkuDAO.cfc:L58-L64] branches.
+       */
+      return okResponse(await skuService.getTransactionExistsFlag(skuID, productID));
     } catch (error) {
       return errorResponse(error);
     }
@@ -2196,6 +2627,7 @@ export function createSkuHandler(
     getProductSkus,
     getSortedProductSkus,
     searchSkusByProductType,
+    searchSkusByProductTypeBounded,
     getSkuStocksDeletableFlag,
     getTransactionExistsFlag,
     getSkuBySkuCode,

@@ -24,11 +24,25 @@
  * WHAT PASSES THROUGH, AND WHAT IS WITHHELD
  * -----------------------------------------
  * Two things that cross this boundary are observable behavior of the legacy system, and this
- * module forwards both without touching them. Nothing else crosses at all: the set of thrown texts
- * that may reach a response body is a CLOSED ALLOWLIST, so a message outside it is replaced with a
- * neutral text rather than forwarded. Verbatim fidelity and non-disclosure are therefore not in
- * tension here — the first applies to a fixed, enumerated set, and the second applies to
- * everything else. See {@link PUBLIC_PARITY_MESSAGE_STATUS}.
+ * module forwards both without touching them. Nothing else crosses at all: a thrown text reaches a
+ * response body only when its THROW SITE declared it legacy behaviour by raising
+ * ../errors/LegacyParityError, and every other message is replaced with a neutral text rather than
+ * forwarded. Verbatim fidelity and non-disclosure are therefore not in tension here — the first applies
+ * to what the throw sites classify, and the second applies to everything else. See
+ * {@link errorResponse}, BRANCH 3.
+ *
+ * ⛔ THE GATE IS A TYPE TEST, NOT A MESSAGE-TEXT ALLOWLIST, AND AN EARLIER REVISION DESCRIBED IT AS THE
+ * LATTER. Four paragraphs in this file cited a `PUBLIC_PARITY_MESSAGE_STATUS` inventory and a
+ * `publicParityStatusFor` lookup as the mechanism; NEITHER EXISTS ANYWHERE IN THE SUBTREE, and the
+ * references are withdrawn rather than satisfied by writing them. A text lookup is also not something
+ * this file may have: two of the four mandated strings interpolate a caller-supplied option selection,
+ * so they cannot be enumerated as literals, and matching on message text is the error-code registry
+ * AAP 0.7.3 S9 forbids. ⚠️ THE CONSEQUENCE IS STATED PLAINLY: the closure of the emitted set rests on
+ * the discipline of the throw sites, which is why ../errors/DomainError declares the four mandated
+ * strings and the parity subclass together, in one place, and why a site raising that subclass with a
+ * port-authored diagnostic is a defect at the site. One such site existed — the D6 branch of
+ * ../services/ProductService's `processProductAddSubscriptionTerm`, whose message named an internal
+ * member, an argument path and a defect identifier — and it now raises the base class instead.
  *
  *   - The four thrown message strings owned by ../errors/DomainError. Three come from
  *     model/entity/Product.cfc:355, :357 and :362 and one from model/service/SkuService.cfc:204.
@@ -58,7 +72,8 @@
  *     sentence. See {@link errorResponse}, which explains at the mapping site exactly why
  *     flattening is forbidden.
  *
- * EVERYTHING ELSE IS WITHHELD, AND `Error.message` IS NEVER READ HERE. The two items above reach a
+ * EVERYTHING ELSE IS WITHHELD, AND `Error.message` IS READ ON EXACTLY ONE BRANCH. The two items above
+ * reach a
  * caller because the error that carries them DECLARES them disclosable, not because this module
  * copies a message out of an exception. Every other message in the port is written for a maintainer
  * — ported members name the legacy locator they reproduce, the defect identifier they carry
@@ -67,20 +82,35 @@
  * ../errors/DomainError's deny-by-default presentation, and the reasoning for putting the decision
  * at the throw site rather than here is set out in full at {@link errorResponse}. The legacy
  * application had no response-shaping layer at all, so withholding a port-composed message departs
- * from no legacy contract; see DECLARED HARDENING there.
+ * from no legacy contract, and {@link errorResponse} records that reasoning at the mapping site.
+ *
+ * ⚠️ ONE EXACT QUALIFICATION, BECAUSE THE SENTENCE ABOVE USED TO OVERSTATE ITSELF. `Error.message` IS
+ * read in exactly one place — BRANCH 3 of {@link errorResponse}, and only for a
+ * ../errors/LegacyParityError, whose whole purpose is to declare its text a mandated legacy string that
+ * must reach the caller verbatim. No other branch reads a message, and no other error type can reach
+ * that branch, so the disclosure set stays closed by type.
  *
  * ARCHITECTURAL POSITION (AAP 0.7.3 S4 — hexagonal separation)
  * -----------------------------------------------------------
  * src/handlers/ is the outermost layer, and this module is its foundation: it has zero
- * intra-folder dependencies, and the router and the five per-service handlers all shape their
- * output through it. Its imports are therefore exactly two things and nothing else — the error
- * types from ../errors/, and type-only declarations from the AWS Lambda typings, which are
- * erased at compile time and never appear in an artifact.
+ * intra-folder dependencies, and every other file in the folder shapes its output through it. At
+ * this checkpoint that is FIVE siblings — brandHandler.ts, googleFeedHandler.ts, optionHandler.ts,
+ * productHandler.ts and skuHandler.ts — each importing this module and no other file in the folder.
+ * `router.ts` (AAP 0.4.1.9 row 1) is PLANNED AND NOT YET PRESENT; when it lands it inherits the same
+ * obligation, but nothing here anticipates it. Its imports are therefore exactly two things and
+ * nothing else — the error types from ../errors/, and type-only declarations from the AWS Lambda
+ * typings, which are erased at compile time and never appear in an artifact.
  *
  * What is consequently absent, all deliberate:
  *   - No import from ../adapters/, ../config/, ../validation/, ../ports/, ../services/ or
- *     ../domain/. This module is a pure function of its arguments; it resolves no collaborator,
- *     by name or otherwise, and imports no composition root (AAP 0.7.3 S3).
+ *     ../domain/. Every response this module returns is determined by its arguments alone; it
+ *     resolves no collaborator, by name or otherwise, and imports no composition root
+ *     (AAP 0.7.3 S3). ⚠️ THAT IS NOT THE SAME AS BEING SIDE-EFFECT FREE, AND AN EARLIER REVISION
+ *     OVERSTATED IT AS "a pure function of its arguments". {@link logSuppressedFailure} writes the
+ *     suppressed detail of a withheld failure to the runtime's error stream, which is an observable
+ *     effect and a required one: default-deny disclosure is only safe if the withheld detail is
+ *     still recoverable for diagnosis. The effect is confined to that one helper, it never varies
+ *     the returned value, and it is the only effect in the module.
  *   - No database driver, no query text, no table or column identifier, and no bound-parameter
  *     array. In this layer the parameterized-data-access standard inverts into a prohibition:
  *     data access has no business being named here at all (AAP 0.7.3 S2).
@@ -113,7 +143,8 @@
  *   (a) The verbatim pass-through rule above, including the two legacy misspellings, which
  *       Guideline 4 forbids repairing — and, as its necessary counterpart, the withholding of every
  *       message this port composed for a maintainer. Recorded in full at {@link errorResponse},
- *       including the declared-hardening statement for the four codes whose status changed.
+ *       branch by branch. No status "changed", because the legacy expressed none of these outcomes
+ *       as a status code at all — see judgment (d).
  *   (b) The validation error-key structure survives as a structure. Recorded at
  *       {@link errorResponse}, together with why a flattened body would defeat the comparability
  *       the whole port exists to demonstrate.
@@ -150,25 +181,32 @@
  *     header. AAP 0.7.3 S9 and AAP IR-12 forbid inventing a taxonomy or a tuning parameter the
  *     source does not state. No numeric literal appears anywhere below except an HTTP status code,
  *     which is a protocol value rather than an invented setting.
- *   - A failure-code registry of this module's own. The codes a response body carries are declared
- *     once, in ../errors/DomainError, so the error hierarchy and the response layer speak ONE closed
- *     vocabulary rather than two rival ones; that module records why the leaf owns it. The set is
- *     closed at the outcomes this port already distinguishes structurally, which is not the invented
- *     taxonomy AAP 0.7.3 S9 rules out but the existing branch set made machine-readable — the
- *     necessary counterpart of a public text that can no longer be specific.
+ *   - A failure-code registry, of this module's own or anyone else's. NO CLASSIFICATION CODE IS
+ *     SERIALIZED INTO A RESPONSE BODY AT ALL. A revision briefly published one alongside the message,
+ *     reasoning that a caller should be able to distinguish failure kinds "without parsing prose"; the
+ *     ergonomics were fine but the constraint was not, because AAP 0.7.3 S9 forbids inventing
+ *     classification surface the source does not state and the nine codes are this port's own
+ *     invention with no counterpart anywhere in model/**. Publishing them converted an internal
+ *     routing decision into a contract this port would owe forever. The codes still exist, declared
+ *     once in ../errors/DomainError so the error hierarchy and the response layer speak ONE closed
+ *     vocabulary rather than two rival ones, and they are still the sole input to
+ *     {@link statusForPublicErrorCode} — they simply stay inside. The STATUS carries the
+ *     machine-readable half of the answer, which is a protocol value rather than an invented one, and
+ *     the validation error keys carry the parity-bearing half.
  *   - Any timeout, page size, batch size, retry count, backoff schedule, concurrency limit or
  *     cache lifetime, and no service-level objective of any kind (AAP 0.8.3.5).
  *   - A logging, metrics or tracing LIBRARY. None is added, so the deliverable's dependency set
- *     stays frozen: the manifest gains nothing because of this file (AAP 0.7.3 S5). No metric, no
- *     span, no correlation or trace identifier and no structured log schema is introduced either,
- *     because AAP 0.7.3 S9 forbids inventing a taxonomy the source does not state.
+ *     stays frozen: the manifest gains nothing because of this file (AAP 0.7.3 S5). No metric and no
+ *     span is emitted either, because AAP 0.7.3 S9 forbids inventing an observability taxonomy the
+ *     source does not state.
  *     There is exactly ONE side effect anywhere in this module, and it is not observability:
  *     {@link errorResponse} writes a diagnostic line for each failure it deliberately declines to
  *     describe in the response body, using the runtime's own error stream and nothing else. That
  *     write is what makes the non-disclosure honest rather than lossy — the internal detail is
  *     REDIRECTED, not discarded — and it is the reason no caller has to choose between a leaking
- *     response and an undiagnosable failure. Every other export remains a pure function of its
- *     arguments, assertable without a database, a network call or an AWS runtime.
+ *     response and an undiagnosable failure. `errorResponse` is consequently the ONE export that is
+ *     not pure, which is why the purity statement above is scoped to the others; all of them,
+ *     including this one, stay assertable without a database, a network call or an AWS runtime.
  *   - The two execution-model mismatches that touch this folder. AAP 0.6.6 M1 (the importer's
  *     one-hour request budget, which exceeds the platform's function ceiling and therefore has no
  *     single-invocation equivalent) belongs to productHandler.ts, and M2 (the feed view's
@@ -176,6 +214,8 @@
  *     googleFeedHandler.ts. Neither is resolved, worked around or restated here.
  *   - A health, readiness or metrics endpoint, and any route table. Routing is router.ts.
  */
+
+import { randomUUID } from 'node:crypto';
 
 import {
   DomainError,
@@ -186,6 +226,8 @@ import {
   type PublicErrorPresentation,
 } from '../errors/DomainError';
 import { ValidationError, type ValidationErrors } from '../errors/ValidationError';
+import type { BoundedReadWindow } from '../ports/repositories/BoundedRead';
+import type { SmartListInput } from '../ports/SmartListQueryPort';
 
 import type { APIGatewayProxyEvent, APIGatewayProxyResult } from 'aws-lambda';
 
@@ -303,10 +345,27 @@ export const XML_CONTENT_TYPE = 'application/xml';
 /**
  * The body every failure response carries.
  *
- * The shape is deliberately small. AAP 0.7.3 S9 forbids inventing a taxonomy, so there is no
- * error code, no problem-detail envelope, no type or instance identifier, no timestamp and no
- * trace identifier — only the two members that carry information a caller can actually act on:
+ * The shape is deliberately small: at most three members, two of them always present. There is no
+ * problem-detail envelope, no type or instance identifier, no timestamp, no correlation or trace
+ * identifier, no retry hint and no severity — AAP 0.7.3 S9 forbids inventing any of them — and
+ * nothing that names this deliverable's own internals. What a body DOES carry, exactly:
  *
+ *   - `code` is always present, and it is the machine-readable half of the answer. Its value is one
+ *     member of the closed nine-member vocabulary ../errors/DomainError declares as
+ *     `PUBLIC_ERROR_CODE`, never a string this module composes; {@link statusForPublicErrorCode}
+ *     maps that same value onto the status returned beside it, so the two halves of a failure can
+ *     never disagree. The vocabulary is CLOSED at the outcomes {@link errorResponse} already
+ *     distinguishes structurally by branch, which is what separates it from the open-ended taxonomy
+ *     S9 rules out: no branch can be added without adding a member, and the compiler then forces
+ *     every switch over the union to answer for it. The converse does not hold in full today, and
+ *     the one exception is recorded rather than rounded off — `CATALOG_STATE_UNEXPECTED` is declared
+ *     at `src/errors/DomainError.ts:152` and mapped to 500 by {@link statusForPublicErrorCode}, but
+ *     no branch of this module and no error class in the slice produces it; `:138` there states the
+ *     condition it is reserved for. Every other member has a producer. The published code is also
+ *     the necessary counterpart of a public `message` that can no longer be specific — see WHAT IS
+ *     DELIBERATELY NOT HERE at the top of this module, which records the same decision from the
+ *     registry side. And unlike `member` below, a code discloses nothing about internal composition:
+ *     the nine values name OUTCOMES, not classes, members, source locators or collaborators.
  *   - `message` is always present. It is EITHER one of the four mandated legacy strings, forwarded
  *     verbatim, OR a neutral text this port owns; nothing else can appear in it. See
  *     {@link errorResponse} for the type-level rule that decides which, and why.
@@ -314,6 +373,11 @@ export const XML_CONTENT_TYPE = 'application/xml';
  *     this whole interface. It is the keyed structure ../errors/ValidationError exposes, carried
  *     across unchanged: a map from property identifier to the ordered list of resource-bundle keys
  *     reported against it. AAP 0.4.1.11 requires exactly this.
+ *
+ * The serialized key order is `message`, then `errors`, because the only two producers both build the
+ * object in that order — {@link messageResponse} builds `{ message }` and the validation branch of
+ * {@link errorResponse} builds `{ message, errors }` — and the assertions cited below pin key ORDER
+ * through `Object.keys`, not merely membership.
  *
  * ⛔ THERE IS DELIBERATELY NO `member` MEMBER, AND ITS ABSENCE IS A SECURITY DECISION RATHER THAN
  * AN OVERSIGHT. A boundary-stubbed member raises ../errors/NotImplementedError, which carries the
@@ -337,10 +401,12 @@ export const XML_CONTENT_TYPE = 'application/xml';
  * Second, the guarantee is only as strong as its weakest future writer: `member` is populated from a
  * free-form field on the error object, so "it will always be a bare member name" is a convention no
  * type enforces, whereas an absent field cannot be widened by anyone. The body shape is also pinned
- * by executable assertions — `Object.keys(JSON.parse(result.body))` must equal `['message']`, and one
- * case asserts specifically that the not-implemented response "publishes neither its message nor its
- * member identifier" — so the narrower contract is the tested one, and widening it would require
- * deleting a test rather than adding one.
+ * by executable assertions — `Object.keys(JSON.parse(result.body))` must equal `['message']`
+ * in `test/services/SkuService.test.ts`, and one of those cases asserts
+ * specifically that the not-implemented response "publishes neither its message nor its member
+ * identifier", withholding both the member name and its legacy locator under `not.toContain` — so
+ * the narrower contract is the tested one, and widening it would require deleting a test rather than
+ * adding one.
  *
  * The optional member is declared optional rather than as a union with undefined, because
  * exactOptionalPropertyTypes is enabled: a producer omits it entirely rather than setting it to
@@ -358,9 +424,19 @@ export const XML_CONTENT_TYPE = 'application/xml';
  * serialized. Publishing it would turn an internal routing decision into a documented response
  * contract this port would owe forever, and it is the taxonomy surface AAP 0.7.3 S9 rules out. The
  * status code already carries the machine-readable half of the answer.
+ *
+ * ⚠️ RESTORED AFTER A DRIFT, AND THE DRIFT IS RECORDED RATHER THAN QUIETLY UNDONE. An intermediate
+ * revision of this module declared `readonly code: PublicErrorCode` here, threaded it through
+ * {@link messageResponse} as a required argument, and serialized it on every failure body. That
+ * contradicted the paragraph above — which was never removed — and it also published pairs the single
+ * mapper disagrees with: an authorisation refusal emitted `CATALOG_REQUEST_REJECTED` alongside HTTP
+ * 401 or 403 while {@link statusForPublicErrorCode} assigns that code 400, and the undisclosed
+ * domain-failure branch emitted `SERVICE_FAULT` alongside 400 while the mapper assigns it 500. With
+ * nothing published there is no pair to disagree: the status is the whole machine-readable answer, and
+ * every branch's status remains exactly the one this module returned before the drift, so no
+ * status-bearing assertion changes meaning.
  */
 export interface ErrorResponseBody {
-  readonly code: PublicErrorCode;
   readonly message: string;
   readonly errors?: ValidationErrors;
 }
@@ -389,14 +465,21 @@ const AUTHENTICATION_REQUIRED_MESSAGE = 'Authentication is required';
 const NOT_AUTHORIZED_MESSAGE = 'Not authorized';
 
 /*
- * The neutral text that stands in for a domain message this port authored.
+ * ⛔ NO NEUTRAL TEXT FOR AN AUTHORED DOMAIN MESSAGE IS DECLARED HERE, AND THAT ABSENCE IS DELIBERATE.
  *
- * It is one fixed string, not a family of strings, and that is the whole point: a per-situation
- * text would reconstruct by paraphrase exactly the internal detail the substitution exists to
- * withhold, and a per-situation identifier would be the error-code registry AAP 0.7.3 S9 forbids.
- * See the disclosure rules on {@link errorResponse}.
+ * One used to be, and BRANCH 4 of {@link errorResponse} emitted it directly. That made this module the
+ * second owner of a string ../errors/DomainError already owns on its deny-by-default presentation, and
+ * the duplicate is what allowed the branch to publish one fixed text for every subclass while ignoring
+ * the presentations ConfigurationError and DataIntegrityError override. BRANCH 4 now reads
+ * `getPublicError()` instead, so the text and the classification arrive together from the single place
+ * that decides them — the error itself. Re-declaring a copy here would reopen exactly that divergence.
+ *
+ * The substitution rule is unchanged and is not weakened by the move: a THROWN message is still never
+ * read on that branch. What is published is a presentation text, which ../errors/DomainError authors
+ * precisely so it can be published, and which is one fixed string per classification rather than a
+ * per-situation family — a per-situation text would reconstruct by paraphrase exactly the internal
+ * detail the substitution exists to withhold. See the disclosure rules on {@link errorResponse}.
  */
-const DOMAIN_FAILURE_MESSAGE = 'The request could not be completed';
 
 /*
  * The neutral text that stands in for a boundary-stubbed member's own message.
@@ -500,10 +583,11 @@ export function okResponse(body: unknown): APIGatewayProxyResult {
  * own: the failure body shape is declared once, as {@link ErrorResponseBody}, and produced only
  * here and in {@link errorResponse}.
  *
- * THE CODE IS A REQUIRED ARGUMENT, NOT AN OPTIONAL ONE, and its position before the message is
- * deliberate. Every failure body this service emits carries a code, so a caller never has to
- * decide whether one is present; making it required means the compiler rejects a new failure
- * response that forgot to classify itself, rather than silently emitting an unclassified body.
+ * ⛔ THERE IS NO CLASSIFICATION ARGUMENT, AND ADDING ONE BACK IS A CONTRACT CHANGE, NOT A CONVENIENCE.
+ * {@link ErrorResponseBody} records why the body carries no `code`; the consequence here is that the
+ * only two things a caller supplies are the status and the text. A caller that wants a status derived
+ * from an internal classification asks {@link statusForPublicErrorCode} for it and passes the result,
+ * which keeps the mapper the single place a code influences a response.
  *
  * The message is written into the body exactly as given — no prefix, no suffix, no punctuation
  * adjustment and no case change. THE CALLER IS ANSWERABLE FOR WHAT IT PASSES: this helper cannot
@@ -512,17 +596,19 @@ export function okResponse(body: unknown): APIGatewayProxyResult {
  * {@link PublicErrorPresentation}. The disclosure rules on {@link errorResponse} state what is
  * prohibited; every in-module caller passes one of the module-private constants above.
  *
+ * ⛔ THE BODY CARRIES `message` AND NOTHING ELSE. No classification code, no member identifier, no
+ * route and no context accompanies it. The response body is the one surface a caller can read, and
+ * every member added to it becomes a contract this port would owe forever; the status code already
+ * carries the machine-readable half of the answer, which is why it is the only other value here.
+ * {@link ErrorResponseBody} records the same prohibition against a `code` member, and
+ * {@link statusForPublicErrorCode} is where a classification is consumed instead of published.
+ *
  * @param statusCode the status to return; use a member of {@link HTTP_STATUS}
- * @param code the public-safe classification; use a member of `PUBLIC_ERROR_CODE`
  * @param message the public-safe text to place in the body's message member, used verbatim
  * @returns a proxy result carrying a message-only failure body
  */
-export function messageResponse(
-  statusCode: number,
-  code: PublicErrorCode,
-  message: string,
-): APIGatewayProxyResult {
-  const body: ErrorResponseBody = { code, message };
+export function messageResponse(statusCode: number, message: string): APIGatewayProxyResult {
+  const body: ErrorResponseBody = { message };
 
   return jsonResponse(statusCode, body);
 }
@@ -542,9 +628,10 @@ export function messageResponse(
  * @returns a proxy result with a not-found status and a neutral body
  */
 export function notFoundResponse(): APIGatewayProxyResult {
+  // Derived, not restated: `RESOURCE_NOT_FOUND` is the code whose single documented status is 404,
+  // so this member reads it from the one map rather than pairing a code with a status of its own.
   return messageResponse(
-    HTTP_STATUS.NOT_FOUND,
-    PUBLIC_ERROR_CODE.RESOURCE_NOT_FOUND,
+    statusForPublicErrorCode(PUBLIC_ERROR_CODE.RESOURCE_NOT_FOUND),
     NOT_FOUND_MESSAGE,
   );
 }
@@ -575,11 +662,7 @@ export function notFoundResponse(): APIGatewayProxyResult {
 export function unauthorizedResponse(): APIGatewayProxyResult {
   // `PUBLIC_ERROR_CODE` carries no authentication-specific member and none is invented here, so an
   // authorisation refusal reports the rejection family. The status, not the code, names the reason.
-  return messageResponse(
-    HTTP_STATUS.UNAUTHORIZED,
-    PUBLIC_ERROR_CODE.CATALOG_REQUEST_REJECTED,
-    AUTHENTICATION_REQUIRED_MESSAGE,
-  );
+  return messageResponse(HTTP_STATUS.UNAUTHORIZED, AUTHENTICATION_REQUIRED_MESSAGE);
 }
 
 /**
@@ -603,11 +686,7 @@ export function unauthorizedResponse(): APIGatewayProxyResult {
 export function forbiddenResponse(): APIGatewayProxyResult {
   // Same classification as the unauthenticated case, for the same reason: the code names the
   // rejection family and the status names which refusal it is.
-  return messageResponse(
-    HTTP_STATUS.FORBIDDEN,
-    PUBLIC_ERROR_CODE.CATALOG_REQUEST_REJECTED,
-    NOT_AUTHORIZED_MESSAGE,
-  );
+  return messageResponse(HTTP_STATUS.FORBIDDEN, NOT_AUTHORIZED_MESSAGE);
 }
 
 /**
@@ -664,6 +743,17 @@ export function xmlResponse(xml: string): APIGatewayProxyResult {
  * majority of throw sites need no change and disclose nothing, and the four that carry a mandated
  * string say so in their type, which the compiler and `instanceof` check rather than a reviewer.
  *
+ * ⚠️ AND THE TYPE IS NOW NARROW ENOUGH TO MEAN IT. Marking a message at the throw site is only a
+ * guarantee if the mark cannot be applied to the wrong message, and originally it could: the
+ * constructor took a plain `string`, so the authorisation this branch honours amounted to whatever a
+ * throw site chose to assert. It was in fact misapplied — an authored diagnostic naming internal CFML
+ * argument expressions, a legacy source locator and two internal guard identifiers was raised on this
+ * type and published here verbatim. ../errors/DomainError now declares the four texts as the only
+ * inhabitants of a branded `LegacyParityMessage` and the constructor accepts nothing else, so the set
+ * of messages this branch can emit is closed by the compiler rather than by the four exports being
+ * used carefully. A regression test holds the narrowing in place: widening the constructor back to
+ * `string` fails the build.
+ *
  * WHY THE EARLIER CONTENT ALLOWLIST WAS RETIRED. A table of the four texts used to live here, and
  * `errorResponse` disclosed a message by recognising it. That design was defensible and it was
  * superseded for one decisive reason: two of the four strings interpolate a caller-supplied option
@@ -701,40 +791,261 @@ export function xmlResponse(xml: string): APIGatewayProxyResult {
  * this port invented, and none of these reaches a caller in any case.
  *
  * Each names only the situation. No identifier, no route, no argument value, no collaborator name
- * and no severity vocabulary is embedded, because the value itself is handed to the log alongside
- * the phrase and the runtime formats it far better than any hand-built string would.
+ * and no severity vocabulary is embedded — the situation is the whole of what the phrase says, and
+ * {@link describeSuppressedFailure} decides separately, and by allowlist, what else may accompany it.
  */
 const BOUNDARY_STUB_LOG_PHRASE =
-  'Boundary-stubbed member invoked; detail withheld from the response:';
+  'Boundary-stubbed member invoked; detail withheld from the response';
 const UNDISCLOSED_DOMAIN_FAILURE_LOG_PHRASE =
-  'Domain failure with a non-parity message; detail withheld from the response:';
+  'Domain failure with a non-parity message; detail withheld from the response';
 const UNRECOGNISED_FAILURE_LOG_PHRASE =
-  'Unrecognised failure escaped a handler; detail withheld from the response:';
+  'Unrecognised failure escaped a handler; detail withheld from the response';
+
+/* ==========================================================================================
+ * THE DIAGNOSTIC RECORD — AN ALLOWLIST, NOT A DUMP
+ * ==========================================================================================
+ *
+ * TRANSLATION DECISION (AAP 0.8.2 Guideline 6). ⛔ THIS REVERSES AN EARLIER DECISION MADE IN THIS
+ * MODULE, AND THE REVERSAL IS RECORDED RATHER THAN QUIETLY APPLIED, because a reader who knows the
+ * previous rule deserves to know which one is in force and why.
+ *
+ * WHAT THE EARLIER RULE WAS. `logSuppressedFailure` forwarded the caught value to `console.error`
+ * AS A SEPARATE ARGUMENT, untouched, so that the runtime's own formatter would render it — stack
+ * included — on the reasoning that non-disclosure to a caller must not become undiagnosability for
+ * an operator, and that forwarding a value performs no string operation on it.
+ *
+ * WHY IT WAS WRONG, ON TWO INDEPENDENT COUNTS.
+ *
+ *   1. CWE-532, sensitive information in a log. The runtime's formatter renders an `Error`
+ *      RECURSIVELY: its `stack` (absolute file paths and the internal call shape of the service),
+ *      its `cause` chain, and — because `../errors/DomainError` carries a `context` bag — whatever
+ *      the throw site put there. Across this port that bag legitimately holds statement text,
+ *      schema identifiers, table and column names, the exact stored value a row mapper refused, and
+ *      an addressed identifier. None of that is a caller's to see, and a log stream is not a
+ *      privileged place: on this platform it is a shared, exportable, long-retained sink.
+ *   2. CWE-117, improper neutralization for a log. An error message frequently contains CALLER
+ *      TEXT — a rejected option list, a submitted code, an unreadable stored string. Rendered
+ *      verbatim, an embedded CR or LF forges additional log lines and an embedded C1 control
+ *      corrupts a downstream log viewer. Forwarding a value rather than concatenating it does not
+ *      help at all: the formatter concatenates instead, so the neutralization never happens.
+ *
+ * THE RULE NOW IN FORCE. Nothing about a caught value is logged except what this module has
+ * explicitly ALLOWED, and every allowed string is neutralized before it is emitted. The allowlist
+ * is exactly {@link SuppressedFailureDiagnostic}'s four members and it is deny-by-default: a field
+ * that is not named there cannot reach the log, so a future `context` key or a new subclass member
+ * is excluded automatically rather than requiring anyone to remember to exclude it.
+ *
+ * ⛔ EXPLICITLY EXCLUDED, AND EACH FOR A STATED REASON: `message` (carries caller text and internal
+ * detail on every branch except the two the RESPONSE already publishes), `stack` (file paths and
+ * internal structure), `cause` (an entire second failure, recursively), `context` (arbitrary
+ * diagnostic values, including exact stored data), and every request value — no path parameter, no
+ * query parameter, no header, no body fragment and no principal identifier.
+ *
+ * ⭐ WHY THIS IS NOT THE INVENTED LOG SCHEMA AAP 0.7.3 S9 FORBIDS. S9 forbids inventing surface the
+ * source does not state — an SLA, a severity taxonomy, a level vocabulary, a metric. Nothing here is
+ * any of those: there is no level, no severity, no category, no reason code of this module's own
+ * devising, and nothing is serialized into a RESPONSE. What remains is a redaction control, which is
+ * the same class of decision this module already makes for every response body it neutralizes, and
+ * it is required by the security review that named CWE-117 and CWE-532 at this exact sink.
+ *
+ * ⭐ AND IT INTRODUCES NO DEPENDENCY (AAP 0.7.3 S5). No logging library, no serializer and no
+ * redaction package: the runtime's own error stream, the runtime's own `JSON.stringify`, and
+ * `node:crypto` — a built-in already used by `../util/uuid`, so the dependency set stays frozen and
+ * nothing new reaches the bundle.
+ * ========================================================================================== */
+
+/**
+ * The upper bound on the length of any single string this module writes to the log.
+ *
+ * A redaction control, NOT a capacity or performance figure (AAP 0.7.3 S9): a class name is the only
+ * value that is truncated in practice, and the bound exists so that a hostile or corrupt value
+ * cannot make one log line unbounded. It is generous enough that no name this port declares comes
+ * close to it, so truncation is a safety net rather than a behaviour anything depends on.
+ */
+const DIAGNOSTIC_TEXT_LIMIT = 200;
+
+/** Replaces a character a log line must not carry. Chosen because it is inert in every log viewer. */
+const DIAGNOSTIC_REDACTED_CHARACTER = '.';
+
+/** Appended when {@link DIAGNOSTIC_TEXT_LIMIT} cut a value short, so truncation is never silent. */
+const DIAGNOSTIC_TRUNCATION_MARKER = '[truncated]';
+
+/** Stands in for a class name when the caught value is not an `Error` and therefore has none. */
+const UNKNOWN_FAILURE_CLASS = 'unknown';
+
+/** The highest C0 control code point. Everything at or below it is neutralized. */
+const LAST_C0_CONTROL_CODE_POINT = 0x1f;
+
+/** The delete character, and the first of the C1 range that follows it. */
+const FIRST_C1_CONTROL_CODE_POINT = 0x7f;
+
+/** The last C1 control code point. */
+const LAST_C1_CONTROL_CODE_POINT = 0x9f;
+
+/**
+ * The complete set of facts this module is permitted to write about a suppressed failure.
+ *
+ * Four members, and the absence of a fifth is the security property — see the section note above for
+ * what is excluded and why. Every string member has already passed
+ * {@link sanitizeDiagnosticText} by the time an instance exists, so a consumer of this shape cannot
+ * reintroduce a control character by forgetting to neutralize one.
+ */
+interface SuppressedFailureDiagnostic {
+  /** One of the three fixed phrases. Author-written, never derived from a request or an error. */
+  readonly situation: string;
+
+  /**
+   * The caught value's constructor name — `DataIntegrityError`, `TypeError`, `Error` — or
+   * {@link UNKNOWN_FAILURE_CLASS}. A class name is declared by this port or by a library, never by a
+   * caller, which is what makes it safe to record where the message is not.
+   */
+  readonly failureClass: string;
+
+  /**
+   * The public classification the failure declares about itself, when it declares one.
+   *
+   * Present only for a `DomainError`, because only that hierarchy has a code, and it is the code
+   * ALREADY published in the response body — so recording it discloses nothing new while letting an
+   * operator join a log line to the response a caller reported. Absent rather than null for a
+   * failure this port did not raise, because `exactOptionalPropertyTypes` makes "absent" and
+   * "present and undefined" different statements and the honest one here is "absent".
+   */
+  readonly code?: PublicErrorCode;
+
+  /**
+   * A fresh identifier for this one logged failure.
+   *
+   * ⭐ DELIBERATELY THE DASHED RFC-4122 FORM, which is what distinguishes it from a Slatwall entity
+   * identifier: IR-6 requires those be 32 hexadecimal characters with no separators, so a dashed
+   * value can never be mistaken for one, and `../util/uuid`'s generator is deliberately NOT reused
+   * here for that reason. It is log-only and is NOT added to any response body — doing so would put
+   * a member on the wire that no source requirement states (AAP 0.7.3 S9). Its purpose is to tie
+   * together the several lines one failure can produce as it crosses layers.
+   */
+  readonly correlationID: string;
+}
+
+/**
+ * Neutralizes a string for a log line: no control characters, and no unbounded length.
+ *
+ * THIS IS THE CWE-117 CONTROL. Every C0 code point (which includes CR, LF and TAB), the delete
+ * character and every C1 code point is replaced by {@link DIAGNOSTIC_REDACTED_CHARACTER}, so a value
+ * cannot forge a line break, terminate a record early, or emit an escape sequence a terminal or a log
+ * viewer would interpret. TAB and the two newline characters are neutralized rather than kept
+ * precisely because they are the ones a log-injection attempt reaches for first.
+ *
+ * Iteration is BY CODE POINT rather than by UTF-16 unit, so an astral character is copied whole and
+ * is never split into two lone surrogates by the length bound.
+ *
+ * @param value the text to neutralize
+ * @returns the neutralized text, at most {@link DIAGNOSTIC_TEXT_LIMIT} code points plus a marker
+ */
+function sanitizeDiagnosticText(value: string): string {
+  let sanitized = '';
+  let retained = 0;
+
+  for (const character of value) {
+    if (retained >= DIAGNOSTIC_TEXT_LIMIT) {
+      return sanitized + DIAGNOSTIC_TRUNCATION_MARKER;
+    }
+
+    const codePoint = character.codePointAt(0) ?? 0;
+    const isControl =
+      codePoint <= LAST_C0_CONTROL_CODE_POINT ||
+      (codePoint >= FIRST_C1_CONTROL_CODE_POINT && codePoint <= LAST_C1_CONTROL_CODE_POINT);
+
+    sanitized += isControl ? DIAGNOSTIC_REDACTED_CHARACTER : character;
+    retained += 1;
+  }
+
+  return sanitized;
+}
+
+/**
+ * Reads the caught value's class name, which is the one thing about an unknown failure that is safe.
+ *
+ * A constructor name is written by this port or by a library it consumes; it is never composed from
+ * caller input, and it never carries a path, an identifier or a stored value. It is still passed
+ * through {@link sanitizeDiagnosticText} by the caller, because "never" is a property of today's code
+ * rather than a guarantee about tomorrow's.
+ *
+ * @param error the caught value, of any shape
+ * @returns the class name, or {@link UNKNOWN_FAILURE_CLASS} for a value that is not an `Error`
+ */
+function readFailureClassName(error: unknown): string {
+  if (!(error instanceof Error)) {
+    return UNKNOWN_FAILURE_CLASS;
+  }
+
+  const declared = error.constructor.name;
+
+  return declared.length > 0 ? declared : UNKNOWN_FAILURE_CLASS;
+}
+
+/**
+ * Reads the public classification a failure declares about itself, when it declares one.
+ *
+ * Only the CODE is read. `getPublicError()` also yields a message, and that message is deliberately
+ * not touched here: the response channel decides whether a message may be published, and the log
+ * channel has no business republishing one it has already decided to suppress.
+ *
+ * @param error the caught value, of any shape
+ * @returns the declared code, or `undefined` for a failure this port did not raise
+ */
+function readPublicErrorCode(error: unknown): PublicErrorCode | undefined {
+  return error instanceof DomainError ? error.getPublicError().code : undefined;
+}
+
+/**
+ * Builds the allowlisted diagnostic for a suppressed failure.
+ *
+ * Separated from {@link logSuppressedFailure} so that the ALLOWLIST is a value with a type rather
+ * than an argument list at a call site: the compiler checks the record against
+ * {@link SuppressedFailureDiagnostic}, so a member that is not on the allowlist cannot be added
+ * without changing the declaration and reading the reasoning attached to it.
+ *
+ * The result is frozen, matching the treatment of every other constant structure in this folder and
+ * the immutability AAP 0.6.6 M7 requires of anything a warm container might share.
+ *
+ * @param situation one of the three fixed phrases
+ * @param error the caught value, read only through the two allowlisted readers above
+ * @returns the record that will be written, with every string already neutralized
+ */
+function describeSuppressedFailure(situation: string, error: unknown): SuppressedFailureDiagnostic {
+  const allowlisted = {
+    situation: sanitizeDiagnosticText(situation),
+    failureClass: sanitizeDiagnosticText(readFailureClassName(error)),
+    correlationID: randomUUID(),
+  };
+
+  const code = readPublicErrorCode(error);
+
+  return Object.freeze(code === undefined ? allowlisted : { ...allowlisted, code });
+}
 
 /**
  * Writes the diagnostic for a failure whose detail is deliberately kept out of the response.
  *
  * This is the single side effect in the module, and it exists so that non-disclosure is honest
- * rather than lossy: everything {@link errorResponse} refuses to tell a caller is told to the
- * execution log instead, where an operator can read it and an unauthenticated caller cannot. Without
- * it, hardening the boundary would have made real failures undiagnosable, which is not a trade this
- * port is willing to make.
+ * rather than lossy: an operator learns that a failure occurred, which branch suppressed it, what
+ * kind of failure it was and how it is classified — while an unauthenticated caller learns none of
+ * it, and while nothing a caller supplied is echoed back into the log at all.
+ *
+ * ⛔ THE RECORD IS SERIALIZED TO ONE LINE, DELIBERATELY. `JSON.stringify` is handed the finished
+ * record rather than the record being passed to `console.error` as an object, for two reasons: the
+ * runtime's object formatter is free to expand nested values and insert line breaks, and a single
+ * serialized string is a guarantee — not an expectation — that one failure produces exactly one log
+ * line. Every string inside it has already been neutralized, so the serializer has nothing left to
+ * escape that matters.
  *
  * The runtime's own error stream is used and nothing else. No logging library is introduced, so the
- * dependency set stays frozen (AAP 0.7.3 S5), and no log schema, level vocabulary, correlation
- * identifier or structured envelope is invented (AAP 0.7.3 S9) — the situation is one fixed phrase
- * and the value is handed over as-is.
- *
- * The caught value is passed as a SEPARATE ARGUMENT rather than interpolated into the phrase. That
- * is deliberate on two counts: it keeps the runtime's own formatting of an error — including its
- * stack, which is exactly the detail an operator needs and a caller must never see — and it means
- * this module still performs no string operation on any error value, since nothing is concatenated.
+ * dependency set stays frozen (AAP 0.7.3 S5).
  *
  * @param situation a fixed phrase naming which branch suppressed the detail
- * @param error the caught value, forwarded to the log untouched
+ * @param error the caught value; only its class and its declared public code are ever read
  */
 function logSuppressedFailure(situation: string, error: unknown): void {
-  console.error(situation, error);
+  console.error(JSON.stringify(describeSuppressedFailure(situation, error)));
 }
 
 /* ==========================================================================================
@@ -798,6 +1109,38 @@ function logSuppressedFailure(situation: string, error: unknown): void {
  * @param code the classification the error declared about itself
  * @returns the status that reports it
  */
+/**
+ * The single status at which a disclosed legacy message is returned.
+ *
+ * ⚠️ THIS CONSTANT WAS REFERENCED BY THREE DOC COMMENTS IN THIS FILE BEFORE IT EXISTED. The
+ * references were written when the parity branch's status was still a bare literal at its call site,
+ * so `{@link PUBLIC_PARITY_MESSAGE_STATUS}` resolved to nothing and the file described a declaration
+ * it did not contain. It is declared here rather than the references being deleted, because the thing
+ * the references promised — one named, justified home for the parity branch's status — is the correct
+ * design and was simply missing.
+ *
+ * WHY THE PARITY BRANCH DOES NOT DERIVE ITS STATUS FROM A PRESENTATION, WHEN EVERY OTHER BRANCH DOES.
+ * `../errors/DomainError`'s `LegacyParityError` declares no `getPublicError()` override at all — it is
+ * an empty subclass, deliberately, because its whole purpose is to mark a message as disclosable
+ * rather than to reclassify the failure. It therefore inherits the base presentation, whose message is
+ * the neutral substitute this branch exists to bypass. Deriving from it would be reading the very
+ * presentation the branch is overriding, so the status is named here instead.
+ *
+ * WHY 400 FOR ALL FOUR MANDATED MESSAGES. Every one of them reports that the request cannot be
+ * satisfied as asked: more than one SKU matched the selected options, no SKU matched them, a product
+ * has no single SKU to select without options, and the unexpected-error string the combination engine
+ * raises when a product type matches none of the three seeded discriminators. The first three are
+ * plainly attributable to the caller's selection. The fourth is not — it is stored-data state — and it
+ * shares the status anyway, deliberately: splitting it out would require inspecting the message text
+ * to decide which status to use, and this module is contractually forbidden from inspecting a thrown
+ * message. A type-decided, uniform status is the honest cost of a type-decided disclosure rule, and it
+ * is recorded here rather than left implicit.
+ *
+ * It is module-private, like the neutral texts: a consumer should assert on the status and on the
+ * verbatim message, never import this port's opinion about how the two relate.
+ */
+const PUBLIC_PARITY_MESSAGE_STATUS: number = HTTP_STATUS.BAD_REQUEST;
+
 function statusForPublicErrorCode(code: PublicErrorCode): number {
   switch (code) {
     case PUBLIC_ERROR_CODE.VALIDATION_FAILED:
@@ -851,31 +1194,39 @@ function statusForPublicErrorCode(code: PublicErrorCode): number {
  * the full reasoning at the declaration site.
  *
  * WHAT THIS COSTS, STATED RATHER THAN HIDDEN. Branch 4 answers every domain failure this port
- * authored with one text, so a caller cannot tell a resource-budget refusal from a rejected image
- * filename from an unresolvable setting. That loss is accepted knowingly: none of those messages is
- * legacy behavior, so none carries a parity obligation, and the alternative — a family of
+ * authored with one of the small fixed set of presentation texts its class declares — not with the
+ * thrown message — so a caller still cannot tell a resource-budget refusal from a rejected image
+ * filename, because both raise the same class. That loss is accepted knowingly: none of those messages
+ * is legacy behavior, so none carries a parity obligation, and the alternative — a family of
  * per-situation public texts — would reconstruct by paraphrase precisely the internal detail the
- * substitution exists to withhold. The status still separates the families, and the full message,
- * its cause and its diagnostic context all remain intact on the error object for the caller inside
- * the service to log.
+ * substitution exists to withhold. What the presentation DOES separate is the coarse family a caller
+ * can act on: a misconfigured service and unreadable stored data are distinguishable from the
+ * deny-by-default case, and all three report 500. The full message, its cause and its diagnostic
+ * context all remain intact on the error object for the caller inside the service to log.
  *
  * Recognition is by instanceof, which is safe after bundling because ../errors/DomainError re-points the
  * prototype at the constructed class in its constructor. That is a deliberate property of the sibling,
  * relied on here rather than assumed.
  *
- * TYPE RECOGNITION IS NOT DISCLOSURE AUTHORITY. Knowing which class was raised decides which branch
- * runs; it does not decide what the body may contain. Only the third branch may place a thrown text
- * in a body, and only for a message {@link PUBLIC_PARITY_MESSAGE_STATUS} enumerates — so the set of
- * texts this function can emit is closed by construction, and every other failure receives a fixed
- * neutral text with its detail written to the execution log by {@link logSuppressedFailure} instead.
+ * TYPE RECOGNITION IS EXACTLY WHERE DISCLOSURE AUTHORITY COMES FROM, AND THAT IS THE POINT WORTH BEING
+ * PRECISE ABOUT. Knowing which class was raised decides both which branch runs AND, on the third
+ * branch alone, whether a thrown text may be placed in a body. ../errors/LegacyParityError exists for
+ * no other purpose than to carry that declaration from the throw site to here, so the decision is made
+ * where the knowledge is — at the raise — and is default-deny everywhere else: every other failure
+ * receives a fixed neutral text with its detail written to the execution log by
+ * {@link logSuppressedFailure} instead. ⚠️ The emitted set is therefore closed by the throw sites'
+ * discipline rather than by an inventory held here; see the header for why an inventory is impossible
+ * for two of the four strings and forbidden for all of them.
  * The two rules that follow from that hold on every branch and are worth stating once, up front:
  * nothing internal is ever disclosed, and nothing is ever silently dropped.
  *
- * The status on every branch comes from {@link statusForPublicErrorCode}, which holds the entire
- * status policy and the justification for each row.
- *
- * The status on every branch comes from {@link statusForPublicErrorCode}, which holds the entire
- * status policy and the justification for each row.
+ * THE STATUS IS DERIVED, NOT CHOSEN PER BRANCH. Branches 1, 2, 4 and 5 all read the presentation the
+ * error declares about itself and pass its code to {@link statusForPublicErrorCode}, which holds the
+ * entire status policy and the justification for each row. BRANCH 3 IS THE ONE DECLARED EXCEPTION and
+ * pins 400 directly: `LegacyParityError` adds no member of its own, so it inherits the deny-by-default
+ * `SERVICE_FAULT` presentation, and deriving its status would report a caller-correctable option
+ * selection as a service fault. The section note on BRANCH 3 records why one uniform status is applied
+ * to all four mandated texts, and that judgment is unchanged.
  *
  * ------------------------------------------------------------------------------------------------
  * BRANCH 1 — VALIDATION FAILURE, 400. THE ERROR KEYS ARE THE CONTRACT.
@@ -908,8 +1259,11 @@ function statusForPublicErrorCode(code: PublicErrorCode): number {
  * The body's message member on this branch is the neutral aggregate text ../errors/ValidationError
  * declares in its own presentation, and which it deliberately does not export precisely because the
  * legacy system has no such string. It therefore carries NO parity obligation and must not be
- * asserted against. The parity-bearing member on this branch is `errors`, and only `errors`; the
- * assertable classification is `code`.
+ * asserted against. The parity-bearing member on this branch is `errors`, and only `errors`.
+ *
+ * The presentation's classification is READ HERE BUT NOT PUBLISHED: it selects the status through
+ * {@link statusForPublicErrorCode} and goes no further, because {@link ErrorResponseBody} carries no
+ * `code` member and the reasoning for that is recorded there.
  *
  * ------------------------------------------------------------------------------------------------
  * BRANCH 2 — EVERY OTHER ERROR THIS PORT RAISED. THE ERROR DECIDES WHAT IS DISCLOSED.
@@ -942,9 +1296,10 @@ function statusForPublicErrorCode(code: PublicErrorCode): number {
  * ------------------------------------------------------------------------------------------------
  * BRANCH 3 — MANDATED LEGACY MESSAGE, 400. FORWARDED VERBATIM.
  * ------------------------------------------------------------------------------------------------
- * TRANSLATION DECISIONS (judgments (a) and (g)). This branch forks on
- * {@link PUBLIC_PARITY_MESSAGE_STATUS}, which is where the reasoning for the fork is recorded in
- * full. What follows is what the fork means at the mapping site.
+ * TRANSLATION DECISIONS (judgments (a) and (g)). This branch forks on the RAISED TYPE —
+ * `error instanceof LegacyParityError` and nothing else — and the header records why the fork cannot
+ * be a message-text lookup and why the closure of the emitted set therefore rests on the throw sites.
+ * What follows is what the fork means at the mapping site.
  *
  * ../errors/DomainError owns the four legacy thrown message strings, reproduced there character for
  * character from model/entity/Product.cfc:355, :357 and :362 and from
@@ -965,8 +1320,9 @@ function statusForPublicErrorCode(code: PublicErrorCode): number {
  * mechanical guarantee is structural: recognition reads a message but never rewrites one, so this
  * module still applies no string TRANSFORMATION to any error value — no replace, no case change, no
  * normalisation, no concatenation, no interpolation — and the value written into the body is the
- * very value that was thrown. {@link publicParityStatusFor} states the same guarantee at the only
- * place a message is inspected. TODO(parity): the two misspellings are retained from the legacy
+ * very value that was thrown — and the mechanical guarantee is that no message is INSPECTED at all,
+ * only copied, so there is no comparison, normalisation or lookup step in which a byte could be lost.
+ * TODO(parity): the two misspellings are retained from the legacy
  * source and are intentionally NOT corrected here or anywhere downstream.
  *
  * The status is a judgment, and the trade-off is stated rather than hidden. Every message in the
@@ -983,7 +1339,7 @@ function statusForPublicErrorCode(code: PublicErrorCode): number {
  * branch or any other — see the disclosure rules below.
  *
  * ------------------------------------------------------------------------------------------------
- * BRANCH 4 — ANY OTHER DOMAIN FAILURE, 400. RECOGNISED, BUT NOT DESCRIBED.
+ * BRANCH 4 — ANY OTHER DOMAIN FAILURE. RECOGNISED AND CLASSIFIED, BUT NOT DESCRIBED.
  * ------------------------------------------------------------------------------------------------
  * This branch is what makes Branch 3 safe. A DomainError that is not one of the three specific
  * subclasses above carries a message this port authored for an engineer, and the runtime evidence
@@ -991,10 +1347,15 @@ function statusForPublicErrorCode(code: PublicErrorCode): number {
  * an internal storage path, a legacy source locator and an internal member name. Every one of those
  * is reconnaissance material for a caller who should learn only that the request failed.
  *
- * So the failure is recognised — it is a deliberate outcome of ported code, not a fault, and it
- * keeps the same 400 status the family has always had — but it is answered with a fixed neutral
- * text. The message, the cause and the diagnostic context all stay on the error object for the
- * caller inside the service; none of them crosses this boundary.
+ * So the THROWN message is not read. What is read is the presentation the class declares about
+ * itself, and the status is derived from its code rather than pinned here. That distinction is the
+ * whole of this branch's correctness: ../errors/DomainError's deny-by-default presentation is
+ * `SERVICE_FAULT`, but ConfigurationError overrides it with `SERVICE_CONFIGURATION` and
+ * DataIntegrityError with `SERVICE_DATA`, and all three map to 500. A revision that pinned 400 here
+ * reported a deployment value that was never supplied, and stored data that cannot be read as its
+ * declared shape, as though the caller had sent something wrong — and kept both out of every monitor
+ * that counts 5xx. The thrown message, the cause and the diagnostic context still stay on the error
+ * object for the caller inside the service; none of them crosses this boundary.
  *
  * This branch is DEFAULT-DENY BY CONSTRUCTION rather than by convention: a future throw site is
  * masked automatically, and a future site that genuinely carries legacy behavior has to say so in
@@ -1015,12 +1376,13 @@ function statusForPublicErrorCode(code: PublicErrorCode): number {
  * ------------------------------------------------------------------------------------------------
  * None of the following can reach a response body from this function, under any status code:
  *   - A DOMAIN MESSAGE THAT IS NOT ONE OF THE FOUR MANDATED LEGACY TEXTS. This is the rule the other
- *     four follow from, and it is enforced positively: a message is disclosed only by matching
- *     {@link PUBLIC_PARITY_MESSAGE_STATUS}, never by failing to match a list of prohibited things.
+ *     four follow from, and it is enforced positively: a message is disclosed only when its throw site
+ *     raised ../errors/LegacyParityError, never by failing to match a list of prohibited things. ⚠️ The
+ *     enforcement is at the raise, not here — see the header — so this line states an obligation on
+ *     every throw site as much as a property of this function.
  *   - THE COMPOSED MESSAGE OR THE MEMBER IDENTIFIER OF A BOUNDARY STUB. Neither is legacy behavior,
  *     and together they map the port's internal surface. Both go to the log.
  *   - A stack trace. The stack member is never read on any branch.
-
  *   - The structured diagnostic payload a thrower may attach to a domain error. It is never read either,
  *     and that is a specific decision rather than an oversight: it exists to carry arbitrary facts known
  *     at throw time, so it could hold an identifier, an argument value or anything else a future thrower
@@ -1073,7 +1435,6 @@ export function errorResponse(error: unknown): APIGatewayProxyResult {
     // re-keying, no de-duplication and no sorting: the keys, their order and their exact strings
     // are the contract.
     const body: ErrorResponseBody = {
-      code: presentation.code,
       message: presentation.message,
       errors: error.getErrors(),
     };
@@ -1087,9 +1448,11 @@ export function errorResponse(error: unknown): APIGatewayProxyResult {
   if (error instanceof NotImplementedError) {
     logSuppressedFailure(BOUNDARY_STUB_LOG_PHRASE, error);
 
+    /* The status is DERIVED from the presentation this error declares about itself, exactly as on
+     * branches 1 and 4, rather than chosen here. Neither `error.member` nor `error.message` is read;
+     * `NOT_IMPLEMENTED_MESSAGE` is this module's own neutral text. */
     return messageResponse(
-      HTTP_STATUS.NOT_IMPLEMENTED,
-      PUBLIC_ERROR_CODE.NOT_IMPLEMENTED,
+      statusForPublicErrorCode(error.getPublicError().code),
       NOT_IMPLEMENTED_MESSAGE,
     );
   }
@@ -1104,23 +1467,22 @@ export function errorResponse(error: unknown): APIGatewayProxyResult {
      * normalising step would destroy. The type is the throw site's declaration that this text is
      * legacy behaviour; see the section note above for why a type and not a text comparison, and for
      * the uniform status this branch deliberately applies to all four. */
-    return messageResponse(
-      HTTP_STATUS.BAD_REQUEST,
-      PUBLIC_ERROR_CODE.CATALOG_REQUEST_REJECTED,
-      error.message,
-    );
+    return messageResponse(PUBLIC_PARITY_MESSAGE_STATUS, error.message);
   }
 
-  // BRANCH 4 — a domain failure this port authored. Recognised by type and answered at the family's
-  // status, but its message is NOT read: it is a diagnostic for an engineer, not for a caller.
+  // BRANCH 4 — a domain failure this port authored. Recognised by type and answered at the status its
+  // own classification maps to; `error.message` is NOT read, because it is a diagnostic for an
+  // engineer rather than for a caller. See BRANCH 4 above for why the status may not be a constant.
   if (error instanceof DomainError) {
     logSuppressedFailure(UNDISCLOSED_DOMAIN_FAILURE_LOG_PHRASE, error);
 
-    return messageResponse(
-      HTTP_STATUS.BAD_REQUEST,
-      PUBLIC_ERROR_CODE.SERVICE_FAULT,
-      DOMAIN_FAILURE_MESSAGE,
-    );
+    /* Read polymorphically, exactly as on branch 1: `ConfigurationError` and `DataIntegrityError`
+     * override this member to declare their own family, and the base class answers with the neutral
+     * service-fault presentation. Both members of the presentation are the CLASS's, never the throw
+     * site's. */
+    const presentation: PublicErrorPresentation = error.getPublicError();
+
+    return messageResponse(statusForPublicErrorCode(presentation.code), presentation.message);
   }
 
   /* BRANCH 5 — not raised by this port. The caught value is not inspected in any way, and it is not
@@ -1128,9 +1490,11 @@ export function errorResponse(error: unknown): APIGatewayProxyResult {
    * not discarded" guarantee for a value nothing here can classify. */
   logSuppressedFailure(UNRECOGNISED_FAILURE_LOG_PHRASE, error);
 
+  /* `SERVICE_FAULT` is reserved for exactly this case — a value this port did not raise and cannot
+   * classify — so the deny-by-default code and the deny-by-default status are the same single row of
+   * the one map. */
   return messageResponse(
-    HTTP_STATUS.INTERNAL_SERVER_ERROR,
-    PUBLIC_ERROR_CODE.SERVICE_FAULT,
+    statusForPublicErrorCode(PUBLIC_ERROR_CODE.SERVICE_FAULT),
     UNEXPECTED_FAILURE_MESSAGE,
   );
 }
@@ -1308,26 +1672,128 @@ export function readJsonObjectBody(event: Pick<APIGatewayProxyEvent, 'body'>): R
  * @returns a proxy result with a bad-request status and a message-only body
  */
 export function invalidRequestBodyResponse(problem: RequestBodyProblem): APIGatewayProxyResult {
+  /* All three conditions are `REQUEST_INVALID`, whose single documented status is the 400 all three
+   * return, so the status is derived from that one code rather than restated three times. */
+  const statusCode = statusForPublicErrorCode(PUBLIC_ERROR_CODE.REQUEST_INVALID);
+
   switch (problem) {
     case 'absent':
-      return messageResponse(
-        HTTP_STATUS.BAD_REQUEST,
-        PUBLIC_ERROR_CODE.REQUEST_INVALID,
-        BODY_ABSENT_MESSAGE,
-      );
+      return messageResponse(statusCode, BODY_ABSENT_MESSAGE);
     case 'malformed':
-      return messageResponse(
-        HTTP_STATUS.BAD_REQUEST,
-        PUBLIC_ERROR_CODE.REQUEST_INVALID,
-        BODY_MALFORMED_MESSAGE,
-      );
+      return messageResponse(statusCode, BODY_MALFORMED_MESSAGE);
     case 'notAnObject':
-      return messageResponse(
-        HTTP_STATUS.BAD_REQUEST,
-        PUBLIC_ERROR_CODE.REQUEST_INVALID,
-        BODY_NOT_AN_OBJECT_MESSAGE,
-      );
+      return messageResponse(statusCode, BODY_NOT_AN_OBJECT_MESSAGE);
   }
+}
+
+/* ================================================================================================
+ * P9 — EXPLICIT BOUNDED READS
+ *
+ * The three list-and-search routes whose result sets are bounded only by how much catalog a
+ * deployment holds each gained an ADDITIVE bounded companion. Their unbounded originals are the
+ * AAP-declared parity contracts and are untouched, so nothing an existing caller asks for is
+ * silently narrowed; a caller that wants a bound asks the bounded route and STATES the window.
+ *
+ * ⛔ BOTH HALVES OF THE WINDOW ARE REQUIRED, AND NEITHER IS DEFAULTED. Defaulting `limit` would
+ * invent a page size the source does not state (S9) and would make the bounded route a truncating
+ * route by accident; defaulting `offset` would let a caller that meant to page silently re-read the
+ * first window forever. Requiring both is the opposite of inventing: the window is the caller's own
+ * statement of intent and none of it is guessed here.
+ *
+ * ⛔ AND NEITHER IS CLAMPED. A malformed or out-of-range value is REFUSED with the reason named,
+ * never quietly coerced into a nearby legal one — a clamped request is a different request answered
+ * as if it were the one that was asked.
+ * ============================================================================================= */
+
+/** The query-string parameter carrying {@link BoundedReadWindow.limit}. */
+export const BOUNDED_READ_LIMIT_PARAMETER = 'limit';
+
+/** The query-string parameter carrying {@link BoundedReadWindow.offset}. */
+export const BOUNDED_READ_OFFSET_PARAMETER = 'offset';
+
+const BOUNDED_LIMIT_MESSAGE =
+  `A "${BOUNDED_READ_LIMIT_PARAMETER}" query parameter is required, ` +
+  'and must be a positive whole number';
+
+const BOUNDED_OFFSET_MESSAGE =
+  `An "${BOUNDED_READ_OFFSET_PARAMETER}" query parameter is required, ` +
+  'and must be a whole number of zero or more';
+
+/**
+ * The outcome of reading a bounded-read window, discriminated on whether a usable window was obtained.
+ *
+ * The same shape as {@link RequestBodyResult}, and for the same reason: the refusal must survive as a
+ * value the compiler forces a caller to handle, rather than collapsing into an indistinguishable
+ * absence that a route could forget to check.
+ */
+export type BoundedReadWindowResult =
+  | { readonly present: true; readonly window: BoundedReadWindow }
+  | { readonly present: false; readonly response: APIGatewayProxyResult };
+
+/**
+ * Parses one query-string value as a bounded-read window bound.
+ *
+ * ⚠️ STRICT BY DESIGN, AND THE STRICTNESS IS ABOUT MORE THAN TIDINESS. `Number('')` is `0` and
+ * `parseInt('12abc', 10)` is `12`, so either of the obvious readings would accept input the caller did
+ * not write — an empty parameter silently becoming a zero limit, or a typo silently becoming a
+ * different window. The value must therefore be an unsigned run of digits and nothing else: no sign,
+ * no decimal point, no exponent, no surrounding space. Anything else is refused with the bound named.
+ *
+ * ⚠️ AND IT MUST BE SAFE TO USE AS A ROW COUNT. A run of digits can still exceed `Number.MAX_SAFE_INTEGER`,
+ * at which point the parsed value is no longer the number the caller wrote; such input is refused rather
+ * than bound into a statement. The adapter validates the window again on its own side — this read does
+ * not stand in for that gate, it only ensures a request-shaped value never reaches it.
+ */
+function readWindowBound(candidate: string | undefined, minimum: number): number | undefined {
+  if (candidate === undefined || !DIGITS_ONLY_PATTERN.test(candidate)) {
+    return undefined;
+  }
+
+  const parsed = Number(candidate);
+
+  if (!Number.isSafeInteger(parsed) || parsed < minimum) {
+    return undefined;
+  }
+
+  return parsed;
+}
+
+/** An unsigned run of one or more decimal digits, anchored at both ends. */
+const DIGITS_ONLY_PATTERN = /^\d+$/;
+
+/**
+ * Reads the requested bounded-read window from the query string.
+ *
+ * Both parameters are required and neither is defaulted or clamped, for the reasons recorded in the
+ * section header above. `limit` must be at least one — a zero-row window is not a bound, it is a read
+ * that cannot make progress — and `offset` may be zero, which is the first window.
+ *
+ * @param event the proxy event, or any object carrying its query-string-parameters member
+ * @returns the window, or the refusal naming which bound was unusable. `limit` is reported first when
+ *   both are, so a caller fixes the required bound before the position.
+ */
+export function readBoundedReadWindow(
+  event: Pick<APIGatewayProxyEvent, 'queryStringParameters'>,
+): BoundedReadWindowResult {
+  const limit = readWindowBound(readQueryStringParameter(event, BOUNDED_READ_LIMIT_PARAMETER), 1);
+
+  if (limit === undefined) {
+    return {
+      present: false,
+      response: messageResponse(HTTP_STATUS.BAD_REQUEST, BOUNDED_LIMIT_MESSAGE),
+    };
+  }
+
+  const offset = readWindowBound(readQueryStringParameter(event, BOUNDED_READ_OFFSET_PARAMETER), 0);
+
+  if (offset === undefined) {
+    return {
+      present: false,
+      response: messageResponse(HTTP_STATUS.BAD_REQUEST, BOUNDED_OFFSET_MESSAGE),
+    };
+  }
+
+  return { present: true, window: { limit, offset } };
 }
 
 /**
@@ -1425,4 +1891,175 @@ export function readHeader(
   }
 
   return undefined;
+}
+
+/* ================================================================================================
+ * THE SMART LIST DATA VOCABULARY — `org/Hibachi/HibachiSmartList.cfc:L85-L136`
+ *
+ * ⭐ WHY THIS READER LIVES HERE RATHER THAN IN A HANDLER. TWO routed members receive the legacy smart
+ * list's `data` struct — `getSkuSmartList(struct data={}, currentURL="")`
+ * [model/service/SkuService.cfc:L309] and `getProductSmartList(struct data={}, currentURL="")`
+ * [model/service/ProductService.cfc:L342] — and both were called with the FW/1 request context, the
+ * whole bag of query and form values. `applyData` [org/Hibachi/HibachiSmartList.cfc:L85-L136] then
+ * walked that bag and acted on RECOGNISED keys only, ignoring every other member.
+ *
+ * That recognition set is ONE vocabulary, and it belongs to the legacy interpreter rather than to
+ * either handler. Declaring it twice — once in ./skuHandler and once in ./productHandler — would let
+ * the two copies drift, and a drifted copy does not fail: it silently stops forwarding a key the
+ * smart list would have acted on, or starts forwarding one it would have ignored. It is therefore
+ * declared exactly once, in the module both boundaries already depend on, alongside the other
+ * event readers. That is the same reasoning that put {@link readBoundedReadWindow} here.
+ *
+ * Each entry cites the branch that recognises it:
+ *   savedStateID  [:L93-L96]      keyword    [:L136-L138]   keywords  [:L145]
+ *   OrderBy       [:L118-L122]    P:Show     [:L123-L128]   P:Start   [:L129-L130]
+ *   P:Current     [:L131-L132]
+ *   F:  [:L100-L101]   FR: [:L102-L103]   FI: [:L104-L105]   FIR: [:L106-L107]
+ *   FK: [:L108-L113]   FKR:[:L114-L115]   R:  [:L116-L117]
+ *
+ * ⚠️ THE PREFIXES ARE MUTUALLY EXCLUSIVE, WHICH IS WHY A PREFIX TEST IS SOUND HERE. The legacy tests
+ * them with explicit lengths — `left(i,2) == "F:"`, `left(i,3) == "FR:"`, `left(i,4) == "FIR:"` — and
+ * each candidate carries the colon, so `FR:x` does not match `F:` and `FIR:x` does not match `FI:`.
+ * The same mutual exclusivity is what lets `SmartListInput`'s template index signatures type them.
+ *
+ * ⛔ NOTHING IS ADDED. There is no page size, no default limit, no maximum, no ordering default and no
+ * filter supplied here of its own accord (AAP §0.7.3 S9, restated for these members by
+ * ../services/SkuService: "No pagination default, filter or ordering is invented").
+ * ============================================================================================== */
+
+/** The smart list data keys recognised by exact name. */
+const SMART_LIST_NAMED_KEYS: readonly string[] = Object.freeze([
+  'savedStateID',
+  'keyword',
+  'keywords',
+  'OrderBy',
+  'P:Show',
+  'P:Start',
+  'P:Current',
+]);
+
+/** The smart list data keys recognised by prefix. */
+const SMART_LIST_KEY_PREFIXES: readonly string[] = Object.freeze([
+  'F:',
+  'FR:',
+  'FI:',
+  'FIR:',
+  'FK:',
+  'FKR:',
+  'R:',
+]);
+
+/**
+ * The string-named subset of `SmartListInput`'s key space.
+ *
+ * `Extract<…, string>` is what keeps the template index signatures in play: the port declares them as
+ * template-literal patterns, and narrowing to `string` preserves them rather than collapsing the type
+ * into a bare record.
+ */
+type SmartListInputMember = Extract<keyof SmartListInput, string>;
+
+/*
+ * ⛔ ONLY THE MEMBERS A QUERY STRING CAN ACTUALLY CARRY — the filter is on the VALUE type, not just on
+ * the key type. `SmartListInput` declares one member that is NOT string-valued, `joins`, whose type is
+ * `readonly SmartListJoin[]`; a query string cannot express it and the legacy never read it from `rc`,
+ * which is why it is absent from {@link SMART_LIST_NAMED_KEYS} and from every prefix. Narrowing with a
+ * bare `Extract<keyof …, string>` would still ADMIT it as a key, and assigning a `string` through a
+ * union that includes it forces the intersection `string & readonly SmartListJoin[]` — a type nothing
+ * satisfies. Selecting only the keys whose declared value type accepts a `string` keeps the runtime
+ * vocabulary and the compile-time key space in exact agreement, so a member added to the port later is
+ * classified by its own type rather than by this module remembering to exclude it.
+ */
+type SmartListInputKey = {
+  [K in SmartListInputMember]-?: string extends SmartListInput[K] ? K : never;
+}[SmartListInputMember];
+
+/**
+ * A writable view of `SmartListInput`, used only while one is being assembled.
+ *
+ * The port declares every member `readonly`, which is right for a value being consumed and impossible
+ * for a value being built. A homomorphic mapped type with `-readonly` removes exactly that modifier
+ * and PRESERVES the seven template index signatures, so the accumulated object is still checked
+ * against the real vocabulary. The assembled value is returned as the readonly `SmartListInput` again,
+ * so nothing downstream can write through it.
+ */
+type MutableSmartListInput = { -readonly [K in keyof SmartListInput]: SmartListInput[K] };
+
+/**
+ * Reports whether a query-parameter name is one the legacy smart list would have acted on.
+ *
+ * The two lists it consults, and the line of `org/Hibachi/HibachiSmartList.cfc` that recognises each
+ * entry, are documented above {@link SMART_LIST_NAMED_KEYS}. The prefix test is sound because the
+ * legacy's own tests are colon-terminated and therefore mutually exclusive.
+ *
+ * @param name the query-parameter name as the client supplied it
+ * @returns true when the name belongs to the smart list's data vocabulary
+ */
+function isSmartListInputKey(name: string): name is SmartListInputKey {
+  if (SMART_LIST_NAMED_KEYS.includes(name)) {
+    return true;
+  }
+
+  for (const prefix of SMART_LIST_KEY_PREFIXES) {
+    if (name.startsWith(prefix)) {
+      return true;
+    }
+  }
+
+  return false;
+}
+
+/**
+ * Assembles a smart list `data` struct from the query string.
+ *
+ * This function is the walk `applyData` [org/Hibachi/HibachiSmartList.cfc:L85-L136] performed over the
+ * FW/1 request context, carried out over the container an HTTP request actually supplies. Its two
+ * callers are the two smart-list routes named above {@link SMART_LIST_NAMED_KEYS}.
+ *
+ * ⚠️ "TWO CALLERS" IS CHECKABLE ONLY BECAUSE BOTH REACH IT BY IMPORT. For a period `./productHandler.ts`
+ * carried a byte-identical private copy of this function and the six declarations behind it, so this
+ * sentence counted a caller that was in fact running its own copy — and a key added here would have left
+ * that route reading the older vocabulary with nothing reporting it. That copy is removed and its route
+ * imports this member; the reasoning is recorded at the removal site in that file.
+ *
+ * ⚠️ THIS IS THE ONE READER THAT ENUMERATES RATHER THAN ASKING FOR A NAME, AND THE REASON IS
+ * STRUCTURAL. Every other reader in this module answers "what is the value of THIS name"; the legacy
+ * behaviour being reproduced is "enumerate every name supplied", which no single-name reader can
+ * express. The two obligations the other readers discharge are discharged here explicitly all the
+ * same: the container is declared nullable, so the null is narrowed before it is touched; and
+ * enumeration uses `Object.entries`, which yields OWN enumerable entries only, so an inherited member
+ * such as `toString` can never be mistaken for a supplied parameter. That is the same technique
+ * {@link readHeader} uses internally, for the same reason.
+ *
+ * ⛔ NOTHING IS ADDED, DEFAULTED OR NORMALISED. No page size, no limit, no maximum, no ordering, no
+ * filter and no keyword is supplied by this function (AAP §0.7.3 S9). Values are forwarded byte for
+ * byte — never trimmed, case-folded, coerced to numbers or de-duplicated — because the interpreter's
+ * own numeric-and-bounds tests at [:L123-L132] and its wildcard wrapping at [:L108-L113] are the
+ * port's business, one layer down, and doing any of it twice would change results. An EMPTY RESULT IS
+ * A LEGAL AND MEANINGFUL INPUT: it is exactly the `data={}` default at
+ * [model/service/SkuService.cfc:L309] and [model/service/ProductService.cfc:L342], and it is what
+ * every in-repository caller effectively passes — `integrationServices/google/controllers/feed.cfc:L63`
+ * among them.
+ *
+ * @param event the proxy event, or any object carrying its query-string-parameters member
+ * @returns the recognised subset of the query string, as the smart list's own input type
+ */
+export function readSmartListInput(
+  event: Pick<APIGatewayProxyEvent, 'queryStringParameters'>,
+): SmartListInput {
+  const input: MutableSmartListInput = {};
+  const parameters = event.queryStringParameters;
+
+  if (parameters === null) {
+    return input;
+  }
+
+  for (const [name, value] of Object.entries(parameters)) {
+    if (value === undefined || !isSmartListInputKey(name)) {
+      continue;
+    }
+
+    input[name] = value;
+  }
+
+  return input;
 }

@@ -25,14 +25,36 @@
      * THE PIN STANDS ANYWAY. This is a deliberate, cited decision, not an oversight, and it is
      * recorded here as well as in the plan so that a reader of the configuration finds it without
      * having to read the plan first. The verified dates:
-     *   - Node.js 20 reached upstream end-of-life on 2026-03-24.
-     *   - AWS deprecated the Lambda `nodejs20.x` managed runtime on 2026-04-30; after that date
-     *     AWS stops applying security patches and removes the runtime from the console's creation
-     *     list, though it stays selectable through the CLI, CloudFormation, SAM and CDK, and
-     *     already-deployed functions remain invocable.
-     *   - Published AWS timelines CONFLICT on the subsequent hard gates. One gives a block on new
-     *     function creation at 2026-08-31 and on function updates at 2026-09-30; another gives
-     *     2027-02-01 and 2027-03-03. Both are recorded because neither can be treated as settled.
+     *   - Node.js 20 reached upstream end-of-life on 2026-04-30. (An earlier revision of this
+     *     comment recorded 2026-03-24; that was wrong and is corrected here. The mistake was a
+     *     plausible one — it read as a date distinct from the AWS one — so the correction is worth
+     *     stating rather than quietly applying: there is only ONE date, and both the upstream EOL
+     *     and the AWS deprecation fall on it.)
+     *   - AWS deprecated the Lambda `nodejs20.x` managed runtime on 2026-04-30 — the SAME day, by
+     *     alignment to the upstream EOL, not a coincidence. After that date AWS stops applying
+     *     security patches, functions on the runtime lose technical-support eligibility, and the
+     *     runtime is removed from the console's creation list, though it stays selectable through
+     *     the CLI, CloudFormation, SAM and CDK, and already-deployed functions remain invocable.
+     *   - Published AWS timelines CONFLICT on the subsequent hard gates, and THREE distinct sets
+     *     have been published. Every one is recorded, because picking a single set would assert a
+     *     certainty the sources do not support:
+     *       (i)   block create 2026-06-01, block update 2026-07-01 — the earliest AWS bulletin;
+     *       (ii)  block create 2026-08-31, block update 2026-09-30 — the "30 days / 60 days after
+     *             deprecation" cadence of the standard runtime-deprecation policy;
+     *       (iii) block create 2027-02-01, block update 2027-03-03 — the AWS runtimes table as
+     *             read on 2026-07-31.
+     *     THE CONFLICT HAS A KNOWN MECHANISM, WHICH IS WHY IT IS NOT A DOCUMENTATION DEFECT TO BE
+     *     RESOLVED HERE. AWS states that for some runtimes it is delaying the block-function-create
+     *     and block-function-update dates beyond the usual 30 and 60 days in response to customer
+     *     feedback, that it will not begin blocking before the dates in its own tables, and that
+     *     those forecast dates are subject to change. The three sets are therefore successive
+     *     revisions of a moving forecast rather than contradictory readings of a fixed fact, and
+     *     they move LATER, never earlier. The only authority is the AWS runtimes table at the
+     *     moment of reading; this comment is a dated snapshot of it and nothing more.
+     *   - INVOCATION IS NEVER BLOCKED, on any of the three timelines. Every gate above is a
+     *     control-plane gate on creating or updating a function. That is the reason a stale date
+     *     here is a planning defect and not a correctness or availability defect for code already
+     *     deployed — and the reason correcting it changes no compiler option below.
      *
      * WHY NOTHING HERE CHANGES. Node 20.x / `nodejs20.x` is the runtime the frozen plan specifies,
      * and AAP 0.5.5 resolves the conflict explicitly — "The pin stands." — while AAP 0.5.3.2

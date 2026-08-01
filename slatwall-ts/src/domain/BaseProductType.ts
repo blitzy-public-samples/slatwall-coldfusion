@@ -46,11 +46,22 @@
  * `SwProductType`. These values must be EQUAL to the database strings, so the representation is a
  * string-literal union over `as const` data.
  *
- * TRANSLATION DECISION — THE COMPARISON NARROWS TO CASE-SENSITIVE. `model/service/SkuService.cfc:L61`
- * compares with CFML `==`, which also matched `"Merchandise"` or `"MERCHANDISE"`. The ported
- * comparison is case-sensitive, which is correct because the seeded rows are the only values it can
- * legitimately see — but a row whose `systemCode` had been hand-edited to a different case would have
- * matched in CFML and will not match here.
+ * ⚠️ THE UNION IS THE CANONICAL SPELLING, NOT THE COMPARISON RULE — READ
+ * {@link resolveBaseProductType} BEFORE COMPARING ANYTHING TO A MEMBER OF IT. Earlier prose here
+ * asserted that the ported comparison "narrows to case-sensitive" and that this was correct because
+ * only the seeded rows can legitimately be seen. Both halves were wrong, and the second was the
+ * reason the first looked safe. `model/service/SkuService.cfc:L61`, `:L139` and `:L173` compare with
+ * CFML `==`, which is CASE-INSENSITIVE for text operands, so a `SwProductType` row holding
+ * `Merchandise` or `MERCHANDISE` entered the merchandise branch in the legacy system. Nothing
+ * constrains the column to the seeded casing: `systemCode` is an ordinary `varchar` with no check
+ * constraint, `model/validation/ProductType.json` declares no format rule for it, and
+ * `model/entity/ProductType.cfc:L110` returns whatever text the row holds — including a value
+ * inherited from a hierarchy root. A `===` comparison therefore turned a working legacy product into
+ * a thrown `LegacyParityError` at `model/service/SkuService.cfc:L203-L205`, silently changed
+ * `getSkuDefinition` from a merchandise definition to the empty string, and silently dropped the
+ * fetch-options join in `SkuDAO.getProductSkus`. Branch selection goes through
+ * {@link resolveBaseProductType}; `===` against a member of this union is only ever correct on a value
+ * that recogniser has already returned.
  */
 export type BaseProductType = 'merchandise' | 'subscription' | 'contentAccess';
 
@@ -153,9 +164,50 @@ export const SEEDED_PRODUCT_TYPES_BY_SYSTEM_CODE = Object.freeze({
 } as const satisfies SeededProductTypeRegistry);
 
 /**
- * Narrows an untrusted value to {@link BaseProductType}.
+ * Recognises an untrusted value as one of the three seeded discriminators, CFML-fashion, and answers
+ * with the CANONICAL spelling — the single supported way to select a base-product-type branch.
  *
- * TRANSLATION DECISION — THE UNION AND THIS GUARD ARE COMPLEMENTARY, NOT REDUNDANT. Both exist,
+ * ⭐ CASE-INSENSITIVE RECOGNITION, CANONICAL ANSWER, ORIGINAL VALUE UNTOUCHED. That triple is the
+ * whole contract, and each third of it matters:
+ *
+ *   - CASE-INSENSITIVE, because the three legacy comparisons are CFML `==` on text operands and CFML
+ *     `==` folds case: `model/service/SkuService.cfc:L61`, `:L139` and `:L173`;
+ *     `model/entity/Sku.cfc:L577`, `:L579` and `:L584`; and the fetch-options chain at
+ *     `model/dao/SkuDAO.cfc:L154-L161`. A row holding `Merchandise` reached the merchandise arm of
+ *     every one of them. Reproducing that is preservation (G2), not leniency.
+ *   - CANONICAL, so that the value flowing INTO a narrowed branch is a real member of
+ *     {@link BaseProductType} and the compiler can still check a `switch` over it exhaustively. This
+ *     is what keeps the recognition fix from costing the exhaustiveness the migration buys.
+ *   - ORIGINAL VALUE UNTOUCHED, because nothing here writes back, re-cases or normalises the stored
+ *     text. Callers that carry the observed value onward — the diagnostic context of the fallthrough
+ *     throw in `src/services/SkuService.ts`, for one — must keep carrying the value they read, not the
+ *     canonical one, or the diagnostic would misreport what is actually in the row.
+ *
+ * FOLDING RULE, STATED PRECISELY. Both sides are lowered with `String.prototype.toLowerCase`, which is
+ * locale-INDEPENDENT; `toLocaleLowerCase` is deliberately not used, because under a Turkish locale it
+ * folds `I` to a dotless `ı` and `Merchandise` would stop matching depending on where the code ran —
+ * a behaviour the CFML original never had. The three seeded codes are pure ASCII
+ * [config/dbdata/SlatwallProductType.xml.cfm:L13-L15], so the fold cannot collide two of them into one
+ * and cannot admit a non-ASCII string by accident.
+ *
+ * NO TRIMMING, AND THAT IS DELIBERATE. CFML `==` does not trim its operands, so a stored
+ * `" merchandise"` did NOT match in the legacy system and must not match here. Adding a `trim` would
+ * be an enhancement of exactly the kind Guideline 4 forbids.
+ *
+ * A NON-STRING, `null`, `undefined` OR THE EMPTY STRING RESOLVES TO `undefined`, NEVER TO AN ARM.
+ * `model/entity/ProductType.cfc:L110-L115` walks to the root of the hierarchy when a product type
+ * carries no `systemCode` of its own and returns the root's, which may itself be null or empty, so
+ * "unrecognised" is a reachable, legitimate outcome rather than a defensive branch. No seeded code is
+ * empty, so no empty or absent value can ever select an arm.
+ *
+ * ⛔ THE THREE CONSUMERS TREAT AN UNRECOGNISED VALUE DIFFERENTLY, AND NONE MAY BE ALIGNED TO ANOTHER.
+ * `createSkus` throws the legacy fallthrough message [model/service/SkuService.cfc:L203-L205];
+ * `getSkuDefinition` has no fallthrough arm at all and leaves its result the empty string
+ * [model/entity/Sku.cfc:L574-L590]; and `SkuDAO.getProductSkus` simply adds no join
+ * [model/dao/SkuDAO.cfc:L154-L161]. This recogniser therefore reports recognition and nothing more —
+ * it never throws and never substitutes a default.
+ *
+ * TRANSLATION DECISION — THE UNION AND THIS RECOGNISER ARE COMPLEMENTARY, NOT REDUNDANT. Both exist,
  * and either one alone would be wrong:
  *
  *   - The union alone would be a compile-time fiction. `getBaseProductType()` at
@@ -169,30 +221,50 @@ export const SEEDED_PRODUCT_TYPES_BY_SYSTEM_CODE = Object.freeze({
  *     behaviour. The fallthrough at `model/service/SkuService.cfc:L203-L204` DOES execute for such
  *     a value, and it throws; its message literal is owned solely by `src/errors/DomainError.ts`
  *     and is deliberately not reproduced here.
- *   - This guard alone would lose exhaustiveness checking, which is the benefit the migration buys
- *     for this construct: with the union, a `switch` over a narrowed discriminator is checked
+ *   - This recogniser alone would lose exhaustiveness checking, which is the benefit the migration
+ *     buys for this construct: with the union, a `switch` over the RETURNED discriminator is checked
  *     against all three arms at compile time, replacing an unchecked CFML string comparison.
  *
- * Used together, a consumer passes the untrusted string through this guard, gets exhaustive
- * checking inside the narrowed branch, and keeps a genuinely reachable `else` for everything else
- * — which is where the legacy behaviour lives. Note that the two legacy consumers treat that
- * `else` DIFFERENTLY, and neither may be aligned to the other: `createSkus` throws, whereas
- * `getSkuDefinition` at `model/entity/Sku.cfc:L574-L590` has no fallthrough arm at all and
- * silently leaves its result as the empty string.
+ * Used together, a consumer passes the untrusted string through this recogniser, gets exhaustive
+ * checking inside the narrowed branch, and keeps a genuinely reachable `undefined` case for
+ * everything else — which is where the legacy behaviour lives.
  *
- * SOUNDNESS. The predicate is derived from `SEEDED_PRODUCT_TYPES_BY_SYSTEM_CODE`, so guard and
- * data cannot drift: `SeededProductTypeRegistry` forces that object's own keys to be exactly the
- * members of `BaseProductType` — no fewer, no more — making own-key membership equivalent to
- * membership of the union.
+ * ⛔ WHY THIS IS NOT A `value is BaseProductType` TYPE PREDICATE, AND MUST NEVER BE TURNED BACK INTO
+ * ONE. A predicate narrows the ARGUMENT, so the value inside the guarded block keeps its observed
+ * casing while the compiler believes it is one of the three literals — and every `case 'merchandise'`
+ * arm inside that block then silently fails to match `Merchandise`. That is precisely the defect this
+ * function replaces: the previous `isBaseProductType` predicate compiled, narrowed, and then let a
+ * `switch` fall through all three arms. Returning a NEW canonical value is what makes the fold
+ * effective rather than cosmetic, and it is why the recogniser is a resolver and not a guard.
  *
- * `Object.hasOwn` is used rather than the `in` operator on purpose. `in` also walks the prototype
- * chain, so it would report `'toString'` and `'constructor'` as members and quietly widen the
- * guard to accept values that are not product types at all.
+ * SOUNDNESS. The answer is derived from `SEEDED_PRODUCT_TYPES_BY_SYSTEM_CODE` by iteration, so
+ * recogniser and data cannot drift: `SeededProductTypeRegistry` forces that object's own keys to be
+ * exactly the members of `BaseProductType` — no fewer, no more — and every value returned below is a
+ * `systemCode` read off one of those records rather than a literal retyped here.
  *
- * @param value - Any value, typically a `systemCode` read from the database. `null`, `undefined`
- *                and non-string values are handled and simply return `false`; nothing throws.
- * @returns `true` only for the three seeded `systemCode` strings, compared case-sensitively.
+ * `Object.values` is used rather than `Object.hasOwn` on a folded key. Folding the KEY would require a
+ * second, lower-cased copy of the registry to look into, and that copy would be a silently divergeable
+ * duplicate of the seeded data (IR-7). Three iterations of a frozen three-member object is the honest
+ * implementation of a three-way comparison, which is exactly what the legacy `if`/`else if` chain is.
+ *
+ * @param value - Any value, typically a `systemCode` read from the database, possibly inherited from a
+ *   hierarchy root. `null`, `undefined`, the empty string and non-string values are all handled and
+ *   simply resolve to `undefined`; nothing throws.
+ * @returns The canonical seeded `systemCode` whose text equals `value` under CFML's case-insensitive
+ *   `==`, or `undefined` when no seeded code does. The argument itself is never modified.
  */
-export function isBaseProductType(value: unknown): value is BaseProductType {
-  return typeof value === 'string' && Object.hasOwn(SEEDED_PRODUCT_TYPES_BY_SYSTEM_CODE, value);
+export function resolveBaseProductType(value: unknown): BaseProductType | undefined {
+  if (typeof value !== 'string') {
+    return undefined;
+  }
+
+  const foldedValue = value.toLowerCase();
+
+  for (const seededProductType of Object.values(SEEDED_PRODUCT_TYPES_BY_SYSTEM_CODE)) {
+    if (seededProductType.systemCode.toLowerCase() === foldedValue) {
+      return seededProductType.systemCode;
+    }
+  }
+
+  return undefined;
 }

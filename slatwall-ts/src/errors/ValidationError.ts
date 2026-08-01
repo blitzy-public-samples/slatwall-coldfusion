@@ -204,6 +204,31 @@ export const ACCESS_CONTENTS_REQUIRED_RBKEY = 'validate.product.accesscontentsre
 export const FILE_UPLOAD_RBKEY = 'validate.fileUpload';
 
 /**
+ * The error key an entity records against itself when one of ITS process objects carries findings.
+ *
+ * Legacy locator: `model/entity/HibachiEntity.cfc:L133-L147`, which OVERRIDES `getErrors()` to walk
+ * `variables.processObjects` and, for each process object reporting `hasErrors()`, calls
+ * `addError('processObjects', key, true)` — where `key` is the PROCESS CONTEXT name, not a
+ * resource-bundle key. So this is the one error key in the inventory whose paired message is a context
+ * identifier such as `updateSkus`, and that asymmetry is legacy behaviour rather than an inconsistency
+ * to tidy away.
+ *
+ * ⚠️ WHY IT MATTERS RATHER THAN BEING DECORATIVE, because a reader of `HibachiTransient.cfc` alone will
+ * conclude the opposite. `org/Hibachi/HibachiTransient.cfc:L76-L77` and `:L93-L94` FILTER this key out
+ * when composing the human-readable error message and the HTML error list, which makes it look like a
+ * presentation artefact. It is not: the filtering is display-only, and its very existence proves the key
+ * is in the bag. Because the key is in the bag, `hasErrors()` answers true, and
+ * `org/Hibachi/HibachiService.cfc:L112` gates the whole process invocation on exactly that answer. An
+ * entity whose process object failed validation therefore never reaches its process body in the legacy.
+ *
+ * ⚠️ THE DUPLICATE GUARD IS PART OF THE BEHAVIOUR. `:L135` tests
+ * `!arrayFindNoCase(originalErrors.processObjects, key)` before recording, so the key is recorded AT
+ * MOST ONCE PER CONTEXT and the comparison is CASE-INSENSITIVE. A case-sensitive test, or no test at
+ * all, would let one context accumulate duplicate entries across repeated reads.
+ */
+export const PROCESS_OBJECTS_ERROR_KEY = 'processObjects';
+
+/**
  * The error bag: a map from property identifier to the ordered list of resource-bundle keys
  * reported against it.
  *

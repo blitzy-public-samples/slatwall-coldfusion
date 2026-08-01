@@ -116,6 +116,7 @@
 
 import type { Product, ProductPropertyName } from '../../domain/product/Product';
 import type { UniquePropertyEntity } from '../../ports/UniquePropertyPort';
+import type { ExactDecimal } from '../../util/formatting';
 import type {
   DataTypeConstraint,
   EqualityConstraint,
@@ -290,7 +291,7 @@ export type ProductValidationSubject = ValidationSubject &
      * persistent="false"` [`model/entity/Product.cfc:L118`]. See X1 at
      * {@link priceRequiredConstraint}, including the boundary note about how it is resolved.
      */
-    readonly price?: number;
+    readonly price?: ExactDecimal;
 
     /** `property name="productName" ormtype="string" notnull="true";` [`model/entity/Product.cfc:L55`] */
     readonly productName?: string;
@@ -688,9 +689,13 @@ export const baseProductTypeInListSubscription = Object.freeze({
  * =============================================================================================
  * WHY NO PARITY ANNOTATION AND NO REGISTER ENTRY
  * =============================================================================================
- * The AAP's defect register is CLOSED at its declared range, and no entry in it covers this. Inventing
- * one would fabricate a plan artifact, so this finding is documented in prose at the site of the judgment
- * — which is exactly what guideline 6 asks for — and carries no invented identifier of any kind.
+ * No entry in the register covers this, and no new one is minted for it — the register is stated
+ * canonically, and only once, in the header of `src/ports/repositories/SkuRepository.ts` (AAP
+ * 0.6.7's frozen source range D1-D21, plus the source extension D22 and the three contract
+ * corrections D23, D24 and D25, with no D26 or beyond; and AAP 0.6.6's M1-M8 plus M9, with no M10
+ * or beyond). Inventing one would fabricate a plan artifact, so this finding is documented in prose
+ * at the site of the judgment — which is exactly what guideline 6 asks for — and carries no
+ * invented identifier of any kind.
  *
  * =============================================================================================
  * COLLECTION-CEILING SEMANTICS, reproduced by `../Validator` from

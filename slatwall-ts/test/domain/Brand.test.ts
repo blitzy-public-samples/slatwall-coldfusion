@@ -69,30 +69,6 @@
  * Each inherited assertion below is re-expressed against the layer that now owns the behaviour, and
  * the re-expression is named at the case that performs it.
  *
- * OF THE THREE LEGACY FRAMEWORK MEMBERS THE INHERITED ASSERTIONS CALLED, ONE IS GONE AND TWO ARE BACK:
- *   `validate` / `hasErrors`      GONE from the entity. AAP §0.8.3.2 retires `org/Hibachi/**` for this
- *                                 slice rather than porting it, so validation moved out to
- *                                 `src/validation/Validator.ts` driving `brand.rules.ts`.
- *   `getSimpleRepresentation`     ⭐ PRESENT. `model/entity/Brand.cfc:L157-L159` is empty, so Brand
- *                                 overrode nothing and INHERITED the framework default — a naming
- *                                 convention at `org/Hibachi/HibachiEntity.cfc:L59-L88`. IR-1 makes
- *                                 an inherited member the slice depends on an explicit declaration,
- *                                 so `src/domain/product/Brand.ts` now declares the default itself
- *                                 and the case below CALLS IT. An earlier revision reproduced the
- *                                 convention in two test-local helpers and asserted against those,
- *                                 which is documentary rather than traceable; F22 named that gap and
- *                                 the helpers are gone.
- *   `getPrimaryIDPropertyName`    ⭐ PRESENT. It is one of the seven managed-entity members
- *                                 `src/domain/product/Brand.ts` now declares explicitly under IR-1,
- *                                 because `src/validation/Validator.ts` and
- *                                 `src/ports/UniquePropertyPort.ts` require them BY NAME. An earlier
- *                                 revision of this file recorded it as absent and asserted a
- *                                 test-local literal in its place; the case below now calls the real
- *                                 member, which is what F22 asks for.
- *
- * Each inherited assertion below is re-expressed against the layer that now owns the behaviour, and
- * the re-expression is named at the case that performs it.
- *
  * WHAT IS EXERCISED FOR REAL: the actual `Brand` class, the actual `Product` class, the actual
  * `Validator`, the actual transliterated `brand.rules.ts` rule set and the actual `ValidationError`
  * bag. Nothing about the code under test is re-implemented here.
@@ -1593,10 +1569,14 @@ describe('Brand — declared-type coercion, org/Hibachi/HibachiTransient.cfc:L19
   });
 
   it('NET-NEW — an ambiguous boolean raises rather than being written through or silently dropped', () => {
-    // The declared D18-precedent departure. `'maybe'` was never ACCEPTED by the legacy either — it
-    // produced a CFML cast failure on the way to Hibernate — so this changes when and how loudly a
-    // bad value fails, not whether. Silently skipping would leave the prior value in place, which
-    // for a visibility flag is the worst of the three outcomes.
+    /* NOT A HARDENING, AND NO LONGER CLAIMED AS ONE. An earlier revision recorded this as a declared
+     * D18-precedent departure; `src/domain/base/populate.ts` withdraws that framing and records the
+     * difference as an execution-model one under M5 instead. `'maybe'` was never ACCEPTED by the
+     * legacy — it produced a CFML cast failure on the way to Hibernate — so the ACCEPTED SET is
+     * identical and only the POINT of failure moves, because the target has no ORM flush in which to
+     * fail. The two alternatives would each have changed an outcome: silently clearing deletes a value
+     * the caller never asked to delete, and silently skipping leaves the prior value in place, which
+     * for a visibility flag is the worst of the three. */
     expect(() => populateBrand({ activeFlag: 'maybe' })).toThrow(DomainError);
     expect(() => populateBrand({ publishedFlag: 'on' })).toThrow(
       /cannot be represented in the declared type/,
@@ -1646,35 +1626,55 @@ describe('Brand — declared-type coercion, org/Hibachi/HibachiTransient.cfc:L19
 });
 
 /* ================================================================================================
- * THE brandWebsite URL POLICY — DECISION V-2 IN `src/validation/Validator.ts`
+ * THE brandWebsite URL CHECK — SEC-15 IS WITHDRAWN
  *
  * `model/validation/Brand.json:L4` is the ONLY `dataType: "url"` rule in the whole slice, so this
- * entity is the only place the policy split is observable. Every case here is NET-NEW: AAP 0.6.5.2
+ * entity is the only place the check is observable at all. Every case here is NET-NEW: AAP 0.6.5.2
  * records that `meta/tests/unit/entity/BrandTest.cfc` asserts nothing but the `products` default, and
  * no legacy test exercises validation of this property at all.
  *
- * The cases pin BOTH halves of the departure — what is newly rejected, and what is unchanged — so a
- * reviewer can see the boundary rather than infer it. The unchanged half matters most: the message
- * key is composed from `constraintValue`, which is still `'url'`, so the bag stays byte-comparable to
- * legacy output.
+ * ⛔ WHAT THESE CASES USED TO BE. Seven cases pinned a two-policy split declared as DECISION V-2, "a
+ * declared departure from byte-for-byte preservation", on the D18 precedent. Under it the slice's one
+ * `url` rule selected a `'webAddress'` predicate that admitted only `http` and `https` and additionally
+ * rejected embedded credentials and ASCII control characters, so `file:///etc/passwd`,
+ * `mailto:hello@acme.test`, `ftp://files.test/x`, `news:acme.group`, `https://user:pass@acme.test/`,
+ * `'https://acme.test\n'` and `'https://ac\u0000me.test'` were all asserted to FAIL.
+ *
+ * ⛔ WHY THEY ARE GONE. `org/Hibachi/HibachiValidationService.cfc:L259` evaluates the rule as
+ * `isNull(propertyValue) || isValid(arguments.constraintValue, propertyValue)`, and the engine's
+ * documented `url` protocols are HTTP, HTTPS, FTP, FILE, MAILTO and NEWS. Every one of those values
+ * SAVED in the legacy system, so every one of those assertions pinned a save the legacy performed and
+ * the port refused. D18 (AAP 0.6.7.7) is the SOLE declared behaviour-hardening exception and is a
+ * precedent only for a divergence that removes a flaw class WITHOUT changing an outcome; a rejection is
+ * a different outcome. See THE SIX-PROTOCOL URL CHECK IS THE WHOLE CHECK in
+ * `src/validation/Validator.ts` for the full record and for the flagged residual exposure.
+ *
+ * ⭐ WHAT REPLACES THEM: WITHDRAWAL REGRESSIONS that FAIL if the narrowing is reinstated, alongside the
+ * cases that were always parity cases — a value with no scheme still fails, an absent value still
+ * passes, the stored value is never rewritten, and the rule stays save-scoped. The message key is
+ * unchanged by the withdrawal in either direction, because it was composed from `constraintValue` both
+ * before and after.
  * ============================================================================================== */
-describe('Brand — brandWebsite URL policy, model/validation/Brand.json:L4', () => {
-  it('NET-NEW — the reported file:///etc/passwd vector is rejected under the webAddress policy', async () => {
-    // The legacy engine's URL check accepted six protocols — HTTP, HTTPS, FTP, FILE, MAILTO and NEWS
-    // — so this value satisfied the rule before DECISION V-2. It is the exact vector the security
-    // review reported, and it is asserted by value rather than by category.
+describe('Brand — brandWebsite URL check, model/validation/Brand.json:L4', () => {
+  it('NET-NEW — WITHDRAWAL REGRESSION: file:///etc/passwd is ACCEPTED, because :L259 accepted it', async () => {
+    /* The exact vector the security review reported, asserted by value rather than by category — and
+     * asserted to PASS. The legacy engine's `url` check covers FILE, so a brand carrying this value
+     * saved. Refusing it here would be a save the legacy performed and this port declined, which is the
+     * outcome change AAP 0.8.2 guideline 2 forbids. The exposure is real and is flagged at the predicate,
+     * not closed by a silent narrowing inside a ported format check. */
     const brand = new Brand();
     brand.brandName = 'ACME';
     brand.urlTitle = 'acme';
     brand.brandWebsite = 'file:///etc/passwd';
 
     const { errors } = await validateBrand(brand, 'save');
-    expect(errors.getError('brandWebsite')).toEqual([
-      'validate.save.Brand.brandWebsite.dataType.url',
-    ]);
+    expect(errors.hasError('brandWebsite')).toBe(false);
+    expect(errors.getError('brandWebsite')).toEqual([]);
   });
 
-  it('NET-NEW — the other three non-web legacy protocols are rejected too', async () => {
+  it('NET-NEW — WITHDRAWAL REGRESSION: the other three non-web legacy protocols are ACCEPTED too', async () => {
+    // FTP, MAILTO and NEWS complete the engine's six. All three satisfied the rule in the legacy, so
+    // all three satisfy it here.
     for (const website of ['ftp://files.test/x', 'mailto:hello@acme.test', 'news:acme.group']) {
       const brand = new Brand();
       brand.brandName = 'ACME';
@@ -1682,11 +1682,49 @@ describe('Brand — brandWebsite URL policy, model/validation/Brand.json:L4', ()
       brand.brandWebsite = website;
 
       const { errors } = await validateBrand(brand, 'save');
-      expect(errors.hasError('brandWebsite')).toBe(true);
+      expect(errors.hasError('brandWebsite')).toBe(false);
     }
   });
 
-  it('NET-NEW — a genuine http or https website still passes, which is what the field is for', async () => {
+  it('NET-NEW — WITHDRAWAL REGRESSION: embedded credentials and a control character are ACCEPTED', async () => {
+    /* These were the two clauses the withdrawn predicate added ON TOP of restricting the scheme, and
+     * they are the reason the withdrawal is not merely about four protocols. The legacy check is a
+     * scheme-and-shape test, not a credential or character policy, so a value the legacy stored is
+     * stored here. The surviving predicate still rejects whitespace INSIDE the value, because that is
+     * part of the shape it approximates — see the case below. */
+    for (const website of [
+      'https://user:pass@acme.test/',
+      'https://user@acme.test/',
+      'https://ac\u0000me.test',
+    ]) {
+      const brand = new Brand();
+      brand.brandName = 'ACME';
+      brand.urlTitle = 'acme';
+      brand.brandWebsite = website;
+
+      const { errors } = await validateBrand(brand, 'save');
+      expect(errors.hasError('brandWebsite')).toBe(false);
+    }
+  });
+
+  it('NET-NEW — WITHDRAWAL REGRESSION: surrounding whitespace is trimmed away and the value is ACCEPTED', async () => {
+    /* The withdrawn predicate tested for control characters on the RAW value, before trimming,
+     * specifically so a trailing newline could not be stripped and let the value through. The surviving
+     * predicate trims first, exactly as `org/Hibachi/HibachiValidationService.cfc` hands the engine
+     * whatever the property holds, so these pass. Trimming is a read-time operation only — the case
+     * further down asserts the STORED value is untouched. */
+    for (const website of ['https://acme.test\n', '\thttps://acme.test', '  https://acme.test  ']) {
+      const brand = new Brand();
+      brand.brandName = 'ACME';
+      brand.urlTitle = 'acme';
+      brand.brandWebsite = website;
+
+      const { errors } = await validateBrand(brand, 'save');
+      expect(errors.hasError('brandWebsite')).toBe(false);
+    }
+  });
+
+  it('NET-NEW — a genuine http or https website passes, which is what the field is for', async () => {
     for (const website of [
       'http://acme.test',
       'https://acme.test',
@@ -1703,31 +1741,28 @@ describe('Brand — brandWebsite URL policy, model/validation/Brand.json:L4', ()
     }
   });
 
-  it('NET-NEW — embedded credentials and control characters are rejected', async () => {
-    // Control characters are checked on the RAW value, before trimming: a trailing newline would
-    // otherwise be stripped and the value would pass, which is how a stored link smuggles a second
-    // line into whatever later consumes it.
-    for (const website of [
-      'https://user:pass@acme.test/',
-      'https://user@acme.test/',
-      'https://acme.test\n',
-      '\thttps://acme.test',
-      'https://ac\u0000me.test',
-    ]) {
+  it('NET-NEW — the check is not withdrawn to nothing: a value with no scheme, and one with internal whitespace, still FAIL', async () => {
+    /* The withdrawal restores the legacy approximation; it does not remove the rule. `isValid("url", …)`
+     * requires a recognised scheme and a non-empty remainder, so a bare word and an interrupted address
+     * both fail — and the message key is the same one `:L226` composes, which is the half of the
+     * contract the withdrawal was careful not to disturb. */
+    for (const website of ['not-a-url', 'https://acme test/x', 'https://']) {
       const brand = new Brand();
       brand.brandName = 'ACME';
       brand.urlTitle = 'acme';
       brand.brandWebsite = website;
 
       const { errors } = await validateBrand(brand, 'save');
-      expect(errors.hasError('brandWebsite')).toBe(true);
+      expect(errors.getError('brandWebsite')).toEqual([
+        'validate.save.Brand.brandWebsite.dataType.url',
+      ]);
     }
   });
 
   it('NET-NEW — the rule still PASSES on an absent value, unchanged from :L259', async () => {
     // `org/Hibachi/HibachiValidationService.cfc:L259` passes the data-type rule on an absent value,
     // making it a format check rather than a presence check. `model/entity/Brand.cfc:L57` declares no
-    // `required`, so an unset website is legal — and the policy split did not touch that.
+    // `required`, so an unset website is legal — and neither the split nor its withdrawal touched that.
     const brand = new Brand();
     brand.brandName = 'ACME';
     brand.urlTitle = 'acme';
@@ -1748,9 +1783,11 @@ describe('Brand — brandWebsite URL policy, model/validation/Brand.json:L4', ()
   });
 
   it('NET-NEW — the rule is save-scoped, so a delete never evaluates the website at all', async () => {
-    // model/validation/Brand.json:L4 declares `contexts: "save"`, and :L71 is the context gate.
+    /* model/validation/Brand.json:L4 declares `contexts: "save"`, and :L71 is the context gate. The
+     * value has to be one the save context would REJECT for this to prove anything, which is why it is
+     * `not-a-url` and no longer `file:///etc/passwd` — that vector now passes in both contexts. */
     const brand = new Brand();
-    brand.brandWebsite = 'file:///etc/passwd';
+    brand.brandWebsite = 'not-a-url';
 
     const { errors } = await validateBrand(brand, 'delete');
     expect(errors.hasError('brandWebsite')).toBe(false);

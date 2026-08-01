@@ -1,5 +1,5 @@
 /**
- * The product importer's import-source policy gate — SEC-08.
+ * `MySqlProductRepository` — the ported `model/dao/ProductDAO.cfc`.
  *
  * AAP authority: AAP 0.4.1.12 lists `slatwall-ts/test/adapters/MySqlProductRepository.test.ts` | CREATE
  * | "**NET-NEW**", and the AAP 0.4.4 wildcard row authorises `slatwall-ts/test/**` | CREATE.
@@ -7,38 +7,41 @@
  * =============================================================================================
  * WHAT THIS FILE COVERS, AND WHAT IT DELIBERATELY DOES NOT
  * =============================================================================================
- * TWO SUITES, ADDED AT TWO DIFFERENT CHECKPOINTS, AND THE SPLIT IS RECORDED RATHER THAN TIDIED AWAY.
+ * ONE SUITE, COVERING THE ADAPTER'S OWN BEHAVIOUR: the per-row transaction boundary (mismatch M3), the
+ * empty spreadsheet branch, the delimiter map, the `void` return contract, the declared exception D18,
+ * the D20 partial collapse, Discrepancy 6 and the identifier whitelist.
  *
- * [1] `product import source — SEC-08 policy gate` covers `validateProductImportSource` in
- *     `src/ports/repositories/ProductRepository.ts` — the gate the adapter's `importFromFile` is
- *     contracted to receive. It was written before the adapter existed and its note then read "the
- *     adapter itself does not exist yet"; it also recorded that the importer's own behaviour — the
- *     per-row transaction boundary (mismatch M3), the empty spreadsheet branch, the delimiter map and
- *     the `void` return contract — would "arrive with the adapter."
+ * ⛔ A SECOND SUITE USED TO LIVE HERE AND IS WITHDRAWN WITH THE BEHAVIOUR IT ASSERTED. It was called
+ * `product import source — SEC-08 policy gate` and it exercised a `validateProductImportSource` scheme
+ * and host allowlist over a branded `ProductImportSource`. That gate is withdrawn:
+ * `model/dao/ProductDAO.cfc:L73-L87` performs NO check of any kind before retrieving, so refusing a
+ * location would change an outcome the legacy produces, which AAP §0.8.2 guideline 4 forbids and which
+ * the D18 precedent of §0.6.7.7 does NOT license — parameterising a statement returns exactly the rows
+ * interpolated text returned, whereas a refusal returns nothing. The five policy figures the gate needed
+ * were also invented configuration (§0.7.3 standard 9, IR-12). The residual CWE-918 exposure — including
+ * every ADDRESS-level concern the withdrawn suite documented as an adapter obligation — is carried on
+ * the register as mismatch M4, "remote file fetch inside the request", for the operator to close (S8).
+ * `src/ports/repositories/ProductRepository.ts` states the withdrawal in full.
  *
- * [2] `MySqlProductRepository — the ported ProductDAO` is that arrival.
- *     `src/adapters/mysql/MySqlProductRepository.ts` now exists, so the deferred behaviour is covered
- *     here rather than left as a standing gap. It closes exactly the list suite [1] deferred, plus the
- *     declared exception D18, the D20 partial collapse, Discrepancy 6 and the identifier whitelist.
+ * ⛔ WHAT IS GENUINELY NOT COVERED, AND WHY NEITHER GAP CAN BE CLOSED FROM A TEST. Two register entries
+ * this adapter carries have no assertable form here:
  *
- * Both suites live in this one file because AAP 0.4.1.12 enumerates it as the single home for coverage
- * of `model/dao/ProductDAO.cfc`, and inventing an un-enumerated `test/ports/**` file would be exactly
- * the scope drift the plan forbids.
+ *   - **M4, the remote retrieval itself.** The only reader implementation the subtree delivers is
+ *     `unresolvableProductImportSourceReader` (`src/adapters/mysql/MySqlProductRepository.ts:1287`), and
+ *     it REFUSES rather than fetching. Every case below therefore supplies retrieved content directly,
+ *     which exercises the import loop but asserts nothing about a network fetch. The suite proves the
+ *     ORDERING that matters instead — "retrieves ONCE, before the first boundary opens" — so no wait can
+ *     sit inside a transaction, which is the part M4 makes reviewable.
+ *   - **M1, the one-hour request budget** at `model/service/ProductService.cfc:L65-L68`. It has no
+ *     single-invocation form to assert against; it is flagged, not resolved.
  *
- * NOT COVERED HERE, because it is impossible here rather than merely omitted: every ADDRESS-level
- * defence the port states as an adapter obligation — resolving the approved host and refusing private,
- * loopback, link-local or instance-metadata addresses; connecting to the address that was vetted rather
- * than re-resolving; re-validating each redirect hop; and enforcing the byte and time bounds while
- * streaming. All four need a resolver or a live socket. They are NOT the repository's either: the
- * repository performs no network input or output at all (mismatch M4 — the single legacy `cfhttp` at
- * `model/dao/ProductDAO.cfc:L87` becomes an injected reader), so they belong to whichever collaborator
- * the composition root supplies as that reader. The gate closes the NAME half of CWE-918; that
- * collaborator must close the ADDRESS half.
- *
- * ALSO NOT COVERED, and deliberately: no test here touches a database. Every statement is asserted on
- * the text and the bound parameter array a recording double captured, which is what AAP 0.7.3 standard
- * 6 requires — the legacy suite has no mocking library at all and no CFML runtime is available here, so
- * assertability without a live engine is a design property of the adapter rather than a convenience.
+ * ⚠️ AN EARLIER REVISION OF THIS HEADER SAID THE OPPOSITE, AND THE CORRECTION IS RECORDED RATHER THAN
+ * SWEPT UP. It listed "the per-row transaction boundary (mismatch M3), the empty spreadsheet branch, the
+ * delimiter map and the `void` return contract" as NOT covered, adding that "those arrive with the
+ * adapter" — true while the importer lived elsewhere, and false now. All four are covered, by the
+ * `importFromFile — mismatch M3 and the void contract` suite below and its per-row-body companion, and
+ * the paragraph above this one already lists them. The stale sentence contradicted its own file, which
+ * is precisely the failure a reader uses this header to avoid.
  *
  * TEST PROVENANCE: every case is **NET-NEW**. AAP 0.6.5.2 verified that no legacy DAO test exists at
  * all — "**No** `SkuDAOTest` or `OptionDAOTest` exists" — and there is likewise no `ProductDAOTest`.
@@ -53,7 +56,8 @@ import {
   MySqlProductRepository,
 } from '../../src/adapters/mysql/MySqlProductRepository';
 import { assertTableName } from '../../src/adapters/mysql/QueryRunner';
-import { validateProductImportSource } from '../../src/ports/repositories/ProductRepository';
+import { DomainError } from '../../src/errors/DomainError';
+import { DEPRECATED_SETTING_DEFAULTS } from '../../src/adapters/settings/StaticSettingResolver';
 
 import type {
   DelimitedImportRecordSet,
@@ -64,202 +68,12 @@ import type {
 } from '../../src/adapters/mysql/MySqlProductRepository';
 import type { MySqlRow } from '../../src/adapters/mysql/rowMappers';
 import type { AccountContextPort } from '../../src/ports/AccountContextPort';
-import type {
-  ProductImportSource,
-  ProductImportSourcePolicy,
-  ProductRepository,
-} from '../../src/ports/repositories/ProductRepository';
-
-/**
- * A policy that permits exactly one scheme and one host.
- *
- * ⛔ EVERY VALUE HERE IS A TEST FIXTURE, NOT A RECOMMENDED DEFAULT. The port declares no default for any
- * of the five members precisely so that no figure in source can be mistaken for policy (AAP 0.7.3 S9,
- * IR-12), and these numbers exist only so the cases below have something concrete to refuse against.
- */
-const POLICY: ProductImportSourcePolicy = {
-  allowedSchemes: ['https'],
-  allowedHosts: ['feeds.example'],
-  maximumResponseBytes: 1_048_576,
-  requestTimeoutMs: 30_000,
-  maximumRedirects: 2,
-};
-
-const APPROVED = 'https://feeds.example/catalog/products.csv';
-
-describe('product import source — SEC-08 policy gate', () => {
-  it('NET-NEW — approves an allowlisted host on an allowlisted scheme', () => {
-    expect(validateProductImportSource(APPROVED, POLICY)).toBe(APPROVED);
-  });
-
-  it('NET-NEW — returns the candidate BYTE-FOR-BYTE, normalising nothing', () => {
-    /*
-     * The WHATWG parse lower-cases the scheme and host internally, and a normalising validator would
-     * hand back that rewritten form. It must not: the value that was checked has to be the value that
-     * gets fetched, or the check applies to a different URL than the request does.
-     */
-    const asTyped = 'HTTPS://Feeds.Example/Catalog/Products.csv';
-    expect(validateProductImportSource(asTyped, POLICY)).toBe(asTyped);
-  });
-
-  it('NET-NEW — matches scheme and host case-insensitively and tolerates padded policy entries', () => {
-    const padded: ProductImportSourcePolicy = {
-      ...POLICY,
-      allowedSchemes: [' HTTPS '],
-      allowedHosts: [' Feeds.Example '],
-    };
-    expect(validateProductImportSource(APPROVED, padded)).toBe(APPROVED);
-  });
-
-  it('NET-NEW — refuses every scheme outside the policy, including the non-HTTP SSRF reach', () => {
-    for (const candidate of [
-      'file:///etc/passwd',
-      'ftp://feeds.example/products.csv',
-      'gopher://feeds.example/1',
-      'dict://feeds.example:2628/show',
-      'sftp://feeds.example/products.csv',
-      'data:text/csv,productCode',
-      'http://feeds.example/products.csv',
-    ]) {
-      expect(validateProductImportSource(candidate, POLICY)).toBeUndefined();
-    }
-  });
-
-  it('NET-NEW — refuses embedded credentials, whose visible host is NOT the parsed host', () => {
-    /*
-     * `https://feeds.example@evil.test/x` reads as the approved host to a human and parses to
-     * `evil.test`. The userinfo form is refused outright rather than parsed and trusted — the assertion
-     * below pins the parse so the reason stays visible to a future reader.
-     */
-    expect(new URL('https://feeds.example@evil.test/x').hostname).toBe('evil.test');
-
-    for (const candidate of [
-      'https://feeds.example@evil.test/x.csv',
-      'https://feeds.example:secret@evil.test/x.csv',
-      'https://user:pass@feeds.example/x.csv',
-    ]) {
-      expect(validateProductImportSource(candidate, POLICY)).toBeUndefined();
-    }
-  });
-
-  it('NET-NEW — refuses suffix-confusion and sibling-subdomain hosts', () => {
-    // Exactly the failures a wildcard or suffix rule would have admitted, which is why
-    // `allowedHosts` offers neither.
-    for (const candidate of [
-      'https://feeds.example.attacker.test/x.csv',
-      'https://notfeeds.example/x.csv',
-      'https://evil.feeds.example/x.csv',
-      'https://feeds.example./x.csv',
-    ]) {
-      expect(validateProductImportSource(candidate, POLICY)).toBeUndefined();
-    }
-  });
-
-  it('NET-NEW — refuses the internal targets an unbounded fetch would have reached', () => {
-    /*
-     * These are refused HERE only because they are not allowlisted names. That is NOT the same as an
-     * address check: an approved name that RESOLVES to one of these addresses still reaches the adapter,
-     * which is why the port makes address vetting an adapter obligation rather than implying this case
-     * closed it.
-     */
-    for (const candidate of [
-      'https://169.254.169.254/latest/meta-data/',
-      'http://169.254.169.254/latest/meta-data/',
-      'https://127.0.0.1/admin',
-      'https://localhost/admin',
-      'https://[::1]/admin',
-      'https://10.0.0.5/internal',
-      'https://metadata.google.internal/computeMetadata/v1/',
-    ]) {
-      expect(validateProductImportSource(candidate, POLICY)).toBeUndefined();
-    }
-  });
-
-  it('NET-NEW — refuses a candidate that is not an absolute URL, rather than resolving it', () => {
-    for (const candidate of [
-      '',
-      '   ',
-      '/catalog/products.csv',
-      'products.csv',
-      'https://',
-      '://x',
-    ]) {
-      expect(validateProductImportSource(candidate, POLICY)).toBeUndefined();
-    }
-  });
-
-  it('NET-NEW — an empty scheme or host allowlist refuses everything', () => {
-    // Treated as a deliberate "imports disabled" policy, not as a misconfiguration to second-guess:
-    // guessing would mean inventing a fallback scheme or host.
-    expect(
-      validateProductImportSource(APPROVED, { ...POLICY, allowedSchemes: [] }),
-    ).toBeUndefined();
-    expect(validateProductImportSource(APPROVED, { ...POLICY, allowedHosts: [] })).toBeUndefined();
-  });
-
-  it('NET-NEW — refuses to approve anything when a bound is not a positive safe integer', () => {
-    /*
-     * A `NaN`, `Infinity`, zero or negative bound degrades silently to "no bound at all", so an
-     * unbounded policy must approve nothing however sound the URL is. The bounds are checked BEFORE the
-     * URL for exactly that reason.
-     */
-    for (const bad of [Number.NaN, Number.POSITIVE_INFINITY, 0, -1, 1.5]) {
-      expect(
-        validateProductImportSource(APPROVED, { ...POLICY, maximumResponseBytes: bad }),
-      ).toBeUndefined();
-      expect(
-        validateProductImportSource(APPROVED, { ...POLICY, requestTimeoutMs: bad }),
-      ).toBeUndefined();
-    }
-    for (const bad of [Number.NaN, Number.POSITIVE_INFINITY, -1, 1.5]) {
-      expect(
-        validateProductImportSource(APPROVED, { ...POLICY, maximumRedirects: bad }),
-      ).toBeUndefined();
-    }
-  });
-
-  it('NET-NEW — a host-less URL is refused even if its scheme is misguidedly allowlisted', () => {
-    /*
-     * DEFENCE IN DEPTH, and the only way to reach the empty-host guard. `file:` URLs parse with an empty
-     * host, so an operator who allowlisted `file` would otherwise have a candidate that satisfies the
-     * scheme clause and then vacuously "matches" no host at all. The guard refuses it outright: a URL
-     * with no host can never be a member of a host allowlist, so approving one would mean approving a
-     * location the policy never named. This is deliberately not reachable through the fixture policy —
-     * it is asserted against a policy no operator should write, precisely because they might.
-     */
-    expect(new URL('file:///etc/passwd').hostname).toBe('');
-
-    const misguided: ProductImportSourcePolicy = {
-      ...POLICY,
-      allowedSchemes: ['file'],
-      allowedHosts: ['feeds.example', ''],
-    };
-    expect(validateProductImportSource('file:///etc/passwd', misguided)).toBeUndefined();
-  });
-
-  it('NET-NEW — zero redirects is a valid policy, not an unset one', () => {
-    expect(validateProductImportSource(APPROVED, { ...POLICY, maximumRedirects: 0 })).toBe(
-      APPROVED,
-    );
-  });
-
-  it('NET-NEW — refusal carries no reason, so no caller can use it as a policy oracle', () => {
-    /*
-     * Every refusal is the same single `undefined`. A per-clause reason code would tell a remote caller
-     * which schemes and hosts are configured — the reconnaissance half of the SSRF this gate closes.
-     */
-    const refusals = [
-      validateProductImportSource('file:///etc/passwd', POLICY),
-      validateProductImportSource('https://evil.test/x.csv', POLICY),
-      validateProductImportSource('https://feeds.example@evil.test/x.csv', POLICY),
-      validateProductImportSource('not a url', POLICY),
-    ];
-    expect(new Set(refusals)).toEqual(new Set([undefined]));
-  });
-});
+import type { ProductRepository } from '../../src/ports/repositories/ProductRepository';
+import { Product } from '../../src/domain/product/Product';
+import { toExactDecimal } from '../../src/util/formatting';
 
 /* ================================================================================================
- * SUITE [2] — THE ADAPTER. A RECORDING HARNESS, AND NO DATABASE.
+ * THE ADAPTER. A RECORDING HARNESS, AND NO DATABASE.
  * ==============================================================================================
  * Every double below is a plain object literal or a small closure. There is no mocking library in this
  * subtree and none is added: the adapter takes its execution surfaces and its three collaborators as
@@ -304,8 +118,14 @@ function classify(sql: string): string {
   if (s.startsWith('SELECT brandID FROM SwBrand')) return 'brandLookup';
   if (s.startsWith('SELECT productTypeID FROM SwProductType')) return 'productTypeLookup';
   if (s.includes('LEFT JOIN SwOption')) return 'optionLookup';
-  if (s.startsWith('SELECT optionID FROM SwSkuOption')) return 'skuOptionExistence';
-  if (s.startsWith('SELECT productID FROM SwProduct WHERE urlTitle')) return 'urlTitleProbe';
+  // Both existence probes project a constant and stop at the first match, so they are recognised by
+  // their table rather than by a projected column. See the ⚠️ paragraphs on
+  // `SKU_OPTION_EXISTENCE_STATEMENT` and `URL_TITLE_PROBE_STATEMENT` for why the projections changed.
+  // The `urlTitle` arm must stay ABOVE `productExistence`: that arm still projects `productID`, whose
+  // value `saveImportData` genuinely reads, so the two are no longer confusable — but keeping the
+  // narrower test first preserves the ordering guarantee if either projection ever converges again.
+  if (s.startsWith('SELECT 1 FROM SwSkuOption')) return 'skuOptionExistence';
+  if (s.startsWith('SELECT 1 FROM SwProduct WHERE urlTitle')) return 'urlTitleProbe';
   if (s.startsWith('SELECT productID FROM SwProduct WHERE')) return 'productExistence';
   if (s.startsWith('SELECT skuID FROM SwSku WHERE')) return 'skuExistence';
   if (s.startsWith('INSERT INTO SwProduct')) return 'productInsert';
@@ -316,7 +136,11 @@ function classify(sql: string): string {
   if (s.startsWith('UPDATE SwAttributeValue')) return 'attributeValueUpdate';
   if (s.startsWith('UPDATE SwProduct INNER JOIN SwSku')) return 'defaultSkuBackfill';
   if (s.startsWith('UPDATE SwSku INNER JOIN SwProduct')) return 'imageFileBackfill';
+  if (s.startsWith('UPDATE SwProduct SET defaultSkuID = NULL')) return 'defaultSkuDetach';
   if (s.startsWith('UPDATE SwProduct SET')) return 'productUpdate';
+  if (s.startsWith('DELETE FROM SwSkuOption')) return 'skuOptionDelete';
+  if (s.startsWith('DELETE FROM SwSku ')) return 'skuDelete';
+  if (s.startsWith('DELETE FROM SwProduct')) return 'productDelete';
   if (s.startsWith('UPDATE SwSku SET')) return 'skuUpdate';
 
   return `UNCLASSIFIED: ${s.slice(0, 70)}`;
@@ -335,8 +159,6 @@ interface Harness {
   readonly dependencies: MySqlProductRepositoryDependencies;
   /** Every source the retrieval collaborator was asked for, with the delimiter and qualifier. */
   readonly retrievals: { source: string; delimiter: string; textQualifier: string }[];
-  /** How many times the image-extension resolver was called. */
-  readonly extensionCalls: () => number;
 }
 
 /**
@@ -345,19 +167,12 @@ interface Harness {
  * @param recordSet - what the retrieval collaborator returns.
  * @param replies - per-classification answers. A missing read answers with no rows and a missing write
  *   reports zero affected rows, which is the "nothing exists yet" shape most cases want.
- * @param imageExtension - what the image-extension resolver returns. NOT a default the adapter carries:
- *   the adapter has no default, which is the annotated gap, so the value has to be supplied here.
  * @returns the harness.
  */
-function makeHarness(
-  recordSet: DelimitedImportRecordSet,
-  replies: ReplyTable = {},
-  imageExtension = 'TEST_EXT',
-): Harness {
+function makeHarness(recordSet: DelimitedImportRecordSet, replies: ReplyTable = {}): Harness {
   const journal: JournalEntry[] = [];
   const events: string[] = [];
   const retrievals: { source: string; delimiter: string; textQualifier: string }[] = [];
-  let extensionCalls = 0;
 
   const surfaceFor = (region: string): ProductStatementExecutor => ({
     execute: (sql, params) => {
@@ -375,21 +190,35 @@ function makeHarness(
   });
 
   const transactions: ProductImportTransactionBoundary = {
-    runPerItem: async <TItem, TResult>(
-      items: readonly TItem[],
-      work: (item: TItem, scope: ProductImportTransactionScope) => Promise<TResult>,
-    ): Promise<TResult[]> => {
-      const results: TResult[] = [];
+    /*
+     * The non-collecting per-row boundary. It retains nothing for the same reason the real one does not:
+     * the row body produces no value, so an array of one discarded entry per row would be memory
+     * proportional to the file's row count. The event log is what this double exists to record, and it
+     * is unchanged — one `begin#n`/`commit#n` pair per row, strictly in order (M3).
+     *
+     * ⚠️ IT CONSUMES THE ITEM SOURCE WITH `for await`, EXACTLY AS `UnitOfWork.runEachItem` DOES, and that
+     * is not a formality. The importer now feeds rows in lazily so it does not hold the whole file, so a
+     * synchronous `for...of` here would model a boundary production does not have — and would fail on the
+     * very source production supplies. `for await` consumes a materialised array and a lazy source through
+     * one statement, so this double cannot accept a source the real boundary would reject, or vice versa.
+     *
+     * ⚠️ AND IT STILL ADVANCES THE SOURCE STRICTLY BETWEEN "TRANSACTIONS", never concurrently and never
+     * ahead: the next item is pulled only after the previous row's `commit#n` is recorded. That ordering
+     * is what M3 (independent ordered commits) and M6 (write order is behaviour) both rest on, and it is
+     * what makes the recorded event sequence a faithful witness to it.
+     */
+    runPerItemWithoutResults: async <TItem>(
+      items: readonly TItem[] | AsyncIterable<TItem>,
+      work: (item: TItem, scope: ProductImportTransactionScope) => Promise<void>,
+    ): Promise<void> => {
       let ordinal = 0;
 
-      for (const item of items) {
+      for await (const item of items) {
         ordinal += 1;
         events.push(`begin#${ordinal}`);
-        results.push(await work(item, { executor: surfaceFor(`row#${ordinal}`) }));
+        await work(item, { executor: surfaceFor(`row#${ordinal}`) });
         events.push(`commit#${ordinal}`);
       }
-
-      return results;
     },
     runWithoutTransaction: async <T>(
       work: (executor: ProductStatementExecutor) => Promise<T>,
@@ -413,7 +242,6 @@ function makeHarness(
     journal,
     events,
     retrievals,
-    extensionCalls: () => extensionCalls,
     dependencies: {
       executor: surfaceFor('pool'),
       transactions,
@@ -425,9 +253,17 @@ function makeHarness(
       },
       accountContext,
       urlTitleFilter: (productName) => productName.toLowerCase().replace(/[^a-z0-9]+/g, '-'),
-      globalImageExtension: () => {
-        extensionCalls += 1;
-        return imageExtension;
+      /*
+       * F03 — reads the identifier of a product's default SKU for the `defaultSkuID` foreign key.
+       * `Product.defaultSku` is typed against a nine-member behavioural delegate that deliberately
+       * exposes no identifier accessor, so the read arrives as a function. This double answers from a
+       * `skuID` property when one is present, which is what the entity the production reader receives
+       * carries, and answers the unsaved empty value otherwise — the same value
+       * `src/domain/sku/Sku.ts` initialises `skuID` to.
+       */
+      readDefaultSkuId: (defaultSku: object): string => {
+        const candidate: unknown = (defaultSku as { readonly skuID?: unknown }).skuID;
+        return typeof candidate === 'string' ? candidate : '';
       },
     },
   };
@@ -491,15 +327,17 @@ function importable(
   );
 }
 
-/** The policy-approved sources the suite imports from. Branded through the real gate, never forged. */
-function approvedSource(fileName: string): ProductImportSource {
-  const branded = validateProductImportSource(`https://feeds.example/catalog/${fileName}`, POLICY);
-
-  if (branded === undefined) {
-    throw new Error(`the fixture source ${fileName} was refused by the policy gate`);
-  }
-
-  return branded;
+/**
+ * The locations the suite imports from.
+ *
+ * A plain `string`, because the port takes a plain `string`. An earlier revision minted a branded
+ * `ProductImportSource` through a scheme-and-host gate; that gate is withdrawn (see the file header), so
+ * a fixture location is now exactly what a caller supplies. The absolute form is retained because
+ * `model/dao/ProductDAO.cfc:L74` derives the file type from the last dot-delimited segment of whatever
+ * it is given, and an absolute URL is the shape the legacy is written against.
+ */
+function importLocation(fileName: string): string {
+  return `https://feeds.example/catalog/${fileName}`;
 }
 
 /** Every statement of one classification, in issue order. */
@@ -686,7 +524,7 @@ describe('MySqlProductRepository — the ported ProductDAO', () => {
       const harness = makeHarness(SIMPLE_FILE);
       const repository = new MySqlProductRepository(harness.dependencies);
 
-      await repository.importFromFile(approvedSource('products.csv'));
+      await repository.importFromFile(importLocation('products.csv'));
 
       expect(harness.events.filter((event) => event.startsWith('begin#'))).toEqual([
         'begin#1',
@@ -713,7 +551,7 @@ describe('MySqlProductRepository — the ported ProductDAO', () => {
       const harness = makeHarness(SIMPLE_FILE);
       const repository = new MySqlProductRepository(harness.dependencies);
 
-      await repository.importFromFile(approvedSource('products.csv'));
+      await repository.importFromFile(importLocation('products.csv'));
 
       expect(harness.events).toEqual([
         'begin#1',
@@ -733,7 +571,7 @@ describe('MySqlProductRepository — the ported ProductDAO', () => {
       const harness = makeHarness(SIMPLE_FILE);
       const repository = new MySqlProductRepository(harness.dependencies);
 
-      await repository.importFromFile(approvedSource('products.csv'));
+      await repository.importFromFile(importLocation('products.csv'));
 
       const backfill = onlyOf(harness, 'defaultSkuBackfill');
       expect(norm(backfill.sql)).toContain('LIMIT 1');
@@ -743,19 +581,16 @@ describe('MySqlProductRepository — the ported ProductDAO', () => {
     });
 
     it('NET-NEW — binds the image extension rather than interpolating it, and invents no default', async () => {
-      const harness = makeHarness(SIMPLE_FILE, {}, 'TEST_EXT');
+      const harness = makeHarness(SIMPLE_FILE);
       const repository = new MySqlProductRepository(harness.dependencies);
 
-      await repository.importFromFile(approvedSource('products.csv'));
+      await repository.importFromFile(importLocation('products.csv'));
 
       const backfill = onlyOf(harness, 'imageFileBackfill');
       expect(norm(backfill.sql)).toContain('concat(productCode, ?)');
       // Both the separator and the extension travel INSIDE the one bound value, exactly as :L307
       // composed them into one literal.
-      expect(backfill.params).toEqual(['.TEST_EXT']);
-      // Resolved per import and never cached, so a warm container cannot serve one caller's
-      // configuration to the next (mismatch M7).
-      expect(harness.extensionCalls()).toBe(1);
+      expect(backfill.params).toEqual([`.${DEPRECATED_SETTING_DEFAULTS.globalImageExtension}`]);
     });
 
     it('NET-NEW — resolves to undefined, reporting nothing at all', async () => {
@@ -768,13 +603,13 @@ describe('MySqlProductRepository — the ported ProductDAO', () => {
       const repository = new MySqlProductRepository(harness.dependencies);
 
       await expect(
-        repository.importFromFile(approvedSource('products.csv')),
+        repository.importFromFile(importLocation('products.csv')),
       ).resolves.toBeUndefined();
     });
 
     it('NET-NEW — maps .csv to a comma and .txt to a tab, and passes the default text qualifier', async () => {
       const csv = makeHarness(SIMPLE_FILE);
-      await new MySqlProductRepository(csv.dependencies).importFromFile(approvedSource('a.csv'));
+      await new MySqlProductRepository(csv.dependencies).importFromFile(importLocation('a.csv'));
       expect(csv.retrievals).toEqual([
         {
           source: 'https://feeds.example/catalog/a.csv',
@@ -785,7 +620,7 @@ describe('MySqlProductRepository — the ported ProductDAO', () => {
 
       const txt = makeHarness(SIMPLE_FILE);
       await new MySqlProductRepository(txt.dependencies).importFromFile(
-        approvedSource('a.txt'),
+        importLocation('a.txt'),
         '"',
       );
       expect(txt.retrievals).toEqual([
@@ -802,7 +637,7 @@ describe('MySqlProductRepository — the ported ProductDAO', () => {
       // validates the type and nothing reports, so rejecting one here would be an enhancement.
       const harness = makeHarness(SIMPLE_FILE);
       await new MySqlProductRepository(harness.dependencies).importFromFile(
-        approvedSource('feed.dat'),
+        importLocation('feed.dat'),
       );
 
       expect(harness.retrievals[0]?.delimiter).toBe('');
@@ -813,7 +648,7 @@ describe('MySqlProductRepository — the ported ProductDAO', () => {
       const repository = new MySqlProductRepository(harness.dependencies);
 
       await expect(
-        repository.importFromFile(approvedSource('catalog.xls')),
+        repository.importFromFile(importLocation('catalog.xls')),
       ).resolves.toBeUndefined();
 
       // The branch is empty in the source, so no retrieval happens and no row is imported...
@@ -830,7 +665,7 @@ describe('MySqlProductRepository — the ported ProductDAO', () => {
     it('NET-NEW — an empty file drives zero transactions and still runs both back-fills', async () => {
       const harness = makeHarness(fileWith([]));
       await new MySqlProductRepository(harness.dependencies).importFromFile(
-        approvedSource('empty.csv'),
+        importLocation('empty.csv'),
       );
 
       expect(harness.events).toEqual(['no-tx:enter', 'no-tx:leave']);
@@ -839,10 +674,205 @@ describe('MySqlProductRepository — the ported ProductDAO', () => {
     it('NET-NEW — retrieves ONCE, before the first boundary opens, so no wait sits in a transaction', async () => {
       const harness = makeHarness(SIMPLE_FILE);
       await new MySqlProductRepository(harness.dependencies).importFromFile(
-        approvedSource('products.csv'),
+        importLocation('products.csv'),
       );
 
       expect(harness.retrievals).toHaveLength(1);
+    });
+
+    it('NET-NEW — resolves a repeated brand and product type ONCE per import, not once per row', async () => {
+      // All three rows of SIMPLE_FILE carry brand `Acme` and product type `Merchandise`.
+      const harness = makeHarness(SIMPLE_FILE, {
+        brandLookup: [{ brandID: 'b-1' }],
+        productTypeLookup: [{ productTypeID: 'pt-1' }],
+      });
+      await new MySqlProductRepository(harness.dependencies).importFromFile(
+        importLocation('products.csv'),
+      );
+
+      // Three rows, three transactions — the per-row boundary is untouched.
+      expect(entriesOf(harness, 'productInsert')).toHaveLength(3);
+
+      // But one statement each, because the resolutions are remembered for the import.
+      expect(entriesOf(harness, 'brandLookup')).toHaveLength(1);
+      expect(entriesOf(harness, 'productTypeLookup')).toHaveLength(1);
+
+      // And the resolved identifiers still reach EVERY row's insert, not just the first.
+      for (const insert of entriesOf(harness, 'productInsert')) {
+        expect(insert.params).toContain('b-1');
+        expect(insert.params).toContain('pt-1');
+      }
+
+      // The one probe issued ran inside a row's own transaction, never on the pool (M6).
+      expect(entriesOf(harness, 'brandLookup')[0]?.region).toBe('row#1');
+    });
+
+    it('NET-NEW — an UNRESOLVED brand is re-probed on every row, because a miss is never remembered', async () => {
+      // No `brandLookup` reply, so every probe comes back empty — the legacy's own unmatched-brand path.
+      const harness = makeHarness(SIMPLE_FILE, { productTypeLookup: [{ productTypeID: 'pt-1' }] });
+      await new MySqlProductRepository(harness.dependencies).importFromFile(
+        importLocation('products.csv'),
+      );
+
+      // Once per row, exactly as :L179-L182 issues it. Remembering a miss would have hidden a brand
+      // created concurrently between two rows — which the legacy WOULD have seen.
+      expect(entriesOf(harness, 'brandLookup')).toHaveLength(3);
+
+      // The resolved product type is still remembered, so the two behaviours coexist in one import.
+      expect(entriesOf(harness, 'productTypeLookup')).toHaveLength(1);
+    });
+
+    it('NET-NEW — remembers a resolved option per (group, code), and still probes every link', async () => {
+      const withOptions = importable(
+        ['product_productCode', 'option_colour'],
+        ['CODE-1', 'RED'],
+        ['CODE-2', 'RED'],
+        ['CODE-3', 'BLUE'],
+      );
+      const harness = makeHarness(withOptions, {
+        optionGroupLookup: [{ optionGroupID: 'og-1' }],
+        optionLookup: [{ optionID: 'o-1', optionGroupID: 'og-1' }],
+      });
+      await new MySqlProductRepository(harness.dependencies).importFromFile(
+        importLocation('products.csv'),
+      );
+
+      // Two distinct codes over three rows: RED resolves once and is reused, BLUE resolves on its own row.
+      expect(entriesOf(harness, 'optionLookup')).toHaveLength(2);
+      expect(entriesOf(harness, 'optionLookup').map((entry) => entry.params[0])).toEqual([
+        'RED',
+        'BLUE',
+      ]);
+
+      // The link probe is asked afresh for EVERY row, because its key carries the per-row SKU (M6).
+      expect(entriesOf(harness, 'skuOptionExistence')).toHaveLength(3);
+    });
+
+    it('NET-NEW — TWO imports on ONE instance share no lookup memory (mismatch M7)', async () => {
+      const harness = makeHarness(SIMPLE_FILE, { brandLookup: [{ brandID: 'b-1' }] });
+      const repository = new MySqlProductRepository(harness.dependencies);
+
+      await repository.importFromFile(importLocation('products.csv'));
+      await repository.importFromFile(importLocation('again.csv'));
+
+      /*
+       * Six rows across two imports, all carrying brand `Acme`. Within one import the resolution is
+       * remembered, so each import issues exactly ONE brand statement — but the memory dies with its
+       * plan, so the SECOND import issues its own rather than inheriting the first's. Two statements
+       * total, not one and not six: one is the M7 leak this guards against, six is the N+1 P4 removes.
+       */
+      expect(entriesOf(harness, 'productInsert')).toHaveLength(6);
+      expect(entriesOf(harness, 'brandLookup')).toHaveLength(2);
+      expect(entriesOf(harness, 'brandLookup').map((entry) => entry.params)).toEqual([
+        ['Acme'],
+        ['Acme'],
+      ]);
+    });
+
+    it('NET-NEW — deferBackfills suppresses the two back-fills WITHOUT touching the row loop', async () => {
+      const harness = makeHarness(SIMPLE_FILE);
+      await new MySqlProductRepository(harness.dependencies).importFromFile(
+        importLocation('products.csv'),
+        undefined,
+        { deferBackfills: true },
+      );
+
+      // Three rows, three independent transactions — unchanged.
+      expect(harness.events).toEqual([
+        'begin#1',
+        'commit#1',
+        'begin#2',
+        'commit#2',
+        'begin#3',
+        'commit#3',
+      ]);
+
+      // And no untransacted region at all, because the caller took the obligation.
+      expect(entriesOf(harness, 'defaultSkuBackfill')).toEqual([]);
+      expect(entriesOf(harness, 'imageFileBackfill')).toEqual([]);
+    });
+
+    it('NET-NEW — the deferred back-fills run identically when invoked as their own step', async () => {
+      const deferred = makeHarness(SIMPLE_FILE);
+      const repository = new MySqlProductRepository(deferred.dependencies);
+      await repository.importFromFile(importLocation('products.csv'), undefined, {
+        deferBackfills: true,
+      });
+      await repository.backfillImportDerivedColumns();
+
+      const inline = makeHarness(SIMPLE_FILE);
+      await new MySqlProductRepository(inline.dependencies).importFromFile(
+        importLocation('products.csv'),
+      );
+
+      // Same two statements, same order, same parameters, same untransacted region — the only difference
+      // is WHEN the caller asked for them. That is the whole of the P16 resolution.
+      expect(norm(onlyOf(deferred, 'defaultSkuBackfill').sql)).toBe(
+        norm(onlyOf(inline, 'defaultSkuBackfill').sql),
+      );
+      expect(norm(onlyOf(deferred, 'imageFileBackfill').sql)).toBe(
+        norm(onlyOf(inline, 'imageFileBackfill').sql),
+      );
+      expect(onlyOf(deferred, 'imageFileBackfill').params).toEqual(
+        onlyOf(inline, 'imageFileBackfill').params,
+      );
+      expect(deferred.events.slice(-2)).toEqual(['no-tx:enter', 'no-tx:leave']);
+    });
+
+    it('NET-NEW — an already-aborted signal stops the import before it retrieves anything', async () => {
+      const harness = makeHarness(SIMPLE_FILE);
+      const controller = new AbortController();
+      controller.abort();
+
+      await expect(
+        new MySqlProductRepository(harness.dependencies).importFromFile(
+          importLocation('products.csv'),
+          undefined,
+          { signal: controller.signal },
+        ),
+      ).rejects.toThrow(/cancelled/i);
+
+      // Nothing retrieved, no transaction opened, and — deliberately — no back-fill either: the import
+      // never reached the point at which :L288 runs.
+      expect(harness.retrievals).toHaveLength(0);
+      expect(harness.events).toEqual([]);
+    });
+
+    it('NET-NEW — cancelling mid-file leaves earlier rows committed, exactly as a mid-file failure does', async () => {
+      const harness = makeHarness(SIMPLE_FILE);
+      const controller = new AbortController();
+
+      // Abort once the first row has committed. The signal is read at the NEXT row boundary, never
+      // inside a transaction, so row 1 is whole and row 2 is not begun at all.
+      const original = harness.dependencies.transactions.runPerItemWithoutResults.bind(
+        harness.dependencies.transactions,
+      );
+      const transactions = harness.dependencies.transactions as {
+        runPerItemWithoutResults: typeof original;
+      };
+      transactions.runPerItemWithoutResults = <TItem>(
+        items: readonly TItem[] | AsyncIterable<TItem>,
+        work: (item: TItem, scope: ProductImportTransactionScope) => Promise<void>,
+      ): Promise<void> =>
+        original(items, async (item, scope) => {
+          await work(item, scope);
+          controller.abort();
+        });
+
+      await expect(
+        new MySqlProductRepository(harness.dependencies).importFromFile(
+          importLocation('products.csv'),
+          undefined,
+          { signal: controller.signal },
+        ),
+      ).rejects.toThrow(/cancelled/i);
+
+      // Row 1 committed; row 2 was entered by the boundary and abandoned before its first statement.
+      expect(harness.events).toEqual(['begin#1', 'commit#1', 'begin#2']);
+      expect(entriesOf(harness, 'productInsert')).toHaveLength(1);
+
+      // And the back-fills did NOT run, because the import did not reach them.
+      expect(entriesOf(harness, 'defaultSkuBackfill')).toEqual([]);
     });
   });
 
@@ -850,7 +880,7 @@ describe('MySqlProductRepository — the ported ProductDAO', () => {
     it('NET-NEW — picks product_productCode over product_productName (:L100 order, :L107 break)', async () => {
       const harness = makeHarness(SIMPLE_FILE);
       await new MySqlProductRepository(harness.dependencies).importFromFile(
-        approvedSource('products.csv'),
+        importLocation('products.csv'),
       );
 
       // The existence lookup names the column the priority walk chose. `productCode` sits at index 2
@@ -869,7 +899,7 @@ describe('MySqlProductRepository — the ported ProductDAO', () => {
       );
       const harness = makeHarness(nameOnly);
       await new MySqlProductRepository(harness.dependencies).importFromFile(
-        approvedSource('products.csv'),
+        importLocation('products.csv'),
       );
 
       expect(norm(onlyOf(harness, 'productExistence').sql)).toBe(
@@ -884,7 +914,7 @@ describe('MySqlProductRepository — the ported ProductDAO', () => {
       );
       const harness = makeHarness(remote);
       await new MySqlProductRepository(harness.dependencies).importFromFile(
-        approvedSource('products.csv'),
+        importLocation('products.csv'),
       );
 
       const lookup = onlyOf(harness, 'productExistence');
@@ -895,7 +925,7 @@ describe('MySqlProductRepository — the ported ProductDAO', () => {
     it('NET-NEW — runs every per-row statement on that row\u2019s own transaction scope', async () => {
       const harness = makeHarness(SIMPLE_FILE);
       await new MySqlProductRepository(harness.dependencies).importFromFile(
-        approvedSource('products.csv'),
+        importLocation('products.csv'),
       );
 
       // Mismatch M6: the SKU save reads back the product identifier the product save has just
@@ -917,7 +947,7 @@ describe('MySqlProductRepository — the ported ProductDAO', () => {
     it('NET-NEW — reads the brand and product-type headings exactly as :L180 and :L184 spell them', async () => {
       const harness = makeHarness(SIMPLE_FILE);
       await new MySqlProductRepository(harness.dependencies).importFromFile(
-        approvedSource('products.csv'),
+        importLocation('products.csv'),
       );
 
       // :L180 spells the brand heading all-lowercase and :L184 spells the product-type heading in
@@ -929,7 +959,7 @@ describe('MySqlProductRepository — the ported ProductDAO', () => {
     it('NET-NEW — carries an unmatched brand through as an empty identifier, as the legacy does', async () => {
       const harness = makeHarness(SIMPLE_FILE);
       await new MySqlProductRepository(harness.dependencies).importFromFile(
-        approvedSource('products.csv'),
+        importLocation('products.csv'),
       );
 
       // Both lookups answer with no rows here. :L182 and :L186 read the column unguarded and CFML
@@ -942,7 +972,7 @@ describe('MySqlProductRepository — the ported ProductDAO', () => {
     it('NET-NEW — inserts a 32-character lowercase hex identifier (IR-6), never a dashed UUID', async () => {
       const harness = makeHarness(SIMPLE_FILE);
       await new MySqlProductRepository(harness.dependencies).importFromFile(
-        approvedSource('products.csv'),
+        importLocation('products.csv'),
       );
 
       for (const what of ['productInsert', 'skuInsert']) {
@@ -959,7 +989,7 @@ describe('MySqlProductRepository — the ported ProductDAO', () => {
         importable(['product_productCode', 'product_productName'], ['CODE-1', 'First Product']),
       );
       await new MySqlProductRepository(harness.dependencies).importFromFile(
-        approvedSource('products.csv'),
+        importLocation('products.csv'),
       );
 
       const insert = onlyOf(harness, 'productInsert');
@@ -976,7 +1006,7 @@ describe('MySqlProductRepository — the ported ProductDAO', () => {
     it('NET-NEW — sets all four audit columns on insert and only the modified pair on update', async () => {
       const inserting = makeHarness(SIMPLE_FILE);
       await new MySqlProductRepository(inserting.dependencies).importFromFile(
-        approvedSource('products.csv'),
+        importLocation('products.csv'),
       );
       const insertSql = norm(entriesOf(inserting, 'productInsert')[0]?.sql ?? '');
       expect(insertSql).toContain('createdDateTime');
@@ -989,7 +1019,7 @@ describe('MySqlProductRepository — the ported ProductDAO', () => {
         skuExistence: [{ skuID: 's-existing' }],
       });
       await new MySqlProductRepository(updating.dependencies).importFromFile(
-        approvedSource('products.csv'),
+        importLocation('products.csv'),
       );
       const updateSql = norm(entriesOf(updating, 'productUpdate')[0]?.sql ?? '');
       expect(updateSql).toContain('modifiedDateTime = ?');
@@ -1005,7 +1035,7 @@ describe('MySqlProductRepository — the ported ProductDAO', () => {
         skuExistence: [{ skuID: 's-existing' }],
       });
       await new MySqlProductRepository(harness.dependencies).importFromFile(
-        approvedSource('products.csv'),
+        importLocation('products.csv'),
       );
 
       // :L368-L378 appends extra data to the INSERT lists only. Substantial behaviour, two lines away
@@ -1022,14 +1052,17 @@ describe('MySqlProductRepository — the ported ProductDAO', () => {
     it('NET-NEW — probes for a urlTitle collision and, on a hit, appends the code ONCE (:L404-L406)', async () => {
       const clean = makeHarness(SIMPLE_FILE);
       await new MySqlProductRepository(clean.dependencies).importFromFile(
-        approvedSource('products.csv'),
+        importLocation('products.csv'),
       );
       const cleanInsert = entriesOf(clean, 'productInsert')[0];
       expect(cleanInsert?.params).toContain('first-product');
 
-      const colliding = makeHarness(SIMPLE_FILE, { urlTitleProbe: [{ productID: 'p-other' }] });
+      // One row shaped as the driver returns a constant projection: the probe reads nothing off it but
+      // its presence, so the cell is the literal `1` rather than an identifier the statement no longer
+      // selects.
+      const colliding = makeHarness(SIMPLE_FILE, { urlTitleProbe: [{ '1': 1 }] });
       await new MySqlProductRepository(colliding.dependencies).importFromFile(
-        approvedSource('products.csv'),
+        importLocation('products.csv'),
       );
       const collidedInsert = entriesOf(colliding, 'productInsert')[0];
       // ONE append, with the product code, and NO second probe. A second collision is unhandled.
@@ -1044,7 +1077,7 @@ describe('MySqlProductRepository — the ported ProductDAO', () => {
     it('NET-NEW — resolves a urlTitle for the product table only, never for the SKU table', async () => {
       const harness = makeHarness(SIMPLE_FILE);
       await new MySqlProductRepository(harness.dependencies).importFromFile(
-        approvedSource('products.csv'),
+        importLocation('products.csv'),
       );
 
       expect(norm(entriesOf(harness, 'skuInsert')[0]?.sql ?? '')).not.toContain('urlTitle');
@@ -1059,7 +1092,7 @@ describe('MySqlProductRepository — the ported ProductDAO', () => {
         optionGroupLookup: [{ optionGroupID: 'og-1' }],
       });
       await new MySqlProductRepository(harness.dependencies).importFromFile(
-        approvedSource('products.csv'),
+        importLocation('products.csv'),
       );
 
       // :L200 seeds from the lookup cell and :L202 appends `"-" & cell` per SURVIVING group, in file
@@ -1075,7 +1108,7 @@ describe('MySqlProductRepository — the ported ProductDAO', () => {
       // The group lookup answers with no rows, so :L169 deletes the heading.
       const harness = makeHarness(withOptions);
       await new MySqlProductRepository(harness.dependencies).importFromFile(
-        approvedSource('products.csv'),
+        importLocation('products.csv'),
       );
 
       expect(onlyOf(harness, 'skuExistence').params).toEqual(['CODE-1']);
@@ -1092,7 +1125,7 @@ describe('MySqlProductRepository — the ported ProductDAO', () => {
         optionGroupLookup: [{ optionGroupID: 'og-1' }],
       });
       await new MySqlProductRepository(harness.dependencies).importFromFile(
-        approvedSource('products.csv'),
+        importLocation('products.csv'),
       );
 
       const groupLookups = entriesOf(harness, 'optionGroupLookup');
@@ -1109,10 +1142,13 @@ describe('MySqlProductRepository — the ported ProductDAO', () => {
       const existing = makeHarness(withOptions, {
         optionGroupLookup: [{ optionGroupID: 'og-1' }],
         optionLookup: [{ optionID: 'o-1', optionGroupID: 'og-1' }],
-        skuOptionExistence: [{ optionID: 'o-1' }],
+        // A constant-projection row: the link probe reads only whether anything came back, so the cell
+        // is the literal `1`. `optionLookup` above keeps its identifiers, because `:L216-L217` really
+        // does read them.
+        skuOptionExistence: [{ '1': 1 }],
       });
       await new MySqlProductRepository(existing.dependencies).importFromFile(
-        approvedSource('products.csv'),
+        importLocation('products.csv'),
       );
       // The link already exists, so :L230 declines to insert it and :L222 never runs.
       expect(entriesOf(existing, 'optionInsert')).toEqual([]);
@@ -1123,7 +1159,7 @@ describe('MySqlProductRepository — the ported ProductDAO', () => {
         optionLookup: [{ optionID: null, optionGroupID: 'og-1' }],
       });
       await new MySqlProductRepository(missing.dependencies).importFromFile(
-        approvedSource('products.csv'),
+        importLocation('products.csv'),
       );
       // The outer join returned a row for the group with a NULL option, so :L222 creates the option
       // and :L228 sets the existence flag false so the link is always written.
@@ -1142,7 +1178,7 @@ describe('MySqlProductRepository — the ported ProductDAO', () => {
         optionGroupLookup: [{ optionGroupID: 'og-1' }],
       });
       await new MySqlProductRepository(harness.dependencies).importFromFile(
-        approvedSource('products.csv'),
+        importLocation('products.csv'),
       );
 
       // The asymmetry is real and is preserved: the generated code gains a bare separator...
@@ -1160,7 +1196,7 @@ describe('MySqlProductRepository — the ported ProductDAO', () => {
 
       const noRowsAffected = makeHarness(withAttribute);
       await new MySqlProductRepository(noRowsAffected.dependencies).importFromFile(
-        approvedSource('products.csv'),
+        importLocation('products.csv'),
       );
       const update = onlyOf(noRowsAffected, 'attributeValueUpdate');
       // Bind order follows statement TEXT order: value, attribute, product. :L246 bound the value by
@@ -1174,7 +1210,7 @@ describe('MySqlProductRepository — the ported ProductDAO', () => {
 
       const rowsAffected = makeHarness(withAttribute, { attributeValueUpdate: 1 });
       await new MySqlProductRepository(rowsAffected.dependencies).importFromFile(
-        approvedSource('products.csv'),
+        importLocation('products.csv'),
       );
       expect(entriesOf(rowsAffected, 'attributeValueInsert')).toEqual([]);
     });
@@ -1183,7 +1219,7 @@ describe('MySqlProductRepository — the ported ProductDAO', () => {
       const withAttribute = importable(['product_productCode', 'attribute_attr-1'], ['CODE-1', '']);
       const harness = makeHarness(withAttribute);
       await new MySqlProductRepository(harness.dependencies).importFromFile(
-        approvedSource('products.csv'),
+        importLocation('products.csv'),
       );
 
       expect(entriesOf(harness, 'attributeValueUpdate')).toEqual([]);
@@ -1198,7 +1234,7 @@ describe('MySqlProductRepository — the ported ProductDAO', () => {
       // completes.
       await expect(
         new MySqlProductRepository(emptyHarness.dependencies).importFromFile(
-          approvedSource('products.csv'),
+          importLocation('products.csv'),
         ),
       ).resolves.toBeUndefined();
 
@@ -1211,9 +1247,59 @@ describe('MySqlProductRepository — the ported ProductDAO', () => {
       // step resolves pages in a separate content-management schema this port does not read.
       await expect(
         new MySqlProductRepository(populatedHarness.dependencies).importFromFile(
-          approvedSource('products.csv'),
+          importLocation('products.csv'),
         ),
       ).rejects.toThrow();
+
+      // ⭐ AND THE REFUSAL PRECEDES EVERY WRITE, WHICH IS THE PROPERTY M3 MAKES LOAD-BEARING. The step
+      // sits LAST in the legacy row body, so refusing there would commit each earlier row and abandon
+      // the file half-imported — a partial catalogue the legacy never produces, because the legacy
+      // completes the step. The check is a preflight over the whole record set, so no statement is
+      // issued and no boundary is opened.
+      expect(populatedHarness.journal).toEqual([]);
+      expect(populatedHarness.events).toEqual([]);
+    });
+
+    it('NET-NEW — preflights the content refusal even when the offending cell is on a LATER row', async () => {
+      // The offending cell is on row three. Under a per-row check, rows one and two would already be
+      // durable when row three raised; under the preflight, neither is attempted.
+      const late = makeHarness(
+        importable(
+          ['product_productCode', 'productcontent_page'],
+          ['CODE-1', ''],
+          ['CODE-2', ''],
+          ['CODE-3', 'late-page'],
+        ),
+      );
+
+      await expect(
+        new MySqlProductRepository(late.dependencies).importFromFile(
+          importLocation('products.csv'),
+        ),
+      ).rejects.toThrow();
+
+      expect(late.journal).toEqual([]);
+      expect(late.events).toEqual([]);
+    });
+
+    it('NET-NEW — imports to completion when the content column is present but every cell is empty', async () => {
+      // `:L258` is TRUE and `:L260` iterates zero times for every row, so the legacy completes the
+      // import. Refusing here would fail a file the legacy imports, which is why the preflight counts
+      // non-empty cells rather than testing for the heading alone.
+      const allEmpty = makeHarness(
+        importable(['product_productCode', 'productcontent_page'], ['CODE-1', ''], ['CODE-2', '']),
+      );
+
+      await expect(
+        new MySqlProductRepository(allEmpty.dependencies).importFromFile(
+          importLocation('products.csv'),
+        ),
+      ).resolves.toBeUndefined();
+
+      expect(allEmpty.events.filter((event) => event.startsWith('commit#'))).toEqual([
+        'commit#1',
+        'commit#2',
+      ]);
     });
 
     it('NET-NEW — never classifies productcontent_page as a product column', async () => {
@@ -1221,7 +1307,7 @@ describe('MySqlProductRepository — the ported ProductDAO', () => {
         importable(['product_productCode', 'productcontent_page'], ['CODE-1', '']),
       );
       await new MySqlProductRepository(harness.dependencies).importFromFile(
-        approvedSource('products.csv'),
+        importLocation('products.csv'),
       );
 
       // Its first underscore-delimited segment is `productcontent`, which matches none of :L131-L138's
@@ -1232,7 +1318,7 @@ describe('MySqlProductRepository — the ported ProductDAO', () => {
     it('NET-NEW — supplies the :L143-L148 flag defaults only when the HEADING is absent', async () => {
       const withoutFlags = makeHarness(SIMPLE_FILE);
       await new MySqlProductRepository(withoutFlags.dependencies).importFromFile(
-        approvedSource('products.csv'),
+        importLocation('products.csv'),
       );
       const defaulted = norm(entriesOf(withoutFlags, 'productInsert')[0]?.sql ?? '');
       expect(defaulted).toContain('activeFlag');
@@ -1242,7 +1328,7 @@ describe('MySqlProductRepository — the ported ProductDAO', () => {
         importable(['product_productCode', 'product_activeFlag'], ['CODE-1', '']),
       );
       await new MySqlProductRepository(withEmptyFlagCell.dependencies).importFromFile(
-        approvedSource('products.csv'),
+        importLocation('products.csv'),
       );
       const carried = entriesOf(withEmptyFlagCell, 'productInsert')[0];
       // The default covers a missing COLUMN, not a missing VALUE, so the empty cell travels as itself.
@@ -1265,7 +1351,7 @@ describe('MySqlProductRepository — the ported ProductDAO', () => {
         optionLookup: [{ optionID: null, optionGroupID: 'og-1' }],
       });
       await new MySqlProductRepository(harness.dependencies).importFromFile(
-        approvedSource('products.csv'),
+        importLocation('products.csv'),
       );
 
       const inserts = entriesOf(harness, 'optionInsert');
@@ -1283,7 +1369,7 @@ describe('MySqlProductRepository — the ported ProductDAO', () => {
         accountContext: { getCurrentAccount: () => undefined },
       };
       await new MySqlProductRepository(unauthenticated).importFromFile(
-        approvedSource('products.csv'),
+        importLocation('products.csv'),
       );
 
       // The legacy accessor always returns an account object — a NEW, unpersisted one when nobody is
@@ -1378,13 +1464,28 @@ describe('MySqlProductRepository — the ported ProductDAO', () => {
   });
 
   describe('structure — the port contract and the absence of shared state', () => {
-    it('NET-NEW — an instance satisfies ProductRepository through its three declared members', () => {
+    it('NET-NEW — an instance satisfies ProductRepository through its seven declared members', () => {
       const harness = makeHarness(SIMPLE_FILE);
       const repository: ProductRepository = new MySqlProductRepository(harness.dependencies);
 
+      // Three are the legacy's own public DAO members; the other FOUR are additive and each is
+      // documented at its declaration — the windowed search companion, the back-fill step the
+      // out-of-band M1 workflow invokes once per logical import instead of once per invocation, and the
+      // two F03 write members covered immediately below. The count in this case's name is the count
+      // asserted in its body: seven.
       expect(typeof repository.findAttributeSets).toBe('function');
       expect(typeof repository.importFromFile).toBe('function');
       expect(typeof repository.searchByProductType).toBe('function');
+      expect(typeof repository.searchByProductTypeBounded).toBe('function');
+      expect(typeof repository.backfillImportDerivedColumns).toBe('function');
+      /*
+       * F03 — the two write members. The port carried only the three read members before, so
+       * `ProductService`'s save and delete paths had no persister to be wired to and terminated in the
+       * object graph. Asserting their presence here is what keeps the port and the adapter from drifting
+       * apart again.
+       */
+      expect(typeof repository.saveProduct).toBe('function');
+      expect(typeof repository.removeProduct).toBe('function');
     });
 
     it('NET-NEW — a plain object literal also satisfies ProductRepository, so doubles need no library', () => {
@@ -1392,9 +1493,15 @@ describe('MySqlProductRepository — the ported ProductDAO', () => {
         findAttributeSets: () => Promise.resolve([]),
         importFromFile: () => Promise.resolve(),
         searchByProductType: () => Promise.resolve([]),
+        searchByProductTypeBounded: () => Promise.resolve({ rows: [], hasMore: false }),
+        backfillImportDerivedColumns: () => Promise.resolve(),
+        saveProduct: (product) => Promise.resolve(product),
+        removeProduct: () => Promise.resolve(),
       };
 
       expect(typeof double.importFromFile).toBe('function');
+      expect(typeof double.saveProduct).toBe('function');
+      expect(typeof double.removeProduct).toBe('function');
     });
 
     it('NET-NEW — exposes no member beyond the port, so saveImportData stays private', () => {
@@ -1409,6 +1516,11 @@ describe('MySqlProductRepository — the ported ProductDAO', () => {
       expect(surface).toContain('findAttributeSets');
       expect(surface).toContain('importFromFile');
       expect(surface).toContain('searchByProductType');
+
+      // The back-fill step is now public — not because the legacy exposed it, but because the two
+      // statements it runs must be invocable once per logical import by a workflow that spans several
+      // invocations (M1). It adds no behaviour; see its declaration.
+      expect(surface).toContain('backfillImportDerivedColumns');
     });
 
     it('NET-NEW — two instances in one container share no state (mismatch M7)', async () => {
@@ -1421,8 +1533,8 @@ describe('MySqlProductRepository — the ported ProductDAO', () => {
         { optionGroupLookup: [{ optionGroupID: 'og-2' }] },
       );
 
-      await new MySqlProductRepository(first.dependencies).importFromFile(approvedSource('a.csv'));
-      await new MySqlProductRepository(second.dependencies).importFromFile(approvedSource('b.csv'));
+      await new MySqlProductRepository(first.dependencies).importFromFile(importLocation('a.csv'));
+      await new MySqlProductRepository(second.dependencies).importFromFile(importLocation('b.csv'));
 
       // The option-group resolution of the first import must not leak into the second. Each import's
       // plan is local to the call, never a field, so the second resolves its own heading from scratch.
@@ -1439,10 +1551,10 @@ describe('MySqlProductRepository — the ported ProductDAO', () => {
       const harness = makeHarness(SIMPLE_FILE);
       const repository = new MySqlProductRepository(harness.dependencies);
 
-      await repository.importFromFile(approvedSource('products.csv'));
+      await repository.importFromFile(importLocation('products.csv'));
       const firstPass = harness.journal.length;
       harness.events.length = 0;
-      await repository.importFromFile(approvedSource('products.csv'));
+      await repository.importFromFile(importLocation('products.csv'));
 
       expect(harness.journal.length).toBe(firstPass * 2);
       expect(harness.events).toEqual([
@@ -1456,5 +1568,351 @@ describe('MySqlProductRepository — the ported ProductDAO', () => {
         'no-tx:leave',
       ]);
     });
+  });
+
+  /* ==============================================================================================
+   * SEC-14 — WHICH COLUMNS AN IMPORTED FILE MAY ASSIGN
+   *
+   * NET-NEW, like everything in this file (AAP §0.6.5.2 — the legacy ships no DAO test at all).
+   *
+   * The finding was that the heading classifier at `model/dao/ProductDAO.cfc:L130-L140` accepts ANY
+   * heading prefixed `product` or `sku`, and the only downstream check was the identifier whitelist,
+   * which answers "is this a real column" and not "may a remote file WRITE it" — CWE-915.
+   *
+   * These cases are written to fail in BOTH directions. The refusals prove the mutation targets are
+   * closed; the ACCEPTANCE cases prove the allowlist did not close a column the legacy legitimately
+   * imports, which is the half that would turn a security fix into a regression. Every refusal is
+   * additionally asserted to have written NOTHING, because M3 commits each row on its own — a control
+   * that refused halfway through would leave a partially imported catalog no rollback undoes.
+   * ============================================================================================ */
+
+  describe('importable-column authorization — SEC-14', () => {
+    /** Imports a file and returns the failure it raised, or undefined when it succeeded. */
+    async function importFailure(recordSet: DelimitedImportRecordSet): Promise<{
+      readonly raised: unknown;
+      readonly harness: Harness;
+    }> {
+      const harness = makeHarness(recordSet);
+
+      try {
+        await new MySqlProductRepository(harness.dependencies).importFromFile(
+          importLocation('products.csv'),
+        );
+      } catch (error: unknown) {
+        return { raised: error, harness };
+      }
+
+      return { raised: undefined, harness };
+    }
+
+    it.each([
+      ['product_productID', 'the product primary key'],
+      ['product_createdDateTime', 'a created audit column'],
+      ['product_modifiedByAccountID', 'a modified-by audit column'],
+      ['product_calculatedQATS', 'the calculated availability column the public feed ranges on'],
+      ['product_calculatedTitle', 'a calculated column the back-fill owns'],
+      ['product_brandID', 'a relationship-control foreign key'],
+      ['product_productTypeID', 'a relationship-control foreign key'],
+      ['product_defaultSkuID', 'a relationship-control foreign key'],
+      ['product_urlTitle', 'the server-generated url title'],
+    ])('NET-NEW — REFUSES %s, which is %s', async (heading) => {
+      const { raised, harness } = await importFailure(
+        importable(['product_productCode', heading], ['CODE-1', 'x']),
+      );
+
+      expect(raised).toBeInstanceOf(DomainError);
+      /* Refused before the first row boundary opened, so nothing was written and nothing was read. */
+      expect(harness.events).toEqual([]);
+      expect(harness.journal).toEqual([]);
+    });
+
+    it.each([
+      ['sku_skuID', 'the sku primary key'],
+      ['sku_productID', 'the relationship-control foreign key back to the product'],
+      ['sku_subscriptionTermID', 'a relationship-control foreign key'],
+      ['sku_calculatedQATS', 'a calculated column'],
+      ['sku_modifiedDateTime', 'an audit column'],
+      ['sku_remoteID', 'an integration identifier with no sku-side lookup requirement'],
+    ])('NET-NEW — REFUSES %s, which is %s', async (heading) => {
+      const { raised, harness } = await importFailure(
+        importable(['product_productCode', 'sku_skucode', heading], ['CODE-1', 'SKU-1', 'x']),
+      );
+
+      expect(raised).toBeInstanceOf(DomainError);
+      expect(harness.events).toEqual([]);
+      expect(harness.journal).toEqual([]);
+    });
+
+    it('NET-NEW — names the refused heading and column, and never echoes the cell value', async () => {
+      const { raised } = await importFailure(
+        importable(['product_productCode', 'product_productID'], ['CODE-1', 'HIJACKED-VALUE']),
+      );
+
+      expect(raised).toBeInstanceOf(DomainError);
+      const failure = raised as DomainError;
+      const rendered = `${failure.message} ${JSON.stringify(failure.context)}`;
+      expect(rendered).toContain('product_productID');
+      expect(rendered).toContain('SwProduct');
+      /* The heading came from the file and travels as context so an operator can act on the refusal;
+       * the row's DATA never does, because this failure is destined for a log. */
+      expect(rendered).not.toContain('HIJACKED-VALUE');
+    });
+
+    it('NET-NEW — refuses regardless of the casing the file happened to use', async () => {
+      const { raised } = await importFailure(
+        importable(['product_productCode', 'PRODUCT_DEFAULTSKUID'], ['CODE-1', 'x']),
+      );
+
+      expect(raised).toBeInstanceOf(DomainError);
+    });
+
+    it('NET-NEW — ACCEPTS product_remoteID, which :L100 lists FIRST in the lookup priority walk', async () => {
+      /* The one asymmetry between the two tables, and it is a source requirement rather than a
+       * convenience: an import keyed on the integration identifier cannot work if the identifier may
+       * never be stored. */
+      const { raised, harness } = await importFailure(
+        importable(['product_remoteID', 'product_productName'], ['REMOTE-1', 'A Product Name']),
+      );
+
+      expect(raised).toBeUndefined();
+      expect(harness.events).toContain('begin#1');
+      const insert = onlyOf(harness, 'productInsert');
+      expect(insert.sql).toContain('remoteID');
+      expect(insert.params).toContain('REMOTE-1');
+    });
+
+    it('NET-NEW — ACCEPTS every plain persistent scalar of both tables in one file', async () => {
+      const { raised, harness } = await importFailure(
+        importable(
+          [
+            'product_productCode',
+            'product_productName',
+            'product_productDescription',
+            'product_activeFlag',
+            'product_publishedFlag',
+            'product_sortOrder',
+            'sku_skucode',
+            'sku_price',
+            'sku_listPrice',
+            'sku_renewalPrice',
+            'sku_imageFile',
+            'sku_activeFlag',
+            'sku_userDefinedPriceFlag',
+          ],
+          [
+            'CODE-1',
+            'A Product Name',
+            'Described',
+            '1',
+            '1',
+            '3',
+            'SKU-1',
+            '10',
+            '12',
+            '9',
+            'shoe.png',
+            '1',
+            '0',
+          ],
+        ),
+      );
+
+      expect(raised).toBeUndefined();
+      expect(harness.events).toContain('commit#1');
+    });
+
+    it('NET-NEW — still refuses a heading naming no column at all, as a schema fault', async () => {
+      /* The allowlist is a strict SUBSET of the schema whitelist, so an unknown column is refused too.
+       * The point of the case is that nothing became permissive: `product_nonsense` did not start
+       * importing merely because a second, narrower check was added in front of the first. */
+      const { raised, harness } = await importFailure(
+        importable(['product_productCode', 'product_nonsense'], ['CODE-1', 'x']),
+      );
+
+      expect(raised).toBeInstanceOf(DomainError);
+      expect(harness.journal).toEqual([]);
+    });
+
+    it('NET-NEW — leaves the author-controlled extraData path untouched', async () => {
+      /* `:L368-L378` supplies `brandID`, `productTypeID` and the defaulted flags itself, and those are
+       * exactly the columns a FILE may not name. The insert must therefore still carry them. */
+      const { raised, harness } = await importFailure(
+        importable(['product_productCode'], ['CODE-1']),
+      );
+
+      expect(raised).toBeUndefined();
+      const insert = onlyOf(harness, 'productInsert');
+      expect(insert.sql).toContain('brandID');
+      expect(insert.sql).toContain('productTypeID');
+      expect(insert.sql).toContain('activeFlag');
+      expect(insert.sql).toContain('publishedFlag');
+    });
+  });
+});
+
+/* ================================================================================================
+ * F03 / F04 — THE ENTITY WRITE SEAM
+ * ================================================================================================
+ * `ProductService` declares a `persistProduct` collaborator and reaches product deletion through
+ * `BaseService`, and before these two members existed NO adapter implemented `SwProduct`
+ * INSERT/UPDATE/DELETE at all — the importer's `composeImportInsert`/`composeImportUpdate` compose
+ * statements for a delimited-file row, not for a domain entity, so the save path terminated in the object
+ * graph. These cases pin the parts that fail silently rather than loudly: the identifier shape, the
+ * circular-foreign-key write order, the audit stamp, and the forced removal sequence.
+ *
+ * TEST PROVENANCE: **NET-NEW**, like every case in this file. AAP 0.6.5.2 records that no legacy DAO test
+ * exists for any DAO in the slice.
+ * ============================================================================================== */
+describe('MySqlProductRepository — entity persistence (F03 / F04)', () => {
+  /** IR-6: 32 lowercase hexadecimal characters, no dashes, never an auto-increment. */
+  const IDENTIFIER_SHAPE = /^[0-9a-f]{32}$/;
+
+  /** A transient product carrying enough to make the foreign keys observable. */
+  function transientProduct(): Product {
+    const product = new Product();
+    product.productName = 'Test Product';
+    product.productCode = 'TESTPRODUCTXXX';
+    product.urlTitle = 'test-product';
+    return product;
+  }
+
+  function repositoryFor(harness: Harness): MySqlProductRepository {
+    return new MySqlProductRepository(harness.dependencies);
+  }
+
+  it('NET-NEW — mints a 32-character lowercase hex identifier on the insert branch, and only there', async () => {
+    const harness = makeHarness(SIMPLE_FILE);
+    const product = transientProduct();
+    expect(product.isNew()).toBe(true);
+
+    await repositoryFor(harness).saveProduct(product);
+    const minted = product.productID;
+
+    expect(minted).toMatch(IDENTIFIER_SHAPE);
+    expect(minted).not.toContain('-');
+    expect(product.isNew()).toBe(false);
+
+    /* A second save must NOT re-mint: the stored row is keyed on the first value, and step 5 of the
+     * write order depends on this call updating rather than inserting a duplicate. */
+    await repositoryFor(harness).saveProduct(product);
+    expect(product.productID).toBe(minted);
+  });
+
+  it('NET-NEW — the first save INSERTs with defaultSkuID null, and the second UPDATEs carrying it', async () => {
+    const harness = makeHarness(SIMPLE_FILE);
+    const product = transientProduct();
+    const repository = repositoryFor(harness);
+
+    /* STEP 4a — the product row, before any SKU row exists. */
+    await repository.saveProduct(product);
+
+    const insert = onlyOf(harness, 'productInsert');
+    expect(insert.kind).toBe('write');
+    expect(norm(insert.sql)).toContain('INSERT INTO SwProduct (productID,');
+    expect(insert.params[0]).toBe(product.productID);
+    /* `defaultSkuID` is bound, and bound as null: `model/entity/Product.cfc:L71` and
+     * `model/entity/Sku.cfc:L65` reference each other, so neither row can carry its reference on
+     * insert. */
+    const columnCount = norm(insert.sql).split('VALUES')[0]?.split(',').length ?? 0;
+    expect(insert.params.length).toBe(columnCount);
+    expect(insert.params).toContain(null);
+
+    /* STEP 5 — the SKU now exists, so the back-reference can be written. */
+    product.defaultSku = {
+      getCurrencyCode: () => 'USD',
+      /* F07 — the delegate's monetary members are `ExactDecimal`, so the literals are exact text. */
+      getPrice: () => toExactDecimal(1),
+      getRenewalPrice: () => toExactDecimal(1),
+      getListPrice: () => toExactDecimal(1),
+      getImageDirectory: () => '',
+      getImagePath: () => '',
+      getImage: () => '',
+      getResizedImagePath: () => '',
+      getImageExistsFlag: () => false,
+    };
+
+    await repository.saveProduct(product);
+
+    const update = onlyOf(harness, 'productUpdate');
+    expect(norm(update.sql)).toContain('UPDATE SwProduct SET');
+    expect(norm(update.sql)).toContain('defaultSkuID = ?');
+    expect(norm(update.sql)).toContain('WHERE productID = ?');
+    /* The predicate binds last, so the identifier is the final parameter. */
+    expect(update.params[update.params.length - 1]).toBe(product.productID);
+    /* And the injected reader supplied the default SKU's identifier, because the delegate exposes no
+     * identifier accessor of its own. */
+    expect(update.params).toContain('');
+  });
+
+  it('NET-NEW — stamps the audit block on insert, both timestamps to the identical instant', async () => {
+    const harness = makeHarness(SIMPLE_FILE);
+    const product = transientProduct();
+    expect(product.createdDateTime).toBeUndefined();
+
+    await repositoryFor(harness).saveProduct(product);
+
+    const created = product.createdDateTime;
+    const modified = product.modifiedDateTime;
+    expect(created).toBeInstanceOf(Date);
+    expect(modified).toBeInstanceOf(Date);
+    /* `org/Hibachi/HibachiEntity.cfc:L613` and `:L618` read the clock once, so the two are equal. */
+    expect(modified?.getTime()).toBe(created?.getTime());
+    /* The harness's account is persisted and administrative, so both foreign keys are written. */
+    expect(product.createdByAccount).toBe('aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa');
+    expect(product.modifiedByAccount).toBe('aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa');
+  });
+
+  it('NET-NEW — on update moves only modifiedDateTime and never re-writes createdByAccount', async () => {
+    const harness = makeHarness(SIMPLE_FILE);
+    const product = transientProduct();
+    const repository = repositoryFor(harness);
+
+    await repository.saveProduct(product);
+    const createdAt = product.createdDateTime?.getTime();
+
+    product.createdByAccount = 'bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb';
+    await repository.saveProduct(product);
+
+    expect(product.createdDateTime?.getTime()).toBe(createdAt);
+    expect(product.createdByAccount).toBe('bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb');
+    expect(product.modifiedDateTime?.getTime()).toBeGreaterThanOrEqual(createdAt ?? 0);
+  });
+
+  it('NET-NEW — removal emits four statements in the order the foreign keys force', async () => {
+    const harness = makeHarness(SIMPLE_FILE);
+    const product = transientProduct();
+    const repository = repositoryFor(harness);
+
+    await repository.saveProduct(product);
+    const identifier = product.productID;
+    harness.journal.length = 0;
+
+    await repository.removeProduct(product);
+
+    expect(harness.journal.map((entry) => entry.what)).toEqual([
+      'defaultSkuDetach',
+      'skuOptionDelete',
+      'skuDelete',
+      'productDelete',
+    ]);
+    /* Every statement is keyed on the product identifier and nothing else. */
+    for (const entry of harness.journal) {
+      expect(entry.kind).toBe('write');
+      expect(entry.params).toEqual([identifier]);
+    }
+    /* The link rows are removed through a sub-select on the SKU table, because the link table carries no
+     * product column of its own — `model/entity/Sku.cfc:L76`. */
+    expect(norm(onlyOf(harness, 'skuOptionDelete').sql)).toContain(
+      'DELETE FROM SwSkuOption WHERE skuID IN (SELECT skuID FROM SwSku WHERE productID = ?)',
+    );
+  });
+
+  it('NET-NEW — refuses to remove a transient product rather than composing a predicate on the unsaved value', async () => {
+    const harness = makeHarness(SIMPLE_FILE);
+
+    await expect(repositoryFor(harness).removeProduct(transientProduct())).rejects.toThrow(
+      /cannot be removed before it has been persisted/,
+    );
+    expect(harness.journal).toEqual([]);
   });
 });

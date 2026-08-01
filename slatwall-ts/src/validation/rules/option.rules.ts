@@ -598,8 +598,8 @@ export const optionGroupRequiredConstraint = Object.freeze({
  * blocking guards, and `model/entity/Product.cfc:L73` `skus` `cascade="all-delete-orphan" inverse="true"`.
  * This is a plain note: no new execution-model number is opened for it — AAP §0.6.6 allocates M1
  * through M8 — and no defect register entry is invented here. ⚠️ F27: the tail of this sentence read
- * "the register being closed at D1 through D22", which was untrue on both counts; see
- * `src/ports/repositories/SkuRepository.ts`.
+ * "the register being closed at D1 through D22", which was untrue on both counts; the live bound is
+ * stated only at `src/ports/repositories/SkuRepository.ts`.
  *
  * Emits `validate.delete.Option.skus.maxCollection`.
  */
@@ -808,9 +808,9 @@ export const optionValidationRuleSet = Object.freeze({
  *
  * NO PARITY ANNOTATION APPEARS IN THIS FILE, and that is a finding rather than an omission: no
  * entry in the defect register crosses `model/validation/Option.json`'s boundary, and no D-number is
- * invented here. ⚠️ F27: this previously asserted "The register is CLOSED at D1 through D22". It is
- * not closed, and D1–D22 was never the AAP's range: §0.6.7 is frozen at D1–D21 while this port has
- * minted D22, D23 and D24 — see `src/ports/repositories/SkuRepository.ts`. The plan's one declared
+ * invented here. ⚠️ F27: this previously asserted "The register is CLOSED at D1 through D22", and
+ * D1–D22 was never the AAP's range: §0.6.7 is frozen at D1–D21, and the port-minted entries beyond it
+ * are enumerated only at `src/ports/repositories/SkuRepository.ts`. The plan's one declared
  * exception to preserve-and-annotate is D18, which belongs to `src/adapters/mysql`, and this file
  * claims none.
  * ============================================================================================== */

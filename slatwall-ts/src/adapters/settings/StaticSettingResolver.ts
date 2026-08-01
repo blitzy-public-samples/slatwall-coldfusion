@@ -223,13 +223,13 @@ import type {
  * CARRIED, NOT REPAIRED — the observations this file owns (AAP §0.7.3 S7 / S8, §0.8.2 Guideline 4)
  * =============================================================================================
  *
- * The defect and mismatch registers are CLOSED at D1-D24 and M1-M9. AAP §0.6.7 catalogues D1-D21 and
- * AAP §0.6.6 catalogues M1-M8; the three defects and one mismatch beyond those were found during the
- * port and are each recorded once at the file that owns the behaviour — D22 at
- * `src/adapters/mysql/rowMappers.ts` and `src/ports/repositories/SkuRepository.ts`, and D23, D24 and
- * M9 at `src/services/SkuService.ts`. Within M1-M9, M5 is the request-end implicit transaction
- * demarcation and M6 is the validation read-back loop; the two are adjacent and must not be swapped.
- * Every finding below is recorded with a `path:Lnnn` locator and no new identifier is minted.
+ * NO REGISTER BOUND IS STATED HERE. AAP §0.6.7 is frozen at D1-D21 and AAP §0.6.6 at M1-M8; every
+ * entry the port minted beyond them is enumerated in exactly one place, `src/ports/repositories/SkuRepository.ts`,
+ * and this file deliberately keeps no second copy — the copy it used to keep named a figure that had
+ * already moved on. One adjacency is repeated because it is a naming hazard and not a bound: M5 is the
+ * request-end implicit transaction demarcation and M6 is the validation read-back loop; the two are
+ * adjacent and must not be swapped. Every finding below is recorded with a `path:Lnnn` locator and no
+ * new identifier is minted.
  * Nothing below is repaired: preserving legacy behaviour and annotating it is the standard, and the
  * plan's single declared exception to it (D18, SQL parameterization) belongs to
  * `src/adapters/mysql/MySqlProductRepository.ts`, not to this file. This file claims no exception.
@@ -283,7 +283,11 @@ import type {
  * ---------------------------------------------------------------------------------------------
  * `model/dao/ProductDAO.cfc` interpolates `setting("globalImageExtension")` into SQL at L307, L313
  * and L320 — the three arms of a dialect branch whose conditions sit at L304, L310 and L317. It is
- * deliberately absent from the port's closed union and from this adapter, and it must stay absent:
+ * deliberately absent from the port's CLOSED UNION, and it must stay absent. Its source-backed value
+ * nevertheless lives in this module, as the separate non-port table
+ * {@link DEPRECATED_SETTING_DEFAULTS} — see the note there for why that is the right home and why a
+ * bespoke callback injected into the MySQL adapter was not. The four reasons the name is not a
+ * nineteenth PUBLIC name are unchanged:
  *   (a) IR-2 enumerates EIGHTEEN names; adding a nineteenth would be invented surface
  *       (AAP §0.7.3 S9).
  *   (b) It is not read through `HibachiEntity.setting()`, so it falls outside the mechanism IR-2
@@ -294,15 +298,27 @@ import type {
  *       `extends="HibachiObject"` → org/Hibachi/HibachiObject.cfc:L1, which is terminal. No file on
  *       that chain declares `setting()`, and the `onMissingMethod` fabrication that rescues such
  *       calls elsewhere exists only on the service base at org/Hibachi/HibachiService.cfc:L255 —
- *       not on the DAO chain. Porting them as working behaviour would ADD behaviour the legacy
- *       system never had, which is the same reasoning that leaves D12 (`FeedDAO`) and D15
- *       (`buildSkuCombinations`) documented and unported.
+ *       not on the DAO chain. A grep for `onMissingMethod` in org/Hibachi/HibachiObject.cfc does
+ *       return three hits, and none of them is a declaration: a comment at L117 and a GUARDED
+ *       delegation at L123-L124 inside `invokeMethod`, which dispatches by name and is not the path
+ *       `#setting(...)#` string interpolation takes. So the conclusion stands — the three legacy call
+ *       sites could not have executed.
  *   (d) It is marked deprecated in source: its declaration at
  *       model/service/SettingService.cfc:L247 sits inside the `// DEPRECATED***` block opened at
  *       model/service/SettingService.cfc:L246.
  * `globalImageExtension` [model/service/SettingService.cfc:L247] and the in-scope
  * `productImageDefaultExtension` [model/service/SettingService.cfc:L191] happen to share the
  * default value `'jpg'`. They are distinct names and are never aliased or merged.
+ *
+ * ⚠️ TODO(parity) — WHAT REASON (c) MEANS FOR THE ONE CONSUMER, STATED AS A DECISION RATHER THAN LEFT
+ * IMPLICIT. Because the legacy call sites are unresolvable, the legacy importer's second derived-column
+ * back-fill could never have completed; the port nevertheless EXECUTES it, using the source-backed
+ * `'jpg'` from {@link DEPRECATED_SETTING_DEFAULTS}. Omitting it instead would not have been the
+ * neutral choice that omitting D12 (`FeedDAO`) and D15 (`buildSkuCombinations`) was: those are
+ * unreachable, so dropping them removes nothing, whereas this statement is reachable and its absence
+ * would leave every imported SKU's `imageFile` null — a change to imported DATA rather than to dead
+ * code. The port therefore realises the legacy's evident intent with the legacy's own declared value,
+ * and records here that the legacy could not have realised it itself.
  *
  * ---------------------------------------------------------------------------------------------
  * 4. THE SETTING IS IN SCOPE; THE CALCULATED PROPERTY DERIVED FROM IT IS NOT
@@ -603,6 +619,86 @@ export const SEEDED_SKU_ELIGIBLE_FULFILLMENT_METHODS: {
     productTypeID: SEEDED_PRODUCT_TYPES_BY_SYSTEM_CODE.contentAccess.productTypeID,
     settingValue: '444df2ffeca081dc22f69c807d2bd8fe',
   }),
+});
+
+/**
+ * A legacy setting name that the in-scope slice reads but that the port's public union deliberately
+ * does NOT carry, because the legacy source marks it deprecated.
+ *
+ * Kept as its own named type rather than inlined, so the compile-time guard below can prove the name
+ * is outside {@link SettingName} — see {@link DEPRECATED_SETTING_DEFAULTS}.
+ */
+type DeprecatedSettingName = 'globalImageExtension';
+
+/** Fails the compile unless `T` really is `never`. */
+type AssertNever<T extends never> = T;
+
+/**
+ * ⛔ THE GUARD THAT KEEPS THE PUBLIC UNION AT EIGHTEEN. If a later change adds
+ * `globalImageExtension` to `CatalogSettingName`, `Extract` stops being `never`, the constraint on
+ * {@link AssertNever} fails, and the compile breaks here — forcing whoever widens the union to decide
+ * deliberately instead of ending up with the same name answered from two places. That is the failure
+ * mode this whole block exists to prevent, so it is enforced rather than merely requested.
+ */
+type _DeprecatedNamesStayOutsideThePublicUnion = AssertNever<
+  Extract<DeprecatedSettingName, SettingName>
+>;
+
+/**
+ * The effective values of the deprecated legacy setting names, transcribed from the declaration that
+ * produced each — the same treatment {@link METADATA_DEFAULTS} gives the public sixteen, in a
+ * separate table because these names are NOT part of the port's contract.
+ *
+ * ⭐ WHY THIS EXISTS, AND WHY IT LIVES HERE. `model/dao/ProductDAO.cfc:L307`, `:L313` and `:L320`
+ * each interpolate `setting("globalImageExtension")` into statement text, so an in-scope consumer
+ * genuinely needs the value. It is not one of the port's eighteen names, and it must not become a
+ * nineteenth: the legacy source itself marks it `// DEPRECATED***` at
+ * model/service/SettingService.cfc:L246, so promoting it into the public contract would be this port
+ * asserting something the legacy explicitly retired. Answering it from a bespoke callback injected
+ * into the MySQL adapter — which is what an earlier revision did — was the other wrong answer: it put
+ * a setting default outside the settings module, so the key, default and provider accounting was no
+ * longer closed, and it invented a deployment input for a value the legacy never asked an operator
+ * for. Both problems disappear once the value sits in the one module that owns setting defaults, and
+ * the consumer imports it as data.
+ *
+ * ⭐ IT IS DATA RATHER THAN A `setting()` ANSWER FOR THE SAME REASON
+ * {@link SEEDED_SKU_ELIGIBLE_FULFILLMENT_METHODS} IS. The port's `setting()` signature accepts only
+ * the closed union, deliberately, so a name outside it cannot be requested through the method at all.
+ * Exposing the value as a named, frozen, locator-documented constant keeps the closed union intact
+ * while still letting the one consumer that needs it read a source-backed value.
+ *
+ * ⚠️ NOTHING IS INVENTED, AND NOTHING IS RESOLVED AT RUN TIME. The value is the literal
+ * `defaultValue` from the metadata declaration, and the name is NOT seeded in
+ * config/dbdata/SlatwallSetting.xml.cfm — a repository-wide search for it in that file returns
+ * nothing — so the metadata default is exactly what the legacy engine yields: it survives the default
+ * test at model/service/SettingService.cfc:L481 unchanged, precisely as the sixteen literal names in
+ * {@link METADATA_DEFAULTS} do. There is therefore no row lookup to model and no operator input to
+ * read (standard S9).
+ *
+ * `Object.freeze` makes the table immutable at run time, which is what keeps the
+ * no-module-scope-mutable-state property M7 true of this module.
+ */
+export const DEPRECATED_SETTING_DEFAULTS: {
+  readonly [Name in DeprecatedSettingName]: SettingValue;
+} = Object.freeze({
+  /**
+   * model/service/SettingService.cfc:L247 — `{fieldType="text", defaultValue="jpg"}`, immediately
+   * under the `// DEPRECATED***` marker at `:L246`.
+   *
+   * Read by the importer's second derived-column back-fill, whose three dialect branches
+   * (model/dao/ProductDAO.cfc:L307 `concat`, `:L313` `||`, `:L320` `+`) all compose the same
+   * `<productCode>.<extension>` file name. The separator is NOT part of this value: the legacy
+   * literal is `'.#setting("globalImageExtension")#'`, so the dot belongs to the composing statement
+   * and the consumer prepends it.
+   *
+   * Not to be confused with the port's `productImageDefaultExtension`
+   * (model/service/SettingService.cfc:L191), which happens to carry the same `'jpg'` literal but is a
+   * DIFFERENT, non-deprecated name read by a different consumer. They are two settings that agree,
+   * not one setting named twice, which is why this table does not alias {@link METADATA_DEFAULTS}.
+   * Section 3 of the module note above records the point in full, together with the three other
+   * reasons this name is not a nineteenth public one.
+   */
+  globalImageExtension: 'jpg',
 });
 
 /**

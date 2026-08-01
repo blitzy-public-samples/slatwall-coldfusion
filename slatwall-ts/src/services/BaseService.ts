@@ -967,7 +967,10 @@ export class BaseService<
    * @returns The persisted entity — the value produced by the persistence step, never merely the
    *   argument that was handed in.
    * @throws {ValidationError} the accumulated failure bag, keyed by property identifier, when the
-   *   entity did not pass validation. Nothing is persisted in that case.
+   *   entity did not pass validation. Nothing is persisted in that case, and the entity referenced by
+   *   the argument is the one the legacy `super.save()` would have returned — which is what lets
+   *   `ProductService.saveProductType` convert the raise back into entity-carried findings. See the
+   *   note at the return statement.
    */
   public async save(
     entity: TEntity,
@@ -1108,10 +1111,22 @@ export class BaseService<
      * [:L103] `return arguments.entity;`
      *
      * The legacy line returned the entity whether or not it had failed, because the entity carried its
-     * own bag for the caller to inspect. The ported entities carry none, so an accumulated failure is
-     * raised here instead — after the post-processing gate has been evaluated, so the two-part gate at
+     * own bag for the caller to inspect. Not every ported entity carries one, so an accumulated failure
+     * is raised here instead — after the post-processing gate has been evaluated, so the two-part gate at
      * [:L91] keeps both of its arms live. The bag is raised as-is, with its keys and message keys
      * untouched, so `src/handlers/httpResponse.ts` can serialise it exactly as it expects.
+     *
+     * ⚠️ THE RAISE IS THIS MEMBER'S CONTRACT, BUT IT IS NOT EVERY CALLER'S CONTRACT, AND ONE CALLER
+     * CONVERTS IT BACK. `model/service/ProductService.cfc:L310` returns `arguments.productType` on every
+     * path and its own `:L306` gate then reads `hasErrors()`, so `saveProductType` must NOT raise on a
+     * validation failure. `src/services/ProductService.ts` therefore catches this `ValidationError`,
+     * attaches its findings to the product type through a composed error surface, and returns the
+     * entity — restoring that member's legacy failure semantics without changing this one's. Two facts
+     * make that conversion exact rather than approximate: on the failure path nothing has been persisted,
+     * because the gate above [:L154-L155] skips `persist`; and `savedEntity` is still the very instance
+     * the caller passed in, because `populate` mutates in place and returns its target. The other two
+     * in-slice callers of this member — `BrandService.saveBrand` and the SKU save path — rely on the
+     * raise and are unaffected.
      */
     if (errors.hasErrors()) {
       throw errors;

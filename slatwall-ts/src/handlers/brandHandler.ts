@@ -11,14 +11,19 @@
  * field mapping and no SQL anywhere in this file, because every one of those belongs to a layer beneath
  * it.
  *
- * It is a THIN, INJECTABLE FUNCTION OF THE SERVICE: {@link createBrandHandler} takes the service and
- * returns the four bound operations. Nothing is constructed here, nothing is resolved by name, and
- * ../config/container is never imported — the planned src/handlers/router.ts is to call the composition
- * root and pass the service in. That is also what makes this file assertable with a hand-written double, without a
- * database, a network call or an AWS runtime (AAP 0.7.3 S6).
+ * It is a THIN, INJECTABLE FUNCTION OF ITS DEPENDENCIES: {@link createBrandHandler} takes TWO — the
+ * brand service and the authorisation resolver — and returns the THREE routed operations, frozen.
+ * Both parameters are required and neither has a default, so there is no construction path that
+ * omits the gate; judgment (k) records why the resolver is a per-invocation resolver rather than a
+ * captured context. The count asymmetry is deliberate and is explained immediately below: the
+ * injected SERVICE surface is FOUR members while the ROUTED surface is THREE, because `newBrand` has
+ * no legacy action behind it. Nothing is constructed here, nothing is resolved by name, and
+ * ../config/container is never imported — the planned src/handlers/router.ts is to call the
+ * composition root and pass both dependencies in. That is also what makes this file assertable with
+ * hand-written doubles, without a database, a network call or an AWS runtime (AAP 0.7.3 S6).
  *
- * FOUR MEMBERS, AND THE COUNT IS THE POINT
- * ----------------------------------------
+ * THREE ROUTED OPERATIONS FROM A FOUR-MEMBER SERVICE, AND THE COUNTS ARE THE POINT
+ * -------------------------------------------------------------------------------
  * model/service/BrandService.cfc declares EXACTLY ONE public function, and AAP 0.6.3.3 records the
  * consequence — it has no dead injections and is the cleanest of the four services. A one-member
  * service produces a small handler, and that is correct rather than incomplete.
@@ -37,24 +42,13 @@
  * and consulted here. Restoring it is PARITY, not invented policy; judgment (k) records what
  * changed, which is only the failure mode.
  *
- * The injected SERVICE surface is four members, because `saveBrand`'s creation path genuinely needs
- * the synthesized factory. The ROUTED surface is three, because `newBrand` has no legacy action
- * behind it and is therefore not something a caller may invoke directly. {@link BrandHandler}
- * records the evidence for that split, and {@link BRAND_ACCESS_MATRIX} classifies the three that
- * remain using the legacy's own vocabulary.
- *
- * EVERY ROUTED MEMBER IS AUTHORISED BEFORE IT DOES ANYTHING
- * --------------------------------------------------------
- * The legacy authorised every request in one place, before any controller method ran —
- * `setupRequest()` [org/Hibachi/Hibachi.cfc:L182-L203], refusing at [:L188]. That gate is framework
- * code and does not cross the boundary (AAP 0.8.3.2), so its CONTRACT is declared as a port instead
- * and consulted here. Restoring it is PARITY, not invented policy; judgment (k) records what
- * changed, which is only the failure mode.
- *
  * TECHNOLOGY-SPECIFIC TRANSLATION DECISIONS (AAP 0.8.2 Guideline 6)
  * ----------------------------------------------------------------
- * The four mandated groups are (a) to (d); (e) to (j) are the judgments this file makes on its own
- * account and are each restated at the member that makes them.
+ * The four mandated groups are (a) to (d); (e) to (l) are the judgments this file makes on its own
+ * account and are each restated at the member that makes them. The list below runs to (l) with no
+ * gaps: an earlier revision of this summary stopped at (j) while the body already cited (k) at the
+ * authorisation gate and (l) at the response projection, so a reader following either reference
+ * found nothing to follow it to.
  *
  * (a) THREE OF THE FOUR SERVICE MEMBERS HAD NO CFML DECLARATION AT ALL. `newBrand`, `getBrand` and
  *     `deleteBrand` appear in no source file anywhere in the legacy repository. They existed only
@@ -82,30 +76,20 @@
  *     the slice calls it, so it is declared, but no legacy action ever addressed it from outside, so
  *     nothing here publishes it. {@link BrandHandler} carries that evidence.
  *
- *     ⚠️ THE RESTRAINT STOPS THERE, AND THE STOPPING POINT IS EVIDENCE-LED RATHER THAN ARBITRARY.
- *     An earlier revision of this file read judgment (b) more widely and withdrew `getBrand` and
- *     `deleteBrand` as well, leaving `saveBrand` as the only closure. That reading was withdrawn,
- *     for four reasons recorded here rather than in a commit message:
- *       - AAP 0.4.2.3's "exactly 1 public member" is a statement about the OBSERVABLE SERVICE
- *         CONTRACT — Goal B's 28 members, the surface AAP 0.8.3.1 requires be "checkable
- *         method-by-method". It tabulates `model/service/BrandService.cfc`'s `public … function`
- *         declarations. It says nothing about which operations a boundary mounts.
- *       - AAP 0.4.2.5 INDEPENDENTLY REQUIRES all three synthesized members. It names
- *         `brandService.newBrand()`, `brandService.getBrand(id)` and
- *         `brandService.deleteBrand(entity)` as real call sites in the slice and states each "must
- *         be declared explicitly" (IR-1). A file that both declares them and refuses to let anything
- *         reach them satisfies the letter of 0.4.2.5 and none of its purpose.
- *       - THE AAP ENUMERATES NO ROUTES ANYWHERE. AAP 0.4.1.9 assigns this file "the BrandService
- *         surface" and assigns routing itself to src/handlers/router.ts, which is a separate target
- *         file. There is therefore no route list to be in breach of, in either direction.
- *       - THE ORIGINAL OBJECTION WAS TO AN UNGATED SURFACE, NOT TO A WIDE ONE. Reaching a brand by
- *         identifier and deleting one are the two operations that need a principal; publishing them
- *         with no gate is what was wrong. {@link BRAND_ACCESS_MATRIX} now classifies all three, and
- *         `resolveAuthorization` is a REQUIRED parameter of {@link createBrandHandler}, so an
- *         ungated routed brand operation is not a state a caller can construct. The gate is the
- *         remedy; amputation was a proxy for it.
- *     What both readings agree on is preserved exactly: `newBrand` stays unrouted, and the reason it
- *     stays unrouted is evidence about the legacy application rather than a preference.
+ *     ⚠️ THE RESTRAINT STOPS AT `newBrand`, AND THE STOPPING POINT IS EVIDENCE-LED. `getBrand` and
+ *     `deleteBrand` ARE routed, for three reasons:
+ *       - AAP 0.4.2.3's "exactly 1 public member" describes the OBSERVABLE SERVICE CONTRACT — Goal
+ *         B's 28 members, the surface AAP 0.8.3.1 requires be "checkable method-by-method". It
+ *         tabulates `model/service/BrandService.cfc`'s `public … function` declarations and says
+ *         nothing about which operations a boundary mounts.
+ *       - AAP 0.4.2.5 INDEPENDENTLY REQUIRES all three synthesized members, naming
+ *         `brandService.newBrand()`, `brandService.getBrand(id)` and `brandService.deleteBrand(entity)`
+ *         as real call sites that "must be declared explicitly" (IR-1). Declaring them and letting
+ *         nothing reach them would satisfy the letter of 0.4.2.5 and none of its purpose.
+ *       - THE RISK WAS AN UNGATED SURFACE, NOT A WIDE ONE. Reaching a brand by identifier and deleting
+ *         one are the operations that need a principal. {@link BRAND_ACCESS_MATRIX} classifies all
+ *         three and `resolveAuthorization` is a REQUIRED parameter of {@link createBrandHandler}, so
+ *         an ungated routed brand operation is not a state a caller can construct.
  *
  * (c) THE URL-TITLE DERIVATION AND THE `SwBrand` TABLE NAME BELONG TO THE SERVICE, NOT HERE. The legacy
  *     body at model/service/BrandService.cfc:L67-L78 tests the entity's and the payload's URL title at
@@ -144,16 +128,9 @@
  * (l) A ROUTE RETURNS AN EXPLICIT MINIMAL PROJECTION, NEVER A DOMAIN INSTANCE. Recorded at
  *     {@link BrandResponse} and {@link toBrandResponse}.
  *
- * The list is (a) to (l) with no gaps, and one letter changed its subject rather than being retired.
- * An earlier revision withdrew `getBrand` and `deleteBrand` from the route surface and consequently
- * declared (g) and (h) "deliberately absent". Judgment (b) above records why that withdrawal was
- * itself withdrawn, so (g) is made again at `deleteBrand` — the delete verdict is forwarded as a
- * boolean and never becomes a status — and (h) now records the one member that really is unrouted,
- * `newBrand`, in place of the earlier note about the promise on its routed form. Nothing about the
- * underlying contracts moved: the boolean delete verdict is still owned by ../services/BaseService
- * and ../services/BrandService, and `newBrand` is still deliberately synchronous there because the
- * legacy `new` branch only instantiates in memory. The history is recorded rather than smoothed over
- * so a reader comparing revisions sees a re-decision instead of inferring a renumbering.
+ * The boolean delete verdict is owned by ../services/BaseService and ../services/BrandService, and
+ * `newBrand` is deliberately synchronous there because the legacy `new` branch only instantiates in
+ * memory.
  *
  * Imports are exactly four modules — ./httpResponse, ../domain/product/Brand,
  * ../ports/AccountContextPort and ../services/BrandService — all relative and extensionless, because

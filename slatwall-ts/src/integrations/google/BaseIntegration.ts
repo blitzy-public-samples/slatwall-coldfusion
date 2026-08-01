@@ -100,12 +100,12 @@
  * display-name copy-paste artifact D11 is annotated in `GoogleIntegration.ts`, and the dead,
  * syntactically broken feed data-access component is D12.
  *
- * ⚠️ F19 — THE D12 POINTER USED TO NAME AN UNDELIVERED FILE. This said the D12 evidence "is evidenced
- * in this folder's `README.md`" and appealed to the rule that an entry must be findable in exactly one
- * place. That `README.md` is not delivered at this checkpoint — the folder holds FOUR files — so the
- * rule was being broken by the very sentence invoking it: the evidence was findable in NO place. It is
- * now carried in `IntegrationContract.ts`, the module every other file in the folder depends on, and
- * this file continues to hold neither entry.
+ * ⭐ F19 — THE D12 POINTER, AND WHY IT MOVED TWICE. It originally named this folder's `README.md`,
+ * appealing to the rule that an entry must be findable in exactly one place. At an earlier checkpoint
+ * that README was undelivered, so the pointer was redirected to `IntegrationContract.ts` to keep the
+ * evidence findable somewhere. `README.md` is now delivered and AAP §0.4.1.10 assigns the D12 finding
+ * to it explicitly, so the pointer names `README.md` §9 once more and the interim copy has been
+ * withdrawn rather than left to be kept in step by hand. This file continues to hold neither entry.
  *
  * One legacy inconsistency inside this file's own span is recorded here and given no number,
  * because it is not a defect: integrationServices/BaseIntegration.cfc:L60 writes the empty string

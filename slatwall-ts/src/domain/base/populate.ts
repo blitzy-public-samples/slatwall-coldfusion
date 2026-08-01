@@ -129,6 +129,7 @@ import type { PopulationAuthorizationPort } from '../../ports/AccountContextPort
 import type { UniquePropertyMetaData } from '../../ports/UniquePropertyPort';
 import { ValidationError } from '../../errors/ValidationError';
 
+import { parseExactDecimal } from '../../util/formatting';
 import { isAuditPropertyName } from './AuditableEntity';
 
 /* =============================================================================================
@@ -224,17 +225,27 @@ function renderSimpleValue(value: SimpleDataValue): string {
  *     `OptionGroup.imageGroupFlag` [model/entity/OptionGroup.cfc:L57] and to ProductType's two
  *     flags [model/entity/ProductType.cfc:L54, :L55] — ten `ormtype="boolean"` declarations across
  *     the six in-scope entities, counted.
- *   - `Sku.price` is declared `price: number = 0` [src/domain/sku/Sku.ts:L955] against
- *     `ormtype="big_decimal"` [model/entity/Sku.cfc:L55]; `Option.sortOrder` is declared
- *     `sortOrder?: number` against `ormtype="integer"` [model/entity/Option.cfc:L56]. Both held
- *     strings.
+ *   - `Option.sortOrder` is declared `sortOrder?: number` against `ormtype="integer"`
+ *     [model/entity/Option.cfc:L56], and held strings.
+ *
+ *     F07 — `Sku.price` USED TO BE THE OTHER EXAMPLE HERE, declared `price: number = 0` against
+ *     `ormtype="big_decimal"` [model/entity/Sku.cfc:L55]. It no longer is: the three monetary
+ *     properties are `ExactDecimal`, so their declared type and their ORM type now agree that the
+ *     value is exact, and the coercion below produces text for them rather than a double. The
+ *     `integer` case is unaffected and remains the live example.
  *
  * IN CFML THAT DIVERGENCE WAS INVISIBLE, because the destination had no static type and Hibernate
  * converted at flush. In TypeScript the destination HAS a declared type, and writing a string into
  * it makes the declaration a lie that the compiler cannot catch — {@link PopulationTarget} widens
- * every field to `unknown` precisely so the assignment is legal. Transliterating the untyped write
- * therefore does not preserve behaviour; it silently changes it, in the one direction that matters
- * most, on properties that gate visibility and pricing.
+ * every field to `unknown` precisely so the assignment is legal.
+ *
+ * ⭐ AND THE TWO LANGUAGES DISAGREE ON THE READ, WHICH IS THE FACT THE WHOLE BLOCK TURNS ON. CFML
+ * boolean-casts a boolean-castable string in a condition, so `<cfif 'false'>` is FALSE — the same
+ * semantics `../../validation/Validator`'s `toCfBoolean` transcribes for
+ * `org/Hibachi/HibachiValidationService.cfc:L162`. JavaScript has no such cast, so `if ('false')` is
+ * TRUE. Transliterating the untyped write therefore does not preserve behaviour; it INVERTS it, on
+ * properties that gate visibility and pricing. Coercing towards the declared type is what keeps the
+ * read faithful, so it is a parity requirement rather than an improvement.
  *
  * THE FIX. Every {@link ColumnPropertyDescriptor} DECLARES the legacy `ormtype` as
  * {@link ColumnValueType}, and {@link coerceDeclaredValue} converts towards it. The declaration is
@@ -247,24 +258,38 @@ function renderSimpleValue(value: SimpleDataValue): string {
  * OptionGroup:L64,L66}.cfc], which never reach a coercion at all. There is consequently no date or
  * timestamp arm, because adding one would be inventing a case the slice cannot exercise (S9).
  *
- * ⭐ DECLARED DEPARTURE FROM BYTE-FOR-BYTE PRESERVATION, on the D18 precedent (AAP §0.6.7.7).
- * An ambiguous representation now RAISES at population time instead of being written through and
- * failing later. The bar for this was: does it reject anything the legacy ACCEPTED? It does not.
+ * ⚠️ WHERE THE FAILURE HAPPENS IS AN EXECUTION-MODEL DIFFERENCE, FLAGGED PER AAP §0.6.6 AND IR-10 —
+ * AND IT IS NOT CLAIMED ON D18's PRECEDENT. An earlier revision recorded this as a "declared
+ * departure from byte-for-byte preservation, on the D18 precedent (AAP §0.6.7.7)", and that framing is
+ * withdrawn. D18 is the SOLE declared behaviour-hardening exception in this port and it is a precedent
+ * only for a divergence that removes a flaw class WITHOUT changing an outcome. Nothing here needs that
+ * licence, because no outcome changes: what changes is only the POINT at which an already-failing
+ * operation fails.
  *
+ * THE ACCEPTED SET IS UNCHANGED, WHICH IS WHY NO LICENCE IS NEEDED:
  *   - For a boolean destination the accepted set is exactly CFML's own boolean-cast vocabulary —
  *     `true`/`false`, `yes`/`no` and any numeric value, case-insensitively, with non-zero true —
  *     which is what `isBoolean()` admits and what the CFML engine converted on the way to a
  *     Hibernate `boolean`. `'maybe'` was never accepted; it produced a cast failure at flush.
  *   - For a numeric destination the accepted set is a well-formed number. `'abc'` was never
- *     accepted either.
+ *     accepted either; it failed the same way.
  *
- * So the change is WHEN and HOW LOUDLY a bad value fails, not WHETHER. AAP §0.8.2 Guideline 4
- * forbids enhancing business logic; it does not require preserving a late opaque failure in place
- * of an early precise one when the outcome is identical. The alternative designs were both worse
- * and are recorded as rejected: silently clearing the property would DELETE a value the caller
- * never asked to delete, and silently skipping it would leave the prior value in place — an update
- * that reports success while ignoring a field is precisely the failure mode a gate-bearing flag
- * must not have.
+ * ⭐ AND THE RELOCATION IS FORCED, NOT CHOSEN. The legacy failure happened inside Hibernate's
+ * flush-time conversion from the CFML value to the mapped Java type. There is no such conversion
+ * layer here: `mysql2` binds whatever it is given, and the absence of an ORM flush is already on the
+ * register as M5. Something therefore has to decide the type on the way IN, and once that decision is
+ * made at population time the failure necessarily surfaces at population time too. The only question
+ * left is what to do with a value that cannot be represented, and the two alternatives are worse and
+ * are recorded as rejected: silently clearing the property would DELETE a value the caller never
+ * asked to delete, and silently skipping it would leave the prior value in place — an update that
+ * reports success while ignoring a field is precisely the failure mode a gate-bearing flag must not
+ * have. Both of those WOULD change an outcome; raising does not.
+ *
+ * ⚠️ THE ONE OBSERVABLE CONSEQUENCE IS FLAGGED RATHER THAN SMOOTHED OVER. Because population raises,
+ * validation never runs for a payload carrying an unrepresentable value, so no error bag is produced
+ * where the legacy would have produced one and then failed at flush. The operation fails either way
+ * and nothing is persisted either way, but a caller comparing failure SHAPES will see a thrown
+ * domain error rather than a populated entity with a later commit failure.
  *
  * WHAT IS NOT CHANGED. The blank-to-NULL rule [org/Hibachi/HibachiTransient.cfc:L195-L196], the
  * `notNull` exception, `trim` semantics, declaration-order iteration, the audit exclusion, the
@@ -349,8 +374,8 @@ type CoercionOutcome =
  *
  * Reproduces CFML's boolean-cast vocabulary and nothing wider: the literals `true`/`false` and
  * `yes`/`no` case-insensitively, plus any numeric value with non-zero meaning true. A JSON boolean
- * arrives already correct and is passed straight through, which is the case SEC-16's proof
- * exercised.
+ * arrives already correct and is passed straight through, which is the `{"activeFlag": false}` case
+ * the DECLARED VALUE TYPES block opens with.
  *
  * @param value - The original payload value, before rendering.
  * @param trimmedText - The same value rendered and trimmed, supplied so it is computed once.
@@ -393,11 +418,23 @@ function coerceBooleanValue(value: SimpleDataValue, trimmedText: string): Coerci
  * A JSON boolean is rejected for both. The legacy path rendered `true` as the string `'true'`,
  * which no numeric ORM type could parse, so rejecting it preserves the legacy outcome.
  *
- * ON PRECISION. `ormtype="big_decimal"` is arbitrary-precision in Hibernate, whereas the domain
- * class declares the IEEE-754 double `price: number = 0` [src/domain/sku/Sku.ts:L955]. `number` is
- * therefore the destination type this coercion must produce; the precision ceiling belongs to that
- * declared field, not to this function, and it is recorded here rather than worked around by
- * writing a string into a field declared `number`.
+ * ⭐ ON PRECISION — F07, AND THE TWO DESTINATIONS DIVERGE HERE. An earlier revision of this note
+ * recorded that `ormtype="big_decimal"` is arbitrary-precision in Hibernate while the domain class
+ * declared the IEEE-754 double `price: number = 0`, and concluded that `number` was *"therefore the
+ * destination type this coercion must produce"*, with the precision ceiling belonging to the declared
+ * field rather than to this function.
+ *
+ * ⚠️ THAT WAS TRUE AND IT WAS ALSO A LIVE PRECISION LEAK, BECAUSE THIS PATH IS A REAL WRITE PATH.
+ * `populate()` is how an untyped request payload reaches an entity, so a price arriving here was rounded
+ * to the nearest double BEFORE it ever reached the repository — and the assignment is made through
+ * {@link CoercionOutcome}, whose `value` is `NonNullable<unknown>`, so the compiler could not see the
+ * mismatch and no test reported it. Fixing only the service-level reads would have left this one open.
+ *
+ * The four `bigDecimal` properties — `listPrice`, `price` and `renewalPrice` on `../sku/Sku`, and
+ * `calculatedSalePrice` on `../product/Product` — are now typed `ExactDecimal`, so THE `bigDecimal` ARM
+ * PRODUCES EXACT DECIMAL TEXT and no `Number(...)` runs on it. The `integer` arm is unchanged and still
+ * produces a `number`, because `sortOrder` and its kind genuinely are integers and
+ * `Number.isSafeInteger` already guards the only loss available to them.
  *
  * @param value - The original payload value, before rendering.
  * @param trimmedText - The same value rendered and trimmed.
@@ -418,6 +455,17 @@ function coerceNumericValue(
     return { kind: 'ambiguous' };
   }
 
+  /* F07 — A `bigDecimal` DESTINATION NEVER TOUCHES `Number(...)`. The text has already passed
+   * {@link DECIMAL_TEXT_PATTERN}, so `parseExactDecimal` only normalises its spelling — supplying the
+   * leading zero of `'.34'`, dropping the trailing point of `'12.'` — and cannot widen the accepted set,
+   * because the exponent forms it would otherwise expand were rejected by that pattern one branch above.
+   * `undefined` is unreachable for text the pattern accepted and is mapped to `ambiguous` rather than
+   * asserted away, which is this file's established stance on an impossible-but-checkable state. */
+  if (!wholeNumbersOnly) {
+    const exact = parseExactDecimal(trimmedText);
+    return exact === undefined ? { kind: 'ambiguous' } : { kind: 'assign', value: exact };
+  }
+
   const numericValue = Number(trimmedText);
   if (!Number.isFinite(numericValue)) {
     return { kind: 'ambiguous' };
@@ -426,7 +474,7 @@ function coerceNumericValue(
   // A whole-number destination additionally requires the parsed value to survive as an exact
   // integer. `Number.isSafeInteger` rejects a digit string beyond 2^53-1, which would otherwise be
   // silently rounded to a different number than the caller sent.
-  if (wholeNumbersOnly && !Number.isSafeInteger(numericValue)) {
+  if (!Number.isSafeInteger(numericValue)) {
     return { kind: 'ambiguous' };
   }
 
@@ -967,8 +1015,11 @@ export interface ManyToManyPropertyDescriptor<
    * implementation cannot hand back null without failing to compile. No equivalent `throw` is
    * emitted and the message is not exported anywhere — it originates in `org/Hibachi/**`, framework
    * code that §0.8.3.2 states is "being retired for this slice, not carried forward", and it is not
-   * one of the four legacy throw strings `src/errors/DomainError.ts` carries, nor one of the
-   * twenty-one carried defects D1-D21.
+   * one of the four legacy throw strings `src/errors/DomainError.ts` carries, nor one of the carried
+   * defects — the register is stated canonically, and only once, in the header of
+   * `src/ports/repositories/SkuRepository.ts` (AAP 0.6.7's frozen source range D1-D21, plus the
+   * source extension D22 and the three contract corrections D23, D24 and D25, with no D26 or
+   * beyond; and AAP 0.6.6's M1-M8 plus M9, with no M10 or beyond).
    *
    * The legacy read returned the live collection, which is why BRANCH 5 iterates it BACKWARDS while
    * {@link removeRelated} mutates it. An implementation may return the live array or a copy; the
@@ -1830,8 +1881,9 @@ export function populateWithSubProperties<
       /*
        * ⭐ THE DECLARED-TYPE COERCION. This replaced an unconditional
        * `renderSimpleValue(rawValue).trim()`; the full argument, the census of ORM types it is closed
-       * over, the D18-precedent departure it declares, and the two rejected alternative designs are
-       * all recorded in the DECLARED VALUE TYPES block near the top of this file.
+       * over, the CFML-versus-JavaScript truthiness fact that makes the coercion a parity requirement,
+       * the flagged execution-model relocation of the failure point, and the two rejected alternative
+       * designs are all recorded in the DECLARED VALUE TYPES block near the top of this file.
        *
        * The blank-to-NULL rule and the `notNull` exception are unchanged and are still evaluated
        * BEFORE any conversion, inside {@link coerceDeclaredValue}, because [:L195] evaluates them
@@ -1851,10 +1903,12 @@ export function populateWithSubProperties<
         /*
          * AMBIGUOUS — the value cannot be represented in the property's declared type.
          *
-         * This is the one place in this file that raises, and it is a DECLARED departure rather than
-         * an accident; see the DECLARED VALUE TYPES block. The message and the attached context
-         * carry declaration facts only and NEVER the offending value, so nothing caller-supplied can
-         * be reflected back even before `src/handlers/httpResponse.ts` maps domain errors to public
+         * This is the one place in this file that raises, and it is a FORCED RELOCATION of a failure
+         * Hibernate performed at flush rather than a new failure or a hardening; see the DECLARED
+         * VALUE TYPES block, which withdraws the earlier D18-precedent framing and records the
+         * difference as an execution-model one under M5. The message and the attached context carry
+         * declaration facts only and NEVER the offending value, so nothing caller-supplied can be
+         * reflected back even before `src/handlers/httpResponse.ts` maps domain errors to public
          * codes.
          */
         throw new DomainError(AMBIGUOUS_POPULATED_VALUE_MESSAGE, {
@@ -2443,11 +2497,20 @@ export interface EntityMetadataSurface {
  * `org/Hibachi/HibachiTransient.cfc:L29-L67`.
  *
  * ⭐ WHY THIS BELONGS HERE AND NOT ON THE ENTITY CLASSES. These six members are framework facilities,
- * inherited in the legacy rather than written per entity, and every entity module in this port carries
- * an explicit mandate forbidding them as hand-written instance methods — `src/domain/product/ProductType.ts`
- * states it outright, naming `hasErrors` and `getErrors` among the members that appear nowhere in the
- * class (F22). {@link manageEntity} is the mechanism already established for exactly this situation by
- * the metadata surface above, so the error surface arrives the same way: composed on, not declared in.
+ * inherited in the legacy rather than written per entity, and NOT ONE of the six entity classes
+ * declares any of them — measured, zero occurrences across all six — so the error surface is composed
+ * on rather than declared in, uniformly. `src/domain/product/ProductType.ts` states the prohibition
+ * outright, naming `hasErrors` and `getErrors` among the members that appear nowhere in the class
+ * (F22); the other five simply never declare them. {@link manageEntity} is the mechanism.
+ *
+ * ⚠️ THE METADATA SURFACE ABOVE IS NOT THE SAME STORY, AND THIS BLOCK USED TO ASSERT THAT IT WAS. It
+ * read "every entity module in this port carries an explicit mandate forbidding them as hand-written
+ * instance methods" and offered the metadata surface as the precedent already established for it.
+ * FIVE of the six classes do hand-write all seven metadata members and do declare
+ * `implements ManagedEntity`; only ProductType relies on composition for them.
+ * `src/domain/base/AuditableEntity.ts` records that split once, on the contract those five implement.
+ * The error half of the claim stands exactly as written — it is the generalisation to both halves that
+ * did not survive being checked.
  *
  * ⭐ WHY IT IS REQUIRED RATHER THAN OPTIONAL. `model/service/SkuService.cfc:L143`, [`:L148`] and
  * [`:L176`] call `arguments.product.addError(...)`, and [`:L152`] and [`:L180`] gate SKU creation on
@@ -2494,8 +2557,23 @@ export interface EntityErrorSurface {
 /**
  * An entity plus the two framework surfaces {@link manageEntity} composes onto it.
  *
- * Both halves are framework-inherited in the legacy and both are forbidden as hand-written instance
- * methods by every entity module's own mandate, which is why they arrive together and from one place.
+ * Both halves are framework-inherited in the legacy, which is why they arrive together and from one
+ * place: an entity either extends the framework bases or it does not.
+ *
+ * ⚠️ NOT BECAUSE NO CLASS DECLARES THEM. That is what this block used to say, and it holds for the
+ * ERROR half only. Five of the six entity classes hand-write the whole metadata half as prototype
+ * methods, which `Object.assign` then SHADOWS with equivalent own-property closures over the same
+ * declaration; ProductType hand-writes none, so for it those closures are the only implementation.
+ * `src/domain/base/AuditableEntity.ts` records the split once, on the seven-member contract the five
+ * accept.
+ *
+ * ⛔ AND THIS IS A DIFFERENT `ManagedEntity` FROM THAT CONTRACT, DESPITE THE SHARED NAME. This one is
+ * the generic VIEW a collaborator holds — the entity intersected with both surfaces — and is what
+ * `src/adapters/mysql/rowMappers.ts`, the services and `src/ports/repositories/BrandRepository.ts`
+ * name. The non-generic interface in `src/domain/base/AuditableEntity.ts` is the OBLIGATION an entity
+ * class accepts. No module imports both, so the shared name cannot collide at a use site, and
+ * `src/domain/product/ProductType.ts` turns on the distinction: it declines the obligation while
+ * remaining reachable through the view.
  */
 export type ManagedEntity<TEntity> = TEntity & EntityMetadataSurface & EntityErrorSurface;
 

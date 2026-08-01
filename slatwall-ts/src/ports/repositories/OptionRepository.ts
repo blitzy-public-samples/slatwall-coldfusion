@@ -38,10 +38,10 @@
  * untouched by D22. The annotations below therefore mark PRESERVED BEHAVIOUR, not defects.
  *
  * A DELIBERATE NOTE ON WHAT IS *NOT* WRONG WITH THIS SOURCE. ⚠️ F27: this sentence used to open "The
- * carried-defect register for this slice runs from D1 to D22 and is closed (AAP 0.6.7 ...)". AAP
- * §0.6.7 is frozen at D1–D21, and the register is NOT closed — this port has minted D22, D23, D24 and
- * M9 beyond the AAP's ranges (see `src/ports/repositories/SkuRepository.ts`, which defines D22).
- * What the note actually needed to say is that NO ENTRY LANDS HERE (AAP 0.7.3 S7 — "preserve and
+ * carried-defect register for this slice runs from D1 to D22 and is closed (AAP 0.6.7 ...)". Both
+ * halves were wrong, and the replacement states no range at all: the bounds and every port-minted
+ * entry live in one place, `src/ports/repositories/SkuRepository.ts`, which is the only file that
+ * may state them. What the note actually needed to say is that NO ENTRY LANDS HERE (AAP 0.7.3 S7 — "preserve and
  * annotate, do not repair"), and that is worth recording, because silence would invite someone to
  * "harden" a component that needs no hardening. It binds every value
  * through `<cfqueryparam>` — at `L68`, `L78` and `L107`, which is all three of them — so it is
@@ -51,12 +51,12 @@
  * it is untouched by D22, the physical/logical name divergence.
  *
  * ⚠️ F27 — THE D22 ATTRIBUTION HERE WAS WRONG AND IS CORRECTED. It said the divergence "affects
- * `ProductDAO` and `ProductTypeDAO` only", which omitted the component where D22 is DEFINED and where
- * it takes its sharpest, intra-file form: `model/dao/SkuDAO.cfc` places logical entity names in the
- * native statement at `:L132` and `:L135` while using physical names in the native statement at
- * `:L179-L186`. `model/dao/ProductDAO.cfc` and `model/dao/ProductTypeDAO.cfc:L54-L62` are affected
- * too. Verified by reading all four catalog DAOs; OptionDAO remains the only one untouched, which is
- * this note's real point and is unchanged. No parity annotation below is
+ * `ProductDAO` and `ProductTypeDAO` only", which omitted the legacy component D22 ORIGINATES in and
+ * where it takes its sharpest, intra-file form: `model/dao/SkuDAO.cfc` places logical entity names
+ * in the native statement at `:L132` and `:L135` while using physical names in the native statement
+ * at `:L179-L186`. `model/dao/ProductDAO.cfc` and `model/dao/ProductTypeDAO.cfc:L54-L62` are
+ * affected too. Verified by reading all four catalog DAOs; OptionDAO remains the only one
+ * untouched, which is this note's real point and is unchanged. No parity annotation below is
  * therefore attached to a defect; the annotations that ARE below mark PRESERVED BEHAVIOUR instead.
  *
  * `model/dao/OptionDAO.cfc` is REFERENCE-ONLY and never modified (AAP §0.4.1.1, TR-6). Behaviour is
@@ -64,6 +64,8 @@
  * (AAP §0.8.1) — and every judgement call the translation required is annotated inline with the
  * locator that justifies it (AAP §0.8.2 Guideline 6).
  */
+
+import type { BoundedReadResult, BoundedReadWindow } from './BoundedRead';
 
 /**
  * One row of {@link OptionRepository.findUnusedOptions} — an option offered for selection.
@@ -227,6 +229,39 @@ export interface OptionRepository {
   ): Promise<UnusedOptionRow[]>;
 
   /**
+   * The same listing as {@link OptionRepository.findUnusedOptions}, restricted to a caller-stated
+   * window.
+   *
+   * ⚠️ ADDITIONAL SURFACE, NOT A REPLACEMENT. The unbounded member above is the port of
+   * `model/dao/OptionDAO.cfc:L51-L92` and stays unbounded, because that statement is (AAP §0.8.2
+   * Guideline 4, §0.7.3 S9). This member exists so a caller that can state a ceiling has a place to.
+   *
+   * EVERYTHING ELSE IS IDENTICAL, INCLUDING THE TWO THINGS EASIEST TO LOSE. The membership polarity
+   * stays `IN` — the mirror of the sibling member's `NOT IN` — and the empty-list case still resolves
+   * to a single placeholder bound to the empty string, and therefore still to an empty result. The bind
+   * order stays statement order: group identifiers FIRST, product identifier LAST, which is the reverse
+   * of the argument order and stays that way for the reason recorded on the unbounded member.
+   *
+   * ⚠️ THE WINDOW PAGES DETERMINISTICALLY HERE, UNLIKE THE TWO SEARCH MEMBERS.
+   * `model/dao/OptionDAO.cfc:L90-L92` orders by group name then option name, so successive windows over
+   * an unchanged match set are disjoint and exhaustive. That ordering is the legacy's and is neither
+   * extended nor parameterised.
+   *
+   * THE WINDOW COMES FIRST for consistency with the other bounded members, even though both remaining
+   * arguments are required here and either order would compile.
+   *
+   * @param window - the caller's row ceiling and zero-based offset. Both required; neither defaulted.
+   * @param productID - as on the unbounded member.
+   * @param existingOptionGroupIDList - as on the unbounded member, empty string included.
+   * @returns the window's rows in the legacy order, plus whether at least one further row lies past it.
+   */
+  findUnusedOptionsBounded(
+    window: BoundedReadWindow,
+    productID: string,
+    existingOptionGroupIDList: string,
+  ): Promise<BoundedReadResult<UnusedOptionRow>>;
+
+  /**
    * Lists the option groups not yet present on a product, as drop-down rows.
    *
    * THE BUSINESS RULE, AND ITS INVERTED POLARITY. Every option group whose identifier is absent
@@ -265,4 +300,33 @@ export interface OptionRepository {
    * never null or undefined.
    */
   findUnusedOptionGroups(existingOptionGroupIDList: string): Promise<UnusedOptionGroupRow[]>;
+
+  /**
+   * The same listing as {@link OptionRepository.findUnusedOptionGroups}, restricted to a caller-stated
+   * window.
+   *
+   * ⚠️ ADDITIONAL SURFACE, NOT A REPLACEMENT, for the same reason as every other bounded member: the
+   * port of `model/dao/OptionDAO.cfc:L94-L117` stays unbounded because that statement is.
+   *
+   * ⚠️ THE INVERTED POLARITY SURVIVES, AND IT MATTERS MOST HERE. The predicate stays `NOT IN`, so for a
+   * product with NO option groups this member still resolves to EVERY option group while its sibling
+   * resolves to none. Bounding a result that is "the whole table by design" is precisely the case a
+   * caller most wants a ceiling for, and it is also the case where quietly capping the unbounded member
+   * would have done the most damage — a rendered drop-down silently missing entries.
+   *
+   * The empty-list input still emits exactly one placeholder bound to the empty string and is neither
+   * guarded nor special-cased.
+   *
+   * ⚠️ THE WINDOW PAGES DETERMINISTICALLY. `model/dao/OptionDAO.cfc:L115-L117` orders by group name —
+   * one sort term, where the sibling has two — so successive windows over an unchanged match set are
+   * disjoint and exhaustive.
+   *
+   * @param window - the caller's row ceiling and zero-based offset. Both required; neither defaulted.
+   * @param existingOptionGroupIDList - as on the unbounded member, empty string included.
+   * @returns the window's rows in name order, plus whether at least one further row lies past it.
+   */
+  findUnusedOptionGroupsBounded(
+    window: BoundedReadWindow,
+    existingOptionGroupIDList: string,
+  ): Promise<BoundedReadResult<UnusedOptionGroupRow>>;
 }

@@ -216,48 +216,134 @@ import { DomainError } from '../errors/DomainError';
  * ============================================================================================ */
 
 /* ==============================================================================================
- * DECISION F — the Google feed's host authority is CONFIGURATION, not a request header
- * (security finding SEC-06; AAP §0.4.1.10; standard S9; requirement IR-12).
+ * DECISION F — the Google feed's host authority arrives as CONFIGURATION, because a stateless
+ * invocation has no request scope to read it from
+ * (AAP §0.4.1.10; AAP §0.6.6 / IR-10; standard S9; requirement IR-12).
  *
  * WHY A TENTH VARIABLE EXISTS
  * ---------------------------
  * integrationServices/google/views/feed/product.cfm interpolates `CGI.HTTP_HOST` into all five of
- * its absolute URLs — :L14, :L15, :L22, :L23 and :L24 — with no validation. On a persistent CFML
- * server that value is whatever the caller sent in the request's `Host` header, and the target
- * platform is no different. Three routes open as a result, and none needs an unusual deployment:
- * XML markup in the header lands inside four element text nodes and can add or replace feed
- * fields; every product, image and additional-image URL in the document is rebased onto whatever
- * authority the caller names; and a single bare ampersand leaves the document with no defined XML
- * parse at all.
+ * its absolute URLs — :L14, :L15, :L22, :L23 and :L24 — with no validation of any kind. There is
+ * no `CGI` scope on the target platform, and the routed feed operation in
+ * src/handlers/googleFeedHandler.ts takes no invocation event, so the value cannot be read the way
+ * the view reads it. The only ambient source left is configuration, and the sole-reader invariant
+ * above means it has to come from HERE. That is the whole reason this variable exists.
  *
- * A canonical host cannot come from the request, so it has to come from configuration, and the
- * sole-reader invariant above means it has to come from HERE. That is the whole reason this
- * variable exists.
+ * This is an EXECUTION-MODEL ADAPTATION, recorded in the same register as the M-series mismatches of
+ * AAP §0.6.6 rather than resolved by guesswork (IR-10). It is stated rather than claimed as an
+ * improvement: under the legacy two requests carrying two different host headers produce two
+ * different documents, whereas here every invocation produces the configured host.
  *
  * WHY IT IS REQUIRED RATHER THAN DEFAULTED
  * ----------------------------------------
- * Same fail-fast contract as the other nine, inherited from config/configORM.cfm:L4-L7. There is
- * no host to inherit — the legacy read one from the request and recorded none in source — so any
+ * Same fail-fast contract as every other required name, inherited from config/configORM.cfm:L4-L7.
+ * There is no host to inherit — the legacy read one from the request and recorded none in source — so any
  * value this module supplied on the operator's behalf would be invented, which standard S9 forbids
  * outright. A deployment that renders a merchant feed without having stated its own host is a
- * deployment whose operator has not yet decided, and failing at load naming the variable is
- * strictly better than emitting a feed full of somebody else's links.
+ * deployment whose operator has not yet decided, and failing at load naming the variable is the same
+ * completeness rule the other nine variables obey. It is a configuration-completeness rule, NOT a
+ * security control.
  *
- * WHY THE SYNTAX RULE IS NOT DUPLICATED HERE
- * ------------------------------------------
- * This module checks PRESENCE and NON-BLANKNESS only, exactly as it does for DB_HOST. The
- * authority-syntax rule — the character allowlist that closes the injection and rebasing routes —
- * lives in exactly one place, `validateFeedHostAuthority` in
- * src/integrations/google/ProductFeedBuilder.ts, as its DECISION G-1. Restating it here would put
- * the same rule in two files with no mechanism keeping them in step, and a drifted copy of a
- * security rule is worse than one copy: the branded type that rule produces is what the builder's
- * render context actually demands, so the rule cannot be bypassed by reading this value directly.
+ * WHY NO SYNTAX RULE RUNS ANYWHERE, HERE OR DOWNSTREAM
+ * ---------------------------------------------------
+ * This module checks PRESENCE and NON-BLANKNESS only, exactly as it does for DB_HOST — and nothing
+ * further checks the value at any later layer either.
  *
- * Consequently the arrow direction is preserved and no new import appears in this file. Config does
- * NOT reach up into src/integrations/**; the deferred src/handlers/googleFeedHandler.ts reads
- * `config.googleFeed.host` from here, passes it through the builder's validator, and hands the
- * branded result to the render context. That handler owes one further obligation no type can
- * enforce — that it never substitutes a request header for this value — and DECISION G-1 states it.
+ * ⛔ AN EARLIER REVISION DEFERRED AN AUTHORITY-SYNTAX RULE TO THE SERIALIZER, AND THAT RULE IS
+ * WITHDRAWN. It was a character allowlist plus a DNS-label ceiling whose miss RAISED, declared as
+ * `validateFeedHostAuthority` / DECISION G-1 in src/integrations/google/ProductFeedBuilder.ts, and it
+ * was paired with a fail-closed membership gate over an `allowedHosts` list. Both are gone. The legacy
+ * performs NO check, so refusing a configured host is an outcome change: AAP §0.8.2 guideline 4 forbids
+ * enhancement beyond what the migration requires, and D18 (AAP §0.6.7.7) is the SOLE declared
+ * behaviour-hardening exception — a precedent only for a divergence that removes a flaw class WITHOUT
+ * changing an outcome, which parameterised SQL does and a refusal does not. The character allowlist and
+ * the 63-octet ceiling were also invented figures the source states nowhere (S9, IR-12).
+ *
+ * ⚠️ THE RESIDUAL EXPOSURE IS FLAGGED, NOT CLOSED (S8). XML markup in this value lands inside four
+ * element text nodes and can add or replace feed fields; a bare ampersand leaves the document with no
+ * defined XML parse; and every product, image and additional-image URL is built on whatever authority
+ * it names. All three are carried from :L14, :L15, :L22, :L23 and :L24. Because the value is
+ * configuration rather than a caller-supplied header, it is the operator's own to get right, and the
+ * serializer's WITHDRAWN RAW-SINK VALIDATION note carries the full argument.
+ *
+ * The arrow direction is unchanged and no new import appears in this file. Config does NOT reach up
+ * into src/integrations/**; src/handlers/googleFeedHandler.ts reads `config.googleFeed.host` from here
+ * and hands it to the render context unmodified.
+ * ============================================================================================ */
+
+/* ==============================================================================================
+ * DECISION G — the three setting values whose LEGACY DEFAULT IS COMPUTED AT RUN TIME are read HERE,
+ * because a value the legacy derived by calling services this slice excludes cannot come from a
+ * frozen table, and the only other places it could come from are a container literal or an invented
+ * default — both forbidden (AAP §0.7.3 standard 3 and standard 9; IR-12).
+ *
+ * WHAT THE GAP IS
+ * ---------------
+ * src/adapters/settings/StaticSettingResolver.ts resolves the eighteen setting names this slice
+ * reads. FIFTEEN of them come from frozen literals carried from
+ * config/dbdata/SlatwallSetting.xml.cfm and the entity metadata defaults, and need nothing from the
+ * environment. THREE do not, because [model/service/SettingService.cfc:L164, :L222, :L223] COMPUTE
+ * them — two by calling the `Currency*` and `Fulfillment*` services AAP §0.2.2.1 excludes, and one
+ * from the CFML application scope, which has no counterpart in a stateless invocation. That
+ * adapter's `StaticSettingResolverConfiguration` is the shape those three arrive in, and
+ * {@link SettingsConfig} below is that shape read from the environment.
+ *
+ * ⭐ ALL THREE ARE OPTIONAL, HERE AND AT THE ADAPTER, AND THE OPTIONALITY IS THE CONTRACT.
+ * `StaticSettingResolver`'s constructor takes ONE argument that defaults to `{}`, so a deployment
+ * that reads only `globalDateFormat` states nothing and every frozen name still resolves; supplying
+ * one value makes ONE further name resolvable and omitting it leaves that ONE name — and only that
+ * name — raising a classified configuration error. Under `exactOptionalPropertyTypes` an omitted
+ * member is ABSENT rather than `undefined`, and {@link loadSettingsConfig} preserves that
+ * distinction by never writing an absent key.
+ *
+ * ⛔ THREE FURTHER SECTIONS ONCE STOOD UNDER THIS DECISION AND ARE ALL WITHDRAWN, because the
+ * REQUIRED, no-default collaborator each one fed has itself been withdrawn on AAP authority. The
+ * reason belongs to each withdrawing file, so each is quoted in its own words:
+ *   - src/util/urlTitle.ts, on its removed `UrlTitleAttemptBudget`: "The legacy states no ceiling,
+ *     so every possible value of one is a fabricated number. Passing the fabrication to the caller
+ *     as a required argument relocated the invention; it did not avoid it." The collision loop at
+ *     model/service/DataService.cfc:L64 is unbounded in the legacy and is unbounded in the port.
+ *   - src/services/SkuService.ts, on its removed `SkuCombinationBudget`: "Requiring the composition
+ *     root to supply the maximum RELOCATED the fabrication rather than avoiding it: the number still
+ *     had to be invented by somebody before the graph could be built at all."
+ *   - src/ports/repositories/ProductRepository.ts, on the whole SEC-08 gate its
+ *     `ProductImportSourcePolicy` configured: "the policy object itself was five invented
+ *     configuration values, which AAP §0.7.3 standard 9 and IR-12 forbid outright."
+ *
+ * KEEPING THEIR LOADERS AFTER THE COLLABORATORS WENT WOULD HAVE BEEN THE SAME RELOCATION ALL THREE
+ * REJECT. Seven environment variables — five import-policy values, one URL-title budget, one
+ * combination budget — would have stayed MANDATORY under DECISION C's fail-fast contract, so every
+ * deployment would have had to invent seven numbers before the service could start, to configure
+ * behaviour no collaborator in this subtree can reach. Reading a value nothing consumes is not a
+ * harmless leftover; it is an invented policy with a longer commute. Their shapes and loaders are
+ * therefore removed and recorded in place — see the note above {@link SettingsConfig} and the loader
+ * note above {@link loadSettingsConfig}.
+ *
+ * WHY THE SHAPE IS RESTATED LOCALLY INSTEAD OF IMPORTED
+ * ----------------------------------------------------
+ * Exactly the DECISION F precedent, and for the identical reason. `GoogleFeedConfig` is declared
+ * here as a plain shape and the deferred handler declares the shape it needs independently; the two
+ * meet structurally at the composition root. Importing `StaticSettingResolverConfiguration` from
+ * src/adapters/** would point the arrow from the config layer INTO the layers that receive
+ * configuration — the one direction AAP §0.4.3.5 rules out. So this module imports nothing but its
+ * own error type, and structural typing does the rest: a member added to the adapter's interface and
+ * not to {@link SettingsConfig} fails to compile at the wiring site, which is the signal that keeps
+ * the two in step without an import.
+ *
+ * WHAT IS STILL NOT READ HERE, SO THE ABSENCES READ AS DECISIONS
+ * --------------------------------------------------------------
+ *   - No timeout, retry, chunk or queue figure for the importer's ONE-HOUR request budget
+ *     [model/service/ProductService.cfc:L65-L68]. That is mismatch M1, it is unrepresentable in a
+ *     single invocation, and AAP §0.4.1.9 gives it to src/handlers/productHandler.ts to FLAG. A
+ *     variable here would look like a resolution of a mismatch this port deliberately surfaces.
+ *   - No figure for the feed's 360-second render budget
+ *     [integrationServices/google/views/feed/product.cfm:L9] — mismatch M2, same reasoning.
+ *   - No numeric policy of any kind. Every number this module reads is a connection fact of
+ *     DECISION E; the three values read under this decision are strings the legacy computed, and no
+ *     layer below receives a bound, a ceiling or a budget from here.
+ *   - No default for anything. The TEN required variables are fatal when absent (DECISION B,
+ *     DECISION E, DECISION F) and every one of them is blank in slatwall-ts/.env.example; the THREE
+ *     optional setting inputs are absent-or-present and are never substituted when absent.
  * ============================================================================================ */
 
 /**
@@ -364,16 +450,79 @@ export interface GoogleFeedConfig {
    * replacement for the legacy `CGI.HTTP_HOST` reads at
    * integrationServices/google/views/feed/product.cfm:L14, :L15, :L22, :L23 and :L24.
    *
-   * Typed as a plain string HERE and validated ELSEWHERE, on purpose. This module checks presence
-   * and non-blankness; the authority-syntax rule that closes the injection and origin-rebasing
-   * routes lives once, in `validateFeedHostAuthority` in
-   * src/integrations/google/ProductFeedBuilder.ts. See DECISION F for why the rule is not copied
-   * into this file and why the arrow does not point upward from config into integrations.
+   * Typed as a plain string HERE and NOT validated anywhere, on purpose. This module checks presence
+   * and non-blankness only; the authority-syntax rule that used to run in the serializer is WITHDRAWN,
+   * because the legacy performs no check and refusing a configured host is an outcome change. The
+   * residual injection and origin-rebasing exposure is FLAGGED rather than closed (S8). See DECISION F
+   * for the full argument and for why the arrow does not point upward from config into integrations.
    *
-   * ⛔ NEVER a request header. The consumer's obligation, which no type can enforce, is stated as
-   * the PROVENANCE OBLIGATION in that same builder's DECISION G-1.
+   * IT IS CONFIGURATION RATHER THAN A REQUEST HEADER because a stateless invocation has no request
+   * scope — an execution-model adaptation (IR-10), not a control.
    */
   readonly host: string;
+}
+
+/*
+ * ⛔ THREE CONFIG SHAPES ONCE STOOD HERE — `ProductImportConfig`, `UrlTitleConfig` and
+ * `SkuCombinationConfig` — AND ALL THREE ARE REMOVED WITH THEIR LOADERS. Each mirrored a REQUIRED,
+ * no-default collaborator input below the config layer, and every one of those inputs has since been
+ * withdrawn on AAP authority: the URL-title attempt budget and the SKU combination budget as invented
+ * ceilings the legacy states nowhere (AAP §0.8.2 guideline 4, §0.7.3 standard 9, IR-12), and the
+ * importer's `ProductImportSourcePolicy` with the whole SEC-08 branded-source gate, because refusing a
+ * location the legacy would have fetched changes an outcome and D18 is the SOLE declared
+ * behaviour-preservation exception (AAP §0.6.7.7). See the loader note further down for each
+ * withdrawing file's own words, and DECISION G for the one collaborator that still reads from here.
+ */
+
+/**
+ * The three setting values whose legacy default is computed at run time — see DECISION G.
+ *
+ * Structurally the `StaticSettingResolverConfiguration` of
+ * src/adapters/settings/StaticSettingResolver.ts. Fifteen of the eighteen names that adapter resolves
+ * come from frozen literals and need nothing here; these three do not, because
+ * [model/service/SettingService.cfc:L164, :L222, :L223] COMPUTE them, two of them from services this
+ * slice excludes.
+ *
+ * ⭐ ALL THREE ARE OPTIONAL, AND THE OPTIONALITY IS THE CONTRACT RATHER THAN LENIENCY. Supplying a
+ * value makes the corresponding setting name resolvable; omitting it leaves that ONE name raising a
+ * classified configuration error while every other name continues to work. A deployment that reads
+ * only `globalDateFormat` must not be forced to invent currency and fulfillment lists it has no
+ * business knowing. Under `exactOptionalPropertyTypes` an omitted member is ABSENT rather than
+ * `undefined`, and the loader below preserves that distinction by never writing an absent key.
+ */
+export interface SettingsConfig {
+  /**
+   * The CFML application scope's `applicationRootMappingPath`, from which
+   * `globalAssetsImageFolderPath` is derived exactly as [model/service/SettingService.cfc:L164]
+   * derives it.
+   *
+   * ⚠️ THE PATH ONLY, WITHOUT the `/custom/assets/images` suffix. The suffix is the legacy's and the
+   * setting adapter appends it, so supplying a path that already includes it produces a doubled
+   * suffix. Stated here because this is the value an operator types.
+   */
+  readonly applicationRootMappingPath?: string;
+
+  /**
+   * The comma-delimited currency identifier list [model/service/SettingService.cfc:L222] computes as
+   * `getCurrencyService().getAllActiveCurrencyIDList()`.
+   *
+   * Carried as a delimited STRING rather than an array because the legacy consumer reads it with list
+   * functions — [model/entity/Sku.cfc:L373] and [:L375] — and the `Currency*` family is out of scope
+   * (AAP §0.2.2.1), so the deployment supplies the list that service would have returned.
+   */
+  readonly skuEligibleCurrencies?: string;
+
+  /**
+   * The comma-delimited fulfillment-method identifier list
+   * [model/service/SettingService.cfc:L223] computes as
+   * `getFulfillmentService().getAllActiveFulfillmentMethodIDList()`.
+   *
+   * A delimited string for the same reason as the currency list. Two independent facts make it
+   * unanswerable statically: the computation reaches the excluded `Fulfillment*` family, and the
+   * three seeded rows at [config/dbdata/SlatwallSetting.xml.cfm:L14-L16] are scoped by
+   * `productTypeID` while the port's resolution context carries an entity kind and identifier only.
+   */
+  readonly skuEligibleFulfillmentMethods?: string;
 }
 
 export interface AppConfig {
@@ -388,12 +537,16 @@ export interface AppConfig {
    * connection fact and nothing in the database section is a presentation fact.
    */
   readonly googleFeed: GoogleFeedConfig;
+
+  /** The three run-time-computed setting values — see {@link SettingsConfig} and DECISION G. */
+  readonly settings: SettingsConfig;
 }
 
 /* ==============================================================================================
  * VALIDATION HELPERS
  *
- * Three helpers, one shared shape, and three shared guarantees.
+ * SIX READERS — five that must produce a value and one that may return `undefined` — plus the
+ * loopback predicate one of them consults, one shared argument shape, and three shared guarantees.
  *
  * Guarantee 1 — no unsound narrowing. An environment read is typed `string | undefined`, and
  * `noUncheckedIndexedAccess` means that stays true however the read is written. Each helper
@@ -412,10 +565,14 @@ export interface AppConfig {
  * Trimming would be a silent transformation of operator input, and it would be outright wrong for
  * a password, where leading or trailing whitespace can be significant.
  *
- * "Required" throughout means PRESENT. Absence of any of the TEN variables is fatal, and no
+ * "Required" throughout means PRESENT. Absence of any of the TEN required variables is fatal, and no
  * default is ever substituted for any of them (DECISION B, DECISION E, DECISION F, standard S9).
- * Nine of the ten are connection facts and the tenth is the Google feed host (DECISION F); the
- * same three helpers serve both sections, and the feed host uses the non-blank helper.
+ * NINE are connection facts and ONE is the Google feed host (DECISION F). THREE FURTHER VARIABLES
+ * ARE OPTIONAL — the run-time-computed setting inputs of {@link SettingsConfig}, DECISION G — which
+ * brings the key set this module reads to THIRTEEN names in total. Optional means genuinely
+ * absent-or-present: an omitted one is never replaced by a value this module chose, and a
+ * present-but-blank one is still an error, since blank cannot be what an operator meant by supplying
+ * the name at all.
  * ============================================================================================ */
 
 /**
@@ -445,16 +602,37 @@ const LOWEST_ADDRESSABLE_TCP_PORT = 1;
 const HIGHEST_ADDRESSABLE_TCP_PORT = 65535;
 
 /**
- * Smallest value a pool bound or a timeout may take.
+ * Smallest value a pool bound or a connection timeout may take.
  *
  * Arithmetic rather than invented, which is what keeps it clear of standard S9: a pool that may
  * hold fewer than one connection can never connect, a queue that may hold fewer than one request
  * cannot queue, and a timeout shorter than one millisecond cannot elapse. Rejecting zero is the
  * substance of the bound, because zero is the driver's documented no-limit sentinel for the queue
  * (DECISION E). No corresponding ceiling exists here, deliberately — see DECISION E for why one
- * would be a capacity figure with no source.
+ * would be a capacity figure with no source. It is the floor for all three numbers this module
+ * reads and, since the withdrawal recorded immediately below, the ONLY floor.
  */
 const LOWEST_PERMITTED_RESOURCE_BOUND = 1;
+
+/*
+ * ⛔ A `LOWEST_PERMITTED_HOP_BOUND` OF ZERO ONCE STOOD HERE, AS THE ONE ASYMMETRY IN THE NUMERIC
+ * READERS, AND THE FLOOR PARAMETER THAT CARRIED IT IS GONE WITH IT. The zero floor existed solely so
+ * the withdrawn import policy's redirect count could accept "follow none"; with that shape removed
+ * — see DECISION G and the note above {@link SettingsConfig} — all three surviving numeric reads are
+ * resource bounds that must admit something. So {@link requireResourceBoundValue} applies
+ * {@link LOWEST_PERMITTED_RESOURCE_BOUND} itself rather than taking a floor argument that every
+ * caller would now pass the same value for: a parameter with one possible value documents a choice
+ * that no longer exists.
+ */
+
+/*
+ * ⛔ A `LIST_DELIMITER` COMMA ONCE STOOD HERE, AND SO DID THE `requireDelimitedListValue` READER
+ * FURTHER DOWN THAT WAS ITS ONLY USER. Both are removed, because the two allowlists they split were
+ * the withdrawn import policy's schemes and hosts (DECISION G). The two delimited setting values
+ * that remain are read WHOLE and never split here: their legacy consumers read them with CFML list
+ * functions [model/entity/Sku.cfc:L373, :L375], so splitting them at the boundary would hand the
+ * setting adapter a shape the legacy never produced.
+ */
 
 /**
  * Highest value an IPv4 dotted-quad octet may take, the maximum of its 8-bit unsigned field.
@@ -598,25 +776,28 @@ function requireTcpPortValue(variableName: string, rawValue: string | undefined)
 }
 
 /**
- * Reads a variable that must be present and must denote a resource bound of at least one.
+ * Reads a variable that must be present and must denote an integer resource bound.
  *
  * Applied to the pool's connection limit, its queue limit and the connection timeout — the three
- * numbers DECISION E requires the operator to state so that this port does not have to invent
- * them. The validation is deliberately asymmetric: a floor is enforced because a bound below one
- * is not a bound at all, and no ceiling is enforced because any ceiling would be a capacity figure
- * with no source (standard S9).
+ * numbers DECISION E requires the operator to state so that this port does not have to invent them,
+ * and the only three numbers this module reads at all. The validation is deliberately asymmetric: a
+ * floor is enforced because a bound below its floor is not a bound at all, and no ceiling is
+ * enforced because any ceiling would be a capacity figure with no source (standard S9).
  *
- * Zero is rejected by the floor, and that rejection is the point rather than a side effect: the
- * driver documents zero as the no-limit sentinel for its queue, so a deployment that set zero
- * would silently reinstate the unbounded queue these values exist to close.
+ * THE FLOOR IS {@link LOWEST_PERMITTED_RESOURCE_BOUND} AND IS APPLIED HERE RATHER THAN PASSED IN.
+ * It was a parameter while a second, zero floor existed for the withdrawn import policy's redirect
+ * count; with that shape gone (DECISION G) every caller would pass the same constant, so the reader
+ * names it directly. One numeric reader with one message is still the point — the same consolidation
+ * {@link requirePresentValue} records in its own body comment — and the constant is now part of the
+ * contract rather than an argument each call site restates.
  *
  * @param variableName name of the environment variable, used verbatim in the failure message
  * @param rawValue the value read from the environment, still possibly absent
- * @returns the bound as an integer of at least one
+ * @returns the bound as an integer of at least {@link LOWEST_PERMITTED_RESOURCE_BOUND}
  * @throws DomainError naming `variableName` when the variable is absent, blank, not a plain
- *   base-ten integer, not exactly representable, or below one
+ *   base-ten integer, not exactly representable, or below the floor
  */
-function requirePositiveIntegerValue(variableName: string, rawValue: string | undefined): number {
+function requireResourceBoundValue(variableName: string, rawValue: string | undefined): number {
   const value = requireNonBlankValue(variableName, rawValue).trim();
 
   if (!UNSIGNED_INTEGER_PATTERN.test(value)) {
@@ -635,15 +816,81 @@ function requirePositiveIntegerValue(variableName: string, rawValue: string | un
   // and silently acting on a different number than the operator wrote is worse than refusing.
   if (!Number.isSafeInteger(bound) || bound < LOWEST_PERMITTED_RESOURCE_BOUND) {
     throw new DomainError(
+      /* The sentence naming the driver's sentinel is kept, and kept SCOPED to the one variable it is
+       * about. It was an unqualified claim while this reader served only the three pool numbers, was
+       * qualified when the withdrawn DECISION G policy numbers briefly read through it — where "the
+       * driver reads it as no limit" would have been asserted about a redirect count and a byte cap
+       * the driver never sees — and stays qualified now that those callers are gone, because the
+       * connection limit and the timeout are not queue sentinels either. Same reasoning as the
+       * message generalisation recorded in the body of {@link requirePresentValue}. */
       `Environment variable ${variableName} must be an exactly representable integer of at ` +
-        `least ${LOWEST_PERMITTED_RESOURCE_BOUND}. Zero is rejected because the driver reads it ` +
-        'as "no limit", which is the unbounded behaviour this value exists to prevent.',
+        `least ${LOWEST_PERMITTED_RESOURCE_BOUND}. A bound below its floor admits nothing at all, ` +
+        'and for DB_QUEUE_LIMIT in particular the driver reads zero as "no limit", which is the ' +
+        'unbounded behaviour that value exists to prevent.',
       { context: { variable: variableName } },
     );
   }
 
   return bound;
 }
+
+/**
+ * Reads a variable that may legitimately be absent, and refuses it when present but blank.
+ *
+ * The only reader in this module that can return `undefined`, and it exists for the three
+ * run-time-computed setting inputs of {@link SettingsConfig} alone. Their optionality is a contract
+ * recorded at that interface: supplying one makes a single setting name resolvable and omitting one
+ * leaves that name — and only that name — unresolvable, so forcing every deployment to state all
+ * three would force it to invent currency and fulfillment lists it has no business knowing.
+ *
+ * ⛔ ABSENT AND BLANK ARE DIFFERENT, AND ONLY ABSENT IS PERMITTED. This is the mirror image of
+ * {@link requirePresentValue}, which permits blank and refuses absent, and the asymmetry is
+ * deliberate in both directions. There the empty string is a real legacy value
+ * [org/Hibachi/Hibachi.cfc:L12-L13]; here it is a deployment that typed the name and left it empty,
+ * which cannot be what was meant — a blank path resolves to the bare `/custom/assets/images` suffix
+ * and a blank identifier list is a list of nothing, and both would look like working configuration
+ * while behaving as if nothing had been supplied. Refusing is what makes "absent" mean absent.
+ *
+ * ⭐ NOTHING IS SUBSTITUTED WHEN THE VALUE IS ABSENT. The caller must OMIT the corresponding key
+ * rather than write `undefined` into it, because `exactOptionalPropertyTypes` makes those two states
+ * distinct and the consuming adapter tests for presence.
+ *
+ * @param variableName name of the environment variable, used verbatim in the failure message
+ * @param rawValue the value read from the environment, possibly absent
+ * @returns the value exactly as supplied and un-trimmed, or `undefined` when the variable is not set
+ * @throws DomainError naming `variableName` when the variable is set but carries no non-whitespace
+ *   content
+ */
+function optionalNonBlankValue(
+  variableName: string,
+  rawValue: string | undefined,
+): string | undefined {
+  if (typeof rawValue !== 'string') {
+    return undefined;
+  }
+
+  if (rawValue.trim().length === 0) {
+    throw new DomainError(
+      `Environment variable ${variableName} is set but blank. It is optional, so leave it unset ` +
+        'entirely rather than empty: an empty value is not the same as no value, and this service ' +
+        'substitutes nothing for either.',
+      { context: { variable: variableName } },
+    );
+  }
+
+  return rawValue;
+}
+
+/*
+ * ⛔ `requireDelimitedListValue` ONCE STOOD HERE — the reader that required a variable to be PRESENT,
+ * accepted a blank whole value as the empty list, refused a blank entry inside a non-empty one, and
+ * returned the entries frozen and verbatim. It is removed with its only two callers: the withdrawn
+ * import policy's scheme and host allowlists (DECISION G). Its asymmetry was specific to those two
+ * variables — presence required, blank permitted, because "no location at all" was one of the answers
+ * the operator was being asked for — so nothing that survives here wants it. See the note where
+ * `LIST_DELIMITER` stood for why the two delimited setting values that remain are read WHOLE rather
+ * than split, and DECISION G for the withdrawal itself.
+ */
 
 /**
  * Decides whether a configured host names the loopback interface.
@@ -733,7 +980,8 @@ function requireTlsModeValue(
  * Reads and validates the database section, then freezes it.
  *
  * The nine environment reads below are the complete set for the DATABASE section — the service as a
- * whole reads ten, the tenth being the Google feed host in `loadGoogleFeedConfig()` (DECISION F).
+ * whole reads THIRTEEN names: these nine, the Google feed host in `loadGoogleFeedConfig()`
+ * (DECISION F), and the three OPTIONAL run-time-computed setting inputs of DECISION G.
  * They are written as literal dotted accesses so that the key set is statically visible in one
  * search and so that no key is resolved through a computed string (standard S3). They are evaluated
  * in the order host,
@@ -756,12 +1004,12 @@ function loadDatabaseConfig(): DatabaseConfig {
     user: requirePresentValue('DB_USER', process.env.DB_USER),
     password: requirePresentValue('DB_PASSWORD', process.env.DB_PASSWORD),
     tlsMode: requireTlsModeValue('DB_TLS_MODE', process.env.DB_TLS_MODE, host),
-    connectionLimit: requirePositiveIntegerValue(
+    connectionLimit: requireResourceBoundValue(
       'DB_CONNECTION_LIMIT',
       process.env.DB_CONNECTION_LIMIT,
     ),
-    queueLimit: requirePositiveIntegerValue('DB_QUEUE_LIMIT', process.env.DB_QUEUE_LIMIT),
-    connectTimeoutMs: requirePositiveIntegerValue(
+    queueLimit: requireResourceBoundValue('DB_QUEUE_LIMIT', process.env.DB_QUEUE_LIMIT),
+    connectTimeoutMs: requireResourceBoundValue(
       'DB_CONNECT_TIMEOUT_MS',
       process.env.DB_CONNECT_TIMEOUT_MS,
     ),
@@ -775,13 +1023,71 @@ function loadDatabaseConfig(): DatabaseConfig {
  * an origin, so a blank one is a misconfiguration indistinguishable in effect from an absent one —
  * the same reasoning {@link requireNonBlankValue} applies to DB_HOST and DB_NAME.
  *
- * The authority-syntax rule deliberately does NOT run here. See DECISION F for the full reasoning
- * and `validateFeedHostAuthority` in src/integrations/google/ProductFeedBuilder.ts for the rule
- * itself.
+ * NO AUTHORITY-SYNTAX RULE RUNS HERE, AND NONE RUNS DOWNSTREAM EITHER. The rule that used to run in
+ * src/integrations/google/ProductFeedBuilder.ts is withdrawn; DECISION F carries the argument and the
+ * flagged residual exposure.
  */
 function loadGoogleFeedConfig(): GoogleFeedConfig {
   return Object.freeze({
     host: requireNonBlankValue('GOOGLE_FEED_HOST', process.env.GOOGLE_FEED_HOST),
+  });
+}
+
+/*
+ * ⛔ THREE LOADERS ONCE STOOD HERE — `loadProductImportConfig`, `loadUrlTitleConfig` and
+ * `loadSkuCombinationConfig` — AND ALL THREE ARE REMOVED. Each read a value that no collaborator asks
+ * for any more, and each of the three withdrawing files says in its own words that leaving the value
+ * here would RELOCATE an invented number rather than avoid it:
+ *
+ *   - `src/util/urlTitle.ts` on its removed `UrlTitleAttemptBudget`: "The legacy states no ceiling, so
+ *     every possible value of one is a fabricated number. Passing the fabrication to the caller as a
+ *     required argument relocated the invention; it did not avoid it."
+ *   - `src/services/SkuService.ts` on its removed `SkuCombinationBudget`: "Requiring the composition
+ *     root to supply the maximum RELOCATED the fabrication rather than avoiding it: the number still
+ *     had to be invented by somebody before the graph could be built at all."
+ *   - `src/ports/repositories/ProductRepository.ts` on its withdrawn SEC-08 gate: "the policy object
+ *     itself was five invented configuration values, which AAP §0.7.3 standard 9 and IR-12 forbid
+ *     outright."
+ *
+ * Keeping the loaders would also have made a deployment supply SEVEN environment variables — five
+ * import-policy values plus the two budgets — before this module would build at all, for no
+ * behavioural effect anywhere, because `loadConfig` is fail-fast by DECISION C. `loadSettingsConfig`
+ * below survives on its own merits: `../adapters/settings/StaticSettingResolver`'s
+ * `StaticSettingResolverConfiguration` is a live contract and its three names are the setting values
+ * whose LEGACY default is computed at run time, so a deployment-supplied value replaces a computation
+ * rather than inventing a ceiling.
+ */
+
+/**
+ * Reads the three optional setting inputs, then freezes them.
+ *
+ * ⭐ AN ABSENT VALUE OMITS ITS KEY RATHER THAN WRITING `undefined` INTO IT, and under
+ * `exactOptionalPropertyTypes` that is a real distinction rather than a stylistic one: the consuming
+ * adapter declares each member as `?: string`, so a key present and holding `undefined` is NOT
+ * assignable to it. The conditional spreads below are what keep the two states apart, and they are
+ * the reason this loader cannot be written as a flat object literal.
+ *
+ * Every read goes through {@link optionalNonBlankValue}, so a variable left empty rather than unset
+ * fails here instead of resolving to a value that behaves as though nothing had been supplied.
+ */
+function loadSettingsConfig(): SettingsConfig {
+  const applicationRootMappingPath = optionalNonBlankValue(
+    'SETTING_APPLICATION_ROOT_MAPPING_PATH',
+    process.env.SETTING_APPLICATION_ROOT_MAPPING_PATH,
+  );
+  const skuEligibleCurrencies = optionalNonBlankValue(
+    'SETTING_SKU_ELIGIBLE_CURRENCIES',
+    process.env.SETTING_SKU_ELIGIBLE_CURRENCIES,
+  );
+  const skuEligibleFulfillmentMethods = optionalNonBlankValue(
+    'SETTING_SKU_ELIGIBLE_FULFILLMENT_METHODS',
+    process.env.SETTING_SKU_ELIGIBLE_FULFILLMENT_METHODS,
+  );
+
+  return Object.freeze({
+    ...(applicationRootMappingPath === undefined ? {} : { applicationRootMappingPath }),
+    ...(skuEligibleCurrencies === undefined ? {} : { skuEligibleCurrencies }),
+    ...(skuEligibleFulfillmentMethods === undefined ? {} : { skuEligibleFulfillmentMethods }),
   });
 }
 
@@ -798,12 +1104,21 @@ function loadGoogleFeedConfig(): GoogleFeedConfig {
  * The database section is loaded first, so a deployment missing a connection fact reports that
  * before it reports a missing feed host. That ordering is arbitrary only in appearance: the
  * connection facts are required by every entry point, whereas the feed host is required by one, so
- * reporting the broader failure first is the more useful diagnostic.
+ * reporting the broader failure first is the more useful diagnostic. The DECISION G setting section
+ * is loaded last for the same reason, and it is the one section that cannot fail at all unless a name
+ * was typed and left empty — all three of its inputs are optional.
+ *
+ * ⛔ NO SECTION IS LAZY AND NONE IS SKIPPABLE. Loading only the sections a particular entry point
+ * needs would mean a Lambda that never renders the feed could ship with no feed host and a Lambda
+ * that never opens a pool could ship with no connection facts, each discovering it on first use
+ * rather than at load — the fail-fast contract DECISION C inherits from config/configORM.cfm:L4-L7
+ * applies to every value equally.
  */
 function loadConfig(): AppConfig {
   return Object.freeze({
     database: loadDatabaseConfig(),
     googleFeed: loadGoogleFeedConfig(),
+    settings: loadSettingsConfig(),
   });
 }
 
@@ -812,9 +1127,10 @@ function loadConfig(): AppConfig {
  *
  * Built exactly once, when this module is first loaded, and never rebuilt: there is no reload,
  * override, set or reset entry point, by design (see WHY THERE IS NO CROSS-INVOCATION CACHE in
- * the file header). Loading this module with any of the ten variables missing or malformed
- * throws a {@link DomainError} naming the offending variable — the fail-fast contract inherited
- * from config/configORM.cfm:L4-L7 and set out in DECISION C.
+ * the file header). Loading this module with any of the TEN required variables missing or
+ * malformed — or with any of the THREE optional ones present but blank — throws a
+ * {@link DomainError} naming the offending variable, the fail-fast contract inherited from
+ * config/configORM.cfm:L4-L7 and set out in DECISION C.
  *
  * Consumed by constructor injection only. src/config/database.ts reads it to create the
  * module-scope pool, src/config/container.ts wires the resulting collaborators, and the deferred
@@ -822,14 +1138,18 @@ function loadConfig(): AppConfig {
  * (DECISION F); nothing below the config layer imports this module, and nothing below it reads the
  * environment (AAP §0.4.3.5).
  *
+ * ⭐ THE DECISION G SECTION IS WHAT THE COMPOSITION ROOT BINDS INSTEAD OF A LITERAL. It is
+ * structurally the shape its consumer declares — `StaticSettingResolverConfiguration` — so wiring is
+ * a pass-through with no adaptation, no cast and no value chosen in the container.
+ *
  * @example
  * ```ts
  * import { config } from '../config/env';
  *
  * const { host, port, database, user, password } = config.database;
  *
- * // DECISION F — validated and branded by the builder before it reaches a render context.
- * const feedHost = validateFeedHostAuthority(config.googleFeed.host);
+ * // DECISION F — handed to the feed render context unmodified and unchecked.
+ * const feedHost = config.googleFeed.host;
  * ```
  */
 export const config: AppConfig = loadConfig();

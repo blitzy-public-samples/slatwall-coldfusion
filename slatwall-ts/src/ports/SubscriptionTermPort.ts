@@ -308,4 +308,56 @@ export interface SubscriptionTermPort {
   getSubscriptionBenefit(
     subscriptionBenefitID: string,
   ): Promise<SubscriptionBenefitReference | null>;
+
+  /**
+   * Resolves MANY subscription terms in one boundary call, keyed by identifier.
+   *
+   * ⭐ WHY THIS IS THE SAME QUESTION, NOT A NEW ONE. `model/service/SkuService.cfc:L157-L158` opens a
+   * loop over the `subscriptionTerms` list and calls the single-identifier member once PER ELEMENT, so
+   * a product created with `k` terms crosses this boundary `k` times to ask `k` variations of one
+   * question. This member asks it once. {@link SubscriptionTermPort.getSubscriptionTerm} keeps its
+   * contract unchanged for `model/service/ProductService.cfc:L175`, which genuinely resolves one
+   * identifier taken from a process object.
+   *
+   * ⚠️ IT MUST NOT REJECT FOR A MISSING IDENTIFIER, AND THAT IS A CORRECTNESS REQUIREMENT RATHER THAN A
+   * CONVENIENCE. An identifier that matches no row is simply ABSENT from the returned map — exactly as
+   * the single-identifier member resolves `null` — because the caller decides what absence means and
+   * WHEN. In the legacy loop the term is resolved AFTER that element's price is read, so an element
+   * with both a bad price and an unknown term fails on the price; a batch that threw on the unknown
+   * term would surface the wrong error, from the wrong element, before the loop had begun. Returning a
+   * partial map is what keeps every failure the caller's, in the caller's order.
+   *
+   * ⚠️ AND IT MUST NOT CACHE. The map is the answer to one call and is owned by the caller (M7); an
+   * implementation that retained it across invocations would leak one request's resolutions into
+   * another on a warm container.
+   *
+   * @param subscriptionTermIDs - The identifiers to resolve. Duplicates are permitted and resolve once.
+   * @returns A map holding an entry ONLY for identifiers that matched a row.
+   */
+  getSubscriptionTermsByIDs(
+    subscriptionTermIDs: readonly string[],
+  ): Promise<Map<string, SubscriptionTermReference>>;
+
+  /**
+   * Resolves MANY subscription benefits in one boundary call, keyed by identifier.
+   *
+   * The batch counterpart of {@link SubscriptionTermPort.getSubscriptionBenefit}, and one member serves
+   * both benefit collections for the same reason the single-identifier member does: the legacy calls one
+   * collaborator member from both `model/service/SkuService.cfc:L161` and `:L164`, and which collection
+   * receives a resolved value stays the caller's decision.
+   *
+   * ⚠️ THE TWO COLLECTIONS ARE RESOLVED SEPARATELY EVEN THOUGH ONE MEMBER SERVES BOTH. They are distinct
+   * lists that may name the same benefit, and the caller keeps them apart because
+   * `model/entity/Sku.cfc:L78` and `:L79` are different relationships. Merging them into a single batch
+   * would be sound for the READ but would blur which collection asked, so the caller does not.
+   *
+   * Absence, non-rejection and non-caching are governed exactly as for
+   * {@link SubscriptionTermPort.getSubscriptionTermsByIDs}.
+   *
+   * @param subscriptionBenefitIDs - The identifiers to resolve. Duplicates are permitted.
+   * @returns A map holding an entry ONLY for identifiers that matched a row.
+   */
+  getSubscriptionBenefitsByIDs(
+    subscriptionBenefitIDs: readonly string[],
+  ): Promise<Map<string, SubscriptionBenefitReference>>;
 }

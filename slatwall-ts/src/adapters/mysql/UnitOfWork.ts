@@ -71,10 +71,13 @@
  *
  *   1. A boundary is ONE ACQUIRED CONNECTION, and every read and every write inside it runs on that
  *      connection. THE DEFENCE IS STRUCTURAL, NOT DISCIPLINARY: {@link TransactionScope} carries a
- *      connection-bound {@link SqlExecutor} and nothing else, the pooled connection itself is never
- *      handed out, and no member of this class returns one. A read issued against the pool from
- *      inside a boundary would compile, type-check, pass every test that does not specifically probe
- *      uncommitted-sibling visibility, and silently change which SKUs the combination engine accepts.
+ *      connection-bound {@link ReadWriteSqlExecutor} and nothing else, the pooled connection itself is
+ *      never handed out, and no member of this class returns one. THE READ AND THE WRITE ARE BOTH ON
+ *      THAT ONE EXECUTOR, deliberately, because an executor that could not write would push every
+ *      insert onto some other connection and put it outside the very transaction the read has to see
+ *      it in. A read issued against the pool from inside a boundary would compile, type-check, pass
+ *      every test that does not specifically probe uncommitted-sibling visibility, and silently change
+ *      which SKUs the combination engine accepts.
  *   2. WRITE ORDER IS BEHAVIOUR. The odometer enumeration order of the combination engine determines
  *      both the generated SKU set and, through this loop, the order uniqueness validation observes
  *      its siblings in. Nothing here reorders, coalesces, batches or defers a write; there is no
@@ -82,8 +85,8 @@
  *   3. THE BOUNDARY IS SUBSTITUTABLE. AAP 0.4.1.12 requires slatwall-ts/test/services/SkuService.test.ts
  *      to carry a combination-batch test that would fail under either naive ordering, and AAP 0.6.5.2
  *      records that every such test is NET-NEW with no mocking library available. Both are only
- *      possible because a caller depends on {@link SqlExecutor}, which a plain object literal can
- *      satisfy, so the call sequence is inspectable without a database.
+ *      possible because a caller depends on {@link ReadWriteSqlExecutor}, a two-member contract a plain
+ *      object literal can satisfy, so the call sequence is inspectable without a database.
  *
  * THE ASYMMETRY IS DELIBERATE AND MUST NOT BE TIDIED. Its sibling rule at
  * model/entity/Sku.cfc:L772-L784 is PURE: it walks the SKU's options in memory and returns false at
@@ -201,29 +204,40 @@
  * paragraph exists so a later reader sees a decision rather than an oversight.
  *
  * ------------------------------------------------------------------------------------------------
- * THE REGISTERS ARE CLOSED
+ * THIS FILE MINTS NO NEW IDENTIFIER, AND MAKES NO GLOBAL CLOSURE CLAIM
  * ------------------------------------------------------------------------------------------------
- * This file mints no new defect or mismatch identifier. It owns M3, M5 and M6, is bound by M7, cites
+ * the register is stated canonically, and only once, in the header of
+ * `src/ports/repositories/SkuRepository.ts` (AAP 0.6.7's frozen source range D1-D21, plus the
+ * source extension D22 and the three contract corrections D23, D24 and D25, with no D26 or beyond;
+ * and AAP 0.6.6's M1-M8 plus M9, with no M10 or beyond). This file mints no new defect or mismatch
+ * identifier. It owns M3, M5 and M6, is bound by M7, cites
  * D22, M1, M2 and M8, and records every other finding by `path:Lnnn` locator alone. D18 — the single
  * declared parameterization-hardening exception — belongs exclusively to
  * src/adapters/mysql/MySqlProductRepository.ts and is not claimed here.
  * ============================================================================================== */
 
 import { DataIntegrityError, DomainError } from '../../errors/DomainError';
-import { assertColumnName, assertTableName } from './QueryRunner';
+import { assertColumnName, assertTableName, readAffectedRows } from './QueryRunner';
 import { toRows } from './rowMappers';
 
-import type { SqlExecutor } from './QueryRunner';
+import type {
+  BoundParameterValue,
+  SqlExecutor,
+  StatementPool,
+  StatementRunner,
+  TransactionalStatementRunner,
+} from './QueryRunner';
 import type { MySqlRow } from './rowMappers';
-import type { Connection, ExecuteValues, Pool, PoolConnection } from 'mysql2/promise';
 
 /* ================================================================================================
  * TODO(parity) D22 — org/Hibachi/HibachiEntity.cfc:L642 AND :L644 HAND THIS FILE A TABLE NAME IN THE
  * PHYSICAL VOCABULARY, AND IT IS STILL VALIDATED RATHER THAN TRUSTED
  * ================================================================================================
  * The legacy tree speaks two table vocabularies at once and both are correct; the full account, the
- * six entity rows and the five framework prefixing sites are documented in ./QueryRunner, which owns
- * D22. What matters at THIS file's one statement-composing member is which vocabulary arrives:
+ * six entity rows and the five framework prefixing sites are documented in ./QueryRunner, which
+ * holds the name-mapping table. D22's register home is ../../ports/repositories/SkuRepository, and
+ * neither that adapter nor this one owns the entry. What matters at THIS file's one
+ * statement-composing member is which vocabulary arrives:
  *
  *   org/Hibachi/HibachiEntity.cfc:L642 and :L644 pass `getMetaData(this).table` into the sort-order
  *   helper — the PHYSICAL name, `SwOption` or `SwOptionGroup` for the two in-scope entities.
@@ -284,9 +298,7 @@ const NO_ACCUMULATED_ERRORS = (): boolean => false;
  * @param candidate - Any value a caller placed in a parameter list.
  * @returns `true` when the value can be bound to a single placeholder.
  */
-function isBindableValue(
-  candidate: unknown,
-): candidate is string | number | bigint | boolean | Date | null {
+function isBindableValue(candidate: unknown): candidate is BoundParameterValue {
   return (
     candidate === null ||
     typeof candidate === 'string' ||
@@ -316,8 +328,8 @@ function isBindableValue(
  *   the offending value's runtime type travel on `context`; THE VALUE ITSELF DELIBERATELY DOES NOT,
  *   because a bound parameter can hold data that has no business in an error object.
  */
-function toBoundParameters(params: readonly unknown[]): ExecuteValues[] {
-  const bound: ExecuteValues[] = [];
+function toBoundParameters(params: readonly unknown[]): BoundParameterValue[] {
+  const bound: BoundParameterValue[] = [];
 
   for (let index = 0; index < params.length; index += 1) {
     const candidate = params[index];
@@ -342,50 +354,159 @@ function toBoundParameters(params: readonly unknown[]): ExecuteValues[] {
   return bound;
 }
 
+/*
+ * ⛔ A THIRD DECLARATION OF THIS SHAPE STOOD HERE UNDER A DIFFERENT NAME, AND IT IS REMOVED.
+ * `export interface ScopedSqlExecutor extends SqlExecutor { executeMutation(...) }` occupied this
+ * position — structurally identical to {@link TransactionalSqlExecutor} below, member for member.
+ * Being differently NAMED, it did not merge with its twin the way the two same-named copies recorded
+ * on that interface did, so it simply sat here unreferenced: `tsc` cannot report an exported type as
+ * unused and neither can the linter, so nothing flagged it. Every consumer in this subtree names
+ * `TransactionalSqlExecutor` — this file's `createExecutor`, `TransactionScope.executor` and
+ * `runWithoutTransaction`, then `./MySqlProductTypeRepository` and the test double — and that is
+ * therefore the surviving name. (No count is given for those references deliberately: a count in a
+ * comment is a fact that drifts the next time one is added, and `grep` answers it exactly.)
+ * The two arguments the removed declaration carried alone are folded into its doc rather than dropped
+ * with it: why the writing member EXTENDS the read-only contract instead of replacing it, and what
+ * the affected-row count is for.
+ */
+
 /**
  * Builds the only execution surface this file ever hands out.
  *
  * THIS FUNCTION IS THE M6 DEFENCE, EXPRESSED STRUCTURALLY. The driver object it closes over is either
  * a pooled connection with a transaction open on it or the pool itself, and in neither case does it
- * escape: the returned value exposes one member, `execute`, and carries no reference a caller can
+ * escape: the returned value exposes the two statement members and carries no reference a caller can
  * reach the driver through. A repository handed this object cannot begin, commit or roll back
  * anything, cannot release the connection under the boundary that owns it, and — crucially — cannot
  * route a read back through the pool and out of the transaction it is supposed to be inside.
  *
- * PREPARED EXECUTION ONLY. The driver's other execution member performs client-side text
- * substitution and is never reached from here — not as a fallback, not behind a flag and not for a
- * statement that happens to bind nothing (AAP 0.7.3 S2). Transaction control is likewise issued
- * through the driver's own transaction members and never as hand-built statement text.
+ * ⭐ IT HANDS OUT BOTH A READ AND A WRITE MEMBER, ON ONE CONNECTION, AND THAT IS A REQUIREMENT RATHER
+ * THAN A CONVENIENCE. M6 is the obligation that "each SKU's insert [is] visible to the next SKU's
+ * uniqueness read within the same transaction", so the insert and the read must BOTH be issuable
+ * through this object; an executor that could only read would make the guarantee unreachable, because
+ * the write would have to be issued somewhere else — which means on another connection, outside this
+ * transaction, exactly the silent divergence M6 exists to prevent. The same holds for the importer:
+ * `model/dao/ProductDAO.cfc:L177` opens a transaction per row and every statement inside it writes.
  *
- * The parameter is typed as the driver's base connection type because both a pool and a pooled
- * connection are one, and because a union of the two would leave the overloaded `execute` member
- * uncallable. Nothing in the body depends on which arrived: that is precisely the property that lets
- * the same repository code run inside a boundary and outside one.
+ * The two members are the ONE shared pair {@link ReadWriteSqlExecutor} publishes, so this object is
+ * structurally the executor the three writing adapters in this folder each declare as their
+ * dependency, and a composition root injects THIS and nothing else for the statements inside a
+ * boundary.
+ *
+ *   model/dao/ProductDAO.cfc:L177   `transaction{` opens once PER ROW and the body INSERTs and UPDATEs
+ *                                   (M3). A per-row boundary whose scope cannot write cannot import.
+ *   AAP 0.6.2 / M6                  each SKU's INSERT must be visible to the NEXT SKU's uniqueness
+ *                                   read inside the same transaction. The write is half of the cycle;
+ *                                   without it there is nothing for the read to observe.
+ *   org/Hibachi/HibachiDAO.cfc:L149 the sort-order maximum is read so a row can be written with the
+ *                                   next value, in the same unit of work.
+ *
+ * Concretely, ./MySqlProductRepository declares `ProductImportTransactionScope` requiring an executor
+ * with both members, and a read-only scope was not assignable to it — so nothing could legally consume
+ * this class at all. The two ways to close that gap were to widen here or to assert at the consumer;
+ * asserting would have meant claiming a capability the object did not have, and the first write inside
+ * a boundary would have failed at run time on a member that does not exist. Widening is the honest fix,
+ * and the containment that mattered is untouched: transaction CONTROL is still absent from this
+ * surface, so a repository still cannot commit, roll back, release, or escape to the pool. What it can
+ * now do is the work — under a boundary this file opens and closes.
+ *
+ * PREPARED EXECUTION ONLY. Both members describe the statement through the injected binder and then
+ * execute the description, so the driver's text-substituting member is unreachable from here — not as a
+ * fallback, not behind a flag and not for a statement that happens to bind nothing (AAP 0.7.3 S2).
+ * Transaction control is issued through the connection's own transaction members and never as
+ * hand-built statement text.
+ *
+ * WHY THE DRIVER AND THE BINDER ARRIVE AS TWO SEPARATE ARGUMENTS. The driver parameter is the narrowest
+ * shape that does the job — just the `execute` member — which both a {@link TransactionalConnection}
+ * and a {@link DatabasePool} satisfy, so the same body serves the transacted and untransacted paths and
+ * nothing in it depends on which arrived. Binding, by contrast, is a pure function that touches no
+ * connection, and only the pool publishes it; passing it separately keeps it off the connection
+ * interface, where a sixth member would have implied a per-connection capability that it is not.
  *
  * The result is frozen so a consumer cannot substitute its own execution behaviour after receiving
  * it, and it is created per boundary rather than cached, so nothing outlives the transaction it
  * belongs to (M7).
  *
+ * ⭐ IT EXPOSES TWO MEMBERS, NOT ONE, AND THE SECOND IS WHAT MAKES A BOUNDARY USABLE AT ALL. An earlier
+ * revision returned a read-only `SqlExecutor`. That made every transaction structurally incapable of
+ * WRITING through the connection it had just begun a transaction on, which is a contradiction in terms:
+ * `run` existed to settle writes and handed out an object that could not perform one. The consequence
+ * was concrete and was reported as review finding 2 — rollback-on-errors and M6 read-back visibility
+ * were unreachable no matter how a caller was wired — and as finding 8, because
+ * `MySqlProductRepository`'s `ProductImportTransactionScope` requires a writing member and this class
+ * could not satisfy it. Both members bind to the SAME driver object, so a read inside a boundary
+ * observes that boundary's own writes, which is the whole of M6.
+ *
+ * WHY A WRITE CANNOT BE EXPRESSED THROUGH THE READ MEMBER. `execute` normalises the driver's answer
+ * through `rowMappers.ts` `toRows`, which RAISES when the driver returns a write acknowledgement rather
+ * than a row list. The two answers are different shapes, so they need different readers; the write
+ * reader is `readAffectedRows`, imported from `./QueryRunner` rather than copied, so the driver's
+ * acknowledgement shape is described in exactly one place.
+ *
  * @param driver - The pooled connection the transaction was begun on, or the pool for the untransacted
  *   path.
+ * @param bind - The pool's statement binder, which validates that the statement writes exactly one
+ *   placeholder per bound value before anything reaches the wire.
  * @returns An executor bound to that driver object, and nothing else.
  */
-function createExecutor(driver: Connection): SqlExecutor {
+function createExecutor(driver: StatementRunner): TransactionalSqlExecutor {
+  /*
+   * ONE PATH TO THE DRIVER, so the guard and the binding cannot diverge between the two members. The
+   * blank-statement precondition itself lives in `requireStatementText` below, shared with nothing else
+   * in this module: two copies of one guard are two places for it to drift.
+   */
+  const runStatement = async (sql: string, params: readonly unknown[]): Promise<unknown> => {
+    requireStatementText(sql, params.length);
+
+    const [driverResult] = await driver.execute(sql, toBoundParameters(params));
+
+    return driverResult;
+  };
+
   return Object.freeze({
-    execute: async (sql: string, params: readonly unknown[]): Promise<MySqlRow[]> => {
-      if (sql.trim().length === 0) {
-        throw new DomainError(
-          'A blank statement reached a transaction-scoped execution boundary, so there was nothing ' +
-            'to prepare.',
+    execute: async (sql: string, params: readonly unknown[]): Promise<MySqlRow[]> =>
+      toRows(await runStatement(sql, params)),
+
+    executeMutation: async (sql: string, params: readonly unknown[]): Promise<number> => {
+      const affectedRows = readAffectedRows(await runStatement(sql, params));
+
+      /*
+       * Refused rather than reported as zero. A read statement routed into this member returns a row
+       * list, and a row list is an object, so degrading to zero here would report "affected nothing"
+       * for a statement that never wrote anything — and `model/dao/ProductDAO.cfc:L247` BRANCHES on
+       * this count, so a manufactured zero would silently take the wrong branch.
+       */
+      if (affectedRows === undefined) {
+        throw new DataIntegrityError(
+          'A writing statement inside a transaction boundary did not produce a write ' +
+            'acknowledgement, so the number of rows it affected could not be read.',
           { context: { parameterCount: params.length } },
         );
       }
 
-      const [driverResult] = await driver.execute(sql, toBoundParameters(params));
-
-      return toRows(driverResult);
+      return affectedRows;
     },
   });
+}
+
+/**
+ * Refuses a blank statement, for both members of the executor above.
+ *
+ * Factored out rather than written twice: the two members share this precondition exactly, and two
+ * copies of one guard are two places for it to drift.
+ *
+ * @param sql - The statement text as supplied.
+ * @param parameterCount - How many values the caller intended to bind, for the diagnostic record.
+ * @throws {DomainError} When the statement text is blank.
+ */
+function requireStatementText(sql: string, parameterCount: number): void {
+  if (sql.trim().length === 0) {
+    throw new DomainError(
+      'A blank statement reached a transaction-scoped execution boundary, so there was nothing ' +
+        'to prepare.',
+      { context: { parameterCount } },
+    );
+  }
 }
 
 /**
@@ -452,6 +573,149 @@ function readTopSortOrder(row: MySqlRow): number {
  */
 type RollbackCause = 'accumulatedErrors' | 'workFailure';
 
+/* ==========================================================================================
+ * WHAT MAY BE SAID ABOUT AN ABANDONED FAILURE — AN ALLOWLIST, NOT THE VALUE ITSELF
+ * ==========================================================================================
+ *
+ * TRANSLATION DECISION (AAP 0.8.2 Guideline 6). ⛔ THIS REVERSES AN EARLIER DECISION IN THIS FILE, and
+ * the reversal is recorded rather than quietly applied.
+ *
+ * WHAT THE EARLIER RULE WAS. {@link rollBack} attached the ENTIRE abandoned failure object to the
+ * raised error's `context`, so that a failed roll-back could not swallow the reason the work stopped.
+ *
+ * WHY IT WAS WRONG. `context` is a LOGGABLE bag. Anything placed in it is rendered by whatever writes
+ * the error out, so embedding a raw thrown value there re-exports that value's `message`, its `stack`
+ * (absolute file paths and the internal call shape), its own nested `cause`, and its own `context` —
+ * which across this port legitimately holds statement text, schema identifiers and the exact stored
+ * value a row mapper refused. That is CWE-532, and because a message frequently contains caller text,
+ * an embedded CR or LF also forges log lines (CWE-117). The intent was diagnosability; the effect was
+ * a second, unbounded disclosure channel opened at the worst possible moment.
+ *
+ * THE RULE NOW IN FORCE. Only the abandoned failure's CLASS NAME travels, neutralized. A class name is
+ * declared by this port or by the driver, never composed from caller input, and it is exactly the fact
+ * an operator needs to tell "the work threw a DataIntegrityError" from "the work threw a driver
+ * connection error" while the roll-back was failing. Nothing else about it is recorded here.
+ *
+ * ⭐ AND THE REASON THE WORK STOPPED IS STILL NOT SWALLOWED. That guarantee never depended on the
+ * `context` bag: {@link runWorkInside} re-throws the work's own failure unchanged on every path where the
+ * roll-back SUCCEEDS, which is the overwhelmingly common case. The bag only ever mattered for the
+ * narrow case where the roll-back ITSELF failed, and for that case the class name plus the
+ * roll-back's own failure as `cause` says what an operator can act on.
+ *
+ * ⛔ WHY THIS IS DUPLICATED RATHER THAN SHARED WITH `src/handlers/httpResponse.ts`, WHICH SOLVES THE
+ * SAME PROBLEM AT ITS OWN SINK. An adapter may not import from the handler layer — AAP 0.7.3 S4 keeps
+ * the hexagonal direction one-way, and a data-access module that reached into an AWS-facing boundary
+ * for a string helper would invert it. Extracting a shared utility instead would mean creating a file
+ * the AAP's target inventory does not list (AAP 0.4.1), so the honest choice is a local, deliberately
+ * tiny implementation with the duplication stated at both sites rather than hidden.
+ * ========================================================================================== */
+
+/** The upper bound on the length of the one diagnostic string this module composes. A redaction
+ * control, not a capacity figure (AAP 0.7.3 S9): it exists so a hostile or corrupt class name cannot
+ * make a diagnostic record unbounded. */
+const DIAGNOSTIC_TEXT_LIMIT = 200;
+
+/** Replaces a character a diagnostic record must not carry. Inert in every log viewer. */
+const DIAGNOSTIC_REDACTED_CHARACTER = '.';
+
+/** Appended when {@link DIAGNOSTIC_TEXT_LIMIT} cut a value short, so truncation is never silent. */
+const DIAGNOSTIC_TRUNCATION_MARKER = '[truncated]';
+
+/** Stands in for a class name when the abandoned value is not an `Error` and therefore has none. */
+const UNKNOWN_FAILURE_CLASS = 'unknown';
+
+/** The highest C0 control code point. Everything at or below it is neutralized. */
+const LAST_C0_CONTROL_CODE_POINT = 0x1f;
+
+/** The delete character, and the first of the C1 range that follows it. */
+const FIRST_C1_CONTROL_CODE_POINT = 0x7f;
+
+/** The last C1 control code point. */
+const LAST_C1_CONTROL_CODE_POINT = 0x9f;
+
+/**
+ * Reduces an abandoned failure to the single fact it is safe to record: its neutralized class name.
+ *
+ * Every C0 code point — CR, LF and TAB included — the delete character and every C1 code point is
+ * replaced, so the value cannot forge a line break or emit a terminal escape sequence wherever the
+ * diagnostic is eventually rendered (CWE-117). Iteration is by code point, so an astral character is
+ * copied whole rather than split into lone surrogates by the length bound.
+ *
+ * @param failure - The value that abandoned the work, of any shape.
+ * @returns Its class name, neutralized and bounded, or {@link UNKNOWN_FAILURE_CLASS}.
+ */
+function describeAbandonedFailure(failure: unknown): string {
+  const declared = failure instanceof Error ? failure.constructor.name : '';
+  const source = declared.length > 0 ? declared : UNKNOWN_FAILURE_CLASS;
+
+  let sanitized = '';
+  let retained = 0;
+
+  for (const character of source) {
+    if (retained >= DIAGNOSTIC_TEXT_LIMIT) {
+      return sanitized + DIAGNOSTIC_TRUNCATION_MARKER;
+    }
+
+    const codePoint = character.codePointAt(0) ?? 0;
+    const isControl =
+      codePoint <= LAST_C0_CONTROL_CODE_POINT ||
+      (codePoint >= FIRST_C1_CONTROL_CODE_POINT && codePoint <= LAST_C1_CONTROL_CODE_POINT);
+
+    sanitized += isControl ? DIAGNOSTIC_REDACTED_CHARACTER : character;
+    retained += 1;
+  }
+
+  return sanitized;
+}
+
+/**
+ * Whether a checked-out connection is still fit to hand back to the pool.
+ *
+ * Module-private, mutable by design, and created per checkout — never per class, so nothing here is
+ * the accumulating state M7 rules out. It exists because the answer is decided in one place (a
+ * settlement either succeeded or it did not) and acted on in another (the `finally` that disposes of
+ * the connection), and threading a boolean through the return type of every settle path would make
+ * the failure paths, which cannot return anything, unable to report it.
+ *
+ * It starts `true`: a connection the pool has just handed over has had nothing done to it.
+ */
+interface ConnectionState {
+  knownClean: boolean;
+}
+
+/**
+ * Disposes of a checked-out connection according to what is known about its transaction state.
+ *
+ * THIS IS THE WHOLE OF THE FIX FOR A REAL DEFECT, AND IT IS NOT INVENTED RESILIENCE. Returning a
+ * connection whose commit or roll-back itself failed puts a connection of UNKNOWN transaction state
+ * back into a warm pool, where the next invocation checks it out and begins its own work on top of
+ * whatever was left open. On a warm container that is precisely the cross-invocation bleed M7 exists
+ * to prevent, and it is silent: the next caller sees no error, just a transaction that was already
+ * open or rows that were already there.
+ *
+ * A connection is therefore released ONLY when its state is known — as handed over, after a
+ * successful commit, or after a successful roll-back. On every other path it is destroyed, which
+ * takes it permanently out of service and lets the pool open a fresh one. Destroying costs one
+ * reconnection; releasing costs correctness.
+ *
+ * NOTHING IS SWALLOWED HERE AND NOTHING IS RAISED HERE. This function runs from a `finally`, so
+ * raising would replace the failure the caller is already propagating — the settlement failure or the
+ * work's own failure — with a disposal failure, and the original reason would be lost. The driver's
+ * disposal members do not reject; the decision is expressed in WHICH one is called.
+ *
+ * @param connection - The connection to dispose of.
+ * @param state - What is known about its transaction state.
+ */
+function returnConnection(connection: TransactionalStatementRunner, state: ConnectionState): void {
+  if (state.knownClean) {
+    connection.release();
+
+    return;
+  }
+
+  connection.destroy();
+}
+
 /**
  * What a completed unit of work produced, together with how it must be settled.
  *
@@ -484,20 +748,30 @@ interface CompletedWork<T> {
  * observably equivalent ONLY because the legacy session was discarded at request end; on a warm
  * container, doing nothing would not be equivalent at all.
  *
+ * A SUCCESSFUL ROLL-BACK RESTORES THE CONNECTION'S KNOWN-CLEAN STANDING, and a failed one withdraws
+ * it. That is recorded on the shared state object rather than returned, because the failure path
+ * throws and so cannot return anything, and it is the disposal decision in {@link returnConnection}
+ * that needs the answer.
+ *
  * @param connection - The connection the transaction was begun on.
  * @param cause - Which path reached the roll-back, for the diagnostic record only.
- * @param abandonedFailure - The failure that abandoned the work, when there was one. It travels on the
- *   error's `context` so that a failed roll-back cannot swallow the reason the work stopped.
+ * @param abandonedFailure - The failure that abandoned the work, when there was one. Only its
+ *   neutralized CLASS NAME reaches the error's `context`; the value itself is never embedded there.
+ *   See {@link describeAbandonedFailure}.
  * @throws {DomainError} When the roll-back itself fails. The roll-back failure becomes the error's
- *   `cause` and the abandoned failure travels on `context`, so neither is lost.
+ *   `cause` and the abandoned failure's class travels on `context`, so an operator can tell what kind
+ *   of failure was in flight without the record carrying that failure's message, stack or context.
  */
 async function rollBack(
-  connection: PoolConnection,
+  connection: TransactionalStatementRunner,
   cause: RollbackCause,
+  state: ConnectionState,
   abandonedFailure?: unknown,
 ): Promise<void> {
   try {
     await connection.rollback();
+
+    state.knownClean = true;
   } catch (rollbackFailure) {
     throw new DomainError(
       'The transaction could not be rolled back after the work inside it was abandoned, so nothing ' +
@@ -505,14 +779,22 @@ async function rollBack(
       {
         cause: rollbackFailure,
         /*
-         * The abandoned failure is attached only when there was one, rather than assigned as
+         * ⛔ THE ABANDONED FAILURE IS SUMMARISED, NEVER EMBEDDED. Only its neutralized class name
+         * travels — see the section note on {@link describeAbandonedFailure} for why attaching the
+         * object itself was a disclosure (CWE-532) and log-injection (CWE-117) channel, and for why
+         * the reason the work stopped is still not swallowed.
+         *
+         * The summary is attached only when there WAS an abandoned failure, rather than assigned as
          * `undefined`, because `exactOptionalPropertyTypes` makes "absent" and "present and
          * undefined" different things and the honest statement here is "absent".
          */
         context:
           abandonedFailure === undefined
             ? { rolledBackBecause: cause }
-            : { rolledBackBecause: cause, abandonedFailure },
+            : {
+                rolledBackBecause: cause,
+                abandonedFailureClass: describeAbandonedFailure(abandonedFailure),
+              },
       },
     );
   }
@@ -533,25 +815,85 @@ async function rollBack(
  * @param connection - The connection the transaction was begun on.
  * @param work - The caller's unit of work. It receives the scope and nothing else.
  * @param hasErrors - The M5 gate: the caller's own error-state predicate.
+ * @param state - The connection's disposition record, so a failed roll-back on this path withdraws
+ *   the connection's known-clean standing rather than letting it be recycled.
  * @returns The work's result together with the settle decision.
  * @throws The work's own failure, unchanged, after the boundary has been rolled back. Nothing is
  *   wrapped, re-typed or re-messaged on this path: a caller catching a specific failure from its own
  *   work must still catch the same value.
  */
 async function runWorkInside<T>(
-  connection: PoolConnection,
+  connection: TransactionalStatementRunner,
   work: (scope: TransactionScope) => Promise<T>,
   hasErrors: () => boolean,
+  state: ConnectionState,
 ): Promise<CompletedWork<T>> {
   try {
     const result = await work(Object.freeze({ executor: createExecutor(connection) }));
 
     return { decision: hasErrors() ? 'rollback' : 'commit', result };
   } catch (failure) {
-    await rollBack(connection, 'workFailure', failure);
+    await rollBack(connection, 'workFailure', state, failure);
 
     throw failure;
   }
+}
+
+/**
+ * Opens one transaction on an ALREADY CHECKED-OUT connection, runs the work and settles it.
+ *
+ * Extracted so that the acquire-and-dispose invariant lives in exactly one place per boundary shape
+ * while the begin-work-settle sequence lives in exactly one place FULL STOP. The single-boundary
+ * member checks a connection out, calls this once and disposes of it; the per-item member checks a
+ * connection out, calls this once PER ITEM on that same connection, and disposes of it once at the
+ * end. Neither duplicates the sequence, so neither can drift from the other.
+ *
+ * IT DELIBERATELY DOES NOT ACQUIRE, RELEASE OR DESTROY ANYTHING. A function that both borrowed a
+ * connection and opened a transaction on it could not be reused across items without borrowing one
+ * per item, which is exactly the churn the per-item member exists to avoid.
+ *
+ * The connection's known-clean standing is withdrawn immediately before the transaction is begun and
+ * restored only by a settlement that actually succeeded. So a failure anywhere between those two
+ * points — in `beginTransaction`, in the work, in the roll-back or in the commit — leaves the
+ * connection marked as unknown, and the caller's `finally` destroys it rather than recycling it.
+ *
+ * @typeParam T - Whatever the unit of work produces.
+ * @param connection - The already checked-out connection.
+ * @param state - The connection's disposition record, updated in place.
+ * @param work - The unit of work.
+ * @param hasErrors - The M5 gate.
+ * @returns The work's result, once the transaction has committed.
+ * @throws {DomainError} When `hasErrors()` answers `true`; the transaction is rolled back first.
+ * @throws {DomainError} When the roll-back itself fails; see {@link rollBack}.
+ * @throws The work's own failure, unchanged, after the transaction has been rolled back.
+ */
+async function runTransaction<T>(
+  connection: TransactionalStatementRunner,
+  state: ConnectionState,
+  work: (scope: TransactionScope) => Promise<T>,
+  hasErrors: () => boolean,
+): Promise<T> {
+  state.knownClean = false;
+
+  await connection.beginTransaction();
+
+  const completed = await runWorkInside(connection, work, hasErrors, state);
+
+  if (completed.decision === 'rollback') {
+    await rollBack(connection, 'accumulatedErrors', state);
+
+    throw new DomainError(
+      'The unit of work was rolled back because the caller reported accumulated validation ' +
+        'errors, so nothing it wrote was kept.',
+      { context: { settledAs: completed.decision } },
+    );
+  }
+
+  await connection.commit();
+
+  state.knownClean = true;
+
+  return completed.result;
 }
 
 /* ================================================================================================
@@ -561,21 +903,29 @@ async function runWorkInside<T>(
 /**
  * Everything a unit of work is allowed to reach while its transaction is open.
  *
- * ONE MEMBER, AND THE NARROWNESS IS THE FEATURE. AAP 0.6.2's mandate is that "each SKU's insert
- * [is] visible to the next SKU's uniqueness read within the same transaction", and that guarantee
- * only holds while every statement runs on the connection the transaction was begun on. Carrying the
- * executor and nothing else means a caller inside a boundary has no way to reach the pool, no way to
- * settle the transaction early and no way to return the connection while work is still in flight —
- * so the guarantee is a property of the type rather than of the caller's care.
+ * ONE MEMBER, AND THE NARROWNESS IS THE FEATURE — the narrowness of the SCOPE, that is, not of the
+ * executor on it. AAP 0.6.2's mandate is that "each SKU's insert [is] visible to the next SKU's
+ * uniqueness read within the same transaction", and that guarantee only holds while every statement
+ * runs on the connection the transaction was begun on. Carrying the executor and nothing else means a
+ * caller inside a boundary has no way to reach the pool, no way to settle the transaction early and no
+ * way to return the connection while work is still in flight — so the guarantee is a property of the
+ * type rather than of the caller's care.
  *
- * The member is typed {@link SqlExecutor}, the same one-member contract every repository in this
- * folder declares as its dependency, so IDENTICAL REPOSITORY CODE RUNS INSIDE A BOUNDARY AND OUTSIDE
- * ONE. That is what makes M6 testable at all: a plain object literal satisfies the contract, so a
- * test can record the exact statement sequence a combination batch produces without a database
+ * ⭐ THE EXECUTOR CARRIES BOTH A READ AND A WRITE MEMBER, BECAUSE THE MANDATE IS UNREACHABLE OTHERWISE.
+ * The read member's answer is normalised into rows by `rowMappers.ts` `toRows`, which RAISES on a write
+ * acknowledgement, so a read-shaped executor cannot carry a write at all. A boundary that handed one
+ * out would force every insert to be issued somewhere else — which means on another connection, outside
+ * this transaction — and the uniqueness read inside the boundary would then never see its siblings. It
+ * is therefore typed {@link ReadWriteSqlExecutor}: the SAME pair the three writing adapters in this
+ * folder each declare as their dependency, and a superset of the read-only {@link SqlExecutor} the
+ * read-only adapters declare. IDENTICAL REPOSITORY CODE THEREFORE RUNS INSIDE A BOUNDARY AND OUTSIDE
+ * ONE, which is what makes M6 testable at all: a plain object literal satisfies the contract, so a test
+ * can record the exact statement sequence a combination batch produces without a database
  * (AAP 0.6.5.2 — every repository test in this port is net-new and no mocking library is available).
  *
- * There is deliberately no transaction handle, no identifier, no started-at stamp, no nesting depth
- * and no scratch space on this object. Adding mutable space here would reintroduce exactly the
+ * ⚠️ WHAT IS STILL DELIBERATELY ABSENT, and none of it becomes admissible because a write member is
+ * present: no connection, no transaction handle, no identifier, no started-at stamp, no nesting depth,
+ * no settle member and no scratch space. Adding mutable space here would reintroduce exactly the
  * accumulating state M7 rules out; if a transaction-scoped memo is ever genuinely needed, it belongs
  * on this object precisely BECAUSE this object is discarded when the boundary closes.
  *
@@ -589,9 +939,89 @@ async function runWorkInside<T>(
  * }, () => product.hasErrors());
  * ```
  */
+/**
+ * The execution surface a boundary hands out: one connection, reads AND writes.
+ *
+ * `SqlExecutor` from `./QueryRunner` is deliberately ONE member wide so a test can substitute a plain
+ * object literal, and that width is preserved — this EXTENDS it rather than replacing it, and adds
+ * exactly one member. The pattern is the one three sibling adapters already use for the same reason:
+ * `SkuStatementExecutor`, `BrandStatementExecutor` and `ProductStatementExecutor` each extend
+ * `SqlExecutor` with this same writing member, and `QueryRunner` satisfies all of them structurally.
+ * This is the fourth declaration of that seam and the first that is bound to a TRANSACTION rather than
+ * to a pool.
+ *
+ * ⭐ WHY IT HAS TO EXIST RATHER THAN REUSING ONE OF THE THREE. Each of those three names the adapter it
+ * serves, and none of them may be imported here: they live in files that import `TransactionScope` FROM
+ * this one, so reaching back for one of their types would close an import cycle. Declaring the shape
+ * where the boundary is owned keeps the dependency pointing one way — adapters depend on the boundary,
+ * never the reverse — and structural typing means a scope executor satisfies all three without any of
+ * them being mentioned here.
+ *
+ * ⭐ WHY THE WRITE MEMBER IS PART OF THE BOUNDARY CONTRACT AND NOT A SEPARATE OBJECT. The importer
+ * writes and reads inside the same row transaction: `model/dao/ProductDAO.cfc:L177` opens its
+ * per-row transaction inside the record loop, and everything the row does — the brand and
+ * product-type lookups at `:L179-L186`, the product and SKU writes, the option and link writes —
+ * happens inside it. If a write had to be issued through anything other than the object the
+ * boundary handed over, it would necessarily be issued outside that transaction, which is the
+ * precise failure M6 exists to prevent. `./MySqlProductRepository`'s `ProductStatementExecutor`
+ * declares exactly this pair, and this type is what satisfies it, so the importer's transaction
+ * boundary is {@link UnitOfWork} itself rather than a second adapter holding a second reference
+ * to the pool.
+ *
+ * ⛔ THIS WAS DECLARED TWICE, IDENTICALLY, AND ONE COPY IS REMOVED. Two `export interface`
+ * declarations of this exact shape stood in this file. TypeScript MERGES same-named interfaces in
+ * one scope, so neither the compiler nor the linter reported it and both declarations were live.
+ * The surviving declaration is this one, and the argument the removed copy carried — the one
+ * immediately above — is kept rather than dropped with it.
+ *
+ * ⛔ AND A THIRD, DIFFERENTLY-NAMED TWIN IS REMOVED TOO. `ScopedSqlExecutor` declared this same pair
+ * earlier in the file; the note left at its position records the removal. Because it was differently
+ * named it did not merge with these two, so it was simply dead, and an exported type cannot be
+ * reported as unused. Its two surviving arguments are the next two paragraphs.
+ *
+ * ⭐ IT EXTENDS THE READ-ONLY CONTRACT RATHER THAN RESTATING A FRESH PAIR OF SIGNATURES. A repository
+ * that already accepts an `SqlExecutor` keeps working unchanged, and one that needs to write inside a
+ * transaction says so by asking for this type instead — so widening a collaborator's requirement is a
+ * one-word change at the point that needs it, and no reader has to compare two signature lists to see
+ * that the read member is the same read member.
+ *
+ * ⭐ WHY THE WRITING MEMBER ANSWERS A COUNT AT ALL. It is the only signal a stateless caller gets that
+ * a targeted write matched anything: the legacy relied on the ORM session noticing, and there is no
+ * session here to notice. `./QueryRunner` records the same reasoning for its own mutation member.
+ *
+ * ⚠️ NOTHING ON IT CAN SETTLE A TRANSACTION. There is no `commit`, no `rollback`, no `beginTransaction`
+ * and no way to reach the driver object it closes over. A repository handed one of these can read and
+ * write inside the boundary that owns it and can do nothing else — which is what stops a repository
+ * routing a read back through the pool and out of the transaction it is supposed to be inside (M6).
+ */
+export interface TransactionalSqlExecutor extends SqlExecutor {
+  /**
+   * Run a data-modifying statement on this boundary's connection and return the rows it affected.
+   *
+   * Matches `QueryRunner.executeMutation` member for member, so a repository written against either
+   * one runs unchanged against the other. The affected-row count is not decoration:
+   * `model/dao/ProductDAO.cfc:L247` branches on it.
+   *
+   * @param sql - The writing statement text, with a `?` in every value position.
+   * @param params - The values to bind, in legacy positional order (TR-4).
+   * @returns The number of rows affected, which may legitimately be zero.
+   */
+  executeMutation(sql: string, params: readonly unknown[]): Promise<number>;
+}
+
 export interface TransactionScope {
-  /** The only execution surface inside the boundary. Every read and every write goes through it. */
-  readonly executor: SqlExecutor;
+  /**
+   * The only execution surface inside the boundary. Every read and every write goes through it.
+   *
+   * ⭐ WIDENED FROM THE READ-ONLY `SqlExecutor` TO CLOSE REVIEW FINDINGS 2 AND 8. While this was typed
+   * as a read-only executor, no write could be performed inside any boundary this class opened, which
+   * made rollback-on-errors and M6 read-back visibility structurally unreachable and left
+   * `MySqlProductRepository`'s `ProductImportTransactionScope` — which narrows this very member to a
+   * writing executor — impossible to satisfy. That narrowing is now satisfied by construction: the two
+   * shapes are structurally identical, so `UnitOfWork` meets
+   * `ProductImportTransactionBoundary` without either file importing the other's types.
+   */
+  readonly executor: TransactionalSqlExecutor;
 }
 
 /**
@@ -607,6 +1037,37 @@ export interface TransactionScope {
  * describing what a boundary did, both name the outcome in the same vocabulary.
  */
 export type CommitDecision = 'commit' | 'rollback';
+
+/**
+ * Where the per-item boundary members take their items from: a materialised list, or a lazy source.
+ *
+ * ⚠️ IT CARRIES NO LEGACY ORIGIN, BECAUSE THE LEGACY HAD NO CHOICE TO MAKE.
+ * `model/dao/ProductDAO.cfc:L87` retrieves the whole delimited file into a single CFML query object and
+ * `:L176` then loops `from 1 to data.recordcount`, so the legacy's items are always fully materialised
+ * before the first transaction opens. This union does not model a legacy variation; it models the fact
+ * that a port CAN avoid holding a whole catalog file in memory while producing byte-for-byte the same
+ * sequence of transactions, and that avoiding it is structural (AAP §0.8.2 Guideline 4) because it
+ * changes only WHEN a row becomes known.
+ *
+ * ⚠⚠️ WHAT IT DOES NOT LICENSE. Supplying a lazy source does NOT relax any guarantee
+ * {@link UnitOfWork.runPerItem} and {@link UnitOfWork.runPerItemWithoutResults} make. The items must
+ * still arrive in the order they must be processed, because both M3 (independent ordered commits) and
+ * M6 (write order is behaviour) depend on that order and neither member sorts, filters or reorders.
+ * A source that yields items concurrently, out of order, or more than once is a defect in the source.
+ *
+ * ⚠️ AND A LAZY SOURCE MUST NOT PERFORM DATABASE WORK OF ITS OWN. The loop advances the source BETWEEN
+ * transactions, on the same connection the previous item's transaction just settled on. A source that
+ * issued its own statements would interleave them with the per-item boundaries, which is precisely the
+ * interleaving M6 exists to forbid. Reading bytes, parsing text and yielding parsed values are all
+ * safe; querying is not.
+ *
+ * `readonly TItem[]` is retained as a member of the union rather than being replaced by
+ * `Iterable<TItem>` so that every existing caller — and every existing test double — keeps its exact
+ * declared parameter type and its read-only guarantee.
+ *
+ * @typeParam TItem - The item type, one per independent transaction.
+ */
+export type PerItemSource<TItem> = readonly TItem[] | AsyncIterable<TItem>;
 
 /**
  * Explicit transaction boundaries for the extracted Catalog slice.
@@ -631,13 +1092,36 @@ export type CommitDecision = 'commit' | 'rollback';
  *   - {@link UnitOfWork.runWithoutTransaction} — no boundary at all. The port of the importer's two
  *     bulk back-fills, which run after the loop's transaction has closed.
  *
+ * Plus {@link UnitOfWork.runScoped}, which is NOT a fourth shape — it is `run` with the collaborator
+ * graph built FROM the scope instead of captured from outside it, and the gate asked about the work's
+ * own result instead of about ambient state. It exists because repositories in this folder take their
+ * executor at construction, so a caller cannot otherwise guarantee that the inserts and the uniqueness
+ * read-back AAP 0.6.2 requires to share a transaction actually do. It is the member the writing routes
+ * call; `run` remains the mechanism underneath it and the one place the settle sequence lives.
+ *
  * Plus one read this class owns outright, {@link UnitOfWork.getTableTopSortOrder}, because the
  * entity-lifecycle block that used it has no other home in the port.
+ *
+ * ⭐ THIS CLASS IS THE PRODUCTION IMPLEMENTATION OF THE IMPORTER'S BOUNDARY CONTRACT, AND THAT IS
+ * CHECKED RATHER THAN CLAIMED. `MySqlProductRepository.ts` declares what the importer needs —
+ * `ProductImportTransactionBoundary`, two members wide, one per legacy boundary kind — as a LOCAL
+ * structural interface so a test can record what a boundary did. It is declared locally rather than
+ * imported from here for that reason alone; it is not a second contract, and nothing in this port
+ * implements it except this class. The last two members below satisfy it member for member: the
+ * per-item boundary hands each row its own transaction and its own scope, and the untransacted member
+ * hands the two bulk back-fills a pool-bound executor. Both hand out the same
+ * {@link ReadWriteSqlExecutor} pair the importer's own executor interface names, so the composition
+ * root injects THIS OBJECT and never has to reach the connection a boundary is holding — it cannot,
+ * because no member of this class returns one. `test/adapters/MySqlProductRepository.test.ts` pins the
+ * assignability at compile time, so re-narrowing the scope executor breaks the build rather than the
+ * import.
  *
  * @example
  * ```ts
  * // src/config/container.ts — wired once, then injected downwards.
  * const unitOfWork = new UnitOfWork(pool);
+ * // The importer takes the same object as its boundary: no shim, no adapter, no recovered connection.
+ * const productRepository = new MySqlProductRepository({ transactions: unitOfWork, ... });
  * ```
  */
 export class UnitOfWork {
@@ -651,8 +1135,12 @@ export class UnitOfWork {
    *
    * It is the ONLY field on this class, and it never changes after construction. That is the whole of
    * this class's state (M7).
+   *
+   * Typed as the driver port `./QueryRunner` declares rather than as the driver's own pool type, so
+   * the composition root's single exported pool serves this class and the query runner alike. There is
+   * ONE pool in this subtree and neither adapter imports the configuration layer to reach it.
    */
-  private readonly pool: Pool;
+  private readonly pool: StatementPool;
 
   /**
    * @param pool - The pool to draw transactional connections from, supplied by the composition root.
@@ -660,7 +1148,7 @@ export class UnitOfWork {
    *   contrast model/dao/ProductDAO.cfc:L155-L158, :L329-L332 and :L420, which each construct a
    *   credential-reading connection inside the data-access layer itself.
    */
-  public constructor(pool: Pool) {
+  public constructor(pool: StatementPool) {
     this.pool = pool;
   }
 
@@ -695,7 +1183,70 @@ export class UnitOfWork {
    * A FAILING COMMIT PROPAGATES AND IS NOT FOLLOWED BY A ROLL-BACK ATTEMPT. Once the commit has been
    * issued the transaction's disposition is the server's, and a second settle statement on a connection
    * in that state would be recovery behaviour with no legacy counterpart (AAP 0.8.2 Guideline 4). The
-   * connection is still released, on this path as on every other.
+   * connection is still DISPOSED OF on this path as on every other — but it is destroyed rather than
+   * released, because its transaction state is no longer known; see {@link returnConnection}.
+   *
+   * ==================================================================================================
+   * HOW A CALLER ROUTES REPOSITORY WORK THROUGH `scope.executor` — AND WHY IT PREVIOUSLY COULD NOT
+   * ==================================================================================================
+   * Every MySQL repository in this folder captures its execution surface at construction, so a graph
+   * built by a composition root is necessarily POOL-bound. Handing such a repository to a callback and
+   * asking it to take part in this transaction used to be impossible: the callback received a
+   * `scope.executor` the repository had no way to adopt, so its reads and writes went to the pool —
+   * outside the very boundary meant to contain them. That made both roll-back-on-errors and the M6
+   * same-connection visibility STRUCTURALLY UNREACHABLE rather than merely unwired, which is the more
+   * serious of the two failures: a caller writing the obvious code would have got silent
+   * non-participation rather than an error.
+   *
+   * The gap is closed by a `withExecutor` member on every transaction-sensitive adapter —
+   * `MySqlSkuRepository`, `MySqlOptionRepository`, `MySqlProductTypeRepository`, `MySqlBrandRepository`,
+   * `MySqlProductRepository` and `UniquePropertyChecker` — each returning a NEW instance bound to the
+   * supplied executor rather than mutating the instance it was called on. A caller re-binds inside the
+   * callback:
+   *
+   * ```ts
+   * await unitOfWork.run(
+   *   async (scope) => {
+   *     const skus = skuRepository.withExecutor(scope.executor);
+   *     const unique = uniqueProperties.withExecutor(scope.executor);
+   *     // Every read and write below now shares this boundary's single connection, which is what
+   *     // lets each SKU's uniqueness read observe the siblings written before it (M6, AAP 0.6.2).
+   *     return createTheBatch(skus, unique);
+   *   },
+   *   () => product.hasErrors(),
+   * );
+   * ```
+   *
+   * Returning a new instance rather than mutating is deliberate, and it is what keeps this class
+   * stateless: an in-place re-bind would be an ambient current-transaction slot in all but name, the
+   * one thing M7 and AAP 0.7.3 S3 forbid. Two concurrent boundaries on a warm container get two
+   * instances and cannot observe each other's connection.
+   *
+   * ⚠️ `withExecutor` IS ON NO PORT INTERFACE, WHICH IS WHY THE RE-BIND HAPPENS AT THE COMPOSING CALLER
+   * AND NOT INSIDE A SERVICE. A service may not know that a statement executor exists at all — AAP
+   * 0.7.3 S2 inverted, stated as a prohibition at src/services/BaseService.ts:270-292 — so it can
+   * neither be handed a scope nor re-bind its own collaborators. That is the same conclusion
+   * src/ports/repositories/SkuRepository.ts reaches from the opposite direction, where `persistSku`
+   * records that the write "must not be committed here" and that demarcation "stays with the caller".
+   *
+   * ⛔ THE CALLER MUST CATCH THE ERROR-GATE REJECTION AND RETURN THE ENTITY, NOT PROPAGATE IT. When
+   * `hasErrors()` answers `true` this member rejects, for the return-type reason given above — but the
+   * legacy did NOT raise in that situation. org/Hibachi/Hibachi.cfc:L456-L457 simply never reached the
+   * flush, and model/service/HibachiService.cfc returns `arguments.entity` on BOTH branches, so a
+   * caller received an entity carrying its error bag either way. Allowing this rejection to travel on
+   * to a handler would turn a legacy "entity with errors" into an exception — an OUTCOME change, not a
+   * representation one. The rejection is an artefact of this layer's `Promise<T>` return type, and
+   * converting it back to the legacy's shape is the composing caller's obligation.
+   *
+   * ⚠️ WHERE THE PRODUCTION CALL SITE BELONGS, AND WHY IT IS NOT IN THIS MILESTONE. Nothing in the
+   * delivered subtree calls this member, and that is a sequencing fact rather than an oversight. The
+   * artefact that would write the wiring above is src/config/container.ts, which belongs to a LATER
+   * milestone and is deliberately not authored here. Neither of the two layers that exist can host the
+   * call in its place: a service is barred by the prohibition cited above, and a handler receives a
+   * service SURFACE — a `Pick<>` of the service's members — rather than a repository, an executor or
+   * this class. What this milestone does deliver is the part that must exist first and cannot be
+   * supplied by a composition root at all: the boundary itself, a mutation-capable scope executor, and
+   * a re-bind on every adapter that participates. Wiring is then a call, not a redesign.
    *
    * @typeParam T - Whatever the unit of work produces.
    * @param work - The unit of work. It receives a {@link TransactionScope} and must route EVERY read
@@ -715,35 +1266,98 @@ export class UnitOfWork {
     work: (scope: TransactionScope) => Promise<T>,
     hasErrors: () => boolean,
   ): Promise<T> {
-    const connection: PoolConnection = await this.pool.getConnection();
+    const connection = await this.pool.getConnection();
+    const state: ConnectionState = { knownClean: true };
 
     try {
-      await connection.beginTransaction();
-
-      const completed = await runWorkInside(connection, work, hasErrors);
-
-      if (completed.decision === 'rollback') {
-        await rollBack(connection, 'accumulatedErrors');
-
-        throw new DomainError(
-          'The unit of work was rolled back because the caller reported accumulated validation ' +
-            'errors, so nothing it wrote was kept.',
-          { context: { settledAs: completed.decision } },
-        );
-      }
-
-      await connection.commit();
-
-      return completed.result;
+      return await runTransaction(connection, state, work, hasErrors);
     } finally {
       /*
        * The last step of AAP 0.3.2's sequence, and it runs on EVERY path: after a commit, after a
        * roll-back, after a failed commit, after a failed roll-back and after a failure raised by the
        * work itself. A connection that is not returned is a connection the pool cannot re-use, and on
-       * a warm container that is permanent.
+       * a warm container that is permanent — which is why the disposal is unconditional and only the
+       * CHOICE of disposal depends on what is known about the connection's state.
        */
-      connection.release();
+      returnConnection(connection, state);
     }
+  }
+
+  /**
+   * Runs one unit of work inside one transaction over collaborators BUILT FOR THAT TRANSACTION, and
+   * settles it on the error state of whatever the work produced.
+   *
+   * ⭐ WHY {@link UnitOfWork.run} ALONE WAS NOT ENOUGH, AND WHY THIS MEMBER IS THE FIX RATHER THAN A
+   * CONVENIENCE. Every repository in this folder takes its {@link SqlExecutor} AT CONSTRUCTION, which is
+   * what lets identical repository code run inside a boundary and outside one. The consequence is that a
+   * caller cannot honour M6 by wrapping an ALREADY-CONSTRUCTED service graph in `run`: the graph it
+   * captured is bound to some other executor, so the inserts and the uniqueness read-back that AAP 0.6.2
+   * requires to share one transaction would quietly run on two connections — no error, no compile
+   * failure, and a different set of SKUs. The graph therefore has to be built FROM the scope, and that is
+   * the one thing `run`'s signature cannot express on its own. This member closes that gap: `buildGraph`
+   * receives the scope, so nothing inside the boundary can reach an executor the transaction does not own.
+   *
+   * ⭐ AND IT SETTLES ON THE RESULT RATHER THAN ON AMBIENT STATE. `run` takes the M5 gate as a
+   * PREDICATE OVER NOTHING, which suits a caller holding the entity already but not one whose entity is
+   * produced inside the boundary — a product resolved from an identifier is exactly that case. Here the
+   * gate is a function OF the work's own result, so the caller answers "did this end with accumulated
+   * findings?" about the very object the transaction produced. That is the shape
+   * `model/service/ProductService.cfc:L286-L288` has: re-read `hasErrors()` on the product AFTER SKU
+   * creation has had its chance to record findings on it, then keep the work only if it is still clean.
+   *
+   * ⛔ IT ADDS NO SECOND SETTLEMENT MECHANISM. The whole body is a delegation to `run`: the acquire,
+   * begin, commit-or-roll-back and release sequence, the roll-back-and-reject on accumulated errors, the
+   * re-throw of the work's own failure unchanged, and the release-on-every-path guarantee are all
+   * `run`'s, unmodified. Nothing here retries, nothing here recovers, and no boundary state is retained
+   * after it closes (M7).
+   *
+   * ⚠️ THE GATE IS BRIDGED THROUGH A CLOSURE, AND A GATE CONSULTED BEFORE THE WORK SETTLED RAISES
+   * RATHER THAN DEFAULTING TO "CLEAN". `run` invokes its predicate only after the work has resolved, so
+   * the slot below is always filled by then; if that ever stopped being true, defaulting to `commit`
+   * would keep writes the caller never approved. Raising instead lands inside `run`'s own failure path,
+   * which rolls back — the safe direction — and no legacy message is reused for it.
+   *
+   * @typeParam TGraph - The collaborator graph this transaction's work runs against.
+   * @typeParam TResult - Whatever the unit of work produces.
+   * @param buildGraph - Constructs the collaborators from the scope. It must pass `scope.executor` to
+   *   every repository it builds and must capture no executor from anywhere else; that is the single
+   *   obligation on which M6's visibility guarantee rests.
+   * @param work - The unit of work, run against the graph just built.
+   * @param reportErrors - The M5 gate, asked about the work's own result. Answer `true` when the produced
+   *   entity carries accumulated validation findings.
+   * @returns The unit of work's result, once the transaction has committed.
+   * @throws {DomainError} When `reportErrors` answers `true`; the transaction is rolled back first.
+   * @throws The work's own failure, unchanged, after the transaction has been rolled back.
+   */
+  public async runScoped<TGraph, TResult>(
+    buildGraph: (scope: TransactionScope) => TGraph,
+    work: (graph: TGraph) => Promise<TResult>,
+    reportErrors: (result: TResult) => boolean,
+  ): Promise<TResult> {
+    /* Written as a one-member holder rather than a bare `TResult | undefined`, so a work that legitimately
+     * produces `undefined` is still distinguishable from a work that has not settled yet. */
+    let settled: { readonly result: TResult } | undefined;
+
+    return this.run(
+      async (scope) => {
+        const result = await work(buildGraph(scope));
+
+        settled = { result };
+
+        return result;
+      },
+      () => {
+        if (settled === undefined) {
+          throw new DomainError(
+            'The commit gate was consulted before the unit of work settled, so the error state it ' +
+              'reports on does not exist yet and nothing may be committed.',
+            { context: { member: 'UnitOfWork.runScoped' } },
+          );
+        }
+
+        return reportErrors(settled.result);
+      },
+    );
   }
 
   /**
@@ -759,22 +1373,33 @@ export class UnitOfWork {
    * enhancement, which AAP 0.8.2 Guideline 4 forbids, and it would change what an operator finds in
    * the catalog after a bad file.
    *
-   * STRICTLY SEQUENTIAL, WITH NO EXCEPTIONS. One item is begun only after the previous item has
-   * settled and its connection has been released. There is no concurrent settlement of any kind, no
-   * concurrency limit to tune, no batching and no coalescing of items into a shared transaction.
-   * Sequencing is required twice over: by M3, because each row's commit must be independent and
-   * ordered, and by M6, because write order is behaviour — the combination engine's odometer order
-   * determines both the SKU set and the order uniqueness validation observes its siblings in.
+   * STRICTLY SEQUENTIAL, WITH NO EXCEPTIONS. One item's transaction is begun only after the previous
+   * item's has settled. There is no concurrent settlement of any kind, no concurrency limit to tune,
+   * no batching and no coalescing of items into a shared transaction. Sequencing is required twice
+   * over: by M3, because each row's commit must be independent and ordered, and by M6, because write
+   * order is behaviour — the combination engine's odometer order determines both the SKU set and the
+   * order uniqueness validation observes its siblings in.
    *
-   * IT DELEGATES TO {@link UnitOfWork.run} WITH AN ALWAYS-FALSE GATE, and the delegation is the honest
-   * shape rather than a shortcut: the legacy per-row transaction carries NO error condition — a row
-   * either completes and commits, or a failure propagates and the transaction is abandoned. Reusing
-   * the same skeleton also keeps the acquire-and-release invariant in exactly one place.
+   * ONE CONNECTION IS CHECKED OUT FOR THE WHOLE LIST, NOT ONE PER ITEM — AND THAT IS A FIDELITY
+   * IMPROVEMENT AS WELL AS A COST ONE. Each item still gets its OWN transaction, begun and settled
+   * independently, so M3 is untouched: a mid-list failure still leaves the earlier items committed and
+   * still attempts no further item. What changes is that the connection is borrowed once and disposed
+   * of once instead of being returned to the pool and re-borrowed between every pair of rows. A
+   * thousand-row import stops making a thousand checkout/release round trips against a pool that
+   * `.env.example` documents as holding a single connection, and — because every item now
+   * demonstrably runs on the SAME connection — the read-back ordering M6 requires becomes a property
+   * of the boundary rather than something a one-connection pool happened to provide.
+   *
+   * THE SEQUENCE ITSELF IS NOT DUPLICATED. Both this member and {@link UnitOfWork.run} settle through
+   * the one module-private {@link runTransaction}, with an always-false gate here because the legacy
+   * per-row transaction carries NO error condition — a row either completes and commits, or a failure
+   * propagates and the transaction is abandoned.
    *
    * @typeParam TItem - The item type, one per independent transaction.
    * @typeParam TResult - What each item's work produces.
-   * @param items - The items, in the order they must be processed. Read-only because this member never
-   *   sorts, filters or reorders them.
+   * @param items - The items, in the order they must be processed — a materialised read-only list or a
+   *   lazy {@link PerItemSource}. This member never sorts, filters or reorders them, which is why a
+   *   list is accepted read-only and why a lazy source must already be in order.
    * @param work - The per-item unit of work. It receives the item and that item's own
    *   {@link TransactionScope}; a scope is never shared between items, because their transactions are
    *   not shared either.
@@ -783,21 +1408,120 @@ export class UnitOfWork {
    *   back. Items already committed stay committed and no further item is attempted.
    */
   public async runPerItem<TItem, TResult>(
-    items: readonly TItem[],
+    items: PerItemSource<TItem>,
     work: (item: TItem, scope: TransactionScope) => Promise<TResult>,
   ): Promise<TResult[]> {
     const results: TResult[] = [];
 
-    for (const item of items) {
-      /*
-       * Awaited inside the loop on purpose. This is the whole point of the member, and it is the one
-       * place in this file where a well-meant concurrent settlement would destroy both M3's per-row
-       * commit semantics and M6's insert ordering in a single stroke.
-       */
-      results.push(await this.run((scope) => work(item, scope), NO_ACCUMULATED_ERRORS));
-    }
+    await this.runEachItem(items, work, (result) => {
+      results.push(result);
+    });
 
     return results;
+  }
+
+  /**
+   * Runs one independent transaction per item, sequentially, and collects NOTHING.
+   *
+   * THE SAME BOUNDARY AS {@link UnitOfWork.runPerItem} AND A DIFFERENT MEMORY PROFILE, WHICH IS WHY IT
+   * IS A SEPARATE MEMBER RATHER THAN AN OPTION. The importer's per-row work produces no value —
+   * `model/dao/ProductDAO.cfc:L177-L284` writes the row and moves on, returning nothing — so calling
+   * the collecting member would build an array holding one discarded entry per row of the file and
+   * keep it alive until the whole import finished. Over a large catalog file that array is pure
+   * overhead proportional to the row count, and it exists only because the collecting member's return
+   * type promises a result per item.
+   *
+   * Behaviour is otherwise IDENTICAL, deliberately and by construction: the same single checkout, the
+   * same independent transaction per item, the same strict ordering, the same first-failure semantics
+   * and the same partial commits (M3). Both members run through the same private loop, so the two
+   * cannot diverge.
+   *
+   * ⭐ AND THIS IS THE MEMBER THE IMPORTER STREAMS INTO. Because it retains nothing per item, pairing it
+   * with a lazy {@link PerItemSource} means neither the boundary nor the caller holds the file: the row
+   * currently in its transaction is the only row alive. The collecting sibling cannot offer that, since
+   * its return type promises one result per item and therefore an array as long as the source.
+   *
+   * @typeParam TItem - The item type, one per independent transaction.
+   * @param items - The items, in the order they must be processed — a materialised read-only list or a
+   *   lazy {@link PerItemSource}.
+   * @param work - The per-item unit of work, whose result is not retained.
+   * @throws Whatever an item's work threw, unchanged, after that item's transaction has been rolled
+   *   back. Items already committed stay committed and no further item is attempted.
+   */
+  public async runPerItemWithoutResults<TItem>(
+    items: PerItemSource<TItem>,
+    work: (item: TItem, scope: TransactionScope) => Promise<void>,
+  ): Promise<void> {
+    await this.runEachItem(items, work, undefined);
+  }
+
+  /**
+   * The one per-item loop, shared by the collecting and non-collecting members.
+   *
+   * ⚠️ AN EMPTY SOURCE CHECKS NOTHING OUT AT ALL, AND THAT PROPERTY IS NOW STRUCTURAL RATHER THAN A
+   * LENGTH TEST. It used to be obtained by returning early on `items.length === 0`, which a lazy source
+   * cannot answer without being consumed. The checkout is therefore performed ON DEMAND, immediately
+   * before the FIRST item's transaction begins, so a source that yields nothing still borrows nothing:
+   * borrowing a connection in order to run zero transactions on it would be a pool round trip for no
+   * statement, and the importer legitimately reaches this member with no rows at all — a header-only
+   * file, or the `.xls` branch that reads none. The `finally` releases only when a connection was
+   * actually obtained, for the same reason.
+   *
+   * ⚠️ EVERY OTHER GUARANTEE IS UNCHANGED, AND DELIBERATELY SO. Still ONE checkout for the whole source
+   * rather than one per item; still one independent transaction per item; still strictly sequential,
+   * each transaction begun only after the previous has settled; still first-failure, with earlier items
+   * committed and no later item attempted (M3); still one release. Widening the parameter changes WHEN
+   * an item becomes known, never what happens to it.
+   *
+   * The collector runs AFTER the item's transaction has committed, mirroring
+   * {@link UnitOfWork.run}'s guarantee that a result is only ever handed back for work that was kept.
+   *
+   * @typeParam TItem - The item type.
+   * @typeParam TResult - What each item's work produces; discarded when no collector is supplied.
+   * @param items - The items, in order. Either a materialised read-only list or a lazy source.
+   * @param work - The per-item unit of work.
+   * @param collect - Receives each committed item's result, or `undefined` to retain nothing.
+   */
+  private async runEachItem<TItem, TResult>(
+    items: PerItemSource<TItem>,
+    work: (item: TItem, scope: TransactionScope) => Promise<TResult>,
+    collect: ((result: TResult) => void) | undefined,
+  ): Promise<void> {
+    let connection: TransactionalStatementRunner | undefined;
+    const state: ConnectionState = { knownClean: true };
+
+    try {
+      /*
+       * `for await` consumes a materialised array and a lazy source through the same statement, so the
+       * two cases cannot drift apart into two loops with two sets of settlement semantics. A synchronous
+       * iterable yields synchronously here; the `await` per step is what a lazy source needs, and it
+       * introduces no concurrency for either.
+       */
+      for await (const item of items) {
+        // The first item pays for the checkout; every later item reuses it. See the note above.
+        connection ??= await this.pool.getConnection();
+
+        /*
+         * Awaited inside the loop on purpose. This is the whole point of the member, and it is the one
+         * place in this file where a well-meant concurrent settlement would destroy both M3's per-row
+         * commit semantics and M6's insert ordering in a single stroke.
+         */
+        const result = await runTransaction(
+          connection,
+          state,
+          (scope) => work(item, scope),
+          NO_ACCUMULATED_ERRORS,
+        );
+
+        if (collect !== undefined) {
+          collect(result);
+        }
+      }
+    } finally {
+      if (connection !== undefined) {
+        returnConnection(connection, state);
+      }
+    }
   }
 
   /**
@@ -820,13 +1544,22 @@ export class UnitOfWork {
    * No connection is checked out and none is released, because none is borrowed: the executor is bound
    * to the pool, which is also why nothing here begins, commits or rolls back anything.
    *
+   * IT HANDS OUT THE SAME READ-AND-WRITE PAIR A BOUNDARY DOES, and it has to: both back-fills are
+   * `UPDATE` statements. `model/dao/ProductDAO.cfc:L302` executes the first and `:L325` the second, and
+   * the affected-row count each returns is the only signal a caller gets that the statement matched
+   * anything. What differs here is not the executor's shape but what it is bound to — the pool rather
+   * than a checked-out connection — which is precisely why nothing routed through here has the
+   * visibility guarantee {@link UnitOfWork.run} provides.
+   *
    * @typeParam T - Whatever the work produces.
-   * @param work - The untransacted work. It receives a pool-bound {@link SqlExecutor}.
+   * @param work - The untransacted work. It receives a pool-bound {@link ReadWriteSqlExecutor}.
    * @returns Whatever the work produced.
    * @throws Whatever the work threw, unchanged. There is no transaction to settle, so nothing is
    *   rolled back and nothing needs to be.
    */
-  public async runWithoutTransaction<T>(work: (executor: SqlExecutor) => Promise<T>): Promise<T> {
+  public async runWithoutTransaction<T>(
+    work: (executor: TransactionalSqlExecutor) => Promise<T>,
+  ): Promise<T> {
     /*
      * Awaited rather than returned bare so that a callback which throws SYNCHRONOUSLY surfaces as a
      * rejection, exactly as it would from the two transactional members. Uniform failure semantics
@@ -925,24 +1658,31 @@ export class UnitOfWork {
     const table = assertTableName(tableName);
 
     const columnSupplied = contextIDColumn !== undefined;
-    const valueSupplied = contextIDValue !== undefined;
 
     /*
-     * TODO(parity) org/Hibachi/HibachiDAO.cfc:L161-L164 — A HALF-SUPPLIED SCOPE RAISES HERE WHERE THE
-     * LEGACY WAS SILENT, AND THAT IS A DELIBERATE, DECLARED TIGHTENING. The legacy guard tests both
-     * context arguments together, so supplying one without the other simply emitted no `WHERE` clause
-     * and returned a WHOLE-TABLE maximum under the appearance of a scoped read. For the one in-scope
-     * scoped entity that would seed an option's position from the highest position in the entire table,
-     * silently, with no error anywhere. The two declared overloads already make this unreachable from
-     * typed code; this check closes the same door for a caller arriving without types.
+     * TODO(parity) org/Hibachi/HibachiDAO.cfc:L159-L164 — A HALF-SUPPLIED SCOPE READS THE WHOLE TABLE,
+     * SILENTLY, AND THAT IS THE LEGACY BEHAVIOUR REPRODUCED RATHER THAN REPAIRED. Both context
+     * arguments are declared OPTIONAL at :L150-L151, and :L159 guards the `WHERE` clause with
+     * `structKeyExists(arguments, "contextIDColumn") && structKeyExists(arguments, "contextIDValue")`.
+     * The `&&` is the whole point: supplying ONE alone emits no clause at all and returns a WHOLE-TABLE
+     * maximum under the appearance of a scoped read. For the one in-scope scoped entity that would seed
+     * an option's position from the highest position in the entire table, with no error anywhere.
+     *
+     * ⛔ AN EARLIER REVISION RAISED HERE INSTEAD, AND DESCRIBED ITSELF AS "A DELIBERATE, DECLARED
+     * TIGHTENING". It is WITHDRAWN (F12). Refusing a read the legacy performed is a DIFFERENT OUTCOME,
+     * and D18 (AAP 0.6.7.7) is the SOLE declared behaviour-hardening exception — a precedent only for a
+     * divergence that removes a flaw class WITHOUT changing an outcome. AAP 0.8.2 Guideline 4 forbids
+     * enhancement beyond what the migration requires, and AAP 0.6.7 governs with "preserve and
+     * annotate, do not repair".
+     *
+     * ⭐ WHAT PREVENTS A HALF-SUPPLIED SCOPE NOW IS THE TYPE SYSTEM RATHER THAN A RUNTIME REFUSAL, AND
+     * THAT IS WHY NOTHING OBSERVABLE CHANGED. The two declared overloads above admit the scoping column
+     * and its value only TOGETHER, so a half-supplied call does not compile. A compile-time guarantee
+     * has no runtime behaviour to diverge from the legacy's; the raise did.
+     *
+     * ⚠️ THE RESIDUAL EXPOSURE IS FLAGGED, NOT CLOSED (AAP 0.7.3 S8). A caller arriving without types
+     * would receive the legacy's silent whole-table maximum, which is exactly what the legacy gave it.
      */
-    if (columnSupplied !== valueSupplied) {
-      throw new DomainError(
-        'A scoped sort-order read needs both the scoping column and its value, or neither. Supplying ' +
-          'one alone would silently read the whole table instead of the scope.',
-        { context: { table, columnSupplied, valueSupplied } },
-      );
-    }
 
     /*
      * Composed exactly as org/Hibachi/HibachiDAO.cfc:L157-L164 composes it, including the `COALESCE`

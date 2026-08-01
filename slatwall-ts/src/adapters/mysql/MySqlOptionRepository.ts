@@ -126,9 +126,15 @@
  * ============================================================================================== */
 
 import { DataIntegrityError, DomainError } from '../../errors/DomainError';
-import { assertColumnName, assertTableName } from './QueryRunner';
+import {
+  assertColumnName,
+  assertTableName,
+  prepareBoundedRead,
+  settleBoundedRead,
+} from './QueryRunner';
 import { mapRows, mapUnusedOptionGroupRow, mapUnusedOptionRow } from './rowMappers';
 
+import type { BoundedReadResult, BoundedReadWindow } from '../../ports/repositories/BoundedRead';
 import type { SqlExecutor } from './QueryRunner';
 import type { MySqlRow } from './rowMappers';
 import type {
@@ -583,6 +589,42 @@ export class MySqlOptionRepository implements OptionRepository {
   }
 
   /**
+   * Returns an equivalent {@link MySqlOptionRepository} bound to a DIFFERENT statement executor.
+   *
+   * ⭐ THIS IS THE FIX FOR REVIEW FINDING 2, AND THE DEFECT IT CLOSES WAS STRUCTURAL. Every repository
+   * in this folder captures its executor at construction, which is correct — but while that was the ONLY
+   * way to supply one, an executor chosen at construction time was necessarily the POOL-bound one, and
+   * no later act could change it. Wrapping a service call in `UnitOfWork.run` therefore did nothing
+   * useful: the boundary acquired a connection, began a transaction, and handed out a scope executor
+   * that this class had no way to adopt, so every read and write still went to the pool and straight out
+   * of the transaction. Rollback-on-errors and M6's same-connection read-back visibility were
+   * unreachable no matter how the graph was wired.
+   *
+   * Re-binding closes that. Inside a boundary a caller re-binds this repository to `scope.executor` and
+   * uses the result for the duration of the boundary; every statement the returned instance issues then
+   * runs on the connection the boundary owns.
+   *
+   * ⚠️ A NEW INSTANCE, NOT A MUTATION, AND THE DIFFERENCE IS THE POINT. The captured executor stays
+   * `private readonly` and this method never reassigns it, so the pool-bound instance a composition root
+   * built is still valid and still pool-bound after the call. Mutating it in place would make the
+   * repository's connection depend on WHEN it was used rather than on WHICH instance was used — an
+   * ambient current-transaction slot in all but name, which is exactly what
+   * `src/adapters/mysql/UnitOfWork.ts` refuses to keep (M7, AAP 0.7.3 S3). Two concurrent boundaries on
+   * one warm container get two instances and cannot observe each other's connection.
+   *
+   * ⚠️ IT IS NOT ON THE PORT INTERFACE, AND MUST NOT BE PUT THERE. A service may not know that a
+   * statement executor exists at all (AAP 0.7.3 S2 inverted), so re-binding is exposed on the CONCRETE
+   * adapter and used only by the layer that already holds concrete adapters. Adding it to the port would
+   * leak the persistence mechanism into `src/services/**`.
+   *
+   * @param executor - The executor to bind to, normally a boundary's `scope.executor`.
+   * @returns A new instance identical in every other respect.
+   */
+  public withExecutor(executor: SqlExecutor): MySqlOptionRepository {
+    return new MySqlOptionRepository(executor);
+  }
+
+  /**
    * Lists the options a product may still be offered, as drop-down rows.
    *
    * PORT OF `getUnusedProductOptions` [`model/dao/OptionDAO.cfc:L51-L92`], whose statement is
@@ -638,6 +680,47 @@ export class MySqlOptionRepository implements OptionRepository {
   }
 
   /**
+   * The windowed form of {@link MySqlOptionRepository.findUnusedOptions}.
+   *
+   * NOTHING ABOUT THE MATCH SET IS RE-DECIDED HERE. The list splitting, the placeholder list, the
+   * statement and the bind order all come from the same three collaborators the unbounded member uses,
+   * called in the same sequence, so the pair cannot drift into filtering differently.
+   *
+   * ⚠️ THE BIND ORDER TRAP IS STILL LIVE, AND THE WINDOW SITS AFTER IT. The group identifiers bind
+   * FIRST and the product identifier LAST — statement order, the reverse of the argument order, per the
+   * TODO(parity) on the unbounded member — and the two window values bind after both, in positions the
+   * legacy statement never used. The window therefore cannot disturb the legacy sequence (TR-4).
+   *
+   * THE WINDOW IS APPENDED AFTER THE `ORDER BY`, which is where a `LIMIT` must go and also where it is
+   * meaningful: `model/dao/OptionDAO.cfc:L90-L92` orders by group name then option name, so the window
+   * selects a deterministic slice rather than an arbitrary one.
+   *
+   * @param window - the caller's ceiling and zero-based offset; validated, never defaulted.
+   * @param productID - as on the unbounded member.
+   * @param existingOptionGroupIDList - as on the unbounded member, empty string included.
+   * @returns the window's rows in the legacy order, and whether a further row lies past it.
+   * @throws {DomainError} for an unusable window, or a projected column that does not hold text.
+   * @throws {DataIntegrityError} when the projection and the row reader have drifted apart.
+   */
+  public async findUnusedOptionsBounded(
+    window: BoundedReadWindow,
+    productID: string,
+    existingOptionGroupIDList: string,
+  ): Promise<BoundedReadResult<UnusedOptionRow>> {
+    const bound = prepareBoundedRead(window, 'MySqlOptionRepository.findUnusedOptionsBounded');
+    const optionGroupIds = splitOptionGroupIdList(existingOptionGroupIDList);
+    const sql = composeUnusedOptionsStatement(toPlaceholderList(optionGroupIds));
+
+    const rows = await this.executor.execute(
+      `${sql}
+  LIMIT ${BIND_PLACEHOLDER} OFFSET ${BIND_PLACEHOLDER}`,
+      [...optionGroupIds, productID, ...bound.boundValues],
+    );
+
+    return settleBoundedRead(mapRows(rows, toUnusedOptionRow), bound.limit);
+  }
+
+  /**
    * Lists the option groups not yet present on a product, as drop-down rows.
    *
    * PORT OF `getUnusedProductOptionGroups` [`model/dao/OptionDAO.cfc:L94-L117`], whose statement is
@@ -682,5 +765,41 @@ export class MySqlOptionRepository implements OptionRepository {
     const rows = await this.executor.execute(sql, optionGroupIds);
 
     return mapRows(rows, mapUnusedOptionGroupRow);
+  }
+
+  /**
+   * The windowed form of {@link MySqlOptionRepository.findUnusedOptionGroups}.
+   *
+   * ⚠️ THE `NOT IN` POLARITY IS THE WHOLE REASON A WINDOW IS USEFUL HERE. The unbounded member returns
+   * EVERY option group for a product that has none yet — the mirror image of its sibling, per the
+   * TODO(parity) above — so this is the member whose result is largest exactly when a caller has least
+   * information. The polarity is untouched: the statement, the placeholder list and the bind order all
+   * come from the same collaborators the unbounded member calls.
+   *
+   * The empty-list input still produces one placeholder bound to the empty string, still matches every
+   * real identifier, and is still neither guarded nor special-cased. The window is appended after
+   * `model/dao/OptionDAO.cfc:L115-L117`'s single sort term, so the slice is deterministic.
+   *
+   * @param window - the caller's ceiling and zero-based offset; validated, never defaulted.
+   * @param existingOptionGroupIDList - as on the unbounded member, empty string included.
+   * @returns the window's rows in name order, and whether a further row lies past it.
+   * @throws {DomainError} for an unusable window, or a projected column that does not hold text.
+   * @throws {DataIntegrityError} when the projection and the row reader have drifted apart.
+   */
+  public async findUnusedOptionGroupsBounded(
+    window: BoundedReadWindow,
+    existingOptionGroupIDList: string,
+  ): Promise<BoundedReadResult<UnusedOptionGroupRow>> {
+    const bound = prepareBoundedRead(window, 'MySqlOptionRepository.findUnusedOptionGroupsBounded');
+    const optionGroupIds = splitOptionGroupIdList(existingOptionGroupIDList);
+    const sql = composeUnusedOptionGroupsStatement(toPlaceholderList(optionGroupIds));
+
+    const rows = await this.executor.execute(
+      `${sql}
+  LIMIT ${BIND_PLACEHOLDER} OFFSET ${BIND_PLACEHOLDER}`,
+      [...optionGroupIds, ...bound.boundValues],
+    );
+
+    return settleBoundedRead(mapRows(rows, mapUnusedOptionGroupRow), bound.limit);
   }
 }

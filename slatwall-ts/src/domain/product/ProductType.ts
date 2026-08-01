@@ -88,96 +88,49 @@
  *   - `physicalCounts` — S9, DO NOT INVENT IT. All three validation documents in this product family
  *     reference the key ([model/validation/Product.json:L7], [model/validation/Brand.json:L7],
  *     [model/validation/ProductType.json:L8]) and none of the corresponding entities declares it —
- *     they declare `physicals`. The only `physicalCounts` property declaration is
+ *     they declare `physicals`. Repository-wide, the ONLY `physicalCounts` property declaration is
  *     [model/entity/Physical.cfc:L59]. It is a genuine undeclared-property validation reference in the
  *     legacy source; no field is added here to make it resolve.
  *
- *   THE `systemCode` `maxLength: 0` DELETE GUARD IS WHAT PROTECTS THE THREE SEEDED DISCRIMINATORS
- *   FROM DELETION. A product type carrying ANY `systemCode` at all fails the delete context, and
- *   the only rows that carry one are the three seeded at
- *   `config/dbdata/SlatwallProductType.xml.cfm:L13-L15`. That rule is the clearest justification
- *   for {@link ProductType.systemCode} existing as a field on this class even though this file
- *   enforces nothing: the rule READS the field.
- *
- *   `urlTitle`'s `unique: true` is NOT implemented here either. Application-side uniqueness is
- *   IR-5, enforced by an existence query in `src/adapters/mysql/UniquePropertyChecker.ts`, ported
- *   from `org/Hibachi/HibachiDAO.cfc:L130-L146`, independently of the column's `unique="true"`
- *   metadata.
- *
- *   `physicalCounts` — S9, DO NOT INVENT IT. The key is referenced by all three validation
- *   documents in this product family (`model/validation/Product.json:L7`,
- *   `model/validation/Brand.json:L7`, `model/validation/ProductType.json:L8`) and is declared by
- *   NONE of the corresponding entities: they declare `physicals`. Repository-wide, the only
- *   `physicalCounts` PROPERTY declaration is `model/entity/Physical.cfc:L59`. It is therefore a
- *   genuine undeclared-property validation reference in the legacy source. No `physicalCounts`
- *   field is added to this class to make it resolve; the finding is recorded and left alone.
- *
- * ---------------------------------------------------------------------------------------------
- * THE TEST CONTRACT (Phase H) — `test/domain/ProductType.test.ts` IS NET-NEW
- * ---------------------------------------------------------------------------------------------
- * AAP §0.6.5.2 verified that NO `ProductTypeTest` exists anywhere in `meta/tests/`: this entity had
- * ZERO legacy coverage, and the target test is net-new rather than an extension of an existing
- * signal. It nonetheless follows the four inherited assertions of
- * `meta/tests/unit/entity/SlatwallEntityTestBase.cfc:L51-L67`, which split across three layers:
- *
- *   1. `validate_as_save_for_a_new_instance_doesnt_pass` — `validate(context="save")` then
- *      `hasErrors()`. Lands on the VALIDATION LAYER, not here: F22 forbids this file from declaring
- *      `validate` or `hasErrors`.
- *   2. `simple_representation_exists_and_is_simple` — `isSimpleValue(getSimpleRepresentation())`.
- *      LANDS HERE, satisfied by {@link ProductType.getSimpleRepresentation}, which is this file's
- *      single sanctioned F22 exception because the legacy genuinely overrides it with a real
- *      recursive body at `model/entity/ProductType.cfc:L273-L278`.
- *   3. `has_primary_id_property_name` — `len(getPrimaryIDPropertyName())`. LANDS ON
- *      {@link ProductType.getPrimaryIDPropertyName}, one of the seven managed-entity members this
- *      class declares under IR-1, backed by {@link PRODUCT_TYPE_PRIMARY_ID_PROPERTY_NAME}.
- *      ⚠️ AN EARLIER REVISION SAID THIS ASSERTION LANDED ON THE POPULATION DESCRIPTOR SET, on the
- *      strength of `'productTypeID'` being declared there. That reading is withdrawn: the descriptor
- *      set is the statement of what population may WRITE, and F08 establishes that the legacy never
- *      populates a `fieldtype="id"` property. The name is still declared — in
- *      {@link ProductTypePropertyName} and {@link PRODUCT_TYPE_DECLARED_PROPERTIES} — so the assertion
- *      is satisfied without the primary key being writable.
- *   4. `defaults_are_correct` — `isNew()` and `!len(getPrimaryIDValue())`. Satisfied by
- *      {@link ProductType.isNew} and {@link ProductType.getPrimaryIDValue} together with
- *      `productTypeID` defaulting to the empty string, which is what [`:L52`]'s `unsavedvalue=""`
- *      declares.
+ * `test/domain/ProductType.test.ts` IS NET-NEW: AAP §0.6.5.2 verified that no `ProductTypeTest`
+ * exists anywhere in `meta/tests/`, so this entity had zero legacy coverage. The target test still
+ * follows the four inherited assertions of `meta/tests/unit/entity/SlatwallEntityTestBase.cfc:L51-L67`,
+ * which split across layers: the `validate`/`hasErrors` assertion lands on the validation layer
+ * because F22 forbids declaring those members here; `simple_representation_exists_and_is_simple`
+ * lands on {@link ProductType.getSimpleRepresentation}, this file's single sanctioned F22 exception
+ * because the legacy genuinely overrides it with a recursive body at
+ * [model/entity/ProductType.cfc:L273-L278]; `has_primary_id_property_name` lands on
+ * {@link ProductType.getPrimaryIDPropertyName}; and `defaults_are_correct` is satisfied by
+ * {@link ProductType.isNew} and {@link ProductType.getPrimaryIDValue} together with `productTypeID`
+ * defaulting to the empty string, which is what [`:L52`]'s `unsavedvalue=""` declares. The primary
+ * key is NOT in the population descriptor set: F08 establishes that the legacy never populates a
+ * `fieldtype="id"` property, so the name is declared without being writable.
  *
  * The obligation this file carries for that suite (S6) is that `new ProductType()` succeeds with NO
  * arguments — no framework bootstrap, no container, no database, no I/O and no async work in the
  * constructor — and that every collaborator is substitutable by a plain object literal satisfying a
  * structural interface. Because {@link ProductType.getBaseProductType} takes its resolver as an
  * explicit parameter, both of its branches are reachable from a two-line stub.
- *
- * ---------------------------------------------------------------------------------------------
- * STANDARDS IN FORCE, RECORDED RATHER THAN ASSUMED (UR4)
- * ---------------------------------------------------------------------------------------------
- * `review_rules` returns the single line "No user rules provided." for this project, with no
- * paginated remainder — confirmed on the default window and again with an explicit full range — and
- * the repository contains no `.blitzyignore`, `.cursorrules`, `AGENTS.md` or `CLAUDE.md`. Zero files
- * enter scope by rule and no rule-derived constraint applies here. That is not permission to lower
- * the bar; the nine enterprise standards of AAP §0.7.3 govern instead. The ones with teeth in this
- * file are S1 (strict type safety — this file contains no `any`, no non-null assertion, no `as`
- * cast and no suppression comment, and every narrowing is an explicit guard), S2 (negative: no SQL,
- * no driver, no table name as code), S3 (no service locator — every collaborator is an explicit
- * typed parameter), S4 (hexagonal separation — the only imports are the two `../base/` modules,
- * `../BaseProductType` and a type-only `./Product`; nothing from `adapters/`, `services/`,
- * `config/`, `validation/`, `handlers/`, `integrations/` or `ports/`, and no AWS type), S5
- * (negative: no npm dependency and no `node:` built-in), S6, S7 (preserve and annotate — see the
- * `TODO(parity)` markers, which are carried findings and never deferred work), S8/M7 and S9.
  */
 
 import type { BaseProductType } from '../BaseProductType';
+/*
+ * ⚠️ THREE HELPERS AND ONE TYPE WERE DROPPED FROM THIS IMPORT ALONGSIDE THE SEVEN MANAGED-ENTITY
+ * METHODS, AND THEIR ABSENCE IS THE EVIDENCE THAT THE REMOVAL WAS COMPLETE. `hasDeclaredProperty`,
+ * `readValueByPropertyIdentifier`, `requireDeclaredPropertyMetaData` and `EntityPropertyMetaData`
+ * were imported for `hasProperty`, `getValueByPropertyIdentifier` and `getPropertyMetaData`
+ * respectively. `../base/populate`'s `manageEntity` now calls the same three helpers from one place
+ * for all six entities, so this module needs none of them — see the managed-entity contract block
+ * below. Nothing else in this file referenced them, which is why removing the methods left them
+ * unused rather than merely under-used.
+ */
 import {
   applyPreInsertAudit,
   applyPreUpdateAudit,
   AUDIT_PROPERTY_NAMES,
-  hasDeclaredProperty,
-  readValueByPropertyIdentifier,
-  requireDeclaredPropertyMetaData,
   type AuditableEntity,
   type AuditPropertyName,
   type DeclaredPropertyNameSet,
-  type EntityPropertyMetaData,
-  type ManagedEntity,
 } from '../base/AuditableEntity';
 import type {
   DisabledPropertyDescriptor,
@@ -463,26 +416,35 @@ export interface PhysicalReference {
  * preserves the call-site shape those consumers already have (TR-1), whereas a wrapper object would
  * force every one of them to be rewritten around a discriminant that the legacy never had.
  *
- * WHERE THE RUNTIME TYPE GUARD BELONGS, STATED EXPLICITLY BECAUSE THE TWO REQUIREMENTS PULL AGAINST
- * EACH OTHER. The value must be narrowed through `isBaseProductType` — it is an unvalidated database
- * string and nothing else may be assumed about it — AND the unrecognised case must stay reachable.
- * Both hold only if the narrowing happens at the RECOGNITION POINT, which is the consumer, not here:
- * narrowing inside this method would either shrink the return type to the three codes (deleting the
- * fallthrough) or be a branch whose arms return the same value. The guard is therefore named, located
- * and explained here, and imported by whoever recognises — one line, `import { isBaseProductType }
- * from '../BaseProductType'`. It is deliberately NOT imported by this module: an import used nowhere
- * is a lint error under this project's configuration, and adding a use for the import's sake is
- * exactly the kind of ceremony that hides a decision instead of recording it.
+ * WHERE THE RUNTIME RECOGNITION BELONGS, STATED EXPLICITLY BECAUSE THE TWO REQUIREMENTS PULL AGAINST
+ * EACH OTHER. The value must be recognised through `resolveBaseProductType` — it is an unvalidated
+ * database string and nothing else may be assumed about it — AND the unrecognised case must stay
+ * reachable. Both hold only if the recognition happens at the RECOGNITION POINT, which is the consumer,
+ * not here: recognising inside this method would either shrink the return type to the three codes
+ * (deleting the fallthrough) or be a branch whose arms return the same value. The recogniser is
+ * therefore named, located and explained here, and imported by whoever recognises — one line,
+ * `import { resolveBaseProductType } from '../BaseProductType'`. It is deliberately NOT imported by
+ * this module: an import used nowhere is a lint error under this project's configuration, and adding a
+ * use for the import's sake is exactly the kind of ceremony that hides a decision instead of recording
+ * it.
  *
- * RECOGNITION IS THE CONSUMER'S JOB, AND IT HAS A TOOL. `isBaseProductType` in
- * `../BaseProductType` narrows a value of this type to {@link BaseProductType} and gives a consumer
- * exhaustive checking inside the narrowed branch plus a genuinely reachable `else`. It is
+ * ⚠️ AND THE RECOGNITION IS CASE-INSENSITIVE, WHICH IS WHY IT IS A RESOLVER AND NOT A TYPE GUARD. Every
+ * legacy comparison listed above is CFML `==`, which folds case, so a row holding `Merchandise` matched
+ * `"merchandise"`. A `value is BaseProductType` predicate would narrow the OBSERVED text and leave every
+ * subsequent literal comparison failing against it; `resolveBaseProductType` instead returns the
+ * CANONICAL code, or `undefined`, and leaves the stored value untouched. Read its documentation before
+ * comparing a value of this type to anything.
+ *
+ * RECOGNITION IS THE CONSUMER'S JOB, AND IT HAS A TOOL. `resolveBaseProductType` in
+ * `../BaseProductType` maps a value of this type onto {@link BaseProductType} and gives a consumer
+ * exhaustive checking inside the recognised branch plus a genuinely reachable `undefined` case. It is
  * deliberately NOT called inside `getBaseProductType`: the legacy method is recognition-blind, so
  * calling it here could only either narrow the return type — deleting the fallthrough, as above — or
- * be a no-op branch whose arms return the same value. Note also that the two legacy consumers treat
+ * be a no-op branch whose arms return the same value. Note also that the three legacy consumers treat
  * the unrecognised case DIFFERENTLY and must not be aligned to one another: `createSkus` throws,
- * while `getSkuDefinition` [model/entity/Sku.cfc:L574-L590] has no fallthrough arm at all and leaves
- * its result as the empty string. Neither decision belongs to this entity.
+ * `getSkuDefinition` [model/entity/Sku.cfc:L574-L590] has no fallthrough arm at all and leaves its
+ * result as the empty string, and `SkuDAO.getProductSkus` [model/dao/SkuDAO.cfc:L154-L161] simply adds
+ * no join. None of those decisions belongs to this entity.
  */
 export type BaseProductTypeCode = BaseProductType | (string & {});
 
@@ -559,8 +521,22 @@ export type BaseProductTypeCode = BaseProductType | (string & {});
  * belongs to `Product.ts` [model/entity/Product.cfc:L791-L793] — and `Brand.ts` has neither. The
  * three entity modules in this folder legitimately have three different shapes; they are not to be
  * harmonised.
+ *
+ * ⛔ AND THIS CLASS DOES NOT DECLARE `implements ManagedEntity`, WHICH ITS FIVE SIBLINGS DO. The
+ * non-generic `ManagedEntity` interface in `../base/AuditableEntity` is the CONTRACT for the seven
+ * framework introspection members, so claiming it would oblige this class to declare exactly the
+ * members the mandate above forbids — and an earlier revision did claim it, which is precisely how
+ * those seven methods came to be written here in contradiction of the mandate. The obligation was
+ * removed rather than the mandate. `AuditableEntity` is still implemented, because the four audit
+ * properties are genuine declared columns [model/entity/ProductType.cfc:L83-L86].
+ *
+ * ✅ NOTHING IS LOST, BECAUSE THE MANAGED VIEW IS A DIFFERENT TYPE FROM THE CONTRACT. `../base/populate`
+ * declares the generic `ManagedEntity<TEntity>` — `TEntity & EntityMetadataSurface & EntityErrorSurface`
+ * — and `manageEntity(new ProductType(), PRODUCT_TYPE_ENTITY_METADATA)` produces it by augmenting and
+ * returning THE SAME INSTANCE. A collaborator that needs the introspection surface asks for the managed
+ * view; the class itself simply does not pretend to be it. See the managed-entity contract block below.
  */
-export class ProductType implements AuditableEntity, ManagedEntity {
+export class ProductType implements AuditableEntity {
   /*
    * ─── Persistent properties — `model/entity/ProductType.cfc:L52-L59` ──────────────────────────
    */
@@ -1037,9 +1013,10 @@ export class ProductType implements AuditableEntity, ManagedEntity {
    * `model/service/SkuService.cfc:L204` throws — so no caller silently succeeds where the legacy
    * failed.
    *
-   * `isBaseProductType` from `../BaseProductType` is deliberately NOT called here; recognition
+   * `resolveBaseProductType` from `../BaseProductType` is deliberately NOT called here; recognition
    * belongs to the consumer, and each consumer treats an unrecognised code differently. See
-   * {@link BaseProductTypeCode}.
+   * {@link BaseProductTypeCode}. Note that recognition is CASE-INSENSITIVE there, matching CFML `==`,
+   * so the raw casing this method returns is exactly what the consumers must be given.
    */
   async getBaseProductType(
     rootProductTypeResolver: ProductTypeRootResolver,
@@ -1160,11 +1137,12 @@ export class ProductType implements AuditableEntity, ManagedEntity {
    * asks for. Locator: `model/entity/ProductType.cfc:L92-L99`; AAP §0.6.7.1 defect **D21**.
    *
    * ADDITIONAL D21 PROVENANCE FOUND WHILE PORTING, recorded against the existing defect ID because
-   * this finding is provenance for D21 rather than a distinct behaviour — AAP §0.6.7 catalogues
-   * D1–D21 and the port's register is CLOSED at D1-D24: this member has ZERO callers
+   * this finding is provenance for D21 rather than a distinct behaviour, and AAP §0.6.7 catalogues
+   * D1–D21 (the live bound is stated only at `src/ports/repositories/SkuRepository.ts`): this member has ZERO callers
    * anywhere in the repository, and the `AttributeSetAssignment` entity it claims to return EXISTS
-   * NOWHERE in release 3.1.39 — the string occurs only at `:L92` and `:L94` of this one file. So the
-   * legacy member could never have executed successfully even once. That strengthens the case for
+   * NOWHERE in release 3.1.39 — the string occurs only at `:L92` and `:L94` of this one file. So
+   * the legacy member could never have executed successfully even once. That strengthens the case
+   * for
    * preserving it verbatim rather than repairing it: there is no observed behaviour to regress
    * against, and inventing one would be fabrication (S9).
    *
@@ -1239,7 +1217,6 @@ export class ProductType implements AuditableEntity, ManagedEntity {
    * {@link ProductType.addChildProductType}.)
    *
    * THE RESET IS THE ONLY DIRECT WRITE TO THE COLLECTION. Nothing after it appends to
-   * `this.products`; every element travels through {@link ProductType.addProduct}, exactly as the
    * `this.products`; every element travels through {@link ProductType.addProduct}, exactly as the
    * legacy loop does, and the legacy labelled that reset step with an inline comment at [:L102].
    */
@@ -1562,119 +1539,50 @@ export class ProductType implements AuditableEntity, ManagedEntity {
   }
 
   /* ============================================================================================
-   * THE MANAGED-ENTITY CONTRACT — [org/Hibachi/**], INHERITED IN CFML, DECLARED HERE (IR-1 / TR-3)
+   * THE MANAGED-ENTITY CONTRACT — DELIBERATELY *NOT* DECLARED ON THIS CLASS (F22)
    * ============================================================================================
    * Seven members every legacy entity received down the
    * `HibachiObject` -> `HibachiTransient` -> `HibachiEntity` -> `model/entity/HibachiEntity.cfc`
-   * inheritance chain, and which `src/validation/Validator.ts` and
-   * `src/ports/UniquePropertyPort.ts` both require BY NAME. Neither contract can be satisfied by a
-   * plain data class, which is why they are declared rather than assumed:
+   * inheritance chain — `getClassName`, `getEntityName`, `getPrimaryIDPropertyName`,
+   * `getPrimaryIDValue`, `hasProperty`, `getPropertyMetaData` and `getValueByPropertyIdentifier`.
+   * `src/validation/Validator.ts` and `src/ports/UniquePropertyPort.ts` both require them BY NAME:
    * `ValidationSubject` reads `getClassName` and `hasProperty`, and `UniquePropertyEntity` reads
    * `getEntityName`, `getPrimaryIDValue`, `getPrimaryIDPropertyName`, `getPropertyMetaData` and
    * `getValueByPropertyIdentifier` in exactly the order [org/Hibachi/HibachiDAO.cfc:L134-L138]
    * reads them.
    *
-   * `src/domain/base/AuditableEntity.ts` owns the shared behaviour and every word of the rationale —
-   * including why there is no base class, why the member names are not modernised, and which
-   * inherited members are deliberately NOT ported. Each member below is the thin delegation plus the
-   * constant only this entity can state.
+   * ⛔ AND NONE OF THE SEVEN IS A METHOD OF THIS CLASS. This module's own negative mandate names
+   * `getPrimaryIDPropertyName`, `getPrimaryIDValue` and `getPropertyMetaData` among the framework
+   * members that must not be declared here, and admits EXACTLY ONE exception —
+   * {@link ProductType.getSimpleRepresentation}, which is sanctioned because
+   * [model/entity/ProductType.cfc:L273-L278] genuinely overrides it with a real recursive body. The
+   * other six are framework members of the same family and are excluded on the same ground.
+   *
+   * ✅ THEY ARE SUPPLIED BY COMPOSITION, WHICH IS WHY EXCLUDING THEM COSTS NOTHING.
+   * `manageEntity(new ProductType(), PRODUCT_TYPE_ENTITY_METADATA)` — `manageEntity` from
+   * `../base/populate`, the declaration from {@link PRODUCT_TYPE_ENTITY_METADATA} at the foot of this
+   * module — attaches all seven to the instance and RETURNS THE SAME OBJECT, so identity is
+   * preserved and nothing is wrapped or proxied. `src/adapters/mysql/rowMappers.ts` already performs
+   * that call on every hydrated product type, so any instance reaching the validator or the
+   * uniqueness checker carries the surface those contracts require. The behaviour therefore exists
+   * once, for all six entities, instead of once per entity.
+   *
+   * ⚠️ AN EARLIER REVISION DECLARED ALL SEVEN AS METHODS HERE, AND THE CONTRADICTION IS RECORDED
+   * RATHER THAN QUIETLY TIDIED AWAY. The module simultaneously asserted, in three places, that the
+   * members were "composed onto an instance by `../base/manageEntity` rather than hand-written here"
+   * and that "there is no `getPrimaryIDValue` ... anywhere in this CLASS" — while the class declared
+   * exactly those methods a few hundred lines above. The prose described the intended design and the
+   * code did not implement it; the methods were removed rather than the prose, because the prose was
+   * the half that matched the mandate.
+   *
+   * ⚠️ THE FIVE SIBLING ENTITIES STILL DECLARE THEM, AND THAT ASYMMETRY IS INTENTIONAL — DO NOT
+   * "HARMONISE" IT. `Product.ts`, `Brand.ts`, `Sku.ts`, `Option.ts` and `OptionGroup.ts` each declare
+   * the seven, and `test/domain/Brand.test.ts` asserts several of them directly on a `Brand`. Those
+   * files are governed by their own contracts; this one carries an explicit negative mandate that
+   * they do not. Making all six alike would mean overriding a stated mandate for the sake of
+   * symmetry, so the difference is documented here instead — exactly as this module already does for
+   * `getSimpleRepresentationPropertyName`, which `Product.ts` declares and this file must not.
    * ============================================================================================ */
-
-  /**
-   * `ProductType` — [org/Hibachi/HibachiObject.cfc:L135-L137], the last dot-delimited segment of the
-   * component's fully qualified name. Interpolated into every validation message
-   * [org/Hibachi/HibachiValidationService.cfc:L202, :L213, :L216].
-   *
-   * @returns The bare class name.
-   */
-  getClassName(): string {
-    return PRODUCT_TYPE_CLASS_NAME;
-  }
-
-  /**
-   * `SlatwallProductType` — [org/Hibachi/HibachiEntity.cfc:L287-L289]. Live metadata reflection is replaced by the
-   * declared constant, per TR-3.
-   *
-   * @returns The mapped ORM entity name, NOT the physical table name.
-   */
-  getEntityName(): string {
-    return PRODUCT_TYPE_ENTITY_NAME;
-  }
-
-  /**
-   * `productTypeID` — [org/Hibachi/HibachiEntity.cfc:L249-L251]. The legacy resolved this through
-   * `getService("hibachiService")`; the string-keyed service locator is replaced by the declared
-   * constant, per TR-3 and AAP 0.7.3 S3.
-   *
-   * @returns The name of the primary identifier property.
-   */
-  getPrimaryIDPropertyName(): string {
-    return PRODUCT_TYPE_PRIMARY_ID_PROPERTY_NAME;
-  }
-
-  /**
-   * The primary identifier's VALUE — [org/Hibachi/HibachiEntity.cfc:L244-L246], which forwards to
-   * the generated getter for whichever property `getPrimaryIDPropertyName` names.
-   *
-   * ⚠️ RETURNS `''` FOR AN UNSAVED INSTANCE, because [model/entity/ProductType.cfc:L52] declares
-   * `unsavedvalue=""` and this class initialises the field to `''`. That is what makes the
-   * self-exclusion term of the uniqueness query a NO-OP on insert — an observation AAP 0.4.1.7
-   * requires be reproduced rather than tidied away, and which `src/ports/UniquePropertyPort.ts`
-   * carries as a `TODO(parity)`. It is also the value
-   * [meta/tests/unit/entity/SlatwallEntityTestBase.cfc:L64-L67] asserts on a fresh instance.
-   *
-   * @returns The identifier, or `''` while unsaved.
-   */
-  getPrimaryIDValue(): string {
-    return this.productTypeID;
-  }
-
-  /**
-   * Whether this entity DECLARES the named property —
-   * [org/Hibachi/HibachiTransient.cfc:L763-L765].
-   *
-   * ⚠️ A FALSE ANSWER SILENTLY SKIPS A VALIDATION RULE rather than failing it
-   * [org/Hibachi/HibachiValidationService.cfc:L171]. See PRODUCT_TYPE_DECLARED_PROPERTIES, whose
-   * exhaustiveness is compile-checked precisely because of that.
-   *
-   * @param propertyIdentifier - The name to test, in its declared casing.
-   * @returns `true` when the property is declared.
-   */
-  hasProperty(propertyIdentifier: string): boolean {
-    return hasDeclaredProperty(PRODUCT_TYPE_DECLARED_PROPERTIES, propertyIdentifier);
-  }
-
-  /**
-   * Resolves a declared property's metadata, RAISING for an undeclared name —
-   * [org/Hibachi/HibachiTransient.cfc:L738-L747], whose present-key branch is at [:L741-L743] and
-   * whose throw is at [:L746]. The non-optional return type is faithful to that declaration.
-   *
-   * @param propertyName - The name to resolve.
-   * @returns The metadata for that property.
-   * @throws DomainError - When no property of that name is declared. Withheld from every response
-   *   by the deny-by-default presentation, because it signals a fault in the port rather than
-   *   anything a caller can provoke.
-   */
-  getPropertyMetaData(propertyName: string): EntityPropertyMetaData {
-    return requireDeclaredPropertyMetaData(
-      PRODUCT_TYPE_DECLARED_PROPERTIES,
-      propertyName,
-      PRODUCT_TYPE_CLASS_NAME,
-    );
-  }
-
-  /**
-   * Reads a value by property identifier, walking a path delimited by EITHER `.` OR `_` —
-   * [org/Hibachi/HibachiTransient.cfc:L466-L481]. An unresolvable path yields `''`, never an absent
-   * value; `readValueByPropertyIdentifier` documents all four traversal rules and why each is
-   * behaviour rather than convenience.
-   *
-   * @param propertyIdentifier - A property name, or a delimited path.
-   * @returns The resolved value, or `''`.
-   */
-  getValueByPropertyIdentifier(propertyIdentifier: string): unknown {
-    return readValueByPropertyIdentifier(this, propertyIdentifier);
-  }
 }
 
 /* ================================================================================================
@@ -1863,10 +1771,33 @@ export type ProductTypePropertyName =
  * hand-written methods.
  *
  * ⭐ THIS IS HOW BOTH THINGS STAY TRUE AT ONCE. The mandate says there is no `getPrimaryIDValue`,
- * `getPrimaryIDPropertyName` or `getPropertyMetaData` anywhere in this CLASS, and there still is
- * not: the members are composed onto an instance by `../base/manageEntity` from the declaration
- * below, so the behaviour exists exactly once for all six entities instead of six times over. See
- * {@link EntityMetadataDeclaration} for what each member ports and why.
+ * `getPrimaryIDPropertyName` or `getPropertyMetaData` anywhere in this CLASS, and there is not: the
+ * members are composed onto an instance by `manageEntity` from `../base/populate`, reading the
+ * declaration below, so the behaviour exists exactly once for all six entities instead of six times
+ * over. See {@link EntityMetadataDeclaration} for what each member ports and why.
+ *
+ * ⚠️ THIS PARAGRAPH WAS FALSE WHEN IT WAS FIRST WRITTEN, AND THE CODE WAS CHANGED TO MATCH IT RATHER
+ * THAN THE REVERSE. At that point the class DID declare all seven members as hand-written methods a
+ * few hundred lines above, so a reader who trusted this note would have been misled about where the
+ * behaviour lived, while a reader who trusted the mandate would have been misled about whether it was
+ * obeyed. The methods were removed, the `implements ManagedEntity` clause that obliged them was
+ * dropped, and the claim is now checkable: grep this file for `getPrimaryIDValue(` and the only hits
+ * are prose. The wording is left as it stood because it always described the intended design
+ * correctly; only the code was wrong.
+ *
+ * ⚠️ AND THE SAME WORDING STOOD IN ALL FIVE SIBLING MODULES, WHERE IT WAS RESOLVED THE OTHER WAY.
+ * `Sku.ts`, `Product.ts`, `Brand.ts`, `Option.ts` and `OptionGroup.ts` each carried this note verbatim
+ * while hand-writing all seven members and declaring `implements ManagedEntity` — and for them the
+ * CODE is right, because accepting that contract is a legitimate choice and only this class declines
+ * it. Their notes were corrected to describe what they do; an earlier revision of this block named
+ * only two of the five, which understated the spread. `../base/AuditableEntity` now records the split
+ * once, on the contract itself, so the question "which classes declare these seven" has exactly one
+ * answer to read.
+ *
+ * ⚠️ AND THE PATH IN THE ORIGINAL WORDING WAS ALSO WRONG: it said `../base/manageEntity`, which is not
+ * a module. `manageEntity` is a FUNCTION exported by `../base/populate`. Corrected above rather than
+ * quietly reworded, because a wrong path in a note about where behaviour lives is the specific error
+ * this block exists to prevent.
  *
  * This constant is the ONLY place in this module where the class name and the ORM entity name appear
  * as VALUES rather than as prose, and {@link createProductTypePropertyDescriptorSet} reads its

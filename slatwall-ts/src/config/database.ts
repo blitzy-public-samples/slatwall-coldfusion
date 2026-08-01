@@ -50,9 +50,9 @@
  *     the AWS SDK is deliberately absent from the dependency set because the Lambda runtime
  *     already ships it (AAP 0.5.2.1).
  *   - No statement text, table name or column name appears here, and no identifier-quoting or
- *     string-interpolation helper is exported (DECISION D). What IS exported is the statement
- *     DESCRIPTOR every execution is expressed as — a value that cannot be built from an assembled
- *     string and cannot carry a value it has not bound (DECISION J).
+ *     string-interpolation helper is exported (DECISION D). What IS exported is a statement
+ *     DESCRIPTOR that cannot be built from an assembled string, alongside an execution boundary
+ *     whose bound-value list is mandatory and value-narrowed (DECISION J).
  *   - Nothing is logged and no diagnostic output is produced. No logger is in the dependency set,
  *     and the legacy framework's logging call is not carried across.
  *   - No dependency is added. The runtime dependency set stays at exactly one package (S5).
@@ -70,6 +70,8 @@ import {
 
 import { DomainError } from '../errors/DomainError';
 import { config } from './env';
+
+import type { StatementPool } from '../adapters/mysql/QueryRunner';
 
 /* ==============================================================================================
  * DECISION A — the pool is constructed at MODULE SCOPE, outside every handler, and exactly once.
@@ -251,10 +253,10 @@ import { config } from './env';
  * hand lets it drift on any upgrade and that standard S1 requires consuming published types as they
  * are. That reasoning is sound about RESULT types and is still applied to them below — the result
  * and field-metadata types are the driver's own, imported rather than restated. It does not hold
- * for the INPUT side, because the driver's prepared-execution signature takes a plain string and an
- * optional value list, so inheriting it kept a fully assembled statement type-legal and let a call
- * bind nothing at all. Inheriting a signature inherits its holes as faithfully as its safety, so
- * the input is now this port's own (DECISION J) while the output stays the driver's (S1).
+ * for the INPUT side, because the driver's prepared-execution signature makes the value list OPTIONAL,
+ * so inheriting it let a call bind nothing at all. Inheriting a signature inherits its holes as
+ * faithfully as its safety, so the input is now this port's own — a mandatory, value-narrowed bound
+ * list (DECISION J) — while the output stays the driver's (S1).
  *
  * Withheld deliberately, and each for its own reason:
  *   - the client-side-substituting execution member, per the above;
@@ -450,11 +452,36 @@ import { config } from './env';
  * ---------------
  * {@link PreparedStatement} is a class whose constructor is private, which makes it nominally
  * rather than structurally typed: no string, no object literal and no other shape is assignable to
- * it. Since {@link DatabasePool.execute} accepts only that type, an assembled statement is a
- * COMPILE error at the call site rather than a finding in a later review — and the only route to an
- * instance is the {@link sql} tagged template, where each interpolation becomes a placeholder and
- * contributes its value in the same position. Binding is therefore not something a caller can
- * forget: writing an interpolation IS binding, and there is no other way to write one.
+ * it. The only route to an instance is the {@link sql} tagged template, where each interpolation
+ * becomes a placeholder and contributes its value in the same position. Binding is therefore not
+ * something a caller composing through the tag can forget: writing an interpolation IS binding, and
+ * there is no other way to write one.
+ *
+ * ⭐ WHERE THE GUARANTEE ACTUALLY SITS, CORRECTED
+ * --------------------------------------------
+ * The descriptor was originally the ONLY thing {@link DatabasePool.execute} would accept, and that
+ * went a step too far — far enough that the resulting service could not be assembled. Because the
+ * class is nominal by construction, NOTHING OUTSIDE THIS MODULE CAN PRODUCE ONE, and every statement
+ * this slice runs is composed in src/adapters/mysql/** from whitelisted identifiers and an explicitly
+ * written `?` per value. Those statements are not template literals and cannot become descriptors
+ * without rewriting all eight repositories into tagged templates, which AAP 0.8.2 Guideline 4
+ * forbids. So the descriptor-only signature did not make the unsafe call a compile error; it made
+ * EVERY call a compile error, and the two layers stopped being assignable at all.
+ *
+ * Execution therefore takes the statement text with a MANDATORY, value-narrowed bound list, and the
+ * guarantee is enforced where AAP 0.4.1.7 places it — "src/adapters/mysql/QueryRunner.ts | `pool.execute()`
+ * wrapper enforcing parameterized binding". There are exactly TWO call sites into the driver in the
+ * whole subtree, one in that file and one in src/adapters/mysql/UnitOfWork.ts, and both refuse a blank
+ * statement, narrow every bound value positionally, preserve TR-4 order and reach the prepared member
+ * only. Nothing else in the subtree can reach the driver, because those two files hold the only
+ * references to a pool and neither hands one onwards. Point 2 above is unaffected: the bound list is
+ * mandatory here where the driver's own is optional, so "prepare and bind nothing" is still not a
+ * legal call at this boundary.
+ *
+ * {@link PreparedStatement} and {@link sql} remain, and remain useful: a caller composing a statement
+ * from values reaches the pool with `pool.execute(statement.sql, statement.values)`, and the tag's
+ * composition property — one descriptor interpolated into another splices its text and its values in
+ * order — is what the N-clause `EXISTS` conjunction of AAP 0.3.3.1 needs.
  *
  * That is precisely the contract AAP 0.4.3.4 rule R4 and TR-4 require — "pool.execute(sql, params)
  * with the parameter array assembled in exactly the legacy sequence" — expressed so that the
@@ -505,9 +532,6 @@ const PLACEHOLDER = '?';
  * A value that may be bound to a placeholder.
  *
  * Narrower than the set the driver accepts, and each exclusion is a decision:
- *   - 64-bit integers are excluded because no identifier in this slice is one. AAP IR-6 records
- *     that 107 of 113 entities declare a 32-character string primary key, and the Sw* columns this
- *     port reads and writes carry no 64-bit integer key.
  *   - Binary values are excluded because the slice stores none: an image is a file NAME on
  *     model/entity/Sku.cfc and the bytes live outside the database entirely.
  *   - Nested arrays and objects are excluded because the driver would expand or name-map them,
@@ -521,8 +545,30 @@ const PLACEHOLDER = '?';
  *
  * A column that legitimately holds no value is bound as `null`, which is the value MySQL stores;
  * that is the only way to express absence here, and it is deliberately the explicit one.
+ *
+ * 64-BIT INTEGERS ARE INCLUDED, AND THAT IS A CORRECTION RATHER THAN A WIDENING FOR ITS OWN SAKE. No
+ * identifier in this slice is one — AAP IR-6 records that 107 of 113 entities declare a 32-character
+ * string primary key — so excluding them looked free. It was not: both parameter narrowers in
+ * src/adapters/mysql/** accept an exact 64-bit integer at run time, so a value bound through the
+ * adapter funnels can legitimately arrive here as one, and the driver's own parameter type accepts it.
+ * Declaring otherwise made this type disagree with the layer that feeds it while still compiling,
+ * which is precisely the kind of quiet mismatch this file's compile-time port assertion now exists to
+ * catch. Note that the pool's transport options ask the driver to hand 64-bit values BACK as strings,
+ * so this inclusion concerns what may be BOUND and nothing about what is read.
+ *
+ * ⭐ `bigint` IS ADMITTED, AND ITS ADMISSION IS EVIDENCED RATHER THAN PERMISSIVE. An earlier revision
+ * of this type excluded it, reasoning from AAP IR-6 that 107 of 113 entities declare a 32-character
+ * STRING primary key, so no identifier in the slice is a 64-bit integer. That reasoning is sound about
+ * IDENTIFIERS and silent about MONEY: `model/entity/Sku.cfc:L55-L57` declares `price`, `listPrice` and
+ * `renewalPrice` as `big_decimal`, and a caller holding one of those exactly, rather than as a lossy
+ * `number`, is binding a legitimate scalar. The driver agrees — its own `ExecuteValues` union admits
+ * `bigint` — and both consumers in ../adapters/mysql/ had independently reached the same conclusion
+ * and written their own local unions that admit it. Excluding it here therefore did not prevent a
+ * 64-bit value from being bound; it only prevented the SHARED type from describing what was already
+ * happening, and left three near-identical unions to drift apart. One union, stated once, is the
+ * contract now.
  */
-export type BoundValue = string | number | boolean | Date | null;
+export type BoundValue = string | number | bigint | boolean | Date | null;
 
 /**
  * What may appear inside an interpolation of the {@link sql} tag.
@@ -564,7 +610,7 @@ export class PreparedStatement {
   public readonly values: readonly BoundValue[];
 
   /**
-   * The nominal marker that makes this descriptor unforgeable.
+   * The nominal marker that makes this descriptor unsatisfiable by a bare object literal.
    *
    * A private CONSTRUCTOR alone is not enough, and the gap is easy to miss. TypeScript is
    * structurally typed, so a class whose every member is public stays satisfiable by any object
@@ -659,6 +705,88 @@ export class PreparedStatement {
 
     return new PreparedStatement(text, values);
   }
+
+  /**
+   * Builds a descriptor from a statement that ALREADY carries its placeholders, plus the values to
+   * bind to them in order.
+   *
+   * ==============================================================================================
+   * ⚠️ THIS IS A NARROWER GUARANTEE THAN {@link compose}, AND THE DIFFERENCE IS STATED RATHER THAN
+   * GLOSSED. IT IS NOT A BACK DOOR AROUND DECISION J.
+   * ==============================================================================================
+   * {@link compose} can prove a statement is safe, because it never sees the statement as a string:
+   * it receives the literal fragments separately from the interpolated values and therefore KNOWS
+   * that no value became text. This member receives text that is already assembled, so it cannot
+   * make that proof. What it can do — and does — is enforce the one invariant that makes positional
+   * binding meaningful: exactly one written placeholder per supplied value, in order.
+   *
+   * WHY IT EXISTS AT ALL. ../adapters/mysql/QueryRunner.ts and ../adapters/mysql/UnitOfWork.ts are
+   * ports of `model/dao/HibachiDAO.cfc` and of the request-end flush, and their published surface is
+   * the legacy pair `(sql, params)` — the direct shape of `ormExecuteQuery(hql, positionalParams)`,
+   * which AAP rule R4 requires be preserved one-for-one. Those two modules cannot call {@link sql}
+   * on a caller's behalf, because a tagged template's fragments are fixed at the CALL SITE and there
+   * is no way to synthesise a `TemplateStringsArray` from a runtime string without defeating the
+   * very check {@link compose} performs. The alternative to this member was a cast at each adapter's
+   * boundary asserting that a hand-built object literal is a `PreparedStatement`; the nominal marker
+   * on this class exists precisely to make that impossible, and reaching for it anyway would have
+   * been the "cast around the mismatch" this port must not do. One narrow, documented, arity-checked
+   * construction route inside the module that owns the type is the honest form of the same bridge.
+   *
+   * WHY ITS CALLERS ARE NEVERTHELESS SAFE, WHICH IS A PROPERTY OF THEM AND NOT OF THIS MEMBER:
+   *   - Every statement those two adapters bind is built from module-level string constants declared
+   *     in their own files, never from request data, and never by concatenating a caller's value.
+   *   - The only run-time-varying parts of any of those statements are table and column identifiers,
+   *     and each one passes through `assertTableName` or `assertColumnName`, which resolve a name
+   *     against a closed whitelist derived from the in-scope entity declarations and throw on a miss.
+   *     That is DECISION J's identifier rule, enforced where an identifier is chosen.
+   *   - Repeated placeholders — one `EXISTS` clause per selected option at
+   *     `model/dao/SkuDAO.cfc:L107-L128`, or the `NOT IN` list at `model/dao/OptionDAO.cfc:L93-L116`
+   *     — are generated as a placeholder per value and bound, never interpolated as text.
+   * A future caller that does not hold those properties must use {@link sql} instead. This member
+   * grants no capability that a caller could not already have reached by calling the driver
+   * directly; what it grants is that such a call now goes through the ONE prepared-only boundary this
+   * module owns, so the driver pool stays private and every execution is still a described statement.
+   *
+   * ⭐ THE ARITY CHECK IS A REAL CHECK, NOT A FORMALITY. An off-by-one between placeholders and
+   * values is the failure mode positional binding is prone to and the one the driver reports worst:
+   * MySQL answers a short value list with a generic protocol error naming neither the statement nor
+   * the position, and a long one is silently accepted with the surplus ignored. Refusing both here
+   * turns that into a `DomainError` raised before the statement leaves this module, naming the two
+   * counts. A statement whose text contains a quoted literal `?` inside a string constant would be
+   * miscounted and refused; that is a loud failure rather than a mis-bind, and no statement in the
+   * slice contains one.
+   *
+   * @param sql the statement text, with one placeholder written for each value
+   * @param values the values to bind, in the order their placeholders appear
+   * @returns the frozen descriptor
+   * @throws DomainError when the statement is blank, or when the number of placeholders written in
+   *   the statement does not equal the number of values supplied
+   */
+  public static bind(sql: string, values: readonly BoundValue[]): PreparedStatement {
+    // A blank statement can only be a construction fault upstream. Refused here so it cannot reach
+    // the driver as an empty query, which MySQL answers with a syntax error naming nothing useful.
+    if (sql.trim().length === 0) {
+      throw new DomainError(
+        'A prepared statement cannot be built from blank statement text.',
+        // The counts are safe to report; the statement text and the values are not, and neither is
+        // named here or anywhere else in this module (AAP 0.8.3.9).
+        { context: { valueCount: values.length } },
+      );
+    }
+
+    const placeholderCount = sql.split(PLACEHOLDER).length - 1;
+
+    if (placeholderCount !== values.length) {
+      throw new DomainError(
+        'A prepared statement must write exactly one placeholder for each bound value. ' +
+          'The statement and the value list disagree, so binding it positionally would either ' +
+          'shift every value after the discrepancy or drop the surplus silently.',
+        { context: { placeholderCount, valueCount: values.length } },
+      );
+    }
+
+    return new PreparedStatement(sql, values);
+  }
 }
 
 /**
@@ -707,12 +835,14 @@ export function sql(
  * routing it back through the pool would send it to an arbitrary connection and silently place it
  * outside the transaction.
  *
- * Declared by this port rather than derived from the driver's pooled-connection type, for the
- * reason DECISION J sets out: the driver's prepared-execution signature takes a statement string
- * and an optional value list, so a view derived from it would accept an assembled statement and
- * permit a call that binds nothing. Execution here therefore takes a {@link PreparedStatement} and
- * nothing else. The result and field-metadata types remain the driver's own, and the generic
- * parameter is passed straight through, so a caller still names the result shape it expects (S1).
+ * Declared by this port rather than derived from the driver's pooled-connection type. Execution
+ * takes the statement text and a MANDATORY bound-value list — mandatory because the driver's own
+ * signature makes the list optional, and an optional list permits a call that binds nothing while
+ * the text carries interpolated data. The value list is also narrowed to {@link BoundValue}, so a
+ * nested array or object cannot be handed over for the driver to expand into an unpredictable
+ * number of bound values. The result and field-metadata types remain the driver's own, and the
+ * generic parameter is passed straight through, so a caller still names the result shape it expects
+ * (S1). See DECISION J for where the assembled-statement guarantee lives now.
  *
  * The text-substituting execution member, the identifier-quoting helpers and everything else the
  * driver's connection publishes — changing user, destroying, pausing, preparing, unpreparing,
@@ -728,11 +858,13 @@ export interface TransactionalConnection {
   /**
    * Runs one statement on this connection, inside whatever transaction it has begun.
    *
-   * @param statement the descriptor to execute, values already bound in order
+   * @param sql the statement text, carrying one `?` placeholder per bound value
+   * @param values the values to bind, in placeholder order
    * @returns the driver's result together with its field metadata
    */
   execute<TResult extends QueryResult = QueryResult>(
-    statement: PreparedStatement,
+    sql: string,
+    values: readonly BoundValue[],
   ): Promise<[TResult, FieldPacket[]]>;
 
   /** Opens a transaction on this connection. */
@@ -746,6 +878,17 @@ export interface TransactionalConnection {
 
   /** Returns this connection to the pool. Belongs in a `finally`. */
   release(): void;
+
+  /**
+   * Takes this connection permanently out of service instead of returning it to the pool.
+   *
+   * REQUIRED, NOT OPTIONAL, AND NOT DEFENSIVE PROGRAMMING. A connection whose commit or roll-back
+   * itself failed has an UNKNOWN transaction state; releasing it would hand that state to the next
+   * invocation that checks it out of a warm pool, which is the silent cross-invocation bleed M7
+   * exists to prevent. src/adapters/mysql/UnitOfWork.ts releases only a connection whose state is
+   * known and destroys it otherwise, and it cannot do that unless the boundary offers the choice.
+   */
+  destroy(): void;
 }
 
 /**
@@ -759,17 +902,38 @@ export interface TransactionalConnection {
  *
  *   1. The unsafe path is unreachable. Only prepared execution is exposed, so client-side text
  *      substitution cannot be reached through an injected dependency at all (DECISION D).
- *   2. An assembled statement is unreachable as well, because execution takes a descriptor rather
- *      than a string and a bound value list is not optional (DECISION J). Property 1 alone left
- *      this open.
+ *   2. A call that binds nothing is unreachable, because the bound-value list is not optional here
+ *      as it is on the driver's own signature, and it is narrowed to {@link BoundValue} so the
+ *      driver cannot be asked to expand a nested array or object into an unpredictable number of
+ *      bound values.
  *   3. The pool cannot be closed by a consumer, preserving the warm reuse DECISION A exists for.
- *   4. Substituting a test double means implementing two members, not the driver's entire pool
+ *   4. Substituting a test double means implementing three members, not the driver's entire pool
  *      interface — which matters because the legacy repository has no mocking library at all
  *      (AAP 0.4.3.6), so doubles are written by hand.
  *
  * `getConnection` yields the narrowed {@link TransactionalConnection} rather than the driver's
  * fully featured pooled connection. Without that, the withheld members would be reachable one call
  * away, and the boundary would hold on the pool while leaking on everything acquired from it.
+ *
+ * ⭐ THIS SHAPE IS WHAT THE ADAPTER LAYER'S DRIVER PORT DESCRIBES, AND THE MATCH IS PROVED AT COMPILE
+ * TIME rather than asserted here — see {@link pool}. The two adapters that speak to the database
+ * declare their dependency as `StatementPool` in src/adapters/mysql/QueryRunner.ts, and the single
+ * {@link pool} exported below satisfies it, so the composition root wires ONE pool into both. That
+ * assertion exists because the alternative already happened once: two independently reasonable
+ * descriptions of "the pool" drifted apart, the two layers stopped being assignable, and nothing
+ * caught it because no file yet imported this one.
+ *
+ * ⭐ WHY `bind` IS A MEMBER OF THE POOL AND NOT AN IMPORTABLE FUNCTION. {@link PreparedStatement}'s
+ * constructor is private and the class carries a nominal marker, so a consumer below this layer
+ * cannot produce a descriptor at all — which is the whole point of DECISION J, and which is also
+ * exactly why the two adapters whose published surface is the legacy `(sql, params)` pair could not
+ * be wired to this type without either a cast or a route to construction. They cannot IMPORT the
+ * route, because this module creates the pool and reads the environment at load time, so importing
+ * it from an adapter would make every adapter unusable without a configured database and would break
+ * a test suite that deliberately bootstraps nothing (see jest.config.ts). Publishing construction as
+ * a member of the injected surface resolves both constraints at once: the adapters depend on this
+ * TYPE ONLY, receive the capability as data, and remain constructible in a test with a hand-written
+ * double. {@link PreparedStatement.bind} documents what the capability does and does not guarantee.
  */
 export interface DatabasePool {
   /**
@@ -779,11 +943,13 @@ export interface DatabasePool {
    * {@link getConnection} instead, because the pool would otherwise route it to an arbitrary
    * connection and silently place it outside the transaction.
    *
-   * @param statement the descriptor to execute, values already bound in order
+   * @param sql the statement text, carrying one `?` placeholder per bound value
+   * @param values the values to bind, in placeholder order
    * @returns the driver's result together with its field metadata
    */
   execute<TResult extends QueryResult = QueryResult>(
-    statement: PreparedStatement,
+    sql: string,
+    values: readonly BoundValue[],
   ): Promise<[TResult, FieldPacket[]]>;
 
   /**
@@ -792,6 +958,30 @@ export interface DatabasePool {
    * @returns a pooled connection the caller must release when the transaction has finished
    */
   getConnection(): Promise<TransactionalConnection>;
+
+  /**
+   * Describes a statement that already carries its placeholders, so it can be executed through
+   * {@link execute} or through {@link TransactionalConnection.execute}.
+   *
+   * For the two adapters that publish the legacy `(sql, params)` surface. It is a strictly narrower
+   * guarantee than the {@link sql} tag, and {@link PreparedStatement.bind} sets out exactly what it
+   * does and does not prove, why it exists, and the obligation it places on a caller.
+   *
+   * ⭐ DECLARED `this: void`, WHICH IS A PROMISE ABOUT THE MEMBER AND NOT A FORMALITY. Unlike the other
+   * two members, this one is a PURE FUNCTION: it touches no connection, no pool and no state, so it
+   * behaves identically whether it is called as `pool.bind(…)` or detached and passed along as a value.
+   * ../adapters/mysql/UnitOfWork.ts does exactly that — it hands the binder down to each scope executor
+   * it builds — and without this annotation such a hand-off is indistinguishable, to a reader and to the
+   * linter alike, from detaching a method that silently depends on its receiver. Stating it in the type
+   * makes the safety checkable instead of asserted, and it obliges every implementation to keep the
+   * member receiver-independent.
+   *
+   * @param sql the statement text, with one placeholder written for each value
+   * @param values the values to bind, in the order their placeholders appear
+   * @returns the frozen descriptor
+   * @throws DomainError when the statement is blank or the placeholder and value counts disagree
+   */
+  bind(this: void, sql: string, values: readonly BoundValue[]): PreparedStatement;
 }
 
 /**
@@ -876,9 +1066,20 @@ const poolOptions: PoolOptions = {
    * `listPrice`, `price` and `renewalPrice` at [model/entity/Sku.cfc:L55-L57] and
    * `calculatedSalePrice` at [model/entity/Product.cfc:L62]. Hibernate mapped those to Java
    * `BigDecimal`, an EXACT arbitrary-precision type. An IEEE-754 double is not one, so the
-   * transport has to hand the port the exact digits and let the port decide what is representable.
+   * transport has to hand the port the exact digits.
    *
-   * MEASURED against the MySQL 8.4 this subtree targets, with `CAST` literals:
+   * F07 — AND THE PORT NOW KEEPS THEM RATHER THAN DECIDING WHAT IS REPRESENTABLE. An earlier revision of
+   * this sentence ended *"and let the port decide what is representable"*, which described a mapper that
+   * converted to a double and refused the conversions that lost digits. Those four properties are typed
+   * `ExactDecimal` — the digits, as text — from the mapper through the domain to the bind site, so there
+   * is no representability question left to decide. What these three options guarantee is unchanged and
+   * is now load-bearing for the WHOLE round trip rather than for the read alone.
+   *
+   * MEASURED against MySQL 8.4.11 through `mysql2` 3.23.2, with `CAST` literals. F-21 — THIS PROBE
+   * REQUIRES NO `Sw*` TABLE, which is exactly why it is reproducible here while a statement probe over
+   * the catalog tables is not: every case below is a bare `SELECT CAST(…)` evaluated by the server,
+   * so it can be re-run against any reachable MySQL instance with only a database to connect to.
+   * Three connections were opened, one per option set, and each ran the same three casts:
    *
    *   default (all three unset)
    *     DECIMAL(19,2)  '100.00'                  -> string "100.00"        exact
@@ -905,6 +1106,41 @@ const poolOptions: PoolOptions = {
    * `readOptionalExactDecimal` in the row mappers additionally REFUSES a monetary column that
    * arrives as a JavaScript number, so a regression here fails loudly instead of quietly.
    *
+   * ==============================================================================================
+   * F-21 — THE EVIDENCE BOUNDARY FOR EVERY SERVER-BEHAVIOUR CLAIM IN THIS SUBTREE
+   * ==============================================================================================
+   * THIS IS THE ONE PLACE THE BOUNDARY IS STATED. `./../adapters/mysql/MySqlBrandRepository.ts` and
+   * `./../adapters/mysql/MySqlProductRepository.ts` each record their own probe and point here for the
+   * boundary rather than restating it, because a boundary restated in three files goes stale in three
+   * places from one commit.
+   *
+   * WHAT THE `Sw*` SCHEMA IS, AND WHY IT IS ABSENT. The legacy application never carried DDL: the CFML
+   * engine's Hibernate integration generated every table from the `property` metadata on the entity
+   * components, driven by `config/configORM.cfm`. So there is no schema file in this repository to
+   * apply, no CFML engine available here to generate one, and inventing one would mean authoring a
+   * schema the source does not state (S9). The `Slatwall` database this subtree connects to therefore
+   * contains ZERO tables.
+   *
+   * WHAT THAT DOES AND DOES NOT PERMIT. Claims fall into three kinds, and they are not equally
+   * evidenced — saying so is the point of this note:
+   *
+   *   1. NEEDS NO SCHEMA, FULLY REPRODUCED. Driver and type-transport behaviour, evaluated by the
+   *      server without reference to any table — the `CAST` table above. Re-runnable as written.
+   *   2. NEEDS A TABLE BUT NOT THIS SCHEMA, REPRODUCED OVER DISCLOSED STAND-INS. Statement-shape and
+   *      affected-row semantics, which turn on the shape of the statement and the connection's
+   *      capabilities rather than on column types — the error-1093 probe and the affected-row probe.
+   *      Both were run over minimal stand-in tables in a scratch database that was dropped afterwards,
+   *      and both record that fact at their own site. `Slatwall` was left at zero tables.
+   *   3. NEEDS THE AUTHORITATIVE SCHEMA, NOT REPRODUCED AND NOT CLAIMED. Anything that depends on the
+   *      real column types, nullability, collation, index or engine choices — query plans, uniqueness
+   *      enforcement, foreign-key cascade behaviour, collation-dependent comparison. No claim of that
+   *      kind is asserted anywhere in this subtree, and none may be added while the schema is absent.
+   *
+   * WHEN A GENERATED SCHEMA BECOMES AVAILABLE, the kind-2 probes should be re-run against it and
+   * promoted to executable integration tests, and the stand-in disclosures removed. Until then the
+   * distinction above is the honest statement of what is known, and no figure is inferred from a probe
+   * that did not run (AAP §0.7.3 standard 9).
+   *
    * ⛔ THIS GROUP IS ORTHOGONAL TO THE TRANSPORT-SECURITY AND POOL-BOUND OPTIONS ABOVE, AND NEITHER
    * GROUP SUPERSEDES THE OTHER. `ssl`, `connectionLimit`, `queueLimit`, `waitForConnections` and
    * `connectTimeout` govern HOW the bytes travel and how many connections may be in flight; these
@@ -922,32 +1158,41 @@ const poolOptions: PoolOptions = {
  *
  * Deliberately NOT exported. Everything below the config layer receives {@link pool} instead, the
  * narrowed surface that withholds client-side text substitution, identifier quoting, shutdown and
- * connectivity probing (DECISION D) and accepts only statement descriptors (DECISION J). Keeping
- * this value module-private is what makes those boundaries hold: an exported driver pool would let
- * any consumer reach straight past them.
+ * connectivity probing (DECISION D) and requires a mandatory, value-narrowed bound list (DECISION J).
+ * Keeping this value module-private is what makes those boundaries hold: an exported driver pool
+ * would let any consumer reach straight past them.
  */
 const driverPool: Pool = createPool(poolOptions);
 
 /**
- * Narrows a pooled connection to the transaction surface, and to descriptor-only execution.
+ * Narrows a pooled connection to the transaction surface, and to prepared-only execution.
  *
- * The bound values are copied out of the frozen descriptor because the driver's parameter type is a
- * mutable array; the copy is what lets the descriptor stay read-only without a type assertion
- * (standard S1). Nothing else is translated — the driver's result is returned exactly as it comes
- * back, since result shaping belongs to src/adapters/mysql/rowMappers.ts (AAP 0.4.1.7).
+ * The bound values are copied because the driver's parameter type is a mutable array; the copy is
+ * what lets the caller's list stay read-only without a type assertion (standard S1). Nothing else is
+ * translated — the driver's result is returned exactly as it comes back, since result shaping belongs
+ * to src/adapters/mysql/rowMappers.ts (AAP 0.4.1.7).
+ *
+ * `destroy` and `release` are BOTH forwarded, and the choice between them belongs to the boundary
+ * that checked the connection out rather than to this file: only that boundary knows whether the
+ * transaction settled.
  *
  * @param connection the pooled connection just checked out of the driver's pool
  * @returns the same connection seen through {@link TransactionalConnection}
  */
 function asTransactionalConnection(connection: PoolConnection): TransactionalConnection {
   return Object.freeze({
-    execute: <TResult extends QueryResult = QueryResult>(statement: PreparedStatement) =>
-      connection.execute<TResult>(statement.sql, [...statement.values]),
+    execute: <TResult extends QueryResult = QueryResult>(
+      sql: string,
+      values: readonly BoundValue[],
+    ) => connection.execute<TResult>(sql, [...values]),
     beginTransaction: () => connection.beginTransaction(),
     commit: () => connection.commit(),
     rollback: () => connection.rollback(),
     release: () => {
       connection.release();
+    },
+    destroy: () => {
+      connection.destroy();
     },
   });
 }
@@ -963,10 +1208,11 @@ function asTransactionalConnection(connection: PoolConnection): TransactionalCon
  * (DECISION C, DECISION I). Everything the driver leaves at its documented behaviour is left there
  * deliberately; read DECISION C before configuring anything further.
  *
- * The value is a narrowing wrapper rather than the driver's pool itself, so that execution accepts
- * only a {@link PreparedStatement} and the withheld members stay unreachable, on the pool and on
- * every connection drawn from it alike (DECISION D, DECISION J). It is frozen, so a consumer cannot
- * substitute its own execution behaviour after load.
+ * The value is a narrowing wrapper rather than the driver's pool itself, so that the withheld members
+ * stay unreachable — on the pool and on every connection drawn from it alike — and so that a bound
+ * value list can be neither omitted nor widened past the scalar shapes MySQL binds one-for-one
+ * (DECISION D, DECISION J). It is frozen, so a consumer cannot substitute its own execution behaviour
+ * after load.
  *
  * Evaluating this module does not open a socket and does not verify that the server is reachable;
  * connections are established lazily on first use (DECISION A). It does inherit the eager
@@ -984,8 +1230,38 @@ function asTransactionalConnection(connection: PoolConnection): TransactionalCon
  * ```
  */
 export const pool: DatabasePool = Object.freeze({
-  execute: <TResult extends QueryResult = QueryResult>(statement: PreparedStatement) =>
-    driverPool.execute<TResult>(statement.sql, [...statement.values]),
+  execute: <TResult extends QueryResult = QueryResult>(
+    sql: string,
+    values: readonly BoundValue[],
+  ) => driverPool.execute<TResult>(sql, [...values]),
   getConnection: async (): Promise<TransactionalConnection> =>
     asTransactionalConnection(await driverPool.getConnection()),
+  // Construction is published as data rather than imported, for the reason recorded on
+  // {@link DatabasePool}. It touches neither the driver nor the pool: it is a pure function of its
+  // arguments that validates arity and returns a frozen descriptor.
+  bind: (sql: string, values: readonly BoundValue[]): PreparedStatement =>
+    PreparedStatement.bind(sql, values),
 });
+
+/**
+ * Compile-time proof that {@link pool} satisfies the adapter layer's driver port.
+ *
+ * ⭐ WHY THIS EXISTS AT ALL. Two files independently described "the connection pool" — this one, and
+ * the driver port in src/adapters/mysql/QueryRunner.ts that the two database-speaking adapters
+ * declare their dependency as. Both descriptions were reasonable, neither was wrong on its own, and
+ * they were NOT assignable to each other. Nothing detected it, because at that point no file in the
+ * subtree imported this one: the composition root had not been written yet, so the only place the two
+ * would have met did not exist. The result was a service whose pool could not be wired to its
+ * adapters, discovered only by someone attempting the wiring. This declaration makes that class of
+ * drift a compile error in whichever file drifts, on the very next type-check.
+ *
+ * It is a TYPE-ONLY reference and it is erased entirely: no import statement survives compilation, no
+ * module is loaded at run time, no cycle is created (the adapter does not import this module), and
+ * nothing is added to the bundle. It creates no dependency of this module on that one — only a
+ * checked statement that the shape this module exports is the shape that module requires.
+ *
+ * `void` on the alias, because the alias exists to be CHECKED rather than used; the assertion is
+ * performed by the generic constraint, so there is nothing to reference afterwards.
+ */
+type PoolSatisfiesAdapterDriverPort<TPool extends StatementPool> = TPool;
+export type ExportedPoolShape = PoolSatisfiesAdapterDriverPort<typeof pool>;

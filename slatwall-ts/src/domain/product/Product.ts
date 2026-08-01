@@ -84,8 +84,8 @@
  *   S5 dependency pinning — satisfied negatively: no third-party import and no Node builtin.
  *   S6 test enablement — `new Product()` takes no arguments; see the TRACEABLE TEST CONTRACT block.
  *   S7 preserve and annotate, do not repair — this file owns defect D5 plus five `TODO(parity)`
- *      annotations. No new defect identifier is introduced here; §0.6.7 catalogues D1-D21 and the
- *      port's register is closed at D1-D24.
+ *      annotations. No new defect identifier is introduced here; AAP §0.6.7 catalogues D1-D21, and the
+ *      live register bound is stated only at `src/ports/repositories/SkuRepository.ts`.
  *   S8 / M7 flag mismatches — every memo is per-instance; no cache is added.
  *   S9 invent nothing — no default setting value, no phantom property, no invented framework
  *      member, no invented error text, no service level.
@@ -121,7 +121,11 @@ import {
   noSkusFoundForSelectedOptionsMessage,
 } from '../../errors/DomainError';
 import { ValidationError, type ValidationErrors } from '../../errors/ValidationError';
-import { replaceStringTemplate, type PropertyIdentifierResolver } from '../../util/formatting';
+import {
+  replaceStringTemplate,
+  type ExactDecimal,
+  type PropertyIdentifierResolver,
+} from '../../util/formatting';
 
 /*
  * G6 TRANSLATION DECISION — `import type` FOR THE FOUR IN-SCOPE COLLABORATORS, AND WHY THE MUTUAL
@@ -356,7 +360,8 @@ export type ProductOutOfScopeAssociation = object;
  * getters are implicit ORM accessors over nullable columns and CFML returns null from them; the four
  * retained delegations pass that straight through (see their doc comments). The image members are
  * typed as the legacy declared them at [`:L320-L338`] — `string`, `string`, `string`, `string` and
- * `boolean`.
+ * `boolean`. The three monetary members are typed {@link ExactDecimal} per F07, because
+ * `ormtype="big_decimal"` is exact and a double is not.
  *
  * TODO(boundary): the rightful owners are `PricingPort` for the four price and currency reads and
  * `ImagePathPort` for the five image reads (§0.2.2.7). No file is created under `src/ports/` here.
@@ -364,11 +369,13 @@ export type ProductOutOfScopeAssociation = object;
 export interface ProductDefaultSkuDelegate {
   getCurrencyCode(): string | undefined;
 
-  getPrice(): number | undefined;
+  /* F07 — the three monetary reads are {@link ExactDecimal}, matching `Sku`'s fields; `big_decimal` is
+   * carried as exact digits rather than as a double. `getCurrencyCode` is unaffected. */
+  getPrice(): ExactDecimal | undefined;
 
-  getRenewalPrice(): number | undefined;
+  getRenewalPrice(): ExactDecimal | undefined;
 
-  getListPrice(): number | undefined;
+  getListPrice(): ExactDecimal | undefined;
 
   getImageDirectory(): string;
 
@@ -441,15 +448,26 @@ export interface ProductSkuOptionFinder {
  *   3. Ordering is `sortOrder` ASCENDING [`:L257`], which is what makes the returned order
  *      meaningful to callers and what the SKU-ordering query independently depends on.
  *
- * ✅ IMPLEMENTED — THIS IS NO LONGER A BOUNDARY. `OptionService.getOptionGroupsForProduct`
- * (`src/services/OptionService.ts`) is the owner, and it carries all three semantics above: it sets
+ * ✅ IMPLEMENTED — THIS IS NO LONGER A BOUNDARY. `findProductOptionGroups` in
+ * `src/services/OptionService.ts` is the owner, and it carries all three semantics above: it sets
  * `selectDistinctFlag`, filters on the three-hop `options.skus.product.productID` path, and orders by
  * `sortOrder` ASC. It reads `records`, not `pageRecords`, because [`:L258`] calls `getRecords()`.
- * That module asserts the relation at compile time rather than in prose — see
- * `OptionServiceIsProductOptionGroupFinder` — so a drift between this interface and its implementor
- * fails the build at the seam. Only the `SmartListQueryPort` IMPLEMENTATION beneath it
- * (`src/adapters/mysql/SmartListQueryBuilder.ts`) is still outstanding, and that is an adapter
- * concern, not a missing owner for this query.
+ * `createProductOptionFinders` in that module binds it to the port and is what a caller passes here.
+ * The relation is asserted at compile time rather than in prose — see
+ * `ProductOptionFindersSatisfyGroupFinder` there and `ProductOptionFinderPairSatisfiesGroupFinder` in
+ * `src/services/ProductService.ts` — so a drift between this interface and the query that serves it
+ * fails the build at the seam.
+ *
+ * ⚠️ AN EARLIER REVISION NAMED A PUBLIC SERVICE MEMBER AS THE OWNER AND CALLED THE ADAPTER BENEATH IT
+ * OUTSTANDING. Both statements are corrected. The owner is a module-scope function, not a member of
+ * `OptionService`, because the question it answers is THIS ENTITY's — `getOptionGroups()` below — and the
+ * legacy does not put it on that service either. (An earlier wording gave the reason as an arity budget,
+ * "two extra public members would widen the service past the seven AAP §0.4.2.4 and §0.4.2.5 declare";
+ * that reason is withdrawn where it is stated, in `src/services/OptionService.ts`, because the service
+ * does now carry recorded additive members and a member count was never the thing being preserved.)
+ * And the `SmartListQueryPort` implementation is DELIVERED —
+ * `src/adapters/mysql/SmartListQueryBuilder.ts` implements it and names `model/entity/Product.cfc:L254`
+ * among the call sites its distinct handling exists for. Nothing beneath this interface is missing.
  */
 export interface ProductOptionGroupFinder {
   /**
@@ -475,13 +493,16 @@ export interface ProductOptionGroupFinder {
  *      exactly, so the mapping stays one-for-one.
  *   3. Ordering is `sortOrder` ASCENDING [`:L345`].
  *
- * ✅ IMPLEMENTED — THIS IS NO LONGER A BOUNDARY. `OptionService.getOptionsForProductByOptionGroup`
- * (`src/services/OptionService.ts`) is the owner, carrying all three semantics: `selectDistinctFlag`,
+ * ✅ IMPLEMENTED — THIS IS NO LONGER A BOUNDARY. `findProductOptionsByOptionGroup` in
+ * `src/services/OptionService.ts` is the owner, carrying all three semantics: `selectDistinctFlag`,
  * BOTH filters in the legacy application order, and `sortOrder` ASC, reading `records` per [`:L346`].
  * Its two filters sit in ONE conjunctive group, because the legacy `addFilter` conjoins entries within
  * a group [org/Hibachi/HibachiSmartList.cfc:L590] and only separate groups disjoin [`:L571`].
- * `OptionServiceIsProductOptionFinder` asserts the relation at compile time. Only the
- * `SmartListQueryPort` implementation beneath it remains outstanding, as an adapter concern.
+ * `createProductOptionFinders` binds it to the port, and `ProductOptionFindersSatisfyOptionFinder`
+ * asserts the relation at compile time. The same two corrections recorded on
+ * {@link ProductOptionGroupFinder} apply here: the owner is a module-scope function rather than a
+ * public service member, and the `SmartListQueryPort` implementation beneath it is DELIVERED in
+ * `src/adapters/mysql/SmartListQueryBuilder.ts` rather than outstanding.
  */
 export interface ProductOptionFinder {
   /**
@@ -568,15 +589,41 @@ export interface ProductUnusedOptionFinder {
  * non-empty installation. Passing the identifier restores the legacy behaviour rather than improving
  * on it, so IR-9 / G4 are satisfied: nothing is being "fixed" except the port.
  *
- * ⚠️ THE SHAPE IS THE SERVICE'S, NOT A PRODUCT-SPECIFIC NARROWING — `(skuID?, productID?)`, SKU first.
- * A one-parameter `(productID)` contract would read better here but would NOT be satisfied by
- * `SkuService.getTransactionExistsFlag`, forcing an adapter in the composition root whose only job is
- * to move a value from slot 1 to slot 2. Since both identifiers are 32-character strings (IR-6), that
- * adapter would type-check even when written backwards and would silently query the wrong column. The
- * service-shaped contract removes that failure mode entirely: this entity passes `undefined` first and
- * its own identifier second, visibly, at the one call site.
+ * ⚠️ THE SHAPE IS CALLER-ORDERED AND SHARED, NOT A PRODUCT-SPECIFIC NARROWING — `(skuID?, productID?)`,
+ * SKU first, because `model/entity/Sku.cfc:L594` supplies the first slot and
+ * `model/entity/Product.cfc:L626` the second. A one-parameter `(productID)` contract would read better
+ * here but would fork the declaration into two, and this entity passes `undefined` first and its own
+ * identifier second, visibly, at its one call site.
+ *
+ * ⛔ AN EARLIER REVISION JUSTIFIED THIS SHAPE BY SAYING IT LET `SkuService.getTransactionExistsFlag` BE
+ * BOUND DIRECTLY, "removing that failure mode entirely". IT DOES THE OPPOSITE. The service member
+ * declares ZERO arguments — AAP 0.4.2.2 Discrepancy 4 freezes it that way — and TypeScript accepts a
+ * lower-arity function wherever a higher-arity one is expected, so binding the service here compiled
+ * and then DISCARDED this entity's identifier, leaving the DAO's else-branch to answer a wider
+ * question. The consequence is precisely the one the member below documents: this flag gates a delete
+ * at `model/validation/Product.json:L12`, so a widened `true` blocks deletion of products it should
+ * not, with nothing reporting the substitution.
+ *
+ * ⭐ WHICH IS WHY THE CONTRACT CARRIES {@link ProductTransactionExistenceChecker.argumentOrder} — a
+ * required member the zero-argument service does not declare, so the mis-binding is now a type error
+ * rather than a silent widening. The single correct implementation is `createTransactionExistenceChecker`
+ * in `src/adapters/mysql/MySqlSkuRepository.ts`, which crosses this caller order onto the repository
+ * order `transactionExists(productID?, skuID?)` that AAP 0.4.2.6 pins. The brand cannot catch a crossing
+ * written BACKWARDS — both identifiers are 32-character strings (IR-6), so a swapped adapter
+ * type-checks — which is why the crossing exists in exactly one place beside the implementation it
+ * inverts and is held by behavioural order assertions rather than by types.
  */
 export interface ProductTransactionExistenceChecker {
+  /**
+   * Declares which slot means what, and exists to make a mis-binding fail to compile. Structurally
+   * identical to `SkuTransactionExistenceChecker.argumentOrder` in `src/domain/sku/Sku.ts` — declared
+   * separately, with no import between the two entity modules, so ONE object still satisfies both
+   * contracts without this file taking a dependency on that one.
+   *
+   * ⛔ NOT A RUNTIME SWITCH. Nothing reads this value to decide anything.
+   */
+  readonly argumentOrder: 'skuID-first-productID-second';
+
   /**
    * @param skuID - Accepted so one implementation serves the SKU-side checker too. THIS ENTITY MUST
    *   LEAVE IT `undefined`: the DAO lets `skuID` win when both are present
@@ -748,13 +795,23 @@ export class Product implements AuditableEntity, ManagedEntity {
    * every other scalar is optional: a product is never in a state where it has no `productID`
    * property, only in a state where that property still holds the unsaved value.
    *
-   * IDENTIFIERS ARE GENERATED BY THE PERSISTENCE LAYER, NOT HERE (IR-6). Per §6.2, 107 of the 113
-   * legacy entities declare this exact id shape, so the value is a 32-CHARACTER LOWERCASE HEX
-   * STRING WITH NO DASHES — never a dashed RFC-4122 value and never an auto-increment number.
-   * Generation belongs to `src/util/uuid.ts`, invoked by the layer that owns the write. This module
-   * therefore does NOT import that utility, does not import any platform random-value module, and calls
-   * no generator anywhere: an entity that minted its own key would take the decision away from
-   * `src/adapters/mysql/UnitOfWork.ts`.
+   * IDENTIFIERS ARE NEVER GENERATED HERE (IR-6). Per §6.2, 107 of the 113 legacy entities declare
+   * this exact id shape, so the value is a 32-CHARACTER LOWERCASE HEX STRING WITH NO DASHES — never a
+   * dashed RFC-4122 value and never an auto-increment number. Generation belongs to
+   * `src/util/uuid.ts`, and this module does NOT import that utility, does not import any platform
+   * random-value module, and calls no generator anywhere: an entity that minted its own key would
+   * report itself already persisted the moment it was constructed, which is the one thing
+   * {@link Product.isNew} exists to answer.
+   *
+   * WHICH LAYER DOES MINT IT, AND WHY IT IS NOT THE ADAPTER FOR THIS ENTITY.
+   * `src/services/ProductService.ts` assigns the key inside `saveProduct`, immediately before it hands
+   * the product to SKU creation. The mapping layer this port replaces could leave the decision to the
+   * flush because the flush ran BEFORE the first SKU needed its parent's key; with no flush, the key
+   * has to exist earlier than any adapter is reached, because `SwSku.productID` is written while the
+   * product row itself does not yet exist. That is a documented ordering consequence of AAP §0.6.2 and
+   * not a licence for the domain layer to mint: the service assigns the value, this field only holds
+   * it. Contrast `src/domain/product/Brand.ts`, whose key genuinely IS minted on insert by
+   * `MySqlBrandRepository.saveBrand`, because nothing reads a brand's key before its row is written.
    */
   productID: string = '';
 
@@ -880,7 +937,7 @@ export class Product implements AuditableEntity, ManagedEntity {
    * the `updateCalculatedProperties()` machinery F20 assigns to `UnitOfWork.ts`.
    */
 
-  declare calculatedSalePrice?: number;
+  declare calculatedSalePrice?: ExactDecimal;
 
   /**
    * [model/entity/Product.cfc:L63] `ormtype="integer"`. Persisted, not computed here.
@@ -1051,7 +1108,8 @@ export class Product implements AuditableEntity, ManagedEntity {
    *
    * The descriptor below therefore records the singular name the legacy would have needed
    * (`productReview`) while this comment records the attribute as actually spelled. No new defect
-   * identifier is introduced; §0.6.7 catalogues D1-D21 and the port's register is closed at D1-D24.
+   * identifier is introduced; AAP §0.6.7 catalogues D1-D21 and the live bound is stated only at
+   * `src/ports/repositories/SkuRepository.ts`.
    */
   productReviews: ProductOwnedAssociation[] = [];
 
@@ -1257,8 +1315,11 @@ export class Product implements AuditableEntity, ManagedEntity {
    * family with two-step resolution.
    *
    * `hb_formatType="currency"` is admin display metadata with no target analogue (headless service).
+   *
+   * F07 — typed {@link ExactDecimal} because {@link Product.getPrice} unions this slot with the default
+   * SKU's `price`, and the two halves of one getter must not disagree about representation.
    */
-  declare price?: number;
+  declare price?: ExactDecimal;
 
   /**
    * Per-instance memo for {@link Product.getOptionGroupsStruct} — [model/entity/Product.cfc:L242-L248].
@@ -2230,7 +2291,7 @@ export class Product implements AuditableEntity, ManagedEntity {
    * save and constrains it to a numeric data type. That rule is evaluated by
    * `src/validation/rules/product.rules.ts`, never here — see the VALIDATION CONTRACT block.
    */
-  getPrice(): number | undefined {
+  getPrice(): ExactDecimal | undefined {
     const overriddenPrice = this.price;
     if (overriddenPrice !== undefined) {
       return overriddenPrice;
@@ -2250,7 +2311,7 @@ export class Product implements AuditableEntity, ManagedEntity {
    * `Subscription`-prefixed components); this member only forwards whatever the SKU reports, so it
    * crosses no boundary of its own.
    */
-  getRenewalPrice(): number | undefined {
+  getRenewalPrice(): ExactDecimal | undefined {
     const assignedDefaultSku = this.defaultSku;
     if (assignedDefaultSku !== undefined) {
       return assignedDefaultSku.getRenewalPrice();
@@ -2265,7 +2326,7 @@ export class Product implements AuditableEntity, ManagedEntity {
    * validation rule groups key on the update flags (§0.4.1.5) — but that evaluation lives in
    * `src/validation/rules/productUpdateSkus.rules.ts`, not here.
    */
-  getListPrice(): number | undefined {
+  getListPrice(): ExactDecimal | undefined {
     const assignedDefaultSku = this.defaultSku;
     if (assignedDefaultSku !== undefined) {
       return assignedDefaultSku.getListPrice();
@@ -2632,28 +2693,37 @@ export class Product implements AuditableEntity, ManagedEntity {
    *     variables.transactionExistsFlag = the dynamic sku-service lookup, then
    *         .getTransactionExistsFlag( productID=this.getProductID() )
    *
-   * ⚠️⚠️ D23 — `productID` IS FORWARDED, AND THE EARLIER NOTE HERE MISREAD CFML. [:L626] passes a NAMED
-   * `productID` argument, and the service member it calls does declare no formal parameters —
-   * [model/service/SkuService.cfc:L285] is `public boolean function getTransactionExistsFlag()`. The
-   * mistaken inference was that "the service member never reads it, and nothing is forwarded to the
-   * query", making the flag SYSTEM-WIDE. But [`:L286`] is
+   * ⚠️⚠️ D23 — `productID` IS FORWARDED, WHICH MAKES THE LEGACY FLAG PRODUCT-SCOPED. [:L626] passes a
+   * NAMED `productID` argument, and the service member it calls declares no formal parameters —
+   * [model/service/SkuService.cfc:L285] is `public boolean function getTransactionExistsFlag()`. It
+   * would be easy to infer from that signature that the argument is dropped and the flag is
+   * SYSTEM-WIDE. It is not: [`:L286`] is
    * `getSkuDAO().getTransactionExistsFlag( argumentCollection=arguments )`, and CFML puts an
    * UNDECLARED named argument into the `arguments` scope just as it does a declared one. The whole
    * scope is forwarded, so `productID` arrives at the DAO — which declares it at
    * [model/dao/SkuDAO.cfc:L53-L55] and, finding no `skuID`, takes the `<cfelse>` branch at [`:L61`]:
    * `ss.product.productID = :productID`. THE LEGACY FLAG IS SCOPED TO THIS PRODUCT.
    *
-   * ⚠️ SO PASSING IT IS PRESERVATION, NOT ENHANCEMENT — which is what makes this consistent with G4
-   * rather than an exception to it. The system-wide reading was strictly a defect of the port. Its
-   * consequence was severe in a specific direction worth naming: this flag gates a delete
-   * (`model/validation/Product.json:L12`), so a system-wide `true` would block deletion of EVERY
-   * product in any installation that has ever recorded a single transaction.
+   * ⚠️ SO FORWARDING THE IDENTIFIER IS PRESERVATION, NOT ENHANCEMENT — which is what makes it
+   * consistent with G4 rather than an exception to it. Reading the flag as system-wide would matter in
+   * a specific direction worth naming: it gates a delete (`model/validation/Product.json:L12`), so a
+   * system-wide `true` would block deletion of EVERY product in any installation that has ever
+   * recorded a single transaction.
    *
-   * That outcome is PRESERVED. {@link ProductTransactionExistenceChecker} therefore declares NO
-   * parameters, which is a faithful record of the narrower service contract rather than an oversight,
-   * and this member does not thread its identifier through. Threading it would "fix" the scope of the
-   * check and change which deletes succeed — exactly the enhancement G4 forbids. No new defect
-   * identifier is minted for it either; §0.6.7 is closed at D1-D21.
+   * ⚠️ AN EARLIER REVISION OF THIS PARAGRAPH SAID THE OPPOSITE, AND IT WAS WRONG TWICE OVER. It read
+   * "{@link ProductTransactionExistenceChecker} therefore declares NO parameters … and this member does
+   * not thread its identifier through", which contradicted BOTH the interface — it declares
+   * `(skuID?, productID?)` at its own declaration below — AND the body immediately underneath, which does
+   * thread `this.productID` into the second slot. It also inverted the conclusion the paragraph above
+   * reaches: threading the identifier is what PRESERVES the legacy's product scope, and dropping it is
+   * what would silently widen a delete guard to system scope. G4 forbids improving on the legacy, not
+   * reproducing it.
+   *
+   * That outcome is therefore preserved BY forwarding, not by withholding. No new defect identifier is
+   * minted here — this is D23, minted and accounted for at
+   * `src/ports/repositories/SkuRepository.ts`, which also records that AAP §0.6.7 is frozen at D1–D21
+   * while the port has minted D22–D24 beyond it. No claim is made here about any register being globally
+   * closed; a single file cannot prove that.
    *
    * VALIDATION-SUPPORT MEMBER, and that is WHY it is retained under §0.2.2.6's positive list rather
    * than dropped as a service reach-through: `model/validation/Product.json:L12` declares a delete-time
@@ -2667,10 +2737,17 @@ export class Product implements AuditableEntity, ManagedEntity {
    * unpersisted entity — so the query matches no row and the flag is `false`. No sentinel guard is
    * added: short-circuiting would be behaviour the legacy does not have.
    *
-   * @param transactionChecker - `src/services/SkuService.ts` is the owner, over
-   *   `SkuRepository.transactionExists` in `src/adapters/mysql/MySqlSkuRepository.ts`, which ports the
-   *   ten-way existence chain at [model/dao/SkuDAO.cfc:L53-L98]. `SkuService` satisfies this interface
-   *   directly — asserted at compile time by `SkuServiceIsProductTransactionExistenceChecker`.
+   * @param transactionChecker - Supply `createTransactionExistenceChecker` from
+   *   `src/adapters/mysql/MySqlSkuRepository.ts`. It adapts `SkuRepository.transactionExists`, which
+   *   ports the ten-way existence chain at [model/dao/SkuDAO.cfc:L53-L98], onto this caller-ordered
+   *   contract. Its declared return type is the intersection of this interface and the SKU-side one, so
+   *   the crossing is checked at compile time where it is written — the guard an earlier revision named
+   *   here as `SkuServiceIsProductTransactionExistenceChecker`, which never existed in the subtree.
+   *   ⛔ Do NOT supply `SkuService`: {@link ProductTransactionExistenceChecker.argumentOrder} is what
+   *   makes that a type error rather than a silent widening of the question. Its
+   *   `getTransactionExistsFlag` does declare both identifiers and forwards them correctly, so the
+   *   mis-binding would no longer discard one — but the service is the route-level surface and this
+   *   entity is served by the adapter above, so the brand keeps the two roles from being confused.
    * @returns Whether a transaction references THIS product.
    */
   async getTransactionExistsFlag(
@@ -3552,11 +3629,19 @@ export type ProductNonPersistentPropertyName =
   | 'currentAccountPrice';
 
 /**
- * Product's frozen metadata declaration — the runtime answer to the seven framework introspection
- * members this class deliberately does not declare.
+ * Product's frozen metadata declaration — what `manageEntity` reads to compose the seven framework
+ * introspection members onto an instance.
  *
- * See {@link EntityMetadataDeclaration} for what each member ports and why the surface is composed
- * onto an instance by `../base/manageEntity` rather than hand-written here.
+ * ⚠️ THIS CLASS ALSO DECLARES ALL SEVEN ITSELF, AND THIS BLOCK USED TO SAY THE OPPOSITE. It read "the
+ * runtime answer to the seven framework introspection members this class deliberately does not
+ * declare … composed onto an instance by `../base/manageEntity` rather than hand-written here", and
+ * both halves were wrong. The seven are hand-written further down this module over its own frozen
+ * constants, alongside an `implements ManagedEntity` clause that obliges them; and `../base/manageEntity`
+ * is not a module — `manageEntity` is a FUNCTION exported by `../base/populate`, whose `Object.assign`
+ * shadows those prototype methods with equivalent own-property closures over this declaration.
+ * `../base/AuditableEntity` records once which classes declare the seven and which rely on composition.
+ *
+ * See {@link EntityMetadataDeclaration} for what each member ports.
  *
  * ⚠️ THIS CONSTANT IS WHY THE MODULE HEADER'S CLAIM ABOUT `entityname` NEEDED CORRECTING. The
  * `Slatwall`-prefixed LOGICAL entity name appears here as a value, because `getEntityName()`

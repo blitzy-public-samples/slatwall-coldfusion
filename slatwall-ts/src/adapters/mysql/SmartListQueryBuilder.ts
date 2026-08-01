@@ -104,10 +104,13 @@
  * reaches past the injected {@link SqlExecutor}.
  *
  * M2 IS CITED, NOT ANSWERED HERE. `integrationServices/google/views/feed/product.cfm:L9` declares a
- * 360-second render budget, far beyond the roughly 29-second synchronous integration window of a
- * request-response gateway. That decision belongs to `src/handlers/**`. Nothing here responds to it:
- * no result cap, no streaming mode, no statement timeout and no page size of this file's own
- * invention (S9).
+ * 360-second render budget, far beyond what a synchronous request-response gateway will generally allow
+ * by default. NO FIGURE IS NAMED FOR THAT WINDOW, and that is the same position `../../ports/
+ * SmartListQueryPort.ts` takes for this port and `../../handlers/googleFeedHandler.ts` takes as M2's
+ * owner: synchronous integration limits vary by gateway type, region and configuration, and this
+ * deliverable selects no gateway (AAP §0.2.2.5). That decision belongs to `src/handlers/**`. Nothing
+ * here responds to it: no result cap, no streaming mode, no statement timeout and no page size of this
+ * file's own invention (S9).
  *
  * IMPORT DIRECTION (S4)
  * ---------------------
@@ -136,9 +139,15 @@
  * @see `src/adapters/mysql/QueryRunner.ts` for the identifier whitelist and the execution boundary.
  */
 
+import type { Brand } from '../../domain/product/Brand';
+import type { Option } from '../../domain/option/Option';
+import type { OptionGroup } from '../../domain/option/OptionGroup';
+import type { Product, ProductDefaultSkuDelegate } from '../../domain/product/Product';
+import type { ProductType } from '../../domain/product/ProductType';
+import type { Sku } from '../../domain/sku/Sku';
 import { DataIntegrityError, DomainError } from '../../errors/DomainError';
 import { resolveSmartListPropertyIdentifier } from '../../ports/SmartListQueryPort';
-import { assertColumnName, assertTableName } from './QueryRunner';
+import { assertColumnName, assertTableName, toRowCountBinding } from './QueryRunner';
 import {
   mapBrandRow,
   mapOptionGroupRow,
@@ -150,6 +159,7 @@ import {
 } from './rowMappers';
 
 import type { PhysicalTableName, SqlExecutor } from './QueryRunner';
+import type { CatalogAggregateLoader } from './catalogAggregates';
 import type { MySqlRow } from './rowMappers';
 import type {
   SmartListEntityName,
@@ -157,12 +167,13 @@ import type {
   SmartListFilterValue,
   SmartListJoin,
   SmartListJoinType,
-  SmartListOrder,
   SmartListPagination,
   SmartListQuery,
   SmartListQueryPort,
   SmartListRange,
+  SmartListRecord,
   SmartListResult,
+  SmartListRootEntityName,
   SmartListWhereGroup,
 } from '../../ports/SmartListQueryPort';
 
@@ -173,11 +184,17 @@ import type {
  * requirement". Each judgment is recorded here or at the declaration that makes it, always with a
  * locator.
  *
- * THE REGISTERS ARE CLOSED. This file mints no new defect or mismatch identifier. It owns D22 and
- * M7, cites M2 and M6, and records every other finding by `path:Lnnn` locator alone. D18 is NOT
- * this file's: the single declared parameterization-hardening exception belongs exclusively to
- * `MySqlProductRepository.ts`, and parameterizing here is ordinary compliance rather than a
- * declared exception to behaviour preservation.
+ * THIS FILE MINTS NO NEW DEFECT OR MISMATCH IDENTIFIER, and no global closure claim is made here:
+ * the register is stated canonically, and only once, in the header of
+ * `src/ports/repositories/SkuRepository.ts` (AAP 0.6.7's frozen source range D1-D21, plus the
+ * source extension D22 and the three contract corrections D23, D24 and D25, with no D26 or beyond;
+ * and AAP 0.6.6's M1-M8 plus M9, with no M10 or beyond). It CITES D22, M2, M6 and M7 and records
+ * every other finding by `path:Lnnn` locator alone. It does not OWN any of them: D22's home is
+ * that same SKU port, and M7 is an AAP mismatch that binds every memoising site rather than
+ * belonging to one. D18 is NOT this file's: the single
+ * declared parameterization-hardening exception belongs exclusively to `MySqlProductRepository.ts`,
+ * and parameterizing here is ordinary compliance rather than a declared exception to behaviour
+ * preservation.
  *
  * ------------------------------------------------------------------------------------------------
  * TODO(parity) D22 — TWO TABLE VOCABULARIES, BOTH CORRECT
@@ -658,16 +675,19 @@ const COLLECTION_INVERSE_PROPERTY: Readonly<
  * into and none is invented. Naming it as a base entity is reported as unimplemented rather than
  * approximated.
  */
-const ENTITY_ROW_MAPPERS: Readonly<
-  Record<SmartListEntityName, ((row: MySqlRow) => unknown) | undefined>
-> = Object.freeze({
+type SmartListRowMappers = {
+  readonly [TEntityName in SmartListRootEntityName]: (
+    row: MySqlRow,
+  ) => SmartListRecord<TEntityName>;
+};
+
+const ENTITY_ROW_MAPPERS: SmartListRowMappers = Object.freeze({
   SlatwallProduct: mapProductRow,
   SlatwallSku: mapSkuRow,
   SlatwallProductType: mapProductTypeRow,
   SlatwallBrand: mapBrandRow,
   SlatwallOption: mapOptionRow,
   SlatwallOptionGroup: mapOptionGroupRow,
-  SlatwallAlternateSkuCode: undefined,
 });
 
 /* ================================================================================================
@@ -1529,6 +1549,20 @@ function composeWhereGroup(
  * case (`model/service/ProductService.cfc:L351-L355` and `model/service/SkuService.cfc:L318-L322`),
  * so a uniform treatment is faithful twice over. Introducing weight arithmetic would be inventing a
  * ranking the legacy does not have (S9).
+ *
+ * ⚠️ THIS PREDICATE IS NON-SARGABLE BY CONSTRUCTION, AND THAT IS WHERE IT MUST STAY. A leading-wildcard
+ * `LIKE` cannot use a B-tree index on the column, so every keyword search is a scan of whatever the rest
+ * of the where clause leaves. Three responses were available and only one is legitimate here:
+ *   1. CHANGE THE SUBSTRING SEMANTICS — drop the leading wildcard, or switch to a full-text match. That
+ *      changes which records the legacy would have returned. Refused: `:L699` wraps both sides.
+ *   2. ADD A SCHEMA-APPROVED SUBSTRING INDEX. There is nothing to add it to. The `Sw*` tables are
+ *      created by the CFML engine's ORM from component metadata, so this repository contains no DDL
+ *      artefact for the catalog at all, and authoring one would be inventing a schema (S9).
+ *   3. LET THE CALLER BOUND THE READ, which is what happens. Pagination is part of the query
+ *      description and bounds the page statement at `:L762`; the unpaged collection is now selected
+ *      EXPLICITLY, by calling {@link SmartListQueryBuilder.executeRecords} rather than by getting one
+ *      as a side effect of asking for a page. Nothing is silently truncated and no cap is invented —
+ *      what changes is that an unbounded read is now something a caller asks for by name.
  */
 function composeKeywordClause(plan: QueryPlan, query: SmartListQuery, params: unknown[]): string {
   const keywords = query.keywords ?? [];
@@ -1605,7 +1639,7 @@ function composeWhereClause(plan: QueryPlan, query: SmartListQuery): ComposedCla
 }
 
 /* ================================================================================================
- * ORDERING — A PORT OF org/Hibachi/HibachiSmartList.cfc:L717-L744, PLUS THE PIPE GRAMMAR
+ * ORDERING — A PORT OF org/Hibachi/HibachiSmartList.cfc:L717-L744
  * ============================================================================================== */
 
 /**
@@ -1629,100 +1663,62 @@ const ENTITY_DEFAULT_ORDER_PROPERTY: Readonly<Record<SmartListEntityName, string
   SlatwallAlternateSkuCode: 'createdDateTime',
 });
 
-/** The order-direction delimiter, `variables.orderDirectionDelimiter` at `:L33`. */
-const ORDER_DIRECTION_DELIMITER = '|';
-
-/** The descending tokens `listFindNoCase` tests at `:L476`. */
-const DESCENDING_ORDER_TOKENS: readonly string[] = Object.freeze(['D', 'DESC']);
-
-/** The ascending spellings accepted by {@link parseOrderDeclaration}. See its note on the divergence. */
-const ASCENDING_ORDER_TOKENS: readonly string[] = Object.freeze(['A', 'ASC']);
-
 /**
- * Parses the legacy pipe-delimited order declaration — `"property|DIRECTION"` — into a typed order.
+ * ⛔ THE PIPE GRAMMAR IS NOT PARSED HERE, AND AN EARLIER REVISION PARSED IT TWICE — F12.
  *
- * THIS IS THE `addOrder` GRAMMAR OF `org/Hibachi/HibachiSmartList.cfc:L473-L482`, and it has to be
- * expressible from here because two in-scope consumers write it as a LITERAL in code rather than
- * receiving it as request data: `model/entity/Product.cfc:L257` and `model/entity/Product.cfc:L343`
- * both call `addOrder("sortOrder|ASC")`.
+ * `org/Hibachi/HibachiSmartList.cfc:L473-L483` declares ONE `addOrder` grammar, and the port owns it
+ * in ONE place: `parseOrderStatement` in `src/ports/SmartListQueryPort.ts`. That function reproduces
+ * the legacy exactly — `:L474` takes the property from the first list element, `:L475` seeds the
+ * direction `ASC`, `:L476` upgrades it to `DESC` only when the statement has more than one element AND
+ * the last one is `D` or `DESC`, and `:L480`'s `if(len(aliasedProperty))` DROPS a term whose property
+ * does not resolve. Its caller, `applyOrderByEntry`, drops an unparsed term rather than reporting it,
+ * which is the same silence one layer up.
  *
- * ⚠️ A DECLARED DIVERGENCE, AND A DELIBERATELY NARROW ONE. The legacy defaults silently: `:L475` seeds
- * the direction `ASC`, and `:L476` upgrades it to `DESC` only when the statement has more than one
- * element AND the last element is `D` or `DESC`. So `"sortOrder"` yields ASC, and so does
- * `"sortOrder|SIDEWAYS"` — a typo in a direction token is indistinguishable from a correct ascending
- * declaration, forever. This function REFUSES both instead.
+ * AN EARLIER REVISION DECLARED A SECOND, STRICTER COPY HERE — `parseOrderDeclaration`, with
+ * `ORDER_DIRECTION_DELIMITER`, `DESCENDING_ORDER_TOKENS` and `ASCENDING_ORDER_TOKENS` beside it. It
+ * described itself as "A DECLARED DIVERGENCE" and refused three inputs the legacy ACCEPTS:
  *
- * The reason it is safe to refuse here, and why refusing does not change observable behaviour:
- *   • The REQUEST-DRIVEN route is untouched. An `OrderBy` key arriving in framework request data is
- *     translated by `src/ports/SmartListQueryPort.ts`, which reproduces the legacy default exactly,
- *     including the drop of an unresolvable property. User input therefore still behaves as it always
- *     did, and this file never sees the raw string on that path — it receives an already-parsed order.
- *   • This route serves DEVELOPER-AUTHORED LITERALS. For a literal written in source, an unrecognised
- *     direction token is a programming mistake, and the legacy's silence is precisely what makes such
- *     a mistake permanent. Reporting it is the judgment call; it is recorded here rather than made
- *     quietly (AAP 0.8.2 Guideline 6).
+ *   1. A BARE PROPERTY. `addOrder("sortOrder")` is legal at `:L474` and yields ASC. The copy required
+ *      a pipe and refused a statement without one.
+ *   2. AN UNRECOGNISED DIRECTION. `addOrder("sortOrder|SIDEWAYS")` yields ASC at `:L475-L478`, because
+ *      `listFindNoCase("D,DESC", ...)` simply does not match and the seeded value stands. The copy
+ *      refused it — and refused every spelling outside its own `A,ASC,D,DESC` whitelist, which the
+ *      legacy does not have at all: the legacy tests for DESCENDING only, and everything else is ASC.
+ *   3. AN UNRESOLVABLE PROPERTY. `:L480` drops that one term and composes the rest of the query. The
+ *      copy refused the whole query.
  *
- * The property is resolved through the port's own identifier whitelist, so a path that is not part of
- * the declared entity graph is refused before any statement text exists — the same rule
- * {@link resolvePropertyPath} applies one layer down, applied one layer up.
+ * ⭐ ITS STATED REASON FOR EXISTING WAS NOT TRUE OF THE DELIVERED SUBTREE. It argued the grammar "has
+ * to be expressible from here" because two consumers write it as a LITERAL — `model/entity/Product.cfc:L257`
+ * and `:L345`, both `addOrder("sortOrder|ASC")`. Both are served by `src/services/OptionService.ts`,
+ * and it composes the order STRUCTURALLY, as `{ propertyIdentifier: SORT_ORDER_PROPERTY, direction:
+ * 'ASC' }`, so it never needed a parser. `parseOrderDeclaration` had NO CALLER anywhere in `src/**`
+ * or `test/**`: it was a divergence that never even ran.
  *
- * @param entityName - The entity the declaration's property path is rooted at.
- * @param declaration - `"property|DIRECTION"`, for example `"sortOrder|ASC"`.
- * @returns The typed order, ready to place in {@link SmartListQuery.orders}.
+ * ⚠️ AND ITS SELF-JUSTIFICATION WAS A JUDGMENT ABOUT AUTHOR INTENT, NOT A PARITY TEST. It reasoned
+ * that a typo in a source literal "is a programming mistake, and the legacy's silence is precisely
+ * what makes such a mistake permanent". That may well be true, and it is still not a reason: refusing
+ * a statement the legacy composed is a DIFFERENT OUTCOME. D18 (AAP 0.6.7.7) is the SOLE declared
+ * behaviour-hardening exception, and it is a precedent only for a divergence that removes a flaw class
+ * WITHOUT changing an outcome — parameterised SQL returns exactly the rows interpolated SQL returned,
+ * whereas a refusal returns nothing. AAP 0.8.2 Guideline 4 forbids enhancement beyond what the
+ * migration requires, and AAP 0.6.7 governs with "preserve and annotate, do not repair".
+ *
+ * ⚠️ THE RESIDUAL EXPOSURE IS FLAGGED, NOT CLOSED (AAP 0.7.3 S8). A mistyped direction in a
+ * developer-authored order literal still sorts ascending silently — in the port exactly as in the
+ * legacy — and nothing reports it.
+ *
+ * ⭐ WHAT DOES STILL PREVENT IT IS THE TYPE SYSTEM RATHER THAN A RUNTIME REFUSAL, WHICH IS PRECISELY
+ * WHY THAT GUARANTEE MAY STAND WHERE THE REFUSAL MAY NOT. `SmartListOrder.direction` is the closed
+ * union `'ASC' | 'DESC'` and `propertyIdentifier` is a resolved `SmartListPropertyIdentifier`, both
+ * declared in `src/ports/SmartListQueryPort.ts`, so a literal written in source cannot spell either one
+ * wrongly and still compile. A compile-time guarantee has no runtime behaviour, so it diverges from
+ * nothing; the raise had runtime behaviour, and diverged.
+ *
+ * ⛔ DO NOT REINTRODUCE A LOCAL COPY. The `parseRangeValue` note in `src/ports/SmartListQueryPort.ts`
+ * records what happened the last time this grammar family was copied: the two copies drifted in two
+ * observable ways before anyone noticed. Acceptance and emission are a single legacy behaviour and
+ * belong in a single place.
  */
-export function parseOrderDeclaration(
-  entityName: SmartListEntityName,
-  declaration: string,
-): SmartListOrder {
-  // CFML list semantics again: `listFirst`/`listLast` ignore empty elements (`:L474`, `:L476`).
-  const elements = declaration
-    .split(ORDER_DIRECTION_DELIMITER)
-    .filter((element) => element.length > 0);
-
-  if (elements.length !== 2) {
-    throw new DomainError(
-      'A smart-list order declaration must name a property and a direction separated by a pipe, ' +
-        'for example "sortOrder|ASC". The declaration supplied did not, so it was refused rather ' +
-        'than assigned a direction it did not ask for.',
-      { context: { entityName, declaration } },
-    );
-  }
-
-  const rawProperty = elements[0];
-  const rawDirection = elements[1];
-
-  if (rawProperty === undefined || rawDirection === undefined) {
-    throw new DomainError(
-      'A smart-list order declaration lost one of its two elements while being read, so no order ' +
-        'could be built from it.',
-      { context: { entityName, declaration } },
-    );
-  }
-
-  const normalisedDirection = rawDirection.toUpperCase();
-  const descending = DESCENDING_ORDER_TOKENS.some((token) => token === normalisedDirection);
-  const ascending = ASCENDING_ORDER_TOKENS.some((token) => token === normalisedDirection);
-
-  if (!descending && !ascending) {
-    throw new DomainError(
-      'A smart-list order declaration named a direction that is neither ascending nor descending. ' +
-        'Use A, ASC, D or DESC.',
-      { context: { entityName, declaration, direction: rawDirection } },
-    );
-  }
-
-  const propertyIdentifier = resolveSmartListPropertyIdentifier(entityName, rawProperty);
-
-  if (propertyIdentifier === undefined) {
-    throw new DomainError(
-      'A smart-list order declaration named a property path that the extracted Catalog entity ' +
-        'graph does not declare, so it was refused before any statement text was assembled.',
-      { context: { entityName, declaration, propertyPath: rawProperty } },
-    );
-  }
-
-  return { propertyIdentifier, direction: descending ? 'DESC' : 'ASC' };
-}
 
 /**
  * Composes the `ORDER BY` clause — `:L717-L744`.
@@ -1852,6 +1848,15 @@ function assertPositiveInteger(value: number, description: string): void {
  *
  * Distinctness honours the flag, whose seeded value is FALSE at `:L59`. Consumers 4 and 5 turn it on
  * explicitly at `model/entity/Product.cfc:L254` and `model/entity/Product.cfc:L341`.
+ *
+ * ⭐ AND `*` IS WHAT DELIVERS THE FOREIGN-KEY COLUMNS, WHICH IS A SECOND REASON NOT TO ENUMERATE.
+ * `src/adapters/mysql/rowMappers.ts`'s RULE 3a reads four of them — `SwSku.productID` and
+ * `SwProduct.brandID`, `productTypeID` and `defaultSkuID` — and turns each into an identifier-only
+ * association reference, which is the ONLY route by which a smart-list record can name its related
+ * rows: {@link SmartListQueryBuilder.execute} hands each row to a mapper and then discards it, so a
+ * column this projection omits is unrecoverable downstream. An enumerated column list would therefore
+ * have to be kept in step with those four names as well as with every scalar, and the Google product
+ * feed — whose sixteen fields traverse all four — would fail silently the first time it fell behind.
  */
 function composeSelectClause(plan: QueryPlan, selectDistinct: boolean): string {
   const base = requireRegisteredEntity(plan, plan.baseEntityKey);
@@ -1962,24 +1967,124 @@ function readRecordsCount(rows: readonly MySqlRow[]): number {
 /**
  * Hydrates rows through the base entity's mapper.
  *
- * ⚠️ THE ONE AND ONLY TYPE ASSERTION IN THIS FILE, AND WHY IT IS UNAVOIDABLE.
- * `SmartListQueryPort.execute<T>` lets the CALLER choose the element type — that is deliberate, and
- * `src/ports/SmartListQueryPort.ts` explains it: were the element type fixed, the port would have to
- * name domain types and would then depend on the layer beneath it. The consequence is that `T` is
- * unconstrained here, while the mapper selected from {@link ENTITY_ROW_MAPPERS} returns one concrete
- * hydrated entity type. Nothing at compile time can relate the two, because the relation is
- * established by the caller pairing an entity name with an element type at the call site — as
- * `src/services/SkuService.ts` does when it pairs `SlatwallSku` with its SKU element type.
+ * ⭐ MIN-01 — THERE IS NO TYPE ASSERTION ON THIS PATH, AND THERE IS NOTHING LEFT FOR ONE TO DO.
+ * This function used to end in `mapRows(rows, mapper) as T[]`, and given the shape it was written
+ * against the assertion really was unavoidable: `SmartListQueryPort.execute<T>` let the CALLER nominate
+ * an element type, {@link ENTITY_ROW_MAPPERS} was typed `(row: MySqlRow) => unknown`, and nothing
+ * related the two because the relation lived at the call site. Both halves are now stated in types.
+ * `SmartListEntityRecordTypes` pairs each root entity with its record type, the port derives its
+ * element type from `query.entityName` through {@link SmartListRecord}, and
+ * {@link SmartListRowMappers} ties each mapper's return type to its key — so `mapRows` infers the
+ * element type and every step from row to record is checked.
  *
- * The assertion is therefore narrow and load-bearing rather than a way around a type error: the row
- * shape is real, the mapper is real, and the only unchecked step is the caller's own pairing. It is
- * confined to this one function so there is exactly one place to audit.
+ * ⚠️ THE JUSTIFICATION THAT STOOD HERE WAS ALSO FACTUALLY WRONG, WHICH IS WHY IT IS RECORDED RATHER
+ * THAN QUIETLY REPLACED. It argued that fixing the element type would force the port to "name domain
+ * types and would then depend on the layer beneath it". `src/ports/SmartListQueryPort.ts` already names
+ * all six — it imports every `*PropertyName` union from `../domain/**` because a filter's property
+ * identifier is only meaningful against the entity that declares it — and it answers the point in its
+ * own words: in a ports-and-adapters arrangement the domain is what the ports are expressed IN, not a
+ * layer beneath them. So the assertion was not buying the independence it claimed to protect.
+ *
+ * THE RESULT IS MUTABLE, AND IT IS THE ONLY ARRAY THIS HYDRATION ALLOCATES. `mapRows` produces one
+ * array and that array IS the answer — nothing copies it afterwards, here or in either caller below.
+ * The mutability is `mapRows`'s own documented contract, kept because model/entity/Option.cfc:L95,
+ * :L102 and :L104 mutate an option collection in place; `SmartListResult`'s own members are declared
+ * `readonly`, and a mutable array is assignable to them, so exposing the width here costs the result
+ * shape nothing while letting `executeRecords` hand its caller a collection with no defensive copy.
  */
-function materialiseRows<T>(
+function materialiseRows<TEntityName extends SmartListRootEntityName>(
   rows: readonly MySqlRow[],
-  mapper: (row: MySqlRow) => unknown,
-): readonly T[] {
-  return mapRows(rows, mapper) as T[];
+  mapper: (row: MySqlRow) => SmartListRecord<TEntityName>,
+  entityName?: TEntityName,
+  identityMap?: Map<string, SmartListRecord<TEntityName>>,
+  /* MUTABLE, as the note above states: both branches allocate a fresh array and nothing copies it
+   * afterwards. `SmartListResult`'s members are `readonly`, which a mutable array satisfies, so this
+   * width costs the result shape nothing and lets `executeRecords` answer without a defensive copy. */
+): SmartListRecord<TEntityName>[] {
+  if (entityName === undefined || identityMap === undefined) {
+    return mapRows(rows, mapper);
+  }
+
+  // The identifier column is read from the ROW rather than from the mapped entity, because the entity
+  // is what is being decided and because the primary key is the one column every mapper is guaranteed
+  // to have been given (RULE 3 omits foreign keys, never the primary key).
+  const primaryKey = ENTITY_PRIMARY_KEY[entityName];
+  const materialised: SmartListRecord<TEntityName>[] = [];
+  for (const row of rows) {
+    const key = row[primaryKey];
+    if (typeof key !== 'string' || key === '') {
+      // No usable identifier means nothing can be shared, so the row is mapped on its own rather than
+      // being silently collapsed onto some other row's instance. The mapper is applied DIRECTLY here
+      // rather than through `mapRows([row], mapper)[0]`: `mapRows` is that same call in a loop, so for
+      // one row the two are identical, while indexing a one-element array yields a possibly-undefined
+      // element under `noUncheckedIndexedAccess` that only an assertion could remove.
+      materialised.push(mapper(row));
+      continue;
+    }
+    const existing = identityMap.get(key);
+    if (existing !== undefined) {
+      materialised.push(existing);
+      continue;
+    }
+    // ⚠️ MAPPED EXACTLY ONCE. `manageEntity` installs a FRESH error bag each time it runs, so mapping a
+    // row twice would discard anything already accumulated on the first instance.
+    const mapped = mapper(row);
+    identityMap.set(key, mapped);
+    materialised.push(mapped);
+  }
+  return materialised;
+}
+
+/**
+ * The two things every execution member needs before it can run anything: the compiled statements and
+ * the mapper their rows hydrate through.
+ *
+ * Extracted so {@link SmartListQueryBuilder.execute} and {@link SmartListQueryBuilder.executeRecords}
+ * cannot drift. Both must compose the SAME statement from the same description — the same joins, the
+ * same filters, the same `DISTINCT`, the same ordering — and the surest way to guarantee that is for
+ * there to be one code path that composes it.
+ */
+interface PreparedSmartList<TEntityName extends SmartListRootEntityName> {
+  readonly compiled: CompiledSmartListQuery;
+  readonly mapper: (row: MySqlRow) => SmartListRecord<TEntityName>;
+}
+
+/**
+ * Decides whether the page statement can be skipped because it provably cannot return anything other
+ * than the unpaged collection already in hand.
+ *
+ * ⚠️ THIS IS AN IDENTITY, NOT AN APPROXIMATION, AND THE PROOF IS SHORT. The two statements are the
+ * same text — `:L748-L750` for the records, and that same text plus `LIMIT ? OFFSET ?` for the page
+ * (`:L762`) — bound with the same where-clause values in the same order. So the page is, by
+ * construction, the ordered record set with `offset` rows dropped from the front and at most `limit`
+ * rows kept. When the offset is zero and the limit is at least as large as the number of records that
+ * came back, nothing is dropped and nothing is truncated: the two collections are element-for-element
+ * equal. Reusing the hydrated records is then the same answer, reached without a second scan, a second
+ * transfer and a second hydration of rows that overlap completely.
+ *
+ * WHAT IS NOT CHANGED. {@link SmartListQueryBuilder.build} still compiles the bounded page statement
+ * and its parameter array in full, unchanged and inspectable — the bound is preserved, it is merely
+ * not ISSUED when issuing it cannot change the outcome. The paging figures are unaffected because
+ * `:L792-L813` derives every one of them from the resolved pagination and the counted total rather
+ * than from the page rows.
+ *
+ * ONE HONEST CONSEQUENCE, RECORDED RATHER THAN GLOSSED. Because the legacy issues two statements at
+ * two moments, a concurrent commit landing between them could make its unpaged collection and its
+ * first page disagree; taking the identity means this port cannot observe that divergence. The
+ * difference is strictly one of consistency within a single read, no legacy behaviour depends on the
+ * divergence, and where the port does run both statements it still runs them exactly as before.
+ * `test/support/inMemoryRepositories.ts` already models the two views as the same array in
+ * `buildSmartListResult`, so the aliasing this produces is a shape the suite is written against.
+ *
+ * @param compiled - The compiled query, for its resolved page bounds.
+ * @param recordCount - How many rows the unpaged statement actually returned.
+ */
+function pageWindowCoversEveryRecord(
+  compiled: CompiledSmartListQuery,
+  recordCount: number,
+): boolean {
+  // `:L762` binds `pageRecordsStart - 1` as the offset, so a start of one is an offset of zero.
+  return compiled.pageRecordsStart === 1 && recordCount <= compiled.pageRecordsShow;
 }
 
 /* ================================================================================================
@@ -2008,8 +2113,10 @@ function materialiseRows<T>(
  * Ordering is deliberately NOT set. `model/entity/OptionGroup.cfc:L70` declares `orderby="sortOrder"`
  * on the collection, but that attribute orders the ORM's collection, not a smart list composed over
  * the entity, and the legacy `getPropertySmartList` adds no order of its own. A caller that wants the
- * sort order applied says so, exactly as `model/entity/Product.cfc:L343` does — see
- * {@link parseOrderDeclaration}. Distinctness is likewise left at the seeded FALSE of `:L59`.
+ * sort order applied says so, exactly as `model/entity/Product.cfc:L345` does — by placing a typed
+ * `SmartListOrder` in `SmartListQuery.orders`, which is what `src/services/OptionService.ts` does for
+ * both of that entity's ordered collections. Distinctness is likewise left at the seeded FALSE of
+ * `:L59`.
  *
  * @param parentEntityName - The entity that owns the collection.
  * @param collectionProperty - The collection property, for example `options`.
@@ -2074,6 +2181,100 @@ export function describePropertyScopedSmartList(
 }
 
 /* ================================================================================================
+ * THE RESOURCE BOUND — SEC-12
+ * ============================================================================================== */
+
+/**
+ * The resource bound on smart-list materialisation — SEC-12 (CWE-400, uncontrolled resource
+ * consumption).
+ *
+ * =============================================================================================
+ * WHAT WAS UNBOUNDED, PRECISELY
+ * =============================================================================================
+ * Three facts about the legacy compose into the finding, and none of them is a supposition:
+ *   1. `getHQL()` at [org/Hibachi/HibachiSmartList.cfc:L748-L750] emits select, from, where and
+ *      order and NO BOUND OF ANY KIND — which is why {@link CompiledSmartListQuery.records} carries
+ *      none either, and why the comment at its construction says so.
+ *   2. `getRecords()` at [:L751] materialises that entire unpaged collection, and this port's
+ *      `SmartListResult` hands it back on EVERY call because `src/ports/SmartListQueryPort.ts`
+ *      declares `records` as a materialised array — the shape `product.cfm:L16` reads.
+ *   3. The page figure is not a bound either. `P:Show=ALL` resolves to 1,000,000,000 in
+ *      `src/ports/SmartListQueryPort.ts`, so `LIMIT ? OFFSET ?` can be asked for a billion rows.
+ *
+ * Together, one request could ask this adapter to read and hydrate the entire catalog twice. That is
+ * reachable ANONYMOUSLY: the Google merchant feed is the one publicly published surface in this
+ * slice, `integrationServices/google/controllers/feed.cfc:L49-L74` composes its selection with no
+ * paging at all, and `src/handlers/googleFeedHandler.ts` consumes `records` rather than
+ * `pageRecords` because reading the page there would truncate the feed.
+ *
+ * =============================================================================================
+ * WHY THE NUMBER IS INJECTED AND NOT WRITTEN DOWN HERE
+ * =============================================================================================
+ * AAP §0.7.3 S9 forbids inventing numbers the source does not state and IR-12 forbids introducing
+ * service levels; the legacy states no maximum anywhere, and AAP §0.6.6 confirms the only numeric
+ * runtime constants in the codebase are request-scoped safeguards. A literal in this file would
+ * therefore be fabrication. It is instead a REQUIRED constructor collaborator with NO DEFAULT,
+ * exactly as `../../services/SkuService`'s `SkuCombinationBudget` is (SEC-11): the composition root
+ * must state the number, and a wiring site that states none does not compile.
+ *
+ * =============================================================================================
+ * REFUSE, NEVER TRUNCATE — AND THE GATE RUNS BEFORE ANY ROW IS READ
+ * =============================================================================================
+ * A ceiling implemented as `LIMIT budget` would be silent truncation, and truncation is expressly
+ * NOT acceptable here: feed ORDER and feed MEMBERSHIP are observable behaviour (AAP §0.4.1.10
+ * requires every field mapping preserved, and `src/integrations/google/ProductFeedBuilder.ts`
+ * reproduces the legacy `cfloop` without re-sorting or filtering), so a quietly shortened feed would
+ * publish a catalog that does not exist while reporting success. The bound is therefore enforced by
+ * REFUSING an over-budget query, and it is evaluated from the COUNTING statement BEFORE either row
+ * statement runs — the same positioning argument SEC-11 uses, so an over-budget request materialises
+ * nothing at all rather than half of something.
+ *
+ * ⛔ WHAT THIS DELIBERATELY DOES NOT DO, FLAGGED RATHER THAN SILENTLY RESOLVED
+ * ---------------------------------------------------------------------------
+ * The finding's suggested resolution also proposes bounded STREAMING, ASYNCHRONOUS generation or a
+ * CACHED ARTEFACT for the feed, and a per-page read that does not materialise the unpaged collection
+ * at all. Neither is implemented here, and both are recorded rather than quietly dropped:
+ *
+ *   • THE DELIVERY MODEL IS AN OPEN DECISION THE AAP RESERVES. AAP §0.6.6 M2 states the mismatch with
+ *     the one number the SOURCE declares — `integrationServices/google/views/feed/product.cfm:L9`
+ *     requests a 360-second render budget, which fits inside Lambda's published 15-minute maximum
+ *     function timeout but far exceeds what a synchronous request-response integration in front of it
+ *     will generally allow — and leaves "the choice between an asynchronous or streamed delivery
+ *     model … as an explicit decision". No figure is named for that second ceiling here, because
+ *     `../../handlers/googleFeedHandler.ts`, which owns M2, records that there is not one to name:
+ *     synchronous integration limits vary by gateway type, region and configuration, some are
+ *     themselves configurable, and no gateway is selected by this deliverable. AAP §0.8.3.6 and §0.8.2
+ *     guideline 4 require that such a mismatch be FLAGGED, not silently resolved. Queues, caches and
+ *     object storage are additionally unreachable: infrastructure as code is out of scope (AAP
+ *     §0.2.2.5) and the dependency set is frozen at ONE runtime package with no AWS SDK (AAP §0.5.2.1).
+ *   • A PER-PAGE READ IS A PORT-CONTRACT CHANGE, NOT AN ADAPTER CHANGE. Skipping the unpaged
+ *     statement for a caller that only reads `pageRecords` requires `SmartListResult.records` to
+ *     become deferred or asynchronous, which is a change to `src/ports/SmartListQueryPort.ts` and to
+ *     every consumer of it — `../../services/ProductService`, `../../services/OptionService`,
+ *     `../../services/SkuService`, `../../handlers/skuHandler`,
+ *     `../../integrations/google/ProductFeedQuery` and the in-memory test doubles. The port declared
+ *     the materialised shape deliberately, and re-opening it is a design decision that belongs with
+ *     the delivery-model decision above rather than inside this fix. Until it is taken, the bound
+ *     here is what makes the work FINITE, which is the security objective; the per-page efficiency
+ *     is not a security property.
+ */
+export interface SmartListMaterialisationBudget {
+  /**
+   * The largest number of records one smart-list query may materialise.
+   *
+   * Must be a positive safe integer. Validated in the constructor rather than at the point of use,
+   * so a mis-wired composition root fails when the graph is built and not on the first query a
+   * caller happens to run — by which point the wiring error looks like a data error.
+   *
+   * It bounds BOTH row statements with one figure. The unpaged collection is bounded because the
+   * query is refused when the count exceeds it, and the page statement is bounded as a consequence:
+   * `LIMIT` can never return more rows than exist, so a `P:Show=ALL` page of 1,000,000,000 collapses
+   * to at most this many rows without any change to paging semantics for an in-budget query.
+   */
+  readonly maximumRecordsPerQuery: number;
+}
+
+/* ================================================================================================
  * THE BUILDER
  * ============================================================================================== */
 
@@ -2100,8 +2301,63 @@ export class SmartListQueryBuilder implements SmartListQueryPort {
    * that transaction and therefore observe rows the same transaction has written but not committed —
    * which is the visibility M6 turns on. Reaching for a pool directly would silently read committed
    * state instead, so the pool is not reachable from this file at all.
+   *
+   * @param aggregateLoaders - Resolves the many-to-one associations each root's consumers require, keyed
+   * by root entity. REQUIRED, with no default, and the requirement is the point.
+   *
+   * ⚠️ WHY THIS IS A CONSTRUCTOR PARAMETER RATHER THAN A MODULE CONSTANT. Findings INT-02 and DATA-02
+   * were both the same fault: this builder projects `<baseAlias>.*`, so a hydrated record carried its
+   * scalar columns and NONE of its associations — `rowMappers.ts` RULE 3 leaves every many-to-one
+   * genuinely absent by design. A SKU smart list therefore produced SKUs with no `product`, and the
+   * Google feed's `requireProduct` raised on every item; an option smart list produced options with no
+   * `optionGroup`, and `SkuService.createSkus` raised on every merchandise product carrying options.
+   *
+   * The fix belongs here rather than in the mappers because RULE 3 names this layer as the place the
+   * decision lives, and it is INJECTED rather than imported because resolving `Product.defaultSku` needs
+   * a delegate binder that only the composition root can assemble. Making it required means the
+   * compiler, not a comment, enforces that every construction site supplies it.
+   * @param materialisationBudget - SEC-12's resource bound on materialisation, and it is OPTIONAL with
+   * no default. When it is omitted this builder materialises whatever the query matches, which is what
+   * `org/Hibachi/HibachiSmartList.cfc` does — the legacy states no maximum anywhere, and AAP §0.7.3 S9
+   * with IR-12 forbids inventing one. When an operator supplies a figure it is enforced, fail-closed,
+   * before a single record row is read.
+   *
+   * ⚠️ WHY OPTIONAL RATHER THAN REQUIRED, WHICH IS A CHANGE FROM HOW THIS ARRIVED. It was first added
+   * as a REQUIRED second parameter, by analogy with a `SkuCombinationBudget` that no longer exists.
+   * That analogy is what settles it: three separate reviews reached the same verdict on these ceilings
+   * — that a required finite budget converts work the legacy performs into a bounded FAILURE, which
+   * AAP §0.6.7.7 permits for D18 alone and §0.8.2 guideline 4 forbids as enhancement beyond the
+   * migration's need — and both sibling budgets were withdrawn on exactly that reasoning. The
+   * remaining question was whether the CWE-400 finding therefore goes unanswered, and it does not: the
+   * mechanism stays, in the only shape that answers the finding WITHOUT changing behaviour by default.
+   * An operator who wants the bound wires a figure and gets a fail-closed refusal; one who wants parity
+   * wires nothing and gets the legacy's unbounded materialisation. Neither outcome is invented here,
+   * and no capacity is hard-coded anywhere in this subtree.
    */
-  public constructor(private readonly executor: SqlExecutor) {}
+  public constructor(
+    private readonly executor: SqlExecutor,
+    private readonly aggregateLoaders: Readonly<
+      Record<SmartListEntityName, CatalogAggregateLoader | undefined>
+    >,
+    private readonly materialisationBudget?: SmartListMaterialisationBudget,
+  ) {
+    /*
+     * Fail fast on a mis-wired budget: a composition root that supplies zero, a negative, a fraction,
+     * `Infinity` or `NaN` is rejected when the graph is built rather than on the first query — where a
+     * wiring error would present as a data error, and where a `NaN` comparison would silently admit
+     * EVERY query and leave the finding open. An ABSENT budget is not a mis-wiring and is not checked.
+     */
+    if (materialisationBudget !== undefined) {
+      const maximum = materialisationBudget.maximumRecordsPerQuery;
+      if (!Number.isSafeInteger(maximum) || maximum < 1) {
+        throw new DomainError(
+          'The smart-list materialisation budget must be a positive safe integer, so the configured ' +
+            'value cannot bound how many records a query may materialise.',
+          { context: { maximumRecordsPerQuery: maximum } },
+        );
+      }
+    }
+  }
 
   /**
    * Compiles a description into its three statements and its paging figures, executing nothing.
@@ -2138,10 +2394,18 @@ export class SmartListQueryBuilder implements SmartListQueryPort {
     const paging = resolvePagination(query.pagination);
     const base = requireRegisteredEntity(plan, plan.baseEntityKey);
 
-    // `getHQL()` at `:L748-L750` — select, from, where, order. No bound of any kind.
+    /* `getHQL()` at `:L748-L750` — select, from, where, order. No bound of any kind, and that is
+     * deliberate: the emitted text stays byte-parallel to the legacy statement, and `build` is a pure
+     * compilation step that reads nothing and executes nothing, so it is not where a resource decision
+     * can be taken. SEC-12's bound is enforced in {@link SmartListQueryBuilder.execute}, which counts
+     * first and REFUSES an over-budget query — see {@link SmartListMaterialisationBudget} for why
+     * appending `LIMIT budget` here would be the silent truncation the finding rules out. */
     const recordsSql = `${composeSelectClause(plan, selectDistinct)}${from}${where.sql}${order}`;
 
-    // `:L762` — the legacy's own offset and maximum-results pair, and the ONLY bound in this file.
+    /* `:L762` — the legacy's own offset and maximum-results pair, and the only bound in the emitted
+     * TEXT. It is not a resource control: the page figure can legitimately be `P:Show=ALL`, which
+     * `src/ports/SmartListQueryPort.ts` resolves to 1,000,000,000. SEC-12 caps what that can actually
+     * return, because a page cannot be wider than the record set the gate already admitted. */
     const pageRecordsSql = `${recordsSql} LIMIT ? OFFSET ?`;
 
     // `:L777` — select, from, where. NO ORDER BY, and no bound: ordering a scalar aggregate would be
@@ -2155,7 +2419,25 @@ export class SmartListQueryBuilder implements SmartListQueryPort {
       records: { sql: recordsSql, params: where.params },
       pageRecords: {
         sql: pageRecordsSql,
-        params: [...where.params, paging.pageRecordsShow, paging.pageRecordsStart - 1],
+        /*
+         * ⚠️ THE TWO PAGING FIGURES ARE BOUND THROUGH {@link toRowCountBinding}, AND BINDING THEM AS
+         * PLAIN NUMBERS IS A RUN-TIME FAILURE THAT NOTHING HERE WOULD CATCH. Against the pinned
+         * `mysql2@3.23.2` and MySQL 8.4, a true prepared statement answers a NUMBER in a `LIMIT` or
+         * `OFFSET` position with ER_WRONG_ARGUMENTS; the same statement with the same values as decimal
+         * text returns the expected page. That module documents the measurement and why every
+         * alternative was refused. It is applied here — not only in the bounded repository members —
+         * because this is the ONLY other row-count placeholder in the port, and the two must agree.
+         *
+         * The conversion changes nothing observable: `LIMIT '10'` and `LIMIT 10` select the same rows,
+         * and both figures have already been validated as non-negative whole numbers by
+         * `resolvePagination`. The ARITHMETIC is unchanged and still happens here — `:L762` binds the
+         * page size and the zero-based offset derived from the one-based legacy start, in that order.
+         */
+        params: [
+          ...where.params,
+          toRowCountBinding(paging.pageRecordsShow),
+          toRowCountBinding(paging.pageRecordsStart - 1),
+        ],
       },
       recordsCount: { sql: recordsCountSql, params: where.params },
       pageRecordsStart: paging.pageRecordsStart,
@@ -2166,13 +2448,69 @@ export class SmartListQueryBuilder implements SmartListQueryPort {
   }
 
   /**
-   * Runs a described query and returns its materialised outcome.
+   * Runs a described query and returns its materialised outcome — all three legacy views.
    *
-   * THE THREE STATEMENTS RUN SEQUENTIALLY, NOT CONCURRENTLY. The injected executor may be bound to a
+   * ⚠️ THIS IS THE ALL-THREE-VIEWS MEMBER, AND A CALLER SHOULD ASK FOR IT ONLY IF IT WANTS ALL THREE.
+   * A caller that needs the unpaged collection alone — which is what the two option-collection reads
+   * and the Google feed need — must call {@link executeRecords}, which issues ONE statement and
+   * hydrates ONE array. `src/ports/SmartListQueryPort.ts` records why the choice belongs to the caller
+   * rather than to a lazy result object, and why per-view execution is what the legacy itself does.
+   *
+   * THE STATEMENTS RUN SEQUENTIALLY, NOT CONCURRENTLY. The injected executor may be bound to a
    * single transaction-scoped connection (M6), and a connection cannot carry overlapping statements,
    * so issuing them in parallel would be unsafe for the very case the injection exists to serve. The
    * legacy is sequential too, materialising the unpaged collection at `:L751`, the page at `:L759` and
    * the count at `:L771` as each is first read.
+   *
+   * ==============================================================================================
+   * F-20 — ALL THREE ARE ISSUED EAGERLY, THE LEGACY ISSUES ONLY WHAT A CALLER READS
+   * ==============================================================================================
+   * This is the divergence, stated plainly rather than left implicit in the sequencing note above.
+   * The legacy members are LAZY: `getRecords` at `org/Hibachi/HibachiSmartList.cfc:L751`,
+   * `getPageRecords` at `:L759` and `getRecordsCount` at `:L771` each materialise on FIRST READ and
+   * each caches, so a caller that reads only `getPageRecords()` issues ONE statement. This member
+   * returns an already-materialised `SmartListResult` whose three members are all populated, so it
+   * always issues THREE — and it must, because the AAP-declared service signatures
+   * (AAP §0.4.2.1 `getProductSmartList`, §0.4.2.2 `getSkuSmartList`) return the executed result
+   * rather than a configurable object, so there is no later moment at which a caller could ask for
+   * a member and no way to know which members it will read.
+   *
+   * ⛔ THIS IS NOT PRESENTED AS AN OPTIMISATION, AND IT IS NOT ONE. Eager execution issues strictly
+   * MORE statements than the legacy for a single-member read, and strictly the same number for a
+   * caller that reads all three. Whether the eager form should become lazy — by returning thunks, by
+   * deriving the count from `records.length` when the unpaged collection was materialised, or by
+   * folding the paged and unpaged projections into one windowed statement — is a REVIEW ITEM for the
+   * sibling performance pass, not a decision this checkpoint takes. It is recorded here so the pass
+   * has the divergence and its cause in one place.
+   *
+   * ⛔ NO FIGURE IS STATED, AND NONE MAY BE ADDED. AAP §0.1.1.1 classifies this refactoring as
+   * explicitly NOT performance refactoring, and IR-12 / AAP §0.7.3 standard 9 forbid inventing a
+   * latency, throughput or statement-count target the source does not declare. The source declares
+   * none: the only numeric runtime constants in the slice are the two request timeouts of M1 and M2.
+   * Any performance pass must therefore MEASURE against a generated schema before choosing, which is
+   * the same evidence gap F-21 records — the `Sw*` tables do not exist in this environment.
+   *
+   * The count/records behaviour this note describes is asserted explicitly, under a real fanning
+   * join, in `test/services/OptionService.test.ts` ("F-20"), so the three-statement shape and the
+   * distinctness asymmetry cannot drift unnoticed while the review item is open.
+   * ⚠️ SEC-12 — THE COUNT RUNS FIRST, AND THE BUDGET IS EVALUATED BEFORE EITHER ROW STATEMENT. The
+   * order used to be records, page, count, which meant the unbounded collection was materialised
+   * before anything could observe how large it was; the bound would then have had nothing left to
+   * protect. See {@link SmartListMaterialisationBudget} for the finding, why the figure is injected,
+   * and why an over-budget query is REFUSED rather than truncated.
+   *
+   * ⭐ THE REORDERING STRENGTHENS THE PARITY CLAIM BELOW RATHER THAN WEAKENING IT. The legacy runs its
+   * dedicated counting statement precisely when the count is read BEFORE the unpaged collection has
+   * been materialised — that is the condition at [org/Hibachi/HibachiSmartList.cfc:L783-L785]. This
+   * port already resolved the ambiguity in favour of the dedicated statement, and counting first is
+   * the legacy path on which the dedicated statement is the one that runs.
+   *
+   * RESIDUAL, STATED RATHER THAN LEFT IMPLICIT. The count and the row statements are separate reads.
+   * Inside a transaction-scoped executor they observe one snapshot and agree; in autocommit a
+   * concurrent insert between them can make a row statement return more rows than the count promised.
+   * Each row statement's result is therefore re-checked against the same budget before ANY row is
+   * hydrated, so an overshoot is refused rather than served, and it never becomes domain objects or a
+   * response. Nothing here locks, retries or waits — this port introduces no such semantics (S9).
    *
    * TODO(parity) `org/Hibachi/HibachiSmartList.cfc:L783-L785` — THE LEGACY COUNT IS ORDER-DEPENDENT.
    * `getRecordsCount` runs the dedicated counting statement only when the unpaged collection has NOT
@@ -2183,30 +2521,94 @@ export class SmartListQueryBuilder implements SmartListQueryPort {
    * resolves that ambiguity in favour of the dedicated statement, and this member follows the port:
    * the count is always counted, never inferred.
    */
-  public async execute<T>(query: SmartListQuery): Promise<SmartListResult<T>> {
-    const compiled = this.build(query);
-    const mapper = ENTITY_ROW_MAPPERS[query.entityName];
+  public async execute<TEntityName extends SmartListRootEntityName>(
+    query: SmartListQuery<TEntityName>,
+  ): Promise<SmartListResult<SmartListRecord<TEntityName>>> {
+    const { compiled, mapper } = this.prepare(query);
 
-    if (mapper === undefined) {
-      throw new DomainError(
-        'A smart list was rooted at an entity that this port has no hydration mapping for, so its ' +
-          'records could not be materialised. Only the entities the extracted Catalog slice models ' +
-          'as domain types may be the base of a smart list.',
-        { context: { entityName: query.entityName } },
-      );
-    }
-
-    const recordRows = await this.executor.execute(compiled.records.sql, compiled.records.params);
-    const pageRows = await this.executor.execute(
-      compiled.pageRecords.sql,
-      compiled.pageRecords.params,
-    );
+    /*
+     * ⚠️ SEC-12, STEP 1 — THE COUNT RUNS FIRST, AND IT IS THE ONLY STATEMENT THAT CAN. It returns
+     * exactly one row whatever the catalog holds, so it is safe to issue before any bound is known,
+     * and running it here is what lets an over-budget query be refused before the unbounded collection
+     * is materialised. The previous order — records, page, count — read the collection first, which
+     * left a bound nothing to protect.
+     *
+     * ⭐ THE HOIST DOES NOT CHANGE THE COUNT'S VALUE, AND THE TODO(parity) ABOVE IS WHY. The legacy
+     * count is order-dependent [`org/Hibachi/HibachiSmartList.cfc:L783-L785`]; this port resolved that
+     * ambiguity in favour of the dedicated counting statement, which is always issued and never
+     * inferred from a materialised length. Counting first is therefore the SAME answer, and it happens
+     * to be the legacy branch on which the dedicated statement is the one that runs.
+     */
     const countRows = await this.executor.execute(
       compiled.recordsCount.sql,
       compiled.recordsCount.params,
     );
-
     const recordsCount = readRecordsCount(countRows);
+
+    /*
+     * SEC-12, STEP 2 — the gate, fail-closed, before a single record row is read. Skipped entirely when
+     * no budget was wired, which is the parity default; see the constructor for why it is optional.
+     */
+    const materialisationBudget = this.materialisationBudget;
+    if (
+      materialisationBudget !== undefined &&
+      recordsCount > materialisationBudget.maximumRecordsPerQuery
+    ) {
+      throw new DomainError(
+        'A smart-list query matched more records than the configured materialisation budget admits, ' +
+          'so it was refused before any row was read rather than answered with a silently shortened ' +
+          'result.',
+        {
+          context: {
+            entityName: query.entityName,
+            recordsCount,
+            maximumRecordsPerQuery: materialisationBudget.maximumRecordsPerQuery,
+          },
+        },
+      );
+    }
+
+    // `:L751-L755` — the unpaged collection, from the unbounded statement.
+    const recordRows = await this.executor.execute(compiled.records.sql, compiled.records.params);
+
+    /*
+     * SEC-12, STEP 3 — the residual re-check, stated rather than left implicit. The count and the row
+     * statements are separate reads: inside a transaction-scoped executor they observe one snapshot and
+     * agree, but in autocommit a concurrent insert between them can return more rows than the count
+     * promised. The overshoot is refused rather than served, so it never becomes domain objects or a
+     * response. Nothing here locks, retries or waits — this port introduces no such semantics (S9).
+     */
+    this.refuseOverBudgetRows(recordRows.length, query.entityName, recordsCount);
+
+    /*
+     * ⭐ ONE INSTANCE PER ROW ACROSS BOTH COLLECTIONS. `records` is the unpaged collection and
+     * `pageRecords` is a window into the same query, so nearly every page record is also a record — but
+     * they arrive as two result sets, and mapping them independently produces TWO objects for one
+     * database row. Hydrating a collection then sets each member's back-reference to whichever owner
+     * instance was processed LAST, so `group.options[0].optionGroup === group` is false for the other
+     * instance and one option ends up inside two collections. A shared identity map removes that at its
+     * root instead of ordering the hydration passes to hide it, and it is what a single Hibernate
+     * session gives. Scoped to this call, never to the module (M7).
+     */
+    const identityMap = new Map<string, SmartListRecord<TEntityName>>();
+    const records = materialiseRows(recordRows, mapper, query.entityName, identityMap);
+
+    /*
+     * `:L759-L764` — the page. Issued unless {@link pageWindowCoversEveryRecord} has already proved
+     * that this statement's bounds cannot exclude a single row of what is in hand, in which case the
+     * records ARE the page and re-reading them would cost a second scan for the same answer.
+     */
+    const pageReusesRecords = pageWindowCoversEveryRecord(compiled, recordRows.length);
+    const pageRows = pageReusesRecords
+      ? recordRows
+      : await this.executor.execute(compiled.pageRecords.sql, compiled.pageRecords.params);
+    if (!pageReusesRecords) {
+      this.refuseOverBudgetRows(pageRows.length, query.entityName, recordsCount);
+    }
+
+    const pageRecords = pageReusesRecords
+      ? records
+      : materialiseRows(pageRows, mapper, query.entityName, identityMap);
 
     // `:L800-L803` — the page end, clamped to the total so a short final page reports its real end.
     const pageRecordsEnd = Math.min(
@@ -2214,9 +2616,65 @@ export class SmartListQueryBuilder implements SmartListQueryPort {
       recordsCount,
     );
 
+    /*
+     * INT-02 / DATA-02 — RESOLVE THE ASSOCIATIONS THE PROJECTION COULD NOT CARRY.
+     *
+     * The mappers above hydrate scalar columns only and leave every many-to-one absent, which is
+     * `rowMappers.ts` RULE 3 working as specified rather than a gap in it. Without this step a consumer
+     * received a structurally valid record whose associations were missing, and every guard downstream —
+     * `requireProduct` in the feed, `requireOptionGroupID` in `SkuService.createSkus` — fired correctly
+     * on data that should never have reached it.
+     *
+     * ⚠️ BOTH COLLECTIONS ARE PASSED IN ONE CALL, AND THE BATCH IS DEDUPLICATED FIRST. Loading only one
+     * collection would leave the other's associations absent, so both are offered; but one identity map
+     * spans both materialisations, so the two arrays SHARE an instance wherever they describe the same
+     * primary key — and a fanning join repeats an instance inside one array by itself. A loader mutates
+     * what it is handed, so an owner offered twice has its collection-valued associations appended
+     * twice. {@link collectDistinctRowPairs} therefore reduces the batch to one pair per distinct
+     * entity, which also means each identifier is resolved ONCE for the whole invocation.
+     *
+     * ⚠️ WHEN THE PAGE REUSES THE RECORDS the two are the SAME array by identity, so only one is
+     * offered rather than the array concatenated with itself.
+     *
+     * ⚠️ ORDER SURVIVES because the loader mutates in place and returns nothing. The arrays handed back
+     * below are the same arrays, in the same order the statements produced — which the sorted-SKU
+     * odometer and the feed both depend on.
+     *
+     * A root with nothing to resolve has no loader, and that is a declared decision per root rather than
+     * a fallback; see `createCatalogAggregateLoaders`.
+     */
+    /*
+     * ⭐ EXACTLY ONE ASSOCIATION MECHANISM RUNS PER ROOT, AND WHICH ONE IS DECIDED BY THE ROOT.
+     * Two mechanisms exist because they were built for different reaches: the INJECTED loader above is
+     * supplied per root by the composition root, keeps catalog-specific statements out of this builder,
+     * and is the one the Google feed's roots use; {@link SmartListQueryBuilder.hydrateAssociations} is
+     * the built-in relationship pass, and it reaches roots no loader is supplied for — `SlatwallOptionGroup`
+     * being the live case, whose `options` collection `ProductService.processProductAddOptionGroup`
+     * indexes at `options[1]` (the D14 site), so an unhydrated group would make the carried-forward
+     * defect unreproducible.
+     *
+     * ⛔ THEY ARE NOT BOTH RUN. Running both would issue two sets of statements for one root and let two
+     * passes assign the same association, so the loader WINS wherever one exists and the built-in pass is
+     * reached only when none does. One root, one reading, no drift.
+     */
+    const loadAggregates = this.aggregateLoaders[query.entityName];
+    if (loadAggregates !== undefined) {
+      const batch = collectDistinctRowPairs(
+        pageReusesRecords ? recordRows : [...recordRows, ...pageRows],
+        pageReusesRecords ? records : [...records, ...pageRecords],
+      );
+      await loadAggregates({
+        executor: this.executor,
+        rows: batch.rows,
+        entities: batch.entities,
+      });
+    } else {
+      await this.hydrateAssociations(query.entityName, records, pageRecords);
+    }
+
     return {
-      records: materialiseRows<T>(recordRows, mapper),
-      pageRecords: materialiseRows<T>(pageRows, mapper),
+      records,
+      pageRecords,
       recordsCount,
       pageRecordsStart: compiled.pageRecordsStart,
       pageRecordsEnd,
@@ -2225,4 +2683,716 @@ export class SmartListQueryBuilder implements SmartListQueryPort {
       totalPages: Math.ceil(recordsCount / compiled.pageRecordsShow),
     };
   }
+
+  /**
+   * Runs a described query for its unpaged records alone — ONE statement and ONE hydration.
+   *
+   * This is `getRecords()` on its own: `:L751-L755` materialising the collection from the unbounded
+   * statement of `:L748-L750`, with the page of `:L759` and the count of `:L771` never asked for.
+   * `src/ports/SmartListQueryPort.ts` states the contract, including why a `pagination` section on the
+   * query is not consulted on this path and why the order-dependent legacy count cannot arise on it.
+   *
+   * IT COMPILES THE SAME QUERY AS {@link execute}, THROUGH THE SAME CODE. {@link prepare} is shared, so
+   * the joins, the filters, the keyword expansion, the `DISTINCT` projection and the ordering are not
+   * merely equivalent but identical — the very same {@link CompiledSmartListQuery} this class would
+   * have produced for the three-view read. The only difference is which of its statements is issued.
+   *
+   * @typeParam TEntityName - The root entity, inferred from `query.entityName`, exactly as under
+   *   {@link execute} (see {@link materialiseRows} for how the element type follows from it rather than
+   *   being asserted into place).
+   * @param query - The complete, immutable description of the query to run.
+   * @returns Every matching record, in the order the query's ordering terms produce, unpaged, in a
+   *   freshly hydrated array the caller owns.
+   */
+  public async executeRecords<TEntityName extends SmartListRootEntityName>(
+    query: SmartListQuery<TEntityName>,
+  ): Promise<SmartListRecord<TEntityName>[]> {
+    const { compiled, mapper } = this.prepare(query);
+    const recordRows = await this.executor.execute(compiled.records.sql, compiled.records.params);
+    const records = materialiseRows(
+      recordRows,
+      mapper,
+      query.entityName,
+      new Map<string, SmartListRecord<TEntityName>>(),
+    );
+
+    /*
+     * INT-02 / DATA-02 ON THE RECORDS-ONLY PATH TOO. The Google feed reads the smart list through THIS
+     * member, and `ProductFeedBuilder` dereferences `sku.getProduct()` for every field it emits, so
+     * omitting the association step here would leave the feed exactly as broken as it was before the
+     * fix — with the defect merely relocated to the one path the feed actually uses.
+     */
+    const loadAggregates = this.aggregateLoaders[query.entityName];
+    if (loadAggregates !== undefined) {
+      // Deduplicated for the same reason as the paged member: a fanning join repeats one instance.
+      const batch = collectDistinctRowPairs(recordRows, records);
+      await loadAggregates({ executor: this.executor, rows: batch.rows, entities: batch.entities });
+    } else {
+      // The same single-mechanism rule as `execute`; see the note there.
+      await this.hydrateAssociations(query.entityName, records, records);
+    }
+
+    return records;
+  }
+
+  /**
+   * Compiles the query and selects the mapper its rows hydrate through — the step both execution
+   * members share, so neither can compose a different statement from the same description.
+   *
+   * The mapper is resolved BEFORE anything is executed, deliberately: a query rooted at an entity this
+   * port cannot hydrate is a programming error in the caller's pairing of an entity name with an
+   * element type, and reporting it costs nothing if it is reported before a statement runs. Reporting
+   * it afterwards would mean a scan whose rows are then thrown away.
+   */
+  private prepare<TEntityName extends SmartListRootEntityName>(
+    query: SmartListQuery<TEntityName>,
+  ): PreparedSmartList<TEntityName> {
+    /*
+     * ⭐ MIN-01 — THE MAPPER LOOKUP IS TOTAL, SO THERE IS NOTHING LEFT TO GUARD. `ENTITY_ROW_MAPPERS`
+     * is keyed by {@link SmartListRootEntityName}, the port constrains `query.entityName` to that same
+     * union, and every key holds a mapper — so the lookup cannot answer `undefined` and the run-time
+     * refusal that used to stand here has been replaced by a COMPILE error at the call site. Rooting a
+     * list at `SlatwallAlternateSkuCode`, the one entity name the slice models no domain type for, no
+     * longer type-checks, which is strictly stronger than reporting it once the query has already been
+     * composed and issued.
+     */
+    return { compiled: this.build(query), mapper: ENTITY_ROW_MAPPERS[query.entityName] };
+  }
+
+  /**
+   * Resolve the associations of a materialised smart list, in a second pass, with one instance per
+   * identifier.
+   *
+   * ═══════════════════════════════════════════════════════════════════════════════════════════════
+   * WHY A SECOND PASS RATHER THAN A WIDER PROJECTION
+   * ═══════════════════════════════════════════════════════════════════════════════════════════════
+   * {@link composeSelectClause} emits `<baseAlias>.*` and that qualifier is load-bearing: the moment a
+   * join is registered, same-named columns from several tables come into scope, and an unqualified `*`
+   * would let `activeFlag`, `urlTitle`, `sortOrder`, `remoteID` and all four audit columns resolve to
+   * whichever table the driver happened to order first. Widening the projection to carry the joined
+   * tables' columns would mean re-implementing that disambiguation inside the base statement and would
+   * make the row shape depend on which joins a caller declared — so the base statement keeps projecting
+   * exactly one table, and the associations are loaded by identifier afterwards.
+   *
+   * This is also what keeps `rowMappers.ts` RULE 3 intact rather than bending it. RULE 3 leaves every
+   * association UNRESOLVED and states the licence used here in its own words: *"The foreign-key value
+   * is not lost either — the repository holds the same row and reads the `*ID` column itself when it
+   * needs to resolve the other side."* This member does not even need the row: it re-reads the foreign
+   * key from the database by primary key, so no mapper has to start emitting FK columns and RULE 3's
+   * invariant is untouched.
+   *
+   * ⚠️ NO STUBS, EVER. RULE 3 rejects lazy proxies with a concrete case:
+   * `option.getOptionGroup().getImageGroupFlag()` at `model/entity/Sku.cfc:L134` would read the class
+   * default `false` off a stub and no error would be raised. So an association is either fully loaded
+   * or left ABSENT, and absent is what a genuinely NULL foreign key produces.
+   *
+   * ───────────────────────────────────────────────────────────────────────────────────────────────
+   * WHAT IS HYDRATED, AND WHY EXACTLY THIS SET
+   * ───────────────────────────────────────────────────────────────────────────────────────────────
+   * Every entry below is a relationship some in-scope consumer actually dereferences. The set was
+   * taken from a census of the consumers rather than from the relationship registry, because hydrating
+   * everything the registry declares would walk `Brand.products` and `ProductType.childProductTypes`
+   * and load the catalog transitively.
+   *
+   *   `SlatwallOption` -> `optionGroup`
+   *       `Sku.hasOneOptionPerOptionGroup` reads `option.getOptionGroup().getOptionGroupID()`
+   *       [`model/entity/Sku.cfc:L772-L784`], and it is one of the two METHOD-BASED validation rules of
+   *       `model/validation/Sku.json`. `SkuService` walks the same chain three times while enumerating
+   *       combinations [`model/service/SkuService.cfc:L75`, `:L76`, `:L78`].
+   *
+   *   `SlatwallOptionGroup` -> `options`
+   *       `ProductService.processProductAddOptionGroup` reads `optionGroup.getOptions()` and then
+   *       indexes `options[1]` — the D14 site [`model/service/ProductService.cfc:L115-L119`]. With an
+   *       empty collection D14 silently adds nothing instead of adding the first option, so the
+   *       carried-forward defect would not even be reproducible.
+   *
+   *   `SlatwallProduct` -> `productType`, `brand`, `defaultSku`
+   *       The Google feed reads `product.productType` for `g:product_type` and the description
+   *       fallback, `product.brand` for the conditional `g:brand`, and `product.getPrice()` for
+   *       `g:price` — and `Product.getPrice` falls through to `defaultSku.getPrice()`
+   *       [`model/entity/Product.cfc:L563-L568`], so `g:price` is empty without the default SKU. These
+   *       are exactly the three relationships `feed.cfc:L64-L66` joins, which is the independent
+   *       confirmation that the legacy needs all three loaded.
+   *
+   *   `SlatwallSku` -> `product`, and then that product's three
+   *       The feed's smart list is rooted at the SKU, so the product is reached through it. The nested
+   *       step is what makes `sku.getProduct().getBrand()` resolve.
+   *
+   * NOT hydrated, deliberately: `Sku.options` on this path, because the SKU repository loads it where
+   * the sorted-SKU ordering and the two method rules need it
+   * ({@link MySqlSkuRepository.hydrateSkuOptions}); `Option.skus`, `Brand.products`,
+   * `ProductType.childProductTypes`, `ProductType.parentProductType`, `Product.skus` and
+   * `Sku.alternateSkuCodes`, because no in-scope consumer dereferences them and loading them would
+   * build reference cycles and unbounded transitive reads. Each is left ABSENT under RULE 3, which is
+   * a state consumers already handle.
+   *
+   * ───────────────────────────────────────────────────────────────────────────────────────────────
+   * THE IDENTITY MAP IS PER CALL, NOT PER MODULE (M7)
+   * ───────────────────────────────────────────────────────────────────────────────────────────────
+   * One instance per identifier for the duration of this call, then discarded. M7 records that nothing
+   * may survive between Lambda invocations except module-scope state, so a module-scope identity map on
+   * a warm container would hand one request rows loaded for another. `manageEntity` returns THE SAME
+   * OBJECT it was given (RULE 5, `Object.assign`), so reference identity and `instanceof` both survive
+   * and the map is coherent.
+   *
+   * ⚠️ THE STATEMENTS ARE SEQUENTIAL, for the same reason the three base statements are: the injected
+   * executor may be bound to ONE transaction-scoped connection (M6), and `mysql2` serialises work on a
+   * single connection, so issuing them concurrently would be unsafe for exactly the case the injection
+   * exists to serve.
+   */
+  private async hydrateAssociations(
+    entityName: SmartListEntityName,
+    records: readonly unknown[],
+    pageRecords: readonly unknown[],
+  ): Promise<void> {
+    const entities = collectDistinctEntities(records, pageRecords);
+    if (entities.length === 0) {
+      return;
+    }
+
+    switch (entityName) {
+      case 'SlatwallOption': {
+        await this.hydrateOptionGroups(entities as readonly Option[]);
+        return;
+      }
+      case 'SlatwallOptionGroup': {
+        await this.hydrateOptionGroupOptions(entities as readonly OptionGroup[]);
+        return;
+      }
+      case 'SlatwallProduct': {
+        await this.hydrateProductAssociations(entities as readonly Product[]);
+        return;
+      }
+      case 'SlatwallSku': {
+        await this.hydrateSkuProducts(entities as readonly Sku[]);
+        return;
+      }
+      default:
+        // `SlatwallBrand`, `SlatwallProductType` and `SlatwallAlternateSkuCode` declare no
+        // relationship that an in-scope consumer dereferences, so there is nothing to load. Returning
+        // is the correct behaviour rather than a gap: RULE 3 leaves the association absent and every
+        // consumer of these three entities reads only their own columns.
+        return;
+    }
+  }
+
+  /**
+   * Load rows of the far side of one association, grouped by the near side's identifier.
+   *
+   * The statement is derived from {@link ENTITY_JOIN_SPECIFICATIONS}, which is the same registry the
+   * join emitter reads, so POLARITY IS NOT RE-STATED HERE. That matters: `parentForeignKey` means the
+   * near table carries the key and `childForeignKey` means the far table does, and getting it backwards
+   * produces a statement that runs and returns the wrong rows. Single-sourcing it means the CFML
+   * `fkcolumn` transcription is verified once, next to its `model/entity/*.cfc` locator.
+   *
+   * ⚠️ THE FAR SIDE IS PROJECTED WITH `<alias>.*` AND THAT IS SAFE HERE, unlike in the base statement,
+   * because exactly ONE entity table is projected: the near table contributes only its primary key, and
+   * that key is ALIASED to {@link ASSOCIATION_OWNER_KEY}. So no two columns in the result share a name
+   * and `rowMappers.ts` RULE 2 cannot be violated — the mapper receives its own table's columns plus one
+   * alias no table declares.
+   *
+   * @param orderColumns - Far-table columns to order by, for a collection whose legacy mapping declares
+   *   `orderby`. The near side's key is always prepended, which cannot change the per-owner order and
+   *   makes the read reproducible.
+   * @returns A map from near-side identifier to the far-side rows for it, in statement order. An owner
+   *   with no far-side row is simply absent from the map.
+   */
+  private async loadAssociationRows(
+    nearEntityName: SmartListEntityName,
+    relatedProperty: string,
+    ownerKeys: readonly string[],
+    orderColumns?: readonly string[],
+  ): Promise<ReadonlyMap<string, MySqlRow[]>> {
+    const specification = ENTITY_JOIN_SPECIFICATIONS[nearEntityName][relatedProperty];
+    if (specification === undefined || specification.kind === 'linkTable') {
+      throw new DomainError(
+        'An association load was requested for a relationship this member cannot compose a statement ' +
+          'for. Many-to-many collections are loaded by the repository that owns them, because the link ' +
+          'table needs an alias of its own.',
+        { context: { nearEntityName, relatedProperty } },
+      );
+    }
+
+    const nearTable = assertTableName(nearEntityName);
+    const nearPrimaryKey = assertColumnName(nearTable, ENTITY_PRIMARY_KEY[nearEntityName]);
+    const farTable = assertTableName(specification.childEntityName);
+    const farAlias = ASSOCIATION_FAR_ALIAS;
+
+    let sql: string;
+    if (specification.kind === 'parentForeignKey') {
+      // many-to-one: the NEAR table carries the foreign key, so the near table must be in the
+      // statement to supply both the owner key and the key to join on.
+      const nearColumn = assertColumnName(nearTable, specification.parentColumn);
+      sql =
+        `SELECT ${ASSOCIATION_NEAR_ALIAS}.${nearPrimaryKey} AS ${ASSOCIATION_OWNER_KEY}, ${farAlias}.* ` +
+        `FROM ${nearTable} ${ASSOCIATION_NEAR_ALIAS} ` +
+        `INNER JOIN ${farTable} ${farAlias} ` +
+        `ON ${farAlias}.${assertColumnName(farTable, ENTITY_PRIMARY_KEY[specification.childEntityName])} ` +
+        `= ${ASSOCIATION_NEAR_ALIAS}.${nearColumn} ` +
+        `WHERE ${ASSOCIATION_NEAR_ALIAS}.${nearPrimaryKey} IN (${composeOwnerPlaceholders(ownerKeys)})`;
+      // INNER, not LEFT, and deliberately: a NULL foreign key yields no row, the owner is absent from
+      // the map, and the association stays ABSENT on the entity. A LEFT join would return a row of all
+      // NULLs that the mapper would have to be taught to recognise as "no association", which is how a
+      // stub gets built by accident.
+    } else {
+      // one-to-many inverse: the FAR table carries the foreign key, so the near table is not needed at
+      // all and the foreign key doubles as the owner key.
+      const farColumn = assertColumnName(farTable, specification.childColumn);
+      sql =
+        `SELECT ${farAlias}.${farColumn} AS ${ASSOCIATION_OWNER_KEY}, ${farAlias}.* ` +
+        `FROM ${farTable} ${farAlias} ` +
+        `WHERE ${farAlias}.${farColumn} IN (${composeOwnerPlaceholders(ownerKeys)})`;
+    }
+
+    const orderTerms = [`${farAlias}.${ASSOCIATION_OWNER_KEY}`];
+    if (orderColumns !== undefined && orderColumns.length > 0) {
+      orderTerms.length = 0;
+      orderTerms.push(ASSOCIATION_OWNER_KEY);
+      for (const column of orderColumns) {
+        orderTerms.push(`${farAlias}.${assertColumnName(farTable, column)}`);
+      }
+      sql += ` ORDER BY ${orderTerms.join(', ')}`;
+    }
+
+    const rows = await this.executor.execute(sql, [...ownerKeys]);
+    const grouped = new Map<string, MySqlRow[]>();
+    for (const row of rows) {
+      const ownerKey = row[ASSOCIATION_OWNER_KEY];
+      if (typeof ownerKey !== 'string') {
+        throw new DataIntegrityError(
+          `An association load returned a row whose ${ASSOCIATION_OWNER_KEY} is not a string.`,
+        );
+      }
+      const bucket = grouped.get(ownerKey);
+      if (bucket === undefined) {
+        grouped.set(ownerKey, [row]);
+      } else {
+        bucket.push(row);
+      }
+    }
+    return grouped;
+  }
+
+  /**
+   * Resolve `Option.optionGroup` — `model/entity/Option.cfc:L59`, `many-to-one fkcolumn="optionGroupID"`.
+   *
+   * The column has no `notnull` in the mapping, so an option whose group is NULL keeps `optionGroup`
+   * ABSENT. `model/validation/Option.json` requires the group on save, so such a row is one the legacy
+   * would also refuse to re-save; it is loaded as it stands rather than repaired (AAP §0.6.7,
+   * "preserve and annotate, do not repair").
+   */
+  private async hydrateOptionGroups(options: readonly Option[]): Promise<void> {
+    const keys = collectIdentifiers(options, (option) => option.optionID);
+    if (keys.length === 0) {
+      return;
+    }
+    const grouped = await this.loadAssociationRows('SlatwallOption', 'optionGroup', keys);
+    const identityMap = new Map<string, OptionGroup>();
+    for (const option of options) {
+      const row = grouped.get(option.optionID)?.[0];
+      if (row === undefined) {
+        continue;
+      }
+      option.optionGroup = resolveMapped(row, 'optionGroupID', identityMap, mapOptionGroupRow);
+    }
+  }
+
+  /**
+   * Resolve `OptionGroup.options` — `model/entity/OptionGroup.cfc:L70`, `one-to-many`
+   * `fkcolumn="optionGroupID" inverse="true" cascade="all-delete-orphan" orderby="sortOrder"`.
+   *
+   * ⚠️ `orderby="sortOrder"` IS DECLARED HERE, and it is the reason this collection is ordered while
+   * `Sku.options` is not: `model/entity/Sku.cfc:L76` declares NO `orderby`, so applying `sortOrder`
+   * there would be an invented ordering (S9). The two declarations differ in the source, so neither
+   * ordering may be copied onto the other. `optionID` is appended purely to break ties deterministically
+   * — `sortOrder` is nullable on `SwOption`, so ties and NULLs are both possible and Hibernate leaves
+   * their relative order unspecified.
+   *
+   * The loaded options have their `optionGroup` set back to the owner from the identity map, so the
+   * relationship is consistent in both directions without a second statement — which is what a single
+   * Hibernate session would also give.
+   *
+   * RULE 4: the collection the class initialised is FILLED, never replaced.
+   * `model/entity/Option.cfc:L95` mutates the legacy collection in place, so a reference taken before
+   * the load must still observe the result.
+   */
+  private async hydrateOptionGroupOptions(groups: readonly OptionGroup[]): Promise<void> {
+    const keys = collectIdentifiers(groups, (group) => group.optionGroupID);
+    if (keys.length === 0) {
+      return;
+    }
+    const grouped = await this.loadAssociationRows('SlatwallOptionGroup', 'options', keys, [
+      'sortOrder',
+      'optionID',
+    ]);
+    const identityMap = new Map<string, Option>();
+    for (const group of groups) {
+      const rows = grouped.get(group.optionGroupID);
+      if (rows === undefined) {
+        continue;
+      }
+      for (const row of rows) {
+        const option = resolveMapped(row, 'optionID', identityMap, mapOptionRow);
+        option.optionGroup = group;
+        group.options.push(option);
+      }
+    }
+  }
+
+  /**
+   * Resolve `Product.productType`, `Product.brand` and `Product.defaultSku` — the three relationships
+   * `integrationServices/google/controllers/feed.cfc:L64-L66` joins, declared at
+   * `model/entity/Product.cfc:L68`, `:L69` and `:L70`, all `many-to-one`.
+   *
+   * All three foreign keys are nullable, and all three genuinely are null in practice: a product need
+   * not have a brand (which is why `feed.cfc:L66` joins brand with an explicit `left`), and a product
+   * has no default SKU until its first SKU is written — see the three-step write order in
+   * {@link MySqlProductRepository.saveProduct}. A null key therefore leaves the association ABSENT, and
+   * every consumer already handles that: the feed omits `g:brand` entirely when the brand is missing,
+   * and `Product.getPrice` returns `undefined` when there is no default SKU.
+   *
+   * ⚠️ `defaultSku` IS TYPED AS A DELEGATE, AND A MAPPED `Sku` DOES **NOT** SATISFY IT. `Product.defaultSku`
+   * is declared `ProductDefaultSkuDelegate`, a nine-member read-only surface that deliberately omits an
+   * identifier accessor so the product module need not import the SKU module. Four of those nine members
+   * do not line up with `Sku`, and the mismatch is real rather than cosmetic:
+   *
+   *   - `Sku` DECLARES NO `getImageDirectory` AT ALL. That asymmetry is `Sku.cfc`'s, not this port's, and
+   *     is already recorded on {@link Sku} — `model/entity/Sku.cfc` declares `getImagePath` at `:L145`
+   *     and no directory member, while `model/entity/Product.cfc` declares one.
+   *   - `Sku`'s four other image members are ASYNCHRONOUS and each REQUIRES an injected `ImagePathPort`,
+   *     because a SKU image path is resolved through settings and the file system. The delegate declares
+   *     them synchronous and zero-argument, as `model/entity/Product.cfc:L320-L338` declares them.
+   *   - `Sku.getCurrencyCode` requires an injected setting resolver; the delegate declares it zero-argument.
+   *
+   * So the mapped SKU is WRAPPED rather than assigned — see {@link resolveDefaultSkuDelegate}. The three
+   * monetary members forward to the SKU, and the six that need a port this layer does not hold RAISE.
+   */
+  private async hydrateProductAssociations(products: readonly Product[]): Promise<void> {
+    const keys = collectIdentifiers(products, (product) => product.productID);
+    if (keys.length === 0) {
+      return;
+    }
+
+    const [productTypeRows, brandRows, defaultSkuRows] = [
+      await this.loadAssociationRows('SlatwallProduct', 'productType', keys),
+      await this.loadAssociationRows('SlatwallProduct', 'brand', keys),
+      await this.loadAssociationRows('SlatwallProduct', 'defaultSku', keys),
+    ];
+
+    const productTypes = new Map<string, ProductType>();
+    const brands = new Map<string, Brand>();
+    const defaultSkus = new Map<string, Sku>();
+    const delegates = new Map<Sku, ProductDefaultSkuDelegate>();
+
+    for (const product of products) {
+      const productTypeRow = productTypeRows.get(product.productID)?.[0];
+      if (productTypeRow !== undefined) {
+        product.productType = resolveMapped(
+          productTypeRow,
+          'productTypeID',
+          productTypes,
+          mapProductTypeRow,
+        );
+      }
+      const brandRow = brandRows.get(product.productID)?.[0];
+      if (brandRow !== undefined) {
+        product.brand = resolveMapped(brandRow, 'brandID', brands, mapBrandRow);
+      }
+      const defaultSkuRow = defaultSkuRows.get(product.productID)?.[0];
+      if (defaultSkuRow !== undefined) {
+        const defaultSku = resolveMapped(defaultSkuRow, 'skuID', defaultSkus, mapSkuRow);
+        product.defaultSku = resolveDefaultSkuDelegate(defaultSku, delegates);
+      }
+    }
+  }
+
+  /**
+   * Resolve `Sku.product` — `model/entity/Sku.cfc:L65`, `many-to-one fkcolumn="productID"` — and then
+   * that product's own three associations.
+   *
+   * THE NESTED STEP IS WHAT THE FEED ACTUALLY NEEDS. Its smart list is rooted at the SKU
+   * (`feed.cfc:L63`), and every product-level field it emits is reached as `sku.getProduct().<...>`.
+   * One statement per level, so the number of statements is fixed by the depth of the graph rather than
+   * by the number of rows: no per-row query, at either level.
+   *
+   * The distinct products are collected from the identity map, so two SKUs of the same product share
+   * one `Product` instance and its associations are loaded once.
+   */
+  private async hydrateSkuProducts(skus: readonly Sku[]): Promise<void> {
+    const keys = collectIdentifiers(skus, (sku) => sku.skuID);
+    if (keys.length === 0) {
+      return;
+    }
+    const grouped = await this.loadAssociationRows('SlatwallSku', 'product', keys);
+    const products = new Map<string, Product>();
+    for (const sku of skus) {
+      const row = grouped.get(sku.skuID)?.[0];
+      if (row === undefined) {
+        continue;
+      }
+      sku.product = resolveMapped(row, 'productID', products, mapProductRow);
+    }
+    await this.hydrateProductAssociations([...products.values()]);
+  }
+
+  /**
+   * Refuses a row set that exceeds the materialisation budget — SEC-12, the defence-in-depth half.
+   *
+   * The primary gate is the pre-count check in {@link SmartListQueryBuilder.execute}. This one exists
+   * only because the count and the row statements are separate reads, so in autocommit a concurrent
+   * insert can widen a row set after the gate has already passed it. It is checked BEFORE hydration,
+   * which is where the per-row cost and the retained memory actually are.
+   *
+   * ⚠️ IT REFUSES; IT DOES NOT TRIM. Returning the first `maximumRecordsPerQuery` rows would be the
+   * silent truncation {@link SmartListMaterialisationBudget} rules out, and it would do so on exactly
+   * the path where a caller has least reason to suspect it.
+   *
+   * @param rowsRead - how many rows the statement returned.
+   * @param entityName - the queried entity, recorded for diagnosis only.
+   * @param recordsCount - the total the counting statement reported, recorded so the divergence
+   *   between the two reads is visible rather than inferred.
+   */
+  private refuseOverBudgetRows(
+    rowsRead: number,
+    entityName: SmartListEntityName,
+    recordsCount: number,
+  ): void {
+    const budget = this.materialisationBudget;
+    if (budget === undefined) {
+      return;
+    }
+
+    const maximumRecordsPerQuery = budget.maximumRecordsPerQuery;
+
+    if (rowsRead > maximumRecordsPerQuery) {
+      throw new DomainError(
+        'A smart-list statement returned more rows than the configured materialisation budget ' +
+          'admits, so the result was refused before any row was hydrated rather than answered with a ' +
+          'silently shortened result.',
+        { context: { entityName, rowsRead, recordsCount, maximumRecordsPerQuery } },
+      );
+    }
+  }
+}
+
+/**
+ * Wrap a mapped SKU as the delegate `Product.defaultSku` declares, memoized per SKU instance.
+ *
+ * ═══════════════════════════════════════════════════════════════════════════════════════════════════
+ * WHY A RAISE IS NOT THE STUB RULE 3 FORBIDS
+ * ═══════════════════════════════════════════════════════════════════════════════════════════════════
+ * `rowMappers.ts` RULE 3 rejects lazy-proxy stubs, and its reason is specific: *"a stub answers
+ * non-identifier reads with class defaults instead of failing"* — `option.getOptionGroup().getImageGroupFlag()`
+ * would quietly return `false`. The danger is SILENCE, not absence. A member that raises is the opposite
+ * of silent: it cannot be mistaken for data, it names the port that is missing, and it fails at the first
+ * read rather than corrupting a rendered feed.
+ *
+ * That is the pattern this subtree already uses for exactly this situation — `MySqlProductRepository`
+ * carries `unresolvableProductImportSourceReader` and `unresolvableImportUrlTitleFilter`, each of which
+ * raises rather than fabricating a value for a collaborator no composition root has bound yet. These six
+ * members follow it.
+ *
+ * ⚠️ TWO, NOT THREE. A `unresolvableGlobalImageExtensionResolver` briefly stood beside them and is gone,
+ * because the collaborator it refused for is gone too: the global image extension is not an injected
+ * callback in this port but the frozen source-backed constant
+ * `DEPRECATED_SETTING_DEFAULTS.globalImageExtension` in `../settings/StaticSettingResolver`, transcribing
+ * the legacy metadata default at `model/service/SettingService.cfc:L247`. A refusing default is the right
+ * shape only for a value the legacy genuinely resolved at runtime and this port cannot; that name was
+ * never seeded, so every caller gets the same declared default and there is nothing to refuse. The
+ * reasoning is recorded on `MySqlProductRepositoryDependencies`, which states the absence explicitly.
+ *
+ * ───────────────────────────────────────────────────────────────────────────────────────────────────
+ * WHY THE THREE MONETARY MEMBERS ARE THE THREE THAT MATTER
+ * ───────────────────────────────────────────────────────────────────────────────────────────────────
+ * `Product.getPrice` falls through to `defaultSku.getPrice()` when the product carries no override
+ * [`model/entity/Product.cfc:L563-L568`], and a freshly mapped product NEVER carries one: `price` is a
+ * column of `SwSku`, not of `SwProduct`, so nothing in a product row can populate the override slot. The
+ * Google feed's `g:price` therefore reads through this delegate on every record
+ * [`integrationServices/google/views/feed/product.cfm`], which is why `defaultSku` has to be hydrated at
+ * all rather than left absent — and `getPrice`, `getListPrice` and `getRenewalPrice` are all
+ * zero-argument and exact on `Sku`, so all three forward with no adaptation.
+ *
+ * TODO(boundary) — the six raising members become real reads once a composition root can bind
+ * `ImagePathPort` and `SettingResolverPort` here (§0.2.2.7). `src/config/container.ts` is not part of this
+ * checkpoint's inventory, so no wiring is invented for it; the raise names the gap instead of hiding it.
+ *
+ * @param sku - The mapped default SKU.
+ * @param memo - Per-read memo, so one SKU instance yields one delegate instance. Without it two products
+ *   sharing a default SKU would receive two wrappers and `===` between them would be false, which would
+ *   defeat the identity map one level up.
+ */
+function resolveDefaultSkuDelegate(
+  sku: Sku,
+  memo: Map<Sku, ProductDefaultSkuDelegate>,
+): ProductDefaultSkuDelegate {
+  const existing = memo.get(sku);
+  if (existing !== undefined) {
+    return existing;
+  }
+
+  const unresolvable = (member: string, port: string): never => {
+    throw new DomainError(
+      `A product's default SKU was read through '${member}', which needs ${port} to answer. A default ` +
+        'SKU hydrated by the smart-list adapter carries only the columns of its own row, so this read ' +
+        'was refused rather than answered with a fabricated value.',
+      { context: { member, port, skuID: sku.skuID } },
+    );
+  };
+
+  const delegate: ProductDefaultSkuDelegate = {
+    getPrice: () => sku.getPrice(),
+    getListPrice: () => sku.getListPrice(),
+    getRenewalPrice: () => sku.getRenewalPrice(),
+    getCurrencyCode: () => unresolvable('getCurrencyCode', 'SettingResolverPort'),
+    getImageDirectory: () => unresolvable('getImageDirectory', 'ImagePathPort'),
+    getImagePath: () => unresolvable('getImagePath', 'ImagePathPort'),
+    getImage: () => unresolvable('getImage', 'ImagePathPort'),
+    getResizedImagePath: () => unresolvable('getResizedImagePath', 'ImagePathPort'),
+    getImageExistsFlag: () => unresolvable('getImageExistsFlag', 'ImagePathPort'),
+  };
+  memo.set(sku, delegate);
+  return delegate;
+}
+
+/**
+ * The alias under which an association load returns the NEAR side's identifier.
+ *
+ * Chosen so that no in-scope table declares a column of this name: the far side is projected with
+ * `<alias>.*`, so an owner key sharing a real column name would be overwritten by it and the grouping
+ * would silently key on the wrong value.
+ */
+const ASSOCIATION_OWNER_KEY = 'smartListAssociationOwnerKey';
+
+/** Statement aliases for an association load. Structure, never bound. */
+const ASSOCIATION_NEAR_ALIAS = 'associationNear';
+const ASSOCIATION_FAR_ALIAS = 'associationFar';
+
+/** One `?` per owner key. Values only — `?` cannot substitute an identifier (TR-4, S2). */
+function composeOwnerPlaceholders(ownerKeys: readonly string[]): string {
+  return ownerKeys.map(() => '?').join(', ');
+}
+
+/**
+ * Collect the entities of both smart-list collections, once each, preserving first-seen order.
+ *
+ * `records` is the unpaged collection and `pageRecords` is a window into the same query, so the two
+ * overlap heavily — and because {@link materialiseRows} shares one identity map across both, an
+ * overlapping row is THE SAME OBJECT in both collections. Deduplication is therefore BY REFERENCE, and
+ * that is sufficient rather than merely convenient: reference equality and identifier equality coincide
+ * for anything these two collections contain.
+ *
+ * ⚠️ VISITING AN OBJECT TWICE IS NOT HARMLESS, which is why this exists at all. A collection loader
+ * PUSHES into the live array, so a second visit would append every member again — and a back-reference
+ * would be re-pointed at the second owner instance. Both failures were observed before the base
+ * identity map was introduced; this set is the second half of that guarantee.
+ */
+/**
+ * Pair each row with the entity it hydrated into, keeping ONE pair per DISTINCT entity.
+ *
+ * ⚠️ THIS EXISTS BECAUSE THE IDENTITY MAP MADE THE OBVIOUS THING WRONG. An injected loader reads
+ * `rows[index]` for `entities[index]` — it needs the pair — and it MUTATES the entity, appending to
+ * collection-valued associations. Since one identity map now spans the unpaged and paged
+ * materialisations, both collections hand back the SAME instance for the same primary key, and a
+ * fanning join repeats one instance inside a single collection as well. Passing those repeats through
+ * would append every child a second and third time: the product whose `skus` held two SKUs came back
+ * holding four. Deduplicating by entity identity resolves each owner exactly once.
+ *
+ * Order is preserved, and so is alignment: the first row that produced an entity is the one kept, which
+ * is the row every loader reads its foreign keys from.
+ *
+ * @param rows - the result rows, index-aligned with `entities`.
+ * @param entities - the hydrated entities.
+ * @returns The deduplicated, still index-aligned pair of arrays.
+ */
+function collectDistinctRowPairs<T>(
+  rows: readonly MySqlRow[],
+  entities: readonly T[],
+): { readonly rows: readonly MySqlRow[]; readonly entities: readonly T[] } {
+  const seen = new Set<T>();
+  const pairedRows: MySqlRow[] = [];
+  const pairedEntities: T[] = [];
+  entities.forEach((entity, index) => {
+    const row = rows[index];
+    if (row === undefined || seen.has(entity)) {
+      return;
+    }
+    seen.add(entity);
+    pairedRows.push(row);
+    pairedEntities.push(entity);
+  });
+  return { rows: pairedRows, entities: pairedEntities };
+}
+
+function collectDistinctEntities(
+  records: readonly unknown[],
+  pageRecords: readonly unknown[],
+): readonly object[] {
+  const seen = new Set<object>();
+  const collected: object[] = [];
+  for (const candidate of [...records, ...pageRecords]) {
+    if (typeof candidate !== 'object' || candidate === null || seen.has(candidate)) {
+      continue;
+    }
+    seen.add(candidate);
+    collected.push(candidate);
+  }
+  return collected;
+}
+
+/**
+ * Collect the distinct, non-empty identifiers of a batch, preserving order.
+ *
+ * A transient entity has no identifier to load an association by, so it is skipped rather than bound as
+ * an empty string — binding `''` would match no row anyway, but it would also make the `IN` list longer
+ * than the number of owners and obscure that fact.
+ */
+function collectIdentifiers<TEntity>(
+  entities: readonly TEntity[],
+  readIdentifier: (entity: TEntity) => string,
+): readonly string[] {
+  const keys: string[] = [];
+  const seen = new Set<string>();
+  for (const entity of entities) {
+    const key = readIdentifier(entity);
+    if (key === '' || seen.has(key)) {
+      continue;
+    }
+    seen.add(key);
+    keys.push(key);
+  }
+  return keys;
+}
+
+/**
+ * Map a row to an entity, returning the instance already mapped for that identifier when there is one.
+ *
+ * THIS IS THE IDENTITY MAP. One instance per identifier per read, which is what a single Hibernate
+ * session gives and what makes `===` between two references to the same row meaningful. `manageEntity`
+ * returns THE SAME OBJECT it was handed (`rowMappers.ts` RULE 5, `Object.assign`), so a mapped entity is
+ * not a copy or a proxy and caching it is sound.
+ *
+ * ⚠️ CALLING A MAPPER TWICE FOR ONE ROW IS NOT HARMLESS — `manageEntity` installs a FRESH error bag and
+ * discards anything already accumulated. Routing every mapping through this function is what guarantees
+ * a row is mapped exactly once.
+ */
+function resolveMapped<TEntity>(
+  row: MySqlRow,
+  identifierColumn: string,
+  identityMap: Map<string, TEntity>,
+  mapper: (row: MySqlRow) => TEntity,
+): TEntity {
+  const key = row[identifierColumn];
+  if (typeof key !== 'string' || key === '') {
+    throw new DataIntegrityError(
+      `An association load returned a row whose ${identifierColumn} is not a non-empty string, so it ` +
+        'could not be identity-mapped.',
+    );
+  }
+  const existing = identityMap.get(key);
+  if (existing !== undefined) {
+    return existing;
+  }
+  const mapped = mapper(row);
+  identityMap.set(key, mapped);
+  return mapped;
 }

@@ -11,8 +11,10 @@
   "scripts": {
     "typecheck": "tsc --noEmit",
     "build": "node build/esbuild.mjs",
-    "test": "jest --ci --config package.json",
-    "lint": "eslint ."
+    "test": "jest --ci",
+    "test:coverage": "jest --ci --coverage",
+    "lint": "eslint .",
+    "format:check": "prettier --check ."
   },
   "dependencies": {
     "mysql2": "3.23.2"
@@ -26,6 +28,7 @@
     "jest": "30.4.2",
     "prettier": "3.9.6",
     "ts-jest": "29.4.12",
+    "ts-node": "10.9.2",
     "typescript": "5.9.3",
     "typescript-eslint": "8.65.0"
   },
@@ -46,8 +49,5 @@
   "overrides": {
     "minimatch": "10.2.6",
     "test-exclude": "7.0.2"
-  },
-  "jest": {
-    "preset": "./jest.config.ts"
   }
 }

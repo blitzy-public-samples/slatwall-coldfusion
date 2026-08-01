@@ -360,8 +360,10 @@ const PHYSICAL_COUNTS_PROPERTY: NameNotDeclaredByProductType<'physicalCounts'> =
  * `ProductTypeTest` EXISTS. AAP 0.6.5.2 records that the legacy suite has no entity test for
  * `ProductType`, no service test for any of the four services and no test for any DAO, so every
  * assertion written against this file is NET-NEW COVERAGE, not a re-run of an existing signal. The
- * extendable legacy signal for the whole slice is two entity test files, five issue regressions and
- * one fixture helper, and none of the two entity files is this entity.
+ * extendable legacy signal for the whole slice is two entity test files, one fixture helper and the
+ * EIGHT Catalog-relevant issue regressions of meta/tests/unit/IssuesTest.cfc — eight of ten issue
+ * methods, the exclusions being the account-only `issue_1376` and the order-only `issue_1604`; AAP
+ * §0.6.5.1 enumerates five of the eight. Neither of the two entity test files is this entity.
  * ============================================================================================ */
 
 /**
@@ -582,10 +584,12 @@ export const urlTitleUniqueConstraint = {
  *                                                           all + lazy="extra"   Yes
  *
  * This is recorded as a plain observation, NOT as a parity annotation and NOT as a new defect
- * identifier: it is faithfully reproduced legacy behaviour rather than a carried defect, and the
- * plan's defect register is closed — no entry may be invented. For the same reason it is not a new
- * execution-model mismatch either; the plan's mismatch inventory is likewise closed, and this file
- * carries none of them.
+ * identifier: it is faithfully reproduced legacy behaviour rather than a carried defect, and no entry
+ * may be invented for it. For the same reason it is not a new execution-model mismatch either, and this
+ * file carries none of them — the register is stated canonically, and only once, in the header of
+ * `src/ports/repositories/SkuRepository.ts` (AAP 0.6.7's frozen source range D1-D21, plus the
+ * source extension D22 and the three contract corrections D23, D24 and D25, with no D26 or beyond;
+ * and AAP 0.6.6's M1-M8 plus M9, with no M10 or beyond).
  *
  * =============================================================================================
  * THE `lazy="extra"` OBSERVATION (guideline 6)
@@ -844,13 +848,16 @@ export const systemCodeMaxLengthConstraint = {
  *
  * NO PARITY ANNOTATION IS RECORDED FOR THIS, and that is a considered decision rather than an
  * omission: a parity annotation marks a carried DEFECT, and this is faithfully reproduced legacy
- * behaviour that the port reproduces exactly. The plan's register is closed and no entry may be invented
- * for it. For completeness, the one defect that genuinely touches this entity — the unfiltered
- * inherited attribute-set assignment at `model/entity/ProductType.cfc:L92-L99`, whose own Todo sits at
- * `:L93` — is PROVEN UNREACHABLE FROM THIS FILE: this document constrains six properties and not one
- * of them is the attribute-set collection that method reads, nor does any other of the seven documents
- * touch it. It is annotated by `../../domain/product/ProductType`, which owns that member. THIS FILE
- * REQUIRES NO PARITY ANNOTATION OF ANY KIND.
+ * behaviour that the port reproduces exactly, and no entry may be invented for it — the register is
+ * stated canonically, and only once, in the header of `src/ports/repositories/SkuRepository.ts`
+ * (AAP 0.6.7's frozen source range D1-D21, plus the source extension D22 and the three contract
+ * corrections D23, D24 and D25, with no D26 or beyond; and AAP 0.6.6's M1-M8 plus M9, with no M10
+ * or beyond). For completeness, the one defect that genuinely touches this entity — the unfiltered
+ * inherited attribute-set assignment at `model/entity/ProductType.cfc:L92-L99`, whose own Todo sits
+ * at `:L93` — is PROVEN UNREACHABLE FROM THIS FILE: this document constrains six properties and not
+ * one of them is the attribute-set collection that method reads, nor does any other of the seven
+ * documents touch it. It is annotated by `../../domain/product/ProductType`, which owns that
+ * member. THIS FILE REQUIRES NO PARITY ANNOTATION OF ANY KIND.
  *
  * The key is constructed even though the rule cannot fire:
  * `validate.delete.ProductType.physicalCounts.maxCollection`.

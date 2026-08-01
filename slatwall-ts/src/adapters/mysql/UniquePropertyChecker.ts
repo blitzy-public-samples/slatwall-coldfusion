@@ -143,9 +143,11 @@
  * (`org/Hibachi/HibachiEntity.cfc:L287`) returns that logical form, so `SlatwallProduct` and not
  * `SwProduct` is what arrives at this boundary. A native statement can only carry the physical name,
  * so the translation is a whitelist LOOKUP — never a prefix concatenation, which applied to a
- * physical name would fabricate a table that does not exist. `assertTableName` performs the
- * normalisation and owns the full D22 table; this file states the consequence and no more: never
- * "fix" HQL entity names to `Sw*`, and never assume a logical name works in native SQL.
+ * physical name would fabricate a table that does not exist. `assertTableName` in ./QueryRunner
+ * performs the normalisation and holds the whole name-mapping table; D22's register home is
+ * ../../ports/repositories/SkuRepository, and this file neither owns the entry nor restates it. It
+ * states the consequence and no more: never "fix" HQL entity names to `Sw*`, and never assume a
+ * logical name works in native SQL.
  *
  * --------------------------------------------------------------------------------------------------
  * EXECUTION-MODEL MISMATCHES HONOURED HERE (AAP 0.7.3 S8)
@@ -202,9 +204,14 @@
  *     the closed set the manifest already pins; and states no capacity, latency or availability
  *     figure anywhere (IR-12).
  *
- * THE REGISTERS ARE CLOSED. This file mints no defect and no mismatch identifier. It CITES D22, D18,
- * M6, M7 and M8, and records every other finding by `path:Lnnn` locator alone.
- * ================================================================================================ */
+ * THIS FILE MINTS NO DEFECT AND NO MISMATCH IDENTIFIER, and no global closure claim is made here:
+ * the register is stated canonically, and only once, in the header of
+ * `src/ports/repositories/SkuRepository.ts` (AAP 0.6.7's frozen source range D1-D21, plus the
+ * source extension D22 and the three contract corrections D23, D24 and D25, with no D26 or beyond;
+ * and AAP 0.6.6's M1-M8 plus M9, with no M10 or beyond). It CITES D22, D18, M6, M7 and M8, and
+ * records every other finding by `path:Lnnn` locator alone.
+ * ================================================================================================
+ * */
 
 import { DomainError } from '../../errors/DomainError';
 import { assertColumnName, assertTableName } from './QueryRunner';
@@ -328,6 +335,49 @@ export class UniquePropertyChecker implements UniquePropertyPort {
   }
 
   /**
+   * Returns an equivalent {@link UniquePropertyChecker} bound to a DIFFERENT statement executor.
+   *
+   * ⭐ THIS IS THE FIX FOR REVIEW FINDING 2, AND THE DEFECT IT CLOSES WAS STRUCTURAL. Every repository
+   * in this folder captures its executor at construction, which is correct — but while that was the ONLY
+   * way to supply one, an executor chosen at construction time was necessarily the POOL-bound one, and
+   * no later act could change it. Wrapping a service call in `UnitOfWork.run` therefore did nothing
+   * useful: the boundary acquired a connection, began a transaction, and handed out a scope executor
+   * that this class had no way to adopt, so every read and write still went to the pool and straight out
+   * of the transaction. Rollback-on-errors and M6's same-connection read-back visibility were
+   * unreachable no matter how the graph was wired.
+   *
+   * Re-binding closes that. Inside a boundary a caller re-binds this repository to `scope.executor` and
+   * uses the result for the duration of the boundary; every statement the returned instance issues then
+   * runs on the connection the boundary owns.
+   *
+   * ⚠️ A NEW INSTANCE, NOT A MUTATION, AND THE DIFFERENCE IS THE POINT. The captured executor stays
+   * `private readonly` and this method never reassigns it, so the pool-bound instance a composition root
+   * built is still valid and still pool-bound after the call. Mutating it in place would make the
+   * repository's connection depend on WHEN it was used rather than on WHICH instance was used — an
+   * ambient current-transaction slot in all but name, which is exactly what
+   * `src/adapters/mysql/UnitOfWork.ts` refuses to keep (M7, AAP 0.7.3 S3). Two concurrent boundaries on
+   * one warm container get two instances and cannot observe each other's connection.
+   *
+   * ⚠️ IT IS NOT ON THE PORT INTERFACE, AND MUST NOT BE PUT THERE. A service may not know that a
+   * statement executor exists at all (AAP 0.7.3 S2 inverted), so re-binding is exposed on the CONCRETE
+   * adapter and used only by the layer that already holds concrete adapters. Adding it to the port would
+   * leak the persistence mechanism into `src/services/**`.
+   *
+   * @param executor - The executor to bind to, normally a boundary's `scope.executor`.
+   * @returns A new instance identical in every other respect.
+   *
+   * ⭐ RE-BINDING MATTERS MORE HERE THAN ANYWHERE ELSE IN THE FOLDER. This is the read that AAP 0.6.2
+   * describes: `Sku.hasUniqueOptions` and the `skuCode` uniqueness rule both run DURING a save, against
+   * rows the same unit of work is still writing. Bound to the pool, this check cannot see them, so a
+   * batch of SKUs would each be judged unique against a table that does not yet contain its siblings —
+   * a silently different answer from the legacy, where the ORM session made the pending rows visible.
+   * Bound to `scope.executor` it sees them. That is the whole of M6.
+   */
+  public withExecutor(executor: SqlExecutor): UniquePropertyChecker {
+    return new UniquePropertyChecker(executor);
+  }
+
+  /**
    * Reports whether `propertyName` on `entity` still holds a value no OTHER row has taken.
    *
    * ⚠️ TRUE MEANS UNIQUE. `true` says the value is unique and the entity is therefore safe to save;
@@ -421,12 +471,22 @@ export class UniquePropertyChecker implements UniquePropertyPort {
     const idColumn = assertColumnName(table, entityIDproperty);
 
     /*
-     * `:L140`, translated. The projection is the whole row because the legacy statement selects the
-     * ENTITY; the alias is carried across so the two read as one statement in two dialects; the
-     * self-exclusion term is unconditional; and there is no cap on the rows returned, because the
-     * legacy counts what it is given.
+     * `:L140`, translated. The predicate is carried across term for term, the alias is carried so the
+     * two read as one statement in two dialects, and the self-exclusion term is unconditional.
+     *
+     * ⚠️ THE PROJECTION IS A CONSTANT AND THE READ STOPS AT ONE ROW, WHERE THE LEGACY SELECTED WHOLE
+     * ENTITIES AND READ ALL OF THEM. This is a structural change and it changes no answer, which is
+     * provable from the legacy body rather than argued: `:L140` binds the rows to a local, and `:L142`
+     * is the ONLY thing that ever reads that local — `arrayLen(results)`, tested for non-zero. No
+     * column is read, no row is returned to the caller, and the magnitude of the count is never
+     * consulted. One matching row is therefore complete evidence, and every further row the legacy
+     * hydrated was transferred and discarded. The verdict below is left in the legacy's own shape
+     * (`length > 0` mirroring `arrayLen`) precisely so the transcription stays checkable.
+     *
+     * The `1` is a projection literal authored here, not caller data, so it is not a value position
+     * S2 would require a placeholder for — the two placeholders below remain the only ones.
      */
-    const sql = `SELECT e.* FROM ${table} e WHERE e.${column} = ? AND e.${idColumn} != ?`;
+    const sql = `SELECT 1 FROM ${table} e WHERE e.${column} = ? AND e.${idColumn} != ? LIMIT 1`;
 
     /*
      * TR-4 — the bound list is assembled in the legacy sequence: the compared VALUE first, the
@@ -474,10 +534,11 @@ export class UniquePropertyChecker implements UniquePropertyPort {
    * self-exclusion term here, and its absence is correct rather than an omission: the consuming
    * algorithm probes candidate strings on behalf of a record that either has not been persisted yet
    * or is being renamed, so there is no row to exclude. `model/dao/DataDAO.cfc:L122-L124` is a plain
-   * existence check with a single bound value, and so is this. The statement also carries no alias and
-   * projects the column rather than the row, because that is what the legacy statement does — and,
-   * being a native statement rather than one over the mapped object graph, it already speaks in
-   * physical table names, so D22 does not arise on this path the way it does on the other.
+   * existence check with a single bound value, and so is this. The statement also carries no alias,
+   * because the legacy statement carries none — and, being a native statement rather than one over the
+   * mapped object graph, it already speaks in physical table names, so D22 does not arise on this path
+   * the way it does on the other. What both probes DO share is their projection: each selects a
+   * constant and stops at the first match, for the reason recorded at the statement itself.
    *
    * THE WHITELIST IS ENFORCED HERE. `tableName` is a plain string on the consuming side by necessity,
    * so this member is where the three-table constraint of `URL_TITLE_TABLES` is actually applied and
@@ -489,8 +550,11 @@ export class UniquePropertyChecker implements UniquePropertyPort {
    * request, and a stateless invocation cannot. It is FLAGGED rather than repaired, and it is
    * deliberately not repaired FROM THIS SIDE: a cap invented here would be behaviour the source does
    * not state (AAP 0.7.3 S9), it would be invisible to the algorithm that owns the loop, and it would
-   * silently change which titles get produced. The bound belongs to the loop, and the module that
-   * owns the loop takes it as a caller-stated policy. Note also what this member must NOT do to make
+   * silently change which titles get produced. NOR IS IT REPAIRED FROM THE OTHER SIDE: an earlier
+   * revision had `src/util/urlTitle.ts` take a required attempt budget and raise on exhaustion, and
+   * that is withdrawn too, because a refusal is an outcome `model/service/DataService.cfc:L64`
+   * never produces. The bound belongs to whoever owns the invocation timeout, and the mismatch is
+   * carried in the M-series register per AAP 0.6.6 / IR-10. Note also what this member must NOT do to make
    * that loop terminate: the first collision suffix is `-2` and never `-1`, because the counter at
    * `model/service/DataService.cfc:L65` is pre-incremented, and nothing here inspects or rewrites a
    * candidate to change that sequence.
@@ -531,10 +595,16 @@ export class UniquePropertyChecker implements UniquePropertyPort {
     const column = assertColumnName(table, URL_TITLE_COLUMN);
 
     /*
-     * `:L122-L124`, translated: the column projected, the table named, one placeholder, no alias, no
-     * self-exclusion term and no cap on the rows returned.
+     * `:L122-L124`, translated: the table named, one placeholder, no alias and no self-exclusion term.
+     *
+     * ⚠️ A CONSTANT PROJECTION AND A ONE-ROW STOP, for exactly the reason given on
+     * {@link UniquePropertyChecker.isUniqueProperty}: `model/dao/DataDAO.cfc:L126` reads nothing off
+     * the result set but its `recordCount`, tested for non-zero, so the projected column was never
+     * looked at and additional matching rows were transferred and discarded. The column is still
+     * resolved and asserted above, because the WHERE clause names it and a table that reached the
+     * whitelist without declaring it must still fail loudly.
      */
-    const sql = `SELECT ${column} FROM ${table} WHERE ${column} = ?`;
+    const sql = `SELECT 1 FROM ${table} WHERE ${column} = ? LIMIT 1`;
 
     const rows: MySqlRow[] = await this.executor.execute(sql, [value]);
 

@@ -9,9 +9,25 @@ one of the files is nearly empty**, and **why a data-access component that exist
 has no counterpart here**. AAP §0.4.1.10 plans this README precisely so those findings are written
 down instead of rediscovered.
 
-Every statement below that describes the legacy system carries an inline `path:locator` citation. That
-is the artifact-trail requirement of AAP §0.8.5, whose stated purpose is that "a skeptical technical
-reviewer can follow end-to-end": a claim without a locator is a claim a reviewer cannot verify.
+Every **source-level behavioural claim** below — every statement about what a legacy file does, and
+every value read out of one — carries an inline `path:locator` citation. That is the artifact-trail
+requirement of AAP §0.8.5, whose stated purpose is that "a skeptical technical reviewer can follow
+end-to-end": a behavioural claim without a locator is a claim a reviewer cannot verify.
+
+Two kinds of statement here are deliberately **not** locator-bearing, because a locator would be the
+wrong evidence for them rather than better evidence:
+
+- **Repository-wide inventory counts** — how many adapters sit in a directory, how many files are in
+  this folder, how many entries a `.gitignore` has, how many ports the subtree declares. These are
+  measurements over a directory, not behaviour at a line; each names the directory it counts, and each
+  is re-derivable by listing that directory.
+- **Absence and environment claims** — that a file, a tool or a documented version does **not** exist.
+  Nothing can be cited at a line number for not being there. Each of these names what was searched and
+  where, so it can be re-run; §15 states the method and its limits in full.
+
+The distinction matters because it is the difference between a claim a reviewer can check by opening
+one file and a claim a reviewer can check by re-running one search. Both are checkable; they are not
+checkable the same way.
 
 ---
 
@@ -45,7 +61,7 @@ framework — was retired rather than translated (AAP §0.8.3.2).
 | `BaseIntegration.ts`     | The default member implementations every adapter inherits  | `integrationServices/BaseIntegration.cfc:L49-L73`           |
 | `GoogleIntegration.ts`   | The interface-conformant **stub only** — no feed logic     | `integrationServices/google/Integration.cfc:L49-L79`        |
 | `ProductFeedQuery.ts`    | **Record selection** — which SKUs the feed contains        | `integrationServices/google/controllers/feed.cfc:L49-L74`   |
-| `ProductFeedBuilder.ts`  | **All RSS field shaping** — where the real work lands      | `integrationServices/google/views/feed/product.cfm:L1-L65`  |
+| `ProductFeedBuilder.ts`  | **All RSS field shaping** — where the real work lands      | `integrationServices/google/views/feed/product.cfm:L1-L66`  |
 | `README.md`              | This document — orientation, plus the two register entries | `integrationServices/google/views/main/default.cfm:L49-L51` |
 
 Two legacy files in `integrationServices/google/` deliberately have **no** counterpart in this folder:
@@ -86,8 +102,13 @@ Three of those nine standards do the most work in this folder, and each is visib
 - **Flag mismatches instead of assuming them away.** The one execution-model mismatch this folder
   touches is recorded as an open decision rather than quietly resolved (§11).
 - **Invent nothing.** No service-level commitment, no capacity figure and no delivery guarantee
-  appears anywhere in this document. Where a number is stated it is either a source-declared value
-  with a locator or a published platform limit, and it is labelled as such.
+  appears anywhere in this document. Every **runtime or service-level** number stated here is either a
+  source-declared value with a locator or a published platform limit, and is labelled as such — there
+  is no third category, and in particular no latency, throughput, uptime, concurrency or capacity
+  figure of this port's own invention (AAP IR-12). Structural measurements are a different kind of
+  number and are governed by the note in the introduction above: counts of files, directory entries,
+  adapters, standards and ports are re-derivable by listing what they count, so they carry no locator
+  and make no claim about runtime behaviour.
 
 Consequently **zero files enter this folder by rule**, no rule conflict exists to resolve, and no rule
 is invented or cited anywhere below.
@@ -119,11 +140,21 @@ split on the colon: `google` selects the integration, `feed` selects the control
 declaring `this.publicMethods="product"` at `feed.cfc:L54`.
 
 **Who owns routing in the port.** That responsibility moves out of this folder entirely, to
-`slatwall-ts/src/handlers/googleFeedHandler.ts` behind `slatwall-ts/src/handlers/router.ts`. Nothing in
-`integrations/google/**` names a URL path, a query parameter, an HTTP method, a status code or a
-content type, and **this document deliberately does not define a new route shape** — the legacy route
-above is recorded as history, not restated as a target. Route decisions belong to the handler layer,
-which is also the only layer permitted to name serverless or gateway types at all (AAP §0.7.3).
+`slatwall-ts/src/handlers/`. The entry point exists: `slatwall-ts/src/handlers/googleFeedHandler.ts` is
+delivered and owns the feed operation, the M2 mismatch of §11, and every request-shaped concern the feed
+has.
+
+⚠️ **There is no target route yet, and this document does not invent one.** `slatwall-ts/src/handlers/`
+currently holds the per-service handlers and the shared response helper; the front controller that AAP
+§0.4.1.9 plans as `slatwall-ts/src/handlers/router.ts` — the file that would map an incoming path onto
+`googleFeedHandler` the way the `slatAction` convention above maps one onto `feed.cfc:L58` — is **not
+delivered**, so the route-to-handler mapping is still open. Nothing follows from that for this folder:
+nothing in `integrations/google/**` names a URL path, a query parameter, an HTTP method, a status code
+or a content type either way, and **this document deliberately does not define a new route shape** — the
+legacy route above is recorded as history, not restated as a target. Route decisions belong to the
+handler layer, which is also the only layer permitted to name serverless or gateway types at all (AAP
+§0.7.3), and this is precisely why §11 leaves M2's delivery model to that layer rather than settling it
+here.
 
 ---
 
@@ -187,9 +218,43 @@ and then applies, in order:
 The controller also hides the page layout at `feed.cfc:L60`, which is a display concern of the retired
 framework and has no counterpart here.
 
+**What the port does with those seven lines.** All three parts above are wired, and they travel together
+through one typed call rather than one call plus seven mutations. `ProductFeedQuery.ts` calls
+`SkuService.getSkuSmartListRecords`, handing it one frozen description in which the feed's three joins
+travel under `additionalJoins` — the only join channel the input translator reads. Both public SKU
+readings compose through the same private member of that service, so the base entity name, the base joins
+and the keyword properties come from one place and cannot drift; that member appends the feed's three
+joins after the service's own, in the legacy's registration order, and the three filters and the
+availability range travel in the same description. Nothing in
+this folder emits SQL, names a table or assembles an identifier: the property each filter names is
+resolved against the entity schema by the port's translator, and every value binds.
+
+⚠️ **Declaring the joins is only half of what the legacy does, and the other half is easy to miss.** In
+the legacy the joins exist so that Hibernate _can_ reach the associated rows; the reaching happens later
+and implicitly, when the view dereferences `sku.getProduct()` at `product.cfm:L18` and walks onward to
+the product's type, its brand and its default SKU. The record projection itself never selects any of
+that — `org/Hibachi/HibachiSmartList.cfc:L521` selects the base entity alone — because a live ORM session
+can lazily fetch whatever the template touches. **A stateless port has no session and therefore no lazy
+fetch.** Joins alone would return SKUs whose product graph was empty, and the serializer would then be
+shaping absent data.
+
+So each association the serializer actually dereferences is **declared and materialised explicitly**.
+`ProductFeedQuery.ts` names four, each with the template line that forces it — SKU to product
+(`product.cfm:L18`), product to product type (`product.cfm:L19` and `:L21`), product to default SKU
+(`product.cfm:L27`, via `model/entity/Product.cfc:L565-L568`) and product to brand (`product.cfm:L32`,
+conditional) — and the adapter projects those columns alongside the base entity and attaches the mapped
+associations to each returned SKU before anything is serialized. The brand projection rides on the
+**left** join, so a brandless product still returns a record and simply has no brand attached, which is
+what keeps the conditional brand element of §6.3 conditional rather than fatal.
+
+Two consequences worth stating plainly, because they are the difference between a feed that renders and
+one that renders blanks: the product-to-default-SKU association is what lets a product's price resolve at
+all, and the product-to-product-type association is what lets the description fall back to the product
+type's description. Both are selection concerns even though both are consumed in §6.3.
+
 ### 6.3 `ProductFeedBuilder.ts` — all RSS field shaping
 
-Shaping is ported from `integrationServices/google/views/feed/product.cfm:L1-L65`, and **this is where
+Shaping is ported from `integrationServices/google/views/feed/product.cfm:L1-L66`, and **this is where
 the real work of the feed lands** (AAP §0.4.1.10). Every field mapping in that template is carried
 across, including the ones a summary would smooth over: the description's fallback from the product's
 own description to the product type's, the conditional sale-price pair, the conditional brand element,
@@ -246,23 +311,45 @@ TODO(parity) D12 — integrationServices/google/model/dao/FeedDAO.cfc:L52-L74
 
 `FeedDAO.cfc` is the file a reader would expect to hold the feed's data access. It holds a single
 method, `getProductFeedQuery`, and that method **could never have executed successfully**. Six
-independent pieces of evidence, each verified directly against the source:
+observations, each verified directly against the source — two of them faults that break the statement,
+one a fault in what it would have meant, and three observations about the component's shape:
 
 1. **Zero callers, repository-wide.** A search across the whole repository for `FeedDAO` and for
-   `getProductFeedQuery` finds **no call site anywhere** — `getProductFeedQuery` appears only at its
-   own declaration, `FeedDAO.cfc:L52`. The component is orphaned: nothing constructs it, nothing
-   injects it, nothing invokes it.
+   `getProductFeedQuery` finds **no executable call site outside the declaration itself** at
+   `FeedDAO.cfc:L52`. The component is orphaned: nothing constructs it, nothing injects it, nothing
+   invokes it. (Both names do of course occur in prose — in this section, and in the one-line pointer
+   `ProductFeedQuery.ts` carries — but a mention in a comment or a document is not a call site.)
 2. **The query assigns an unscoped `rs` variable.** `FeedDAO.cfc:L53` is `<cfset rs = "" />` — no local
    declaration, so the name leaks into the component's shared variables scope.
 3. **The `SELECT` list ends in a trailing comma.** `FeedDAO.cfc:L58` is `SwProduct.calculatedTitle,`
    and the next non-blank line, `FeedDAO.cfc:L60`, is `FROM`. The comma sits immediately before the
    `FROM` keyword.
 4. **It contains an `INNER JOIN SwProduct` with no `ON` clause.** `FeedDAO.cfc:L62-L63` opens the join
-   and `FeedDAO.cfc:L64` goes straight to `WHERE`; no join predicate is ever supplied.
-5. **The `<cfquery>` declares no datasource.** `FeedDAO.cfc:L55` is `<cfquery name="rs">` — a result
-   name and nothing else, so the statement has no connection to run against.
+   and `FeedDAO.cfc:L64` goes straight to `WHERE`; no join predicate is ever supplied. ⚠️ **This one is
+   a semantic fault, not a syntax error** — MySQL accepts a join with no predicate and treats it as a
+   Cartesian product, so had the statement parsed at all it would have paired every SKU row with every
+   product row and then filtered the result. That is an unbounded cross product over two of the largest
+   tables in the schema, and it is a different and worse kind of wrong than a parse failure: it returns
+   an answer.
+5. **The `<cfquery>` names no datasource of its own.** `FeedDAO.cfc:L55` is `<cfquery name="rs">` — a
+   result name and nothing else. ⚠️ **This is an observation, not a fault, and it is stated here only
+   because it is easy to over-read.** A `<cfquery>` with no `datasource` attribute falls back to the
+   application-level default, and this application sets one:
+   `org/Hibachi/Hibachi.cfc:L10-L11` initialises `this.datasource.name` and `Hibachi.cfc:L16` then
+   includes `../../config/configApplication.cfm`, whose `:L2` sets `this.datasource.name = "Slatwall"`.
+   So the statement **would** have had a connection to run against. It is not the missing attribute that
+   made this method dead.
 6. **The component extends nothing.** `FeedDAO.cfc:L49` is `<cfcomponent accessors="true" output="false">`,
-   so it inherits no base that could have supplied the missing datasource or any other default.
+   so it inherits nothing — no base initialiser, no injected collaborator and no datasource override.
+   Combined with evidence 1, that is what makes the component inert rather than merely unused: there is
+   no supertype through which anything could have reached it either.
+
+**Which of the six actually proves the method could never have run.** Evidence 3 does, on its own: a
+`SELECT` list terminated by a comma immediately before `FROM` is a parse failure in every SQL dialect, so
+the statement could not have been prepared, let alone executed. Evidence 1 makes the point moot in
+practice, since nothing ever asked it to. Evidence 4 describes what the statement would have _meant_ had
+it parsed, and evidences 2, 5 and 6 are supporting observations about the component's shape. The
+conclusion is unchanged; what has changed is that it now rests on the fault that carries it.
 
 The two structural faults are visible together. Quoted **as evidence only** — this statement is not
 ported, and no corrected form of it exists anywhere in this subtree:
@@ -289,14 +376,18 @@ is **not deleted**.
   (AAP §0.8.2) hold the CFML tree byte-for-byte unchanged. Every legacy file in this plan is
   REFERENCE; there are zero UPDATE rows and zero deletions.
 
-None of the six faults is given an identifier of its own — they are all evidence for the one register
-entry, D12. This document introduces no new defect or mismatch identifier of any kind.
+None of the six observations is given an identifier of its own — they are all evidence for the one
+register entry, D12. This document introduces no new defect or mismatch identifier of any kind.
 
 **Where the entry lives.** This section is the authoritative home for D12 — the home AAP §0.4.1.10
-assigns it — and `ProductFeedQuery.ts` carries a single one-line pointer to it rather than evidence of
-its own. One sibling, `IntegrationContract.ts`, restates part of the evidence in a header note written
-while this file was still undelivered; that note is left byte-for-byte untouched, because it is
-checkpoint-scoped and belongs to a file this one does not own. The record above is the one to read.
+assigns it — and every other file in the folder points here rather than restating the evidence:
+`ProductFeedQuery.ts` carries a one-line pointer, and `IntegrationContract.ts`, `BaseIntegration.ts`
+and `GoogleIntegration.ts` each name this section as the record's home. An earlier revision of
+`IntegrationContract.ts` restated the whole of the evidence in its header, on the ground that the
+`README.md` said to hold it did not yet exist; it exists, so that restatement has been removed in favour
+of a pointer. Two copies of one register entry would break the same one-place rule the restatement was
+invoking, and the copy that had to go is the one the plan did not assign. The record above is the only
+one to read.
 
 **Nothing was lost by declining to port it**, incidentally, and that is worth knowing before anyone
 mourns the omission. The predicates the broken statement gestures at — the SKU's active flag, the
@@ -334,25 +425,34 @@ The shape of §6.1 has a cause, and this is it.
 <cfsetting requesttimeout="360" />
 ```
 
-360 seconds, behind a route served synchronously. This is mismatch **M2** of AAP §0.6.6, and it does
-not map cleanly onto one invocation of the target execution model: 360 seconds sits **inside** AWS
-Lambda's 15-minute maximum function duration, so the work itself is expressible as a single
-invocation, but it **far exceeds** the roughly 29-second synchronous API Gateway integration budget in
-front of it. The legacy model — hold an HTTP connection open for as long as the render takes — has no
-equivalent on the synchronous path.
+360 seconds, behind a route the legacy serves synchronously. This is mismatch **M2** of AAP §0.6.6, and
+it does not map cleanly onto one invocation of the target execution model. 360 seconds sits **inside**
+AWS Lambda's 15-minute maximum function duration, so the work itself is expressible as a single
+invocation. It nevertheless **far exceeds the default synchronous request-response budget of the gateway
+types ordinarily placed in front of a function**, so a synchronously delivered feed of any real catalogue
+size can be cut off in front of the function while the function is still running. The legacy model — hold
+one HTTP connection open for as long as the render takes — has no equivalent on the synchronous path.
 
-**The mismatch is flagged, not resolved.** The choice between an **asynchronous** and a **streamed**
-delivery model is an explicit, open decision, and it belongs to
-`slatwall-ts/src/handlers/googleFeedHandler.ts`, which owns M2 — **not** to this folder.
-`ProductFeedBuilder.ts` and `ProductFeedQuery.ts` therefore set no budget, no record bound, no
-batching policy, no streaming policy and no cache lifetime of any kind. The 360 is not silently
-re-timed to fit, and it is not capped at 29.
+⚠️ **No single figure is named for that second ceiling, because there is not one to name.** Synchronous
+integration limits differ by gateway type, differ by region, and for some gateway types are themselves
+configurable; a buffered request-response integration and a streamed one do not have the same ceiling at
+all. **This deliverable selects no gateway.** Infrastructure as code is out of scope (AAP §0.2.2.5), and
+as §4 records, the front controller that would map a route onto the feed handler is not delivered either
+— so there is no API type, no gateway configuration and no route from which an effective ceiling could be
+read. Stating one number as "the" limit would present as settled a fact that the deployment decides.
 
-⚠️ **Both numbers above are facts, not targets.** The 360 is a source-declared value with a locator;
-the other two are published platform limits. Neither is a service-level commitment, and no
-performance characteristic of any kind is promised, derived or implied here — AAP §0.6.6 and IR-12
-state only what the source declares. This document cites **M2** and mints no other mismatch
-identifier.
+**The mismatch is therefore flagged, not resolved, and it stays flagged until a gateway is chosen.** The
+choice between an **asynchronous** and a **streamed** delivery model — the two AAP §0.6.6 names, and no
+third of this document's invention — is an explicit, open
+decision, and it belongs to `slatwall-ts/src/handlers/googleFeedHandler.ts`, which owns M2 — **not** to
+this folder. `ProductFeedBuilder.ts` and `ProductFeedQuery.ts` therefore set no budget, no record bound,
+no batching policy, no streaming policy and no cache lifetime of any kind. The 360 is not silently
+re-timed to fit, and it is not capped to fit any gateway figure.
+
+⚠️ **The two numbers above are facts, not targets.** The 360 is a source-declared value with a locator;
+the 15-minute function maximum is a published platform limit. Neither is a service-level commitment, and
+no performance characteristic of any kind is promised, derived or implied here — AAP §0.6.6 and IR-12
+state only what the source declares. This document cites **M2** and mints no other mismatch identifier.
 
 One further execution-model constraint is **obeyed rather than cited**: nothing in this folder carries
 state between invocations. The adapter constructs its return values per call and the serializer holds
@@ -388,8 +488,20 @@ UPDATE rows in the entire plan**. Specifically not modified:
 - every `.cfc` and `.cfm` file in the repository, including `integrationServices/google/model/dao/FeedDAO.cfc`
   and `integrationServices/google/Integration.cfc`.
 
-The practical consequence is that the legacy application builds and runs exactly as it did before,
-whether this subtree is present or not, and the whole deliverable reads as a single additive diff.
+The practical consequence, stated as precisely as the available evidence supports: **the legacy source
+tree is unchanged, and this TypeScript subtree holds no compile-time or run-time reference back into
+it.** Nothing here imports, includes, extends, instruments or is discovered by a `.cfc` or `.cfm` file;
+the dependency arrow points one way, from this subtree's own modules to each other. The whole deliverable
+therefore reads as a single additive diff, and removing `slatwall-ts/` in its entirety would leave the
+repository byte-for-byte as it was.
+
+⚠️ **That is a static claim, and it is deliberately not stated as a runtime one.** Runtime equivalence of
+the legacy application was **not executed and could not be**: no ColdFusion, Railo or Lucee engine is
+available in this environment, `meta/docker/slatwall-local-dev/` — cited as the local development setup —
+does not exist, and MXUnit and CFSelenium are not vendored, so the legacy test suite cannot be run either.
+§15 records that limitation and its consequences in full. The evidence for this section is a diff and an
+import graph, which is what supports a claim about _unchanged source and absent coupling_; it is not
+evidence of observed behaviour, and it is not offered as such.
 
 ---
 
@@ -419,17 +531,37 @@ An integration sits above `services`, `ports` and `domain`, and below `handlers`
 The feed needs values that live behind explicitly out-of-scope collaborators, and it reaches every one
 of them through a declared port rather than by widening its own scope (AAP §0.2.2.7):
 
-| Port                  | Used by                 | What it supplies                                                        |
-| --------------------- | ----------------------- | ----------------------------------------------------------------------- |
-| `PricingPort`         | `ProductFeedBuilder.ts` | The sale price, its expiration, and the product price                   |
-| `ImagePathPort`       | `ProductFeedBuilder.ts` | The primary and additional resized image paths                          |
-| `SettingResolverPort` | `ProductFeedBuilder.ts` | `skuShippingWeight` and `skuShippingWeightUnitCode` (`product.cfm:L58`) |
-| `SmartListQueryPort`  | `ProductFeedQuery.ts`   | The dynamic filter, join and range composition the smart list provided  |
+| Port                  | Used by                 | What it supplies                                                                                                                   |
+| --------------------- | ----------------------- | ---------------------------------------------------------------------------------------------------------------------------------- |
+| `PricingPort`         | `ProductFeedBuilder.ts` | The **promotional** sale price and its expiration, and nothing else (`product.cfm:L28-L30`)                                        |
+| `ImagePathPort`       | `ProductFeedBuilder.ts` | The primary and additional resized image paths                                                                                     |
+| `SettingResolverPort` | `ProductFeedBuilder.ts` | Four keys: `skuShippingWeight` and `skuShippingWeightUnitCode` (`product.cfm:L58`), `imageMissingImagePath`, `globalURLKeyProduct` |
+| `SmartListQueryPort`  | `ProductFeedQuery.ts`   | Filter, join and range composition, **and** the association projection that materialises the joined graph (§6.2)                   |
+
+⚠️ **`PricingPort` does not supply the product price, and it is worth being exact about why.** The feed's
+`g:price` element reads the product's own price — `product.cfm:L27` is
+`local.sku.getProduct().getPrice()` — and `model/entity/Product.cfc:L561-L568` resolves that from the
+product's persisted `price` when one is set and otherwise from its default SKU's. Both are **in-scope
+state** on entities this slice models, so the port carries neither. What crosses the boundary is only the
+`g:sale_price` pair at `product.cfm:L28-L30`: a sale price and its expiration are computed by the
+promotion subsystem, which AAP §0.2.2.6 excludes. The comparison at `product.cfm:L28` therefore has one
+foot on each side — the SKU's own price is in-scope state, the sale price it is compared against is not.
+
+**The four setting keys, and where each is read.** Two are read directly by the serializer for the
+shipping-weight element at `product.cfm:L58`. `imageMissingImagePath` is the fallback the image members
+resolve when no image path is available. `globalURLKeyProduct` is reached one level down rather than
+inline: the item `link` at `product.cfm:L22` is composed by the product entity, which resolves that key
+through the same injected port, so the feed path depends on it without naming it at the call site. All
+four resolve **synchronously** — mismatch M8 of AAP §0.6.6 makes the port synchronous, and awaiting one
+would be a behaviour change, not a style choice.
 
 `SmartListQueryPort` exists as a boundary port for a specific reason worth recording: the availability
 filter at `integrationServices/google/controllers/feed.cfc:L72` reads `product.calculatedQATS`, which
 is a **calculated inventory property**, and inventory is explicitly out of scope (AAP §0.6.4.1,
-§0.2.2.7). The feed cannot resolve that value itself, and it does not try.
+§0.2.2.7). The feed cannot resolve that value itself, and it does not try. The same port is also what
+carries the association projection described in §6.2 — the mechanism that replaces the legacy's lazy
+session fetch — which is why its row above names composition **and** materialisation rather than
+composition alone.
 
 The ports inventory is **closed at thirteen files**, and **this folder creates no new port**. If a
 future change to the feed appears to need one, that is a scope decision to be taken deliberately, not
@@ -443,12 +575,22 @@ The legacy repository contains **no test for the feed at all**, and **no mocking
 MXUnit and CFSelenium are **not vendored** in the repository, so the legacy suite cannot be executed in
 this environment even in principle (AAP §0.5.4, §0.6.5.3).
 
-`slatwall-ts/test/integrations/ProductFeedBuilder.test.ts` is therefore **NET-NEW coverage**. It is not
-parity coverage, it does not extend an existing test, and nothing in this port should be read as
-implying that it does. AAP §0.8.3.7 makes stating this an explicit requirement, because the question
+Both suites covering this folder are therefore **NET-NEW coverage**:
+
+- `slatwall-ts/test/integrations/ProductFeedBuilder.test.ts` — the field mapping, every conditional
+  branch, and the escaping.
+- `slatwall-ts/test/integrations/ProductFeedQuery.test.ts` — record selection: that the three feed joins
+  are applied on top of the SKU smart list rather than instead of it, that returned SKUs arrive with
+  their associations already attached, that an absent association (the brandless product reaching the
+  feed through the left join) is reported as absent rather than fabricated, and that a projection the
+  schema cannot satisfy fails loudly rather than half-building. Each of its cases is named `NET-NEW` in
+  the suite itself, so the label travels with the test rather than living only here.
+
+Neither is parity coverage, neither extends an existing test, and nothing in this port should be read as
+implying that either does. AAP §0.8.3.7 makes stating this an explicit requirement, because the question
 it answers — whether existing tests were replicated or new ones silently generated — is exactly the
-question a skeptical reviewer asks first. For this folder the honest answer is: **new ones, because
-none existed.**
+question a skeptical reviewer asks first. For this folder the honest answer is: **new ones, because none
+existed.**
 
 ---
 
@@ -460,14 +602,25 @@ there is no CFML engine available, the repository contains no container or build
 and the `meta/docker/slatwall-local-dev/` path cited in the original brief **does not exist** — `meta/`
 contains only `meta/tests/` and `meta/eclipse/` (AAP §0.8.4.1). Consequently **no runtime behavioural
 comparison against the original was performed**, and traceability throughout this port is
-**documentary**. That is stated plainly rather than implied away, and it is why every claim above
-carries a locator a reviewer can open.
+**documentary**. That is stated plainly rather than implied away, and it is why every behavioural claim
+above carries a locator a reviewer can open — with the two deliberate exceptions the introduction sets
+out: repository-wide inventory counts, which name the directory they measure, and absence claims, which
+name the search that found nothing.
 
 For the same reason, where the legacy documentation is silent this document records the silence rather
 than filling it. The root `readme.md` does pin three platform floors — Mura at `readme.md:L4`,
 ColdFusion at `readme.md:L6` and Railo at `readme.md:L8`, each written as a version "or Newer" — but
-the Lucee version, the MySQL version and any container-based development workflow are **not
-documented** anywhere in the repository, and no plausible value is supplied for them here.
+**the legacy tree and the root documentation pin no Lucee version, no MySQL version and no
+container-based development workflow**, and no plausible value is invented for any of them here.
+
+⚠️ **One precision, because the unqualified form of that sentence would be false.** The silence is the
+_legacy_ tree's, not the repository's. This TypeScript subtree does record a MySQL version — several
+adapter comments state which server version a behaviour was measured against, because measuring beat
+assuming — and `slatwall-ts/` carries its own pinned toolchain besides. Those are facts about the port's
+own verification environment, established by this work; they are emphatically **not** a discovered pin on
+the legacy application, and neither this document nor any file in this folder attributes them to it. The
+distinction matters: reading a version out of the port and back onto the legacy system would be exactly
+the kind of invention the third standard of §3 forbids.
 
 **No user interface, and no design system.** This folder is headless: there is no component, no
 component library, no design token and no design asset, and none applies. The single legacy file with

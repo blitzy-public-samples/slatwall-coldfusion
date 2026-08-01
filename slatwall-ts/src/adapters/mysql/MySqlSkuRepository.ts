@@ -63,8 +63,9 @@
  * is carried verbatim: never "fix" HQL entity names to `Sw*`, and never assume a logical name works
  * in native SQL. Every statement this adapter emits therefore names PHYSICAL tables, resolved
  * through the whitelist rather than transformed by a prefix rule. This annotation mints no register
- * identifier; D22 is owned here per AAP §0.7.3 S7 and the mismatch and defect registers are not
- * extended by this file.
+ * identifier: D22's register home is `../../ports/repositories/SkuRepository`, which is where it is
+ * DEFINED, and this file is where it is DISCHARGED (AAP §0.7.3 S7). Neither register is extended
+ * here.
  *
  * ⚠️ D18 IS NOT THIS FILE'S. The one declared departure from byte-for-byte preservation — the
  * importer's unparameterized statements — is exclusive to `MySqlProductRepository.ts` (AAP
@@ -78,9 +79,20 @@
  * slice: the ten-way existence chain spans nine order, inventory, physical, stock and vendor
  * families; the SKU-code fallback reads the alternate-code table; and two of the three fetch
  * branches read the access-content and subscription-benefit link tables. `QueryRunner.ts`'s
- * whitelist deliberately holds ONLY the seven in-scope tables and refuses everything else, and it
- * states the division of responsibility for exactly this case: "the repository that meets that join
- * is answerable for flagging it". This file is that repository, so:
+ * whitelist admits the six in-scope entity tables plus the SKU-option link table, refuses everything
+ * else, and states the division of responsibility for exactly this case: "the repository that meets
+ * that join is answerable for flagging it". This file is that repository, so:
+ *
+ * ⚠️ ONE NAME SITS IN BOTH LISTS, AND THIS FILE DOES NOT USE THE WHITELISTED FORM.
+ * `SwAlternateSkuCode` appears in the whitelist as an eighth entry — the paginated dynamic-query
+ * builder needs it as a join target for the third base join of `model/service/SkuService.cfc:L316` —
+ * yet the SKU-code fallback below reaches it through an authored out-of-scope literal instead, because
+ * that statement is composed here from no caller input at all — the legacy spells it as HQL over
+ * `ss.alternateSkuCodes` at `model/dao/SkuDAO.cfc:L103`, and the ported form is a native join over a
+ * family AAP §0.2.2.1 excludes. Both routes are deliberate
+ * and the duplication is stated rather than tidied away: see the reconciliation on the whitelist
+ * declaration in `QueryRunner.ts`. So the sentence above says "six plus the link table" and not
+ * "seven": the eighth name exists, and pretending otherwise here would be the false statement.
  *
  *   - Every IN-SCOPE identifier is resolved through `assertTableName` / `assertColumnName`, which is
  *     the only sanctioned route for a table or column name into statement text (AAP §0.7.3 S2).
@@ -109,16 +121,30 @@
  * numbers below are source-declared values carrying their locators.
  */
 
-import { SEEDED_PRODUCT_TYPES_BY_SYSTEM_CODE } from '../../domain/BaseProductType';
-import type { Product } from '../../domain/product/Product';
-import type { Sku } from '../../domain/sku/Sku';
+import {
+  resolveBaseProductType,
+  SEEDED_PRODUCT_TYPES_BY_SYSTEM_CODE,
+} from '../../domain/BaseProductType';
+import type { Option } from '../../domain/option/Option';
+import type { OptionGroup } from '../../domain/option/OptionGroup';
+import type { Product, ProductTransactionExistenceChecker } from '../../domain/product/Product';
+import type { Sku, SkuTransactionExistenceChecker } from '../../domain/sku/Sku';
 import { SKU_UNSAVED_ID_VALUE } from '../../domain/sku/Sku';
 import { DataIntegrityError, DomainError } from '../../errors/DomainError';
+import type { BoundedReadResult, BoundedReadWindow } from '../../ports/repositories/BoundedRead';
 import type { SkuRepository, SkuRow, SkuSearchRow } from '../../ports/repositories/SkuRepository';
-import type { SqlExecutor } from './QueryRunner';
-import { assertColumnName, assertTableName } from './QueryRunner';
+import type { PhysicalTableName, SqlMutationExecutor } from './QueryRunner';
+import {
+  assertColumnName,
+  assertTableName,
+  prepareBoundedRead,
+  settleBoundedRead,
+} from './QueryRunner';
+import { attachFetchedSkuAssociations } from './catalogAggregates';
+import { applyPreInsertAudit, applyPreUpdateAudit } from '../../domain/base/AuditableEntity';
+import type { AccountContextPort } from '../../ports/AccountContextPort';
 import type { MySqlRow } from './rowMappers';
-import { mapRows, mapSkuRow, mapSkuSearchRow } from './rowMappers';
+import { mapOptionGroupRow, mapOptionRow, mapRows, mapSkuRow, mapSkuSearchRow } from './rowMappers';
 
 /* ================================================================================================
  * IN-SCOPE PHYSICAL IDENTIFIERS — RESOLVED THROUGH THE WHITELIST, NEVER WRITTEN AS BARE TEXT
@@ -129,6 +155,34 @@ const SKU_TABLE = assertTableName('SwSku');
 
 /** `SwSkuOption`, the owning side's link table — `model/entity/Sku.cfc:L76`. */
 const SKU_OPTION_TABLE = assertTableName('SwSkuOption');
+
+/**
+ * The other three link tables `model/entity/Sku.cfc` owns — `:L77`, `:L78` and `:L79`.
+ *
+ * ⚠️ ALL FOUR OF THE SKU'S MANY-TO-MANY COLLECTIONS ARE OWNED BY THIS ENTITY, so all four link rows are
+ * this adapter's to write. Only the option table was named here originally, which meant three of the
+ * four collections were silently discarded on every save: the entity accepted them, `createSkus`
+ * populated them from the subscription and content-access branches, validation reported on them, and the
+ * rows were never written. A later read reconstructed a SKU with three empty collections and nothing
+ * anywhere reported a loss.
+ *
+ * ⚠️ THE FAR ENTITIES ARE OUT OF SCOPE AND THAT DOES NOT CHANGE THE OWNERSHIP. Nothing here reads or
+ * writes `SwContent` or `SwSubscriptionBenefit`; what is written is the LINK ROW, whose owning side is
+ * `SwSku`. The far column carries a 32-character identifier the port already models as a plain
+ * reference (`AccessContentReference`, `SubscriptionBenefitReference`), so no excluded entity is
+ * hydrated, constructed or queried.
+ *
+ * ⚠️ THE ABBREVIATION IN TWO OF THE THREE NAMES IS VERBATIM. `SwSkuSubsBenefit` and
+ * `SwSkuRenewalSubsBenefit` abbreviate "Subscription" where their far COLUMN does not; both spellings
+ * come straight from the `linktable` and `inversejoincolumn` attributes and neither may be regularised.
+ */
+const SKU_ACCESS_CONTENT_TABLE = assertTableName('SwSkuAccessContent');
+
+/** `model/entity/Sku.cfc:L78` — `subscriptionBenefits`. */
+const SKU_SUBSCRIPTION_BENEFIT_TABLE = assertTableName('SwSkuSubsBenefit');
+
+/** `model/entity/Sku.cfc:L79` — `renewalSubscriptionBenefits`. A DIFFERENT table, the same far column. */
+const SKU_RENEWAL_SUBSCRIPTION_BENEFIT_TABLE = assertTableName('SwSkuRenewalSubsBenefit');
 
 /** `SwOption` — `model/entity/Option.cfc:L49`. */
 const OPTION_TABLE = assertTableName('SwOption');
@@ -174,6 +228,45 @@ const SKU_OPTION_COLUMN = Object.freeze({
   optionID: assertColumnName(SKU_OPTION_TABLE, 'optionID'),
 });
 
+/**
+ * The three remaining link tables, each as its own owning and far column pair.
+ *
+ * ⚠️ THE FAR COLUMN OF THE CONTENT LINK IS `contentID`, NOT `accessContentID`. The collection is named
+ * for the ROLE it plays on the SKU while the column names the entity it points at
+ * (`model/entity/Sku.cfc:L77`, `inversejoincolumn="contentID"`), so deriving the column from the
+ * property name would produce a column that does not exist. The whitelist would refuse it, which is the
+ * gate working — but only if the correct name is written here in the first place.
+ *
+ * ⚠️ THE TWO BENEFIT LINKS SHARE A FAR COLUMN NAME AND THAT IS CORRECT. Both point at the same entity
+ * and are distinguished by their TABLE alone, so a SKU may legitimately carry one benefit identifier in
+ * both roles and the two rows live in two different tables. Reading this as a duplication to collapse
+ * would merge two distinct associations.
+ */
+const SKU_LINK_COLUMN = Object.freeze({
+  /**
+   * The option link, restated in the shared shape. The names are the same two the dedicated
+   * {@link SKU_OPTION_COLUMN} carries and both are kept: that constant is read by the option-resolution
+   * and sorted-SKU queries elsewhere in this adapter, where `optionID` is the meaningful name, while this
+   * member exists so the write path can treat all four collections as one kind of thing.
+   */
+  option: Object.freeze({
+    skuID: SKU_OPTION_COLUMN.skuID,
+    far: SKU_OPTION_COLUMN.optionID,
+  }),
+  accessContent: Object.freeze({
+    skuID: assertColumnName(SKU_ACCESS_CONTENT_TABLE, 'skuID'),
+    far: assertColumnName(SKU_ACCESS_CONTENT_TABLE, 'contentID'),
+  }),
+  subscriptionBenefit: Object.freeze({
+    skuID: assertColumnName(SKU_SUBSCRIPTION_BENEFIT_TABLE, 'skuID'),
+    far: assertColumnName(SKU_SUBSCRIPTION_BENEFIT_TABLE, 'subscriptionBenefitID'),
+  }),
+  renewalSubscriptionBenefit: Object.freeze({
+    skuID: assertColumnName(SKU_RENEWAL_SUBSCRIPTION_BENEFIT_TABLE, 'skuID'),
+    far: assertColumnName(SKU_RENEWAL_SUBSCRIPTION_BENEFIT_TABLE, 'subscriptionBenefitID'),
+  }),
+});
+
 /** The `SwOption` columns the odometer reads — `model/entity/Option.cfc:L56`, `:L59`. */
 const OPTION_COLUMN = Object.freeze({
   optionID: assertColumnName(OPTION_TABLE, 'optionID'),
@@ -190,6 +283,68 @@ const OPTION_GROUP_COLUMN = Object.freeze({
   optionGroupID: assertColumnName(OPTION_GROUP_TABLE, 'optionGroupID'),
   sortOrder: assertColumnName(OPTION_GROUP_TABLE, 'sortOrder'),
 });
+
+/**
+ * The `SwOption` and `SwOptionGroup` columns {@link MySqlSkuRepository.hydrateSkuOptions} selects.
+ *
+ * ⚠️ THIS IS A SEPARATE REGISTRY FROM {@link OPTION_COLUMN} AND {@link OPTION_GROUP_COLUMN} ON PURPOSE.
+ * Those two exist for the odometer ordering and name only the three columns it multiplies; this one
+ * names every column its mapper reads, because a partially selected row would hand the mapper an
+ * `undefined` where the table has a value and the entity would come back missing fields the legacy
+ * hydrates. Merging the two registries would silently couple the ordering query to the hydration
+ * query, and either one growing a column would change the other's statement.
+ *
+ * Every name is still routed through `assertColumnName`, so a column that is not registered for its
+ * table in `QueryRunner.ts` fails at module load rather than at query time.
+ */
+const SKU_OPTION_HYDRATION_COLUMN = Object.freeze({
+  optionID: assertColumnName(OPTION_TABLE, 'optionID'),
+  optionCode: assertColumnName(OPTION_TABLE, 'optionCode'),
+  optionName: assertColumnName(OPTION_TABLE, 'optionName'),
+  optionDescription: assertColumnName(OPTION_TABLE, 'optionDescription'),
+  sortOrder: assertColumnName(OPTION_TABLE, 'sortOrder'),
+  optionGroupID: assertColumnName(OPTION_TABLE, 'optionGroupID'),
+  remoteID: assertColumnName(OPTION_TABLE, 'remoteID'),
+  createdDateTime: assertColumnName(OPTION_TABLE, 'createdDateTime'),
+  createdByAccountID: assertColumnName(OPTION_TABLE, 'createdByAccountID'),
+  modifiedDateTime: assertColumnName(OPTION_TABLE, 'modifiedDateTime'),
+  modifiedByAccountID: assertColumnName(OPTION_TABLE, 'modifiedByAccountID'),
+  optionGroupName: assertColumnName(OPTION_GROUP_TABLE, 'optionGroupName'),
+  optionGroupCode: assertColumnName(OPTION_GROUP_TABLE, 'optionGroupCode'),
+  optionGroupDescription: assertColumnName(OPTION_GROUP_TABLE, 'optionGroupDescription'),
+  imageGroupFlag: assertColumnName(OPTION_GROUP_TABLE, 'imageGroupFlag'),
+});
+
+/** Statement aliases for the option-hydration join. Structure, never bound. */
+const HYDRATION_LINK_ALIAS = 'skuOptionLink';
+const HYDRATION_OPTION_ALIAS = 'hydratedOption';
+const HYDRATION_GROUP_ALIAS = 'hydratedOptionGroup';
+
+/**
+ * The prefix that keeps `SwOptionGroup`'s columns from colliding with `SwOption`'s.
+ *
+ * ⚠️ `sortOrder`, `remoteID` and all four audit columns exist on BOTH tables. `rowMappers.ts` RULE 2
+ * states that a joining repository must split or alias before handing a row to a mapper, and this
+ * prefix plus the explicit row rebuild in {@link MySqlSkuRepository.hydrateSkuOptions} is how that is
+ * done. Without it the option's `sortOrder` and the group's `sortOrder` would be one column and the
+ * loser would be decided by the driver's key order.
+ */
+const HYDRATION_GROUP_PREFIX = 'optionGroup_';
+
+/**
+ * The alias under which the LINK table's `skuID` is returned.
+ *
+ * It is aliased rather than selected bare because `SwSku`, `SwSkuOption` and several out-of-scope
+ * tables all carry `skuID`; a distinct name makes the owner key unambiguous no matter what else the
+ * projection grows.
+ */
+const HYDRATION_KEY_COLUMN = 'hydrationOwnerSkuID';
+
+/** A single positional placeholder. Values only — `?` cannot substitute an identifier (TR-4, S2). */
+const BIND_PLACEHOLDER = '?';
+
+/** The separator between placeholders in an `IN` list. Structure, never bound. */
+const CLAUSE_JOINER = ', ';
 
 /** The `SwProduct` columns the nested membership subquery reads — `model/entity/Product.cfc:L52`, `:L69`. */
 const PRODUCT_COLUMN = Object.freeze({
@@ -222,7 +377,7 @@ const OUT_OF_SCOPE_TABLE = Object.freeze({
   alternateSkuCode: 'SwAlternateSkuCode',
   /** `model/entity/Sku.cfc:L77` `linktable="SwSkuAccessContent"` — the contentAccess fetch branch, `model/dao/SkuDAO.cfc:L155`. */
   skuAccessContent: 'SwSkuAccessContent',
-  /** `model/entity/Sku.cfc:L79` `linktable="SwSkuSubsBenefit"` — the subscription fetch branch, `model/dao/SkuDAO.cfc:L160`. */
+  /** `model/entity/Sku.cfc:L78` `linktable="SwSkuSubsBenefit"` — the subscription fetch branch, `model/dao/SkuDAO.cfc:L160`. */
   skuSubscriptionBenefit: 'SwSkuSubsBenefit',
   /** `model/entity/SubscriptionTerm.cfc` — the non-fetching join of the subscription branch, `model/dao/SkuDAO.cfc:L159`. */
   subscriptionTerm: 'SwSubscriptionTerm',
@@ -262,7 +417,14 @@ const OUT_OF_SCOPE_TABLE = Object.freeze({
 const OUT_OF_SCOPE_COLUMN = Object.freeze({
   /** `model/entity/AlternateSkuCode.cfc:L53` — the code itself. */
   alternateSkuCode: 'alternateSkuCode',
-  /** `model/entity/AlternateSkuCode.cfc:L57`, `model/entity/Sku.cfc:L77`, `:L79` — all keyed by SKU. */
+  /**
+   * `model/entity/AlternateSkuCode.cfc:L57`, `model/entity/Sku.cfc:L77` (`SwSkuAccessContent`) and
+   * `:L78` (`SwSkuSubsBenefit`) — all keyed by SKU, all declaring `fkcolumn="skuID"`.
+   *
+   * The neighbouring `:L79` is deliberately NOT cited: it declares `renewalSubscriptionBenefits`
+   * over the DIFFERENT link table `SwSkuRenewalSubsBenefit`, which no member of this adapter joins.
+   * `../../ports/SubscriptionTermPort` is the module that legitimately cites `:L79`.
+   */
   skuID: 'skuID',
   /** `model/entity/Stock.cfc` primary key, and the target of every mediated join below. */
   stockID: 'stockID',
@@ -279,34 +441,31 @@ const OUT_OF_SCOPE_COLUMN = Object.freeze({
  * ============================================================================================== */
 
 /**
- * The statement-execution surface this adapter needs.
+ * The statement-execution surface this adapter needs: the read-plus-write pair, under a local name.
  *
- * `SqlExecutor` from `QueryRunner.ts` is deliberately one member wide so a test can substitute a
- * plain object literal, and that width is preserved: `SkuStatementExecutor` extends it rather than
- * replacing it. It adds exactly one member, and only because {@link SkuRepository.persistSku}
- * requires a write. The read member cannot carry a write — it normalises a driver result into rows
- * and raises when the driver returns a write acknowledgement instead of a row set — so an adapter
- * that must both read and write needs both members named.
+ * ⭐ AN ALIAS OF {@link SqlMutationExecutor}, NOT A SECOND DECLARATION OF THE SAME SHAPE. `QueryRunner.ts`
+ * declares the pair once — `execute` for reads, `executeMutation` for writes, both bound to whatever
+ * connection the object was built over — and every `TransactionScope` hands one out. An earlier revision
+ * widened the read-only `SqlExecutor` privately here, and two sibling adapters did the same, with the
+ * result that NO transaction scope satisfied any of the three and the only executor that fitted them was
+ * the pool-backed `QueryRunner`. Naming the shared declaration instead is what makes the M6 requirement
+ * below a fact the compiler checks.
  *
- * ⚠️ ONE executor, not two. `QueryRunner` satisfies this shape structurally, so the composition root
- * injects a single instance and both members run on the SAME connection. That is not a convenience:
- * it is what makes M6 work. `Sku.hasUniqueOptions()` [`model/entity/Sku.cfc:L756-L769`] is a
- * declarative validation rule that EXECUTES {@link MySqlSkuRepository.findSkusBySelectedOptions}
- * while a batch of sibling SKUs is being written, so the read must observe the writes the same
- * transaction has already issued and not yet committed. Splitting reads and writes across two
- * executors, or reaching past the injected one to a pool, silently breaks that visibility with no
- * error and no failing statement. Nothing in this file constructs a connection or a pool, and
- * nothing here commits — the transaction is opened and closed by the caller.
+ * ⚠️ ONE executor, not two, AND THAT IS WHAT MAKES M6 WORK. `Sku.hasUniqueOptions()`
+ * [`model/entity/Sku.cfc:L756-L769`] is a declarative validation rule that EXECUTES
+ * {@link MySqlSkuRepository.findSkusBySelectedOptions} while a batch of sibling SKUs is being written,
+ * so the read must observe the writes the same transaction has already issued and not yet committed.
+ * Splitting reads and writes across two executors, or reaching past the injected one to a pool, breaks
+ * that visibility silently — no error, no failing statement, just a different answer. The write member
+ * is required for the same reason it exists in the shared declaration: the read member normalises a
+ * driver result into rows and raises when the driver answers with a write acknowledgement, so it cannot
+ * carry {@link SkuRepository.persistSku}'s statements. That write pair is the port of the legacy
+ * `save()`/`delete()` members at `org/Hibachi/HibachiDAO.cfc:L48-L77`.
+ *
+ * Nothing in this file constructs a connection or a pool, and nothing here commits — the transaction is
+ * opened and closed by the caller.
  */
-export interface SkuStatementExecutor extends SqlExecutor {
-  /**
-   * Run a data-modifying statement and return the number of rows it affected.
-   *
-   * Matches `QueryRunner.executeMutation`, which is the port of the legacy `save()`/`delete()`
-   * members of `org/Hibachi/HibachiDAO.cfc:L48-L77`.
-   */
-  executeMutation(sql: string, params: readonly unknown[]): Promise<number>;
-}
+export type SkuStatementExecutor = SqlMutationExecutor;
 
 /**
  * The request-scoped holder for the memoized option-group sort order.
@@ -365,6 +524,67 @@ export function createOptionGroupSortOrderMemo(): OptionGroupSortOrderMemo {
 export type MySqlSkuRepositoryProductTypeRootResolver = Parameters<
   Product['getBaseProductType']
 >[0];
+
+/**
+ * The one object that satisfies BOTH entity-level transaction-existence contracts.
+ *
+ * `SkuTransactionExistenceChecker` in `../../domain/sku/Sku` and
+ * `ProductTransactionExistenceChecker` in `../../domain/product/Product` are declared separately —
+ * neither entity module imports the other for it — but they are structurally identical, so one
+ * instance serves both. Intersecting them here is what makes that claim checked rather than asserted:
+ * the factory below cannot compile unless its result really does satisfy both.
+ */
+export type TransactionExistenceChecker = SkuTransactionExistenceChecker &
+  ProductTransactionExistenceChecker;
+
+/**
+ * Adapt {@link SkuRepository.transactionExists} to the caller-ordered checker the two entities take.
+ *
+ * ⭐ D23 — THIS IS THE ARGUMENT CROSSING, AND IT EXISTS BECAUSE THE TWO LAYERS ARE ORDERED
+ * DIFFERENTLY ON PURPOSE. The entity-level contract is CALLER-ordered, `(skuID?, productID?)`, because
+ * that is the order the legacy call sites read in — `model/entity/Sku.cfc:L594` names `skuID=` and
+ * `model/entity/Product.cfc:L626` names `productID=`. The repository member is DAO-ordered,
+ * `(productID?, skuID?)`, because `model/dao/SkuDAO.cfc:L54-L55` declares `productID` first. AAP 0.4.2.6
+ * pins the second order and AAP 0.4.2.2 Discrepancy 4 pins the zero-argument service signature that
+ * sits between them, so neither order may be "tidied" to remove this function.
+ *
+ * ⛔ WITHOUT IT THE ONLY BINDING AVAILABLE WAS THE WRONG ONE. `SkuService.getTransactionExistsFlag`
+ * declares zero arguments, and TypeScript accepts a lower-arity function wherever a higher-arity one is
+ * expected — so binding the service to either checker compiled and then discarded the identifier the
+ * entity had just supplied, leaving the DAO's else-branch to answer a wider question than the caller
+ * asked. Both flags gate DELETES (`model/validation/Sku.json` and `model/validation/Product.json:L12`),
+ * so the substitution is destructive in both directions and reports nothing. The `argumentOrder` member
+ * both contracts now require is what turns that mis-binding into a compile error; this function is what
+ * makes the correct binding available in production rather than only in test support.
+ *
+ * ⚠️ IT LIVES BESIDE `transactionExists` FOR A REASON THAT TYPES CANNOT COVER. Both identifiers are
+ * 32-character strings (IR-6), so a crossing written backwards type-checks perfectly and silently
+ * queries the wrong column. No brand can distinguish them. The mitigation is therefore structural and
+ * behavioural rather than nominal: the crossing exists in exactly ONE place, immediately below the
+ * implementation whose order it inverts, and order assertions — not the compiler — are what hold it.
+ *
+ * ⚠️ NEITHER IDENTIFIER IS DEFAULTED OR VALIDATED HERE. Passing both is the caller's business and the
+ * DAO's precedence rule decides the outcome: `skuID` WINS when both are present
+ * [model/dao/SkuDAO.cfc:L58-L64]. Supplying neither reaches the same failure the legacy reaches at
+ * [`:L90`], which `SkuRepository.transactionExists` documents and keeps — this function does not
+ * pre-empt it with a guard, because pre-empting would move a legacy failure to a new place.
+ *
+ * @param repository - Narrowed to the single member used, so a test double or any other
+ *   {@link SkuRepository} implementation can be adapted without depending on this file's MySQL parts.
+ * @returns A checker both `Sku.getTransactionExistsFlag` and `Product.getTransactionExistsFlag` accept.
+ */
+export function createTransactionExistenceChecker(
+  repository: Pick<SkuRepository, 'transactionExists'>,
+): TransactionExistenceChecker {
+  return {
+    argumentOrder: 'skuID-first-productID-second',
+    /* THE CROSSING: caller slot 1 (`skuID`) becomes DAO slot 2, caller slot 2 (`productID`) becomes
+     * DAO slot 1. Reading this line as `transactionExists(skuID, productID)` is the mistake it exists
+     * to prevent. */
+    getTransactionExistsFlag: (skuID?: string, productID?: string): Promise<boolean> =>
+      repository.transactionExists(productID, skuID),
+  };
+}
 
 /* ================================================================================================
  * GUARDED SCALAR READS (AAP §0.7.3 S1)
@@ -526,8 +746,78 @@ const TRANSACTION_EXISTS_CHAIN: string = [
   stockMediatedSkuExistsClause(OUT_OF_SCOPE_TABLE.vendorOrderItem, OUT_OF_SCOPE_COLUMN.stockID),
 ].join(' OR ');
 
-/** The alias the existence chain's aggregate is projected under. */
-const TRANSACTION_COUNT_ALIAS = 'transactionCount';
+/**
+ * The alias the existence chain's scalar verdict is projected under.
+ *
+ * The legacy projected `count(ss.skuID) as transactionCount` [`model/dao/SkuDAO.cfc:L57`]. This port
+ * projects an existence flag instead — see {@link MySqlSkuRepository.transactionExists} for why that
+ * is answer-preserving — so the alias is named for what it now carries rather than for the aggregate
+ * it replaced. The alias is internal to the statement and its reader: no caller sees it, no test
+ * asserts it, and the legacy read its own aggregate positionally rather than by name.
+ */
+const TRANSACTION_EXISTS_ALIAS = 'transactionExists';
+
+/**
+ * Composes the SKU-code search statement and its bound values — the whole of
+ * `model/dao/SkuDAO.cfc:L130-L148` except the execution and the row mapping.
+ *
+ * EXTRACTED SO THE UNBOUNDED AND BOUNDED MEMBERS SHARE ONE TRANSLATION. Both
+ * {@link MySqlSkuRepository.searchByProductType} and
+ * {@link MySqlSkuRepository.searchByProductTypeBounded} must apply the same predicate, the same
+ * wildcard wrapping, the same list splitting, the same two differently-strict guards and the same bind
+ * order. Two copies would be two chances for the pair to diverge — and a divergence here is silent,
+ * because both members return the same row type and neither would fail to compile. Everything below is
+ * the original translation, moved verbatim rather than rewritten; the bounded member appends its
+ * window to the returned text and its two values to the returned array, and touches nothing else.
+ *
+ * @param term - the bare search fragment. Optional in the signature and read unguarded by the legacy.
+ * @param productTypeID - comma-delimited product-type identifiers, despite the singular legacy name.
+ * @returns the statement text and its bound values, in legacy positional order (TR-4).
+ * @throws {DomainError} when the term is omitted, reproducing the `model/dao/SkuDAO.cfc:L133`
+ *   failure, or when a supplied product-type list yields no segments.
+ */
+function composeSkuSearch(
+  term?: string,
+  productTypeID?: string,
+): { readonly sql: string; readonly params: unknown[] } {
+  if (term === undefined) {
+    throw new DomainError(
+      'A SKU search requires a term; the legacy DAO reads it without a guard and fails when it is absent.',
+      { context: { productTypeID } },
+    );
+  }
+
+  let sql =
+    `select ${SKU_COLUMN.skuID},${SKU_COLUMN.skuCode} from ${SKU_TABLE} ` +
+    `where ${SKU_COLUMN.skuCode} like ?`;
+
+  /* The wildcards belong to the value (`model/dao/SkuDAO.cfc:L133`), never to the statement. */
+  const params: unknown[] = [`%${term}%`];
+
+  /* Presence AND non-blank-after-trim, exactly as `model/dao/SkuDAO.cfc:L134` tests it. */
+  if (productTypeID !== undefined && productTypeID.trim() !== '') {
+    /*
+     * Platform list semantics: split on commas, drop empty segments, do not trim what remains.
+     * One placeholder per surviving segment, each bound individually — a single comma-joined value
+     * bound to one placeholder would be compared as one long string and match nothing.
+     */
+    const productTypeIDs = productTypeID.split(',').filter((segment) => segment !== '');
+    if (productTypeIDs.length === 0) {
+      throw new DomainError(
+        'The product-type restriction contained no usable identifiers after list splitting.',
+        { context: { productTypeID } },
+      );
+    }
+
+    const placeholders = productTypeIDs.map(() => '?').join(',');
+    sql +=
+      ` and ${SKU_COLUMN.productID} in (select ${PRODUCT_COLUMN.productID} ` +
+      `from ${PRODUCT_TABLE} where ${PRODUCT_COLUMN.productTypeID} in (${placeholders}))`;
+    params.push(...productTypeIDs);
+  }
+
+  return { sql, params };
+}
 
 /**
  * The `SwSku` columns every SKU-returning statement projects, qualified with the root alias.
@@ -637,11 +927,71 @@ export class MySqlSkuRepository implements SkuRepository {
    * @param productTypeRootResolver - resolves a product type to its seeded root discriminator, which
    *   {@link MySqlSkuRepository.findByProduct} branches on.
    */
+  /**
+   * @param executor - Issues every statement this adapter composes.
+   * @param optionGroupSortOrderMemo - The request-scoped sort-order memo, per M7.
+   * @param productTypeRootResolver - Walks a product type to its root, for the base-type discriminator.
+   * @param accountContext - Resolves the acting account for the audit block {@link
+   *   MySqlSkuRepository.persistSku} stamps. Required rather than optional: the legacy write always
+   *   reached the framework audit block at `org/Hibachi/HibachiEntity.cfc:L598-L649`, so a write seam
+   *   that could not name an actor could not reproduce it. The port answers `undefined` for an
+   *   unauthenticated request and the stamping functions accept that, so "nobody is acting" is a
+   *   legitimate ANSWER rather than a missing collaborator.
+   */
   public constructor(
     private readonly executor: SkuStatementExecutor,
     private readonly optionGroupSortOrderMemo: OptionGroupSortOrderMemo,
     private readonly productTypeRootResolver: MySqlSkuRepositoryProductTypeRootResolver,
+    private readonly accountContext: AccountContextPort,
   ) {}
+
+  /**
+   * Returns an equivalent {@link MySqlSkuRepository} bound to a DIFFERENT statement executor.
+   *
+   * ⭐ THIS IS THE FIX FOR REVIEW FINDING 2, AND THE DEFECT IT CLOSES WAS STRUCTURAL. Every repository
+   * in this folder captures its executor at construction, which is correct — but while that was the ONLY
+   * way to supply one, an executor chosen at construction time was necessarily the POOL-bound one, and
+   * no later act could change it. Wrapping a service call in `UnitOfWork.run` therefore did nothing
+   * useful: the boundary acquired a connection, began a transaction, and handed out a scope executor
+   * that this class had no way to adopt, so every read and write still went to the pool and straight out
+   * of the transaction. Rollback-on-errors and M6's same-connection read-back visibility were
+   * unreachable no matter how the graph was wired.
+   *
+   * Re-binding closes that. Inside a boundary a caller re-binds this repository to `scope.executor` and
+   * uses the result for the duration of the boundary; every statement the returned instance issues then
+   * runs on the connection the boundary owns.
+   *
+   * ⚠️ A NEW INSTANCE, NOT A MUTATION, AND THE DIFFERENCE IS THE POINT. The captured executor stays
+   * `private readonly` and this method never reassigns it, so the pool-bound instance a composition root
+   * built is still valid and still pool-bound after the call. Mutating it in place would make the
+   * repository's connection depend on WHEN it was used rather than on WHICH instance was used — an
+   * ambient current-transaction slot in all but name, which is exactly what
+   * `src/adapters/mysql/UnitOfWork.ts` refuses to keep (M7, AAP 0.7.3 S3). Two concurrent boundaries on
+   * one warm container get two instances and cannot observe each other's connection.
+   *
+   * ⚠️ IT IS NOT ON THE PORT INTERFACE, AND MUST NOT BE PUT THERE. A service may not know that a
+   * statement executor exists at all (AAP 0.7.3 S2 inverted), so re-binding is exposed on the CONCRETE
+   * adapter and used only by the layer that already holds concrete adapters. Adding it to the port would
+   * leak the persistence mechanism into `src/services/**`.
+   *
+   * @param executor - The executor to bind to, normally a boundary's `scope.executor`.
+   * @returns A new instance identical in every other respect.
+   */
+  public withExecutor(executor: SkuStatementExecutor): MySqlSkuRepository {
+    /*
+     * The memo travels ACROSS the re-binding rather than being re-created. It is request-scoped (M7) and
+     * a transaction sits INSIDE a request, so a boundary that started its own memo would re-read a sort
+     * order the same invocation had already resolved — and `model/dao/SkuDAO.cfc:L204-L220` memoises
+     * exactly to avoid that. The product-type root resolver is stateless and travels for the same reason
+     * the executor does not: nothing about it is connection-bound.
+     */
+    return new MySqlSkuRepository(
+      executor,
+      this.optionGroupSortOrderMemo,
+      this.productTypeRootResolver,
+      this.accountContext,
+    );
+  }
 
   /**
    * Does any transaction anywhere in the system reference this SKU, or any SKU of this product?
@@ -662,25 +1012,30 @@ export class MySqlSkuRepository implements SkuRepository {
    * incidental. This port fails deliberately instead, with a message authored here: an argument fault
    * must not be answered with `false`, because `false` is the answer that permits a delete.
    *
-   * TODO(parity) `model/dao/SkuDAO.cfc:L93-L95` — THE LEGACY READS ITS AGGREGATE ROW UNGUARDED. It
+   * TODO(parity) `model/dao/SkuDAO.cfc:L93-L95` — THE LEGACY READS ITS SCALAR ROW UNGUARDED. It
    * indexes the first element of the result and compares it to zero without checking that a row came
-   * back or that the value is numeric. An aggregate over a joined set does return one row, so the
-   * read happens to be safe; it is unguarded all the same. This port guards it, because
+   * back or that the value is numeric. A single-row scalar select does return one row, so the read
+   * happens to be safe; it is unguarded all the same. This port guards it, because
    * `noUncheckedIndexedAccess` types the read as possibly absent and the honest response to that is a
    * narrowing check, not a non-null assertion. The behaviour on the normal path is identical.
    *
-   * Discrepancy 4, noted and not resolved here: `model/service/SkuService.cfc:L285` declares the
-   * SERVICE member with NO arguments at all, while its real callers pass one by name —
-   * `model/entity/Sku.cfc:L594` passes the SKU identifier and `model/entity/Product.cfc:L626` passes
-   * the product identifier. The narrower service contract is preserved in the service layer; this
-   * repository keeps both optional identifiers because the DAO declares both
-   * [`model/dao/SkuDAO.cfc:L54-L55`], untyped and not required.
+   * Discrepancy 4, resolved one layer up as carried defect D23 and recorded here because this member
+   * is the thing that raises. `model/service/SkuService.cfc:L285` declares the SERVICE member with NO
+   * arguments at all, while its real callers pass one by name — `model/entity/Sku.cfc:L594` passes the
+   * SKU identifier and `model/entity/Product.cfc:L626` passes the product identifier — and CFML's
+   * argument-collection forwarding at `L286` carries the undeclared name through to the DAO. A literal
+   * zero-arity transcription of the service member DELETES that forwarding, so both delete guards
+   * would reach this method with neither identifier bound and take the `DomainError` below. The
+   * service therefore declares `(skuID?, productID?)` and forwards them here. This repository is
+   * unchanged by that: it keeps both optional identifiers because the DAO declares both
+   * [`model/dao/SkuDAO.cfc:L54-L55`], untyped and not required, and it still raises when neither
+   * arrives — which is precisely the legacy behaviour of a genuinely argument-free invocation.
    *
    * @param productID - the product whose SKUs are tested. Used only when no SKU identifier is given.
    * @param skuID - the SKU tested. Takes precedence whenever it is supplied.
    * @returns `true` when at least one transaction references the selection
    * @throws {DomainError} when neither identifier is supplied
-   * @throws {DataIntegrityError} when the aggregate does not come back as a single numeric row
+   * @throws {DataIntegrityError} when the probe does not come back as a single numeric row
    */
   public async transactionExists(productID?: string, skuID?: string): Promise<boolean> {
     /*
@@ -708,37 +1063,58 @@ export class MySqlSkuRepository implements SkuRepository {
         ? `${SKU_ALIAS}.${SKU_COLUMN.skuID} = ?`
         : `${SKU_ALIAS}.${SKU_COLUMN.productID} = ?`;
 
+    /*
+     * ⚠️ A SCALAR EXISTENCE VERDICT WHERE THE LEGACY COUNTED EVERY MATCH. Structural, and provably
+     * answer-preserving from the legacy body rather than by argument. `model/dao/SkuDAO.cfc:L57`
+     * projects `count(ss.skuID) as transactionCount`, and `:L93-L97` is the ONLY thing that ever reads
+     * it: `results[1] eq 0` returns false, and anything else returns true. The magnitude is never
+     * read, never returned and never compared to any other number, so the count's only contribution
+     * was its non-zeroness. `skuID` is the primary key and cannot be null, so `COUNT(ss.skuID)` is a
+     * count of matching rows and is non-zero on exactly the selections `EXISTS` reports as 1 — the two
+     * projections agree on every input, including the empty selection, where both yield the false
+     * branch.
+     *
+     * WHAT THE SHAPE PRESERVES, DELIBERATELY. The disjunction is still {@link
+     * TRANSACTION_EXISTS_CHAIN} verbatim, still all ten disjuncts in legacy order, still one statement
+     * and one round trip per AAP §0.4.1.7, and still exactly one placeholder. It still returns exactly
+     * ONE ROW for every input, because a scalar `SELECT EXISTS(...)` with no FROM clause of its own
+     * does, just as an unaggregated-group `COUNT` does — which is what keeps BOTH guards below
+     * meaningful rather than turning either into dead code. What changes is that the engine may stop
+     * at the first SKU satisfying the chain instead of walking every one of them.
+     *
+     * NO `LIMIT`, NO `ORDER BY` AND NO OTHER INVENTED CLAUSE. `EXISTS` already carries the one-row
+     * stop in its own definition, so nothing has to be added to obtain it (AAP §0.7.3 S9).
+     */
     const sql =
-      `SELECT COUNT(${SKU_ALIAS}.${SKU_COLUMN.skuID}) AS ${TRANSACTION_COUNT_ALIAS} ` +
-      `FROM ${SKU_TABLE} ${SKU_ALIAS} ` +
-      `WHERE ${rootPredicate} AND ( ${TRANSACTION_EXISTS_CHAIN} )`;
+      `SELECT EXISTS( SELECT 1 FROM ${SKU_TABLE} ${SKU_ALIAS} ` +
+      `WHERE ${rootPredicate} AND ( ${TRANSACTION_EXISTS_CHAIN} ) ) AS ${TRANSACTION_EXISTS_ALIAS}`;
 
     const rows = await this.executor.execute(sql, [identifier]);
-    const aggregateRow = rows[0];
-    if (aggregateRow === undefined) {
+    const verdictRow = rows[0];
+    if (verdictRow === undefined) {
       throw new DataIntegrityError(
-        'The transaction-existence aggregate returned no row, so the count cannot be read.',
+        'The transaction-existence probe returned no row, so its verdict cannot be read.',
         { context: { productID, skuID } },
       );
     }
 
-    const matchingSkuCount = readOptionalNumber(
-      aggregateRow,
-      TRANSACTION_COUNT_ALIAS,
+    const transactionExistsFlag = readOptionalNumber(
+      verdictRow,
+      TRANSACTION_EXISTS_ALIAS,
       'transaction-existence',
     );
-    if (matchingSkuCount === undefined) {
+    if (transactionExistsFlag === undefined) {
       throw new DataIntegrityError(
-        'The transaction-existence aggregate returned a null count, which cannot be interpreted.',
+        'The transaction-existence probe returned a null verdict, which cannot be interpreted.',
         { context: { productID, skuID } },
       );
     }
 
     /*
      * `model/dao/SkuDAO.cfc:L93-L97`: zero is false, anything else is true. Kept in that direction
-     * rather than rewritten as `> 0`, so the behaviour on any unexpected value is the legacy's.
+     * rather than rewritten as `=== 1`, so the behaviour on any unexpected value is the legacy's.
      */
-    return matchingSkuCount !== 0;
+    return transactionExistsFlag !== 0;
   }
 
   /**
@@ -804,7 +1180,9 @@ export class MySqlSkuRepository implements SkuRepository {
     if (row === undefined) {
       return null;
     }
-    return mapSkuRow(row);
+    const sku = mapSkuRow(row);
+    await this.hydrateSkuOptions([sku]);
+    return sku;
   }
 
   /**
@@ -1014,44 +1392,52 @@ export class MySqlSkuRepository implements SkuRepository {
    *   but none of them survive splitting
    */
   public async searchByProductType(term?: string, productTypeID?: string): Promise<SkuSearchRow[]> {
-    if (term === undefined) {
-      throw new DomainError(
-        'A SKU search requires a term; the legacy DAO reads it without a guard and fails when it is absent.',
-        { context: { productTypeID } },
-      );
-    }
-
-    let sql =
-      `select ${SKU_COLUMN.skuID},${SKU_COLUMN.skuCode} from ${SKU_TABLE} ` +
-      `where ${SKU_COLUMN.skuCode} like ?`;
-
-    /* The wildcards belong to the value (`model/dao/SkuDAO.cfc:L133`), never to the statement. */
-    const params: unknown[] = [`%${term}%`];
-
-    /* Presence AND non-blank-after-trim, exactly as `model/dao/SkuDAO.cfc:L134` tests it. */
-    if (productTypeID !== undefined && productTypeID.trim() !== '') {
-      /*
-       * Platform list semantics: split on commas, drop empty segments, do not trim what remains.
-       * One placeholder per surviving segment, each bound individually — a single comma-joined value
-       * bound to one placeholder would be compared as one long string and match nothing.
-       */
-      const productTypeIDs = productTypeID.split(',').filter((segment) => segment !== '');
-      if (productTypeIDs.length === 0) {
-        throw new DomainError(
-          'The product-type restriction contained no usable identifiers after list splitting.',
-          { context: { productTypeID } },
-        );
-      }
-
-      const placeholders = productTypeIDs.map(() => '?').join(',');
-      sql +=
-        ` and ${SKU_COLUMN.productID} in (select ${PRODUCT_COLUMN.productID} ` +
-        `from ${PRODUCT_TABLE} where ${PRODUCT_COLUMN.productTypeID} in (${placeholders}))`;
-      params.push(...productTypeIDs);
-    }
+    const { sql, params } = composeSkuSearch(term, productTypeID);
 
     const rows = await this.executor.execute(sql, params);
     return mapRows(rows, mapSkuSearchRow);
+  }
+
+  /**
+   * The windowed form of {@link MySqlSkuRepository.searchByProductType}.
+   *
+   * The predicate, the wildcard wrapping, the list splitting, both guards and the bind order are not
+   * re-implemented: {@link composeSkuSearch} composes them ONCE for both members, so the two cannot
+   * drift into answering different questions. Everything this member adds is appended after that.
+   *
+   * ⚠️ THE PROBE IS BOUND, NOT INTERPOLATED. `LIMIT ? OFFSET ?` carries two more placeholders, bound
+   * LAST — after the term and after any product-type identifiers — so the legacy bind order (TR-4) is
+   * untouched and the window occupies positions the legacy statement never used. Writing the numbers
+   * into the statement text would put caller-supplied values in the text, which S2 forbids even when
+   * they have been validated.
+   *
+   * ⚠️ THE ROWS ARE MAPPED BEFORE THE WINDOW IS SETTLED, and the order matters. The probe row is
+   * discarded by {@link settleBoundedRead} after mapping, which costs one extra row's hydration and
+   * buys a guarantee: {@link mapSkuSearchRow} refuses a row whose projection has drifted, so the probe
+   * row is validated exactly like every other row rather than being trusted because it is about to be
+   * dropped. Discarding first would let a malformed final row through unnoticed.
+   *
+   * @param window - the caller's ceiling and zero-based offset; validated, never defaulted.
+   * @param term - bare SKU-code fragment. Omitting it raises, exactly as on the unbounded member.
+   * @param productTypeID - comma-delimited product-type identifiers, despite the singular name.
+   * @returns the window's rows and whether a further match lies past it.
+   * @throws {DomainError} for an unusable window, an omitted term, or a product-type list with
+   *   segments that all vanish under list splitting.
+   */
+  public async searchByProductTypeBounded(
+    window: BoundedReadWindow,
+    term?: string,
+    productTypeID?: string,
+  ): Promise<BoundedReadResult<SkuSearchRow>> {
+    const bound = prepareBoundedRead(window, 'MySqlSkuRepository.searchByProductTypeBounded');
+    const { sql, params } = composeSkuSearch(term, productTypeID);
+
+    const rows = await this.executor.execute(`${sql} limit ? offset ?`, [
+      ...params,
+      ...bound.boundValues,
+    ]);
+
+    return settleBoundedRead(mapRows(rows, mapSkuSearchRow), bound.limit);
   }
 
   /**
@@ -1116,6 +1502,9 @@ export class MySqlSkuRepository implements SkuRepository {
   public async findByProduct(product: Product, fetchOptions: boolean): Promise<Sku[]> {
     let sql = `SELECT ${SKU_PROJECTION} FROM ${SKU_TABLE} ${SKU_ALIAS} `;
 
+    /* Retained beyond the branch below so the eager fetch can reuse it without resolving twice. */
+    let baseProductType: string | undefined;
+
     if (fetchOptions) {
       /*
        * Resolved inside the branch, as the legacy does [`model/dao/SkuDAO.cfc:L154`]: with the flag
@@ -1126,17 +1515,33 @@ export class MySqlSkuRepository implements SkuRepository {
        * [`config/dbdata/SlatwallProductType.xml.cfm:L13-L15`] and IR-7 keeps them in exactly one
        * place; a literal here would be a second, silently divergeable copy.
        */
-      const baseProductType = await product.getBaseProductType(this.productTypeRootResolver);
+      baseProductType = await product.getBaseProductType(this.productTypeRootResolver);
 
-      if (baseProductType === SEEDED_PRODUCT_TYPES_BY_SYSTEM_CODE.contentAccess.systemCode) {
+      /*
+       * ⭐ THE LEGACY CHAIN AT [`model/dao/SkuDAO.cfc:L154-L161`] COMPARES WITH CFML `==`, WHICH FOLDS
+       * CASE, so a `SwProductType` row holding `Merchandise` DID receive the option join. `===` against
+       * the seeded spelling silently added no join at all and returned every SKU of the product — the
+       * unrecognised-code outcome — which is the same shape of failure as T3. Recognition therefore goes
+       * through `resolveBaseProductType`, which answers with the canonical code so the three arms below
+       * stay literal comparisons. The observed value is neither modified nor written back.
+       */
+      const recognisedBaseProductType = resolveBaseProductType(baseProductType);
+
+      if (
+        recognisedBaseProductType === SEEDED_PRODUCT_TYPES_BY_SYSTEM_CODE.contentAccess.systemCode
+      ) {
         sql +=
           `INNER JOIN ${OUT_OF_SCOPE_TABLE.skuAccessContent} sac ` +
           `ON sac.${OUT_OF_SCOPE_COLUMN.skuID} = ${SKU_ALIAS}.${SKU_COLUMN.skuID} `;
-      } else if (baseProductType === SEEDED_PRODUCT_TYPES_BY_SYSTEM_CODE.merchandise.systemCode) {
+      } else if (
+        recognisedBaseProductType === SEEDED_PRODUCT_TYPES_BY_SYSTEM_CODE.merchandise.systemCode
+      ) {
         sql +=
           `INNER JOIN ${SKU_OPTION_TABLE} so ` +
           `ON so.${SKU_OPTION_COLUMN.skuID} = ${SKU_ALIAS}.${SKU_COLUMN.skuID} `;
-      } else if (baseProductType === SEEDED_PRODUCT_TYPES_BY_SYSTEM_CODE.subscription.systemCode) {
+      } else if (
+        recognisedBaseProductType === SEEDED_PRODUCT_TYPES_BY_SYSTEM_CODE.subscription.systemCode
+      ) {
         /* Two joins, in legacy order: the term first [`:L159`], then the benefits [`:L160`]. */
         sql +=
           `INNER JOIN ${OUT_OF_SCOPE_TABLE.subscriptionTerm} stm ` +
@@ -1151,7 +1556,253 @@ export class MySqlSkuRepository implements SkuRepository {
     sql += `WHERE ${SKU_ALIAS}.${SKU_COLUMN.productID} = ?`;
 
     const rows = await this.executor.execute(sql, [product.productID]);
-    return mapRows(rows, mapSkuRow);
+    const skus = mapRows(rows, mapSkuRow);
+
+    /*
+     * THE `FETCH` HALF OF `INNER JOIN FETCH`, WHICH THE JOINS ABOVE ARE ONLY THE FIRST HALF OF.
+     *
+     * Every branch above is `INNER JOIN FETCH` in the legacy [`model/dao/SkuDAO.cfc:L155`, `:L157`,
+     * `:L160`], and that keyword does two things: it restricts the result set, which the joins reproduce,
+     * and it POPULATES the association on the returned entities, which they do not. Emitting the joins
+     * without the fetch produced the right NUMBER of SKUs — duplicates and all — carrying empty
+     * collections, so every member that reads one answered from an empty array instead of raising.
+     * `getOptionsDisplay` returned the empty string, `getSkuDefinition` returned nothing, and
+     * `getOptionsIDList` returned no identifiers, none of them reporting a thing.
+     *
+     * Gated on the same flag as the joins, and reusing the base product type already resolved above so a
+     * second resolver round trip is not made. With the flag lowered `baseProductType` is `undefined`,
+     * exactly as the legacy never asks for it, and the fetch is skipped.
+     */
+    if (fetchOptions) {
+      await attachFetchedSkuAssociations(this.executor, skus, baseProductType);
+    }
+
+    return skus;
+  }
+
+  /**
+   * Fill the `options` collection of every supplied SKU, and the `optionGroup` of every option
+   * loaded, from `SwSkuOption` -> `SwOption` -> `SwOptionGroup`.
+   *
+   * ═══════════════════════════════════════════════════════════════════════════════════════════════
+   * WHY THIS EXISTS, AND WHY IT LIVES HERE RATHER THAN IN A ROW MAPPER
+   * ═══════════════════════════════════════════════════════════════════════════════════════════════
+   * `rowMappers.ts` RULE 3 leaves every association UNRESOLVED, and that rule is not being weakened
+   * here. Its own text states the licence this member uses verbatim: *"The foreign-key value is not
+   * lost either — the repository holds the same row and reads the `*ID` column itself when it needs
+   * to resolve the other side."* This is the repository doing exactly that, in a SECOND statement,
+   * for a relationship whose absence is otherwise observable.
+   *
+   * The absence WAS observable, in three separate places:
+   *
+   *   1. `Sku.getOptionsDisplay` / `getSkuDefinition` / `getOptionsIDList` iterate `getOptions()`
+   *      [`model/entity/Sku.cfc:L236`], so an empty collection renders an empty definition where the
+   *      legacy renders the option names.
+   *   2. `Sku.hasUniqueOptions` and `hasOneOptionPerOptionGroup` [`model/entity/Sku.cfc:L756-L784`]
+   *      are the two METHOD-BASED validation rules of `model/validation/Sku.json`. Both walk
+   *      `getOptions()`, and `hasOneOptionPerOptionGroup` dereferences
+   *      `option.getOptionGroup().getOptionGroupID()` — which is why the group is hydrated too, not
+   *      just the option.
+   *   3. ⚠️ MOST SERIOUSLY: {@link MySqlSkuRepository.persistSku} DELETES every `SwSkuOption` row of
+   *      a pre-existing SKU and then re-inserts from `sku.getOptions()`. A SKU loaded WITHOUT its
+   *      options and then saved would therefore have deleted its links and written none — silent
+   *      data loss on a round trip that no compile error and no existing test reported. Hydrating on
+   *      every entity-returning read is what closes that hole, which is why `findBySkuCode` calls
+   *      this member as well even though F05 names only the sorted-SKU path.
+   *
+   * ───────────────────────────────────────────────────────────────────────────────────────────────
+   * RULE 2 IS SATISFIED BY SPLITTING, NOT BY TRUSTING THE MAPPERS
+   * ───────────────────────────────────────────────────────────────────────────────────────────────
+   * `SwOption` and `SwOptionGroup` BOTH carry `sortOrder`, `remoteID` and all four audit columns, and
+   * `SwSkuOption` carries `skuID`. Handing one joined row to two mappers would let a same-named
+   * column resolve silently to the wrong table — the precise failure RULE 2 exists to prevent. So the
+   * group's columns are selected under a distinct prefix, and each mapper is handed a FRESH row object
+   * containing only the columns of the table it owns. No mapper ever sees a foreign column.
+   *
+   * ───────────────────────────────────────────────────────────────────────────────────────────────
+   * RULE 4: THE LIVE ARRAY IS FILLED, NEVER REPLACED
+   * ───────────────────────────────────────────────────────────────────────────────────────────────
+   * `Sku.options` is initialised to `[]` by its class and `model/entity/Option.cfc:L95` mutates the
+   * corresponding legacy collection in place. This member pushes into the array the entity already
+   * holds; it never assigns a new one. Assigning would break any reference taken before the load.
+   *
+   * ───────────────────────────────────────────────────────────────────────────────────────────────
+   * THE IDENTITY MAP, AND WHY IT IS PER CALL RATHER THAN PER MODULE
+   * ───────────────────────────────────────────────────────────────────────────────────────────────
+   * One `Option` instance per `optionID` and one `OptionGroup` instance per `optionGroupID`, for the
+   * whole batch — so two SKUs sharing an option share the object, exactly as one Hibernate session
+   * returns one instance per identifier. The maps are LOCAL to this call and are discarded when it
+   * returns: M7 records that nothing may survive between Lambda invocations, and a module-scope
+   * identity map on a warm container would leak rows across requests and across tenants.
+   *
+   * `manageEntity` returns THE SAME OBJECT it was given (`rowMappers.ts` RULE 5, `Object.assign`), so
+   * reference identity and `instanceof` both survive and the map is coherent.
+   *
+   * ───────────────────────────────────────────────────────────────────────────────────────────────
+   * ORDERING — WHAT THE LEGACY DECLARES, AND WHAT IT DOES NOT
+   * ───────────────────────────────────────────────────────────────────────────────────────────────
+   * ⚠️ `model/entity/Sku.cfc:L76` declares the collection as
+   * `fieldtype="many-to-many" linktable="SwSkuOption" fkcolumn="skuID" inversejoincolumn="optionID"`
+   * with **NO `orderby` attribute**. It is an unordered bag: the legacy's option order is whatever the
+   * query plan happened to yield, and it is therefore NOT specified behaviour. Ordering by
+   * `option.sortOrder` here would look like the obvious choice and would be an INVENTED business
+   * ordering (S9, AAP §0.7.3 standard 9) — `sortOrder` orders options WITHIN A GROUP for display, and
+   * nothing in the legacy applies it to this collection.
+   *
+   * The statement therefore orders by the LINK TABLE's own columns, `skuID` then `optionID`. That
+   * choice adds no business meaning, and it buys the one property an unordered read cannot give: the
+   * same rows come back in the same order every time, so a rendered `getSkuDefinition` is
+   * reproducible. `TODO(parity)`: a round trip does not preserve the order `persistSku` wrote, because
+   * `SwSkuOption` has no sequence column to record it — a property the legacy shares exactly.
+   *
+   * Contrast `model/entity/OptionGroup.cfc:L70`, which DOES declare `orderby="sortOrder"`. That
+   * collection is a different relationship and is hydrated elsewhere; the difference between the two
+   * declarations is why neither ordering may be copied onto the other.
+   *
+   * ───────────────────────────────────────────────────────────────────────────────────────────────
+   * NULLABILITY AND FAN-OUT
+   * ───────────────────────────────────────────────────────────────────────────────────────────────
+   * `SwOption.optionGroupID` has no `notnull` in the mapping [`model/entity/Option.cfc:L59`], so the
+   * join to the group is a LEFT join and an option whose FK is NULL keeps `optionGroup` ABSENT rather
+   * than receiving a stub — RULE 3 forbids stubs precisely because
+   * `option.getOptionGroup().getImageGroupFlag()` [`model/entity/Sku.cfc:L134`] would silently read a
+   * class default off one. `model/validation/Option.json` requires the group on save, so a NULL is a
+   * pre-existing row the legacy would also fail to validate; it is loaded as-is, not repaired.
+   *
+   * `Option.skus`, the INVERSE side of the same many-to-many, is deliberately left unhydrated: no
+   * consumer in the slice dereferences it, and populating it would build a reference cycle whose only
+   * effect would be to make the object graph harder to reason about.
+   *
+   * @param skus - The SKUs to fill. A SKU with no link rows keeps its empty collection, which is the
+   *   correct load for an option-less default SKU rather than an error.
+   */
+  private async hydrateSkuOptions(skus: readonly Sku[]): Promise<void> {
+    const skuIDs: string[] = [];
+    const skusByID = new Map<string, Sku[]>();
+    for (const sku of skus) {
+      const skuID = sku.skuID;
+      if (skuID === SKU_UNSAVED_ID_VALUE || skuID === '') {
+        continue;
+      }
+      const existing = skusByID.get(skuID);
+      if (existing === undefined) {
+        skusByID.set(skuID, [sku]);
+        skuIDs.push(skuID);
+      } else {
+        existing.push(sku);
+      }
+    }
+    if (skuIDs.length === 0) {
+      return;
+    }
+
+    const optionColumns = [
+      SKU_OPTION_HYDRATION_COLUMN.optionID,
+      SKU_OPTION_HYDRATION_COLUMN.optionCode,
+      SKU_OPTION_HYDRATION_COLUMN.optionName,
+      SKU_OPTION_HYDRATION_COLUMN.optionDescription,
+      SKU_OPTION_HYDRATION_COLUMN.sortOrder,
+      SKU_OPTION_HYDRATION_COLUMN.optionGroupID,
+      SKU_OPTION_HYDRATION_COLUMN.remoteID,
+      SKU_OPTION_HYDRATION_COLUMN.createdDateTime,
+      SKU_OPTION_HYDRATION_COLUMN.createdByAccountID,
+      SKU_OPTION_HYDRATION_COLUMN.modifiedDateTime,
+      SKU_OPTION_HYDRATION_COLUMN.modifiedByAccountID,
+    ];
+    const groupColumns = [
+      SKU_OPTION_HYDRATION_COLUMN.optionGroupName,
+      SKU_OPTION_HYDRATION_COLUMN.optionGroupCode,
+      SKU_OPTION_HYDRATION_COLUMN.optionGroupDescription,
+      SKU_OPTION_HYDRATION_COLUMN.imageGroupFlag,
+      SKU_OPTION_HYDRATION_COLUMN.sortOrder,
+      SKU_OPTION_HYDRATION_COLUMN.remoteID,
+      SKU_OPTION_HYDRATION_COLUMN.createdDateTime,
+      SKU_OPTION_HYDRATION_COLUMN.createdByAccountID,
+      SKU_OPTION_HYDRATION_COLUMN.modifiedDateTime,
+      SKU_OPTION_HYDRATION_COLUMN.modifiedByAccountID,
+    ];
+
+    const projection = [
+      `${HYDRATION_LINK_ALIAS}.${SKU_OPTION_COLUMN.skuID} AS ${HYDRATION_KEY_COLUMN}`,
+      ...optionColumns.map((column) => `${HYDRATION_OPTION_ALIAS}.${column}`),
+      `${HYDRATION_GROUP_ALIAS}.${SKU_OPTION_HYDRATION_COLUMN.optionGroupID} ` +
+        `AS ${HYDRATION_GROUP_PREFIX}${SKU_OPTION_HYDRATION_COLUMN.optionGroupID}`,
+      ...groupColumns.map(
+        (column) => `${HYDRATION_GROUP_ALIAS}.${column} AS ${HYDRATION_GROUP_PREFIX}${column}`,
+      ),
+    ].join(', ');
+
+    const placeholders = skuIDs.map(() => BIND_PLACEHOLDER).join(CLAUSE_JOINER);
+    const sql =
+      `SELECT ${projection} ` +
+      `FROM ${SKU_OPTION_TABLE} ${HYDRATION_LINK_ALIAS} ` +
+      `INNER JOIN ${OPTION_TABLE} ${HYDRATION_OPTION_ALIAS} ` +
+      `ON ${HYDRATION_OPTION_ALIAS}.${SKU_OPTION_HYDRATION_COLUMN.optionID} ` +
+      `= ${HYDRATION_LINK_ALIAS}.${SKU_OPTION_COLUMN.optionID} ` +
+      `LEFT JOIN ${OPTION_GROUP_TABLE} ${HYDRATION_GROUP_ALIAS} ` +
+      `ON ${HYDRATION_GROUP_ALIAS}.${SKU_OPTION_HYDRATION_COLUMN.optionGroupID} ` +
+      `= ${HYDRATION_OPTION_ALIAS}.${SKU_OPTION_HYDRATION_COLUMN.optionGroupID} ` +
+      `WHERE ${HYDRATION_LINK_ALIAS}.${SKU_OPTION_COLUMN.skuID} IN (${placeholders}) ` +
+      `ORDER BY ${HYDRATION_LINK_ALIAS}.${SKU_OPTION_COLUMN.skuID}, ` +
+      `${HYDRATION_LINK_ALIAS}.${SKU_OPTION_COLUMN.optionID}`;
+
+    const rows = await this.executor.execute(sql, skuIDs);
+
+    const optionsByID = new Map<string, Option>();
+    const groupsByID = new Map<string, OptionGroup>();
+
+    for (const row of rows) {
+      const ownerKey = row[HYDRATION_KEY_COLUMN];
+      if (typeof ownerKey !== 'string') {
+        throw new DataIntegrityError(
+          `Option hydration returned a link row whose ${HYDRATION_KEY_COLUMN} is not a string.`,
+        );
+      }
+      const owners = skusByID.get(ownerKey);
+      if (owners === undefined) {
+        throw new DataIntegrityError(
+          `Option hydration returned a link row for SKU ${ownerKey}, which was not requested.`,
+        );
+      }
+
+      const optionRow: MySqlRow = {};
+      for (const column of optionColumns) {
+        optionRow[column] = row[column];
+      }
+      const optionKey = optionRow[SKU_OPTION_HYDRATION_COLUMN.optionID];
+      if (typeof optionKey !== 'string') {
+        throw new DataIntegrityError(
+          'Option hydration returned an option row without a string identifier.',
+        );
+      }
+
+      let option = optionsByID.get(optionKey);
+      if (option === undefined) {
+        option = mapOptionRow(optionRow);
+        optionsByID.set(optionKey, option);
+
+        const groupKey =
+          row[`${HYDRATION_GROUP_PREFIX}${SKU_OPTION_HYDRATION_COLUMN.optionGroupID}`];
+        if (typeof groupKey === 'string') {
+          let group = groupsByID.get(groupKey);
+          if (group === undefined) {
+            const groupRow: MySqlRow = {
+              [SKU_OPTION_HYDRATION_COLUMN.optionGroupID]: groupKey,
+            };
+            for (const column of groupColumns) {
+              groupRow[column] = row[`${HYDRATION_GROUP_PREFIX}${column}`];
+            }
+            group = mapOptionGroupRow(groupRow);
+            groupsByID.set(groupKey, group);
+          }
+          option.optionGroup = group;
+        }
+      }
+
+      for (const owner of owners) {
+        owner.options.push(option);
+      }
+    }
   }
 
   /**
@@ -1296,6 +1947,17 @@ export class MySqlSkuRepository implements SkuRepository {
    * the next one, so a failed batch is discarded by the caller's rollback. Committing here would make
    * each SKU independently durable and turn a rejected batch into a partial catalogue.
    *
+   * ⭐ WHO ACTUALLY OPENS THAT TRANSACTION, NAMED HERE BECAUSE FOR A WHILE NOBODY DID. The service is
+   * the caller of THIS member, but it is not the boundary owner — a service in a hexagonal design does
+   * not open a transaction. The owner is `UnitOfWork.runScoped` in ./UnitOfWork, reached from the
+   * writing route through `createProductSkuCreationBoundary` in `src/handlers/skuHandler.ts`: the
+   * boundary builds the product read and the SKU service FROM the transaction's scope, runs them, and
+   * settles on the product's accumulated error state — the port of the gate at
+   * `model/service/ProductService.cfc:L286-L288` and `org/Hibachi/Hibachi.cfc:L456-L457`. Until that
+   * boundary existed the paragraph above described an obligation with no holder: the route resolved the
+   * product on one collaborator and wrote through another, so "writes and reads share the injected
+   * executor" was true of this member and false of the invocation containing it.
+   *
    * ⚠️ AND IT IS WHAT MAKES M6 WORK. The uniqueness rule at `model/entity/Sku.cfc:L756-L769` runs the
    * option resolver against SKUs this member has already written but not committed. That only holds
    * because writes and reads share the injected executor, hence the single-executor design at
@@ -1310,20 +1972,95 @@ export class MySqlSkuRepository implements SkuRepository {
    * update that sets a row to the values it already holds reports zero affected rows and would provoke
    * a duplicate insert. A probe is deterministic and says what it means.
    *
-   * ⚠️ NO IDENTIFIER IS GENERATED HERE. Identifiers are 32-character values assigned in application
-   * code (IR-6), and this member neither returns nor assigns one — so a SKU still carrying the unsaved
-   * sentinel [`model/entity/Sku.cfc:L52`, whose mapping declares an empty unsaved value] cannot be
-   * written and is reported rather than silently given an identifier. TR-5 requires the gap be
-   * surfaced, not swallowed.
+   * ⚠️ NO IDENTIFIER IS GENERATED HERE, AND THE CALLER THAT DOES GENERATE IT IS NAMED. Identifiers are
+   * 32-character values assigned in application code (IR-6), and this member neither returns nor assigns
+   * one — so a SKU still carrying the unsaved sentinel [`model/entity/Sku.cfc:L52`, whose mapping
+   * declares an empty unsaved value] cannot be written and is reported rather than silently given an
+   * identifier. TR-5 requires the gap be surfaced, not swallowed.
    *
-   * Audit columns are written exactly as the entity carries them. Stamping created and modified values
-   * is the entity lifecycle's job, not the adapter's, and duplicating it here would produce two
-   * disagreeing implementations of one rule.
+   * The assignment happens one layer up, in `SkuService.validateNewSku`, and it happens BEFORE the rule
+   * set runs so that the uniqueness rule's self-exclusion clause at [`model/entity/Sku.cfc:L763-L768`]
+   * has a key to compare against. Refusing the sentinel here is what makes that ordering enforceable
+   * rather than merely documented: a future caller that skipped the mint would fail loudly on its first
+   * SKU instead of writing a row keyed on the empty string.
+   *
+   * It used to REJECT any SKU still carrying the unsaved sentinel [`model/entity/Sku.cfc:L52`, whose
+   * mapping declares an empty unsaved value], on the reasoning that generation is "application code's"
+   * job and TR-5 requires an unfilled gap to be surfaced. The premise was right; the conclusion was
+   * not. Nothing anywhere assigned a SKU identifier, so the guard rejected 100% of new SKUs before any
+   * statement ran — `../../services/SkuService`'s combination engine could not write a single row.
+   *
+   * ⚠️ THIS ADAPTER *IS* THE APPLICATION CODE IR-6 MEANS. `fieldtype="id" generator="uuid"` is
+   * resolved by the legacy mapping layer at save time, not by the database — there is no
+   * auto-increment and no default — so the port's equivalent of "save time" is the write itself. That
+   * is already the settled convention in this slice, and this member now follows it rather than
+   * contradicting it: `MySqlBrandRepository.saveBrand` assigns `brand.brandID` on insert, and
+   * `MySqlProductRepository` does the same for the identifiers it writes. The domain layer is
+   * explicitly barred from doing it — `../../domain/sku/Sku.ts` states that entity "never generates
+   * one", and `../../domain/product/ProductType.ts` names `src/adapters/mysql/**` as the layer that
+   * decides when to call the generator.
+   *
+   * The value is `createSlatwallUUID()` from `../../util/uuid` — 32 hexadecimal characters, no
+   * dashes, never RFC-4122 form and never re-cased (IR-6). It is assigned ONLY when the SKU is new;
+   * an existing identifier is never regenerated, because that would orphan the row's link records
+   * rather than update them.
+   *
+   * ⛔ ASSIGNED BEFORE THE LINK ROWS ARE WRITTEN, WHICH IS WHY IT CANNOT BE DEFERRED TO THE CALLER.
+   * The option links below key on this identifier, and the M6 uniqueness read matches on the link
+   * table — so a SKU written without a resolvable identifier would be invisible to the very rule that
+   * must see it. Assigning here keeps the identifier, the row and its links in one operation.
+   *
+   * THE COUNTER-ARGUMENT, RECORDED BECAUSE IT IS A GOOD ONE. `generator="uuid"` is an instruction to
+   * the MAPPING layer, `createSlatwallUUID()` lives in `model/dao/HibachiDAO.cfc` — the data-access
+   * layer this file replaces (AAP §0.4.1.11) — and `MySqlBrandRepository.saveBrand` does assign on its
+   * own insert branch. On that reading this layer is the generator's home, and while nothing upstream
+   * minted, the guard below made the whole SKU-creation path unreachable: `Sku.skuID` defaults to the
+   * sentinel and `src/services/SkuService.ts` calls this member unconditionally, so every creation
+   * raised.
+   *
+   * WHY THE SERVICE STILL OWNS IT. That premise no longer holds — `SkuService` now mints for every
+   * combination it enumerates, including the no-options branch, which is what closed the unreachable
+   * path. Minting HERE as well would put two implementations of one rule on the same write, and the
+   * one thing an identifier must not have is two authorities. The service is the surviving site
+   * because the odometer needs the value BEFORE this member is reached: the `SwSkuOption` link rows
+   * reference it, `SwProduct.defaultSkuID` is set from it, and the uniqueness rule's self-exclusion
+   * clause at `model/entity/Sku.cfc:L763-L768` compares against it while the batch is still being
+   * written (§0.6.2). So the guard below reports a caller that skipped that step, and it is retained
+   * precisely because it is what would catch one.
+   *
+   * WHO DOES ASSIGN IT, NAMED HERE SO THE GUARD IS NOT MISTAKEN FOR AN UNCLOSED GAP.
+   * `src/services/SkuService.ts` mints the value with `createSlatwallUUID()` in the private member that
+   * validates each new SKU, on the statement immediately preceding its call to this one — which is the
+   * translation of Hibernate assigning `generator="uuid"` at write time rather than at construction
+   * time. The guard below therefore reports a caller that skipped that step, not a missing
+   * collaborator, and it stays in place precisely because it is what would catch such a caller.
+   *
+   * Audit columns ARE stamped here, and that is the one lifecycle step this layer does own (F03). The
+   * legacy stamped them from Hibernate's `preInsert`/`preUpdate` during the flush the framework
+   * triggered at request end; a stateless invocation has no such flush, so the write seam is the only
+   * place left that knows which branch is being taken. That is a different question from who mints the
+   * identifier: the stamp needs the INSERT-versus-UPDATE verdict, which only the probe below has.
    *
    * @param sku - the SKU to write, with its options attached
-   * @throws {DomainError} when the SKU carries no identifier
+   * @returns Nothing. The SKU is mutated in place — the audit columns are stamped on the instance the
+   *   caller already holds — and `../../ports/repositories/SkuRepository` declares the member
+   *   `Promise<void>` for that reason. A composition root that wants the `EntityPersister<Sku>`
+   *   callback shape instead binds `(sku) => repository.persistSku(sku).then(() => sku)`; the seam is
+   *   one line wide either way, and no caller in the slice reads a returned instance.
    */
   public async persistSku(sku: Sku): Promise<void> {
+    /*
+     * DATA-01 — THIS MEMBER REFUSES AN UNIDENTIFIED SKU RATHER THAN IDENTIFYING ONE, and the refusal is
+     * the FIRST thing it does, before any statement is prepared. `src/services/SkuService.ts` mints the
+     * 32-character value one statement before the write, because the combination engine's uniqueness
+     * read has to be able to exclude the SKU it is about to insert — AAP §0.6.2's read-back cycle — and
+     * only the service knows the enumeration order that read depends on. Minting here instead would
+     * hand the identifier back too late for that exclusion to work.
+     *
+     * The guard therefore stays as defence in depth: it converts "the caller forgot to mint" from a row
+     * written under the empty-string sentinel — silent, and corrupting, because every such row collides
+     * on the primary key after the first — into a raised error with the SKU code attached.
+     */
     if (sku.isNew() || sku.skuID === SKU_UNSAVED_ID_VALUE) {
       throw new DomainError('A SKU cannot be written before it has been assigned an identifier.', {
         context: { skuCode: sku.skuCode },
@@ -1331,6 +2068,58 @@ export class MySqlSkuRepository implements SkuRepository {
     }
 
     const skuIdentifier = sku.skuID;
+
+    /*
+     * ==================================================================================================
+     * THE EXISTENCE PROBE IS RESOLVED BEFORE THE VALUES ARE COLLECTED, AND THAT ORDER IS FORCED (F03)
+     * ==================================================================================================
+     * It used to sit below the value array, which was harmless while nothing between the two touched the
+     * entity. The audit stamp below does touch it, and the stamp needs to know which branch is being
+     * taken — an insert moves both timestamps, an update moves only `modifiedDateTime` and must leave
+     * `createdByAccount` alone. Collecting first and probing second would therefore have written the
+     * PREVIOUS save's audit values, silently and with no error.
+     *
+     * The probe is used here rather than `isNew()`, and the divergence from
+     * `MySqlProductRepository.saveProduct` and `MySqlProductTypeRepository.saveProductType` — both of
+     * which branch on `isNew()` — is deliberate. The combination engine in `src/services/SkuService.ts`
+     * assigns an identifier and may hand the SAME entity back on a later pass, so `isNew()` cannot be
+     * trusted to distinguish "never written" from "written a moment ago in this very transaction". Those
+     * two members receive either a freshly constructed instance or one loaded from a row, where `isNew()`
+     * is decisive.
+     */
+    const probeSql = `SELECT ${SKU_COLUMN.skuID} FROM ${SKU_TABLE} WHERE ${SKU_COLUMN.skuID} = ?`;
+    const existingRows = await this.executor.execute(probeSql, [skuIdentifier]);
+    const skuRowAlreadyExists = existingRows.length > 0;
+
+    /*
+     * ==================================================================================================
+     * THE AUDIT BLOCK IS STAMPED HERE, BECAUSE THIS IS THE FLUSH (F03)
+     * ==================================================================================================
+     * Hibernate fired `preInsert`/`preUpdate` as part of the flush the framework triggered at request end
+     * (`org/Hibachi/Hibachi.cfc`, double `ormFlush()` gated on the ORM reporting no errors, with
+     * `flushAtRequestEnd=false`). A stateless Lambda invocation has no ORM session, no automatic flush and
+     * no request-end hook (mismatch M5, AAP §0.6.6), so nothing fires the hook unless a write seam calls
+     * it — and `src/services/BaseService.ts` explicitly declines the job and places it "behind
+     * `EntityPersister`", which is this member. Before this call existed the four audit columns were
+     * written exactly as a transient entity held them, i.e. as NULLs, where the legacy wrote a timestamp.
+     *
+     * The free functions are called rather than a hook on the entity because `model/entity/Sku.cfc` does
+     * NOT override `preInsert`/`preUpdate` — a SKU only ever received the framework block. Contrast
+     * `MySqlProductTypeRepository`, whose entity DOES override both and additionally refreshes a persisted
+     * column, and which therefore calls the entity's own hooks.
+     *
+     * ⚠️ STAMP FIRST, COLLECT SECOND. The value array below reads the four audit fields off the entity.
+     *
+     * ⚠️ THE BRANCH IS THE PROBE'S ANSWER, NOT `isNew()`. A SKU the combination engine has already written
+     * once in this transaction takes the UPDATE stamp, which is what the mapping layer did for an entity
+     * already present in its session.
+     */
+    const auditActor = this.accountContext.getCurrentAccount();
+    if (skuRowAlreadyExists) {
+      applyPreUpdateAudit(sku, auditActor);
+    } else {
+      applyPreInsertAudit(sku, auditActor);
+    }
 
     /*
      * Column values in the order of {@link SKU_COLUMN}, minus the identifier, which is handled
@@ -1378,10 +2167,6 @@ export class MySqlSkuRepository implements SkuRepository {
       sku.modifiedByAccount ?? null,
     ];
 
-    const probeSql = `SELECT ${SKU_COLUMN.skuID} FROM ${SKU_TABLE} WHERE ${SKU_COLUMN.skuID} = ?`;
-    const existingRows = await this.executor.execute(probeSql, [skuIdentifier]);
-    const skuRowAlreadyExists = existingRows.length > 0;
-
     if (skuRowAlreadyExists) {
       const assignments = writableColumns.map((column) => `${column} = ?`).join(', ');
       await this.executor.executeMutation(
@@ -1398,36 +2183,120 @@ export class MySqlSkuRepository implements SkuRepository {
     }
 
     /*
-     * The option links, written after the row itself — the order the mapping layer flushes in, and the
-     * only order that works, since the link rows reference the SKU.
+     * ALL FOUR OWNED LINK COLLECTIONS, written after the row itself — the order the mapping layer flushes
+     * in, and the only order that works, since every link row references the SKU.
      *
-     * The delete is issued only when the row PRE-EXISTED. A fresh insert has no links to replace, and
-     * the mapping layer likewise issues no collection delete for an entity it has just inserted.
+     * ⚠️ ONLY THE FIRST OF THESE FOUR USED TO BE WRITTEN. The other three collections were accepted by the
+     * entity, populated by `createSkus`' subscription and content-access branches, reported on by
+     * validation — and then silently discarded, because this adapter never emitted a statement for them.
+     * The SKU row was written, the save returned successfully, and a later read produced a SKU with three
+     * empty collections. Nothing anywhere reported the loss, which is what made it worth finding.
      *
-     * The option list is written as the entity holds it, in order and WITHOUT deduplication: a
-     * repeated option is a data fault the link table's own key is entitled to reject, and silently
-     * collapsing it here would hide the fault from the caller that created it.
+     * ⚠️ ONE RULE, WRITTEN ONCE, FOR ALL FOUR. The replacement semantics — delete only when the SKU row
+     * PRE-EXISTED, insert in the entity's own ORDER, no deduplication — are a single rule that every one
+     * of the SKU's owned collections obeys, so they are expressed as a single member
+     * ({@link MySqlSkuRepository.replaceSkuLinkRows}) rather than as four similar blocks. Four copies of
+     * a rule are four places for it to drift. The option link was previously written out inline; routing
+     * it through the shared member emits byte-identical SQL and removes the last place the rule was
+     * duplicated.
+     *
+     * ⚠️ THE ORDER IS THE ENTITY'S DECLARATION ORDER — `model/entity/Sku.cfc:L76` through `:L79`. Nothing
+     * depends on it; it is followed so a statement log reads in the order the source declares.
+     *
+     * ⚠️ IN PRACTICE THE THREE NON-OPTION COLLECTIONS ARE MUTUALLY EXCLUSIVE, AND THAT IS NOT RELIED ON.
+     * `createSkus` fills the two benefit roles from its subscription branch
+     * (`model/service/SkuService.cfc:L161` and `:L164`) and the contents from its content-access branch
+     * (`:L187` and `:L196`), and those branches are alternatives of one three-way discriminator, so a SKU
+     * built by that member carries at most one of the two groups. Nothing enforces the exclusivity at the
+     * persistence layer, the entity permits all three to be populated at once, and this write therefore
+     * handles all three unconditionally rather than inferring which branch produced the SKU.
      */
+    await this.replaceSkuLinkRows(
+      SKU_OPTION_TABLE,
+      SKU_LINK_COLUMN.option,
+      skuIdentifier,
+      skuRowAlreadyExists,
+      sku.getOptions().map((option) => option.optionID),
+    );
+
+    await this.replaceSkuLinkRows(
+      SKU_ACCESS_CONTENT_TABLE,
+      SKU_LINK_COLUMN.accessContent,
+      skuIdentifier,
+      skuRowAlreadyExists,
+      sku.accessContents.map((accessContent) => accessContent.contentID),
+    );
+
+    await this.replaceSkuLinkRows(
+      SKU_SUBSCRIPTION_BENEFIT_TABLE,
+      SKU_LINK_COLUMN.subscriptionBenefit,
+      skuIdentifier,
+      skuRowAlreadyExists,
+      sku.subscriptionBenefits.map((benefit) => benefit.subscriptionBenefitID),
+    );
+
+    await this.replaceSkuLinkRows(
+      SKU_RENEWAL_SUBSCRIPTION_BENEFIT_TABLE,
+      SKU_LINK_COLUMN.renewalSubscriptionBenefit,
+      skuIdentifier,
+      skuRowAlreadyExists,
+      sku.renewalSubscriptionBenefits.map((benefit) => benefit.subscriptionBenefitID),
+    );
+  }
+
+  /**
+   * Replaces one SKU-owned link collection, with the replacement semantics the option link established.
+   *
+   * Extracted as one member rather than repeated four times because the semantics — delete-when-present,
+   * insert in source order, no deduplication — are a single rule that all four of the SKU's owned
+   * collections obey. Four copies of a rule are four places for it to diverge.
+   *
+   * ⚠️ THE OPTION LINK CALLS THIS TOO, and the SQL it emits is byte-for-byte what the inline block it
+   * replaced emitted: same statement text, same column order, same `(?, ?)` grouping, same value
+   * sequence. It is included rather than left inline because a rule with one exception is two rules.
+   *
+   * ⚠️ NO DEDUPLICATION, DELIBERATELY. A repeated far identifier is a data fault the link table's own key
+   * is entitled to reject, and collapsing it here would hide that fault from the caller that created it.
+   *
+   * ⚠️ AN EMPTY COLLECTION ON A PRE-EXISTING SKU STILL ISSUES THE DELETE, and that is the whole meaning
+   * of replacement. Removing every benefit from a SKU and saving it must clear the rows; skipping the
+   * delete for an empty collection would make removal impossible.
+   *
+   * ⚠️ NOTHING IS COMMITTED HERE (M5). The boundary belongs to `src/adapters/mysql/UnitOfWork.ts`.
+   *
+   * @param table - the link table, already whitelisted.
+   * @param columns - its owning and far column names, already whitelisted.
+   * @param skuIdentifier - the owning SKU's 32-character identifier.
+   * @param skuRowAlreadyExists - whether the SKU row pre-existed this save, which decides the delete.
+   * @param farIdentifiers - the far-side identifiers, in the order the entity holds them, undeduplicated.
+   */
+  private async replaceSkuLinkRows(
+    table: PhysicalTableName,
+    columns: { readonly skuID: string; readonly far: string },
+    skuIdentifier: string,
+    skuRowAlreadyExists: boolean,
+    farIdentifiers: readonly string[],
+  ): Promise<void> {
     if (skuRowAlreadyExists) {
-      await this.executor.executeMutation(
-        `DELETE FROM ${SKU_OPTION_TABLE} WHERE ${SKU_OPTION_COLUMN.skuID} = ?`,
-        [skuIdentifier],
-      );
+      await this.executor.executeMutation(`DELETE FROM ${table} WHERE ${columns.skuID} = ?`, [
+        skuIdentifier,
+      ]);
     }
 
-    const options = sku.getOptions();
-    if (options.length > 0) {
-      const linkPlaceholders = options.map(() => '(?, ?)').join(', ');
-      const linkValues: unknown[] = [];
-      for (const option of options) {
-        linkValues.push(skuIdentifier, option.optionID);
-      }
-      await this.executor.executeMutation(
-        `INSERT INTO ${SKU_OPTION_TABLE} ` +
-          `(${SKU_OPTION_COLUMN.skuID}, ${SKU_OPTION_COLUMN.optionID}) VALUES ${linkPlaceholders}`,
-        linkValues,
-      );
+    if (farIdentifiers.length === 0) {
+      return;
     }
+
+    const placeholders = farIdentifiers.map(() => '(?, ?)').join(', ');
+    const values: unknown[] = [];
+    for (const farIdentifier of farIdentifiers) {
+      values.push(skuIdentifier, farIdentifier);
+    }
+
+    await this.executor.executeMutation(
+      `INSERT INTO ${table} (${columns.skuID}, ${columns.far}) VALUES ${placeholders}`,
+      values,
+    );
   }
 
   /**

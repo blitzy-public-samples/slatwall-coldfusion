@@ -55,10 +55,11 @@ export default tseslint.config(
    * These mirror the lintable paths of slatwall-ts/.gitignore (`node_modules/`, `dist/`, `coverage/`),
    * so the three tools agree on what is generated output. Prettier needs no ignore file of its own:
    * version 3 honours .gitignore directly, which is why that one file is the single declaration of
-   * generated output for all three tools and why no .prettierignore exists here — the plan's file
-   * inventory names .prettierrc.json and .gitignore and nothing else. The remaining .gitignore
-   * entries — *.tsbuildinfo, .env files, npm/yarn logs, .eslintcache — contain no JavaScript or
-   * TypeScript and need no ignore entry here.
+   * generated output for all three tools. slatwall-ts/.gitignore owns the account of what is ignored,
+   * of the .prettierignore that used to exist and no longer does, and of the measurement behind that
+   * removal; none of it is restated here, because restating it in four files is how the four notes
+   * came to disagree in the first place. Its one remaining pattern, the exact filename `.env`,
+   * contains no JavaScript or TypeScript and needs no ignore entry here.
    *
    * `node_modules/**` is redundant with ESLint's built-in default and is listed anyway, because an
    * explicit list is auditable against .gitignore line by line whereas an implicit default is not.
