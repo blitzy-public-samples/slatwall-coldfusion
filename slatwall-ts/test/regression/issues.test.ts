@@ -22,6 +22,13 @@
  *   of this file. Of the three components AAP §0.6.5.3 names in the whole slice's extendable legacy
  *   signal — two entity test files, five issue regressions, one fixture helper — this file carries two.
  *
+ * ⭐ THE `issue_` TITLE PREFIX IS RESERVED FOR THOSE EIGHT, AND NOTHING ELSE IN THIS FILE MAY USE IT.
+ * Net-new companion cases DO live here — one beside `issue_1296`, and three beside the teardown pair —
+ * and every one of them opens its title with `NET-NEW` instead. The reason is that the executed title
+ * list is the artifact a reviewer or a CI consumer reads, so a ninth `issue_`-prefixed title would
+ * present as a ninth ported legacy regression and imply a provenance it does not have, which AAP
+ * §0.8.3.7 forbids. Counting `^issue_` in the verbose output must therefore yield exactly eight.
+ *
  * ⛔ THE SPLIT IS STATED LOCALLY, AND THAT IS A CORRECTION. An earlier revision of this header claimed
  * this file carried "five of the suite's nine traceable assertions" and was "one of only five of the
  * twenty files under `test/**` that are traceable at all". Both figures were aggregate denominators
@@ -1157,8 +1164,18 @@ describe('meta/tests/unit/IssuesTest.cfc — catalog issue regressions', () => {
    * moment someone registers `skus`, or any other one-to-many, the case above starts failing and this one
    * explains why. The executed DISTINCT asymmetry itself is owned by
    * `test/adapters/SmartListQueryBuilder.test.ts`; this case owns only its consequence for this member.
+   *
+   * ⭐ AND THE TITLE ITSELF CARRIES THE `NET-NEW` PREFIX, WHICH IS NOT COSMETIC. Declaring the provenance
+   * in this comment is necessary but NOT sufficient: the artifact a reviewer or a CI consumer actually
+   * reads is the EXECUTED TITLE LIST (`jest --verbose`, or a `--json` report), and a title beginning
+   * `issue_` is read there as one of the ported legacy regressions. An earlier revision titled this case
+   * `issue_1296 — …`, which made the executed list show NINE `issue_`-prefixed titles where the legacy
+   * class supplies EIGHT, and so implied legacy provenance for a case that has none — the exact
+   * implication AAP §0.8.3.7 forbids. The prefix is therefore part of the contract: exactly the eight
+   * ported regressions may open their title with `issue_`, and every net-new companion announces itself
+   * the way the other 2,000-odd net-new cases in this subtree do.
    */
-  it('issue_1296 — the guarantee is join DIRECTION, and fanning rows would break it', async () => {
+  it('NET-NEW — issue_1296 companion: the guarantee is join DIRECTION, and fanning rows would break it', async () => {
     // The row set a collection join produces: product one matched twice, product two once.
     const fannedRows: readonly SeededRow[] = [
       requireAt(ISSUE_1296_ROWS, 0),

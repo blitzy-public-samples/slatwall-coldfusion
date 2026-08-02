@@ -167,7 +167,7 @@ describe('brandHandler — SEC-03, the gate `setupRequest()` ran', () => {
     expect(probe.asked).toStrictEqual([]);
   });
 
-  it('NET-NEW — HibachiScope.cfc:L40-L45 — the logged-in test is the NEGATION of newFlag', async () => {
+  it('NET-NEW — brandHandler — HibachiScope.cfc:L40-L45 — the logged-in test is the NEGATION of newFlag', async () => {
     // `getLoggedInFlag()` is `if(!getSession().getAccount().isNew())`, and `newFlag` carries
     // `isNew()`. A principal that is NEW is therefore NOT logged in.
     const notLoggedIn = makeHandler(account({ newFlag: true }), ['read']);
@@ -256,7 +256,7 @@ describe('brandHandler — SEC-03, the gate `setupRequest()` ran', () => {
     expect(JSON.parse(result.body)).toStrictEqual({ message: 'Not authorized' });
   });
 
-  it('NET-NEW — no refusal carries a WWW-Authenticate header or names any scheme', async () => {
+  it('NET-NEW — brandHandler — no refusal carries a WWW-Authenticate header or names any scheme', async () => {
     const probe = makeHandler(undefined, []);
     const result = await probe.handler.getBrand(identifierEvent('x'));
 

@@ -117,7 +117,7 @@ import {
 import { IMAGE_UPLOAD_ALLOWED_EXTENSIONS } from '../../src/ports/ImagePathPort';
 import type { SmartListJoin } from '../../src/ports/SmartListQueryPort';
 import { resolveSmartListPropertyIdentifier } from '../../src/ports/SmartListQueryPort';
-import type { SkuSearchRow } from '../../src/ports/repositories/SkuRepository';
+import type { SkuRepository, SkuSearchRow } from '../../src/ports/repositories/SkuRepository';
 /* ⛔ NO `SkuRepository`, `BoundedReadResult` OR `BoundedReadWindow` IS IMPORTED HERE ANY LONGER, and the
  * capability they typed has NOT gone away — only this file's view of it has. All three arrived to type the
  * two withdrawn service members `searchSkusByProductTypeBounded` and `getSkuSmartListRecords`; with those
@@ -1714,8 +1714,20 @@ describe('SkuService.createSkus — M6: the validation read-back contract (AAP �
    *   insert-all-then-validate   every read sees the whole batch, so the FIRST SKU is rejected too
    *   validate-before-any-insert every read sees nothing, so a DUPLICATE SKU IS ACCEPTED
    *
-   * The cases below pin the landed order, and the last one runs all three orderings side by side so the
-   * discrimination is a permanent artefact of the suite rather than a claim in a comment.
+   * The cases below pin the landed order, and the LAST TWO run all three orderings side by side so the
+   * discrimination is a permanent artefact of the suite rather than a claim in a comment. They are two
+   * cases rather than one because "all three orderings disagree" and "the SERVICE implements the first of
+   * them" are separate claims, and only the second one can detect drift in `SkuService`:
+   *
+   *   • the SEQUENCER-MODEL guard drives `createSkuBatchSequencer` — a `test/support` model of the three
+   *     orderings — over the real uniqueness rule and the real repository write. It proves the three
+   *     orderings genuinely disagree, which is what makes the ordering worth pinning at all. It does NOT
+   *     touch `SkuService`, so it cannot notice if the service stopped using the landed one.
+   *   • the SERVICE-DRIVEN proof drives the real `SkuService.createSkus` three times over a repository
+   *     whose ONLY difference between runs is what a read-back OBSERVES, and then asserts that the
+   *     service's own verdicts equal the model's `legacyOrder` verdicts. That equality is the bridge
+   *     between the model and the production interleave, and it is what fails if
+   *     `SkuService.validateNewSku`'s validate-then-write order is ever reordered.
    */
 
   const buildMerchandiseProduct = (productID: string = ID.product): Product =>
@@ -2276,18 +2288,26 @@ describe('SkuService.createSkus — M6: the validation read-back contract (AAP �
     expect(harness.skuRepository.persisted).toHaveLength(0);
   });
 
-  it('NET-NEW only the landed sequencing produces the landed verdicts — both naive orderings disagree', async () => {
+  it('NET-NEW — SEQUENCER-MODEL GUARD: the three orderings genuinely disagree about the same two duplicates', async () => {
     /*
-     * ⭐⭐ THE ORDERING PROOF, RUN RATHER THAN ASSERTED.
+     * ⭐ THE ORDERING MODEL, RUN RATHER THAN ASSERTED — AND SCOPED HONESTLY.
      *
      * The same two candidate SKUs — identical single option, same product, therefore duplicates — are
      * put through the SAME validate and insert closures under all three sequencings. The closures are
      * the real ones: `Sku.hasUniqueOptions` reading through the repository port, and the repository's own
      * write. Only the ORDER changes.
      *
-     * If a future change moved `SkuService`'s interleave to either naive strategy, the verdicts below
-     * are the ones that would appear — so this case documents exactly what the earlier cases in this
-     * block are protecting against, and it fails loudly if the ordering harness itself drifts.
+     * ⚠️ WHAT THIS CASE DOES **NOT** PROVE, STATED HERE SO NOBODY READS MORE INTO IT. The sequencing is
+     * performed by `createSkuBatchSequencer` from `test/support/inMemoryRepositories.ts` — a MODEL of the
+     * three orderings — and `SkuService` is never invoked. So this case establishes that the three
+     * orderings really do produce three different verdicts, and it fails loudly if that model drifts; it
+     * CANNOT observe `SkuService.validateNewSku` changing its own validate-then-write interleave, because
+     * nothing here reaches that method.
+     *
+     * ⭐ THE SERVICE-LEVEL CLAIM IS THE CASE THAT FOLLOWS, which drives the real `createSkus` under the
+     * same three read-back visibilities and asserts that its verdicts equal `legacyOrder`'s. Read the two
+     * together: this one says the orderings are distinguishable, the next one says which one production
+     * actually implements.
      */
     const { options } = buildColorAndSizeOptions();
     const red = requireAt(options, 0, 'the red option');
@@ -2337,6 +2357,245 @@ describe('SkuService.createSkus — M6: the validation read-back contract (AAP �
     expect(validateFirst.verdicts).toEqual([true, true]);
     expect(validateFirst.steps).toEqual(['validate:1', 'validate:2', 'insert:1', 'insert:2']);
     expect(validateFirst.verdicts).not.toEqual(legacyOrder.verdicts);
+  });
+
+  it('NET-NEW — SERVICE-DRIVEN: the real createSkus implements legacyOrder, and both naive visibilities diverge', async () => {
+    /*
+     * ⭐⭐ THE M6 PROOF AT SERVICE LEVEL — THE ONE THAT FAILS IF `SkuService`'S OWN INTERLEAVE DRIFTS.
+     *
+     * The case above proves the three orderings are distinguishable, but it sequences the work itself. This
+     * case never sequences anything: it calls `SkuService.createSkus` and lets the SERVICE decide when to
+     * validate and when to write. The only thing that varies between the three runs is what ONE repository
+     * member — `findSkusBySelectedOptions`, the read `Sku.hasUniqueOptions` performs through
+     * `model/dao/SkuDAO.cfc:L106-L128` — is allowed to OBSERVE:
+     *
+     *   everyWriteSoFar       the read is passed straight through, so it sees exactly the rows the service
+     *                         has written so far. This is production behaviour, unmodified.
+     *   noWriteOfThisBatch    the read is filtered back to the rows that existed before `createSkus` was
+     *                         called, so no sibling the batch wrote is ever visible. That is the observable
+     *                         signature of validate-before-any-insert.
+     *   theWholeBatchUpFront  the read is augmented with the batch's FINAL sibling set from the very first
+     *                         read onward. That is the observable signature of insert-all-then-validate.
+     *
+     * Only the FIRST run asserts production behaviour. The other two exist so the contrast is executed
+     * rather than described, and so the three verdict vectors can be shown to be pairwise different — the
+     * property that makes the ordering observable at all.
+     *
+     * ⚠️ WHY THE THIRD VISIBILITY IS FED FROM THE FIRST RUN. A read-back decorator cannot see the future,
+     * so the "whole batch is already written" set is the set the LANDED run actually persisted, read off
+     * `harness.skuRepository.persisted` and handed to the third run. That is exactly what an
+     * insert-all-then-validate ordering would have made visible to the very first read. The reveal is not
+     * taken on trust: `readSizes` records how many rows every read actually returned, so the third run has
+     * to show a first read of TWO rows before its verdicts mean anything.
+     *
+     * `options: red,red` is the discriminating fixture for the same reason as the earlier cases —
+     * `model/service/SkuService.cfc:L78` appends unconditionally, so a repeated selection is a repeated
+     * bucket entry (T1) and the odometer emits two SKUs carrying an identical option set.
+     */
+    type ReadBackVisibility = 'everyWriteSoFar' | 'noWriteOfThisBatch' | 'theWholeBatchUpFront';
+
+    const { options } = buildColorAndSizeOptions();
+    const red = requireAt(options, 0, 'the red option');
+
+    /** One SKU's findings, read off the entity that carries them rather than off the merged batch bag. */
+    const findingsFor = (member: Sku): ReturnType<typeof collectSkuBatchErrors> =>
+      collectSkuBatchErrors(
+        Object.assign(buildMerchandiseProduct(ID.otherProduct), { skus: [member] }),
+      );
+
+    const runVisibility = async (
+      visibility: ReadBackVisibility,
+      revealedUpFront: readonly Sku[],
+    ): Promise<{
+      readonly verdicts: readonly boolean[];
+      readonly findings: readonly ReturnType<typeof collectSkuBatchErrors>[];
+      readonly trace: readonly string[];
+      readonly readSizes: readonly number[];
+      readonly persisted: readonly Sku[];
+    }> => {
+      const harness = buildHarness({ resolvableOptions: options });
+      const product = buildMerchandiseProduct();
+
+      /* Snapshotted BEFORE the call, so "of this batch" means "written by this `createSkus`". */
+      const preExisting = new Set(harness.skuRepository.skus.map((sku) => sku.skuID));
+      const readSizes: number[] = [];
+
+      /*
+       * The decoration is a SPREAD, not a subclass: every other member — `persistSku` included — stays the
+       * harness repository's own closure, so the writes still land in the store the trace and the persisted
+       * list are read from. `test/support/inMemoryRepositories.ts` builds the port as a `this`-free object
+       * literal of arrow functions precisely so this is safe.
+       */
+      const observedRepository: SkuRepository = {
+        ...harness.skuRepository.repository,
+        findSkusBySelectedOptions: async (
+          optionIds: string[],
+          productId: string,
+        ): Promise<Sku[]> => {
+          const written = await harness.skuRepository.repository.findSkusBySelectedOptions(
+            optionIds,
+            productId,
+          );
+          const observed =
+            visibility === 'everyWriteSoFar'
+              ? written
+              : visibility === 'noWriteOfThisBatch'
+                ? written.filter((row) => preExisting.has(row.skuID))
+                : /*
+                   * `theWholeBatchUpFront`. The reveal applies the SAME predicate the repository applies —
+                   * product scope, the option-bearing guard (T3) and the conjunction over every requested
+                   * option (T1) — so the augmentation describes a sibling set that could really exist
+                   * rather than an unconditional appendage.
+                   */
+                  [
+                    ...written,
+                    ...revealedUpFront.filter(
+                      (sku) =>
+                        !written.some((row) => row.skuID === sku.skuID) &&
+                        sku.product !== undefined &&
+                        sku.product.productID === productId &&
+                        sku.options.length > 0 &&
+                        optionIds.every((optionId) =>
+                          sku.options.some((option) => option.optionID === optionId),
+                        ),
+                    ),
+                  ];
+
+          readSizes.push(observed.length);
+
+          return observed;
+        },
+      };
+
+      /*
+       * The REAL service over the decorated port, wired exactly as `buildHarness` wires it — same option
+       * service, same boundary doubles, same real `Validator` over the real ported SKU rule sets. Only the
+       * first constructor argument differs, which is what keeps read-back visibility the single variable.
+       */
+      const service = new SkuService(
+        observedRepository,
+        harness.optionService,
+        harness.subscriptionTerms.subscriptionTerms,
+        harness.accessContents.accessContents,
+        harness.imagePaths.imagePaths,
+        harness.skuQueries.smartList,
+        harness.validation.validator,
+        harness.productTypeRoots.resolver,
+        createDefaultSkuDelegate,
+      );
+
+      const created = await service.createSkus(product, {
+        price: TEST_MERCHANDISE_PRODUCT_PRICE,
+        options: `${ID.red},${ID.red}`,
+      });
+
+      /* `:L207` returns unconditionally, so the boolean carries no verdict in any of the three runs. */
+      expect(created).toBe(true);
+
+      const members = readProductSkus(product);
+      const findings = members.map((member) => findingsFor(member));
+
+      return {
+        verdicts: findings.map((entry) => Object.keys(entry).length === 0),
+        findings,
+        trace: readWriteTrace(harness),
+        readSizes,
+        persisted: harness.skuRepository.persisted,
+      };
+    };
+
+    /*
+     * [1] PRODUCTION BEHAVIOUR. Two SKUs, and the interleave is validate-then-write per SKU: SKU 1's read
+     * observes nothing, SKU 2's read observes SKU 1's row. So the FIRST duplicate is accepted and only the
+     * SECOND is rejected, and the rejection is the single `options` message `model/validation/Sku.json:L6`
+     * reports `hasUniqueOptions` under.
+     */
+    const landed = await runVisibility('everyWriteSoFar', []);
+
+    expect(landed.persisted).toHaveLength(2);
+    expect(landed.trace).toEqual([
+      `read:${ID.red}`,
+      `write:${ID.red}`,
+      `read:${ID.red}`,
+      `write:${ID.red}`,
+    ]);
+    expect(landed.readSizes).toEqual([0, 1]);
+    expect(landed.verdicts).toEqual([true, false]);
+    expect(landed.findings.map((entry) => Object.keys(entry))).toEqual([[], ['options']]);
+    expect(requireAt(landed.findings, 1, "the second SKU's findings").options).toHaveLength(1);
+
+    /*
+     * [2] validate-before-any-insert. Neither read observes a sibling, so the duplicate is ACCEPTED — the
+     * silent divergence M6 exists to prevent. Both SKUs are still written: `SkuService.validateNewSku`
+     * never gates the write on the rule outcome, so what changed is the verdict, not the row count.
+     */
+    const noneVisible = await runVisibility('noWriteOfThisBatch', []);
+
+    expect(noneVisible.persisted).toHaveLength(2);
+    expect(noneVisible.readSizes).toEqual([0, 0]);
+    expect(noneVisible.verdicts).toEqual([true, true]);
+    expect(noneVisible.findings.map((entry) => Object.keys(entry))).toEqual([[], []]);
+    expect(noneVisible.verdicts).not.toEqual(landed.verdicts);
+
+    /*
+     * [3] insert-all-then-validate. Every read observes the finished batch, so SKU 1 is rejected as well —
+     * the mirror-image divergence. The reveal set is the landed run's own persisted pair, and the first
+     * read returning TWO rows is what proves the reveal actually reached the rule.
+     */
+    expect(landed.persisted).toHaveLength(2);
+    const allVisible = await runVisibility('theWholeBatchUpFront', landed.persisted);
+
+    expect(allVisible.persisted).toHaveLength(2);
+    expect(allVisible.readSizes).toEqual([2, 3]);
+    expect(allVisible.verdicts).toEqual([false, false]);
+    expect(allVisible.findings.map((entry) => Object.keys(entry))).toEqual([
+      ['options'],
+      ['options'],
+    ]);
+    expect(allVisible.verdicts).not.toEqual(landed.verdicts);
+
+    /* [4] THREE ORDERINGS, THREE DIFFERENT VERDICT VECTORS — pairwise, not merely "not all equal". */
+    expect(
+      new Set(
+        [landed, noneVisible, allVisible].map((run) =>
+          run.verdicts.map((verdict) => String(verdict)).join(','),
+        ),
+      ).size,
+    ).toBe(3);
+
+    /*
+     * [5] ⭐ THE BRIDGE, AND THE REASON THIS CASE EXISTS SEPARATELY FROM THE ONE ABOVE.
+     *
+     * The service's own verdicts are compared against the sequencing MODEL's `legacyOrder` verdicts for the
+     * same two duplicates. Equality here is the statement "production implements legacyOrder" — the one
+     * claim the model-only case cannot make about `SkuService`, and the assertion that fails the moment
+     * `validateNewSku`'s validate-then-write order is reordered in either direction.
+     *
+     * The model run is repeated here rather than shared with the case above ON PURPOSE: the bridge has to
+     * compare against a value produced in this case, or a later edit to that case could leave this one
+     * comparing against something it no longer describes.
+     */
+    const modelHarness = buildHarness({ resolvableOptions: options });
+    const modelProduct = buildMerchandiseProduct();
+    const modelCandidates = [
+      buildSku({ skuCode: 'DUP-1', price: 10, options: [red], product: modelProduct }),
+      buildSku({ skuCode: 'DUP-2', price: 10, options: [red], product: modelProduct }),
+    ];
+    const modelLookup = createSkusBySelectedOptionsLookup(
+      modelHarness.skuRepository.repository,
+      modelProduct.productID,
+    );
+    const modelResult = await createSkuBatchSequencer<Sku>({
+      sequencing: 'legacyOrder',
+      validate: (candidate) => candidate.hasUniqueOptions(modelLookup),
+      insert: (candidate) => modelHarness.skuRepository.repository.persistSku(candidate),
+    }).run(modelCandidates);
+    const modelVerdicts = modelCandidates.map((candidate) =>
+      modelResult.accepted.includes(candidate),
+    );
+
+    expect(modelVerdicts).toEqual([true, false]);
+    expect(landed.verdicts).toEqual(modelVerdicts);
   });
 });
 

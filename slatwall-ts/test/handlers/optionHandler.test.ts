@@ -174,7 +174,7 @@ describe('optionHandler — SEC-03, the gate and the two classifications', () =>
     expect(probe.asked).toStrictEqual([]);
   });
 
-  it('NET-NEW — HibachiScope.cfc:L40-L45 — the logged-in test is the NEGATION of newFlag', async () => {
+  it('NET-NEW — optionHandler — HibachiScope.cfc:L40-L45 — the logged-in test is the NEGATION of newFlag', async () => {
     const notLoggedIn = makeHandler(account({ newFlag: true }), ['read']);
     expect(
       (await notLoggedIn.handler.getUnusedProductOptionGroups(unusedGroupsEvent(''))).statusCode,
@@ -312,7 +312,7 @@ describe('optionHandler — SEC-03, the gate and the two classifications', () =>
     expect(probe.serviceCalls).toStrictEqual([]);
   });
 
-  it('NET-NEW — no refusal carries a WWW-Authenticate header or names any scheme', () => {
+  it('NET-NEW — optionHandler — no refusal carries a WWW-Authenticate header or names any scheme', () => {
     const probe = makeHandler(undefined, []);
     const result = probe.handler.getOptionsForSelect(optionsBodyEvent('{"options":[]}'));
 

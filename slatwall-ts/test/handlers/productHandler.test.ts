@@ -524,7 +524,7 @@ describe('productHandler — API-01, the authorization gate', () => {
     expect(probe.decisions).toStrictEqual([]);
   });
 
-  it('NET-NEW — HibachiScope.cfc:L40-L45 — the logged-in test is the NEGATION of newFlag', async () => {
+  it('NET-NEW — productHandler — HibachiScope.cfc:L40-L45 — the logged-in test is the NEGATION of newFlag', async () => {
     /* `getLoggedInFlag()` is `if(!getSession().getAccount().isNew())`, and `newFlag` carries
      * `isNew()`. A principal that is NEW is therefore NOT logged in. Inverting this predicate would
      * have admitted exactly the first caller and refused the second. */

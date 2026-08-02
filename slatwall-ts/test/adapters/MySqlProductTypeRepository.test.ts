@@ -1256,7 +1256,7 @@ describe('NET-NEW: MySqlProductTypeRepository.withExecutor — re-binding, and i
     expect(rebound).toBeInstanceOf(MySqlProductTypeRepository);
   });
 
-  it('NET-NEW — every statement the re-bound instance issues lands on the REPLACEMENT executor', async () => {
+  it('NET-NEW — MySqlProductTypeRepository.withExecutor: every statement the re-bound instance issues lands on the REPLACEMENT executor', async () => {
     const original = createSqlExecutorDouble();
     const replacement = createSqlExecutorDouble();
     const repository = new MySqlProductTypeRepository(
@@ -1271,7 +1271,7 @@ describe('NET-NEW: MySqlProductTypeRepository.withExecutor — re-binding, and i
     expect(original.calls).toHaveLength(0);
   });
 
-  it('NET-NEW — the ORIGINAL keeps its own executor and stays usable after the re-binding', async () => {
+  it('NET-NEW — MySqlProductTypeRepository.withExecutor: the ORIGINAL keeps its own executor and stays usable after the re-binding', async () => {
     const original = createSqlExecutorDouble();
     const replacement = createSqlExecutorDouble();
     const repository = new MySqlProductTypeRepository(
@@ -1290,7 +1290,7 @@ describe('NET-NEW: MySqlProductTypeRepository.withExecutor — re-binding, and i
     expect(replacement.calls).toHaveLength(0);
   });
 
-  it('NET-NEW — two re-bindings of one receiver cannot observe each other', async () => {
+  it('NET-NEW — MySqlProductTypeRepository.withExecutor: two re-bindings of one receiver cannot observe each other', async () => {
     const original = createSqlExecutorDouble();
     const firstBoundary = createSqlExecutorDouble();
     const secondBoundary = createSqlExecutorDouble();
@@ -1534,7 +1534,7 @@ describe('NET-NEW: MySqlProductTypeRepository.saveProductType — the INSERT bra
     expect(statement.params[createdByIndex + 1]).toBeNull();
   });
 
-  it('NET-NEW — emits the exact column list, one placeholder per column, identifier included', async () => {
+  it('NET-NEW — saveProductType emits the exact column list, one placeholder per column, identifier included', async () => {
     const harness = createWriteHarness();
 
     await harness.repository.saveProductType(transientProductType());
@@ -1557,7 +1557,7 @@ describe('NET-NEW: MySqlProductTypeRepository.saveProductType — the INSERT bra
     expect((statement.sql.match(/\?/g) ?? []).length).toBe(statement.params.length);
   });
 
-  it('NET-NEW — binds an ABSENT optional field as null rather than dropping it from the statement', async () => {
+  it('NET-NEW — saveProductType binds an ABSENT optional field as null rather than dropping it from the statement', async () => {
     const harness = createWriteHarness();
     const productType = new ProductType();
     productType.productTypeName = 'Sparse Product Type';
@@ -1579,7 +1579,7 @@ describe('NET-NEW: MySqlProductTypeRepository.saveProductType — the INSERT bra
     expect(statement.params).toHaveLength(WRITE_COLUMNS.length + 1);
   });
 
-  it('NET-NEW — BINDS a quote-bearing value instead of writing it into the statement text', async () => {
+  it('NET-NEW — saveProductType BINDS a quote-bearing value instead of writing it into the statement text', async () => {
     const harness = createWriteHarness();
     const hostile = "Robert'); DROP TABLE SwProductType; --";
 
@@ -1598,7 +1598,7 @@ describe('NET-NEW: MySqlProductTypeRepository.saveProductType — the INSERT bra
     expect(statement.sql).not.toContain("'");
   });
 
-  it('NET-NEW — returns the SAME entity instance it was handed, not a copy', async () => {
+  it('NET-NEW — saveProductType returns the SAME entity instance it was handed, not a copy', async () => {
     const harness = createWriteHarness();
     const productType = transientProductType();
 
@@ -1692,7 +1692,7 @@ describe('NET-NEW: MySqlProductTypeRepository.saveProductType — the UPDATE bra
     expect(statement.params).toContain(SUBSCRIPTION_PRODUCT_TYPE_ID);
   });
 
-  it('NET-NEW — refreshes the MODIFIED audit pair without disturbing a stored CREATED pair', async () => {
+  it('NET-NEW — saveProductType refreshes the MODIFIED audit pair without disturbing a stored CREATED pair', async () => {
     const harness = createWriteHarness();
     const productType = persistedProductType();
     const storedCreation = new Date('2019-03-04T05:06:07.000Z');
@@ -1725,7 +1725,7 @@ describe('NET-NEW: MySqlProductTypeRepository.saveProductType — the UPDATE bra
     expect(statement.params[createdAtIndex]).toBe(storedCreation);
   });
 
-  it('NET-NEW — issues exactly ONE statement, with no read-back probe before it', async () => {
+  it('NET-NEW — saveProductType issues exactly ONE statement, with no read-back probe before it', async () => {
     const harness = createWriteHarness();
 
     await harness.repository.saveProductType(persistedProductType());
@@ -1741,7 +1741,7 @@ describe('NET-NEW: MySqlProductTypeRepository.saveProductType — the UPDATE bra
     expect(harness.calls[0]?.sql.startsWith('UPDATE ')).toBe(true);
   });
 
-  it('NET-NEW — chooses its branch from the ENTITY, so one adapter answers both shapes', async () => {
+  it('NET-NEW — saveProductType chooses its branch from the ENTITY, so one adapter answers both shapes', async () => {
     const harness = createWriteHarness();
 
     await harness.repository.saveProductType(transientProductType());
@@ -1753,7 +1753,7 @@ describe('NET-NEW: MySqlProductTypeRepository.saveProductType — the UPDATE bra
     expect(harness.calls[1]?.sql.startsWith('UPDATE ')).toBe(true);
   });
 
-  it('NET-NEW — does not read the affected-row count, so a zero-row update still resolves', async () => {
+  it('NET-NEW — saveProductType does not read the affected-row count, so a zero-row update still resolves', async () => {
     const executorDouble = createSqlExecutorDouble({ outcomes: [sqlAffectedRows(0)] });
     const repository = new MySqlProductTypeRepository(
       executorDouble.executor,
@@ -1814,7 +1814,7 @@ describe('NET-NEW: MySqlProductTypeRepository.removeProductType — refusal and 
     expect(statement.sql).not.toContain(CONTENT_ACCESS_PRODUCT_TYPE_ID);
   });
 
-  it('NET-NEW — resolves to undefined and reads no affected-row count', async () => {
+  it('NET-NEW — removeProductType resolves to undefined and reads no affected-row count', async () => {
     const executorDouble = createSqlExecutorDouble({ outcomes: [sqlAffectedRows(0)] });
     const repository = new MySqlProductTypeRepository(
       executorDouble.executor,
@@ -1831,7 +1831,7 @@ describe('NET-NEW: MySqlProductTypeRepository.removeProductType — refusal and 
     await expect(repository.removeProductType(productType)).resolves.toBeUndefined();
   });
 
-  it('NET-NEW — resolves NO acting account, because a removal stamps nothing', async () => {
+  it('NET-NEW — removeProductType resolves NO acting account, because a removal stamps nothing', async () => {
     const accountDouble = createAccountContextDouble();
     const harness = createWriteHarness(accountDouble);
     const productType = transientProductType();

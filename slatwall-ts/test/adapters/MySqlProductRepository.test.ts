@@ -3436,7 +3436,7 @@ describe('NET-NEW — saveProduct: the INSERT branch', () => {
     expect(only(harness, 'INSERT INTO SwProduct').params[0]).toBe(product.productID);
   });
 
-  it('NET-NEW — emits the exact column list, one placeholder per column, identifier included', async () => {
+  it('NET-NEW — saveProduct emits the exact column list, one placeholder per column, identifier included', async () => {
     const harness = buildHarness(fileWith([]));
 
     await harness.repository.saveProduct(transientProduct());
@@ -3509,7 +3509,7 @@ describe('NET-NEW — saveProduct: the INSERT branch', () => {
     ).toBeNull();
   });
 
-  it('NET-NEW — binds an ABSENT optional field as null rather than dropping it from the statement', async () => {
+  it('NET-NEW — saveProduct binds an ABSENT optional field as null rather than dropping it from the statement', async () => {
     const harness = buildHarness(fileWith([]));
     const product = new Product();
     product.productName = 'Sparse Product';
@@ -3529,7 +3529,7 @@ describe('NET-NEW — saveProduct: the INSERT branch', () => {
     expect(statement.params).toHaveLength(PRODUCT_WRITE_COLUMNS.length + 1);
   });
 
-  it('NET-NEW — BINDS a quote-bearing value instead of writing it into the statement text', async () => {
+  it('NET-NEW — saveProduct BINDS a quote-bearing value instead of writing it into the statement text', async () => {
     const harness = buildHarness(fileWith([]));
 
     await harness.repository.saveProduct(
@@ -3548,7 +3548,7 @@ describe('NET-NEW — saveProduct: the INSERT branch', () => {
     expect(statement.sql).not.toContain("'");
   });
 
-  it('NET-NEW — returns the SAME entity instance it was handed, not a copy', async () => {
+  it('NET-NEW — saveProduct returns the SAME entity instance it was handed, not a copy', async () => {
     const harness = buildHarness(fileWith([]));
     const product = transientProduct();
 
@@ -3585,7 +3585,7 @@ describe('NET-NEW — saveProduct: the UPDATE branch', () => {
     expect(statement.params[statement.params.length - 1]).toBe(PERSISTED_PRODUCT_ID);
   });
 
-  it('NET-NEW — refreshes the MODIFIED audit pair without disturbing a stored CREATED pair', async () => {
+  it('NET-NEW — saveProduct refreshes the MODIFIED audit pair without disturbing a stored CREATED pair', async () => {
     const harness = buildHarness(fileWith([]));
     const storedCreation = new Date('2018-07-08T09:10:11.000Z');
     const product = persistedProduct();
@@ -3610,7 +3610,7 @@ describe('NET-NEW — saveProduct: the UPDATE branch', () => {
     );
   });
 
-  it('NET-NEW — issues exactly ONE statement, with no read-back probe before it', async () => {
+  it('NET-NEW — saveProduct issues exactly ONE statement, with no read-back probe before it', async () => {
     const harness = buildHarness(fileWith([]));
 
     await harness.repository.saveProduct(persistedProduct());
@@ -3625,7 +3625,7 @@ describe('NET-NEW — saveProduct: the UPDATE branch', () => {
     expect(harness.eventKinds()).toEqual([]);
   });
 
-  it('NET-NEW — chooses its branch from the ENTITY, so one adapter answers both shapes', async () => {
+  it('NET-NEW — saveProduct chooses its branch from the ENTITY, so one adapter answers both shapes', async () => {
     const harness = buildHarness(fileWith([]));
 
     await harness.repository.saveProduct(transientProduct());
@@ -3638,7 +3638,7 @@ describe('NET-NEW — saveProduct: the UPDATE branch', () => {
     expect(collapse(harness.statements[1]?.sql ?? '').startsWith('UPDATE SwProduct')).toBe(true);
   });
 
-  it('NET-NEW — does not read the affected-row count, so a zero-row update still resolves', async () => {
+  it('NET-NEW — saveProduct does not read the affected-row count, so a zero-row update still resolves', async () => {
     const harness = buildHarness(fileWith([]), () => sqlAffectedRows(0));
     const product = persistedProduct();
 
@@ -3702,7 +3702,7 @@ describe('NET-NEW — removeProduct: refusal, and the four-statement order', () 
     }
   });
 
-  it('NET-NEW — resolves to undefined and reads no affected-row count', async () => {
+  it('NET-NEW — removeProduct resolves to undefined and reads no affected-row count', async () => {
     const harness = buildHarness(fileWith([]), () => sqlAffectedRows(0));
 
     /*
@@ -3712,7 +3712,7 @@ describe('NET-NEW — removeProduct: refusal, and the four-statement order', () 
     await expect(harness.repository.removeProduct(persistedProduct())).resolves.toBeUndefined();
   });
 
-  it('NET-NEW — resolves NO acting account, because a removal stamps nothing', async () => {
+  it('NET-NEW — removeProduct resolves NO acting account, because a removal stamps nothing', async () => {
     const accountDouble = createAccountContextDouble(persistedAdminAccount());
     const harness = buildHarness(fileWith([]), undefined, accountDouble.accountContext);
 

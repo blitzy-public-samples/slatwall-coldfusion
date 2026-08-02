@@ -575,7 +575,7 @@ const OPTION_GROUP_FILTER_COLUMN = `${OPTION_TABLE}.${OPTION_GROUP_ID_ON_OPTION}
 const OPTION_GROUP_EXCLUSION_COLUMN = `${OPTION_GROUP_TABLE}.${OPTION_GROUP_ID}`;
 
 describe('MySqlOptionRepository.findUnusedOptions — NET-NEW: the statement, token for token', () => {
-  it('NET-NEW — issues exactly the ported statement, with nothing added and nothing dropped', async () => {
+  it('NET-NEW — findUnusedOptions issues exactly the ported statement, with nothing added and nothing dropped', async () => {
     const { call } = await exerciseUnusedOptions(PRODUCT_ID, 'group-a,group-b');
 
     expect(normalize(call.sql)).toBe(UNUSED_OPTIONS_STATEMENT_FOR_TWO_GROUPS);
@@ -720,7 +720,7 @@ describe('MySqlOptionRepository.findUnusedOptions — NET-NEW/G6: bind order is 
 });
 
 describe('MySqlOptionRepository.findUnusedOptions — NET-NEW: placeholder cardinality', () => {
-  it('NET-NEW — emits one bind marker per comma-list element, for every shape of list', async () => {
+  it('NET-NEW — findUnusedOptions emits one bind marker per comma-list element, for every shape of list', async () => {
     /*
      * One table rather than six cases, because the property is a single invariant — one marker per
      * element, one bound value per marker, in list order — and reading it as a table is how a reviewer
@@ -817,7 +817,7 @@ describe('MySqlOptionRepository.findUnusedOptions — NET-NEW: the empty option-
     expect(call.params).not.toEqual([PRODUCT_ID, '']);
   });
 
-  it('NET-NEW — is not special-cased: it issues the same statement a one-element list issues', async () => {
+  it('NET-NEW — findUnusedOptions does not special-case the empty list: it issues the same statement a one-element list issues', async () => {
     const empty = await exerciseUnusedOptions(PRODUCT_ID, '');
     const single = await exerciseUnusedOptions(PRODUCT_ID, 'group-a');
 
@@ -942,7 +942,7 @@ describe('MySqlOptionRepository.findUnusedOptions — NET-NEW: the composed drop
     ]);
   });
 
-  it('NET-NEW — resolves to an empty array when the statement matched nothing', async () => {
+  it('NET-NEW — findUnusedOptions resolves to an empty array when the statement matched nothing', async () => {
     const { rows } = await exerciseUnusedOptions(PRODUCT_ID, 'group-a', sqlRows([]));
 
     expect(rows).toEqual([]);
@@ -950,7 +950,7 @@ describe('MySqlOptionRepository.findUnusedOptions — NET-NEW: the composed drop
 });
 
 describe('MySqlOptionRepository.findUnusedOptionGroups — NET-NEW: the statement, token for token', () => {
-  it('NET-NEW — issues exactly the ported statement, with nothing added and nothing dropped', async () => {
+  it('NET-NEW — findUnusedOptionGroups issues exactly the ported statement, with nothing added and nothing dropped', async () => {
     const { call } = await exerciseUnusedOptionGroups('group-a');
 
     expect(normalize(call.sql)).toBe(UNUSED_OPTION_GROUPS_STATEMENT_FOR_ONE_GROUP);
@@ -1017,7 +1017,7 @@ describe('MySqlOptionRepository.findUnusedOptionGroups — NET-NEW: the statemen
 });
 
 describe('MySqlOptionRepository.findUnusedOptionGroups — NET-NEW: placeholder cardinality', () => {
-  it('NET-NEW — emits one bind marker per comma-list element, for every shape of list', async () => {
+  it('NET-NEW — findUnusedOptionGroups emits one bind marker per comma-list element, for every shape of list', async () => {
     const lists = ['group-a', 'group-a,group-b', 'group-a,group-a', 'group-a,,group-b'];
     const observed: Array<{
       readonly list: string;
@@ -1073,7 +1073,7 @@ describe('MySqlOptionRepository.findUnusedOptionGroups — NET-NEW: the empty op
     expect(call.params).toEqual(['']);
   });
 
-  it('NET-NEW — is not special-cased: it issues the same statement a one-element list issues', async () => {
+  it('NET-NEW — findUnusedOptionGroups does not special-case the empty list: it issues the same statement a one-element list issues', async () => {
     const empty = await exerciseUnusedOptionGroups('');
     const single = await exerciseUnusedOptionGroups('group-a');
 
@@ -1124,7 +1124,7 @@ describe('MySqlOptionRepository.findUnusedOptionGroups — NET-NEW: the bare gro
     ]);
   });
 
-  it('NET-NEW — resolves to an empty array when the statement matched nothing', async () => {
+  it('NET-NEW — findUnusedOptionGroups resolves to an empty array when the statement matched nothing', async () => {
     const { rows } = await exerciseUnusedOptionGroups('group-a', sqlRows([]));
 
     expect(rows).toEqual([]);
@@ -1595,7 +1595,7 @@ describe('MySqlOptionRepository.withExecutor — NET-NEW: re-binding, and its is
     expect(rebound).toBeInstanceOf(MySqlOptionRepository);
   });
 
-  it('NET-NEW — every statement the re-bound instance issues lands on the REPLACEMENT executor', async () => {
+  it('NET-NEW — MySqlOptionRepository.withExecutor: every statement the re-bound instance issues lands on the REPLACEMENT executor', async () => {
     const original = recording();
     const replacement = createSqlExecutorDouble({
       outcomes: [sqlRows([unusedOptionRow(1)])],
@@ -1620,7 +1620,7 @@ describe('MySqlOptionRepository.withExecutor — NET-NEW: re-binding, and its is
     expect(original.double.calls).toHaveLength(0);
   });
 
-  it('NET-NEW — the ORIGINAL keeps its own executor and stays usable after the re-binding', async () => {
+  it('NET-NEW — MySqlOptionRepository.withExecutor: the ORIGINAL keeps its own executor and stays usable after the re-binding', async () => {
     const original = recording(sqlRows([]), sqlRows([]));
     const replacement = createSqlExecutorDouble({ outcomes: [sqlRows([])] });
 
@@ -1639,7 +1639,7 @@ describe('MySqlOptionRepository.withExecutor — NET-NEW: re-binding, and its is
     expect(callAt(original.double, 0).params).toEqual(['outside']);
   });
 
-  it('NET-NEW — two re-bindings of one receiver cannot observe each other', async () => {
+  it('NET-NEW — MySqlOptionRepository.withExecutor: two re-bindings of one receiver cannot observe each other', async () => {
     const original = recording();
     const first = createSqlExecutorDouble({ outcomes: [sqlRows([])] });
     const second = createSqlExecutorDouble({ outcomes: [sqlRows([])] });
@@ -1887,7 +1887,7 @@ describe('MySqlOptionRepository.findUnusedOptionsBounded — NET-NEW: the window
     expect(sql).not.toContain('--');
   });
 
-  it('NET-NEW — REFUSES an unusable window rather than clamping it, and issues no statement', async () => {
+  it('NET-NEW — findUnusedOptionsBounded REFUSES an unusable window rather than clamping it, and issues no statement', async () => {
     /*
      * ⛔ THE EXPECTED SENTENCE IS PER WINDOW KIND, NOT ONE PATTERN FOR ALL SIX. Both refusals open with
      * "A bounded read needs …", so a single `/bounded read needs/` cannot tell a rejected LIMIT from a
@@ -2046,7 +2046,7 @@ describe('MySqlOptionRepository.findUnusedOptionGroupsBounded — NET-NEW: the w
     expect(result.rows).toHaveLength(2);
   });
 
-  it('NET-NEW — REFUSES an unusable window rather than clamping it, and issues no statement', async () => {
+  it('NET-NEW — findUnusedOptionGroupsBounded REFUSES an unusable window rather than clamping it, and issues no statement', async () => {
     for (const window of [
       { limit: 0, offset: 0 },
       { limit: 2, offset: -3 },

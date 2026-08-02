@@ -409,9 +409,27 @@ describe('NET-NEW env — platform behaviour and blast radius', () => {
  * ================================================================================================== */
 
 describe('NET-NEW env — .env.example matches what GOOGLE_FEED_HOST actually enforces', () => {
-  const envExample = readFileSync(ENV_EXAMPLE_PATH, 'utf8');
+  /*
+   * ⚠️ THE DOCUMENT IS READ INSIDE EACH CASE, NEVER AT DESCRIBE-REGISTRATION SCOPE.
+   *
+   * An earlier revision bound `readFileSync(ENV_EXAMPLE_PATH, 'utf8')` to a constant right here, in the
+   * describe factory body. Jest evaluates that body during COLLECTION, before any case runs, so a missing
+   * or unreadable `.env.example` — a checkout without dotfiles, a rename, a packaging step that drops
+   * them — surfaced as `Test suite failed to run` and took EVERY case in this file down with it, including
+   * the thirty-odd that never touch the filesystem and could not have been affected. The blast radius of a
+   * documentation-file problem was the whole loader suite.
+   *
+   * Reading lazily narrows that to the three cases that genuinely depend on the document: they fail with
+   * the real ENOENT, and every other case in the file still reports its own verdict. This is also the
+   * corpus convention rather than a local invention — `ProductFeedBuilder.test.ts`,
+   * `IntegrationContract.test.ts`, `googleFeedHandler.test.ts` and `MySqlProductRepository.test.ts` all
+   * read their reference files inside the test body already, and this suite was the lone deviation.
+   */
+  const readEnvExample = (): string => readFileSync(ENV_EXAMPLE_PATH, 'utf8');
 
   it('[NET-NEW] states the enforced grammar and where it runs', () => {
+    const envExample = readEnvExample();
+
     expect(envExample).toContain('GOOGLE_FEED_HOST');
     /* The published productions the rule transcribes, named so an operator can check it. */
     expect(envExample).toContain('RFC 3986');
@@ -427,6 +445,8 @@ describe('NET-NEW env — .env.example matches what GOOGLE_FEED_HOST actually en
      * that does not exist there; the second cited a withdrawn decision block as the authority for a
      * refusal nothing performed. Neither may reappear.
      */
+    const envExample = readEnvExample();
+
     expect(envExample).not.toContain('validator refuses');
     expect(envExample).not.toContain('DECISION G-1');
   });
@@ -438,6 +458,8 @@ describe('NET-NEW env — .env.example matches what GOOGLE_FEED_HOST actually en
      * misled in the opposite direction from the original defect. Overclaiming is the same class of
      * documentation failure as underclaiming.
      */
+    const envExample = readEnvExample();
+
     expect(envExample).toContain('NOT ENFORCED');
   });
 });

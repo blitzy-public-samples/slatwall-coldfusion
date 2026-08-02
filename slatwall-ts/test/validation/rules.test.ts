@@ -860,7 +860,7 @@ describe('NET-NEW — A3. the one shared code-format regular expression', () => 
  * ============================================================================================== */
 
 describe('NET-NEW — B1. `model/validation/Product.json` — eleven properties, twelve rules', () => {
-  it('NET-NEW — the whole document, in source property and key order', () => {
+  it('NET-NEW — Product.json in full: the whole document, in source property and key order', () => {
     expect(normaliseRuleSet(productValidationRuleSet)).toStrictEqual([
       // `:L3-L6` — TWO INDEPENDENT rule objects against one property, each with its own context list.
       [
@@ -965,7 +965,7 @@ describe('NET-NEW — B1. `model/validation/Product.json` — eleven properties,
 });
 
 describe('NET-NEW — B2. `model/validation/Sku.json` — eight properties, nine rules', () => {
-  it('NET-NEW — the whole document, in source property and key order', () => {
+  it('NET-NEW — Sku.json in full: the whole document, in source property and key order', () => {
     const { ruleSet } = skuRuleSetFor('sku-document-product');
 
     expect(normaliseRuleSet(ruleSet)).toStrictEqual([
@@ -1118,7 +1118,7 @@ describe('NET-NEW — B2. `model/validation/Sku.json` — eight properties, nine
 });
 
 describe('NET-NEW — B3. `model/validation/Brand.json` — X10c, all five declarations', () => {
-  it('NET-NEW — the whole document, in source property and key order', () => {
+  it('NET-NEW — Brand.json in full: the whole document, in source property and key order', () => {
     expect(normaliseRuleSet(brandValidationRules)).toStrictEqual([
       // `:L3`
       ['brandName', [['save', undefined, [['required', true]]]]],
