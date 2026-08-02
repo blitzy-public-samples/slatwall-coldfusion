@@ -192,9 +192,17 @@ async function collectEntryPoints() {
         e.name.endsWith('.ts') &&
         !e.name.endsWith('.d.ts') &&
         !e.name.endsWith('.test.ts') &&
-        // Not Lambda entry points: the route table and the response-shaping helper are
-        // imported by handlers rather than invoked by the runtime.
-        e.name !== 'router.ts' &&
+        // ⭐ router.ts IS AN ENTRY POINT, AND IT IS THE PRIMARY ONE. An earlier revision of this
+        // filter excluded it alongside httpResponse.ts on the stated grounds that both are
+        // "imported by handlers rather than invoked by the runtime". That premise is inverted for
+        // the router: nothing imports it — it imports the five per-service handlers — and it is the
+        // only module in the subtree that exports a Lambda `handler` symbol. Excluding it produced
+        // five bundles that the runtime could load but could not dispatch, which is exactly the
+        // "no wired Lambda entry point" gap AAP 0.4.1.9 names this file to close.
+        //
+        // httpResponse.ts remains excluded, and for that module the original reason holds
+        // unchanged: it is a response-shaping helper every handler imports, it exports no handler,
+        // and bundling it would emit an artifact the runtime has no way to invoke.
         e.name !== 'httpResponse.ts',
     )
     .map((e) => join(handlerDir, e.name));

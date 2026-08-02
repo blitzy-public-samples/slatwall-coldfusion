@@ -145,6 +145,7 @@ import {
   createOptionGroupSortOrderMemo,
   MySqlSkuRepository,
 } from '../adapters/mysql/MySqlSkuRepository';
+import { MySqlTransactionalWriteRunner } from '../adapters/mysql/MySqlTransactionalWriteRunner';
 import { QueryRunner } from '../adapters/mysql/QueryRunner';
 import {
   readProductDefaultSkuId,
@@ -152,7 +153,7 @@ import {
 } from '../adapters/mysql/rowMappers';
 import { SmartListQueryBuilder } from '../adapters/mysql/SmartListQueryBuilder';
 import { UniquePropertyChecker } from '../adapters/mysql/UniquePropertyChecker';
-import { UnitOfWork } from '../adapters/mysql/UnitOfWork';
+import { UnitOfWork, type TransactionScope } from '../adapters/mysql/UnitOfWork';
 import { StaticSettingResolver } from '../adapters/settings/StaticSettingResolver';
 import { populate, type ManagedEntity, type PropertyDescriptorSet } from '../domain/base/populate';
 import { BRAND_PROPERTY_DESCRIPTORS, type BrandPropertyName } from '../domain/product/Brand';
@@ -185,6 +186,7 @@ import type { SkuRepository } from '../ports/repositories/SkuRepository';
 import type { SettingResolverPort } from '../ports/SettingResolverPort';
 import type { SmartListQueryPort } from '../ports/SmartListQueryPort';
 import type { SubscriptionTermPort } from '../ports/SubscriptionTermPort';
+import type { TransactionalWriteRunner } from '../ports/TransactionalWritePort';
 import type { UniquePropertyPort } from '../ports/UniquePropertyPort';
 import {
   BaseService,
@@ -194,7 +196,7 @@ import {
 import { BrandService, type ManagedBrand } from '../services/BrandService';
 import { OptionService } from '../services/OptionService';
 import { ProductService } from '../services/ProductService';
-import { SkuService } from '../services/SkuService';
+import { SkuService, type ProductWithErrorState } from '../services/SkuService';
 import type { UniqueValueProbe } from '../util/urlTitle';
 import { brandValidationRules } from '../validation/rules/brand.rules';
 import { productValidationRuleSet } from '../validation/rules/product.rules';
@@ -206,6 +208,32 @@ import { config, type AppConfig } from './env';
 /* ================================================================================================
  * THE WIRED GRAPH
  * ============================================================================================== */
+
+/**
+ * The transaction-scoped collaborators the SKU-creation write path runs against.
+ *
+ * ⭐ WHY THE COMPOSITION ROOT DECLARES THIS SHAPE RATHER THAN IMPORTING THE HANDLER'S. This file's own
+ * header fixes the direction: `handlers/**` imports the container, and the container imports no handler,
+ * no AWS type and no AWS SDK. `src/handlers/skuHandler.ts` declares an equivalent `SkuWriteGraph`
+ * structurally for the mirror-image reason — `src/adapters/mysql/**` is not among ITS permitted
+ * dependencies. The two shapes therefore meet structurally, in the routing layer, which is the only
+ * place allowed to name both sides. Widening this declaration would break that meeting at compile time
+ * rather than at run time, which is the property the arrangement buys.
+ *
+ * ⚠️ BOTH MEMBERS ARE BOUND TO THE BOUNDARY'S EXECUTOR, NOT TO THE POOL. AAP §0.6.2 is explicit that
+ * `Sku.hasUniqueOptions` is a validation rule that EXECUTES A QUERY against the sibling SKUs the same
+ * operation is writing, and AAP §0.6.6 M6 names that read-back as the likeliest place for this port to
+ * diverge silently. A pool-bound resolver handed into an open transaction would read a sibling set that
+ * excludes the uncommitted rows, so the batch would validate against the wrong world — and nothing would
+ * report a problem.
+ */
+export interface CatalogSkuWriteGraph {
+  /** Loads the aggregate the batch mutates, through the transaction's own scope. */
+  readonly resolveProduct: (productID: string) => Promise<ProductWithErrorState | null>;
+
+  /** The SKU service built for this boundary; the write path may touch no other. */
+  readonly skuService: SkuService;
+}
 
 /**
  * Every collaborator the Catalog slice needs, wired once.
@@ -304,6 +332,42 @@ export interface CatalogContainer {
   /** The one member of `model/service/BrandService.cfc`, plus the three synthesized. */
   readonly brandService: BrandService;
 
+  /**
+   * Runs a product WRITE inside one transaction, against a product service built for that transaction.
+   *
+   * ⭐ WHY A RUNNER RATHER THAN THE SERVICE ITSELF (M5). The legacy committed implicitly at request end,
+   * gated on `getORMHasErrors()` being false, with `flushAtRequestEnd=false` and a double `ormFlush()` in
+   * `org/Hibachi/Hibachi.cfc` doing the work. A stateless invocation has no request-end hook, so AAP
+   * §0.3.3 makes the boundary explicit: this member IS that boundary, one unit of work per invocation,
+   * committed only when the gate the caller supplies reports no errors.
+   *
+   * ⚠️ THE GRAPH IT HANDS OUT IS REBUILT PER TRANSACTION, AND THAT IS THE WHOLE POINT. A service holds
+   * its repository and a repository holds its executor from construction, so {@link CatalogContainer.productService}
+   * is bound to the POOL for its whole life. Calling it inside an open transaction would run its
+   * statements on a DIFFERENT connection: the writes would succeed, sit outside the unit being committed,
+   * and survive a rollback, with nothing reporting a problem. Every collaborator the graph exposes is
+   * therefore constructed against the boundary's own executor — see TIER 7.
+   *
+   * ⚠️ REPOSITORY-LEVEL AND PROBE-LEVEL OVERRIDES DO NOT REACH IT. The scoped graph is built from the
+   * MySQL adapters over the boundary's executor, because re-binding is the property that makes it
+   * correct, and a port-typed double has no executor to re-bind. A test that needs to control the write
+   * path substitutes {@link CatalogContainerOverrides.productWriteRunner} wholesale instead. Every
+   * executor-free boundary — settings, image paths, pricing, subscription terms, access content, account
+   * context, population authorization and the three cleanup ports — IS honoured, because the scoped graph
+   * reads those from the same TIER 1 bindings the pool-bound graph does.
+   */
+  readonly productWriteRunner: TransactionalWriteRunner<ProductService>;
+
+  /**
+   * Runs a SKU-creation batch inside one transaction, against collaborators built for that transaction.
+   *
+   * Same boundary as {@link CatalogContainer.productWriteRunner} and the same rebuild-per-transaction
+   * rule; it exists separately because the combination engine needs a NARROWER graph — the aggregate
+   * resolver plus the SKU service — and because AAP §0.6.2's read-back makes the product read part of the
+   * unit rather than a preliminary to it. See {@link CatalogSkuWriteGraph}.
+   */
+  readonly skuWriteRunner: TransactionalWriteRunner<CatalogSkuWriteGraph>;
+
   /** The interface-conformant stub of `integrationServices/google/Integration.cfc`. */
   readonly googleIntegration: GoogleIntegration;
 
@@ -381,6 +445,20 @@ export interface CatalogContainerOverrides {
   readonly commentCleanup?: EntityCommentCleanupPort;
   readonly productDependencyCleanup?: ProductDependencyCleanup;
   readonly productTypeRootResolver?: ProductTypeRootResolver;
+
+  /**
+   * The two transaction boundaries, substitutable ONLY as whole runners.
+   *
+   * ⚠️ THEY ARE NOT DECOMPOSABLE, AND THAT IS A CONSEQUENCE RATHER THAN A CHOICE. TIER 7 builds its
+   * graph by constructing the MySQL adapters against the boundary's own executor, because re-binding to
+   * that executor is precisely what makes a write transactional (M5) and what lets the uniqueness
+   * read-back observe the batch's own uncommitted siblings (M6, AAP §0.6.2). A port-typed double has no
+   * executor to re-bind, so the repository and probe slots above cannot reach inside a boundary even in
+   * principle. Substituting the runner itself is therefore the honest seam, and it is a complete one: a
+   * double supplied here decides both what the graph contains and whether the unit commits.
+   */
+  readonly productWriteRunner?: TransactionalWriteRunner<ProductService>;
+  readonly skuWriteRunner?: TransactionalWriteRunner<CatalogSkuWriteGraph>;
 }
 
 /* ================================================================================================
@@ -909,10 +987,15 @@ function createProductTypeDescriptorSet(
  * one is checked out — which is what lets `tsc`, `eslint`, `esbuild`, the bundle cold-load and the
  * whole test suite run with no `.env` file and no environment variable set.
  *
- * ⭐ SIX TIERS, IN DEPENDENCY ORDER, WITH NO FORWARD REFERENCE. There is no lazy getter, no deferred
+ * ⭐ SEVEN TIERS, IN DEPENDENCY ORDER, WITH NO FORWARD REFERENCE. There is no lazy getter, no deferred
  * `let x!: T`, no two-pass wiring and no re-entrant factory anywhere: each tier consumes only tiers
  * above it. If a future edit seems to need one of those devices, an edge has been added that the AAP
  * does not have — check it against the four dead injections above before reaching for a workaround.
+ *
+ * ⭐ TIER 7 IS THE ONE TIER THAT BUILDS NOTHING EAGERLY. Tiers 1 through 6 construct the pool-bound
+ * graph; tier 7 constructs two RUNNERS whose graphs are built per transaction, from the boundary's own
+ * executor. That asymmetry is the M5/M6 requirement expressed as wiring rather than as a convention —
+ * see the tier's own block for why a pool-bound service inside a transaction fails silently.
  *
  * @param overrides substitutions for any boundary; omit it entirely for the production graph
  * @returns the frozen graph
@@ -1177,6 +1260,190 @@ export function createCatalogContainer(
   const productFeedQuery = new ProductFeedQuery(skuService);
   const productFeedBuilder = new ProductFeedBuilder(imagePaths, pricing, settings);
 
+  /* ----------------------------------------------------------------------------------------------
+   * TIER 7 — THE TWO WRITE BOUNDARIES (M5, M6)
+   *
+   * ⭐ WHY A SEVENTH TIER EXISTS AT ALL. Tiers 2 through 6 build ONE graph over the pool, which is
+   * correct for every read and for warm reuse — a pool holds no connection until one is checked out, so
+   * the graph costs nothing until it is used. It is exactly wrong for a WRITE. A service holds its
+   * repository and a repository holds its executor from construction, so the services above are bound to
+   * the pool for their whole lives. Handing one of them into an open transaction would run its statements
+   * on a DIFFERENT connection: the writes would succeed, sit outside the unit being committed, and
+   * survive a rollback, with nothing anywhere reporting a problem. This tier is the fix, and it is
+   * structural rather than conventional — the writing collaborators are reachable ONLY through a runner
+   * that rebuilds them from the boundary's own executor.
+   *
+   * ⭐ M5 — THIS IS WHERE THE IMPLICIT REQUEST-END COMMIT BECAME EXPLICIT. `flushAtRequestEnd=false`
+   * with a double `ormFlush()` at request end, gated on the ORM having no errors, is what the legacy did;
+   * a stateless invocation has no request-end hook to hang that on. `MySqlTransactionalWriteRunner` takes
+   * the gate as an argument for exactly this reason, so the caller — never this file — decides what
+   * "no errors" means for its own operation.
+   *
+   * ⚠️ M6 — AND WHY THE PRODUCT READ IS INSIDE THE UNIT, NOT BEFORE IT. AAP §0.6.2 calls the
+   * `Sku.hasUniqueOptions` read-back "the single most dangerous thing in the slice": it is a declarative
+   * validation rule that EXECUTES A QUERY against the sibling SKUs the same operation is writing. Under
+   * Hibernate the rule saw the session's pending inserts; with `mysql2` there is no session, so the only
+   * way it can see them is for the read and the writes to share one connection. That is what the rebuild
+   * below buys, and it is not observable in any type — hence the emphasis here and at
+   * {@link CatalogSkuWriteGraph}.
+   *
+   * ⚠️ THE REBUILD IS EXHAUSTIVE ON PURPOSE. Every collaborator that reaches the database is
+   * reconstructed against `scope.executor`: both repositories, the product write surface, the smart-list
+   * builder, the product-type root resolver that reads THROUGH that builder, the uniqueness probe, the
+   * validator that consults it, and the two services plus two base services that compose them. A partial
+   * rebuild is the failure mode to fear, because it compiles and passes a happy-path test while leaving
+   * one read on the pool — `test/services/SkuService.test.ts` poisons the pool channel precisely so that
+   * mistake fails loudly instead of quietly succeeding against the wrong connection.
+   *
+   * ⭐ THE PROBE IS RE-BOUND THROUGH `withExecutor`, NOT RECONSTRUCTED. `UniquePropertyChecker` documents
+   * that member as existing "for no purpose other than adopting a boundary's executor", and it returns
+   * the LOCKING variant — a `FOR UPDATE` that serializes the uniqueness read against the write that
+   * follows it. A `FOR UPDATE` outside a transaction is acquired and released immediately, so the
+   * pool-bound instance in TIER 2 stays at exact legacy parity while the boundary-scoped one gains the
+   * protection; that pairing is the adapter's own stated design and this is the site that honours it.
+   *
+   * ⚠️ WHAT IS SHARED RATHER THAN REBUILT, AND WHY EACH ONE IS SAFE. The executor-free TIER 1 boundaries
+   * (settings, image paths, pricing, subscription terms, access content, account context, population
+   * authorization and the three cleanup ports) are read straight from the enclosing closure, so a caller's
+   * override of any of them IS honoured inside a transaction. `bindDefaultSkuDelegate` and
+   * `readDefaultSkuIdOrRefuse` issue no statement. The rule sets and property descriptors are data. And
+   * `optionGroupSortOrderMemo` is shared DELIBERATELY: it is the one request-scoped cell in the graph
+   * (M7), so a boundary that minted its own would leave {@link CatalogContainer.beginInvocation} clearing
+   * a cell nobody read, and the sorted-SKU ordering inside a transaction would diverge from the ordering
+   * outside it.
+   *
+   * ⚠️ `unitOfWork` IS PASSED TO THE BOUNDARY-SCOPED IMPORTER, AND THE IMPORTER IS UNREACHABLE FROM HERE.
+   * `MySqlProductRepository` requires a transaction collaborator because `loadDataFromFile` opens its own
+   * per-row boundaries — [model/dao/ProductDAO.cfc:L177] opens `transaction{` INSIDE the record loop, and
+   * AAP §0.6.6 M3 requires those per-row commits be reproduced rather than replaced by one enormous unit.
+   * `src/handlers/productHandler.ts` therefore omits `loadDataFromFile` from the write graph it accepts,
+   * so no route can reach the importer through this runner and no nested boundary is ever opened. The
+   * collaborator is supplied to satisfy the adapter's declared shape, nothing more.
+   * -------------------------------------------------------------------------------------------- */
+  const buildBoundaryScopedGraph = (
+    scope: TransactionScope,
+  ): { readonly productService: ProductService; readonly skuService: SkuService } => {
+    const { executor } = scope;
+
+    const boundaryUniqueProperty = uniquePropertyChecker.withExecutor(executor);
+    const boundaryValidator = new Validator(boundaryUniqueProperty);
+    const boundarySmartList = new SmartListQueryBuilder(
+      executor,
+      createCatalogAggregateLoaders({ bindDefaultSkuDelegate }),
+    );
+    const boundaryProductTypeRoots = createProductTypeRootResolver(boundarySmartList);
+
+    const boundarySkuRepository = new MySqlSkuRepository(
+      executor,
+      optionGroupSortOrderMemo,
+      boundaryProductTypeRoots,
+      accountContext,
+    );
+    const boundaryOptionRepository = new MySqlOptionRepository(executor);
+    const boundaryProductRepository = new MySqlProductRepository({
+      executor,
+      transactions: unitOfWork,
+      sourceReader: unresolvableProductImportSourceReader,
+      contentAssignment: unresolvableProductContentAssignmentPort,
+      accountContext,
+      urlTitleFilter: unresolvableImportUrlTitleFilter,
+      readDefaultSkuId: readDefaultSkuIdOrRefuse,
+    });
+    const boundaryProductPersistence = new MySqlProductPersistence(
+      executor,
+      productDependencyCleanup,
+      readDefaultSkuIdOrRefuse,
+    );
+
+    const boundaryOptionService = new OptionService(boundaryOptionRepository, boundarySmartList);
+    const boundarySkuService = new SkuService(
+      boundarySkuRepository,
+      boundaryOptionService,
+      subscriptionTerms,
+      accessContent,
+      imagePaths,
+      boundarySmartList,
+      boundaryValidator,
+      boundaryProductTypeRoots,
+      bindDefaultSkuDelegate,
+    );
+
+    const boundaryProductBaseService = new BaseService<Product, ProductPropertyName>({
+      validator: boundaryValidator,
+      ruleSet: productValidationRuleSet,
+      propertyDescriptors: PRODUCT_PROPERTY_DESCRIPTORS,
+      populationAuthorization,
+      persist: (product) => boundaryProductPersistence.saveProduct(product),
+      remove: async (product) => {
+        await boundaryProductPersistence.deleteProduct(product);
+      },
+      settingCleanup,
+      commentCleanup,
+    });
+
+    const boundaryProductTypeBaseService = new BaseService<
+      ManagedEntity<ProductType>,
+      ProductTypePropertyName
+    >({
+      validator: boundaryValidator,
+      ruleSet: productTypeValidationRuleSet,
+      propertyDescriptors: createProductTypeDescriptorSet(populationAuthorization),
+      populationAuthorization,
+      persist: async (productType) => {
+        await boundaryProductPersistence.saveProductType(productType);
+        return productType;
+      },
+      remove: async (productType) => {
+        await boundaryProductPersistence.deleteProductType(productType);
+      },
+      settingCleanup,
+      commentCleanup,
+    });
+
+    const boundaryProductService = new ProductService({
+      productRepository: boundaryProductRepository,
+      skuRepository: boundarySkuRepository,
+      skuService: boundarySkuService,
+      optionService: boundaryOptionService,
+      baseService: boundaryProductBaseService,
+      productTypeBaseService: boundaryProductTypeBaseService,
+      validator: boundaryValidator,
+      settings,
+      accountContext,
+      smartListQueryPort: boundarySmartList,
+      subscriptionTermPort: subscriptionTerms,
+      productTypeRootResolver: boundaryProductTypeRoots,
+      productPropertyDescriptors: PRODUCT_PROPERTY_DESCRIPTORS,
+      populationAuthorization,
+      isUrlTitleAvailable: (tableName, value) =>
+        boundaryUniqueProperty.isUrlTitleAvailable(tableName, value),
+      persistProduct: (product) => boundaryProductPersistence.saveProduct(product),
+      defaultSkuIdReader: readDefaultSkuIdOrRefuse,
+    });
+
+    return { productService: boundaryProductService, skuService: boundarySkuService };
+  };
+
+  const productWriteRunner: TransactionalWriteRunner<ProductService> =
+    overrides.productWriteRunner ??
+    new MySqlTransactionalWriteRunner<ProductService>(
+      unitOfWork,
+      (scope) => buildBoundaryScopedGraph(scope).productService,
+    );
+
+  const skuWriteRunner: TransactionalWriteRunner<CatalogSkuWriteGraph> =
+    overrides.skuWriteRunner ??
+    new MySqlTransactionalWriteRunner<CatalogSkuWriteGraph>(unitOfWork, (scope) => {
+      const boundary = buildBoundaryScopedGraph(scope);
+
+      /* The resolver reads THROUGH the boundary's own product service, which is the M6 requirement
+       * restated as wiring: the aggregate and the SKUs written against it share one connection. */
+      return {
+        resolveProduct: (productID: string) => boundary.productService.getProduct(productID),
+        skuService: boundary.skuService,
+      };
+    });
+
   return Object.freeze({
     config,
     queryRunner,
@@ -1204,6 +1471,8 @@ export function createCatalogContainer(
     skuService,
     productService,
     brandService,
+    productWriteRunner,
+    skuWriteRunner,
     googleIntegration,
     productFeedQuery,
     productFeedBuilder,
