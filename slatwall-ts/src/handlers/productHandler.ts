@@ -22,14 +22,18 @@
  * all three in. That is also what makes this file assertable with hand-written doubles, without a
  * database, a network call or an AWS runtime (AAP §0.7.3 S6).
  *
- * ⚠️ THE SERVICE FILE IS THE CONTRACT, NOT THE PLAN'S PROSE
- * ---------------------------------------------------------
+ * ⚠️ THE SERVICE FILE IS WHAT THIS BOUNDARY IS COMPILED AGAINST; THE PLAN IS WHAT BOTH ANSWER TO
+ * -----------------------------------------------------------------------------------------------
  * Every signature this handler calls was read from ../services/ProductService rather than from a table,
- * and where AAP §0.4.2.1's target column and that file disagree, the file wins. Three of that file's
- * return types were deliberately corrected against the plan's prose during its own construction and are
- * recorded there as defect D25; this boundary mirrors the corrected shapes rather than the prose, and
- * {@link ProductHandlerService} is checked against the real class by the compiler so the two cannot
- * drift. Nothing here "corrects" the service (AAP §0.8.2 Guideline 4).
+ * and {@link ProductHandlerService} is checked against the real class by the compiler so the seam and the
+ * service cannot drift. That is a drift guard, NOT a precedence rule: AAP §0.4.2.1's target column is
+ * frozen and the service is aligned TO it (§0.1.2.1, D1 precedence 1). An earlier version of this
+ * paragraph claimed "where the plan and the file disagree, the file wins", on the strength of three of
+ * that file's return types having been corrected against the plan's prose; that claim is WITHDRAWN, and
+ * the formatted-option-groups shape it chiefly rested on now matches the plan's array. Defect D25 is
+ * still live and still recorded on the service member, but it names a LEGACY-versus-PORT divergence — the
+ * CFML body builds a name-keyed struct — rather than a port-versus-plan one. Nothing here "corrects" the
+ * service (AAP §0.8.2 Guideline 4), and nothing here reinterprets the plan.
  *
  * EIGHTEEN ROUTED MEMBERS, AND THE COUNT IS DERIVED RATHER THAN CHOSEN
  * -------------------------------------------------------------------
@@ -228,7 +232,11 @@ import type {
 import type { SmartListInput, SmartListResult } from '../ports/SmartListQueryPort';
 import type { TransactionalWriteRunner } from '../ports/TransactionalWritePort';
 import type { SelectOption } from '../services/OptionService';
-import type { ProductService } from '../services/ProductService';
+import type {
+  FormattedOptionGroup,
+  ProductService,
+  ProductTypeWithErrorState,
+} from '../services/ProductService';
 /*
  * ⭐ THE ONE VALUE IMPORT FROM A SIBLING SERVICE, AND IT IS THE COMMIT GATE.
  *
@@ -457,12 +465,15 @@ export interface ProductHandlerService {
    * `model/service/ProductService.cfc:L70` — `public any function getFormattedOptionGroups(required any
    * product)`.
    *
-   * ⚠️ A MAP, NOT AN ARRAY, and that is defect D25 corrected in the service rather than in the plan's
-   * prose: [:L71] initialises a CFML STRUCT and [:L76] keys it by the option group's NAME. An array would
-   * lose the keys the consumer indexes by. The promise is real — the domain's option-group and option
-   * reads are asynchronous where the legacy's lazy ORM relationships only looked synchronous.
+   * ⚠️ AN ARRAY OF NAME-AND-OPTIONS ENTRIES, WHICH IS WHAT AAP §0.4.2.1 TABULATES. The legacy body builds
+   * a CFML STRUCT — [:L71] initialises `{}` and [:L76] keys it by the option group's NAME — and that
+   * divergence is defect D25, annotated on the service member. An earlier revision of this seam typed the
+   * result `Promise<Record<string, SelectOption[]>>` to mirror the struct; the service withdrew that
+   * reading, and this seam follows the service because {@link ProductHandlerService} is compiler-checked
+   * against the real class. The promise is real — the domain's option-group and option reads are
+   * asynchronous where the legacy's lazy ORM relationships only looked synchronous.
    */
-  readonly getFormattedOptionGroups: (product: Product) => Promise<Record<string, SelectOption[]>>;
+  readonly getFormattedOptionGroups: (product: Product) => Promise<readonly FormattedOptionGroup[]>;
 
   /**
    * `model/service/ProductService.cfc:L104` —
@@ -570,11 +581,18 @@ export interface ProductHandlerService {
    * ⭐ IT LIVES ON THE PRODUCT SERVICE, WHICH IS WHY THERE IS NO SEPARATE PRODUCT-TYPE HANDLER. There is
    * no `ProductTypeService` in the repository at all, so a `productTypeHandler` would have nothing behind
    * it (AAP §0.8.1's functional-scope half).
+   *
+   * ⚠️ THE RETURN TYPE CARRIES THE ERROR SURFACE, AND IT MUST. `model/service/ProductService.cfc:L310`
+   * returns `arguments.productType` on EVERY path, so a failed save arrives as a product type carrying
+   * findings rather than as a thrown value. Declaring this member's result as a bare `ProductType` would
+   * WIDEN that surface away and leave the boundary unable to tell a failed save from a successful one —
+   * which is exactly the gap the commit gate on {@link saveProductType} closes. The service already
+   * resolves `ProductTypeWithErrorState`; this declaration stops the graph from discarding it.
    */
   readonly saveProductType: (
     productType: ProductType,
     data: Record<string, unknown>,
-  ) => Promise<ProductType>;
+  ) => Promise<ProductTypeWithErrorState>;
 
   /**
    * `model/service/ProductService.cfc:L317` — `public boolean function deleteProduct(required any
@@ -886,17 +904,34 @@ export interface ProductSelectOptionResponse {
 }
 
 /**
- * The formatted option groups a product exposes, keyed by option-group NAME.
+ * One formatted option group in a response — the option-group NAME and its projected options.
  *
- * ⚠️ A MAP, AND THE KEY IS THE NAME (defect D25, corrected in the service). Three behaviours travel through
- * this contract untouched: the key is the group name and never the group ID; same-named groups OVERWRITE,
- * because [model/service/ProductService.cfc:L76] is a plain struct assignment and the LAST one wins; and
- * NOTHING IS SORTED, because the legacy sorts neither the groups nor the options within a group. A response
- * that de-duplicated, suffixed or ordered the keys would change what the caller sees.
+ * The two member names are the service's, not this file's: {@link FormattedOptionGroup} declares
+ * `optionGroupName` and `options`, and renaming either here would make the wire disagree with the member
+ * it projects. `optionGroupID` is absent for the same reason it is absent on the service type — the legacy
+ * struct entry cannot carry it (AAP §0.7.3 S9).
  */
-export type FormattedOptionGroupsResponse = Readonly<
-  Record<string, readonly ProductSelectOptionResponse[]>
->;
+export interface FormattedOptionGroupResponse {
+  readonly optionGroupName: string;
+  readonly options: readonly ProductSelectOptionResponse[];
+}
+
+/**
+ * The formatted option groups a product exposes, one entry per distinct option-group NAME.
+ *
+ * ⚠️ AN ARRAY, AND THE LABEL IS THE NAME (defect D25 — the legacy body builds a name-keyed struct, and the
+ * port answers the array AAP §0.4.2.1 tabulates). Three behaviours travel through this contract untouched:
+ * the label is the group name and never the group ID; same-named groups COLLAPSE TO ONE ENTRY, because
+ * [model/service/ProductService.cfc:L76] is a plain struct assignment and the LAST one wins; and NOTHING IS
+ * SORTED, because the legacy sorts neither the groups nor the options within a group. A response that
+ * de-duplicated differently, suffixed a repeated name or ordered the entries would change what the caller
+ * sees.
+ *
+ * ⭐ AND AN ARRAY IS THE SHAPE THAT CAN CARRY THE ORDER ACROSS THE WIRE. A JSON object's member order is
+ * not part of the value a client is entitled to rely on, so serializing these as an object would silently
+ * drop the first-seen order recorded as M9 on {@link FormattedOptionGroup}.
+ */
+export type FormattedOptionGroupsResponse = readonly FormattedOptionGroupResponse[];
 
 /**
  * A page of products, with the smart list's own seven members.
@@ -1684,31 +1719,28 @@ function toProductSkuResponses(skus: readonly Sku[]): readonly ProductSkuRespons
 }
 
 /**
- * Projects the formatted option groups, preserving key order and overwrite semantics.
+ * Projects the formatted option groups, preserving entry order and collapse semantics.
  *
- * ⚠️ THE MAP IS REBUILT BY ITERATION RATHER THAN COPIED WHOLESALE, AND THE ITERATION IS WHAT PRESERVES THE
- * BEHAVIOUR. `Object.entries` yields own enumerable entries in insertion order, which is the order
- * [model/service/ProductService.cfc:L75-L77] built them in, and the map arrives with same-named groups
- * ALREADY collapsed — because [:L76] is a plain struct assignment and the last one wins. Nothing here
- * de-duplicates, suffixes, sorts or reorders; the two option members are copied exactly as the sibling
- * service projected them.
+ * ⚠️ THE ARRAY IS REBUILT ENTRY BY ENTRY RATHER THAN COPIED WHOLESALE, AND THAT IS WHAT PRESERVES THE
+ * BEHAVIOUR. `map` keeps position, which is the first-seen order
+ * [model/service/ProductService.cfc:L75-L77] built the groups in, and the array arrives with same-named
+ * groups ALREADY collapsed — because [:L76] is a plain struct assignment and the last one wins. Nothing
+ * here de-duplicates, suffixes, sorts or reorders; the two option members are copied exactly as the sibling
+ * service projected them, and the label is copied verbatim.
  *
- * @param groups the map the service produced, keyed by option-group name
- * @returns the same map, with each option projected member by member
+ * @param groups the entries the service produced, in first-seen option-group order
+ * @returns the same entries, in the same order, with each option projected member by member
  */
 function toFormattedOptionGroupsResponse(
-  groups: Record<string, SelectOption[]>,
+  groups: readonly FormattedOptionGroup[],
 ): FormattedOptionGroupsResponse {
-  const response: Record<string, readonly ProductSelectOptionResponse[]> = {};
-
-  for (const [optionGroupName, options] of Object.entries(groups)) {
-    response[optionGroupName] = options.map((option) => ({
+  return groups.map((group) => ({
+    optionGroupName: group.optionGroupName,
+    options: group.options.map((option: SelectOption) => ({
       name: option.name,
       value: option.value,
-    }));
-  }
-
-  return response;
+    })),
+  }));
 }
 
 /* ================================================================================================
@@ -1941,8 +1973,23 @@ export function createProductHandler(
    *   http method doens't work for tab delimiter" [sic]. It is recorded here as the DISABLED path it is,
    *   not as a live fallback, because a reader told it were live would look for a branch that does not
    *   execute. Network I/O inside the transaction-bearing request, compounding both M1 and M3. Not
-   *   resolved here either: the fetch is the repository's, and the import-source policy that guards it is
-   *   the service's.
+   *   resolved here either: the fetch is the repository's, and so is the gate that guards it.
+   *
+   * ⭐ SEC-HARDENING (D18-CLASS) — REVIEW FINDING F9 (CWE-918). THE LOCATION READ AT
+   * {@link FILE_URL_QUERY_PARAMETER} IS CALLER-CONTROLLED AND IS DEREFERENCED SERVER-SIDE, WHICH IS THE
+   * FINDING. This route forwards it unexamined, on purpose, and an earlier revision of this note placed
+   * the guarding policy in "the service's" hands, which was wrong: `ProductService.loadDataFromFile` is a
+   * positional delegation that opens no socket either. The refusal belongs at the SINK, so
+   * `ProductImportSourcePolicy` is declared on `../ports/repositories/ProductRepository` and enforced in
+   * `../adapters/mysql/MySqlProductRepository` before any reader is invoked. A gate placed HERE would
+   * protect only callers that arrive through this route, while the composition root reaches the adapter
+   * directly.
+   *
+   * ⚠️ WHAT THAT MEANS FOR THIS RESPONSE. A refused location arrives as an `ImportSourceRejectedError`,
+   * whose public presentation is `CATALOG_REQUEST_REJECTED` — a 400, because the caller can name a
+   * permitted location — carrying a message that names neither the location nor the policy. It travels the
+   * ordinary classified-error path below; nothing here re-wraps it, and re-wrapping it would drop the
+   * presentation and turn a configured refusal into an unclassified 500.
    *
    * TWO ARGUMENTS, IN THE LEGACY'S ORDER AND WITH THE LEGACY'S OPTIONALITY — judgment (h). `fileURL` is
    * `required`, so its absence is answered here rather than forwarded. `textQualifier` carries a default,
@@ -2011,9 +2058,10 @@ export function createProductHandler(
    * transactional: nothing is written, and enclosing a pure read in a transaction would invent a boundary
    * the legacy did not have.
    *
-   * ⚠️ THE RESULT IS A MAP KEYED BY OPTION-GROUP NAME, NOT AN ARRAY (defect D25). Three behaviours travel
-   * through untouched, and {@link toFormattedOptionGroupsResponse} is where they are enforced: the key is
-   * the group NAME and never the group ID; same-named groups OVERWRITE, because
+   * ⚠️ THE RESULT IS AN ARRAY OF NAME-AND-OPTIONS ENTRIES, WHICH IS WHAT AAP §0.4.2.1 TABULATES (defect
+   * D25 — the legacy body builds a name-keyed struct instead). Three behaviours travel through untouched,
+   * and {@link toFormattedOptionGroupsResponse} is where they are enforced: the label is the group NAME and
+   * never the group ID; same-named groups COLLAPSE TO ONE ENTRY, because
    * [model/service/ProductService.cfc:L76] is a plain struct assignment; and NOTHING IS SORTED, because
    * the legacy sorts neither the groups nor the options within a group.
    *
@@ -2024,7 +2072,8 @@ export function createProductHandler(
    * NET-NEW coverage (AAP §0.6.5.2).
    *
    * @param event the proxy event, or any object carrying its path-parameters and headers members
-   * @returns the option groups keyed by name, or the response describing why they could not be returned
+   * @returns the option-group entries in first-seen order, or the response describing why they could not
+   *   be returned
    */
   const getFormattedOptionGroups = async (
     event: ProductIdentifierEvent,
@@ -2714,24 +2763,36 @@ export function createProductHandler(
    * where used"). An unaddressed request is answered 400.
    *
    * ==============================================================================================
-   * ⭐⭐ THE COMMIT GATE IS A CONSTANT `false`, AND THAT IS THE CORRECT GATE — NOT A WEAKENED ONE
+   * ⭐⭐ THE COMMIT GATE ASKS THE SAVED PRODUCT TYPE, AND TWO EARLIER REVISIONS GOT IT WRONG
    * ==============================================================================================
    * The gate exists to reproduce the legacy's request-end flush condition (AAP §0.6.6 M5), which asked
-   * whether findings had ACCUMULATED. For this member nothing can accumulate, on two independent grounds
-   * that were both verified in the code rather than assumed:
+   * whether findings had ACCUMULATED — `if(!getORMHasErrors())`. Here that question is asked of the
+   * product type the work resolved, which is the entity `model/service/ProductService.cfc:L306` asks it of.
    *
-   *   1. `ProductType` HAS NO ERROR SURFACE AT ALL. ../domain/product/ProductType declares no `hasErrors`,
-   *      no `getErrors` and no `addError` — unlike ../domain/product/Product, which implements all six.
-   *      There is no bag to interrogate, so a gate written against one would not compile, and one written
-   *      against the product would be asking about a different entity.
-   *   2. ../services/BaseService's `save` does not accumulate and continue: on failure it RAISES a
-   *      `ValidationError` and persists nothing. ../adapters/mysql/UnitOfWork rolls the transaction back on
-   *      any raise from the work and re-raises, so the raise IS the roll-back — it reaches
-   *      {@link errorResponse}, whose validation branch answers with the field-keyed findings.
+   * ⚠️ AN EARLIER REVISION HARDCODED IT TO `() => false` ON TWO GROUNDS, AND BOTH HAVE SINCE BEEN
+   * FALSIFIED — recorded rather than quietly deleted, because a reader who remembers the constant deserves
+   * to know why it is gone:
    *
-   * ⛔ SO THE GATE IS NOT A PLACEHOLDER, AND IT MUST NOT BE "STRENGTHENED" TO `skuBatchHasErrors`. There is
-   * no product in this route to ask about; passing an unrelated one would make the answer depend on an
-   * entity the member never touched.
+   *   1. It claimed `ProductType` HAS NO ERROR SURFACE AT ALL. The CLASS still declares none, and is
+   *      forbidden to — but ../services/ProductService composes one onto the instance with `manageEntity`
+   *      and resolves `ProductTypeWithErrorState`, so there has been a bag to interrogate ever since. What
+   *      blocked the gate here was this graph declaring the member's result as a bare `ProductType` and
+   *      widening the surface away; that declaration is now the precise one.
+   *   2. It claimed ../services/BaseService's `save` RAISES on failure, so the raise was itself the
+   *      roll-back. That was true of the port and never true of the legacy: the local override at
+   *      `model/service/HibachiService.cfc:L103` returns the entity on every path. The base service was
+   *      corrected to that single exit, so a validation failure now returns NORMALLY — and a constant
+   *      `false` would have committed the transaction and answered 200 with a projection of a product type
+   *      that was never written. That is the failure mode this gate exists to prevent.
+   *
+   * ⛔ IT IS STILL NOT `skuBatchHasErrors`, AND MUST NOT BE "STRENGTHENED" TO IT. There is no product in
+   * this route to ask about; passing an unrelated one would make the answer depend on an entity the member
+   * never touched. The subject is the product type, and only the product type.
+   *
+   * ⭐ THE ROLL-BACK IS WHAT REPORTS THE FAILURE, so nothing is lifted into a carrier here.
+   * ../adapters/mysql/UnitOfWork rolls back and RAISES a `DomainError` when the gate answers `true`, and
+   * that raise reaches {@link errorResponse}. The findings themselves stay on the entity, exactly as the
+   * legacy left them on `arguments.productType`.
    *
    * NET-NEW coverage (AAP §0.6.5.2).
    *
@@ -2759,19 +2820,29 @@ export function createProductHandler(
       return invalidRequestBodyResponse(body.problem);
     }
 
+    /*
+     * Captured rather than read from the resolved value, for the same reason `saveProduct` captures its
+     * two references: the gate is a zero-argument predicate the transaction boundary evaluates BEFORE it
+     * decides to commit, so it cannot be handed the work's result.
+     */
+    let outcome: ProductTypeWithErrorState | null = null;
+
     try {
-      const saved: ProductType | null = await writeRunner.runWrite<ProductType | null>(
-        async (graph) => {
-          const productType: ProductType | null = await graph.getProductType(productTypeID);
+      const saved: ProductTypeWithErrorState | null =
+        await writeRunner.runWrite<ProductTypeWithErrorState | null>(
+          async (graph) => {
+            const productType: ProductType | null = await graph.getProductType(productTypeID);
 
-          if (productType === null) {
-            return null;
-          }
+            if (productType === null) {
+              return null;
+            }
 
-          return graph.saveProductType(productType, body.value);
-        },
-        () => false,
-      );
+            outcome = await graph.saveProductType(productType, body.value);
+
+            return outcome;
+          },
+          () => outcome !== null && outcome.hasErrors(),
+        );
 
       return saved === null ? notFoundResponse() : okResponse(toProductTypeResponse(saved));
     } catch (error) {

@@ -70,8 +70,6 @@ import type {
  */
 const UNREACHED_COLLABORATOR = {} as never;
 
-/** Larger than anything these cases generate; the constructor rejects a non-positive budget. */
-
 /** Distinct 32-character identifiers, so a crossed association is visible rather than coincidental. */
 const ID = {
   sku: 'aaaaaaaa000000000000000000000001',
@@ -97,16 +95,30 @@ interface Statement {
  * caller.
  */
 function makeFeedQuery(port: SmartListQueryPort): ProductFeedQuery {
+  /*
+   * ⚠️ THE POSITIONS ARE NAMED BECAUSE ONLY ONE OF THEM MAY BE REAL, AND A SILENT SHIFT IS THE FAILURE
+   * MODE. Every slot but the smart-list port is a sentinel, so an argument list that drifts by one
+   * position does not fail loudly — it hands the port to a collaborator that is never called and hands a
+   * sentinel to the one that is. Naming each slot in a comment is what makes the sixth position's
+   * correctness reviewable rather than positional luck.
+   */
   const service = new SkuService(
-    UNREACHED_COLLABORATOR,
-    UNREACHED_COLLABORATOR,
-    UNREACHED_COLLABORATOR,
-    UNREACHED_COLLABORATOR,
-    UNREACHED_COLLABORATOR,
-    port,
-    UNREACHED_COLLABORATOR,
-    UNREACHED_COLLABORATOR,
-    UNREACHED_COLLABORATOR,
+    UNREACHED_COLLABORATOR /*  1 skuRepository            */,
+    UNREACHED_COLLABORATOR /*  2 optionService            */,
+    UNREACHED_COLLABORATOR /*  3 subscriptionTermPort     */,
+    UNREACHED_COLLABORATOR /*  4 accessContentPort        */,
+    UNREACHED_COLLABORATOR /*  5 imagePathPort            */,
+    port /*                     6 smartListQueryPort — THE ONE COLLABORATOR THIS PATH REACHES */,
+    UNREACHED_COLLABORATOR /*  7 validator                */,
+    UNREACHED_COLLABORATOR /*  8 productTypeRootResolver  */,
+    UNREACHED_COLLABORATOR /*  9 bindDefaultSkuDelegate   */,
+    /*
+     * ⚠️ AND NO TENTH ARGUMENT, DELIBERATELY. `combinationBudget` is the one OPTIONAL parameter, and the
+     * constructor validates it the moment it is present: `{} as never` yields an `undefined` maximum,
+     * which is neither a safe integer nor positive, so supplying the sentinel here fails the graph at
+     * construction with a budget error. Omitting it is not a gap — the service's own comment states that
+     * an ABSENT budget is not a mis-wiring and is not checked, and this path enumerates no combinations.
+     */
   );
 
   return new ProductFeedQuery(service);
@@ -339,7 +351,7 @@ describe('all seven feed additions arrive in one described query (INT-01)', () =
 describe('the feed joins reach the emitted statement (INT-01)', () => {
   function runFeed(): {
     /* The feed reads the unpaged collection alone, so this is the records array, not the three-view
-     * result — see `ProductFeedQuery.getFeedSkus`, which routes through `getSkuSmartListRecords`. */
+     * result — see `ProductFeedQuery.getFeedSkus`, which routes through `getSkuSmartList`. */
     readonly result: Promise<Sku[]>;
     readonly statements: Statement[];
   } {

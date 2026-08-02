@@ -1855,12 +1855,45 @@ export interface SmartListQueryPort {
    * element-type rules, which is precisely the drift the correspondence in
    * {@link SmartListEntityRecordTypes} exists to prevent.
    *
+   * ⭐ SEC-HARDENING (D18-CLASS) — THIS MEMBER IS SUBJECT TO THE SAME MATERIALISATION POLICY AS
+   * {@link SmartListQueryPort.execute}, AND SAYING SO IS PART OF CLOSING REVIEW FINDING F4 (CWE-400).
+   * ------------------------------------------------------------------------------------------------
+   * "Unpaged" describes WHICH ROWS the query selects, not how many an implementation may be compelled
+   * to materialise. The finding observed that this member's contract had no materialisation bound at
+   * all while the sibling's implementation did, and that the gap was reachable: the anonymous public
+   * Google feed reads its selection through THIS member, so the one caller most worth bounding was the
+   * one the bound did not cover.
+   *
+   * THE CONTRACT IS THEREFORE STATED ONCE FOR BOTH MEMBERS, in these terms:
+   *
+   *   • AN IMPLEMENTATION MAY REFUSE A QUERY WHOSE MATCH IS LARGER THAN ITS CONFIGURED BOUND, and a
+   *     caller must treat a rejection as a legitimate answer rather than an internal fault. What it may
+   *     NOT do is TRUNCATE: feed order and feed membership are observable behaviour (AAP §0.4.1.10
+   *     requires every field mapping preserved, and `src/integrations/google/ProductFeedBuilder.ts`
+   *     reproduces the legacy `cfloop` without re-sorting or filtering), so a quietly shortened result
+   *     would publish a catalog that does not exist while reporting success.
+   *   • THE REFUSAL MUST PRECEDE HYDRATION. A bound applied after the rows are materialised protects
+   *     nothing, which is the exact defect this finding identified on this member.
+   *   • NO BOUND IS DECLARED HERE, AND NONE IS DEFAULTED. The legacy states no maximum anywhere, and
+   *     AAP §0.7.3 S9 with IR-12 forbid inventing one. A port that named a figure would be fabricating
+   *     a service level. With nothing configured, an implementation materialises whatever the query
+   *     matches — exactly as `org/Hibachi/HibachiSmartList.cfc` does — so parity is the default and the
+   *     bound is an operator's opt-in.
+   *
+   * ⚠️ WHICH MAKES THE POLICY AN IMPLEMENTATION CONCERN THAT THE PORT DESCRIBES RATHER THAN CARRIES. No
+   * budget parameter is added to this signature, and none should be: a service calling a smart list has
+   * no business knowing a resource ceiling exists, which is AAP §0.7.3 S2 read in the direction it
+   * matters. `src/adapters/mysql/SmartListQueryBuilder.ts` takes the figure as an optional constructor
+   * collaborator and enforces it identically on both members.
+   *
    * @typeParam TEntityName - The root entity, inferred from `query.entityName`. Constrained to
    *            {@link SmartListRootEntityName}, so rooting a list at an entity the slice models no
    *            domain type for does not compile.
    * @param query - The complete, immutable description of the query to run.
    * @returns Every matching record, in the order the query's ordering terms produce, unpaged, with the
    *          element type {@link SmartListEntityRecordTypes} pairs with the root entity.
+   * @throws When an implementation has a materialisation bound configured and this query exceeds it.
+   *         Refused before any row is hydrated, never silently shortened.
    */
   executeRecords<TEntityName extends SmartListRootEntityName>(
     query: SmartListQuery<TEntityName>,

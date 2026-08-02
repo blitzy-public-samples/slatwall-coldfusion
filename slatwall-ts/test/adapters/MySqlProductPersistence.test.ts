@@ -68,6 +68,11 @@ import type {
   ProductPersistenceExecutor,
 } from '../../src/adapters/mysql/MySqlProductPersistence';
 import type { MySqlRow } from '../../src/adapters/mysql/rowMappers';
+import {
+  forgetHydratedParentProductTypeID,
+  mapProductTypeRow,
+} from '../../src/adapters/mysql/rowMappers';
+import { MySqlProductTypeRepository } from '../../src/adapters/mysql/MySqlProductTypeRepository';
 import type { ProductDefaultSkuDelegate } from '../../src/domain/product/Product';
 import type { EntityPersister, EntityRemover } from '../../src/services/BaseService';
 
@@ -457,6 +462,232 @@ describe('MySqlProductPersistence — the SwProductType write path (DATA-03)', (
 
     expect(productType.productTypeIDPath).toBe(held);
     expect(matching(journal, /^UPDATE SwProductType SET/)[0]?.params[0]).toBe(held);
+  });
+});
+
+/* =================================================================================================
+ * THE PRODUCT-TYPE PARENT ROUND TRIP — RULE 3b
+ * ================================================================================================
+ * ⭐ WHY THIS SECTION EXISTS. `./rowMappers.ts` deliberately does NOT resolve
+ * `ProductType.parentProductType` when it hydrates a row, because an identifier-only parent would make
+ * `ProductType.getSimpleRepresentation` (`src/domain/product/ProductType.ts:1153`) return `undefined`
+ * as soon as it reached the parent's absent name, and that value renders the Google feed's
+ * `g:product_type` element — so a reference would turn `Parent &raquo; Child` into an EMPTY element,
+ * a reference that lies.
+ *
+ * An earlier revision stopped there, and the consequence was silent data loss: both write paths ended
+ * their parent-key expression at `?? null`, so READING a child and SAVING it back wrote `NULL` into
+ * `parentProductTypeID` and DETACHED the child from its parent. Rule 3b closes that by preserving the
+ * row's raw key beside the entity — object-keyed, so nothing leaks across warm invocations (M7) —
+ * without populating the association. These cases prove the round trip on both write paths, and prove
+ * that an explicit detach still reaches `NULL`.
+ *
+ * The parent-key column is assignment index 7 of thirteen and the primary key is bound last at index
+ * 13; `PRODUCT_TYPE_WRITABLE_COLUMNS` in `src/adapters/mysql/MySqlProductTypeRepository.ts:320-341`
+ * fixes that order against `model/entity/ProductType.cfc:L53-L86`.
+ * ============================================================================================== */
+
+describe('MySqlProductPersistence / MySqlProductTypeRepository — the parent round trip (rule 3b)', () => {
+  /** Assignment index of `parentProductTypeID` among the thirteen writable columns. */
+  const PARENT_KEY_INDEX = 7;
+  /** Assignment index of `productTypeIDPath` — the first writable column. */
+  const PATH_INDEX = 0;
+
+  /**
+   * A child product type as it arrives FROM THE DATABASE: hydrated from a driver row, carrying a real
+   * `parentProductTypeID` column and NO resolved association.
+   *
+   * ⚠️ THE ROW IS WHAT `mysql2` HANDS BACK, NOT WHAT THE SEED DOCUMENT RENDERS. A root's parent column
+   * arrives as JS `null`, because `model/dao/DataDAO.cfc:L71-L72` and `:L104-L105` both test the seed
+   * document's `"NULL"` string and bind `<cfqueryparam ... null="yes">` instead. The four-character
+   * string therefore never reaches a row, and no production mapper compares against it.
+   */
+  function hydratedChild(): ProductType {
+    return mapProductTypeRow({
+      productTypeID: ID.productType,
+      productTypeIDPath: `${ID.parentProductType},${ID.productType}`,
+      parentProductTypeID: ID.parentProductType,
+      productTypeName: 'Merchandise',
+      urlTitle: 'merchandise',
+      activeFlag: 1,
+    });
+  }
+
+  /** The tree repository over the recording seam, so its own read and write paths can be observed. */
+  function makeTreeRepository(rowsByTable: Readonly<Record<string, readonly MySqlRow[]>> = {}): {
+    readonly repository: MySqlProductTypeRepository;
+    readonly journal: Journal;
+  } {
+    const { executor, journal } = makeExecutor(rowsByTable, 1);
+
+    return {
+      journal,
+      repository: new MySqlProductTypeRepository(
+        executor,
+        createAccountContextDouble().accountContext,
+      ),
+    };
+  }
+
+  it('NET-NEW — hydration leaves the association absent so the feed cannot be handed a lying reference', () => {
+    const child = hydratedChild();
+
+    /* The association stays unresolved — this is the deliberate half of rule 3a. */
+    expect(child.parentProductType).toBeUndefined();
+    /* And the row's own ancestry path is preserved verbatim, naming a parent the association omits. */
+    expect(child.productTypeIDPath).toBe(`${ID.parentProductType},${ID.productType}`);
+  });
+
+  it('NET-NEW — read-modify-save through MySqlProductPersistence preserves the parent key and the path', async () => {
+    const { adapter, journal } = makeAdapter();
+    const child = hydratedChild();
+
+    /* The "modify" of read-modify-save: a field a caller would plausibly edit. */
+    child.productTypeName = 'Merchandise Renamed';
+
+    await adapter.saveProductType(child);
+
+    const update = matching(journal, /^UPDATE SwProductType SET/)[0];
+
+    /* ⭐ THE REGRESSION THIS SECTION EXISTS FOR: this bound `null` before rule 3b. */
+    expect(update?.params[PARENT_KEY_INDEX]).toBe(ID.parentProductType);
+    expect(update?.params[PARENT_KEY_INDEX]).not.toBeNull();
+    /* The ancestry path survives intact, so the row stays internally consistent. */
+    expect(update?.params[PATH_INDEX]).toBe(`${ID.parentProductType},${ID.productType}`);
+    expect(update?.params[13]).toBe(ID.productType);
+  });
+
+  it('NET-NEW — read-modify-save through MySqlProductTypeRepository preserves the parent key and does NOT flatten the path', async () => {
+    /*
+     * ⚠️ THIS PATH ALSO RUNS THE LIFECYCLE HOOK, WHICH IS WHY IT NEEDS ITS OWN CASE.
+     * `MySqlProductTypeRepository.saveProductType` invokes `ProductType.preUpdate`, porting
+     * `model/entity/ProductType.cfc:L311`, and that hook REBUILDS `productTypeIDPath` by walking
+     * `parentProductType` to the root. With the association deliberately unresolved the walk finds
+     * nothing and would yield the child's own identifier alone — flattening the ancestry and leaving a
+     * row whose preserved parent key contradicts its path. `ProductType.getBaseProductType` reads
+     * `listFirst` of this path to find the root, so a flattened path silently changes a product's
+     * discriminator. The capture-and-restore guard puts the database's own value back.
+     */
+    const { repository, journal } = makeTreeRepository();
+    const child = hydratedChild();
+
+    await repository.saveProductType(child);
+
+    const update = matching(journal, /^UPDATE SwProductType SET/)[0];
+
+    expect(update?.params[PARENT_KEY_INDEX]).toBe(ID.parentProductType);
+    /* NOT the flattened `ID.productType` the unguarded rebuild would have produced. */
+    expect(update?.params[PATH_INDEX]).toBe(`${ID.parentProductType},${ID.productType}`);
+    expect(update?.params[PATH_INDEX]).not.toBe(ID.productType);
+  });
+
+  it('NET-NEW — the FULL round trip through the real read member survives: findAllForTree then saveProductType', async () => {
+    /*
+     * ⭐⭐ THIS IS THE CASE THE REVIEW ASKED FOR, END TO END, WITH NO HAND-BUILT ENTITY ANYWHERE.
+     * Every case above hydrates through `mapProductTypeRow` directly. This one goes through the actual
+     * port member `findAllForTree()` — the read the finding cites — takes the entity it returns, and
+     * hands that same entity to the write member. Nothing in between is constructed by the test.
+     *
+     * It also pins a mechanism detail worth pinning: `mapProductTypeTreeRow` builds its row by calling
+     * `mapProductTypeRow` and then `Object.assign`ing the two counts onto THE SAME OBJECT, so the
+     * object-keyed rule 3b entry recorded during hydration is still keyed to the entity that comes back
+     * out. Had the tree mapper spread into a fresh object instead, the preserved key would have been
+     * silently orphaned and this assertion would fail while every other case here still passed.
+     */
+    const { repository, journal } = makeTreeRepository({
+      SwProductType: [
+        {
+          productTypeID: ID.productType,
+          productTypeIDPath: `${ID.parentProductType},${ID.productType}`,
+          parentProductTypeID: ID.parentProductType,
+          productTypeName: 'Merchandise',
+          urlTitle: 'merchandise',
+          activeFlag: 1,
+          isAssigned: 0,
+          childCount: 0,
+        },
+      ],
+    });
+
+    const [readBack] = await repository.findAllForTree();
+    if (readBack === undefined) {
+      throw new Error('expected exactly one product type row');
+    }
+
+    /* Read as the tree member presents it: counts attached, association still unresolved. */
+    expect(readBack.productTypeID).toBe(ID.productType);
+    expect(readBack.parentProductType).toBeUndefined();
+
+    await repository.saveProductType(readBack);
+
+    const update = matching(journal, /^UPDATE SwProductType SET/)[0];
+    expect(update?.params[PARENT_KEY_INDEX]).toBe(ID.parentProductType);
+    expect(update?.params[PATH_INDEX]).toBe(`${ID.parentProductType},${ID.productType}`);
+    expect(update?.params[13]).toBe(ID.productType);
+  });
+
+  it('NET-NEW — a resolved association still wins over the preserved key', async () => {
+    /*
+     * The association comes first in the expression, mirroring the mapping declaration at
+     * `model/entity/ProductType.cfc:L62`. Re-parenting therefore behaves exactly as before rule 3b:
+     * the preserved key is a FALLBACK, never an override.
+     */
+    const { adapter, journal } = makeAdapter();
+    const child = hydratedChild();
+
+    const newParent = new ProductType();
+    newParent.productTypeID = ID.brand; // any identifier distinct from the hydrated one
+    child.parentProductType = newParent;
+
+    await adapter.saveProductType(child);
+
+    const update = matching(journal, /^UPDATE SwProductType SET/)[0];
+    expect(update?.params[PARENT_KEY_INDEX]).toBe(ID.brand);
+    expect(update?.params[PARENT_KEY_INDEX]).not.toBe(ID.parentProductType);
+  });
+
+  it('NET-NEW — an explicit detach writes NULL, so rule 3b cannot resurrect a removed parent', async () => {
+    /*
+     * ⭐ THE ESCAPE HATCH IS PART OF THE CONTRACT. Preserving the key would be a trap if there were no
+     * way to say "this child genuinely has no parent now", because `removeParentProductType` clears the
+     * association and the preserved key would silently put the old parent back. A caller that means to
+     * detach calls `forgetHydratedParentProductTypeID` first.
+     */
+    const { adapter, journal } = makeAdapter();
+    const child = hydratedChild();
+
+    forgetHydratedParentProductTypeID(child);
+
+    await adapter.saveProductType(child);
+
+    const update = matching(journal, /^UPDATE SwProductType SET/)[0];
+    expect(update?.params[PARENT_KEY_INDEX]).toBeNull();
+  });
+
+  it('NET-NEW — a genuine root records no key and still writes NULL', async () => {
+    /*
+     * The three seeded discriminators are roots: `config/dbdata/SlatwallProductType.xml.cfm:L13-L15`
+     * gives each a `productTypeIDPath` equal to its own identifier and no parent. The driver hands the
+     * parent column back as `null`, `readOptionalString` maps that to `undefined`, and rule 3b records
+     * nothing — so the column is nulled because there is genuinely no parent, not because the key was
+     * lost.
+     */
+    const { adapter, journal } = makeAdapter();
+    const root = mapProductTypeRow({
+      productTypeID: ID.productType,
+      productTypeIDPath: ID.productType,
+      parentProductTypeID: null,
+      productTypeName: 'Merchandise',
+      systemCode: 'merchandise',
+      urlTitle: 'merchandise',
+      activeFlag: 1,
+    });
+
+    await adapter.saveProductType(root);
+
+    const update = matching(journal, /^UPDATE SwProductType SET/)[0];
+    expect(update?.params[PARENT_KEY_INDEX]).toBeNull();
+    expect(update?.params[PATH_INDEX]).toBe(ID.productType);
   });
 });
 

@@ -406,7 +406,6 @@ class RecordingSkuOptionOwner implements SkuOptionOwner {
  * with, plus the two recorders that make its use observable.
  */
 interface ImageDirectoryCollaborator {
-  /** The collaborator passed to `Option.getImageDirectory`. */
   readonly resolver: OptionImageDirectoryResolver;
 
   /**
@@ -915,6 +914,15 @@ describe('Option — setOptionGroup parity', () => {
  * the legacy meaning, not a change to what the method does. The first case below is the regression
  * that would fail under the naive transliteration, and it is mandatory precisely because a
  * transliteration bug there produces no error and no compile failure.
+ *
+ * ⭐ THE ARGUMENT-LESS PATH FAILS WHEN NO GROUP IS ASSIGNED, AND TWO CASES BELOW WERE CORRECTED TO SAY
+ * SO. `:L99-L101` defaults the omitted argument from `variables.optionGroup`; when that key does not
+ * exist — a never-assigned option, or one already detached — the CFML engine raises at `:L100`, BEFORE
+ * the search at `:L102` and before the unconditional clear at `:L106`. So a failed call writes nothing.
+ * An earlier revision of this file asserted `.not.toThrow()` for both of those inputs and described the
+ * relaxation as a hardening of an unreachable path; AAP §0.6.7 admits exactly one behaviour repair —
+ * D18 (§0.6.7.7) — and this was not it. The failure is restored in `src/domain/option/Option.ts` and
+ * asserted here, with the reasoning kept at each case so the correction is legible rather than silent.
  * ============================================================================================== */
 
 describe('Option — removeOptionGroup translation', () => {
@@ -1002,48 +1010,84 @@ describe('Option — removeOptionGroup translation', () => {
     expect(Object.hasOwn(option, 'optionGroup')).toBe(false);
   });
 
-  it('NET-NEW — model/entity/Option.cfc:L98-L107 — a second removal is a no-op rather than a failure, because there is no longer a group to fall back to', () => {
+  it('NET-NEW — model/entity/Option.cfc:L100 — a SECOND removal FAILS, because the fallback resolves to nothing and the legacy dereferences it', () => {
+    /*
+     * ⭐ THIS CASE ASSERTED THE OPPOSITE, AND ASSERTING IT IS WHAT KEPT THE DEFECT ALIVE.
+     * It previously read "a second removal is a NO-OP rather than a failure" and closed with
+     * `.not.toThrow()`, on the stated grounds that "no error escapes — which is the behaviour a
+     * repeated cleanup path depends on". No legacy caller depends on any such thing: the sole legacy
+     * call site `model/entity/OptionGroup.cfc:L96` always passes the group explicitly, and there is no
+     * repeated-cleanup path in the source at all. The sentence described a convenience the port had
+     * invented, and the test then locked it in — which is precisely how a behaviour repair survives
+     * review, and why AAP §0.6.7 forbids the repair rather than merely discouraging it.
+     *
+     * WHAT THE LEGACY DOES. `:L100` defaults the omitted argument from `variables.optionGroup`. After
+     * the first removal that key is gone — `:L106` deleted it — so the assignment reads an undefined
+     * variable and the CFML engine raises THERE, before the collection search at `:L102` and before
+     * the unconditional clear at `:L106`.
+     */
     const optionGroup = buildOptionGroup({ optionGroupCode: 'colour' });
     const option = buildOption({ optionCode: 'white', optionName: 'White', optionGroup });
 
+    // The FIRST removal succeeds: the fallback still resolves, so this is the ordinary path.
     option.removeOptionGroup();
     expect(option.optionGroup).toBeUndefined();
+    expect(optionGroup.getOptions()).toEqual([]);
 
-    // The fallback now resolves to nothing. The port guards the collection lookup on that, so the
-    // unconditional unset at `:L106` still runs and no error escapes — which is the behaviour a
-    // repeated cleanup path depends on.
+    // The SECOND has nothing to fall back to, so it fails — as the legacy does.
     expect(() => {
       option.removeOptionGroup();
-    }).not.toThrow();
+    }).toThrow(TypeError);
+    // The diagnostic names the legacy locator, so the parity story travels with the failure.
+    expect(() => {
+      option.removeOptionGroup();
+    }).toThrow(/model\/entity\/Option\.cfc:L100/);
 
+    // NOTHING MOVED. The legacy raises before its clear, so a failed call performs no write; there is
+    // no half-applied state to distinguish from the state the first removal left behind.
     expect(option.optionGroup).toBeUndefined();
     expect(Object.hasOwn(option, 'optionGroup')).toBe(false);
     expect(optionGroup.getOptions()).toEqual([]);
   });
 
-  it('NET-NEW — model/entity/Option.cfc:L98-L107 — a never-assigned option can be removed, and the group-side delegating helper reaches the same body', () => {
+  it('NET-NEW — model/entity/Option.cfc:L100 — a NEVER-assigned option cannot be detached without an explicit group, and the group-side delegating helper reaches the same body', () => {
     const orphan = new Option();
 
-    // No group was ever assigned, so both the argument and the fallback are absent.
+    /*
+     * ⭐ THE SECOND HALF OF THE SAME CORRECTION. This assertion previously read `.not.toThrow()` and
+     * the title claimed a never-assigned option "can be removed". Both are withdrawn: with neither an
+     * argument nor a fallback, `model/entity/Option.cfc:L100` reads an undefined variable and raises.
+     * The group-side half of this case is UNCHANGED and still passes, which is the useful signal — it
+     * confirms the correction touched only the argument-less path and left the real, exercised
+     * delegation exactly as it was.
+     */
     expect(Object.hasOwn(orphan, 'optionGroup')).toBe(false);
     expect(() => {
       orphan.removeOptionGroup();
-    }).not.toThrow();
+    }).toThrow(TypeError);
+    // Still absent, because the legacy raises before its clear — the failure writes nothing.
     expect(orphan.optionGroup).toBeUndefined();
+    expect(Object.hasOwn(orphan, 'optionGroup')).toBe(false);
 
-    // `model/entity/OptionGroup.cfc:L95-L97` is nothing but `option.removeOptionGroup(this)`, so the
-    // group-side helper must produce the identical outcome. Exercising it here is what proves the
-    // removal is owned in one place rather than implemented twice.
+    // ⭐ AND THE SHIPPED DELEGATING PATH IS UNAFFECTED, WHICH IS THE POINT OF KEEPING THIS HALF.
+    // `model/entity/OptionGroup.cfc:L95-L97` is nothing but `option.removeOptionGroup(this)` — it
+    // ALWAYS supplies an argument, so it never reaches the fallback and never raises. That is what
+    // makes the correction above safe for every caller in the slice: the raise is confined to the
+    // no-argument form, and no in-scope caller uses it.
     const optionGroup = new OptionGroup();
     const member = new Option();
     optionGroup.addOption(member);
     expect(optionGroup.getOptions()).toEqual([member]);
 
-    optionGroup.removeOption(member);
+    expect(() => optionGroup.removeOption(member)).not.toThrow();
 
     expect(optionGroup.getOptions()).toEqual([]);
     expect(member.optionGroup).toBeUndefined();
     expect(Object.hasOwn(member, 'optionGroup')).toBe(false);
+
+    // And it stays safe even for a non-member, because the argument is still supplied: the lookup
+    // simply finds nothing and `:L106` unsets regardless.
+    expect(() => optionGroup.removeOption(new Option())).not.toThrow();
   });
 });
 
@@ -1107,7 +1151,6 @@ describe('Option — the SKUs inverse relationship over SwSkuOption', () => {
 
     option.addSku(owner);
 
-    // The delegation of `:L111` happened, with `this` as the argument.
     expect(owner.added).toEqual([option]);
     expect(owner.removed).toEqual([]);
 
@@ -1129,7 +1172,6 @@ describe('Option — the SKUs inverse relationship over SwSkuOption', () => {
 
     option.removeSku(owner);
 
-    // The delegation of `:L114` happened.
     expect(owner.removed).toEqual([option]);
     expect(owner.added).toEqual([]);
 

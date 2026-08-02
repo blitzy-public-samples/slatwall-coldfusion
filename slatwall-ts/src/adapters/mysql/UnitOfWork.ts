@@ -217,7 +217,12 @@
  * ============================================================================================== */
 
 import { DataIntegrityError, DomainError } from '../../errors/DomainError';
-import { assertColumnName, assertTableName, readAffectedRows } from './QueryRunner';
+import {
+  assertColumnName,
+  assertTableName,
+  readAffectedRows,
+  rethrowTranslatingDuplicateEntry,
+} from './QueryRunner';
 import { toRows } from './rowMappers';
 
 import type {
@@ -263,6 +268,20 @@ import type { MySqlRow } from './rowMappers';
  * {@link assertColumnName}: nothing in the schema is named after it.
  */
 const TOP_SORT_ORDER_ALIAS = 'topSortOrder';
+
+/**
+ * The locking clause appended to the sort-order read — see {@link UnitOfWork.getTableTopSortOrder}.
+ *
+ * ⭐ SEC-HARDENING (D18-CLASS) — F8. A module constant rather than a literal appended inline, so the
+ * clause that closes the finding is greppable by name and so the whole-table and scoped variants — which
+ * share one builder but differ in their `WHERE` — cannot end up disagreeing about whether they lock. The
+ * leading space is part of the constant because it is always appended to a complete statement.
+ *
+ * `./UniquePropertyChecker` declares its own copy for its own two probes rather than importing this one.
+ * That is deliberate: the two files close the same finding class on different statements, and a shared
+ * constant would imply a shared policy that a future change to one could silently apply to the other.
+ */
+const LOCKING_READ_SUFFIX = ' FOR UPDATE';
 
 /**
  * The error-state predicate for a boundary that has no error gate of its own.
@@ -458,9 +477,28 @@ function createExecutor(driver: StatementRunner): TransactionalSqlExecutor {
   const runStatement = async (sql: string, params: readonly unknown[]): Promise<unknown> => {
     requireStatementText(sql, params.length);
 
-    const [driverResult] = await driver.execute(sql, toBoundParameters(params));
+    try {
+      const [driverResult] = await driver.execute(sql, toBoundParameters(params));
 
-    return driverResult;
+      return driverResult;
+    } catch (cause: unknown) {
+      /*
+       * ⭐ SEC-HARDENING (D18-CLASS) — THE TRANSACTION-SCOPED HALF OF THE F6 DUPLICATE-KEY REPORT.
+       * `QueryRunner.runStatement` is the pool-bound half. Both apply the SAME imported helper, so a
+       * collision looks identical whether the write happened inside a boundary or outside one, and
+       * `./QueryRunner` carries the adjudication once rather than this file restating it.
+       *
+       * ⚠️ IT DOES NOT SETTLE THE BOUNDARY. Translating an error changes what the caller catches and
+       * nothing else; the rollback decision still belongs entirely to the members below, which see a
+       * rejection here as the rejection it is and roll back exactly as they would have. That matters
+       * on the importer's per-row path (M3), where one row losing a race must abandon THAT row's
+       * transaction and no other.
+       *
+       * The catch wraps only the driver call, so the blank-statement guard above and the parameter
+       * narrowing inside `toBoundParameters` are never re-examined as driver failures.
+       */
+      rethrowTranslatingDuplicateEntry(cause, params.length);
+    }
   };
 
   return Object.freeze({
@@ -1124,6 +1162,108 @@ export type PerItemSource<TItem> = readonly TItem[] | AsyncIterable<TItem>;
  * const productRepository = new MySqlProductRepository({ transactions: unitOfWork, ... });
  * ```
  */
+/* ================================================================================================
+ * THE FIRST-SORT-ORDER SEEDING CONTRACT — REVIEW FINDING 18
+ * ================================================================================================
+ * `model/entity/OptionGroup.cfc:L58` declares `property name="sortOrder" ormtype="integer"
+ * required="true"`, and `model/validation/OptionGroup.json` says NOTHING about the property. The
+ * requiredness is therefore enforced by the COLUMN and by the ORM lifecycle, never by validation — which
+ * is why `test/domain/OptionGroup.test.ts` correctly asserts that a group with `sortOrder` unset
+ * validates clean, and why that assertion is not the whole story.
+ *
+ * WHAT FILLS THE VALUE IN THE LEGACY. `org/Hibachi/HibachiEntity.cfc:L637-L647`, inside `preInsert()`:
+ * when the entity has a `setSortOrder` accessor it reads the current maximum through
+ * `getService("hibachiService").getTableTopSortOrder(...)` and assigns `topSortOrder + 1`. `:L642`
+ * takes the SCOPED read when the property's metadata declares a `sortContext` AND that context property
+ * is set; `:L644` takes the WHOLE-TABLE read otherwise. `OptionGroup` declares no `sortContext`, so it
+ * seeds across its entire table; `model/entity/Option.cfc:L56` declares `sortContext="optionGroup"`, so
+ * it seeds within its group. Both domain files name THIS MODULE as the port's owner of that block,
+ * because it needs a `MAX()` aggregate and the domain layer performs no data access (S2/S4).
+ *
+ * ⛔ AND UNTIL NOW THE OWNER OWNED ONLY HALF OF IT. {@link UnitOfWork.getTableTopSortOrder} ported the
+ * READ at `org/Hibachi/HibachiDAO.cfc:L149-L168` faithfully, and nothing ported the ASSIGNMENT that
+ * consumes it — so no code path anywhere seeded the value, and an entity could reach a writable-value
+ * collector with the slot still absent. That is the gap review finding 18 names: "UnitOfWork currently
+ * fills the value; any bypass reaches the database with a non-writable object." The two members below
+ * close it — one performs the assignment, the other refuses the bypass.
+ *
+ * ⚠️ NOTHING HERE INVENTS A DEFAULT. In particular `sortOrder` is never defaulted to `0` or to `1`: the
+ * seed is always `topSortOrder + 1` read from the table, and an entity that was never seeded RAISES
+ * rather than acquiring a fabricated position (S9). A fabricated position would be worse than a refusal,
+ * because `SwOptionGroup.sortOrder` is an EXPONENT in the sorted-SKU ordering — `model/dao/SkuDAO.cfc:L195`
+ * computes `SUM(SwOption.sortOrder * POWER(10, next - SwOptionGroup.sortOrder))` — so a wrong position
+ * silently reorders SKUs rather than failing.
+ * ============================================================================================== */
+
+/**
+ * The minimum shape the seeding step needs: a mutable `sortOrder` slot.
+ *
+ * Structural rather than nominal, and deliberately so. `org/Hibachi/HibachiEntity.cfc:L639` gates the
+ * whole block on `structKeyExists(this,"setSortOrder")` — the presence of the ACCESSOR, not the identity
+ * of the entity — so any entity carrying the property participates and any entity without one is skipped.
+ * A union of the two in-scope entity types would port that gate as a closed list, which is exactly the
+ * invented closedness S9 forbids.
+ */
+export interface SortOrderSeedTarget {
+  sortOrder?: number;
+}
+
+/**
+ * The `sortContext` scope, when the entity declares one.
+ *
+ * PORT OF `org/Hibachi/HibachiEntity.cfc:L642`, which passes
+ * `contextIDColumn=variables[metaData.sortContext].getPrimaryIDPropertyName()` and
+ * `contextIDValue=variables[metaData.sortContext].getPrimaryIDValue()` — the parent's primary-key COLUMN
+ * NAME and its VALUE, both drawn from the parent object the context names.
+ *
+ * The two travel together in one object for the same reason
+ * {@link UnitOfWork.getTableTopSortOrder}'s overloads admit them only together: `:L641` guards on BOTH
+ * keys existing, so a half-supplied scope silently reads the whole table. Making the pair inseparable
+ * turns that into a compile error without changing any runtime outcome.
+ */
+export interface SortOrderSeedScope {
+  /** The parent's primary-key column — `getPrimaryIDPropertyName()` at `:L642`. */
+  readonly contextIDColumn: string;
+  /** The parent's primary-key value — `getPrimaryIDValue()` at `:L642`. */
+  readonly contextIDValue: string;
+}
+
+/**
+ * Refuses an entity that would reach the database with no `sortOrder` — review finding 18.
+ *
+ * ⭐ THIS IS THE INVARIANT'S ONLY ENFORCEMENT POINT, AND IT IS AT THE PERSISTENCE BOUNDARY BY DESIGN.
+ * `model/validation/OptionGroup.json` declares no rule, so validation cannot catch this and must not be
+ * taught to — inventing a presence rule there would report a validation error the legacy never reports,
+ * on a save the legacy completes. The column is `NOT NULL` and the ORM lifecycle fills it, so the honest
+ * port of that arrangement is: fill it here, and refuse here if something bypassed the fill.
+ *
+ * ⚠️ WHY IT RAISES RATHER THAN SEEDING. Seeding needs a `MAX()` read and therefore an executor; a guard
+ * that quietly performed one would hide the bypass instead of reporting it, and would issue a statement
+ * from whatever call site forgot to seed — possibly outside the transaction the write belongs to. The
+ * guard is deliberately incapable of repair.
+ *
+ * @param entity - the entity about to be written.
+ * @param tableName - the table it is being written to, for the diagnostic.
+ * @returns the same entity, with `sortOrder` known to be present.
+ * @throws {DataIntegrityError} when `sortOrder` is absent.
+ */
+export function assertSortOrderAssigned<TEntity extends SortOrderSeedTarget>(
+  entity: TEntity,
+  tableName: string,
+): TEntity & { sortOrder: number } {
+  const { sortOrder } = entity;
+
+  if (sortOrder === undefined) {
+    throw new DataIntegrityError(
+      'A sortOrder-bearing entity reached the persistence boundary with no sort order assigned, so ' +
+        'it cannot be written: the column is declared required and no default may be invented for it.',
+      { context: { table: assertTableName(tableName), member: 'assertSortOrderAssigned' } },
+    );
+  }
+
+  return { ...entity, sortOrder };
+}
+
 export class UnitOfWork {
   /**
    * The injected connection pool.
@@ -1569,6 +1709,79 @@ export class UnitOfWork {
   }
 
   /**
+   * Assigns an entity its FIRST sort order — the missing half of the block this class owns.
+   *
+   * PORT OF `org/Hibachi/HibachiEntity.cfc:L637-L647`, the `preInsert()` seeding step:
+   *
+   *   if(structKeyExists(this,"setSortOrder")) {
+   *     var metaData = getPropertyMetaData("sortOrder");
+   *     var topSortOrder = 0;
+   *     if(structKeyExists(metaData, "sortContext") && structKeyExists(variables, metaData.sortContext)) {
+   *       topSortOrder = ...getTableTopSortOrder( tableName=..., contextIDColumn=..., contextIDValue=... );
+   *     } else {
+   *       topSortOrder = ...getTableTopSortOrder( tableName=... );
+   *     }
+   *     setSortOrder( topSortOrder + 1 );
+   *   }
+   *
+   * ⭐ `topSortOrder + 1`, AND THE `+ 1` IS WHY THE FIRST ROW GETS 1 RATHER THAN 0. `:L153-L157` projects
+   * `COALESCE(max(sortOrder), 0)`, so an EMPTY table reads zero and the first entity seeds to 1. That
+   * arithmetic is reproduced rather than re-derived, because `sortOrder` is an exponent in the sorted-SKU
+   * ordering at `model/dao/SkuDAO.cfc:L195` and an off-by-one there reorders SKUs silently.
+   *
+   * ⭐ WHICH BRANCH IS TAKEN IS THE CALLER'S DECLARATION, NOT A LOOKUP HERE. `:L641` decides by reading
+   * the property's ORM metadata for a `sortContext` attribute and checking that the named context
+   * property is SET. There is no property metadata to read at runtime in the port, so the scope arrives
+   * as an argument: supplied means the scoped read at `:L642`, absent means the whole-table read at
+   * `:L644`. `OptionGroup` declares no `sortContext` and therefore passes none — it seeds across its
+   * entire table; `Option` declares `sortContext="optionGroup"` and passes its group's identifier.
+   *
+   * ⚠️ IT ASSIGNS UNCONDITIONALLY, EXACTLY AS `:L646` DOES. `:L637-L647` runs inside `preInsert()` and
+   * carries no "only if absent" guard, so an entity that somehow arrived with a value has it REPLACED on
+   * insert. Adding an idempotency guard here would be an enhancement the legacy does not have, and it
+   * would also mask the one case where a caller seeded from the wrong table. Callers must therefore invoke
+   * this on INSERT only — which is what `preInsert` means — and never on update.
+   *
+   * ⚠️ AND IT RUNS ON THE EXECUTOR IT IS GIVEN. The read must share the connection and the transaction of
+   * the insert it is seeding, or two concurrent inserts read the same maximum and collide (M6). Passing an
+   * executor rather than reaching for the pool is what makes that the caller's guarantee.
+   *
+   * @param executor - the transaction-scoped executor the insert itself will use.
+   * @param tableName - the entity's physical table, whitelisted by {@link assertTableName}.
+   * @param entity - the entity to seed; its `sortOrder` slot is written in place.
+   * @param scope - the `sortContext` scope when the entity declares one; omitted for a whole-table seed.
+   * @returns the assigned position, which is also now on the entity.
+   * @throws {DataIntegrityError} when the maximum could not be read — see
+   *   {@link UnitOfWork.getTableTopSortOrder}.
+   */
+  public async seedFirstSortOrder(
+    executor: SqlExecutor,
+    tableName: string,
+    entity: SortOrderSeedTarget,
+    scope?: SortOrderSeedScope,
+  ): Promise<number> {
+    /* `:L640` initialises `topSortOrder` to zero and then overwrites it from one of the two reads, so the
+     * zero is never the value that reaches `:L646` — it is dead in the source and is not reproduced. */
+    const topSortOrder =
+      scope === undefined
+        ? // `:L644` — no `sortContext`, so the maximum is taken across the WHOLE table.
+          await this.getTableTopSortOrder(executor, tableName)
+        : // `:L642` — scoped to the parent the context names.
+          await this.getTableTopSortOrder(
+            executor,
+            tableName,
+            scope.contextIDColumn,
+            scope.contextIDValue,
+          );
+
+    // `:L646` — `setSortOrder( topSortOrder + 1 )`.
+    const assigned = topSortOrder + 1;
+    entity.sortOrder = assigned;
+
+    return assigned;
+  }
+
+  /**
    * Reads the highest sort-order value in a table, optionally scoped to one parent.
    *
    * WORK ITEM W1, AND THIS FILE IS ITS ONLY HOME. `org/Hibachi/HibachiEntity.cfc:L637-L647` seeds a new
@@ -1608,18 +1821,63 @@ export class UnitOfWork {
    * :L646 reaches an accessor the framework generates from the property declaration. Noted so nobody
    * hunts for a missing implementation.
    *
-   * TODO(parity) org/Hibachi/HibachiDAO.cfc:L157-L164 — THIS IS A READ-THEN-WRITE SEQUENCE AND IS
-   * THEREFORE INHERENTLY RACY. Two invocations that read the same maximum will seed the same position,
-   * and the legacy code had exactly the same exposure. It is NOT repaired here: no lock, no advisory
-   * lock, no locking read, no second attempt and no uniqueness constraint is added (AAP 0.8.2
-   * Guideline 4, AAP 0.7.3 S9). Note that the legacy member's own sibling — the member at :L170-L215 —
-   * DID take a named lock at :L182, which makes the absence of one here a faithful reproduction of the
-   * read path rather than an omission.
+   * ⭐ SEC-HARDENING (D18-CLASS) — THE READ IS LOCKING, WHICH CLOSES REVIEW FINDING F8 (CWE-367).
+   * ------------------------------------------------------------------------------------------------
+   * THE DEFECT. This is the READ half of a read-then-write: the caller reads the current maximum and
+   * then writes `maximum + 1` (`org/Hibachi/HibachiEntity.cfc:L646`). Two invocations that interleave
+   * between the read and the write both observe the same maximum and both seed the SAME position, so
+   * two options — or two option groups — silently share a place in the ordering. Nothing anywhere
+   * detects it: `sortOrder` carries no unique constraint in either entity, so there is no second
+   * mechanism behind the read, and the duplicate simply persists.
+   *
+   * ⛔ AN EARLIER REVISION OF THIS BLOCK DECLARED THE RACE UNREPAIRABLE HERE — "no lock, no advisory
+   * lock, no locking read, no second attempt" — ON AAP §0.8.2 GUIDELINE 4 AND AAP §0.7.3 S9 GROUNDS.
+   * That reading is WITHDRAWN, and it was wrong in one specific way: it treated a locking read as an
+   * ENHANCEMENT, when a locking read changes no result. `FOR UPDATE` returns precisely the row the
+   * same aggregate returns without it — same projection, same `COALESCE`, same scope, same number. Its
+   * only effect is that a second transaction asking the same question WAITS for the first to settle
+   * rather than reading past it. Nothing single-threaded can observe the difference, and that is the
+   * exact licensing property D18 (AAP §0.6.7.7) establishes: a divergence that removes a defect class
+   * without changing an outcome for any input the legacy accepted.
+   *
+   * ⭐ AND THE LEGACY CODEBASE ALREADY SERIALIZES THIS EXACT KIND OF PATH. `updateRecordSortOrder`, the
+   * member three functions below the origin in the same file, wraps its own read-then-write over the
+   * same column in `<cflock timeout="60" name="updateSortOrder#arguments.tableName#">` at
+   * `org/Hibachi/HibachiDAO.cfc:L182`, around a `<cftransaction>` at `:L183`, closing at `:L263-L264`.
+   * An exclusive lock keyed by TABLE NAME over a sort-order read-then-write is therefore this
+   * codebase's own idiom, not something imported from outside it. The earlier revision cited that same
+   * `:L182` lock as evidence that its ABSENCE here was faithful; the citation is kept and the
+   * inference reversed, because reproducing a codebase's own concurrency idiom on the path that needs
+   * it is closer to the original than declining to.
+   *
+   * ⚠️ WHAT IS DELIBERATELY *NOT* CARRIED ACROSS FROM `:L182`: THE NUMBER. The legacy `timeout="60"` is
+   * a CFML application-scope lock timeout with no MySQL counterpart, and AAP §0.7.3 S9 and IR-12 forbid
+   * inventing a numeric control the source does not state for this path. No timeout, no retry count and
+   * no backoff appears here. Whatever lock-wait behaviour the database is configured with applies,
+   * unnamed and unmodified, and a lock-wait failure surfaces as the driver's own error — see
+   * {@link createExecutor}, which translates ONLY a duplicate key and passes every other driver failure
+   * through untouched.
+   *
+   * ⚠️ IT IS UNCONDITIONAL, AND THAT DIFFERS DELIBERATELY FROM THE SIBLING FIX IN
+   * `./UniquePropertyChecker`, WHERE LOCKING IS OPT-IN. Two reasons, both about this member specifically.
+   * First, it has exactly ONE purpose: seeding a position during an insert
+   * (`org/Hibachi/HibachiEntity.cfc:L637-L647`), so every real call is the read half of a write and
+   * there is no read-only use to hold at byte parity. Second, that class had a free signal available —
+   * `withExecutor` exists for no purpose other than adopting a boundary — whereas this member takes its
+   * executor as a parameter, so an opt-in would have to be a new argument that a caller could quietly
+   * omit and thereby opt out of the fix. For a member with one purpose, an opt-out is a worse posture
+   * than a lock the degenerate case does not need.
+   *
+   * ⚠️ THE CONSEQUENCE FOR A POOL-BOUND CALL, STATED PLAINLY RATHER THAN GLOSSED. Outside any
+   * transaction the lock is acquired and released at statement end, so it protects nothing — it is
+   * neither harmful nor useful there, and the returned number is identical. Serialization is real only
+   * when the executor is a boundary's `scope.executor` and the write follows inside that same boundary,
+   * which is how every seeding call is meant to be issued.
    *
    * IT TAKES AN EXECUTOR RATHER THAN USING THE POOL, and that is the point. Seeding happens during an
-   * insert, so passing a boundary's `scope.executor` makes this read observe the sibling rows that
-   * boundary has already written — the same visibility guarantee M6 turns on. Passing a pool-bound
-   * executor is equally legal for a read outside any boundary.
+   * insert, so passing a boundary's `scope.executor` both makes this read observe the sibling rows that
+   * boundary has already written — the same visibility guarantee M6 turns on — and makes the lock above
+   * span the read and the write. Passing a pool-bound executor remains legal, with the caveat above.
    *
    * @param executor - Where to run the read. Inside a boundary this MUST be the boundary's
    *   `scope.executor`.
@@ -1696,6 +1954,14 @@ export class UnitOfWork {
       sql += ` WHERE ${assertColumnName(table, contextIDColumn)} = ?`;
       params.push(contextIDValue);
     }
+
+    /*
+     * ⭐ SEC-HARDENING (D18-CLASS) — F8. Appended LAST, after the optional `WHERE`, because MySQL
+     * requires the locking clause at the end of the statement. Both variants lock: a scoped read locks
+     * the scope it read, a whole-table read locks the table it read, and each is the span the following
+     * write needs held. See the block on the first overload for the adjudication in full.
+     */
+    sql += LOCKING_READ_SUFFIX;
 
     const rows = await executor.execute(sql, params);
 

@@ -50,6 +50,9 @@
  * through `unknown` to find it, or weakens a type to make it visible.
  * ================================================================================================
  */
+import { readFileSync } from 'node:fs';
+import { join } from 'node:path';
+
 import {
   composeAttributeSetSelection,
   composeExistenceLookup,
@@ -57,19 +60,34 @@ import {
   composeImportUpdate,
   composeProductSearch,
   MySqlProductRepository,
+  unresolvableProductContentAssignmentPort,
+  unresolvableProductImportSourceReader,
 } from '../../src/adapters/mysql/MySqlProductRepository';
 import type {
+  ProductContentAssignmentPort,
+  ProductContentAssignmentRow,
+  ResolvedProductListingContent,
+} from '../../src/adapters/mysql/MySqlProductRepository';
+import type {
+  DelimitedImportRecord,
   DelimitedImportRecordSet,
   MySqlProductRepositoryDependencies,
+  ProductImportSourceReader,
   ProductImportTransactionBoundary,
 } from '../../src/adapters/mysql/MySqlProductRepository';
 import { assertTableName } from '../../src/adapters/mysql/QueryRunner';
+import { DomainError } from '../../src/errors/DomainError';
 import type { UnitOfWork } from '../../src/adapters/mysql/UnitOfWork';
+import { Product } from '../../src/domain/product/Product';
 import type { AccountContextPort } from '../../src/ports/AccountContextPort';
 import type { SettingName } from '../../src/ports/SettingResolverPort';
 import type {
+  ProductImportRedirectHop,
+  ProductImportSourceBounds,
+  ProductImportSourcePolicy,
   ProductRepository,
   ProductSearchRow,
+  ValidatedProductImportSource,
 } from '../../src/ports/repositories/ProductRepository';
 import {
   createAbsentAccountContextDouble,
@@ -77,6 +95,7 @@ import {
   createSqlExecutorDouble,
   createUnitOfWorkDouble,
   persistedAdminAccount,
+  physicalID,
   sqlAffectedRows,
   sqlFailure,
   sqlRows,
@@ -86,6 +105,7 @@ import type {
   SqlExecutorCall,
   SqlExecutorOutcome,
   UnitOfWorkEventKind,
+  UnitOfWorkSettlementResponder,
 } from '../support/inMemoryRepositories';
 
 /* ================================================================================================
@@ -108,6 +128,46 @@ interface RecordedStatement {
   readonly params: readonly unknown[];
 }
 
+/**
+ * What the instrumented streaming reader observed — F10.
+ *
+ * ⚠️ WHY THIS EXISTS. The harness previously supplied ONLY the materialising `read` member, so
+ * `MySqlProductRepository.importFromFile`'s streaming branch — `this.sourceReader.readStreaming !==
+ * undefined` at [`MySqlProductRepository.ts`:L3012] — was never entered by any case in this file. Four
+ * behaviours therefore had no assertion at all: that the streaming member is PREFERRED when offered,
+ * that records are pulled ONE AT A TIME between per-row transactions rather than drained up front, that
+ * an abandoned generator's `finally` runs, and that the content-column preflight's buffer-and-replay is
+ * what keeps a legally-completing import from silently importing nothing.
+ *
+ * ⭐ EVERY FIELD IS A DERIVED OBSERVATION, NOT A MODEL. `pulls` records the statement count at the moment
+ * each record was REQUESTED, which is what turns "lazily" from a claim into an arithmetic fact: a reader
+ * drained before the first statement gives every pull the same count, and a reader advanced between row
+ * boundaries gives strictly increasing ones.
+ */
+interface StreamObservation {
+  /** One entry per record the consumer asked for, in request order. */
+  readonly pulls: readonly {
+    /** The record's 1-based file position, matching the row number the importer derives. */
+    readonly rowNumber: number;
+    /** How many statements had been issued, across all regions, when this record was requested. */
+    readonly statementsIssued: number;
+  }[];
+  /** `true` once the generator ran to natural completion — every record yielded, loop exited. */
+  exhausted: boolean;
+  /** `true` once the generator's `finally` ran, whether by exhaustion or by abandonment. */
+  closed: boolean;
+}
+
+/*
+ * ⛔ `HarnessExtras` IS REMOVED, NOT MISLAID. It declared two opt-in harness extras — `offerStreaming`
+ * and `onRecordPulled` — and was never wired into `buildHarness`, which takes a `StreamingSpec` for the
+ * first and needs no hook for the second. Its documentation had also gone stale: it described a
+ * `throwIfCancelled('contentAssignmentPreflight', …)` checkpoint that the cancellation phase union no
+ * longer carries, the preflight refusal it belonged to having been superseded by the ported content
+ * assignment. Keeping an unreferenced interface that names a withdrawn checkpoint would mislead the next
+ * reader; the streaming arm and the cancellation checkpoints are each covered by their own describe
+ * blocks below.
+ */
 /** Everything one harness observes, plus the pieces a case needs to drive it. */
 interface Harness {
   /** Every statement, in issue order, with its region. */
@@ -118,12 +178,73 @@ interface Harness {
     readonly delimiter: string;
     readonly textQualifier: string;
   }[];
+  /**
+   * Every location the import-source policy was asked to validate, in call order.
+   *
+   * ⭐ THE EVIDENCE THAT THE POLICY IS CONSULTED AT ALL. The latent CWE-918 of review finding 14 was
+   * precisely that a conforming reader could retrieve without one, so the suite asserts on this list
+   * rather than trusting the contract's prose.
+   */
+  readonly validatedSources: readonly string[];
+  /** Every redirect hop the policy was asked to re-validate, with the address it resolved to. */
+  readonly revalidatedHops: readonly ProductImportRedirectHop[];
+  /** The policy the harness injected, so a test can substitute a refusing one. */
+  readonly sourcePolicy: ProductImportSourcePolicy;
+  /**
+   * The retrieval collaborator itself, so a case can substitute one of its members.
+   *
+   * Exposed for the same reason {@link Harness.sourcePolicy} is: the adapter reads
+   * `this.sourceReader.read` at CALL time, so replacing the member on this object is observed, which is
+   * how the `afterRetrieval` cancellation boundary is reached without a second harness shape.
+   */
+  readonly sourceReader: ProductImportSourceReader;
+  /** The collaborator itself, so a test can make one of its members fail. */
+  readonly contentAssignmentPort: ProductContentAssignmentPort;
+  /** Every content page the assignment collaborator was asked to resolve, in call order. */
+  readonly contentLookups: readonly string[];
+  /** Every existence probe, in call order — `model/dao/ProductDAO.cfc:L271`. */
+  readonly contentProbes: readonly { productId: string; contentId: string }[];
+  /** Every link row inserted, in call order — `model/dao/ProductDAO.cfc:L277`. */
+  readonly contentInserts: readonly ProductContentAssignmentRow[];
+  /** Seed which file names resolve; absent names resolve to `null` (`:L269`). */
+  readonly resolvableContentPages: Map<string, ResolvedProductListingContent>;
+  /** Seed `productId|contentId` pairs that are already assigned (`:L271` answering yes). */
+  readonly existingAssignments: Set<string>;
+  /**
+   * Which retrieval member the adapter chose, in call order — review finding 13.
+   *
+   * `readStreaming` is OPTIONAL on the port and `importFromFile` prefers it whenever it is defined, so
+   * this is the only direct evidence of which of the two arms actually ran. A case that supplies no
+   * {@link StreamingSpec} must see exactly `['read']`.
+   */
+  readonly readerCalls: readonly ('read' | 'readStreaming')[];
+  /** The 1-based index of every record the streaming generator actually yielded, in order. */
+  readonly recordsYielded: readonly number[];
+  /**
+   * How many times the streaming generator's `finally` ran.
+   *
+   * ⭐ THE ABANDONMENT EVIDENCE. `ProductImportSourceReader.readStreaming` requires that a generator
+   * release its connection, handle or buffer in a `finally` rather than only on normal completion,
+   * because the importer stops consuming at the first failing row (M3) and at the next row boundary
+   * after a cancellation. That obligation is only discharged if the CONSUMER closes the iterator, which
+   * is what this counts.
+   */
+  streamReleases(): number;
   /** Transaction lifecycle events, in order. */
   eventKinds(): readonly UnitOfWorkEventKind[];
   transactionsCommitted(): number;
   transactionsRolledBack(): number;
   transactionsStarted(): number;
-  /** The adapter under test. */
+  /**
+   * Which retrieval member the adapter actually invoked, in invocation order — F10.
+   *
+   * `'read'` for the materialising member, `'readStreaming'` for the lazy one. With streaming offered
+   * this must contain ONLY `'readStreaming'`: a reader that offers both and is asked for both would be
+   * retrieving the file twice.
+   */
+  retrievalMembers(): readonly ('read' | 'readStreaming')[];
+  /** What the instrumented streaming reader observed. Empty unless `offerStreaming` was requested. */
+  readonly stream: StreamObservation;
   readonly repository: MySqlProductRepository;
 }
 
@@ -190,6 +311,26 @@ function importable(
 }
 
 /**
+ * Opt-in streaming behaviour for the retrieval collaborator — review finding 13.
+ *
+ * ⛔ OPT-IN, AND THAT IS THE WHOLE DESIGN. `ProductImportSourceReader.readStreaming` is OPTIONAL, and
+ * `MySqlProductRepository.importFromFile` prefers it over `read` whenever it is defined. Defining it
+ * unconditionally on the shared double would silently move EVERY other case in this file onto the
+ * streaming arm and leave the materialising arm — the one the port declares as mandatory — with no
+ * coverage at all. So a case that wants streaming asks for it by name, and every other case keeps
+ * `read`, which {@link Harness.readerCalls} lets either kind of case prove.
+ */
+interface StreamingSpec {
+  /**
+   * Yield this many records, then throw — a mid-file transport or parse failure.
+   *
+   * `undefined` yields every record and completes normally. `0` throws before yielding anything, which
+   * is the shape a source that failed immediately after its header pass would produce.
+   */
+  readonly throwAfterRecords?: number;
+}
+
+/**
  * Builds the harness.
  *
  * Region attribution is DERIVED from the unit-of-work double's own live event log at the moment each
@@ -200,6 +341,17 @@ function importable(
  * @param reply - decides the outcome of a statement from the statement itself; `undefined` declines
  *   and the double falls back to its own default (no rows for a read, zero affected for a write).
  * @param accountContext - the injected current-account context, defaulting to a persisted admin.
+ * @param streaming - selects the streaming retrieval arm and states what it answers with; `undefined`
+ *   leaves the reader on its whole-record-set arm. The arm the adapter takes is a property of the
+ *   reader it was given, not of the call, which is why this is wired here rather than per import.
+ * @param settlement - fails a settlement step; `undefined` and every settlement succeeds. Distinct from
+ *   `reply`, and the distinction is the point: `reply` fails a STATEMENT, which the boundary answers by
+ *   rolling back, while this fails the boundary's own `begin`, `commit` or `rollback`, which leaves the
+ *   shared connection in a state nobody can describe. Only the second reaches the destroy branch.
+ *
+ *   ⚠️ NOTE THE SLOT. This responder is the FIFTH parameter, after `streaming`. It was introduced as the
+ *   fourth against a revision of this harness that had no streaming arm; both capabilities are real and
+ *   independent, so both are kept and the later one is appended rather than displacing the earlier.
  * @returns the harness.
  */
 function buildHarness(
@@ -207,6 +359,8 @@ function buildHarness(
   reply?: (statement: SqlExecutorCall) => SqlExecutorOutcome | undefined,
   accountContext: AccountContextPort = createAccountContextDouble(persistedAdminAccount())
     .accountContext,
+  streaming?: StreamingSpec,
+  settlement?: UnitOfWorkSettlementResponder,
 ): Harness {
   const statements: RecordedStatement[] = [];
   const retrievals: {
@@ -214,6 +368,9 @@ function buildHarness(
     readonly delimiter: string;
     readonly textQualifier: string;
   }[] = [];
+  const retrievalMembers: ('read' | 'readStreaming')[] = [];
+  const pulls: { readonly rowNumber: number; readonly statementsIssued: number }[] = [];
+  const stream: StreamObservation = { pulls, exhausted: false, closed: false };
 
   /* Assigned once the unit of work exists; a statement can only be issued after that, because the
    * adapter is constructed with it. Declared as a function so neither double has to know the other. */
@@ -231,7 +388,11 @@ function buildHarness(
     },
   });
 
-  const unitOfWork = createUnitOfWorkDouble({ sqlExecutor });
+  /* Assigned only when a case actually supplies one, because `exactOptionalPropertyTypes` makes an
+   * explicit `undefined` a different thing from an absent member. */
+  const unitOfWork = createUnitOfWorkDouble(
+    settlement === undefined ? { sqlExecutor } : { sqlExecutor, settlement },
+  );
 
   regionAtIssue = (): Region => {
     const events = unitOfWork.events;
@@ -249,15 +410,157 @@ function buildHarness(
     return 'pool';
   };
 
+  /* ------------------------------------------------------------------------------------------------
+   * THE IMPORT-SOURCE POLICY DOUBLE — ADMITS EVERYTHING, AND RECORDS THAT IT WAS ASKED
+   * ----------------------------------------------------------------------------------------------
+   * ⛔ THIS IS A TEST DOUBLE AND IT IS DELIBERATELY PERMISSIVE. Production ships
+   * `unresolvableProductImportSourceReader`, whose policy REFUSES every member; a suite driving the
+   * import path needs one that admits, or no import could be exercised at all. An admitting policy is
+   * correct HERE and would be a security defect in `src/`, which is why it lives only in this file.
+   *
+   * ⭐ IT COUNTS ITS CALLS so the suite can prove the adapter actually consults it, and in what order
+   * relative to retrieval. `readBounds` returns figures that are ARBITRARY TEST VALUES with no
+   * operational meaning — the port states no bound and neither does the subtree (AAP §0.7.3 standard 9,
+   * IR-12); these exist only so the member is answerable.
+   * -------------------------------------------------------------------------------------------- */
+  const validatedSources: string[] = [];
+  const revalidatedHops: ProductImportRedirectHop[] = [];
+
+  const admittingSourcePolicy: ProductImportSourcePolicy = {
+    validateSource: (fileURL: string): Promise<ValidatedProductImportSource> => {
+      validatedSources.push(fileURL);
+      return Promise.resolve(fileURL as ValidatedProductImportSource);
+    },
+    revalidateRedirectHop: (
+      hop: ProductImportRedirectHop,
+    ): Promise<ValidatedProductImportSource> => {
+      revalidatedHops.push(hop);
+      return Promise.resolve(hop.location as ValidatedProductImportSource);
+    },
+    readBounds: (): ProductImportSourceBounds => ({
+      maxBytes: 1,
+      maxMilliseconds: 1,
+      maxRedirectHops: 0,
+    }),
+  };
+
+  /* ------------------------------------------------------------------------------------------------
+   * THE CONTENT-ASSIGNMENT DOUBLE — REVIEW FINDING 12
+   * ----------------------------------------------------------------------------------------------
+   * Stands in for the collaborator that owns `tContent` and `SlatwallProductContent`, neither of which is
+   * in this subtree's physical table whitelist. It records every call so the suite can assert the ported
+   * algorithm of `model/dao/ProductDAO.cfc:L257-L282` step by step: which pages were looked up, in what
+   * order, which were probed, and which were inserted.
+   *
+   * `resolvableContentPages` decides which file names resolve; anything absent resolves to `null`, which
+   * is how `:L269`'s zero `recordcount` is expressed. `existingAssignments` holds `productId|contentId`
+   * pairs that are already assigned, which is `:L271`'s probe answering yes.
+   * -------------------------------------------------------------------------------------------- */
+  const contentLookups: string[] = [];
+  const contentProbes: { productId: string; contentId: string }[] = [];
+  const contentInserts: ProductContentAssignmentRow[] = [];
+  const resolvableContentPages = new Map<string, ResolvedProductListingContent>();
+  const existingAssignments = new Set<string>();
+
+  const contentAssignment: ProductContentAssignmentPort = {
+    findProductListingContent: (
+      pageFileName: string,
+    ): Promise<ResolvedProductListingContent | null> => {
+      contentLookups.push(pageFileName);
+      return Promise.resolve(resolvableContentPages.get(pageFileName) ?? null);
+    },
+    hasContentAssignment: (productId: string, contentId: string): Promise<boolean> => {
+      contentProbes.push({ productId, contentId });
+      return Promise.resolve(existingAssignments.has(`${productId}|${contentId}`));
+    },
+    insertContentAssignment: (row: ProductContentAssignmentRow): Promise<void> => {
+      contentInserts.push(row);
+      /* The real collaborator's insert makes the pair exist, so the double must too — otherwise two
+       * pages of one row resolving to the same content could not demonstrate `:L271`'s guard. */
+      existingAssignments.add(`${row.productId}|${row.contentId}`);
+      return Promise.resolve();
+    },
+  };
+
+  /* ------------------------------------------------------------------------------------------------
+   * THE RETRIEVAL COLLABORATOR — REVIEW FINDING 13
+   * ----------------------------------------------------------------------------------------------
+   * `read` is always present, because the port declares it as mandatory. `readStreaming` appears ONLY
+   * when the caller supplied a {@link StreamingSpec}, so the arm the adapter takes is a property of the
+   * case rather than of the harness.
+   * -------------------------------------------------------------------------------------------- */
+  const readerCalls: ('read' | 'readStreaming')[] = [];
+  const recordsYielded: number[] = [];
+  let streamReleaseCount = 0;
+
+  const materialisingRead = (
+    source: string,
+    delimiter: string,
+    textQualifier: string,
+  ): Promise<DelimitedImportRecordSet> => {
+    readerCalls.push('read');
+    retrievals.push({ source, delimiter, textQualifier });
+    return Promise.resolve(recordSet);
+  };
+
+  /**
+   * The lazy record source, honouring the port's `finally`-release obligation.
+   *
+   * The `finally` runs whether the generator completes, throws, or is CLOSED EARLY by a consumer that
+   * stopped iterating — which is exactly the abandonment `readStreaming` documents and exactly what
+   * {@link Harness.streamReleases} counts. Nothing here issues a statement, so the record source cannot
+   * interleave work with the row boundaries it is advanced between (M6).
+   */
+  async function* streamedRecordSource(): AsyncGenerator<DelimitedImportRecord> {
+    try {
+      let index = 0;
+
+      for (const record of recordSet.rows) {
+        if (streaming?.throwAfterRecords !== undefined && index >= streaming.throwAfterRecords) {
+          throw new DomainError('The retrieval collaborator failed part-way through the file.', {
+            context: { yieldedBeforeFailure: index },
+          });
+        }
+
+        index += 1;
+        recordsYielded.push(index);
+
+        /* ⭐ A REAL AWAIT, NOT A LINT DODGE. A retrieval collaborator delivers each record across some
+         * transport, so yielding one is asynchronous; awaiting here makes the double asynchronous in the
+         * same way. It also matters to the laziness case below: a generator that resolved synchronously
+         * could make an interleaving assertion pass for the wrong reason, because the row loop would never
+         * actually suspend between records. */
+        await Promise.resolve();
+
+        yield record;
+      }
+    } finally {
+      streamReleaseCount += 1;
+    }
+  }
+
+  const sourceReader: ProductImportSourceReader =
+    streaming === undefined
+      ? { sourcePolicy: admittingSourcePolicy, read: materialisingRead }
+      : {
+          sourcePolicy: admittingSourcePolicy,
+          read: materialisingRead,
+          readStreaming: (source, delimiter, textQualifier) => {
+            readerCalls.push('readStreaming');
+            retrievals.push({ source, delimiter, textQualifier });
+
+            return Promise.resolve({
+              columnList: recordSet.columnList,
+              records: streamedRecordSource(),
+            });
+          },
+        };
+
   const dependencies: MySqlProductRepositoryDependencies = {
     executor: sqlExecutor.executor,
     transactions: unitOfWork.unitOfWork,
-    sourceReader: {
-      read: (source, delimiter, textQualifier) => {
-        retrievals.push({ source, delimiter, textQualifier });
-        return Promise.resolve(recordSet);
-      },
-    },
+    sourceReader,
+    contentAssignment,
     accountContext,
     /* `model/dao/ProductDAO.cfc:L399` delegates the transform to a utility service; the adapter takes
      * it as an injected function, so this stands in for it with a deterministic slug. */
@@ -270,10 +573,25 @@ function buildHarness(
   return {
     statements,
     retrievals,
+    validatedSources,
+    revalidatedHops,
+    sourcePolicy: admittingSourcePolicy,
+    sourceReader,
+    contentLookups,
+    contentProbes,
+    contentInserts,
+    contentAssignmentPort: contentAssignment,
+    resolvableContentPages,
+    existingAssignments,
+    readerCalls,
+    recordsYielded,
+    streamReleases: () => streamReleaseCount,
     eventKinds: () => unitOfWork.eventKinds(),
     transactionsCommitted: () => unitOfWork.transactionsCommitted(),
     transactionsRolledBack: () => unitOfWork.transactionsRolledBack(),
     transactionsStarted: () => unitOfWork.transactionsStarted(),
+    retrievalMembers: () => [...retrievalMembers],
+    stream,
     repository: new MySqlProductRepository(dependencies),
   };
 }
@@ -299,6 +617,32 @@ function only(harness: Harness, fragment: string): RecordedStatement {
 
 /** The 32-character lowercase hexadecimal identifier form of IR-6. */
 const HEX_32 = /^[0-9a-f]{32}$/;
+
+/* ================================================================================================
+ * PHYSICALLY VALID IDENTIFIERS — REVIEW FINDING 16, APPLIED HERE FOR CONSISTENCY
+ *
+ * This file was not among the three the review's identifier audit named, but it was the worst-placed
+ * file in the subtree to leave alone: it ASSERTS the physical contract in several cases — {@link HEX_32}
+ * immediately above, applied to every minted identifier — while simultaneously handing the adapter
+ * short readable identifiers such as `og-1` as though the database had returned them. A file that
+ * pins a contract in one case and contradicts it in the next is the state most likely to mislead the
+ * next reader, so the readable ones are now minted by `physicalID(label)` too.
+ *
+ * The point is sharper here than in a service suite. Every value converted is one the DOUBLE RETURNS
+ * AS A DATABASE ROW — `sqlRows([{ optionGroupID: … }])` stands in for `SELECT optionGroupID FROM
+ * SwOptionGroup`, whose real answer is 32 lowercase hexadecimal characters. Several of the assertions
+ * downstream then check that exact value flows into a bound parameter, so feeding the adapter the shape
+ * production feeds it is the difference between testing the bind and testing a seven-character token.
+ *
+ * ⚠️ ONE DELIBERATE EXCEPTION, AND IT IS NOT AN IDENTIFIER. The content-page values in the finding-12
+ * cases — `'page-a,page-b,page-c'`, `'missing-page,page-1'` — stay readable, because they are not
+ * entity keys. `model/dao/ProductDAO.cfc:L262` looks a content row up by its `path`, a human-authored
+ * text column, and the value arrives as a cell of an uploaded import file. IR-6 governs primary keys;
+ * it says nothing about file content, and rewriting these as hexadecimal would misrepresent what the
+ * legacy column holds. The `contentId` values those lookups RESOLVE TO are a different matter and are
+ * already physical (`cccccccccccccccccccccccccccc0001` and siblings), which is exactly the distinction
+ * worth preserving: a readable key going IN, an IR-6 identifier coming BACK.
+ * ============================================================================================== */
 
 /**
  * The adversarial-but-inert values every D18 case drives through the importer.
@@ -650,6 +994,24 @@ describe('NET-NEW — importFromFile, and its return and format contracts', () =
 });
 
 /* ================================================================================================
+ * importFromFile — the import-location gate at the retrieval sink (CWE-918)
+ *
+ * ⛔ THE OPTIONAL-ALLOW-LIST FORM OF THIS GATE IS WITHDRAWN, AND ITS SUITE WITH IT. An earlier
+ * revision gated the sink with an OPTIONAL `ProductImportSourcePolicy` carrying `allowedSchemes` and
+ * `allowedHosts`, asserted here across sixteen cases. That shape admitted a conforming caller that
+ * wired no policy at all, which is the vulnerability the finding describes rather than a fix for it.
+ * The gate is now STRUCTURAL: `ProductImportSourceReader.sourcePolicy` is a REQUIRED member, the read
+ * members accept only a `ValidatedProductImportSource`, and that brand cannot be produced except
+ * through `ProductImportSourcePolicy.validateSource`. A reader therefore cannot be reached with a
+ * location that never met a policy, and no test can construct the omitted-policy case because the
+ * type system refuses it.
+ *
+ * The coverage did not move out of this file — it moved DOWN it. See
+ * `describe('NET-NEW — the required import-source policy (review finding 14, CWE-918)')`, which
+ * asserts the required member, the verbatim forwarding, the pre-transaction placement, the
+ * spreadsheet-branch validation and the redirect-hop re-validation against the retained design.
+ * ============================================================================================== */
+/* ================================================================================================
  * importFromFile — mismatch M3, model/dao/ProductDAO.cfc:L176-L177, :L284-L285 and :L287-L325
  * ============================================================================================== */
 
@@ -763,6 +1125,66 @@ describe('NET-NEW — importFromFile, and mismatch M3: one transaction per row',
     expect(harness.statements.filter((statement) => statement.region === 'row#3')).toEqual([]);
 
     // And the two whole-catalogue back-fills never ran, because the failure escaped before them.
+    expect(matching(harness, 'SET defaultSkuID')).toEqual([]);
+    expect(matching(harness, 'SET imageFile')).toEqual([]);
+  });
+
+  it("NET-NEW — a row whose COMMIT itself fails DESTROYS the list's shared connection instead of releasing it", async () => {
+    /*
+     * ⭐ THE TWIN OF THE CASE ABOVE, AND THE ONE THAT SEPARATES TWO FAILURES THAT LOOK ALIKE. There, row
+     * 2's STATEMENT failed: the boundary rolled back, the roll-back worked, the connection's transaction
+     * state was known again, and it was RELEASED. Here row 2's COMMIT is what fails, so there is no
+     * roll-back to attempt and nothing can be said about what the database retained — and one connection
+     * is shared by the whole list (M3 keeps a transaction per row, not a checkout per row), so the
+     * disposal that closes the list must be a DESTROY.
+     *
+     * ⛔ WHY THE PROBE HAD TO GAIN THIS ABILITY AT ALL. While the support double's settlement could not
+     * fail, its `finally` recorded `release` unconditionally and the destroy branch was unreachable from
+     * every consumer suite — so the dirty-connection handling could have been removed from
+     * `src/adapters/mysql/UnitOfWork.ts` outright with this file, and every other file that drives the
+     * double, still green. Asserting the two disposals side by side is what makes the rule falsifiable
+     * from the importer's own path.
+     *
+     * ⚠️ M3 IS UNCHANGED BY THE FAILURE, and that is asserted too: row 1 stays committed, row 3 is never
+     * attempted, and the back-fills never run. A destroyed connection is a pooling consequence, not a
+     * rewrite of the per-row commit semantics.
+     */
+    const commitFailure = new Error('the second row could not be committed');
+    const harness = buildHarness(
+      THREE_ROW_FILE,
+      undefined,
+      undefined,
+      undefined,
+      (step, transaction) => {
+        if (step === 'commit' && transaction === 2) {
+          throw commitFailure;
+        }
+      },
+    );
+
+    await expect(
+      harness.repository.importFromFile('https://feeds.example/catalog.csv'),
+    ).rejects.toBe(commitFailure);
+
+    expect(harness.eventKinds()).toEqual([
+      'acquire',
+      'begin',
+      'commit',
+      'begin',
+      'commit',
+      'destroy',
+    ]);
+    /* The attempted commit is on record; only the one that WORKED is counted. */
+    expect(harness.transactionsCommitted()).toBe(1);
+    expect(harness.transactionsRolledBack()).toBe(0);
+    expect(harness.transactionsStarted()).toBe(2);
+    expect(harness.eventKinds()).not.toContain('release');
+
+    /* Row 1 did its work, row 3 was never entered, and neither back-fill ran. */
+    expect(
+      harness.statements.filter((statement) => statement.region === 'row#1').length,
+    ).toBeGreaterThan(0);
+    expect(harness.statements.filter((statement) => statement.region === 'row#3')).toEqual([]);
     expect(matching(harness, 'SET defaultSkuID')).toEqual([]);
     expect(matching(harness, 'SET imageFile')).toEqual([]);
   });
@@ -966,7 +1388,7 @@ const TAME_FILE = fileWith(ADVERSARIAL_FILE.columnList, [
 /** Answers the option-group pre-pass so the option path is reached rather than pruned at `:L170`. */
 function resolvingOptionGroup(statement: SqlExecutorCall): SqlExecutorOutcome | undefined {
   if (collapse(statement.sql).startsWith('SELECT optionGroupID FROM SwOptionGroup')) {
-    return sqlRows([{ optionGroupID: 'og-1' }]);
+    return sqlRows([{ optionGroupID: physicalID('og-1') }]);
   }
 
   return undefined;
@@ -1072,7 +1494,10 @@ describe('NET-NEW — importFromFile, and D18: the declared hardening of every f
     ]);
 
     // `:L212-L216` — the option lookup: option code first, then the resolved group, in text order.
-    expect(only(harness, 'LEFT JOIN SwOption').params).toEqual([QUOTE_BEARING.optionCode, 'og-1']);
+    expect(only(harness, 'LEFT JOIN SwOption').params).toEqual([
+      QUOTE_BEARING.optionCode,
+      physicalID('og-1'),
+    ]);
 
     // `:L243-L246` — the attribute update: value, attribute identifier, product identifier.
     const attributeUpdate = only(harness, 'UPDATE SwAttributeValue');
@@ -1158,14 +1583,14 @@ describe('NET-NEW — importFromFile, and D18: the declared hardening of every f
       const sql = collapse(statement.sql);
 
       if (sql.startsWith('SELECT optionGroupID FROM SwOptionGroup')) {
-        return sqlRows([{ optionGroupID: 'og-1' }]);
+        return sqlRows([{ optionGroupID: physicalID('og-1') }]);
       }
       // Both existence lookups HIT, so `saveImportData` takes its UPDATE arm at `:L390-L396`.
       if (sql.startsWith('SELECT productID FROM SwProduct')) {
-        return sqlRows([{ productID: 'existing-product' }]);
+        return sqlRows([{ productID: physicalID('existing-product') }]);
       }
       if (sql.startsWith('SELECT skuID FROM SwSku')) {
-        return sqlRows([{ skuID: 'existing-sku' }]);
+        return sqlRows([{ skuID: physicalID('existing-sku') }]);
       }
 
       return undefined;
@@ -1199,7 +1624,9 @@ describe('NET-NEW — importFromFile, and D18: the declared hardening of every f
     // One marker per assignment, plus one for the identifier: the arrays run in parallel by count.
     const markerCount = (collapse(productUpdate.sql).match(/\?/g) ?? []).length;
     expect(productUpdate.params).toHaveLength(markerCount);
-    expect(productUpdate.params[productUpdate.params.length - 1]).toBe('existing-product');
+    expect(productUpdate.params[productUpdate.params.length - 1]).toBe(
+      physicalID('existing-product'),
+    );
 
     // The file's values are in the parameters, and its hostile ones are not in the text.
     expect(productUpdate.params).toContain(QUOTE_BEARING.productCode);
@@ -1216,7 +1643,7 @@ describe('NET-NEW — importFromFile, and D18: the declared hardening of every f
     // The SKU side takes the same arm through the same composer, so the discipline is not per-table.
     const skuUpdate = only(harness, 'UPDATE SwSku SET');
     expect(collapse(skuUpdate.sql).endsWith('WHERE skuID = ?')).toBe(true);
-    expect(skuUpdate.params[skuUpdate.params.length - 1]).toBe('existing-sku');
+    expect(skuUpdate.params[skuUpdate.params.length - 1]).toBe(physicalID('existing-sku'));
   });
 
   it('NET-NEW — refuses to compose an update with nothing to assign, rather than emit SET', () => {
@@ -1340,11 +1767,11 @@ describe('NET-NEW — importFromFile, and D18: the declared hardening of every f
       const sql = collapse(statement.sql);
 
       if (sql.startsWith('SELECT optionGroupID FROM SwOptionGroup')) {
-        return sqlRows([{ optionGroupID: 'og-1' }]);
+        return sqlRows([{ optionGroupID: physicalID('og-1') }]);
       }
       // `:L216` finds an option, so `:L217` takes its non-empty branch and the probe at `:L218` runs.
       if (sql.includes('LEFT JOIN SwOption')) {
-        return sqlRows([{ optionID: 'opt-1', optionGroupID: 'og-1' }]);
+        return sqlRows([{ optionID: physicalID('opt-1'), optionGroupID: physicalID('og-1') }]);
       }
 
       return undefined;
@@ -1359,7 +1786,7 @@ describe('NET-NEW — importFromFile, and D18: the declared hardening of every f
     expect(collapse(linkProbe.sql)).toBe(
       'SELECT 1 FROM SwSkuOption WHERE optionID = ? AND skuID = ? LIMIT 1',
     );
-    expect(linkProbe.params[0]).toBe('opt-1');
+    expect(linkProbe.params[0]).toBe(physicalID('opt-1'));
     expect(linkProbe.params).toHaveLength(2);
 
     // No row came back, so `:L230-L234` inserts the link with the very same two identifiers.
@@ -1373,10 +1800,10 @@ describe('NET-NEW — importFromFile, and D18: the declared hardening of every f
       const sql = collapse(statement.sql);
 
       if (sql.startsWith('SELECT optionGroupID FROM SwOptionGroup')) {
-        return sqlRows([{ optionGroupID: 'og-1' }]);
+        return sqlRows([{ optionGroupID: physicalID('og-1') }]);
       }
       if (sql.includes('LEFT JOIN SwOption')) {
-        return sqlRows([{ optionID: 'opt-1', optionGroupID: 'og-1' }]);
+        return sqlRows([{ optionID: physicalID('opt-1'), optionGroupID: physicalID('og-1') }]);
       }
       if (sql.startsWith('SELECT 1 FROM SwSkuOption')) {
         return sqlRows([{ '1': 1 }]);
@@ -1424,7 +1851,7 @@ describe('NET-NEW — importFromFile, and D18: the declared hardening of every f
   it('NET-NEW — skips the :L247 insert when the update reports a changed row', async () => {
     const harness = buildHarness(ADVERSARIAL_FILE, (statement) => {
       if (collapse(statement.sql).startsWith('SELECT optionGroupID FROM SwOptionGroup')) {
-        return sqlRows([{ optionGroupID: 'og-1' }]);
+        return sqlRows([{ optionGroupID: physicalID('og-1') }]);
       }
       if (collapse(statement.sql).startsWith('UPDATE SwAttributeValue')) {
         return sqlAffectedRows(1);
@@ -1540,34 +1967,24 @@ describe('NET-NEW — importFromFile, and D18: the declared hardening of every f
     expect(assertTableName('SwProduct')).toBe('SwProduct');
   });
 
-  it('NET-NEW — names no Mura CMS tContent table, and refuses the import that would need it', async () => {
-    const harness = buildHarness(
-      fileWith(
-        ['productcontent_page', 'product_productCode', 'product_productName', 'brand_brandname'],
-        ['page-1', 'CODE-1', 'Widget', 'Acme'],
-      ),
-    );
-
+  it('NET-NEW — names no Mura CMS tContent table, and composes no excluded identifier for it', () => {
     /*
-     * ⛔ `model/dao/ProductDAO.cfc:L261-L264` JOINS `tContent`, WHICH IS A MURA CMS TABLE AND A DECLARED
-     * EXTRACTION BOUNDARY. It belongs to a separate application's schema, so it is not in the identifier
-     * whitelist and it must never be added to one: admitting it would extend this catalogue port into a
-     * content-management system whose columns and lifecycle sit outside every scope boundary declared
-     * for this slice. The name may appear in a refusal or in a comment such as this one — nowhere else.
+     * ⛔ `model/dao/ProductDAO.cfc:L262` SELECTS FROM `tContent`, A MURA CMS TABLE, and `:L271`/`:L277`
+     * touch `SlatwallProductContent`, whose whole `Content*` family AAP §0.2.2.1 excludes. NEITHER is in
+     * this port's physical whitelist and neither may be added to one: admitting them would extend a
+     * catalogue port into a content-management schema whose columns and lifecycle sit outside every scope
+     * boundary declared for this slice.
      *
-     * The refusal is a PREFLIGHT for the same M3 reason as the column authorisation above: the legacy
-     * performs this step LAST in the row body, so refusing there would commit every earlier row and
-     * abandon the file mid-import. Refusing before the first boundary leaves the catalogue untouched.
+     * ⭐ THIS CASE USED TO ASSERT A REFUSAL OF THE WHOLE IMPORT, AND THAT WAS REVIEW FINDING 12. The
+     * boundary is real, but refusing was "a functional substitution, not a translation" — the legacy
+     * COMPLETES the step. What the boundary actually forbids is composing those identifiers HERE, which is
+     * a narrower claim than refusing the import, and it is the claim this case now makes. The behaviour
+     * itself is asserted in the ported-algorithm section below, through
+     * `ProductContentAssignmentPort`.
      */
-    await expect(
-      harness.repository.importFromFile('https://feeds.example/catalog.csv'),
-    ).rejects.toThrow(/content-management application/);
-
-    expect(harness.statements).toEqual([]);
-    expect(harness.eventKinds()).toEqual([]);
-
-    // The name is not a table this port will accept, and this is the assertion that keeps it that way.
     expect(() => assertTableName('tContent')).toThrow(/does not contain/);
+    expect(() => assertTableName('SwProductContent')).toThrow(/does not contain/);
+    expect(() => assertTableName('SlatwallProductContent')).toThrow(/does not contain/);
   });
 
   it('NET-NEW — leaves the file-fed and setting-fed statements distinguishable by provenance', async () => {
@@ -1861,7 +2278,7 @@ describe('NET-NEW — importFromFile, and the parity decisions adjacent to D18',
         // Only `Colour` resolves; `Size` finds nothing and `:L170` deletes it from the array.
         if (collapse(statement.sql).startsWith('SELECT optionGroupID FROM SwOptionGroup')) {
           return statement.params[0] === 'Colour'
-            ? sqlRows([{ optionGroupID: 'og-1' }])
+            ? sqlRows([{ optionGroupID: physicalID('og-1') }])
             : sqlRows([]);
         }
 
@@ -1876,7 +2293,7 @@ describe('NET-NEW — importFromFile, and the parity decisions adjacent to D18',
      * is silently ignored. Two lookups were issued; one option path ran. */
     expect(matching(harness, 'FROM SwOptionGroup WHERE optionGroupName')).toHaveLength(2);
     expect(matching(harness, 'LEFT JOIN SwOption')).toHaveLength(1);
-    expect(only(harness, 'LEFT JOIN SwOption').params).toEqual(['Blue', 'og-1']);
+    expect(only(harness, 'LEFT JOIN SwOption').params).toEqual(['Blue', physicalID('og-1')]);
   });
 
   it('NET-NEW — appends _<productCode> ONCE on a urlTitle collision and never re-probes', async () => {
@@ -1950,7 +2367,7 @@ describe('NET-NEW — importFromFile, and the parity decisions adjacent to D18',
       importable(['product_productCode', 'product_productName'], ['CODE-1', 'Existing']),
       (statement) => {
         if (collapse(statement.sql).startsWith('SELECT productID FROM SwProduct')) {
-          return sqlRows([{ productID: 'existing-product' }]);
+          return sqlRows([{ productID: physicalID('existing-product') }]);
         }
 
         return undefined;
@@ -1994,13 +2411,13 @@ describe('NET-NEW — importFromFile, and the parity decisions adjacent to D18',
       const sql = collapse(statement.sql);
 
       if (sql.startsWith('SELECT optionGroupID FROM SwOptionGroup')) {
-        return sqlRows([{ optionGroupID: 'og-1' }]);
+        return sqlRows([{ optionGroupID: physicalID('og-1') }]);
       }
       if (sql.startsWith('SELECT productID FROM SwProduct')) {
-        return sqlRows([{ productID: 'existing-product' }]);
+        return sqlRows([{ productID: physicalID('existing-product') }]);
       }
       if (sql.startsWith('SELECT skuID FROM SwSku')) {
-        return sqlRows([{ skuID: 'existing-sku' }]);
+        return sqlRows([{ skuID: physicalID('existing-sku') }]);
       }
 
       return undefined;
@@ -2010,8 +2427,10 @@ describe('NET-NEW — importFromFile, and the parity decisions adjacent to D18',
 
     /* Same internal return, different arm: `:L392` reads the identifier off the existence lookup instead
      * of generating one, and every dependent write then carries THAT value. */
-    expect(only(harness, 'UPDATE SwAttributeValue').params).toContain('existing-product');
-    expect(only(harness, 'INSERT INTO SwSkuOption').params).toContain('existing-sku');
+    expect(only(harness, 'UPDATE SwAttributeValue').params).toContain(
+      physicalID('existing-product'),
+    );
+    expect(only(harness, 'INSERT INTO SwSkuOption').params).toContain(physicalID('existing-sku'));
   });
 
   it('NET-NEW — supplies the :L143-L148 flag defaults only when the heading is ABSENT', async () => {
@@ -2059,7 +2478,7 @@ describe('NET-NEW — importFromFile, and the parity decisions adjacent to D18',
 
     const resolving = buildHarness(twoRowsOneBrand, (statement) => {
       if (collapse(statement.sql).startsWith('SELECT brandID FROM SwBrand')) {
-        return sqlRows([{ brandID: 'brand-1' }]);
+        return sqlRows([{ brandID: physicalID('brand-1') }]);
       }
 
       return undefined;
@@ -2261,8 +2680,8 @@ describe('NET-NEW — searchByProductType, and its optional plural surface', () 
     const harness = buildHarness(
       fileWith([]),
       searchAnswering(
-        { productID: 'p-1', productName: 'First Widget' },
-        { productID: 'p-2', productName: QUOTE_BEARING.productName },
+        { productID: physicalID('p-1'), productName: 'First Widget' },
+        { productID: physicalID('p-2'), productName: QUOTE_BEARING.productName },
       ),
     );
 
@@ -2275,8 +2694,8 @@ describe('NET-NEW — searchByProductType, and its optional plural surface', () 
      * is why `value` carries the NAME and `id` the identifier — the opposite of what the words suggest.
      */
     expect(found).toEqual([
-      { id: 'p-1', value: 'First Widget' },
-      { id: 'p-2', value: QUOTE_BEARING.productName },
+      { id: physicalID('p-1'), value: 'First Widget' },
+      { id: physicalID('p-2'), value: QUOTE_BEARING.productName },
     ]);
     // Exactly two keys, and no leakage of the underlying column names into the projection.
     expect(Object.keys(found[0] ?? {}).sort()).toEqual(['id', 'value']);
@@ -2356,18 +2775,94 @@ describe('NET-NEW — searchByProductType, and its optional plural surface', () 
     expect(harness.eventKinds()).toEqual([]);
   });
 
-  it('NET-NEW — satisfies the ProductRepository port for all three declared members', () => {
+  it('NET-NEW — satisfies the ProductRepository port across its whole declared surface', () => {
     /*
      * The interface parity check, stated so it cannot drift. This binding fails to compile if the adapter
      * stops satisfying the port — a renamed member, a changed arity, a narrowed argument or a widened
      * return would each break it — which is the compile-time equivalent of the method-by-method mapping
      * the migration is meant to make checkable.
+     *
+     * ⚠️ ALL SIX ARE NAMED, NOT THREE. An earlier revision asserted "all three declared members" and
+     * listed only the three legacy DAO members, which silently under-counted the port: `ProductRepository`
+     * also declares `backfillImportDerivedColumns`, `saveProduct` and `removeProduct`, and each is
+     * documented as additive at its own declaration. An assertion that names a subset cannot notice a
+     * member disappearing from outside that subset, so the whole surface is enumerated.
      */
     const asPort: ProductRepository = buildHarness(fileWith([])).repository;
 
+    /* The three legacy DAO members — AAP §0.4.2.6. */
     expect(typeof asPort.findAttributeSets).toBe('function');
     expect(typeof asPort.importFromFile).toBe('function');
     expect(typeof asPort.searchByProductType).toBe('function');
+
+    /* The three additive members, each defended at its declaration. */
+    expect(typeof asPort.backfillImportDerivedColumns).toBe('function');
+    expect(typeof asPort.saveProduct).toBe('function');
+    expect(typeof asPort.removeProduct).toBe('function');
+
+    /*
+     * ⛔ AND THE BOUNDED SEARCH IS ABSENT, ASSERTED RATHER THAN LEFT IMPLICIT.
+     *
+     * `searchByProductTypeBounded` was declared on this port, implemented on this adapter and mirrored on
+     * the in-memory double, and was reached from NOWHERE — no service, no handler, no integration. It has
+     * been removed, and the removal is pinned here because absence is otherwise invisible: nothing else
+     * in this suite would notice it being reinstated, and reinstating it would restore adapter code that
+     * cannot be exercised through any ratified caller.
+     *
+     * Wiring one instead was not available. AAP §0.4.2.1 fixes `ProductService` at fifteen public members
+     * and none is a product search — the legacy `model/dao/ProductDAO.cfc:L419` member is reached from the
+     * out-of-scope admin layer, not from `model/service/ProductService.cfc` — so a caller would have
+     * needed an unratified sixteenth member, which TR-1 and AAP §0.8.2 guideline 4 forbid.
+     *
+     * ⭐ THE SIBLING BOUNDED MEMBERS ARE UNAFFECTED, and that asymmetry is the point rather than an
+     * inconsistency: `SkuRepository.searchByProductTypeBounded` is reached from
+     * `SkuService.searchSkusByProductTypeBounded` and the two `OptionRepository` bounded reads from
+     * `OptionService`, so each of those has a routed caller this one never had.
+     */
+    expect('searchByProductTypeBounded' in asPort).toBe(false);
+    expect(
+      Object.hasOwn(Object.getPrototypeOf(asPort) as object, 'searchByProductTypeBounded'),
+    ).toBe(false);
+
+    /*
+     * The unbounded member it sat beside is untouched, and still declares its TWO arguments — `term` and
+     * the plural `productTypeIDs`. Arity is asserted because the removed member's own arity was three, so
+     * a mistaken deletion of the wrong declaration would show up here as a two becoming a three.
+     */
+    expect(asPort.searchByProductType).toHaveLength(2);
+  });
+
+  /*
+   * ⭐ REVIEW FINDING F3 — THE SAME SURFACE, CHECKED THE OTHER WAY ROUND. The case above enumerates the
+   * six members BY HAND, which catches a member that DISAPPEARS. It cannot catch one that is ADDED: a
+   * seventh method could join the port and every assertion above would still pass. The mapped type below
+   * closes that direction — it is keyed off `keyof ProductRepository`, so a new member makes this file
+   * fail to COMPILE until it is named here and driven by the statement sweep.
+   *
+   * ⛔ AND IT NAMES SIX KEYS, NOT SEVEN. The revision that introduced this check listed
+   * `searchByProductTypeBounded` as a seventh and asserted a length of seven. That member has since been
+   * withdrawn from the port for having no caller anywhere, so a seven-key map would now fail to compile
+   * against the six-member interface — which is precisely the property being relied on here, working as
+   * intended.
+   */
+  it('NET-NEW — F3: the ProductRepository surface is EXHAUSTIVE at SIX members, keyed off the port itself', () => {
+    const asPort: ProductRepository = buildHarness(fileWith([])).repository;
+
+    const everyPortMember: Record<keyof ProductRepository, true> = {
+      findAttributeSets: true,
+      importFromFile: true,
+      searchByProductType: true,
+      backfillImportDerivedColumns: true,
+      saveProduct: true,
+      removeProduct: true,
+    };
+
+    const declared = Object.keys(everyPortMember) as readonly (keyof ProductRepository)[];
+
+    expect(declared).toHaveLength(6);
+    for (const member of declared) {
+      expect(typeof asPort[member]).toBe('function');
+    }
   });
 });
 
@@ -2380,7 +2875,16 @@ describe('NET-NEW — searchByProductType, and its optional plural surface', () 
  * characterisation of any single legacy line.
  * ============================================================================================== */
 
-/** Drives every public member and returns every statement all three produced, in issue order. */
+/**
+ * Drives every public member and returns every statement they produced, in issue order.
+ *
+ * ⚠️ "EVERY STATEMENT" IS A LOAD-BEARING CLAIM, AND IT HAS TO BE KEPT TRUE. An earlier revision drove
+ * only the importer's two arms plus the two unbounded reads, while the gates below asserted their
+ * properties over "EVERY statement the adapter can emit" — so the bounded search, the write, the
+ * removal and the explicit back-fill were exempt from the standing discipline without saying so. Each
+ * is driven here now, and anything added to the public surface later must be added here too or the
+ * gates silently stop covering it.
+ */
 async function everyStatementTheAdapterCanEmit(): Promise<readonly RecordedStatement[]> {
   const importing = buildHarness(ADVERSARIAL_FILE, resolvingOptionGroup);
   await importing.repository.importFromFile('https://feeds.example/catalog.csv');
@@ -2390,16 +2894,16 @@ async function everyStatementTheAdapterCanEmit(): Promise<readonly RecordedState
     const sql = collapse(statement.sql);
 
     if (sql.startsWith('SELECT optionGroupID FROM SwOptionGroup')) {
-      return sqlRows([{ optionGroupID: 'og-1' }]);
+      return sqlRows([{ optionGroupID: physicalID('og-1') }]);
     }
     if (sql.startsWith('SELECT productID FROM SwProduct')) {
-      return sqlRows([{ productID: 'existing-product' }]);
+      return sqlRows([{ productID: physicalID('existing-product') }]);
     }
     if (sql.startsWith('SELECT skuID FROM SwSku WHERE skuCode')) {
-      return sqlRows([{ skuID: 'existing-sku' }]);
+      return sqlRows([{ skuID: physicalID('existing-sku') }]);
     }
     if (sql.includes('LEFT JOIN SwOption')) {
-      return sqlRows([{ optionID: 'opt-1', optionGroupID: 'og-1' }]);
+      return sqlRows([{ optionID: physicalID('opt-1'), optionGroupID: physicalID('og-1') }]);
     }
 
     return undefined;
@@ -2417,9 +2921,78 @@ async function everyStatementTheAdapterCanEmit(): Promise<readonly RecordedState
     QUOTE_BEARING.searchTerm,
     READ_ARGUMENTS.productTypeIds.join(','),
   );
+  /* The write and removal arms, whose statements no read or import path composes. Both arms of the
+   * write are driven, because an insert LISTS the identifier while an update MATCHES on it. */
+  const writing = buildHarness(fileWith([]));
+  await writing.repository.saveProduct(transientProduct());
+  await writing.repository.saveProduct(persistedProduct());
+  await writing.repository.removeProduct(persistedProduct());
+  /*
+   * ⚠️ AND BOTH WRITE ARMS AGAIN WITH ADVERSARIAL VALUES, WHICH IS THE HALF THAT WAS MISSING. Driving
+   * the write path with `transientProduct()` alone put its STATEMENTS under the gates below but not its
+   * VALUES: every field that product carries is benign, so the value-separation gate could scan the
+   * insert and the update and find nothing to separate. It would have passed identically against an
+   * adapter that composed `productName` straight into the statement text. `adversarialProduct()` carries
+   * a quote and a statement terminator in every writable field, so the gate now has something to fail on.
+   *
+   * The benign arms above are KEPT rather than replaced: they are what the other gates' expectations were
+   * written against, and the adversarial arms compose the same statement texts — the write column list is
+   * fixed, not derived from which fields happen to be set — so adding them changes which VALUES the sweep
+   * observes without changing which STATEMENTS it observes.
+   */
+  await writing.repository.saveProduct(adversarialProduct());
+  await writing.repository.saveProduct(adversarialProduct({ productID: PERSISTED_PRODUCT_ID }));
+  /* The back-fill, which the importer normally invokes for itself but which is separately declared. */
+  await writing.repository.backfillImportDerivedColumns();
 
-  return [...importing.statements, ...updating.statements, ...reading.statements];
+  return [
+    ...importing.statements,
+    ...updating.statements,
+    ...reading.statements,
+    ...writing.statements,
+  ];
 }
+
+/**
+ * A product whose every writable text field carries a quote and a statement terminator.
+ *
+ * Used by the cross-cutting gates so the write path is held to the same value-separation rule as the
+ * importer. The values are deliberately unlike any schema identifier, so a substring search for one
+ * cannot collide with a legitimate column name.
+ */
+function adversarialProduct(overrides: Partial<Product> = {}): Product {
+  const product = new Product();
+
+  product.productName = WRITE_ARGUMENTS.productName;
+  product.productCode = WRITE_ARGUMENTS.productCode;
+  product.productDescription = WRITE_ARGUMENTS.productDescription;
+  product.urlTitle = WRITE_ARGUMENTS.urlTitle;
+
+  /*
+   * ⚠️ THE OVERRIDES PARAMETER EXISTS FOR ONE REASON: THE UPDATE ARM. `saveProduct` branches on
+   * `isNew()`, so a product with no identifier can only ever reach the INSERT statement. Supplying
+   * `productID` here is what lets the same adversarial values be driven through the UPDATE arm as well,
+   * and both arms need it — an insert LISTS the identifier among its values while an update MATCHES on
+   * it and appends it last, so the two bind their values at different offsets and a gate that saw only
+   * one of them would be half a gate.
+   */
+  return Object.assign(product, overrides);
+}
+
+/**
+ * Write-side arguments for the gate: quote-bearing, and unmistakable against any schema identifier.
+ *
+ * ⚠️ DECLARED ONCE AND CONSUMED TWICE, WHICH IS THE POINT. `adversarialProduct()` assigns these and the
+ * gate below asserts them, so the values the write path is GIVEN and the values the gate LOOKS FOR cannot
+ * drift apart. Inlining them in the factory would let a later edit change a field's value and silently
+ * narrow the gate to a string nothing sends any more — a gate that then passes by vacuity.
+ */
+const WRITE_ARGUMENTS = Object.freeze({
+  productName: "Pro'duct; DROP TABLE SwProduct; --",
+  productCode: "co'de-alpha",
+  productDescription: "des'cription <b>alpha</b>",
+  urlTitle: "url'-title",
+});
 
 /** Read-side arguments for the gate: quote-bearing, and unmistakable against any schema identifier. */
 const READ_ARGUMENTS = Object.freeze({
@@ -2445,8 +3018,18 @@ describe('NET-NEW — the query discipline every statement in this adapter is he
     const text = statements.map((statement) => statement.sql).join('\n');
 
     /*
-     * Every value any of the three members was given, including the wildcard-wrapped search term and the
-     * product-type list tokens. None of them may appear as text; all of them appear as parameters.
+     * Every value any of the SIX members was given — the importer's cells, the read side's search term
+     * and product-type tokens, and the write side's quote-bearing product fields. None of them may appear
+     * as text; all of them appear as parameters.
+     *
+     * ⚠️ THE WRITE-SIDE VALUES ARE LISTED HERE DELIBERATELY, AND THEIR ABSENCE WAS PART OF FINDING F3 —
+     * NOW DISCHARGED AT BOTH ENDS. Naming them here was only half of it: the helper also had to SEND them,
+     * and while it drove the write arms with a benign product these expectations were unsatisfiable, so the
+     * gate reported a failure that named a real hole rather than a wrong assertion. The helper now drives
+     * both write arms with `adversarialProduct()` as well, so each value below is both named here and
+     * actually bound. Scanning a statement is not the same as holding its values to the rule, and
+     * `productName` carries a statement terminator precisely so that the difference is observable rather
+     * than theoretical.
      *
      * ⚠️ EVERY VALUE HERE IS CHOSEN TO BE UNMISTAKABLE, and that is a deliberate design of the check
      * rather than a convenience. A generic argument such as `'brand'` would be found inside the perfectly
@@ -2456,6 +3039,7 @@ describe('NET-NEW — the query discipline every statement in this adapter is he
      */
     const supplied = [
       ...Object.values(QUOTE_BEARING),
+      ...Object.values(WRITE_ARGUMENTS),
       ...READ_ARGUMENTS.typeCodes,
       ...READ_ARGUMENTS.productTypeIds,
       'Merchandise',
@@ -2534,41 +3118,94 @@ describe('NET-NEW — the query discipline every statement in this adapter is he
     }
   });
 
-  it('NET-NEW — carries a LIMIT on exactly the three source-grounded statements, and no other', async () => {
+  it('NET-NEW — carries a LIMIT on exactly three statements — one source-literal and two documented answer-preserving — and no other', async () => {
     const statements = await everyStatementTheAdapterCanEmit();
     const limited = statements.filter((statement) => collapse(statement.sql).includes('LIMIT'));
 
     /*
-     * ⭐ NO ROW CEILING IS INVENTED, AND THE THREE THAT EXIST ARE ENUMERATED RATHER THAN WAVED THROUGH.
-     * A blanket "no LIMIT anywhere" claim would be false and would hide the interesting question, which
-     * is whether each `LIMIT` is source-grounded:
+     * ⭐ NO ROW CEILING IS INVENTED, AND THE THREE THAT EXIST ARE ENUMERATED RATHER THAN WAVED THROUGH —
+     * separated by PROVENANCE, because only one of them is literally in the legacy text. A blanket
+     * "no LIMIT anywhere" claim would be false, and a blanket "all three are source-grounded" claim would
+     * be false in the other direction:
      *
-     *   1. `:L291` — the default-SKU back-fill's subquery. The `LIMIT 1` IS IN THE SOURCE, and the
-     *      absence of an `ORDER BY` beside it is preserved with it.
-     *   2. `:L401-L404` — the URL-title probe. The legacy projected `productID` and `:L404` then read
-     *      nothing but the record count, so one matching row was already complete evidence and every
-     *      further row was discarded. Provably answer-preserving, and documented as a translation
-     *      decision rather than an optimisation.
-     *   3. `:L218-L221` — the SKU-option link probe, the same argument: `:L221` reads only the count.
+     *   1. SOURCE-LITERAL. `:L291` — the default-SKU back-fill's subquery. The `LIMIT 1` IS IN THE
+     *      LEGACY TEXT, and the absence of an `ORDER BY` beside it is preserved with it.
+     *   2. ANSWER-PRESERVING TARGET DECISION. `:L401-L404` — the URL-title probe. The legacy statement
+     *      carries NO `LIMIT`: it projects `productID`, and `:L404` then reads nothing but the record
+     *      count, so one matching row was already complete evidence and every further row was discarded.
+     *      The cap is therefore provably answer-preserving, and it is a translation decision rather than
+     *      either a source quotation or an optimisation.
+     *   3. ANSWER-PRESERVING TARGET DECISION. `:L218-L221` — the SKU-option link probe, the same
+     *      argument and the same absence of a legacy `LIMIT`: `:L221` reads only the count.
      *
-     * Nothing else is capped. The product search in particular carries none, because `:L421` declares
-     * none and a ceiling there would change which rows a caller sees.
+     * ⚠️ AND THERE IS NO FOURTH, CALLER-SUPPLIED CATEGORY ON THIS PORT. A windowed
+     * `searchByProductTypeBounded` was declared here at one point and has been withdrawn: no caller in
+     * the slice reached it, and AAP §0.4.2.1 closes `ProductService` at fifteen members with no product
+     * search among them, so nothing could reach it without inventing a sixteenth. Its removal is why
+     * this gate expects THREE shapes rather than four, and why every `LIMIT` the adapter can emit is a
+     * literal `LIMIT 1` FIXED BY THIS ADAPTER rather than a number a caller chose — one of the three
+     * quoted from the legacy text and the other two the documented answer-preserving decisions above.
+     * (The distinction is provenance, not shape: all three are `LIMIT 1`, and none is caller-supplied.)
+     * The routed windowed member that DOES exist lives on `SkuRepository` and is gated in that adapter's
+     * own suite.
+     *
+     * Nothing else is capped. The UNBOUNDED product search in particular carries none, because `:L421`
+     * declares none and a ceiling there would change which rows a caller sees.
      */
     const limitedTexts = new Set(limited.map((statement) => collapse(statement.sql)));
+
+    /*
+     * ⚠️ THERE IS NO FOURTH SHAPE, AND THE REASON IS A WITHDRAWAL RATHER THAN AN OVERSIGHT. A windowed
+     * `searchByProductTypeBounded` was declared on this port at one point, and while it existed this gate
+     * was expected to see a fourth `LIMIT ? OFFSET ?` shape once the sweep drove every member. The member
+     * has since been withdrawn — nothing in the slice reached it, and AAP §0.4.2.1 closes `ProductService`
+     * at fifteen members with no product search among them — so the fourth shape has no emitter and the
+     * count is three.
+     *
+     * ⭐ WHAT THAT WITHDRAWAL DOES *NOT* EXCUSE IS THE WIDENING, AND THE WIDENING IS THE PART THAT MATTERS.
+     * While this helper drove only three of the adapter's members, the closing claim — no statement mentions
+     * an offset — was passing by omission: the statements that could have contradicted it were never
+     * executed. The helper now drives all SIX declared members, so the same claim is discharged by
+     * execution rather than by absence. That is the durable half of the finding, and it survives the
+     * member's removal intact.
+     */
     expect(limitedTexts.size).toBe(3);
 
+    /* No windowed shape at all, now that the caller-supplied window has been withdrawn from this port. */
+    const windowed = [...limitedTexts].filter((text) => text.includes('OFFSET'));
+    expect(windowed).toHaveLength(0);
+
+    const hardCaps: string[] = [];
+    const boundWindows: string[] = [];
+
     for (const text of limitedTexts) {
+      if (text.endsWith('LIMIT ? OFFSET ?')) {
+        boundWindows.push(text);
+        continue;
+      }
+      hardCaps.push(text);
       expect(
         text.includes('SET defaultSkuID') ||
           text.startsWith('SELECT 1 FROM SwProduct WHERE urlTitle') ||
           text.startsWith('SELECT 1 FROM SwSkuOption'),
       ).toBe(true);
-      // One row, every time. No caller-supplied number reaches any of the three.
+      // One row, every time. No caller-supplied number reaches any of the three, whatever its provenance.
       expect(text).toContain('LIMIT 1');
     }
 
-    // And no statement mentions an offset, which only the explicitly windowed member may add.
-    expect(statements.every((statement) => !collapse(statement.sql).includes('OFFSET'))).toBe(true);
+    expect(hardCaps).toHaveLength(3);
+    /* And NO windowed shape, now that the caller-supplied window has been withdrawn from this port. */
+    expect(boundWindows).toHaveLength(0);
+
+    /*
+     * And no statement this adapter can emit carries an OFFSET at all. The prohibition is global again
+     * because the one member that legitimately paginated has been withdrawn; what it encodes is that no
+     * statement quietly acquires pagination the legacy never had.
+     */
+    const offsetBearing = statements.filter((statement) =>
+      collapse(statement.sql).includes('OFFSET'),
+    );
+    expect(offsetBearing).toHaveLength(0);
   });
 
   it('NET-NEW — states no timeout, retry, batch size or capacity number anywhere', async () => {
@@ -2608,7 +3245,17 @@ describe('NET-NEW — the query discipline every statement in this adapter is he
     const repository = new MySqlProductRepository({
       executor: first.executor,
       transactions: unitOfWork.unitOfWork,
-      sourceReader: { read: () => Promise.resolve(fileWith([])) },
+      sourceReader: {
+        sourcePolicy: {
+          validateSource: (fileURL: string) =>
+            Promise.resolve(fileURL as ValidatedProductImportSource),
+          revalidateRedirectHop: (hop: ProductImportRedirectHop) =>
+            Promise.resolve(hop.location as ValidatedProductImportSource),
+          readBounds: () => ({ maxBytes: 1, maxMilliseconds: 1, maxRedirectHops: 0 }),
+        },
+        read: () => Promise.resolve(fileWith([])),
+      },
+      contentAssignment: unresolvableProductContentAssignmentPort,
       accountContext: createAccountContextDouble(persistedAdminAccount()).accountContext,
       urlTitleFilter: (productName) => productName,
       readDefaultSkuId: () => '',
@@ -2660,5 +3307,2180 @@ describe('NET-NEW — the query discipline every statement in this adapter is he
     for (const statement of harness.statements) {
       expect(Object.isFrozen(statement.params)).toBe(true);
     }
+  });
+});
+
+/* ================================================================================================
+ * THE THREE ADDITIVE MEMBERS — the write, the removal, and the import controls
+ * ================================================================================================
+ * Everything above exercises the three members `model/dao/ProductDAO.cfc` declares. The suites below
+ * exercise the three it does NOT, and their labels carry **NET-NEW** for a second and stronger reason
+ * than the rest of the file: not merely "no legacy test exists" but "no legacy MEMBER exists". There
+ * is no legacy statement, no legacy bind order and no legacy return contract for these to be
+ * traceable to, so every expectation is derived from the production source alone and none of it should
+ * be read as evidence of observed parity with the CFML system.
+ *
+ * ⛔ A FOURTH ADDITIVE MEMBER WAS DECLARED HERE AND HAS BEEN WITHDRAWN. `searchByProductTypeBounded`
+ * capped rows on a statement the legacy never capped, and nothing reached it: AAP §0.4.2.1 closes
+ * `ProductService` at fifteen members and §0.4.2.5 enumerates the synthesized set, with no product
+ * search in either, so wiring a caller would have meant inventing a sixteenth member. It is asserted
+ * ABSENT in the port-satisfaction case above rather than tested here. The routed windowed member that
+ * does exist is `SkuRepository.searchByProductTypeBounded`, gated in that adapter's own suite.
+ *
+ * WHY THE REMAINING THREE EXIST, since a reviewer is entitled to ask before reading their cases:
+ *   - `saveProduct` / `removeProduct` — persistence formerly reached the database through the ORM
+ *     flush the framework triggered at request end, which mismatch M5 removed along with the session.
+ *     A stateless invocation has to issue its own statements.
+ *   - `ProductImportOptions` — the legacy importer ran under a 3600-second request budget (M1) with a
+ *     transaction per row (M3). Neither survives a single Lambda invocation, so the port offers a
+ *     cancellation signal and a way to defer the post-loop back-fills across chunks. Their cases pin
+ *     WHERE cancellation is observed, which is the part that determines whether an abort can leave a
+ *     row half-written.
+ * ============================================================================================== */
+
+/**
+ * The 19 writable product columns, resolved through the whitelist in the adapter's declared order.
+ *
+ * The adapter keeps its own list module-private, so these expectations resolve each name the same way
+ * it does rather than importing internals or retyping literals. The ORDER is the adapter's order, and
+ * that order IS the assertion in the bind-order cases: a column moved in production without being
+ * moved here shifts a binding, and these cases fail rather than passing against a shifted array.
+ */
+const PRODUCT_WRITE_COLUMNS = Object.freeze([
+  'activeFlag',
+  'urlTitle',
+  'productName',
+  'productCode',
+  'productDescription',
+  'publishedFlag',
+  'sortOrder',
+  'calculatedSalePrice',
+  'calculatedQATS',
+  'calculatedAllowBackorderFlag',
+  'calculatedTitle',
+  'brandID',
+  'productTypeID',
+  'defaultSkuID',
+  'remoteID',
+  'createdDateTime',
+  'createdByAccountID',
+  'modifiedDateTime',
+  'modifiedByAccountID',
+] as const);
+
+/** The identifier column name, spelled once. */
+const PRODUCT_ID_COLUMN_NAME = 'productID';
+
+/*
+ * The three physical tables the write and removal statements name, resolved through the same schema
+ * whitelist the adapter uses rather than retyped. A name the whitelist stopped recognising would fail
+ * at module evaluation instead of quietly comparing one hard-coded literal against another.
+ */
+const PRODUCT_TABLE = assertTableName('SwProduct');
+const SKU_TABLE = assertTableName('SwSku');
+const SKU_OPTION_TABLE = assertTableName('SwSkuOption');
+
+/** A persisted product identifier for the write and removal cases. */
+const PERSISTED_PRODUCT_ID = 'dddddddddddddddddddddddddddddddd';
+
+/**
+ * A transient product carrying the field values a save should persist.
+ *
+ * `productID` is left at the constructor's empty string, which is what `model/entity/Product.cfc:L52`
+ * declares as `unsavedvalue=""` and what `isNew()` tests, so this selects the insert branch.
+ */
+function transientProduct(overrides: Partial<Product> = {}): Product {
+  const product = new Product();
+  product.productName = 'Test Product';
+  product.productCode = 'TESTPRODUCT-1';
+  product.urlTitle = 'test-product';
+  product.activeFlag = true;
+  product.publishedFlag = true;
+  return Object.assign(product, overrides);
+}
+
+/** A persisted product: a non-empty identifier is what makes `isNew()` answer false. */
+function persistedProduct(overrides: Partial<Product> = {}): Product {
+  const product = transientProduct(overrides);
+  product.productID = PERSISTED_PRODUCT_ID;
+  return product;
+}
+
+/** The index of a writable column within a bound parameter array, for the given branch. */
+function writeColumnIndex(
+  column: (typeof PRODUCT_WRITE_COLUMNS)[number],
+  branch: 'insert' | 'update',
+): number {
+  /*
+   * ⚠️ THE TWO BRANCHES DO NOT SHARE AN OFFSET, AND CONFLATING THEM READS THE NEXT COLUMN'S VALUE.
+   * An INSERT lists the identifier first, shifting every column value one position right; an UPDATE
+   * binds the writable values from position zero and appends the identifier at the end. Naming the
+   * branch here forces each call site to say which it means instead of guessing.
+   */
+  const position = PRODUCT_WRITE_COLUMNS.indexOf(column);
+  return branch === 'insert' ? position + 1 : position;
+}
+
+describe('NET-NEW — saveProduct: the INSERT branch', () => {
+  it('NET-NEW — mints a 32-character identifier for a transient product and binds it FIRST', async () => {
+    const harness = buildHarness(fileWith([]));
+    const product = transientProduct();
+
+    expect(product.isNew()).toBe(true);
+
+    await harness.repository.saveProduct(product);
+
+    /* IR-6: 32 lowercase hexadecimal characters, no dashes, generated in application code. */
+    expect(product.productID).toMatch(HEX_32);
+    expect(product.isNew()).toBe(false);
+    expect(only(harness, 'INSERT INTO SwProduct').params[0]).toBe(product.productID);
+  });
+
+  it('NET-NEW — emits the exact column list, one placeholder per column, identifier included', async () => {
+    const harness = buildHarness(fileWith([]));
+
+    await harness.repository.saveProduct(transientProduct());
+
+    const statement = only(harness, 'INSERT INTO SwProduct');
+    const expectedColumns = [PRODUCT_ID_COLUMN_NAME, ...PRODUCT_WRITE_COLUMNS].join(', ');
+    const expectedPlaceholders = [PRODUCT_ID_COLUMN_NAME, ...PRODUCT_WRITE_COLUMNS]
+      .map(() => '?')
+      .join(', ');
+
+    /*
+     * Whole-statement equality rather than a substring probe. A column added to the list but not to
+     * the value array — or the reverse — shifts every binding after it, and only an exact comparison
+     * of both halves catches that.
+     */
+    expect(collapse(statement.sql)).toBe(
+      `INSERT INTO ${PRODUCT_TABLE} (${expectedColumns}) VALUES (${expectedPlaceholders})`,
+    );
+    expect(statement.params).toHaveLength(PRODUCT_WRITE_COLUMNS.length + 1);
+  });
+
+  it('NET-NEW — stamps the audit actor through the FREE functions, not through entity hooks', async () => {
+    const harness = buildHarness(fileWith([]));
+    const product = transientProduct();
+
+    await harness.repository.saveProduct(product);
+
+    /*
+     * ⭐ THE FREE STAMPING FUNCTIONS ARE CORRECT HERE, AND THE CONTRAST IS DELIBERATE.
+     * `MySqlProductTypeRepository.saveProductType` calls the ENTITY'S OWN hooks, because
+     * `model/entity/ProductType.cfc:L305-L313` overrides them to rebuild its ancestry path before
+     * delegating to the audit block. `model/entity/Product.cfc` overrides NEITHER hook, so a product
+     * only ever received the framework block — which is what the free functions are. Calling entity
+     * hooks here would invoke behaviour the legacy product never had.
+     */
+    const statement = only(harness, 'INSERT INTO SwProduct');
+    expect(product.createdByAccount).toBe(TEST_ADMIN_ACCOUNT_ID);
+    expect(product.modifiedByAccount).toBe(TEST_ADMIN_ACCOUNT_ID);
+    expect(statement.params[writeColumnIndex('createdByAccountID', 'insert')]).toBe(
+      TEST_ADMIN_ACCOUNT_ID,
+    );
+    expect(statement.params[writeColumnIndex('modifiedByAccountID', 'insert')]).toBe(
+      TEST_ADMIN_ACCOUNT_ID,
+    );
+    expect(product.createdDateTime).toBeInstanceOf(Date);
+  });
+
+  it('NET-NEW — stamps the timestamps but binds NULL actors when no account is in context', async () => {
+    const harness = buildHarness(
+      fileWith([]),
+      undefined,
+      createAbsentAccountContextDouble().accountContext,
+    );
+    const product = transientProduct();
+
+    await harness.repository.saveProduct(product);
+
+    /*
+     * An absent account is a real state — an unauthenticated or system-initiated write. The timestamps
+     * still have to be stamped because they depend on the clock rather than the actor, and the two
+     * account columns bind null rather than an empty string: the difference between "nobody was
+     * recorded" and "an account whose identifier is blank".
+     */
+    expect(product.createdDateTime).toBeInstanceOf(Date);
+    expect(product.createdByAccount).toBeUndefined();
+    expect(
+      only(harness, 'INSERT INTO SwProduct').params[
+        writeColumnIndex('createdByAccountID', 'insert')
+      ],
+    ).toBeNull();
+  });
+
+  it('NET-NEW — binds an ABSENT optional field as null rather than dropping it from the statement', async () => {
+    const harness = buildHarness(fileWith([]));
+    const product = new Product();
+    product.productName = 'Sparse Product';
+
+    await harness.repository.saveProduct(product);
+
+    const statement = only(harness, 'INSERT INTO SwProduct');
+
+    /*
+     * Dropping the column would let the database apply its own default, which is a DIFFERENT outcome
+     * from storing the absence the entity holds — and on an update it would leave a stale value in
+     * place. Every unset field, including the two association keys, binds null.
+     */
+    expect(statement.params[writeColumnIndex('productDescription', 'insert')]).toBeNull();
+    expect(statement.params[writeColumnIndex('brandID', 'insert')]).toBeNull();
+    expect(statement.params[writeColumnIndex('productTypeID', 'insert')]).toBeNull();
+    expect(statement.params).toHaveLength(PRODUCT_WRITE_COLUMNS.length + 1);
+  });
+
+  it('NET-NEW — BINDS a quote-bearing value instead of writing it into the statement text', async () => {
+    const harness = buildHarness(fileWith([]));
+
+    await harness.repository.saveProduct(
+      transientProduct({ productName: QUOTE_BEARING.productName }),
+    );
+
+    const statement = only(harness, 'INSERT INTO SwProduct');
+
+    /*
+     * D18's hardening applies to the IMPORTER's interpolated statements. This write interpolates
+     * nothing in the first place, so the value appears in the bound array and nowhere in the text —
+     * ordinary compliance rather than an exception, and this case is its evidence.
+     */
+    expect(statement.params).toContain(QUOTE_BEARING.productName);
+    expect(statement.sql).not.toContain(QUOTE_BEARING.productName);
+    expect(statement.sql).not.toContain("'");
+  });
+
+  it('NET-NEW — returns the SAME entity instance it was handed, not a copy', async () => {
+    const harness = buildHarness(fileWith([]));
+    const product = transientProduct();
+
+    /*
+     * The caller keeps its reference and reads the minted identifier off it. Returning a copy would
+     * leave the caller holding a transient entity that reports `isNew()` forever.
+     */
+    await expect(harness.repository.saveProduct(product)).resolves.toBe(product);
+  });
+});
+
+describe('NET-NEW — saveProduct: the UPDATE branch', () => {
+  it('NET-NEW — PRESERVES the stored identifier, mints no replacement, and binds it LAST', async () => {
+    const harness = buildHarness(fileWith([]));
+    const product = persistedProduct();
+
+    expect(product.isNew()).toBe(false);
+
+    await harness.repository.saveProduct(product);
+
+    const statement = only(harness, 'UPDATE SwProduct SET');
+    const expectedAssignments = PRODUCT_WRITE_COLUMNS.map((column) => `${column} = ?`).join(', ');
+
+    expect(product.productID).toBe(PERSISTED_PRODUCT_ID);
+    expect(collapse(statement.sql)).toBe(
+      `UPDATE ${PRODUCT_TABLE} SET ${expectedAssignments} WHERE ${PRODUCT_ID_COLUMN_NAME} = ?`,
+    );
+    /*
+     * The identifier binds LAST here and FIRST on the insert, because an insert LISTS it while an
+     * update MATCHES on it. Transposing the two would key the row on a column value — the single most
+     * damaging binding error this member could make.
+     */
+    expect(statement.params).toHaveLength(PRODUCT_WRITE_COLUMNS.length + 1);
+    expect(statement.params[statement.params.length - 1]).toBe(PERSISTED_PRODUCT_ID);
+  });
+
+  it('NET-NEW — refreshes the MODIFIED audit pair without disturbing a stored CREATED pair', async () => {
+    const harness = buildHarness(fileWith([]));
+    const storedCreation = new Date('2018-07-08T09:10:11.000Z');
+    const product = persistedProduct();
+    product.createdDateTime = storedCreation;
+    product.createdByAccount = 'aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa';
+
+    await harness.repository.saveProduct(product);
+
+    /*
+     * An update stamps only the modified half. Overwriting the created half would rewrite history on
+     * every save, and because the update binds a full column assignment the stored creation values
+     * have to survive the round trip through the entity to be re-bound unchanged.
+     */
+    expect(product.createdDateTime).toBe(storedCreation);
+    expect(product.createdByAccount).toBe('aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa');
+    expect(product.modifiedByAccount).toBe(TEST_ADMIN_ACCOUNT_ID);
+
+    const statement = only(harness, 'UPDATE SwProduct SET');
+    expect(statement.params[writeColumnIndex('createdDateTime', 'update')]).toBe(storedCreation);
+    expect(statement.params[writeColumnIndex('createdByAccountID', 'update')]).toBe(
+      'aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa',
+    );
+  });
+
+  it('NET-NEW — issues exactly ONE statement, with no read-back probe before it', async () => {
+    const harness = buildHarness(fileWith([]));
+
+    await harness.repository.saveProduct(persistedProduct());
+
+    /*
+     * The insert-or-update decision comes from the entity, not from a probe. The importer probes
+     * because a delimited row carries no identifier and existence has to be discovered; a product
+     * reaching this member is either freshly constructed or loaded from a row, so `isNew()` answers
+     * exactly and a round trip would buy nothing.
+     */
+    expect(harness.statements).toHaveLength(1);
+    expect(harness.eventKinds()).toEqual([]);
+  });
+
+  it('NET-NEW — chooses its branch from the ENTITY, so one adapter answers both shapes', async () => {
+    const harness = buildHarness(fileWith([]));
+
+    await harness.repository.saveProduct(transientProduct());
+    await harness.repository.saveProduct(persistedProduct());
+
+    expect(harness.statements).toHaveLength(2);
+    expect(collapse(harness.statements[0]?.sql ?? '').startsWith('INSERT INTO SwProduct')).toBe(
+      true,
+    );
+    expect(collapse(harness.statements[1]?.sql ?? '').startsWith('UPDATE SwProduct')).toBe(true);
+  });
+
+  it('NET-NEW — does not read the affected-row count, so a zero-row update still resolves', async () => {
+    const harness = buildHarness(fileWith([]), () => sqlAffectedRows(0));
+    const product = persistedProduct();
+
+    /*
+     * The legacy write primitive at `org/Hibachi/HibachiDAO.cfc:L69-L77` is declared `void` and
+     * reported nothing, so a caller never learned whether a row was present. Resolving on a zero-row
+     * acknowledgement preserves that; raising would invent a failure mode the legacy did not have.
+     */
+    await expect(harness.repository.saveProduct(product)).resolves.toBe(product);
+  });
+});
+
+describe('NET-NEW — removeProduct: refusal, and the four-statement order', () => {
+  it('NET-NEW — REFUSES a transient product and issues NO statement at all', async () => {
+    const harness = buildHarness(fileWith([]));
+
+    /*
+     * A transient product carries the empty unsaved value from `model/entity/Product.cfc:L52`, so a
+     * removal keyed on it would compose `WHERE productID = ''` — matching nothing in a sound table and
+     * an arbitrary row in an unsound one. Refusing before composing anything is not a hardening: it
+     * refuses an input the legacy could not express, rather than one it accepted.
+     */
+    await expect(harness.repository.removeProduct(transientProduct())).rejects.toThrow(
+      /cannot be removed before it has been persisted/,
+    );
+    expect(harness.statements).toHaveLength(0);
+  });
+
+  it('NET-NEW — names the refused product code in the failure context', async () => {
+    const harness = buildHarness(fileWith([]));
+
+    await expect(
+      harness.repository.removeProduct(transientProduct({ productCode: 'UNSAVED-1' })),
+    ).rejects.toMatchObject({ context: { productCode: 'UNSAVED-1' } });
+  });
+
+  it('NET-NEW — emits FOUR statements in referential order, each keyed on the identifier', async () => {
+    const harness = buildHarness(fileWith([]));
+
+    await harness.repository.removeProduct(persistedProduct());
+
+    /*
+     * ⭐ THE ORDER IS THE CONTRACT, BECAUSE EVERY STEP REMOVES A ROW THE NEXT ONE REFERENCES.
+     *   1. The product's own back-reference to its default SKU is nulled, because that SKU row is
+     *      about to disappear and the column points at it.
+     *   2. The SKU-option link rows go next, since they reference the SKU rows removed in step 3.
+     *   3. The SKU rows, which reference the product row removed in step 4.
+     *   4. The product itself, last.
+     * Re-ordering any pair would attempt to delete a row still referenced by a live one. All four bind
+     * the identifier and interpolate nothing.
+     */
+    expect(harness.statements.map((statement) => collapse(statement.sql))).toEqual([
+      `UPDATE ${PRODUCT_TABLE} SET defaultSkuID = NULL WHERE ${PRODUCT_ID_COLUMN_NAME} = ?`,
+      `DELETE FROM ${SKU_OPTION_TABLE} WHERE skuID IN ` +
+        `(SELECT skuID FROM ${SKU_TABLE} WHERE productID = ?)`,
+      `DELETE FROM ${SKU_TABLE} WHERE productID = ?`,
+      `DELETE FROM ${PRODUCT_TABLE} WHERE ${PRODUCT_ID_COLUMN_NAME} = ?`,
+    ]);
+    for (const statement of harness.statements) {
+      expect(statement.params).toEqual([PERSISTED_PRODUCT_ID]);
+    }
+  });
+
+  it('NET-NEW — resolves to undefined and reads no affected-row count', async () => {
+    const harness = buildHarness(fileWith([]), () => sqlAffectedRows(0));
+
+    /*
+     * For a removal the count is exact, but the legacy primitive is declared `void` and reported
+     * nothing, so a zero-row acknowledgement is not an error.
+     */
+    await expect(harness.repository.removeProduct(persistedProduct())).resolves.toBeUndefined();
+  });
+
+  it('NET-NEW — resolves NO acting account, because a removal stamps nothing', async () => {
+    const accountDouble = createAccountContextDouble(persistedAdminAccount());
+    const harness = buildHarness(fileWith([]), undefined, accountDouble.accountContext);
+
+    await harness.repository.removeProduct(persistedProduct());
+
+    /*
+     * There is no audit stamp on a row being deleted, so consulting the account seam would be work
+     * with no observable effect and would couple a removal to a collaborator it does not need.
+     */
+    expect(accountDouble.callCount()).toBe(0);
+  });
+
+  it('NET-NEW — opens no transaction, leaving the boundary to the caller', async () => {
+    const harness = buildHarness(fileWith([]));
+
+    await harness.repository.removeProduct(persistedProduct());
+
+    /*
+     * Four statements that must all succeed or all fail is exactly the shape that wants a
+     * transaction — and the adapter still does not open one, because the boundary belongs to the
+     * caller's `UnitOfWork` (M5). Asserting the absence keeps the ownership explicit: a removal that
+     * opened its own boundary could not be composed into a larger one.
+     */
+    expect(harness.eventKinds()).toEqual([]);
+    expect(harness.statements.every((statement) => statement.region === 'pool')).toBe(true);
+  });
+});
+
+describe('NET-NEW — ProductImportOptions: the cancellation signal', () => {
+  /** An `AbortSignal` already in the aborted state. */
+  function abortedSignal(): AbortSignal {
+    const controller = new AbortController();
+    controller.abort();
+    return controller.signal;
+  }
+
+  it('NET-NEW — aborts BEFORE the retrieval, so the source is never even read', async () => {
+    const harness = buildHarness(THREE_ROW_FILE, resolvingOptionGroup);
+
+    await expect(
+      harness.repository.importFromFile('https://feeds.example/catalog.csv', undefined, {
+        signal: abortedSignal(),
+      }),
+    ).rejects.toMatchObject({
+      context: { fileURL: 'https://feeds.example/catalog.csv', phase: 'beforeRetrieval' },
+    });
+
+    /*
+     * The earliest checkpoint costs nothing and saves the most: an already-cancelled import performs
+     * no network retrieval and issues no statement. The empty retrieval log is the observable half —
+     * a signal checked only inside the row loop would have fetched the file first.
+     */
+    expect(harness.retrievals).toHaveLength(0);
+    expect(harness.statements).toHaveLength(0);
+    expect(harness.eventKinds()).toEqual([]);
+  });
+
+  it('NET-NEW — carries NO row number in the pre-row phases, because no row has been reached', async () => {
+    const harness = buildHarness(THREE_ROW_FILE, resolvingOptionGroup);
+
+    const failure = await harness.repository
+      .importFromFile('https://feeds.example/catalog.csv', undefined, { signal: abortedSignal() })
+      .catch((error: unknown) => error);
+
+    /*
+     * The context shape differs by phase, deliberately: a pre-row abort reports only the file and the
+     * phase, while a row abort adds `rowNumber` and `committedRows`. Fabricating a zero row number
+     * here would imply the loop had started.
+     */
+    expect(failure).toMatchObject({ context: { phase: 'beforeRetrieval' } });
+    expect((failure as { context?: Record<string, unknown> }).context).not.toHaveProperty(
+      'rowNumber',
+    );
+    expect((failure as { context?: Record<string, unknown> }).context).not.toHaveProperty(
+      'committedRows',
+    );
+  });
+
+  it('NET-NEW — an UNABORTED signal changes nothing about the import', async () => {
+    const withSignal = buildHarness(THREE_ROW_FILE, resolvingOptionGroup);
+    const withoutSignal = buildHarness(THREE_ROW_FILE, resolvingOptionGroup);
+    const controller = new AbortController();
+
+    await withSignal.repository.importFromFile('https://feeds.example/catalog.csv', undefined, {
+      signal: controller.signal,
+    });
+    await withoutSignal.repository.importFromFile('https://feeds.example/catalog.csv');
+
+    /*
+     * Supplying a signal that never fires must be indistinguishable from supplying none. Otherwise
+     * every caller that wants cancellability would pay for it in changed behaviour.
+     */
+    expect(withSignal.statements.map((statement) => collapse(statement.sql))).toEqual(
+      withoutSignal.statements.map((statement) => collapse(statement.sql)),
+    );
+    expect(withSignal.transactionsCommitted()).toBe(withoutSignal.transactionsCommitted());
+    expect(withSignal.eventKinds()).toEqual(withoutSignal.eventKinds());
+  });
+
+  it('NET-NEW — aborting mid-file COMMITS the rows already done and attempts no later row', async () => {
+    const controller = new AbortController();
+    let rowTransactionsSeen = 0;
+    const harness = buildHarness(THREE_ROW_FILE, (statement) => {
+      /*
+       * Abort as soon as the first row's INSERT has been issued. The signal is checked at the TOP of
+       * each row iteration and never between two statements of the same row, so the first row runs to
+       * completion and commits, and the second row is never attempted.
+       */
+      if (collapse(statement.sql).startsWith('INSERT INTO SwProduct')) {
+        rowTransactionsSeen += 1;
+        controller.abort();
+      }
+      return resolvingOptionGroup(statement);
+    });
+
+    const failure = await harness.repository
+      .importFromFile('https://feeds.example/catalog.csv', undefined, { signal: controller.signal })
+      .catch((error: unknown) => error);
+
+    /*
+     * ⭐ THIS IS THE M3 PARTIAL-IMPORT SHAPE, PRESERVED RATHER THAN REPAIRED. The legacy opens a
+     * transaction per row, so a mid-file failure already leaves earlier rows committed and no later
+     * row attempted. Cancellation reproduces exactly that shape instead of inventing an all-or-nothing
+     * import, and `committedRows` reports it as `rowNumber - 1`.
+     */
+    expect(rowTransactionsSeen).toBe(1);
+    expect(failure).toMatchObject({
+      context: { phase: 'row', rowNumber: 2, committedRows: 1 },
+    });
+    expect(harness.transactionsCommitted()).toBe(1);
+    /*
+     * ⚠️ ROW TWO'S BOUNDARY IS OPENED AND THEN ROLLED BACK, AND THAT IS THE POINT RATHER THAN A LEAK.
+     * The signal is checked at the top of the row body, which runs INSIDE the per-row boundary, so the
+     * abort rolls back a transaction in which nothing has been written yet. That is precisely what
+     * guarantees the abort cannot leave a row half-written: the alternative — checking before the
+     * boundary opens — would be indistinguishable here but would not hold if a row's first statement
+     * were ever issued before the check. One committed row and one empty rollback is the exact shape.
+     */
+    expect(harness.transactionsRolledBack()).toBe(1);
+    expect(harness.transactionsStarted()).toBe(2);
+  });
+
+  it('NET-NEW — a mid-file abort runs NO back-fill, because the import did not complete', async () => {
+    const controller = new AbortController();
+    const harness = buildHarness(THREE_ROW_FILE, (statement) => {
+      if (collapse(statement.sql).startsWith('INSERT INTO SwProduct')) {
+        controller.abort();
+      }
+      return resolvingOptionGroup(statement);
+    });
+
+    await harness.repository
+      .importFromFile('https://feeds.example/catalog.csv', undefined, { signal: controller.signal })
+      .catch(() => undefined);
+
+    /*
+     * The back-fills run AFTER the row loop, so an abort that escapes the loop skips them. A back-fill
+     * over a partially imported file would derive default-SKU and image columns from half a catalog.
+     */
+    expect(harness.statements.filter((statement) => statement.region === 'backfill')).toHaveLength(
+      0,
+    );
+  });
+});
+
+describe('NET-NEW — ProductImportOptions: deferBackfills', () => {
+  it('NET-NEW — runs BOTH back-fills after the row loop when the flag is absent', async () => {
+    const harness = buildHarness(THREE_ROW_FILE, resolvingOptionGroup);
+
+    await harness.repository.importFromFile('https://feeds.example/catalog.csv');
+
+    /*
+     * The default is to back-fill, which is what the legacy does at `:L288-L302` — unconditionally,
+     * with no flag to suppress it. Two statements, outside any row transaction, in the pool region the
+     * harness labels `backfill`.
+     */
+    const backfills = harness.statements.filter((statement) => statement.region === 'backfill');
+    expect(backfills).toHaveLength(2);
+  });
+
+  it('NET-NEW — runs the back-fills even for an EMPTY file, exactly as the legacy does', async () => {
+    const harness = buildHarness(importable([]));
+
+    await harness.repository.importFromFile('https://feeds.example/catalog.csv');
+
+    /*
+     * A file with no rows still triggers the back-fills, because the legacy statement is outside the
+     * loop and has no row-count guard. Skipping them for an empty file would be a defensible
+     * optimisation and a behaviour change, so it is not made.
+     */
+    expect(harness.statements.filter((statement) => statement.region === 'backfill')).toHaveLength(
+      2,
+    );
+  });
+
+  it('NET-NEW — SUPPRESSES both back-fills when deferBackfills is true, and imports the rows anyway', async () => {
+    const harness = buildHarness(THREE_ROW_FILE, resolvingOptionGroup);
+
+    await harness.repository.importFromFile('https://feeds.example/catalog.csv', undefined, {
+      deferBackfills: true,
+    });
+
+    /*
+     * The flag exists because M1's 3600-second budget is unrepresentable in one Lambda invocation, so a
+     * long import has to be chunked — and the derived columns must be computed ONCE at the end rather
+     * than per chunk. Suppression must not disturb the rows themselves, which the commit count proves.
+     */
+    expect(harness.statements.filter((statement) => statement.region === 'backfill')).toHaveLength(
+      0,
+    );
+    expect(harness.transactionsCommitted()).toBe(3);
+  });
+
+  it('NET-NEW — deferBackfills FALSE is the same as absent, not a third behaviour', async () => {
+    const explicitlyFalse = buildHarness(THREE_ROW_FILE, resolvingOptionGroup);
+    const absent = buildHarness(THREE_ROW_FILE, resolvingOptionGroup);
+
+    await explicitlyFalse.repository.importFromFile(
+      'https://feeds.example/catalog.csv',
+      undefined,
+      {
+        deferBackfills: false,
+      },
+    );
+    await absent.repository.importFromFile('https://feeds.example/catalog.csv');
+
+    /*
+     * Production tests `options?.deferBackfills !== true`, so only the exact boolean `true` suppresses.
+     * Pinning `false` as equivalent to absent keeps a later `Boolean(...)`-style rewrite from turning
+     * any other falsy value into a third behaviour.
+     */
+    expect(
+      explicitlyFalse.statements.filter((statement) => statement.region === 'backfill'),
+    ).toHaveLength(2);
+    expect(absent.statements.filter((statement) => statement.region === 'backfill')).toHaveLength(
+      2,
+    );
+  });
+
+  it('NET-NEW — the deferred back-fill is separately invocable and issues the SAME two statements', async () => {
+    const deferred = buildHarness(THREE_ROW_FILE, resolvingOptionGroup);
+    const inline = buildHarness(THREE_ROW_FILE, resolvingOptionGroup);
+
+    await deferred.repository.importFromFile('https://feeds.example/catalog.csv', undefined, {
+      deferBackfills: true,
+    });
+    await deferred.repository.backfillImportDerivedColumns();
+    await inline.repository.importFromFile('https://feeds.example/catalog.csv');
+
+    /*
+     * Deferring then invoking has to be equivalent to not deferring at all, or chunking would change
+     * the result. Comparing the two back-fill statement sequences byte for byte is that equivalence.
+     */
+    const backfillsOf = (harness: Harness): readonly string[] =>
+      harness.statements
+        .filter((statement) => statement.region === 'backfill')
+        .map((statement) => collapse(statement.sql));
+
+    expect(backfillsOf(deferred)).toEqual(backfillsOf(inline));
+    expect(backfillsOf(deferred)).toHaveLength(2);
+  });
+
+  it('NET-NEW — runs the back-fill outside any transaction, on the pool', async () => {
+    const harness = buildHarness(fileWith([]));
+
+    await harness.repository.backfillImportDerivedColumns();
+
+    /*
+     * Both statements are bulk updates over the whole table, which the legacy issues at request scope
+     * with no transaction of its own. `runWithoutTransaction` preserves that, and the harness's
+     * `backfill` region is how that choice becomes observable.
+     */
+    expect(harness.statements).toHaveLength(2);
+    expect(harness.statements.every((statement) => statement.region === 'backfill')).toBe(true);
+    expect(harness.transactionsStarted()).toBe(0);
+  });
+});
+/* ================================================================================================
+ * importFromFile — SEC-08, the import-source gate at the retrieval seam
+ * ================================================================================================
+ * ⭐ REVIEW FINDING F8 (CWE-918). An earlier revision of this suite LOCKED the opposite behaviour: it
+ * asserted that whatever location arrived was forwarded to the retriever untouched and unchecked, and
+ * that lock is why the exposure survived a review. The lock is gone and these cases replace it.
+ *
+ * ⚠️ WHAT IS ASSERTED HERE IS NARROWER THAN THE FINDING'S FULL WORDING, DELIBERATELY AND ON RECORD. The
+ * finding also asks for resolved-address blocking, connecting to the vetted address and revalidating
+ * every redirect. Those need DNS resolution and a socket, which the adapter may not import (S4, S5), so
+ * they are stated as obligations on `ProductImportSourceReader` and cannot be asserted here — there is
+ * no retriever in this subtree to hold to them. What IS decidable without resolving anything is decided
+ * at the seam and is asserted below, in both directions.
+ *
+ * ⚠️ AND EVERY REFUSAL CASE ASSERTS WHAT MUST *NOT* HAVE HAPPENED, not merely that something threw. The
+ * gate runs before the retriever is selected, so a refused location must leave the reader untouched, no
+ * transaction opened and no statement issued — including the two bulk back-fills, which otherwise run
+ * even for a file that imports nothing.
+ *
+ * ⭐ TWO STACKED CONTROLS, AND THEY ARE NOT THE SAME CONTROL. This describe exercises the MODULE gate
+ * `assertRetrievableImportSource`, which is decidable without resolving anything and is applied by the
+ * adapter itself. The sibling describe below exercises the injected OPERATOR policy
+ * (`ProductImportSourcePolicy.validateSource` and `revalidateRedirectHop`), which is where the
+ * finding's resolved-address and redirect-hop obligations are actually discharged — so the paragraph
+ * above, which says they "cannot be asserted here", is scoped to THIS describe and not to the suite.
+ *
+ * ⚠️ THE TWO DO NOT GUARD THE SAME SET OF PATHS, AND THE ASYMMETRY IS DELIBERATE ON BOTH SIDES. The
+ * module gate is guarded on the file type and is SKIPPED for the spreadsheet branch, because that branch
+ * opens no socket and refusing it would change an outcome on a path with no egress to protect — asserted
+ * by the last case here. The operator policy runs UNCONDITIONALLY, including for that branch, so a caller
+ * cannot learn from a silent `.xls` success that a location would have been admitted — asserted by the
+ * sibling describe. Neither is redundant, and neither subsumes the other.
+ * ============================================================================================== */
+
+describe('NET-NEW — importFromFile, and SEC-08: the import-source gate', () => {
+  /**
+   * One hostile location per clause of the reinstated policy, each with the reason it is refused.
+   *
+   * Every IPv4 entry that is not already dotted-quad is here because the WHATWG parser canonicalises it
+   * to one before the gate sees it — which is the anti-evasion behaviour a hand-rolled host check gets
+   * wrong, and the reason the gate does not attempt its own decoding.
+   */
+  const REFUSED_LOCATIONS: readonly { readonly location: string; readonly because: string }[] =
+    Object.freeze([
+      { location: 'file:///etc/passwd', because: 'scheme — a local file is not HTTP' },
+      { location: 'ftp://files.test/x.csv', because: 'scheme — cfhttp does not speak FTP' },
+      { location: 'gopher://files.test/1', because: 'scheme — a classic request-smuggling vector' },
+      { location: 'data:text/csv,a,b', because: 'scheme — no retrieval happens at all' },
+      {
+        location: 'https://operator:secret@feeds.example/catalog.csv',
+        because: 'credentials — cfhttp took them as separate attributes, never from the URL',
+      },
+      {
+        location: 'https://operator@feeds.example/catalog.csv',
+        because: 'credentials — a username alone still counts',
+      },
+      { location: 'http://127.0.0.1/catalog.csv', because: 'loopback — RFC 1122 127.0.0.0/8' },
+      { location: 'http://127.1/catalog.csv', because: 'loopback — short form, canonicalised' },
+      { location: 'http://2130706433/catalog.csv', because: 'loopback — decimal integer form' },
+      { location: 'http://0x7f000001/catalog.csv', because: 'loopback — hexadecimal form' },
+      { location: 'http://017700000001/catalog.csv', because: 'loopback — octal form' },
+      { location: 'http://localhost/catalog.csv', because: 'loopback — RFC 6761 reserved name' },
+      {
+        location: 'http://admin.localhost/catalog.csv',
+        because: 'loopback — the reserved suffix covers subdomains',
+      },
+      { location: 'http://[::1]/catalog.csv', because: 'loopback — RFC 4291 IPv6 ::1' },
+      {
+        location: 'http://[::ffff:127.0.0.1]/catalog.csv',
+        because: 'loopback — IPv4-mapped IPv6, which no IPv6 clause alone would catch',
+      },
+      { location: 'http://10.0.0.5/catalog.csv', because: 'private — RFC 1918 10/8' },
+      { location: 'http://172.20.0.5/catalog.csv', because: 'private — RFC 1918 172.16/12' },
+      { location: 'http://192.168.1.1/catalog.csv', because: 'private — RFC 1918 192.168/16' },
+      {
+        location: 'http://169.254.169.254/latest/meta-data/iam/security-credentials/',
+        because: 'instance metadata — inside RFC 3927 link-local, the headline CWE-918 target',
+      },
+      {
+        location: 'http://[fd00:ec2::254]/latest/meta-data/',
+        because: 'instance metadata over IPv6 — inside RFC 4193 unique-local',
+      },
+      { location: 'http://[fc00::1]/catalog.csv', because: 'unique-local — RFC 4193 fc00::/7' },
+      { location: 'http://[fe80::1]/catalog.csv', because: 'link-local — RFC 4291 fe80::/10' },
+      { location: 'http://0.0.0.0/catalog.csv', because: 'unspecified — RFC 1122 0/8' },
+      { location: '/import/catalog.csv', because: 'not an absolute URL, so nothing to retrieve' },
+      { location: 'catalog.csv', because: 'not an absolute URL either' },
+    ]);
+
+  /**
+   * Locations that MUST still be retrieved, which is the half no amount of refusal testing can show.
+   *
+   * The boundary entries are the point: each sits one step outside a refused range, so a gate that is
+   * even slightly too wide fails here rather than passing quietly.
+   */
+  const ADMITTED_LOCATIONS: readonly string[] = Object.freeze([
+    'https://feeds.example/catalog.csv',
+    'http://feeds.example/catalog.csv',
+    'HTTPS://Feeds.Example/catalog.csv',
+    'https://feeds.example:8443/catalog.csv?since=1#top',
+    'http://8.8.8.8/catalog.csv',
+    // One step outside each RFC 1918 block, and outside 127/8 on both sides.
+    'http://172.15.0.5/catalog.csv',
+    'http://172.32.0.5/catalog.csv',
+    'http://192.167.1.1/catalog.csv',
+    'http://126.0.0.1/catalog.csv',
+    'http://128.0.0.1/catalog.csv',
+    // RFC 6598 carrier-grade NAT space is NOT one of the six refused ranges, and is not added.
+    'http://100.64.0.1/catalog.csv',
+    // Just outside fc00::/7 and fe80::/10 respectively.
+    'http://[fbff::1]/catalog.csv',
+    'http://[fec0::1]/catalog.csv',
+    'http://[2001:db8::1]/catalog.csv',
+    // An IPv4-mapped address whose embedded IPv4 is public must survive the mapped-address decode.
+    'http://[::ffff:8.8.8.8]/catalog.csv',
+    // Names that merely LOOK like refused hosts, and are not.
+    'http://localhostx.test/catalog.csv',
+    'http://notlocalhost/catalog.csv',
+  ]);
+
+  it('NET-NEW — refuses every hostile location, one vector per clause of the policy', async () => {
+    const admitted: string[] = [];
+
+    for (const { location, because } of REFUSED_LOCATIONS) {
+      const harness = buildHarness(THREE_ROW_FILE);
+      let refused = false;
+
+      try {
+        await harness.repository.importFromFile(location);
+      } catch {
+        refused = true;
+      }
+
+      if (!refused) {
+        admitted.push(`${location} — should have been refused: ${because}`);
+      }
+    }
+
+    /* Reported as a list rather than one assertion per vector so a widened gate names every location it
+     * newly lets through, instead of stopping at the first. */
+    expect(admitted).toEqual([]);
+  });
+
+  it('NET-NEW — a refused location reaches the retriever ZERO times and writes NOTHING', async () => {
+    const harness = buildHarness(THREE_ROW_FILE);
+
+    await expect(
+      harness.repository.importFromFile(
+        'http://169.254.169.254/latest/meta-data/iam/security-credentials/',
+      ),
+    ).rejects.toThrow();
+
+    /*
+     * ⭐ THE ORDERING IS THE WHOLE CONTROL, AND THIS IS WHERE IT IS PROVED. The gate runs before the
+     * branch that selects between the streaming and materialising retrieval members, so the reader is
+     * never asked for anything: an empty `retrievals` list is the assertion that no request was made,
+     * not merely that its result was discarded.
+     */
+    expect(harness.retrievals).toEqual([]);
+
+    /* No transaction opened, so there is no partially imported catalogue — the M3 shape a mid-file
+     * failure produces is absent because no row was ever attempted. */
+    expect(harness.transactionsStarted()).toBe(0);
+    expect(harness.transactionsCommitted()).toBe(0);
+    expect(harness.transactionsRolledBack()).toBe(0);
+
+    /*
+     * ⚠️ AND NOT ONE STATEMENT WAS ISSUED, INCLUDING THE TWO BULK BACK-FILLS. That is the strict part:
+     * `:L288` and `:L304` sit outside the row loop and outside the spreadsheet branch, so an empty file
+     * and an `.xls` upload both still run them. A refusal must not, because a refusal happens before the
+     * import begins rather than during it.
+     */
+    expect(harness.statements).toEqual([]);
+    expect(matching(harness, 'SET defaultSkuID')).toEqual([]);
+    expect(matching(harness, 'SET imageFile')).toEqual([]);
+  });
+
+  it('NET-NEW — no refusal echoes the raw location, so a logged rejection leaks no secret', async () => {
+    const harness = buildHarness(THREE_ROW_FILE);
+    const secret = 'sup3rs3cret';
+
+    let raised: unknown;
+    try {
+      await harness.repository.importFromFile(
+        `https://operator:${secret}@feeds.example/catalog.csv?token=${secret}`,
+      );
+    } catch (error) {
+      raised = error;
+    }
+
+    /*
+     * A refusal is a thing that gets logged, and the location it refuses can carry a password in its
+     * userinfo or a token in its query. The message and context therefore report the host and the reason
+     * only. Serialising the whole error — message plus context — and searching it for the secret is the
+     * assertion, because either half leaking it would be equally bad.
+     */
+    expect(raised).toBeInstanceOf(Error);
+
+    /*
+     * ⚠️ SERIALISED IN TWO HALVES ON PURPOSE, BECAUSE ONE CALL CANNOT SEE BOTH. `message` and `stack` are
+     * NON-enumerable own properties of an `Error`, so `JSON.stringify` alone omits them; `context` is an
+     * ordinary enumerable property, so `String(...)` alone omits it. An earlier version of this case
+     * passed `Object.getOwnPropertyNames(raised)` as the replacer array and reported a context of `{}` —
+     * a replacer array is a whitelist applied at EVERY depth, so it filtered out the very keys under
+     * inspection and would have passed no matter what the context held.
+     */
+    const rendered = `${String(raised)} ${JSON.stringify(raised)}`;
+    expect(rendered).not.toContain(secret);
+    /* The host IS reported, because a refusal nobody can diagnose gets disabled by whoever it blocks. */
+    expect(rendered).toContain('feeds.example');
+  });
+
+  it('NET-NEW — still retrieves every legitimate location, including the boundary ones', async () => {
+    const refused: string[] = [];
+
+    for (const location of ADMITTED_LOCATIONS) {
+      const harness = buildHarness(fileWith([]));
+
+      try {
+        await harness.repository.importFromFile(location);
+      } catch (error) {
+        refused.push(`${location} :: ${String(error)}`);
+        continue;
+      }
+
+      if (harness.retrievals.length !== 1) {
+        refused.push(`${location} :: reached the retriever ${harness.retrievals.length} times`);
+      }
+    }
+
+    /*
+     * ⭐ THIS IS THE DIRECTION A REFUSAL SUITE CANNOT ESTABLISH. A gate that refuses everything passes
+     * every hostile case above and is useless; only this case fails it. The boundary entries — 172.15,
+     * 172.32, 192.167, 126, 128, fbff::, fec0:: — are one step outside a refused range each, so an
+     * off-by-one in a mask or an octet comparison shows up here as a named location rather than as a
+     * silent narrowing of what the importer can read.
+     */
+    expect(refused).toEqual([]);
+  });
+
+  it('NET-NEW — forwards the approved location BYTE-FOR-BYTE, gating without rewriting it', async () => {
+    const mixedCase = 'HTTPS://Feeds.Example:8443/Catalog.CSV';
+    const withQueryAndFragment = 'https://feeds.example/catalog.csv?since=1#top';
+
+    const first = buildHarness(fileWith([]));
+    await first.repository.importFromFile(mixedCase);
+
+    /*
+     * ⭐ THIS IS THE DISCRIMINATING ASSERTION, AND THE MIXED CASE IS WHY. The gate parses the location to
+     * judge it and then throws the parse away. Had it handed on its own canonical form instead, the scheme
+     * and host would arrive lower-cased — `new URL('HTTPS://Feeds.Example:8443/Catalog.CSV').href` is
+     * `https://feeds.example:8443/Catalog.CSV` — so an unchanged `HTTPS://Feeds.Example` proves no
+     * canonicalisation happened, which an already-lower-case URL could not have shown either way. A gate
+     * that normalises is a gate that judges one string and fetches another.
+     */
+    expect(first.retrievals).toEqual([{ source: mixedCase, delimiter: ',', textQualifier: '' }]);
+
+    const second = buildHarness(fileWith([]));
+    await second.repository.importFromFile(withQueryAndFragment);
+
+    /*
+     * ⚠️ AND THE QUERY AND FRAGMENT SURVIVE TOO — WITH A LEGACY QUIRK THE GATE MUST NOT TIDY AWAY. The
+     * delimiter here is EMPTY, not a comma, and that is `model/dao/ProductDAO.cfc:L74` behaving exactly as
+     * written: the file type is the last dot-delimited segment of the WHOLE location, with no extraction of
+     * the URL path, so the type resolves to `csv?since=1#top`, matches neither `csv` nor `txt`, and falls
+     * to the no-delimiter case at `:L75`. Stripping the query to "fix" that would be new behaviour, and
+     * the gate is the one place holding a parsed URL and therefore the one place tempted to do it. It does
+     * not. This expectation was originally written as a comma and was wrong for exactly that reason.
+     */
+    expect(second.retrievals).toEqual([
+      { source: withQueryAndFragment, delimiter: '', textQualifier: '' },
+    ]);
+  });
+
+  it('NET-NEW — leaves the .xls no-op UNGATED, because that path never opens a socket', async () => {
+    const harness = buildHarness(THREE_ROW_FILE);
+
+    /*
+     * ⭐ A DELIBERATE HOLE IN THE GATE, AND THE REASON IT IS CORRECT. `:L83-L85` is an empty branch: a
+     * spreadsheet upload retrieves nothing, imports nothing, raises nothing, and still falls through to
+     * the two bulk back-fills at `:L288-L325`. Gating it would refuse a location the legacy processes
+     * without ever making a request — changing an outcome on a path that has no egress to protect, which
+     * is exactly the divergence D18's precedent does NOT license. So the hostile host below is accepted
+     * here, and it is accepted safely, because nothing fetches it.
+     */
+    await expect(
+      harness.repository.importFromFile('http://169.254.169.254/catalog.xls'),
+    ).resolves.toBeUndefined();
+
+    expect(harness.retrievals).toEqual([]);
+    expect(harness.transactionsStarted()).toBe(0);
+    /* The back-fills still run, which is the behaviour a refusal here would have destroyed. */
+    expect(matching(harness, 'SET defaultSkuID')).toHaveLength(1);
+    expect(matching(harness, 'SET imageFile')).toHaveLength(1);
+  });
+});
+
+/* ================================================================================================
+ * REVIEW FINDING 14 — THE IMPORT-SOURCE POLICY IS A REQUIRED CONTRACT (CWE-918, was latent)
+ * ==============================================================================================
+ * The finding: "Arbitrary locations are forwarded unchanged to an injected reader with no required
+ * scheme, host, IP, redirect, size, or timeout policy. The shipped reader refuses, so no current network
+ * exploit exists; a future operator reader becomes SSRF-capable unless it independently supplies all
+ * controls." Its resolution: "Make source validation a required port contract and require
+ * redirect-hop/IP revalidation plus explicit size/time bounds."
+ *
+ * ⭐ WHY THESE ASSERT ON THE SEAM RATHER THAN ON A BLOCKED REQUEST. There is no transport client in this
+ * subtree to exploit, so there is no request to block; what the finding identifies is a CONTRACT that
+ * permitted an unsafe implementation. These cases therefore prove the contract is unskippable: that the
+ * adapter consults the policy, that it does so before retrieving, that a refusal stops everything, and
+ * that the shipped policy is not a permissive default a future reader could inherit.
+ *
+ * ⚠️ AND THE COMPILE-TIME HALF CANNOT BE ASSERTED AT RUNTIME AT ALL. `read` and `readStreaming` accept
+ * only a `ValidatedProductImportSource`, whose brand is unforgeable outside the port module, so "a reader
+ * cannot be reached with an unvetted location" is enforced by `tsc` rather than by a case here. The
+ * harness has to cast to produce one, which is itself the evidence.
+ * ============================================================================================== */
+
+describe('NET-NEW — the required import-source policy (review finding 14, CWE-918)', () => {
+  it('NET-NEW — consults the policy with the location VERBATIM, before it retrieves anything', async () => {
+    const harness = buildHarness(fileWith([]));
+
+    await harness.repository.importFromFile('https://feeds.example/catalog.csv?a=1&b=%2E%2E');
+
+    /*
+     * The location is handed over exactly as the caller supplied it — not normalised, not decoded, not
+     * re-encoded. Normalising before the policy sees it would let a normalisation difference decide what
+     * the policy is shown, which is a standard bypass: the policy would vet one string and the client
+     * would fetch another.
+     */
+    expect(harness.validatedSources).toEqual(['https://feeds.example/catalog.csv?a=1&b=%2E%2E']);
+
+    /* And the retrieval received the SAME string, so validation is on the real path rather than beside
+     * it. If the adapter validated one value and fetched another, this pair would disagree. */
+    expect(harness.retrievals).toEqual([
+      {
+        source: 'https://feeds.example/catalog.csv?a=1&b=%2E%2E',
+        /*
+         * ⭐ TODO(parity) `model/dao/ProductDAO.cfc:L74` — THE DELIMITER IS EMPTY, NOT A COMMA, AND THAT
+         * IS THE LEGACY'S OWN BEHAVIOUR RATHER THAN A FAULT HERE. The file type is the last dot-delimited
+         * segment of the LOCATION, so a query string is swallowed into it: the type resolves to
+         * `csv?a=1&b=%2E%2E`, which matches neither `csv` nor `txt`, and `:L75-L80` has no else — so the
+         * delimiter stays `""` and the file is retrieved with NO delimiter rather than failing.
+         *
+         * It is asserted rather than avoided (by choosing a tidy location) because it is a real property
+         * a caller can hit, and because a future "improvement" that parsed the URL properly would change
+         * which delimiter the legacy would have used. Carried as observed.
+         */
+        delimiter: '',
+        textQualifier: '',
+      },
+    ]);
+  });
+
+  it('NET-NEW — a REFUSING policy stops the import dead: no retrieval, no statement, no transaction', async () => {
+    const harness = buildHarness(THREE_ROW_FILE);
+    const refusal = new Error('policy refused this location');
+
+    /* Substituting a refusing policy models the operator reader the finding is about. */
+    jest
+      .spyOn(harness.sourcePolicy, 'validateSource')
+      .mockImplementation(() => Promise.reject(refusal));
+
+    /*
+     * ⚠️ THE LOCATION IS DELIBERATELY BENIGN, AND THAT IS WHAT MAKES THIS CASE ABOUT THE POLICY. Two
+     * controls guard this seam: the adapter's own module gate `assertRetrievableImportSource`, and the
+     * injected operator policy spied on above. A hostile location — this case was originally written
+     * against `http://169.254.169.254/latest/meta-data/` — is refused by the MODULE gate first, which
+     * raises its own error and never reaches the policy at all. The assertion below would then have been
+     * satisfied by the wrong control, or, since it pins the refusal by IDENTITY, not satisfied at all.
+     *
+     * A location the module gate admits is therefore the only vector that isolates the operator's refusal.
+     * Nothing is lost by moving off the hostile one: the module gate's refusal of exactly that address is
+     * asserted in the SEC-08 describe above, alongside twenty-five other vectors.
+     */
+    await expect(
+      harness.repository.importFromFile('https://feeds.example/catalog.csv'),
+    ).rejects.toBe(refusal);
+
+    /*
+     * ⭐ THE ORDERING IS THE POINT. The refusal happens before retrieval and before the first per-row
+     * boundary, so a rejected location cannot leave a partially imported catalogue behind — which
+     * matters more here than in most places because M3 commits every row independently, so there is no
+     * outer transaction to roll back.
+     */
+    expect(harness.retrievals).toEqual([]);
+    expect(harness.statements).toEqual([]);
+    expect(harness.transactionsStarted()).toBe(0);
+    expect(harness.transactionsCommitted()).toBe(0);
+    expect(harness.transactionsRolledBack()).toBe(0);
+  });
+
+  it('NET-NEW — consults the policy even for the empty .xls branch, which retrieves nothing', async () => {
+    const harness = buildHarness(THREE_ROW_FILE);
+
+    await harness.repository.importFromFile('https://feeds.example/catalog.xls');
+
+    /*
+     * ⚠️ DELIBERATE, AND IT IS NOT REDUNDANT. The `.xls` branch at `model/dao/ProductDAO.cfc:L83-L85`
+     * retrieves nothing, so validation cannot protect it. It runs anyway so that the answer to "may this
+     * location be fetched" does not depend on the file extension — otherwise a caller could learn from a
+     * silent `.xls` success that a location would have been admitted, turning the extension into an
+     * oracle.
+     */
+    expect(harness.validatedSources).toEqual(['https://feeds.example/catalog.xls']);
+    expect(harness.retrievals).toEqual([]);
+  });
+
+  it('NET-NEW — validates once per invocation, and per invocation rather than per row', async () => {
+    const harness = buildHarness(THREE_ROW_FILE);
+
+    await harness.repository.importFromFile('https://feeds.example/catalog.csv');
+
+    /* One retrieval, one validation, three rows. The policy sits on the retrieval, not on the row loop,
+     * so a file's row count cannot multiply the work a policy is asked to do. */
+    expect(harness.validatedSources).toHaveLength(1);
+    expect(harness.retrievals).toHaveLength(1);
+  });
+
+  it('NET-NEW — the SHIPPED policy refuses all three members, so it is no permissive default', async () => {
+    const { sourcePolicy } = unresolvableProductImportSourceReader;
+
+    /*
+     * ⛔ THIS IS THE CASE THAT KEEPS THE FIX HONEST. A required contract satisfied by an implementation
+     * that admits everything would be worse than no contract, because every future reader would inherit
+     * a pre-approved bypass. The shipped policy declines every member for the same documented reason the
+     * shipped reader declines: `model/dao/ProductDAO.cfc:L87` resolves `getService("utilityTagService")`,
+     * a bean declared NOWHERE in the legacy repository, and the `new http()` fallback at `:L89-L98` is
+     * commented out — so the legacy import could never retrieve a file, and inventing a retrieval client
+     * would ADD a capability the ported system does not have.
+     */
+    await expect(sourcePolicy.validateSource('https://feeds.example/catalog.csv')).rejects.toThrow(
+      /ProductImportSourcePolicy\.validateSource/,
+    );
+    await expect(
+      sourcePolicy.revalidateRedirectHop({
+        location: 'https://feeds.example/redirected.csv',
+        resolvedAddress: '127.0.0.1',
+      }),
+    ).rejects.toThrow(/revalidateRedirectHop/);
+  });
+
+  it('NET-NEW — readBounds THROWS rather than inventing a byte cap, a timeout or a redirect cap', () => {
+    const { sourcePolicy } = unresolvableProductImportSourceReader;
+
+    /*
+     * ⭐ WHY `readBounds` IS A METHOD AND NOT A PROPERTY, ASSERTED. A property would force every
+     * implementation — including this non-retrieving one — to name three figures, and those figures would
+     * be exactly the invented configuration AAP §0.7.3 standard 9 and IR-12 forbid: the legacy states no
+     * byte cap, no transfer timeout and no redirect limit anywhere. A method can decline.
+     */
+    expect(() => sourcePolicy.readBounds()).toThrow(/readBounds/);
+
+    /* The diagnostic names what an operator must supply, so the refusal is actionable rather than blunt. */
+    try {
+      sourcePolicy.readBounds();
+      throw new Error('readBounds resolved, but it must refuse');
+    } catch (error) {
+      expect((error as Error).message).toMatch(/byte cap/);
+      expect((error as Error).message).toMatch(/timeout/);
+      expect((error as Error).message).toMatch(/redirect cap/);
+    }
+  });
+
+  it('NET-NEW — no scheme, host, address range or numeric bound is stated anywhere in the subtree', () => {
+    /*
+     * ⭐⭐ THE GUARD THAT KEEPS THE CONTRACT FROM DRIFTING INTO INVENTED POLICY. The fix is licensed only
+     * because it obliges the OPERATOR to decide and decides nothing itself. This case reads the two
+     * modules that carry the contract and asserts they name no concrete policy value — so a future edit
+     * that quietly adds "https only", a metadata-address deny list or a 10 MB cap fails here, where the
+     * reasoning is recorded, rather than silently becoming invented configuration.
+     */
+    const contractSources = [
+      readFileSync(
+        join(__dirname, '..', '..', 'src', 'ports', 'repositories', 'ProductRepository.ts'),
+        'utf8',
+      ),
+      readFileSync(
+        join(__dirname, '..', '..', 'src', 'adapters', 'mysql', 'MySqlProductRepository.ts'),
+        'utf8',
+      ),
+    ];
+
+    for (const source of contractSources) {
+      /* Deny/allow lists are expressed as address literals; none may appear as code. */
+      const code = source
+        .split('\n')
+        .filter((line) => !line.trimStart().startsWith('*'))
+        .join('\n');
+
+      expect(code).not.toMatch(/169\.254\.169\.254/);
+      expect(code).not.toMatch(/127\.0\.0\.1/);
+      expect(code).not.toMatch(/maxBytes\s*:\s*\d/);
+      expect(code).not.toMatch(/maxMilliseconds\s*:\s*\d/);
+      expect(code).not.toMatch(/maxRedirectHops\s*:\s*\d/);
+    }
+  });
+});
+
+/* ================================================================================================
+ * REVIEW FINDING 12 — THE CONTENT ASSIGNMENT IS PORTED, NOT REFUSED (model/dao/ProductDAO.cfc:L257-L282)
+ * ==============================================================================================
+ * The finding: "The target refuses the entire import when content-assignment columns are present. Legacy
+ * code queries `tContent`, probes the product-content assignment, and inserts it. This is a functional
+ * substitution, not a translation." Its resolution: "Introduce a declared boundary port for content
+ * lookup/assignment or otherwise implement the planned import behavior without admitting arbitrary CMS
+ * identifiers into the Catalog whitelist."
+ *
+ * ⭐ BOTH HALVES ARE ASSERTED HERE. The ALGORITHM — heading test, list split, per-page order, the two
+ * skips, the identifier shape and the insert payload — is asserted against the legacy line by line. The
+ * WHITELIST constraint is asserted by the `assertTableName` case above: no excluded identifier is composed
+ * in this subtree, because every statement the step needs is issued by the collaborator.
+ * ============================================================================================== */
+
+describe('NET-NEW — the ported content assignment (review finding 12)', () => {
+  const CONTENT_FILE_HEADINGS = [
+    'productcontent_page',
+    'product_productCode',
+    'product_productName',
+    'brand_brandname',
+  ];
+
+  it('NET-NEW — resolves each page, probes it, and inserts the link row (:L262, :L271, :L277)', async () => {
+    const harness = buildHarness(
+      importable(CONTENT_FILE_HEADINGS, ['page-1', 'CODE-1', 'Widget', 'Acme']),
+    );
+    harness.resolvableContentPages.set('page-1', {
+      contentId: 'cccccccccccccccccccccccccccc0001',
+      contentPath: '/site/products/widget',
+    });
+
+    await harness.repository.importFromFile('https://feeds.example/catalog.csv');
+
+    /* `:L262` — looked up by file name, exactly the token the cell carried. */
+    expect(harness.contentLookups).toEqual(['page-1']);
+
+    /* `:L271` — probed for THIS product and the resolved content. */
+    expect(harness.contentProbes).toHaveLength(1);
+    expect(harness.contentProbes[0]?.contentId).toBe('cccccccccccccccccccccccccccc0001');
+
+    /* `:L277` — one link row, with the content path DENORMALISED beside the identifier exactly as the
+     * legacy denormalises it, and with the product the row imported. */
+    expect(harness.contentInserts).toHaveLength(1);
+    const inserted = harness.contentInserts[0];
+    expect(inserted?.contentId).toBe('cccccccccccccccccccccccccccc0001');
+    expect(inserted?.contentPath).toBe('/site/products/widget');
+    expect(inserted?.productId).toBe(harness.contentProbes[0]?.productId);
+
+    /* `:L275` — `lcase(replace(createUUID(),"-","","all"))`. IR-6: 32 lowercase hex, no dashes. */
+    expect(inserted?.productContentId).toMatch(/^[0-9a-f]{32}$/);
+  });
+
+  it('NET-NEW — splits the cell on commas and assigns every page IN FILE ORDER (:L259, :L260)', async () => {
+    const harness = buildHarness(
+      importable(CONTENT_FILE_HEADINGS, ['page-a,page-b,page-c', 'CODE-1', 'Widget', 'Acme']),
+    );
+    for (const [index, name] of ['page-a', 'page-b', 'page-c'].entries()) {
+      harness.resolvableContentPages.set(name, {
+        contentId: `cccccccccccccccccccccccccccc000${index + 1}`,
+        contentPath: `/site/${name}`,
+      });
+    }
+
+    await harness.repository.importFromFile('https://feeds.example/catalog.csv');
+
+    /* `:L259` splits on the default comma delimiter and `:L260` iterates in that order. Order is asserted
+     * rather than membership because the inserts are sequential and a concurrent implementation would let
+     * two pages of one row race the `:L271` probe. */
+    expect(harness.contentLookups).toEqual(['page-a', 'page-b', 'page-c']);
+    expect(harness.contentInserts.map((row) => row.contentPath)).toEqual([
+      '/site/page-a',
+      '/site/page-b',
+      '/site/page-c',
+    ]);
+  });
+
+  it('NET-NEW — SILENTLY SKIPS a page that does not resolve, and still commits the row (:L269)', async () => {
+    const harness = buildHarness(
+      importable(CONTENT_FILE_HEADINGS, ['missing-page,page-1', 'CODE-1', 'Widget', 'Acme']),
+    );
+    harness.resolvableContentPages.set('page-1', {
+      contentId: 'cccccccccccccccccccccccccccc0001',
+      contentPath: '/site/products/widget',
+    });
+
+    await expect(
+      harness.repository.importFromFile('https://feeds.example/catalog.csv'),
+    ).resolves.toBeUndefined();
+
+    /*
+     * `:L269` gates the whole assignment on `lookupResult.recordcount`, and there is no else: an
+     * unresolved page produces NO error, NO warning and NO record. Both pages were looked up; only the
+     * resolvable one was probed and inserted.
+     *
+     * ⚠️ TODO(parity) — THE DROPPED ASSIGNMENT IS UNDETECTABLE BY THE CALLER, because `:L73` declares the
+     * member `void` and it reports nothing. That is the legacy's behaviour and it is preserved rather than
+     * improved with a summary object.
+     */
+    expect(harness.contentLookups).toEqual(['missing-page', 'page-1']);
+    expect(harness.contentProbes).toHaveLength(1);
+    expect(harness.contentInserts).toHaveLength(1);
+    expect(harness.transactionsCommitted()).toBe(1);
+  });
+
+  it('NET-NEW — inserts NOTHING when the assignment already exists (:L274 `if(!exists)`)', async () => {
+    const harness = buildHarness(
+      importable(CONTENT_FILE_HEADINGS, ['page-1', 'CODE-1', 'Widget', 'Acme']),
+    );
+    harness.resolvableContentPages.set('page-1', {
+      contentId: 'cccccccccccccccccccccccccccc0001',
+      contentPath: '/site/products/widget',
+    });
+    /* Seeded through the probe's own key shape, so the step sees an existing pair for whatever product
+     * identifier the import mints. */
+    const seedExisting = harness.existingAssignments;
+    const originalHas = seedExisting.has.bind(seedExisting);
+    jest
+      .spyOn(seedExisting, 'has')
+      .mockImplementation((key: string) =>
+        key.endsWith('|cccccccccccccccccccccccccccc0001') ? true : originalHas(key),
+      );
+
+    await harness.repository.importFromFile('https://feeds.example/catalog.csv');
+
+    /* It was resolved and probed, and the probe answering yes made the insert a no-op — the step is
+     * idempotent, which is what lets the same file be imported twice. */
+    expect(harness.contentLookups).toEqual(['page-1']);
+    expect(harness.contentProbes).toHaveLength(1);
+    expect(harness.contentInserts).toEqual([]);
+  });
+
+  it('NET-NEW — does nothing at all when the heading is absent (:L258, the ordinary import)', async () => {
+    const harness = buildHarness(THREE_ROW_FILE);
+
+    await harness.repository.importFromFile('https://feeds.example/catalog.csv');
+
+    /* `:L258`'s `arrayFindNoCase` misses, so the collaborator is never consulted for any of the three
+     * rows. This is the path every ordinary import takes. */
+    expect(harness.contentLookups).toEqual([]);
+    expect(harness.contentProbes).toEqual([]);
+    expect(harness.contentInserts).toEqual([]);
+  });
+
+  it('NET-NEW — does nothing when the heading is present but the cell is EMPTY (:L259, :L260)', async () => {
+    const harness = buildHarness(
+      importable(CONTENT_FILE_HEADINGS, ['', 'CODE-1', 'Widget', 'Acme']),
+    );
+
+    await harness.repository.importFromFile('https://feeds.example/catalog.csv');
+
+    /* `listToArray('')` yields an empty array, so `:L260` iterates zero times. The row still imports —
+     * which is the case the withdrawn whole-file refusal got wrong in the other direction, since a file
+     * whose content column was empty in every row was refused despite the legacy completing it. */
+    expect(harness.contentLookups).toEqual([]);
+    expect(harness.transactionsCommitted()).toBe(1);
+  });
+
+  it('NET-NEW — a collaborator failure rolls back ITS row and leaves earlier rows committed (M3)', async () => {
+    const harness = buildHarness(
+      importable(
+        CONTENT_FILE_HEADINGS,
+        ['page-1', 'CODE-1', 'Widget', 'Acme'],
+        ['page-2', 'CODE-2', 'Gadget', 'Acme'],
+      ),
+    );
+    harness.resolvableContentPages.set('page-1', {
+      contentId: 'cccccccccccccccccccccccccccc0001',
+      contentPath: '/site/one',
+    });
+    harness.resolvableContentPages.set('page-2', {
+      contentId: 'cccccccccccccccccccccccccccc0002',
+      contentPath: '/site/two',
+    });
+
+    const failure = new Error('content application unavailable');
+    jest
+      .spyOn(harness.contentAssignmentPort, 'insertContentAssignment')
+      .mockImplementationOnce(() => Promise.resolve())
+      .mockImplementationOnce(() => Promise.reject(failure));
+
+    await expect(
+      harness.repository.importFromFile('https://feeds.example/catalog.csv'),
+    ).rejects.toBe(failure);
+
+    /*
+     * ⭐ THIS IS THE FLAGGED CONSEQUENCE OF PORTING THE STEP RATHER THAN PREFLIGHTING IT, ASSERTED. Row 1
+     * committed and row 2 rolled back, so the catalogue is partially imported — and that is M3's own
+     * shape, the same outcome any mid-file data failure produces, not something the boundary invented.
+     * The withdrawn preflight avoided this by refusing every such file outright, which avoided the
+     * legacy's behaviour along with it.
+     */
+    expect(harness.transactionsCommitted()).toBe(1);
+    expect(harness.transactionsRolledBack()).toBe(1);
+  });
+
+  it('NET-NEW — the SHIPPED collaborator refuses all three members rather than dropping assignments', async () => {
+    /*
+     * ⛔ REFUSING IS THE HONEST DEFAULT AND RESOLVING `null` WOULD BE THE DANGEROUS ONE. A lookup that
+     * quietly resolved nothing would import a catalogue with every content assignment DROPPED and report
+     * success, and `importFromFile` returns nothing, so no caller could detect it. The default announces
+     * the gap instead.
+     */
+    await expect(
+      unresolvableProductContentAssignmentPort.findProductListingContent('page-1'),
+    ).rejects.toThrow(/tContent/);
+    await expect(
+      unresolvableProductContentAssignmentPort.hasContentAssignment('p', 'c'),
+    ).rejects.toThrow(/SlatwallProductContent/);
+    await expect(
+      unresolvableProductContentAssignmentPort.insertContentAssignment({
+        productContentId: 'aaaaaaaaaaaaaaaaaaaaaaaaaaaa0001',
+        contentId: 'cccccccccccccccccccccccccccc0001',
+        contentPath: '/site/one',
+        productId: 'bbbbbbbbbbbbbbbbbbbbbbbbbbbb0001',
+      }),
+    ).rejects.toThrow(/SlatwallProductContent/);
+  });
+});
+
+/* ================================================================================================
+ * THE ADDITIVE RUNTIME PATHS — REVIEW FINDING 13
+ * ================================================================================================
+ * Four groups of runtime behaviour existed on this adapter with no direct coverage at all, and the
+ * review named every one of them: the streaming retrieval arm, cancellation at each observed boundary,
+ * both arms of the back-fill deferral, and two of the three import lookup-memory key families. They are
+ * grouped here because they share one property that makes untested-ness especially dangerous: NONE of
+ * them changes the statements a plain import issues, so a regression in any of them is invisible to
+ * every other case in this file.
+ *
+ * ⛔ WHAT THESE CASES DO NOT DO. Not one of them asserts a NEW behaviour into existence. Each pins
+ * behaviour the adapter and the port already document, so that the documentation and the code cannot
+ * drift apart silently. Where a case records a legacy fact it carries the `model/...:Lnnn` locator, and
+ * where a path has NO legacy counterpart — the streaming arm and the deferral both — it says so, because
+ * AAP §0.8.2 Guideline 4 makes "structural, adds no behaviour" a claim that has to be checkable rather
+ * than asserted.
+ *
+ * ⚠️ THE REVIEW SAID "CANCELLATION AT FOUR BOUNDARIES", AND THERE ARE EXACTLY FOUR — BUT NOT THE FOUR
+ * IT COUNTED. Its inventory predates two changes made in this same pass: review finding 14 ADDED
+ * `afterSourceValidation`, and review finding 12 REMOVED `contentAssignmentPreflight` along with the
+ * whole-file preflight it belonged to. The current set is `beforeRetrieval`, `afterSourceValidation`,
+ * `afterRetrieval` and `row`, and the last case below asserts that the set is exactly that — so a fifth
+ * boundary appearing later cannot slip in untested.
+ * ============================================================================================== */
+
+describe('NET-NEW — the streaming retrieval arm (review finding 13)', () => {
+  it('NET-NEW — prefers readStreaming over read when the reader offers both', async () => {
+    const streamed = buildHarness(THREE_ROW_FILE, undefined, undefined, {});
+    const materialised = buildHarness(THREE_ROW_FILE);
+
+    await streamed.repository.importFromFile('https://feeds.example/catalog.csv');
+    await materialised.repository.importFromFile('https://feeds.example/catalog.csv');
+
+    /*
+     * ⭐ THE PREFERENCE IS THE CONTRACT, AND IT IS WHAT MAKES THE MEMBER SAFELY OPTIONAL. Both readers
+     * define `read`; only one also defines `readStreaming`, and the adapter takes the streaming arm
+     * whenever it is there. That is what keeps the collaborator's contract ADDITIVE — an existing reader
+     * is not broken by the arm existing, and a streaming reader is not mandated by it.
+     */
+    expect(streamed.readerCalls).toEqual(['readStreaming']);
+    expect(materialised.readerCalls).toEqual(['read']);
+
+    /* ⭐ AND THE TWO ARMS CONVERGE. Same statements, same order, same regions, same transaction shape —
+     * which is the whole justification for the arm existing at all. If the arms could diverge, the
+     * streaming path would be new behaviour rather than a different way of delivering the same rows. */
+    expect(streamed.statements.map((statement) => collapse(statement.sql))).toEqual(
+      materialised.statements.map((statement) => collapse(statement.sql)),
+    );
+    expect(streamed.statements.map((statement) => statement.region)).toEqual(
+      materialised.statements.map((statement) => statement.region),
+    );
+    expect(streamed.eventKinds()).toEqual(materialised.eventKinds());
+  });
+
+  it('NET-NEW — is advanced LAZILY, one record per settled row boundary', async () => {
+    const yieldedAtRowBoundary: number[] = [];
+    /* The sampler needs the harness the same call is building, so it reads through a box that is filled
+     * once the harness exists. `-1` would be recorded if a statement somehow preceded construction. */
+    const observed: { harness?: Harness } = {};
+
+    const harness = buildHarness(
+      THREE_ROW_FILE,
+      (statement) => {
+        // Sampled as each product insert is issued, so the sample lands inside a row's transaction.
+        if (collapse(statement.sql).startsWith('INSERT INTO SwProduct')) {
+          yieldedAtRowBoundary.push(observed.harness?.recordsYielded.length ?? -1);
+        }
+
+        return undefined;
+      },
+      undefined,
+      {},
+    );
+
+    observed.harness = harness;
+
+    await harness.repository.importFromFile('https://feeds.example/catalog.csv');
+
+    /*
+     * ⭐ THIS IS THE ONLY DIRECT EVIDENCE THAT NOTHING BUFFERS THE FILE. Row n is written while exactly n
+     * records have been produced, so the generator is pulled one record at a time by the row loop rather
+     * than drained up front. A `for await (const row of [...records])` — the obvious refactor — would
+     * make this read `[3, 3, 3]` while leaving every other assertion in this file untouched.
+     *
+     * ⚠️ AND IT IS STRUCTURAL, NOT BEHAVIOURAL. `model/dao/ProductDAO.cfc:L87` retrieves the ENTIRE file
+     * into one CFML query object and has no lazy form to port, so laziness is not a legacy property being
+     * preserved. What it must not do is change the rows, their order or their row numbers, and the
+     * convergence assertion in the case above is what holds it to that.
+     */
+    expect(yieldedAtRowBoundary).toEqual([1, 2, 3]);
+    expect(harness.recordsYielded).toEqual([1, 2, 3]);
+
+    // Exhausted normally, and released exactly once.
+    expect(harness.streamReleases()).toBe(1);
+  });
+
+  it('NET-NEW — a mid-file streaming failure keeps earlier rows committed (M3)', async () => {
+    /* The generator yields record 1, then fails when the loop asks for record 2 — a transport or parse
+     * failure part-way through a file, which is precisely the shape M3 already tolerates. */
+    const harness = buildHarness(THREE_ROW_FILE, undefined, undefined, { throwAfterRecords: 1 });
+
+    await expect(
+      harness.repository.importFromFile('https://feeds.example/catalog.csv'),
+    ).rejects.toThrow(/failed part-way through the file/);
+
+    /*
+     * ⭐ THE FAILURE ARRIVES BETWEEN BOUNDARIES, NOT INSIDE ONE, and that is why the outcome is clean.
+     * The record source is advanced by the row loop AFTER the previous row's transaction settled, so
+     * row 1 is committed and durable, and the failure opens no second boundary to roll back. Compare a
+     * mid-file DATA failure, which rolls its own row back — both leave earlier rows committed, which is
+     * the M3 partial-import shape either way.
+     */
+    expect(harness.recordsYielded).toEqual([1]);
+    expect(harness.transactionsStarted()).toBe(1);
+    expect(harness.transactionsCommitted()).toBe(1);
+    expect(harness.transactionsRolledBack()).toBe(0);
+
+    /* ⛔ AND THE BACK-FILLS DO NOT RUN. `model/dao/ProductDAO.cfc:L288` and `:L304` are reached only by
+     * falling out of the loop; a raise inside it propagates past them in the legacy too. A `finally` that
+     * ran them anyway would invent a recovery the legacy has no equivalent for. */
+    expect(matching(harness, 'SET defaultSkuID')).toEqual([]);
+    expect(matching(harness, 'SET imageFile')).toEqual([]);
+  });
+
+  it('NET-NEW — releases the stream even when it fails before yielding anything', async () => {
+    const harness = buildHarness(THREE_ROW_FILE, undefined, undefined, { throwAfterRecords: 0 });
+
+    await expect(
+      harness.repository.importFromFile('https://feeds.example/catalog.csv'),
+    ).rejects.toThrow(/failed part-way through the file/);
+
+    /* A source that fails immediately after its header pass still had a `finally` to run, and no row
+     * boundary ever opened — so the import is a no-op rather than a partial one. */
+    expect(harness.recordsYielded).toEqual([]);
+    expect(harness.streamReleases()).toBe(1);
+    expect(harness.transactionsStarted()).toBe(0);
+  });
+
+  it('NET-NEW — ABANDONS the stream cleanly when a row fails, running its finally', async () => {
+    /* Row 2's product insert fails, so the row loop stops consuming with record 3 never demanded. */
+    const harness = buildHarness(
+      THREE_ROW_FILE,
+      (statement) => {
+        if (
+          collapse(statement.sql).startsWith('INSERT INTO SwProduct') &&
+          statement.params.includes('CODE-2')
+        ) {
+          return sqlFailure(new DomainError('the row failed'));
+        }
+
+        return undefined;
+      },
+      undefined,
+      {},
+    );
+
+    await expect(
+      harness.repository.importFromFile('https://feeds.example/catalog.csv'),
+    ).rejects.toThrow(/the row failed/);
+
+    /*
+     * ⭐⭐ THIS IS THE CASE THE PORT'S `finally` OBLIGATION EXISTS FOR, AND IT COULD NOT BE ASSERTED
+     * BEFORE. `readStreaming` documents that a generator "has its `return()` invoked without having been
+     * exhausted, and must release its connection, handle or buffer in a `finally` rather than only on
+     * normal completion". That obligation is only DISCHARGEABLE if the consumer actually closes the
+     * iterator — and the consumer is `for await` in `UnitOfWork.runEachItem`, through the
+     * `normaliseRecords` generator in between. Both links have to forward the close, and this asserts
+     * that they do: the generator's `finally` ran even though record 3 was never asked for.
+     *
+     * ⛔ WHAT WOULD BREAK IT. Draining the records into an array before the loop, or iterating with a
+     * manual `next()` loop that returns early without calling `return()`. Either leaks whatever the real
+     * reader holds open, on exactly the mid-file failure M3 says is expected rather than exceptional.
+     */
+    expect(harness.recordsYielded).toEqual([1, 2]);
+    expect(harness.streamReleases()).toBe(1);
+    expect(harness.transactionsCommitted()).toBe(1);
+    expect(harness.transactionsRolledBack()).toBe(1);
+  });
+
+  it('NET-NEW — takes NEITHER arm for the .xls branch, which retrieves nothing', async () => {
+    const harness = buildHarness(THREE_ROW_FILE, undefined, undefined, {});
+
+    await harness.repository.importFromFile('https://feeds.example/catalog.xls');
+
+    /* `model/dao/ProductDAO.cfc:L83-L85` is an empty `//Read xls`. The spreadsheet arm is tested BEFORE
+     * the streaming arm, so offering `readStreaming` must not turn the documented no-op into a
+     * retrieval — and the two back-fills still run, because `:L288` and `:L304` sit outside the branch. */
+    expect(harness.readerCalls).toEqual([]);
+    expect(harness.recordsYielded).toEqual([]);
+    expect(harness.streamReleases()).toBe(0);
+    expect(matching(harness, 'SET defaultSkuID')).toHaveLength(1);
+  });
+});
+
+describe('NET-NEW — cancellation at every observed boundary (review finding 13)', () => {
+  /** An already-aborted signal, which is all `throwIfCancelled` ever reads. */
+  function abortedSignal(): AbortSignal {
+    const controller = new AbortController();
+    controller.abort();
+    return controller.signal;
+  }
+
+  /** The `DomainError` context a rejected import carried, so the phase can be asserted directly. */
+  async function cancellationContext(
+    run: Promise<void>,
+  ): Promise<Record<string, unknown> | undefined> {
+    try {
+      await run;
+    } catch (error) {
+      expect(error).toBeInstanceOf(DomainError);
+      return (error as DomainError).context;
+    }
+
+    throw new Error('the import resolved instead of reporting cancellation');
+  }
+
+  it('NET-NEW — beforeRetrieval: nothing is validated, retrieved or written', async () => {
+    const harness = buildHarness(THREE_ROW_FILE);
+
+    const context = await cancellationContext(
+      harness.repository.importFromFile('https://feeds.example/catalog.csv', undefined, {
+        signal: abortedSignal(),
+      }),
+    );
+
+    /*
+     * ⭐ THE FIRST BOUNDARY IS BEFORE THE POLICY, NOT AFTER IT, and the ordering is deliberate: a caller
+     * who has already abandoned the work should not cause a collaborator to resolve an address on its
+     * behalf. So an already-aborted import consults nothing at all.
+     */
+    expect(context).toEqual({
+      fileURL: 'https://feeds.example/catalog.csv',
+      phase: 'beforeRetrieval',
+    });
+    expect(harness.validatedSources).toEqual([]);
+    expect(harness.retrievals).toEqual([]);
+    expect(harness.statements).toEqual([]);
+    expect(harness.transactionsStarted()).toBe(0);
+  });
+
+  it('NET-NEW — afterSourceValidation: the policy ran, the retrieval did not', async () => {
+    const harness = buildHarness(THREE_ROW_FILE);
+    const controller = new AbortController();
+
+    /* Aborts DURING validation, which is the only way to land on this boundary: it sits between the
+     * policy and the retrieval, and nothing else runs in between. */
+    jest.spyOn(harness.sourcePolicy, 'validateSource').mockImplementation((fileURL: string) => {
+      controller.abort();
+      return Promise.resolve(fileURL as ValidatedProductImportSource);
+    });
+
+    const context = await cancellationContext(
+      harness.repository.importFromFile('https://feeds.example/catalog.csv', undefined, {
+        signal: controller.signal,
+      }),
+    );
+
+    /*
+     * ⭐ THIS BOUNDARY EXISTS BECAUSE REVIEW FINDING 14 ADDED A STEP THAT CAN BLOCK. A policy may perform
+     * its own address resolution, so it is the one place in the pre-retrieval path that can take real
+     * time — and a caller that abandoned the work while it was waiting must not then have the file
+     * fetched. It is checked after the policy rather than inside it, so no policy has to know about
+     * cancellation to be correct.
+     */
+    expect(context).toEqual({
+      fileURL: 'https://feeds.example/catalog.csv',
+      phase: 'afterSourceValidation',
+    });
+    expect(harness.retrievals).toEqual([]);
+    expect(harness.statements).toEqual([]);
+    expect(harness.transactionsStarted()).toBe(0);
+  });
+
+  it('NET-NEW — afterRetrieval: the file was fetched, but no row boundary opened', async () => {
+    const harness = buildHarness(THREE_ROW_FILE);
+    const controller = new AbortController();
+
+    jest
+      .spyOn(harness.sourceReader, 'read')
+      .mockImplementation((source: string, delimiter: string, textQualifier: string) => {
+        controller.abort();
+        return Promise.resolve(
+          fileWith(
+            ['product_productCode', 'product_productName', 'brand_brandname'],
+            ['CODE-1', 'One', 'Acme'],
+          ),
+        ).then((set) => {
+          void source;
+          void delimiter;
+          void textQualifier;
+          return set;
+        });
+      });
+
+    const context = await cancellationContext(
+      harness.repository.importFromFile('https://feeds.example/catalog.csv', undefined, {
+        signal: controller.signal,
+      }),
+    );
+
+    /*
+     * ⭐ THE RETRIEVAL IS THE LONGEST STEP AND IT IS NOT INTERRUPTIBLE FROM HERE — the collaborator owns
+     * its own transport. So the check sits immediately after it and before the plan is built, which is
+     * the earliest point the adapter regains control. Nothing has been written, so the import is a no-op
+     * even though bytes were fetched.
+     */
+    expect(context).toEqual({
+      fileURL: 'https://feeds.example/catalog.csv',
+      phase: 'afterRetrieval',
+    });
+    expect(harness.statements).toEqual([]);
+    expect(harness.transactionsStarted()).toBe(0);
+  });
+
+  it('NET-NEW — row: earlier rows stay committed and the aborting row writes nothing (M3)', async () => {
+    const controller = new AbortController();
+
+    const harness = buildHarness(THREE_ROW_FILE, (statement) => {
+      // Abort while row 1 is being written, so row 2's boundary check is the one that fires.
+      if (
+        collapse(statement.sql).startsWith('INSERT INTO SwProduct') &&
+        statement.params.includes('CODE-1')
+      ) {
+        controller.abort();
+      }
+
+      return undefined;
+    });
+
+    const context = await cancellationContext(
+      harness.repository.importFromFile('https://feeds.example/catalog.csv', undefined, {
+        signal: controller.signal,
+      }),
+    );
+
+    /*
+     * ⭐⭐ THE ROW BOUNDARY IS THE ONE THAT HAD TO BE GOT RIGHT, and the reported numbers are the proof.
+     * The check runs BEFORE row 2's first statement, so row 2's transaction is opened and rolled back
+     * with nothing in it, row 1 stays committed, and row 3 is never attempted. That is EXACTLY the shape
+     * a mid-file data failure produces (M3), which is the point: cancellation is not allowed to invent an
+     * outcome the legacy cannot already reach.
+     *
+     * ⛔ AND IT IS NEVER CHECKED INSIDE A BOUNDARY. Aborting between two statements of one row could
+     * leave that row half-written inside an open transaction — an outcome with no legacy counterpart at
+     * all. `committedRows` is `rowNumber - 1` precisely because every earlier row committed on its own.
+     */
+    expect(context).toEqual({
+      fileURL: 'https://feeds.example/catalog.csv',
+      phase: 'row',
+      rowNumber: 2,
+      committedRows: 1,
+    });
+    expect(harness.transactionsCommitted()).toBe(1);
+    expect(harness.transactionsRolledBack()).toBe(1);
+    expect(matching(harness, 'INSERT INTO SwProduct')).toHaveLength(1);
+
+    /* The back-fills are reached by falling out of the loop, and a raise leaves the loop early. */
+    expect(matching(harness, 'SET defaultSkuID')).toEqual([]);
+  });
+
+  it('NET-NEW — an un-aborted signal changes nothing, and an absent one changes nothing', async () => {
+    const withSignal = buildHarness(THREE_ROW_FILE);
+    const withoutSignal = buildHarness(THREE_ROW_FILE);
+
+    await withSignal.repository.importFromFile('https://feeds.example/catalog.csv', undefined, {
+      signal: new AbortController().signal,
+    });
+    await withoutSignal.repository.importFromFile('https://feeds.example/catalog.csv');
+
+    /* ⭐ THE OPTION IS OBSERVED, NEVER CREATED. `ProductImportOptions.signal` is supplied by the caller
+     * or it is absent; the adapter derives none from a deadline and imposes no timeout of its own,
+     * because AAP §0.6.6 M1 records the legacy's own budget as a 3600-second REQUEST timeout owned by
+     * `model/service/ProductService.cfc:L65-L68`, and S9 forbids minting a substitute. So a live signal
+     * that never aborts must be indistinguishable from no signal at all. */
+    expect(withSignal.statements.map((statement) => collapse(statement.sql))).toEqual(
+      withoutSignal.statements.map((statement) => collapse(statement.sql)),
+    );
+    expect(withSignal.eventKinds()).toEqual(withoutSignal.eventKinds());
+  });
+
+  it('NET-NEW — the boundary set is EXACTLY four, and the source names all four', () => {
+    const adapter = readFileSync(
+      join(__dirname, '../../src/adapters/mysql/MySqlProductRepository.ts'),
+      'utf8',
+    );
+
+    const phases = [...adapter.matchAll(/throwIfCancelled\('([A-Za-z]+)'/g)].map(
+      (match) => match[1],
+    );
+
+    /*
+     * ⛔ A DRIFT GUARD, AND IT IS AIMED AT A REAL DRIFT THAT ALREADY HAPPENED. The review's inventory
+     * said "four boundaries" and named a set that is no longer current: review finding 14 added
+     * `afterSourceValidation`, and review finding 12 removed `contentAssignmentPreflight` together with
+     * the whole-file preflight it lived on. Enumerating the set from the SOURCE rather than from a list
+     * means a fifth boundary added later arrives with this case failing and a test owed for it, instead
+     * of arriving untested and being described as covered.
+     */
+    expect(phases).toEqual(['beforeRetrieval', 'afterSourceValidation', 'afterRetrieval', 'row']);
+  });
+});
+
+describe('NET-NEW — both back-fill deferral arms (review finding 13)', () => {
+  it('NET-NEW — the DEFAULT arm runs both statements, in order, outside every transaction', async () => {
+    const harness = buildHarness(THREE_ROW_FILE);
+
+    await harness.repository.importFromFile('https://feeds.example/catalog.csv');
+
+    /* `model/dao/ProductDAO.cfc:L288-L302` then `:L304-L325`, both past the closing braces of the
+     * transaction (`:L284`) and the loop (`:L285`) — so both run once, in that order, un-transacted. */
+    const backfills = harness.statements.filter((statement) => statement.region === 'backfill');
+    expect(backfills).toHaveLength(2);
+    expect(collapse(backfills[0]?.sql ?? '')).toContain('SET defaultSkuID');
+    expect(collapse(backfills[1]?.sql ?? '')).toContain('SET imageFile');
+
+    // The last lifecycle event is the un-transacted pool work, after the connection was released.
+    expect(harness.eventKinds().slice(-2)).toEqual(['release', 'poolWork']);
+  });
+
+  it('NET-NEW — deferBackfills: true suppresses BOTH, and nothing else about the import', async () => {
+    const deferred = buildHarness(THREE_ROW_FILE);
+    const immediate = buildHarness(THREE_ROW_FILE);
+
+    await deferred.repository.importFromFile('https://feeds.example/catalog.csv', undefined, {
+      deferBackfills: true,
+    });
+    await immediate.repository.importFromFile('https://feeds.example/catalog.csv');
+
+    /*
+     * ⭐ THE DEFERRAL IS ALL-OR-NOTHING AND TOUCHES NOTHING ELSE. Every per-row statement is identical
+     * between the two arms; the only difference is the two whole-catalog statements at the end. That is
+     * what makes it a change to WORKFLOW COMPOSITION rather than to either statement — which is the
+     * ground on which AAP §0.8.2 Guideline 4 permits it at all.
+     */
+    expect(deferred.statements.filter((statement) => statement.region === 'backfill')).toEqual([]);
+    expect(matching(deferred, 'SET defaultSkuID')).toEqual([]);
+    expect(matching(deferred, 'SET imageFile')).toEqual([]);
+
+    const rowStatements = (harness: Harness): readonly string[] =>
+      harness.statements
+        .filter((statement) => statement.region !== 'backfill')
+        .map((statement) => collapse(statement.sql));
+
+    expect(rowStatements(deferred)).toEqual(rowStatements(immediate));
+  });
+
+  it('NET-NEW — deferBackfills: false is the default arm, not a third behaviour', async () => {
+    const explicit = buildHarness(THREE_ROW_FILE);
+    const omitted = buildHarness(THREE_ROW_FILE);
+
+    await explicit.repository.importFromFile('https://feeds.example/catalog.csv', undefined, {
+      deferBackfills: false,
+    });
+    await omitted.repository.importFromFile('https://feeds.example/catalog.csv');
+
+    /* The adapter tests `options?.deferBackfills !== true`, so `false`, `undefined` and an absent options
+     * object are one arm rather than three. Asserted because a later `=== false` would silently split
+     * them and only an explicit `false` caller would notice. */
+    expect(explicit.statements.map((statement) => collapse(statement.sql))).toEqual(
+      omitted.statements.map((statement) => collapse(statement.sql)),
+    );
+  });
+
+  it('NET-NEW — deferring then invoking the member issues exactly the deferred pair', async () => {
+    const harness = buildHarness(THREE_ROW_FILE);
+
+    await harness.repository.importFromFile('https://feeds.example/catalog.csv', undefined, {
+      deferBackfills: true,
+    });
+
+    const afterImport = harness.statements.length;
+
+    await harness.repository.backfillImportDerivedColumns();
+
+    /*
+     * ⭐ THE OBLIGATION TRANSFERS, IT DOES NOT DISAPPEAR — and the member the caller must invoke issues
+     * the SAME two statements the default arm would have issued, in the same order and the same
+     * un-transacted region. Anything else and deferring would be a behaviour change rather than a
+     * re-timing, and a workflow that deferred across several invocations would end with a catalogue the
+     * legacy never leaves behind.
+     */
+    const late = harness.statements.slice(afterImport);
+    expect(late).toHaveLength(2);
+    expect(collapse(late[0]?.sql ?? '')).toContain('SET defaultSkuID');
+    expect(collapse(late[1]?.sql ?? '')).toContain('SET imageFile');
+    expect(late.every((statement) => statement.region === 'backfill')).toBe(true);
+  });
+
+  it('NET-NEW — the default arm runs both even for a file with NO rows at all', async () => {
+    const harness = buildHarness(importable([]));
+
+    await harness.repository.importFromFile('https://feeds.example/catalog.csv');
+
+    /* ⛔ THE UNCONDITIONALITY IS THE BEHAVIOUR. `:L288` and `:L304` are guarded by neither a record count
+     * nor a file type, so an empty file still runs both whole-catalog statements — and a well-meaning
+     * "skip the back-fills when nothing was imported" would change which rows the database ends up with
+     * for every caller that imports an empty file. */
+    expect(harness.transactionsStarted()).toBe(0);
+    expect(matching(harness, 'SET defaultSkuID')).toHaveLength(1);
+    expect(matching(harness, 'SET imageFile')).toHaveLength(1);
+  });
+});
+
+describe('NET-NEW — every import lookup-memory key family (review finding 13)', () => {
+  /* The brand family is covered by "remembers a resolved brand across rows and re-probes an unresolved
+   * one" above; these are the two the review found uncovered, plus the composite-key property that is
+   * the whole reason the third family needs a key function of its own. */
+
+  it('NET-NEW — remembers a resolved product type across rows, and re-probes an unresolved one', async () => {
+    const twoRowsOneType = importable(
+      ['product_productCode', 'productType_productTypeName'],
+      ['CODE-1', 'Merchandise'],
+      ['CODE-2', 'Merchandise'],
+    );
+
+    const resolving = buildHarness(twoRowsOneType, (statement) => {
+      if (collapse(statement.sql).startsWith('SELECT productTypeID FROM SwProductType')) {
+        return sqlRows([{ productTypeID: '444df2f7ea9c87e60051f3cd87b435a1' }]);
+      }
+
+      return undefined;
+    });
+    const unresolved = buildHarness(twoRowsOneType);
+
+    await resolving.repository.importFromFile('https://feeds.example/catalog.csv');
+    await unresolved.repository.importFromFile('https://feeds.example/catalog.csv');
+
+    /*
+     * ⭐ THE SAME ASYMMETRY THE BRAND FAMILY HAS, AND FOR THE SAME REASON. `:L183-L186` declares no
+     * `ORDER BY`, so where two product types share a name the legacy's own answer is already whatever the
+     * engine yields first and may differ between two probes of one import — remembering the first answer
+     * therefore returns a value the legacy could itself have returned on every row. A MISS is not
+     * remembered, so a type created concurrently is observed on exactly the row the legacy would first
+     * have observed it on.
+     */
+    expect(matching(resolving, 'FROM SwProductType')).toHaveLength(1);
+    expect(matching(unresolved, 'FROM SwProductType')).toHaveLength(2);
+  });
+
+  it('NET-NEW — remembers a resolved option across rows, while re-probing the LINK every row', async () => {
+    const twoRowsOneOption = importable(
+      ['product_productCode', 'option_Size'],
+      ['CODE-1', 'Small'],
+      ['CODE-2', 'Small'],
+    );
+
+    const harness = buildHarness(twoRowsOneOption, (statement) => {
+      const sql = collapse(statement.sql);
+
+      if (sql.startsWith('SELECT optionGroupID FROM SwOptionGroup')) {
+        return sqlRows([{ optionGroupID: 'cccccccccccccccccccccccccccc0001' }]);
+      }
+      if (sql.includes('LEFT JOIN SwOption')) {
+        return sqlRows([
+          {
+            optionID: 'dddddddddddddddddddddddddddd0001',
+            optionGroupID: 'cccccccccccccccccccccccccccc0001',
+          },
+        ]);
+      }
+
+      return undefined;
+    });
+
+    await harness.repository.importFromFile('https://feeds.example/catalog.csv');
+
+    /*
+     * ⭐⭐ TWO DIFFERENT ANSWERS TO TWO DIFFERENT QUESTIONS, AND CONFLATING THEM WOULD BE THE BUG.
+     * The OPTION resolution — "which option is code `Small` in this group" — is a catalogue fact that
+     * cannot change under the import, so `:L212-L215` is asked once. The LINK probe at `:L218-L220` is
+     * asked EVERY row, because its key includes the SKU identifier and two file rows CAN resolve to the
+     * same SKU: `:L200-L203` derives the SKU code from cell values, so duplicate rows collide, and the
+     * second such row must observe the link the first inserted. That is the same-connection read-back M6
+     * requires, and remembering it would substitute a stale answer for the one read that has to be live.
+     */
+    expect(matching(harness, 'LEFT JOIN SwOption')).toHaveLength(1);
+    expect(matching(harness, 'FROM SwSkuOption')).toHaveLength(2);
+
+    // The remembered identifier is the one the link probe binds on the second row, not a re-read.
+    expect(matching(harness, 'FROM SwSkuOption')[1]?.params[0]).toBe(
+      'dddddddddddddddddddddddddddd0001',
+    );
+  });
+
+  it('NET-NEW — the option key is COMPOSITE, so one code in two groups is two lookups', async () => {
+    /* Both headings carry the SAME option code, in two DIFFERENT groups — the exact collision a
+     * code-only key would produce a wrong answer for. */
+    const sameCodeTwoGroups = importable(
+      ['product_productCode', 'option_Size', 'option_Colour'],
+      ['CODE-1', 'One', 'One'],
+      ['CODE-2', 'One', 'One'],
+    );
+
+    const harness = buildHarness(sameCodeTwoGroups, (statement) => {
+      const sql = collapse(statement.sql);
+
+      if (sql.startsWith('SELECT optionGroupID FROM SwOptionGroup')) {
+        // `Size` and `Colour` are distinct groups; the pre-pass resolves each to its own identifier.
+        return statement.params[0] === 'Size'
+          ? sqlRows([{ optionGroupID: 'cccccccccccccccccccccccccccc0001' }])
+          : sqlRows([{ optionGroupID: 'cccccccccccccccccccccccccccc0002' }]);
+      }
+      if (sql.includes('LEFT JOIN SwOption')) {
+        const groupID = String(statement.params[1]);
+        return sqlRows([
+          {
+            optionID: groupID.endsWith('0001')
+              ? 'dddddddddddddddddddddddddddd0001'
+              : 'dddddddddddddddddddddddddddd0002',
+            optionGroupID: groupID,
+          },
+        ]);
+      }
+
+      return undefined;
+    });
+
+    await harness.repository.importFromFile('https://feeds.example/catalog.csv');
+
+    /*
+     * ⭐ THE ARITHMETIC IS THE ASSERTION. Two groups × the same code = two DISTINCT keys, so row 1 issues
+     * two lookups and row 2 issues none. A code-only key would report 1 here and would then assign row 1's
+     * `Colour` cell the identifier of its `Size` option — a silently wrong catalogue, with no error
+     * anywhere. `:L212-L215` matches on BOTH the code and the group, which is why the key must too.
+     *
+     * ⚠️ AND THE JOINING CHARACTER MATTERS. The two parts are joined on a NUL rather than a printable
+     * separator, because an option code is FILE CONTENT and may contain any printable character —
+     * including whatever separator seemed safe. The next case proves a printable separator would be
+     * forgeable.
+     */
+    expect(matching(harness, 'LEFT JOIN SwOption')).toHaveLength(2);
+
+    /*
+     * ⚠️ AND THE TWO LOOPS OVER THE SAME ARRAY RUN IN OPPOSITE DIRECTIONS, WHICH IS OBSERVABLE HERE.
+     * `:L161` resolves the groups with `for(var i=arrayLen(optionGroups); i>=1; i--)` — DESCENDING, because
+     * `:L170` deletes unresolved entries from the array being walked and only a descending walk can delete
+     * safely — so the GROUP lookups issue in reverse heading order. `:L209` then assigns with
+     * `for(var optionGroup in optiongroups)`, a plain ascending walk over the survivors, which retain
+     * their original heading order. So the OPTION lookups issue in heading order: `Size` before `Colour`.
+     * The directions are asserted rather than assumed, because a reader harmonising the two loops would
+     * change this order and nothing else in the file would notice.
+     */
+    expect(matching(harness, 'LEFT JOIN SwOption')[0]?.params).toEqual([
+      'One',
+      'cccccccccccccccccccccccccccc0001',
+    ]);
+    expect(matching(harness, 'LEFT JOIN SwOption')[1]?.params).toEqual([
+      'One',
+      'cccccccccccccccccccccccccccc0002',
+    ]);
+  });
+
+  it('NET-NEW — an option code cannot forge another key by containing a separator', async () => {
+    /* The `Size` cell is spelled so that a naive `group + separator + code` key would collide with the
+     * `Colour` cell's key under any printable separator a reader might have reached for. */
+    const forging = importable(
+      ['product_productCode', 'option_Size', 'option_Colour'],
+      ['CODE-1', 'cccccccccccccccccccccccccccc0002|Blue', 'Blue'],
+    );
+
+    const harness = buildHarness(forging, (statement) => {
+      const sql = collapse(statement.sql);
+
+      if (sql.startsWith('SELECT optionGroupID FROM SwOptionGroup')) {
+        return statement.params[0] === 'Size'
+          ? sqlRows([{ optionGroupID: 'cccccccccccccccccccccccccccc0001' }])
+          : sqlRows([{ optionGroupID: 'cccccccccccccccccccccccccccc0002' }]);
+      }
+      if (sql.includes('LEFT JOIN SwOption')) {
+        return sqlRows([
+          {
+            optionID: 'dddddddddddddddddddddddddddd0001',
+            optionGroupID: String(statement.params[1]),
+          },
+        ]);
+      }
+
+      return undefined;
+    });
+
+    await harness.repository.importFromFile('https://feeds.example/catalog.csv');
+
+    /* ⛔ BOTH CELLS ARE LOOKED UP. If the key were `group + '|' + code`, the `Colour` cell would have hit
+     * the `Size` cell's entry and been assigned its option — a cross-group leak driven entirely by file
+     * content. A NUL cannot appear in a cell that survived delimited parsing, so the composite key is
+     * unforgeable rather than merely unlikely to collide. */
+    expect(matching(harness, 'LEFT JOIN SwOption')).toHaveLength(2);
+  });
+
+  it('NET-NEW — an option the import CREATES is remembered, so no second row re-creates it', async () => {
+    const twoRowsOneNewOption = importable(
+      ['product_productCode', 'option_Size'],
+      ['CODE-1', 'Small'],
+      ['CODE-2', 'Small'],
+    );
+
+    const harness = buildHarness(twoRowsOneNewOption, (statement) => {
+      const sql = collapse(statement.sql);
+
+      if (sql.startsWith('SELECT optionGroupID FROM SwOptionGroup')) {
+        return sqlRows([{ optionGroupID: 'cccccccccccccccccccccccccccc0001' }]);
+      }
+      if (sql.includes('LEFT JOIN SwOption')) {
+        /* `:L212-L215` is an OUTER join, so it returns the GROUP with a NULL option when the option does
+         * not exist yet — which is the `:L217` empty branch that creates one. */
+        return sqlRows([{ optionID: null, optionGroupID: 'cccccccccccccccccccccccccccc0001' }]);
+      }
+
+      return undefined;
+    });
+
+    await harness.repository.importFromFile('https://feeds.example/catalog.csv');
+
+    /*
+     * ⭐ THE CREATED IDENTIFIER IS RECORDED, AND FIRST-FAILURE IS WHY THAT IS ADMISSIBLE. The insert at
+     * `:L222-L227` happens inside row 1's transaction, so a rolled-back row could in principle leave a
+     * remembered identifier pointing at nothing. It cannot happen: the per-row boundary stops at the
+     * FIRST failure (M3), so no later row runs after a row whose transaction rolled back, and no later
+     * row can read the entry. This is not defence in depth — it is the entry's whole licence, and if the
+     * boundary ever gained a continue-on-error mode the recording would have to go with it.
+     */
+    const created = matching(harness, 'INSERT INTO SwOption ');
+    expect(created).toHaveLength(1);
+    expect(String(created[0]?.params[0])).toMatch(HEX_32);
+
+    // One lookup for two rows: row 2 took the memory hit.
+    expect(matching(harness, 'LEFT JOIN SwOption')).toHaveLength(1);
+
+    /*
+     * ⭐⭐ THE CREATION ARM ISSUES NO EXISTENCE PROBE AT ALL, AND THAT ASYMMETRY IS THE LEGACY'S.
+     * `model/dao/ProductDAO.cfc:L217` probes `SlatwallSkuOption` only on its non-empty branch; the empty
+     * branch at `:L222-L228` creates the option and then sets `exists = false` OUTRIGHT, without asking,
+     * because an option that did not exist a statement ago can carry no link. So row 1 probes zero times
+     * and links once, and row 2 — arriving through the memory — takes the `:L217` non-empty branch and
+     * probes exactly once. One probe across two rows, not two.
+     *
+     * ⭐ AND THE SINGLE PROBE BINDS THE CREATED IDENTIFIER, which is the actual proof that the identifier
+     * minted at `:L223` was recorded rather than re-derived. A memory that recorded only FOUND options
+     * would send row 2 back to `:L212-L215`, find the option this import created, and — because the outer
+     * join is not repeated here — the lookup count above would read 2.
+     */
+    const probes = matching(harness, 'FROM SwSkuOption');
+    expect(probes).toHaveLength(1);
+    expect(probes[0]?.region).toBe('row#2');
+    expect(probes[0]?.params[0]).toBe(String(created[0]?.params[0]));
+
+    /* Both rows link, because row 1 skipped the probe and row 2's probe found nothing. */
+    expect(matching(harness, 'INSERT INTO SwSkuOption')).toHaveLength(2);
+  });
+
+  it('NET-NEW — the memory is IMPORT-scoped, never instance-scoped (M7)', async () => {
+    const oneRowOneBrand = importable(['product_productCode'], ['CODE-1']);
+
+    const harness = buildHarness(oneRowOneBrand, (statement) => {
+      if (collapse(statement.sql).startsWith('SELECT brandID FROM SwBrand')) {
+        return sqlRows([{ brandID: 'eeeeeeeeeeeeeeeeeeeeeeeeeeee0001' }]);
+      }
+
+      return undefined;
+    });
+
+    await harness.repository.importFromFile('https://feeds.example/catalog.csv');
+    await harness.repository.importFromFile('https://feeds.example/catalog.csv');
+
+    /*
+     * ⛔⛔ THE HAZARD M7 NAMES, ASSERTED RATHER THAN DOCUMENTED. Nothing survives between Lambda
+     * invocations except module-scope state, so a memory held as a FIELD on the repository would let one
+     * caller's catalogue identifiers answer the next caller's import on a warm container. The memory is
+     * created inside `buildImportPlan` and reachable only through the `ImportPlan` that call returns, so
+     * it dies with the import — and the second import therefore re-probes every family from scratch, on
+     * the very same repository instance.
+     */
+    expect(matching(harness, 'FROM SwBrand')).toHaveLength(2);
   });
 });

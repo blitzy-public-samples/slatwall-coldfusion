@@ -926,6 +926,15 @@ export const productCodeRequiredConstraint = Object.freeze({
  * as a driver-level duplicate-key error escaping the data layer. A port that dropped this constraint and
  * leaned on the column would move the failure and change observable behavior.
  *
+ * ⭐ SEC-HARDENING (D18-CLASS) — AND THE COLUMN IS NOW A REPORTED BACKSTOP RATHER THAN A SILENT ONE.
+ * This constraint is still what produces the keyed message on the ordinary path, and nothing about that
+ * changed. What changed is the path this paragraph calls "escaping the data layer": under review finding
+ * F6 (CWE-367) a write that loses a concurrency race against `model/entity/Product.cfc:L56` now arrives
+ * as a typed `UniqueConstraintViolationError` classified as a request rejection, rather than as an
+ * unclassified driver error indistinguishable from a service fault. That is a reporting change only —
+ * the same writes succeed and fail, at the same moment — and it does not substitute for this rule,
+ * because it carries no property key and therefore cannot tell a caller WHICH value collided.
+ *
  * EVALUATION GOES EXCLUSIVELY THROUGH THE INJECTED PORT. This file NAMES the constraint and RESOLVES its
  * target; it never invokes the port, never issues a query, never reaches an adapter and contains no
  * statement of any kind. The port is constructor-injected into `../Validator` (AAP 0.7.3 S3).

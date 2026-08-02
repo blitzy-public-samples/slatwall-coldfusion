@@ -116,7 +116,7 @@
  *     THE ROUTE TAKEN. `SmartListInput` GREW THE CHANNEL, as `additionalJoins`. The feed declares
  *     {@link PRODUCT_FEED_JOINS}, carries them inside {@link PRODUCT_FEED_INPUT} alongside its three
  *     filters and its one range, and calls the parity-frozen member unchanged —
- *     `SkuService.getSkuSmartListRecords`. `translateSmartListInput` appends the input's contributed
+ *     `SkuService.getSkuSmartList`. `translateSmartListInput` appends the input's contributed
  *     joins AFTER the service's own base list, so order is the legacy's and the base list stays owned by
  *     the service. TR-1 holds because no signature widened: the joins travel in the VALUE, not in a new
  *     parameter, and the ten-member parity surface of `SkuService` is untouched.
@@ -417,14 +417,20 @@ const PRODUCT_FEED_INPUT: SmartListInput = Object.freeze({
 /**
  * The single service capability the feed's selection needs.
  *
- * `Pick<SkuService, 'getSkuSmartListRecords'>` rather than the class, for two reasons that are both worth
+ * `Pick<SkuService, 'getSkuSmartList'>` rather than the class, for two reasons that are both worth
  * stating. It records in the TYPE that the feed reaches exactly one of the nine public members AAP
  * §0.4.2.2 tabulates — so a reader does not have to scan the body to learn the coupling — and it makes
  * the class constructible in a test from a one-member double, which is what "test at least one
  * non-empty item end to end" requires. The member's own signature, arity and return type are
  * untouched (TR-1); narrowing the DEPENDENCY is not narrowing the CONTRACT.
+ *
+ * ⚠️ THE MEMBER NAMED HERE WAS `getSkuSmartListRecords`, AND THAT NAME WAS WITHDRAWN. It was a
+ * records-only reading invented alongside the ported surface, and AAP §0.4.2.2 fixes `SkuService` at
+ * NINE declared public members while §0.8.3.1 makes that surface the artefact a reviewer checks "method
+ * by method" — so a tenth reading defeated the check no matter how well it was documented. The sentence
+ * above is now literally true rather than nearly true: `getSkuSmartList` [:L309] IS one of the nine.
  */
-export type ProductFeedSkuSource = Pick<SkuService, 'getSkuSmartListRecords'>;
+export type ProductFeedSkuSource = Pick<SkuService, 'getSkuSmartList'>;
 
 /**
  * The Google product feed's record selection: the port of the seven working lines of
@@ -460,11 +466,15 @@ export type ProductFeedSkuSource = Pick<SkuService, 'getSkuSmartListRecords'>;
  * in exactly one place in the subtree, inside the service — and no product-type join, no alternate-code
  * join and no keyword property is restated in this file.
  *
- * ⚠️ THE MEMBER CALLED IS THE RECORDS-ONLY READING, `getSkuSmartListRecords`. The view at
- * `integrationServices/google/views/feed/product.cfm:L16` loops the collection and reads no count, so
- * the paged reading's second statement would be issued for an answer nobody reads.
- * {@link ProductFeedSkuSource} narrows the dependency to that one member, so the coupling is legible
- * from the TYPE rather than only from the body.
+ * ⚠️ THE MEMBER CALLED IS `getSkuSmartList` [:L309], AND ITS WHOLE RESULT IS MATERIALISED EVEN
+ * THOUGH ONLY ONE VIEW OF IT IS READ. The view at
+ * `integrationServices/google/views/feed/product.cfm:L16` loops the collection and reads no count, so the
+ * count statement the port issues alongside the records answers a question nobody asks. An invented
+ * records-only reading previously avoided it and was withdrawn: AAP §0.4.2.2 fixes this service at NINE
+ * declared members, §0.8.3.1 makes that surface the thing a reviewer checks member by member, and
+ * §0.1.1.1 records that this migration is "Explicitly not: Performance refactoring". The cost is named
+ * here rather than removed. {@link ProductFeedSkuSource} narrows the dependency to that one member, so
+ * the coupling is legible from the TYPE rather than only from the body.
  *
  * STATELESS BY CONSTRUCTION (M7). The class holds exactly one immutable injected reference and no
  * other field: no cache, no memo, no counter, no accumulated query and no request data. Nothing at
@@ -487,11 +497,20 @@ export type ProductFeedSkuSource = Pick<SkuService, 'getSkuSmartListRecords'>;
  * none reads exactly what was read before, and supplying one reads exactly the same SKUs in exactly the
  * same order.
  *
- * ⛔ NO TIMEOUT, NO DEADLINE AND NO BUDGET. AAP §0.6.6 M2 records that the legacy's own budget is the
- * `requesttimeout="360"` at `integrationServices/google/views/feed/product.cfm:L9` and that the delivery
- * decision is deliberately left OPEN; minting a substitute here would settle it by accident and invent a
- * number the source does not state (S9). What this adds is the ability to OBSERVE a cancellation the
- * caller already holds — never to originate one.
+ * ⛔ NO TIMEOUT, NO DEADLINE AND NO BUDGET IS DECLARED *HERE*. AAP §0.6.6 M2 records that the legacy's
+ * own budget is the `requesttimeout="360"` at `integrationServices/google/views/feed/product.cfm:L9` and
+ * that the delivery decision is deliberately left OPEN; minting a substitute here would settle it by
+ * accident and invent a number the source does not state (S9). What this adds is the ability to OBSERVE a
+ * cancellation the caller already holds — never to originate one.
+ *
+ * ⭐ WHERE THE MATERIALISATION BOUND DOES LIVE, so this note is not read as "the feed is unbounded".
+ * Review finding F4 (CWE-400) concerned how many ROWS one selection may hydrate, which is a different
+ * question from how long a render may take. That bound belongs to
+ * `../../adapters/mysql/SmartListQueryBuilder.ts`: its `SmartListMaterialisationBudget` is an OPTIONAL,
+ * operator-supplied figure with NO DEFAULT, and when one is wired both `execute` and `executeRecords`
+ * count before hydrating and REFUSE an over-budget selection rather than truncating it. This feed reads
+ * through `executeRecords`, so it inherits that gate without naming a figure — which is why no number
+ * appears here and none is invented (S9). With no budget wired the path is byte-for-byte what it was.
  */
 export interface ProductFeedQueryOptions {
   /**
@@ -543,26 +562,41 @@ export class ProductFeedQuery {
    * list is restated here — no product-type join, no alternate-code join and no keyword property — and
    * that inheritance is the whole reason the call is layered rather than replaced.
    *
-   * ⭐ P7 — THE UNPAGED COLLECTION IS ASKED FOR DIRECTLY, BECAUSE IT IS THE ONLY ONE THE FEED READS.
+   * ⭐ THE UNPAGED COLLECTION IS THE ONE THE FEED READS, AND IT IS TAKEN FROM THE PARITY-FROZEN MEMBER.
    * `product.cfm:L16` loops the smart list's RECORDS, and the document reads no page and no count
    * anywhere in its 66 lines. (SIXTY-SIX, not sixty-five: `wc -l` reports 65 because the file's last
    * line, `</cfoutput>` at `:L66`, carries no trailing newline, and `wc -l` counts newlines rather than
    * lines. The five sibling citations in this folder all read `product.cfm:L1-L66` for the same reason.)
-   * The legacy framework materialises each view on FIRST READ of that view —
+   * This member therefore reads `SmartListResult.records` from `getSkuSmartList` [:L309] — the whole
+   * selection, in the selection's own order — and reads nothing else off the result.
+   *
+   * ⚠️ AN EARLIER REVISION CALLED AN INVENTED RECORDS-ONLY READING HERE, AND THE ARGUMENT FOR IT IS
+   * RECORDED BECAUSE IT WAS A REASONABLE ARGUMENT THAT DOES NOT SURVIVE THE PRECEDENCE ORDER. The legacy
+   * framework materialises each view on FIRST READ of that view —
    * `org/Hibachi/HibachiSmartList.cfc:L751-L755`, `:L759-L764` and `:L771`, each behind its own
-   * "have I already?" test — so the legacy feed issues exactly ONE query. Reading through the paged
-   * member issued three and then discarded two, and it also materialised a second array of the same
-   * rows as the current page. Selecting the one view restores the legacy's own statement count.
+   * "have I already?" test — so the legacy feed issues exactly ONE statement, and a records-only member
+   * matched that count where the full result also materialises a count. But AAP §0.4.2.2 fixes
+   * `SkuService` at NINE declared public members and §0.8.3.1 requires that surface be checkable "method
+   * by method", so the tenth member was a parity defect regardless of what it saved. AAP §0.1.1.1 settles
+   * the residue explicitly — "Explicitly not: Performance refactoring" — and §0.8.2 Guideline 4 forbids
+   * optimising "beyond what the migration requires". The extra statement the port materialises is
+   * accepted, deliberately and with its cost named, as the price of the declared surface.
    *
    * ⚠️ THE SELECTION IS UNCHANGED, AND THAT IS STRUCTURAL RATHER THAN ASSERTED. `SkuService` composes
-   * this selection in ONE private member that both its paged and unpaged readings call, so the entity,
-   * the three base joins including the left join, the five keyword properties, the filters, the ordering
-   * and the bound parameters are identical text either way. This file still contributes nothing to the
-   * selection beyond {@link PRODUCT_FEED_INPUT} and still does not reach past the service.
+   * this selection in ONE private member, so the entity, the three base joins including the left join,
+   * the five keyword properties, the filters, the ordering and the bound parameters are exactly the text
+   * that member emits. This file still contributes nothing to the selection beyond
+   * {@link PRODUCT_FEED_INPUT} and still does not reach past the service.
    *
    * ⛔ NOT A TRUNCATION AND NOT A PAGE. Nothing here limits, slices, sorts or trims: the unpaged
    * collection is the WHOLE selection, which is exactly what the legacy `cfloop` walks. Returning the
    * page instead would silently shorten the feed, and no `LIMIT` is introduced anywhere on this path.
+   *
+   * ⭐ AND "WHOLE" IS BOUNDED WHERE BOUNDING BELONGS, NOT HERE. When the composition root wires a
+   * `SmartListMaterialisationBudget`, `../../adapters/mysql/SmartListQueryBuilder.ts` counts the selection
+   * before hydrating it and REFUSES one that exceeds the figure — it never returns a shortened feed, which
+   * is the property this note protects (review finding F4). With no budget wired nothing changes here at
+   * all. Either way this file states no figure and applies no limit of its own.
    *
    * @param options optional invocation-scoped controls that change neither the selection nor its
    *   order; see {@link ProductFeedQueryOptions}
@@ -586,10 +620,10 @@ export class ProductFeedQuery {
       );
     }
 
-    // feed.cfc:L63 with L68-L72 folded in: one call, with the selection declared up front (F-1). The
+    // feed.cfc:L63 with L68-L72 folded in: one call, with the selection declared up front (F-1). Every
     // companion argument is left unsupplied, matching the legacy call exactly.
     /*
-     * THE JOINS TRAVEL INSIDE {@link PRODUCT_FEED_INPUT}, NOT AS A SECOND ARGUMENT — and the choice
+     * THE JOINS TRAVEL INSIDE {@link PRODUCT_FEED_INPUT}, NOT AS A COMPANION ARGUMENT — and the choice
      * decides an observable value, so it is argued rather than assumed.
      *
      * `SmartListInput.additionalJoins` carries them. `translateSmartListInput` in
@@ -597,11 +631,11 @@ export class ProductFeedQuery {
      * is the legacy order — `model/service/SkuService.cfc:L314-L316` seeds the smart list at
      * `feed.cfc:L63`, then `:L64-L66` add to the object the controller now holds.
      *
-     * ⚠️ THE SECOND ARGUMENT IS A DIFFERENT CHANNEL WITH A DIFFERENT RESULT, WHICH IS WHY IT IS NOT USED
-     * HERE. `SkuService.getSkuSmartListRecords(data, additionalJoins)` routes its companion argument
-     * through `mergeSmartListJoins`, which COLLAPSES a repeated `parentEntityName.relatedProperty`. The
-     * feed's first join repeats `SkuService.cfc:L314` verbatim, so that channel would describe FIVE joins
-     * where this one describes SIX. Carrying the repeat is the faithful description: the legacy absorbs it
+     * ⚠️ THE JOIN PARAMETER IS A DIFFERENT CHANNEL WITH A DIFFERENT RESULT, WHICH IS WHY IT IS NOT USED
+     * HERE. Handing joins to `getSkuSmartList`'s trailing join parameter routes them through
+     * `mergeSmartListJoins`, which COLLAPSES a repeated `parentEntityName.relatedProperty`. The feed's
+     * first join repeats `SkuService.cfc:L314` verbatim, so that channel would describe FIVE joins where
+     * this one describes SIX. Carrying the repeat is the faithful description: the legacy absorbs it
      * at REGISTRATION time, not at declaration time — `org/Hibachi/HibachiSmartList.cfc:L269` guards the
      * append with `if(!structKeyExists(variables.entities,newEntityName))` and `:L549` builds the FROM
      * clause by walking that registry, one join per registered entity — and
@@ -609,9 +643,16 @@ export class ProductFeedQuery {
      * one join either way. `test/integrations/ProductFeedQuery.test.ts` pins both halves: six joins in
      * order, and the duplicate present twice in the description.
      *
-     * The companion argument is therefore left unsupplied, which also matches `feed.cfc:L63` calling the
-     * member with no arguments at all.
+     * Both companion arguments are therefore left unsupplied, which also matches `feed.cfc:L63` calling
+     * the member with no arguments at all.
      */
-    return this.skuService.getSkuSmartListRecords(PRODUCT_FEED_INPUT);
+    const selection = await this.skuService.getSkuSmartList(PRODUCT_FEED_INPUT);
+
+    /* `SmartListResult.records` is `readonly Sku[]` and this member answers `Sku[]`, so the collection is
+     * copied rather than cast. The copy is shallow and deliberate: it hands the caller a collection it may
+     * hold without also handing it a writable alias of the result the port returned. No element is
+     * re-shaped, re-sorted, filtered or trimmed on the way through — the order is the selection's own,
+     * which is the order `product.cfm:L16` walks. */
+    return [...selection.records];
   }
 }

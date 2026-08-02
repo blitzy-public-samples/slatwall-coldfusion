@@ -13,14 +13,15 @@
  * of whether a port replicates existing tests or quietly writes new ones, and here the answer is
  * "new ones", stated per case rather than buried in an aggregate.
  *
- * `meta/tests/unit/dao/AccountDAOTest.cfc` — the only DAO test the legacy suite has — was read for
- * SHAPE ONLY and **no content was ported from it**. It resolves a DAO by string through the request
- * scope in `setUp()` [`:L55`] and then asserts a single `isObject` [`:L58-L60`]. It says nothing about
- * statement text, bound parameters, row ordering or projection shape, which are the four things this
- * file exists to pin, so there was nothing in it to carry across. Its shape is also why the two
- * suites differ structurally (AAP 0.4.3.6): that case boots the whole FW/1 application and resolves
- * its collaborator dynamically, whereas every case below constructs the adapter directly over an
- * injected double.
+ * `meta/tests/unit/dao/AccountDAOTest.cfc` was read for SHAPE ONLY and **no content was ported from
+ * it**. It is one of exactly two DAO test files the legacy suite contains — `PaymentDAOTest.cfc` is the
+ * other, and both cover excluded domains — so neither is a counterpart to an option DAO test. It
+ * resolves a DAO by string through the request scope in `setUp()` [`:L55`] and then asserts a single
+ * `isObject` [`:L58-L60`]. It says nothing about statement text, bound parameters, row ordering or
+ * projection shape, which are the four things this file exists to pin, so there was nothing in it to
+ * carry across. Its shape is also why the two suites differ structurally (AAP 0.4.3.6): that case boots
+ * the whole FW/1 application and resolves its collaborator dynamically, whereas every case below
+ * constructs the adapter directly over an injected double.
  *
  * TRACEABILITY IS DOCUMENTARY, AND THE CONSTRAINT IS STATED RATHER THAN IMPLIED. MXUnit and CFSelenium
  * are not vendored in this repository; `meta/docker/slatwall-local-dev/` does not exist; and no
@@ -33,9 +34,25 @@
  * =============================================================================================
  * WHAT THIS FILE COVERS
  * =============================================================================================
- * The two members of `model/dao/OptionDAO.cfc`, and only those two:
+ * THE ADAPTER'S WHOLE PUBLIC SURFACE — all five members, not only the two ported ones. The two
+ * ported members carry the legacy behaviour and are the subject of most of the file; the three
+ * additive members are covered because they are LIVE public code, and an uncovered live member can be
+ * removed or inverted with every case here still passing.
+ *
+ * The two members of `model/dao/OptionDAO.cfc`:
  * `getUnusedProductOptions` [`:L51-L92`] ported as `findUnusedOptions`, and
  * `getUnusedProductOptionGroups` [`:L94-L117`] ported as `findUnusedOptionGroups` (AAP 0.4.2.6).
+ *
+ * The three members with NO legacy counterpart, each covered in its own suite at the foot of this
+ * file and each labelled **NET-NEW** for a second reason — not merely "no legacy test exists", but
+ * "no legacy MEMBER exists":
+ *   * `withExecutor(executor)` — re-binding to a transaction-scoped executor, which exists because
+ *     mismatch M5 removed the ambient ORM session a legacy DAO simply participated in.
+ *   * `findUnusedOptionsBounded(window, …)` and `findUnusedOptionGroupsBounded(window, …)` — the
+ *     windowed forms of the two ported reads. Neither legacy statement carries a row cap, so the
+ *     window is additional surface rather than a port of anything; what its cases assert is that it
+ *     is additional and NOTHING ELSE — the same statement, the same bind order, the same polarity,
+ *     with a `LIMIT`/`OFFSET` pair appended past the `ORDER BY` and bound last.
  *
  * Four properties carry the behaviour, and each one is a place where a plausible tidy-up changes
  * results with no error and no compile failure. They are the subject of the suites below:
@@ -73,11 +90,6 @@
  * =============================================================================================
  * WHAT THIS FILE DELIBERATELY DOES NOT TOUCH
  * =============================================================================================
- *   * THE TWO WINDOWED MEMBERS the adapter also publishes. The AAP maps `model/dao/OptionDAO.cfc` to
- *     exactly two repository members and neither legacy statement carries a row cap, so the pair of
- *     bounded members is additional surface rather than a port of anything here. The absence of a row
- *     cap in the two ported statements is proved POSITIVELY instead: each case that asserts a
- *     statement's tail shows it terminates at its `ORDER BY`, so no clause can follow it.
  *   * `getProductOptionsByGroup` [`model/entity/Product.cfc:L631-L633`], which delegates to a
  *     `ProductService` member that exists nowhere in the repository. It is an out-of-scope defect and
  *     is neither exercised nor repaired here.
@@ -214,7 +226,6 @@ const LABEL_SEPARATOR = ' - ';
  * THE HARNESS
  * ============================================================================================= */
 
-/** One exercised adapter and the double that recorded what it issued. */
 interface Recording {
   readonly repository: MySqlOptionRepository;
   readonly double: SqlExecutorDouble;
@@ -413,13 +424,11 @@ function membershipMarkers(
   return text.slice(from, closes);
 }
 
-/** What one exercise of `findUnusedOptions` produced. */
 interface UnusedOptionsExercise {
   readonly call: SqlExecutorCall;
   readonly rows: UnusedOptionRow[];
 }
 
-/** What one exercise of `findUnusedOptionGroups` produced. */
 interface UnusedOptionGroupsExercise {
   readonly call: SqlExecutorCall;
   readonly rows: UnusedOptionGroupRow[];
@@ -1321,27 +1330,73 @@ describe('MySqlOptionRepository — NET-NEW: statement discipline and the inject
     expect(groupsRun.double.calls).toHaveLength(1);
   });
 
-  it('NET-NEW — satisfies the OptionRepository port through both ported members', async () => {
+  it('NET-NEW — satisfies the OptionRepository port across all four of its declared members', async () => {
     const { repository, double } = recording(
       sqlRows([{ optionID: 'option-1', optionName: 'Large', optionGroupName: 'Size' }]),
       sqlRows([{ optionGroupID: 'group-b', optionGroupName: 'Colour' }]),
+      sqlRows([{ optionID: 'option-2', optionName: 'Small', optionGroupName: 'Size' }]),
+      sqlRows([{ optionGroupID: 'group-c', optionGroupName: 'Material' }]),
     );
 
     /*
      * The adapter is held through the PORT for the duration of this case, which is how every service
      * above it holds one. The annotation is the assertion: it compiles only while the concrete class
      * still satisfies `OptionRepository`, so a signature drifting apart from the contract fails the
-     * typecheck rather than surviving until a service breaks. The two calls then prove the members are
+     * typecheck rather than surviving until a service breaks. The four calls then prove the members are
      * reachable and behave identically through the interface.
+     *
+     * ⚠️ FOUR, NOT TWO. An earlier revision exercised only the two ported members and titled itself
+     * "through both ported members", which left the two ROUTED bounded members outside the one assertion
+     * in this file whose whole purpose is to notice a member drifting from the contract. Two of the port's
+     * four declarations were therefore unchecked here, and the same revision's header entry said they were
+     * out of scope. Both are corrected.
      */
     const port: OptionRepository = repository;
 
     const options = await port.findUnusedOptions(PRODUCT_ID, 'group-a');
     const groups = await port.findUnusedOptionGroups('group-a');
+    const boundedOptions = await port.findUnusedOptionsBounded(
+      { limit: 1, offset: 0 },
+      PRODUCT_ID,
+      'group-a',
+    );
+    const boundedGroups = await port.findUnusedOptionGroupsBounded(
+      { limit: 1, offset: 0 },
+      'group-a',
+    );
 
     expect(options).toEqual([{ name: 'Size - Large', value: 'option-1' }]);
     expect(groups).toEqual([{ name: 'Colour', value: 'group-b' }]);
-    expect(double.calls).toHaveLength(2);
+
+    /*
+     * The bounded pair answers the SAME row shape as the ported pair, wrapped in a verdict rather than
+     * returned bare — which is the whole of the difference between them. Asserting the wrapped rows here,
+     * and not merely that the members exist, is what makes "satisfies the port" mean satisfied in
+     * behaviour and not just in shape.
+     */
+    expect(boundedOptions).toEqual({
+      rows: [{ name: 'Size - Small', value: 'option-2' }],
+      hasMore: false,
+    });
+    expect(boundedGroups).toEqual({
+      rows: [{ name: 'Material', value: 'group-c' }],
+      hasMore: false,
+    });
+
+    /* FOUR members exercised, so four statements — one per declaration, none of them shared. */
+    expect(double.calls).toHaveLength(4);
+
+    /*
+     * The port declares FOUR members, not two: the two ported reads above and their two windowed
+     * companions. Naming all four keeps this case honest about the interface it claims to satisfy —
+     * an earlier revision listed only the ported pair, which read as though the port closed at two.
+     * The windowed pair is exercised for real in its own suites at the foot of this file; here the
+     * claim is only that the concrete adapter answers the whole contract.
+     */
+    expect(typeof port.findUnusedOptions).toBe('function');
+    expect(typeof port.findUnusedOptionsBounded).toBe('function');
+    expect(typeof port.findUnusedOptionGroups).toBe('function');
+    expect(typeof port.findUnusedOptionGroupsBounded).toBe('function');
   });
 
   it('NET-NEW — names only the four tables the legacy statements name, and no other', async () => {
@@ -1429,5 +1484,603 @@ describe('MySqlOptionRepository.findUnusedOptions — NET-NEW: a NULL name in th
     await expect(repository.findUnusedOptions(PRODUCT_ID, 'group-a')).rejects.toThrow(
       /holds a value that is not text/,
     );
+  });
+});
+
+/* ===============================================================================================
+ * THE THREE ADDITIVE MEMBERS
+ * ===============================================================================================
+ * Everything above this line ports `model/dao/OptionDAO.cfc`. Everything below it covers public code
+ * the legacy DAO has no counterpart for, and each suite states WHY the member exists before asserting
+ * what it does — because a member with no legacy origin is exactly the member a later reader is most
+ * tempted to delete, and an uncovered one can be deleted with the whole file still green.
+ *
+ * ⛔ NO NEW BEHAVIOUR IS ASSERTED FOR THE PORTED STATEMENTS HERE. The two windowed members delegate
+ * their list splitting, their placeholder list, their statement text and their bind order to the same
+ * three collaborators the unbounded members use. The cases below therefore assert SAMENESS — the same
+ * statement with a `LIMIT`/`OFFSET` pair appended after the `ORDER BY` and bound last — which is the
+ * only property that keeps the pair from drifting into filtering differently.
+ * ============================================================================================= */
+
+/**
+ * The two placeholders the window appends, in `LIMIT ? OFFSET ?` order.
+ *
+ * Written out as the tail an assertion compares against, so a clause appended after the window would
+ * shift the tail and fail rather than hide behind a `toContain`.
+ */
+const WINDOW_TAIL = 'LIMIT ? OFFSET ?';
+
+/** The window every bounded case uses unless it is about the window itself. */
+const WINDOW = Object.freeze({ limit: 2, offset: 0 });
+
+/**
+ * A bounded-read window's bound pair, exactly as the production helper derives it.
+ *
+ * ⚠️ BOTH VALUES ARE TEXT, NOT NUMBERS, AND THAT IS A MEASURED DRIVER CONSTRAINT RATHER THAN A STYLE
+ * CHOICE. `src/adapters/mysql/QueryRunner.ts` records that `mysql2@3.23.2` speaking to MySQL 8.4
+ * answers `ER_WRONG_ARGUMENTS` when a NUMBER is bound to a row-count placeholder in a true
+ * server-side prepared statement, and answers the expected rows when the same value is bound as
+ * decimal text. No case in this repository reaches a database, so binding a number would type-check,
+ * lint clean and pass every test while failing on the first real connection — which is precisely why
+ * the expected pair is spelled out here as strings.
+ *
+ * ⚠️ THE LIMIT IS `limit + 1`, NOT `limit`. The extra row is the PROBE: it is what lets `hasMore` be
+ * an observed fact rather than an inference from a full window, and it is discarded before the rows
+ * reach the caller.
+ *
+ * @param limit - the caller's row ceiling.
+ * @param offset - the caller's zero-based offset.
+ * @returns the two bound values, in the order the statement places them.
+ */
+function windowBindings(limit: number, offset: number): readonly [string, string] {
+  return [String(limit + 1), String(offset)];
+}
+
+/**
+ * A row the first statement's projection can produce, numbered so ordering is observable.
+ *
+ * @param index - distinguishes the rows within one canned answer.
+ * @returns one raw driver row for the unused-options projection.
+ */
+function unusedOptionRow(index: number): {
+  readonly optionID: string;
+  readonly optionName: string;
+  readonly optionGroupName: string;
+} {
+  return {
+    optionID: `option-${String(index)}`,
+    optionName: `Name ${String(index)}`,
+    optionGroupName: 'Size',
+  };
+}
+
+/**
+ * A row the second statement's projection can produce.
+ *
+ * @param index - distinguishes the rows within one canned answer.
+ * @returns one raw driver row for the unused-option-groups projection.
+ */
+function unusedOptionGroupRow(index: number): {
+  readonly optionGroupID: string;
+  readonly optionGroupName: string;
+} {
+  return { optionGroupID: `group-${String(index)}`, optionGroupName: `Group ${String(index)}` };
+}
+
+/* ===============================================================================================
+ * `withExecutor(executor)` — RE-BINDING TO A TRANSACTION-SCOPED EXECUTOR
+ * ===============================================================================================
+ * ⚠️ NO LEGACY COUNTERPART, AND THE REASON IS EXECUTION-MODEL MISMATCH M5. A legacy DAO never chooses
+ * a connection: the ORM session is ambient and `org/Hibachi/Hibachi.cfc` flushes it at request end
+ * only when the request reports no errors, so the DAO simply participates in whatever transaction the
+ * request already holds. A stateless handler has no request end and no ambient session, so the port
+ * makes the boundary explicit — and an adapter that could only ever hold the POOL-bound executor it
+ * was constructed with would leave every statement outside the boundary's transaction, where a
+ * rollback cannot undo it.
+ *
+ * ⚠️ A NEW INSTANCE, NOT A MUTATION, AND THE DIFFERENCE IS THE WHOLE POINT. Re-binding in place would
+ * make an adapter's connection depend on WHEN it was used rather than on WHICH instance was used — an
+ * ambient current-transaction slot in all but name, and the same warm-container bleed M7 rules out.
+ * Two concurrent boundaries must not be able to observe each other's connection.
+ * ============================================================================================= */
+
+describe('MySqlOptionRepository.withExecutor — NET-NEW: re-binding, and its isolation', () => {
+  it('NET-NEW — answers a NEW instance of the same class and leaves the receiver alone', () => {
+    const { repository } = recording();
+    const replacement = createSqlExecutorDouble();
+
+    const rebound = repository.withExecutor(replacement.executor);
+
+    expect(rebound).not.toBe(repository);
+    expect(rebound).toBeInstanceOf(MySqlOptionRepository);
+  });
+
+  it('NET-NEW — every statement the re-bound instance issues lands on the REPLACEMENT executor', async () => {
+    const original = recording();
+    const replacement = createSqlExecutorDouble({
+      outcomes: [sqlRows([unusedOptionRow(1)])],
+    });
+
+    const rebound = original.repository.withExecutor(replacement.executor);
+    const rows = await rebound.findUnusedOptions(PRODUCT_ID, 'group-a');
+
+    /*
+     * This is the property that makes wrapping a call in a transaction boundary mean anything: the
+     * statement runs on the connection the boundary owns, so a rollback can undo it and a read can
+     * observe a sibling write the same transaction already issued.
+     */
+    expect(replacement.calls).toHaveLength(1);
+    expect(normalize(callAt(replacement, 0).sql)).toBe(
+      normalize(UNUSED_OPTIONS_STATEMENT_FOR_TWO_GROUPS.replace(' IN (?, ?)', ' IN (?)')),
+    );
+    expect(callAt(replacement, 0).params).toEqual(['group-a', PRODUCT_ID]);
+    expect(rows).toEqual([{ name: 'Size - Name 1', value: 'option-1' }]);
+
+    /* And NOTHING reached the executor the receiver still holds. */
+    expect(original.double.calls).toHaveLength(0);
+  });
+
+  it('NET-NEW — the ORIGINAL keeps its own executor and stays usable after the re-binding', async () => {
+    const original = recording(sqlRows([]), sqlRows([]));
+    const replacement = createSqlExecutorDouble({ outcomes: [sqlRows([])] });
+
+    const rebound = original.repository.withExecutor(replacement.executor);
+    await rebound.findUnusedOptionGroups('inside');
+    await original.repository.findUnusedOptionGroups('outside');
+
+    /*
+     * The captured executor is `private readonly` and re-binding never reassigns it, so the
+     * pool-bound instance a composition root built is still pool-bound afterwards. A mutating
+     * implementation would put BOTH statements on the replacement, and this case is what catches it.
+     */
+    expect(replacement.calls).toHaveLength(1);
+    expect(callAt(replacement, 0).params).toEqual(['inside']);
+    expect(original.double.calls).toHaveLength(1);
+    expect(callAt(original.double, 0).params).toEqual(['outside']);
+  });
+
+  it('NET-NEW — two re-bindings of one receiver cannot observe each other', async () => {
+    const original = recording();
+    const first = createSqlExecutorDouble({ outcomes: [sqlRows([])] });
+    const second = createSqlExecutorDouble({ outcomes: [sqlRows([])] });
+
+    const boundaryOne = original.repository.withExecutor(first.executor);
+    const boundaryTwo = original.repository.withExecutor(second.executor);
+    await boundaryOne.findUnusedOptionGroups('one');
+    await boundaryTwo.findUnusedOptionGroups('two');
+
+    /*
+     * M7 — two concurrent boundaries on one warm container get two instances. If re-binding mutated,
+     * the second call would have travelled on whichever executor was bound last and one boundary
+     * would have committed inside the other's transaction.
+     */
+    expect(boundaryOne).not.toBe(boundaryTwo);
+    expect(first.calls).toHaveLength(1);
+    expect(callAt(first, 0).params).toEqual(['one']);
+    expect(second.calls).toHaveLength(1);
+    expect(callAt(second, 0).params).toEqual(['two']);
+  });
+
+  it('NET-NEW — the re-bound instance still answers the whole OptionRepository port', async () => {
+    const original = recording();
+    const replacement = createSqlExecutorDouble({ outcomes: [sqlRows([])] });
+
+    /* A positive type-level assertion rather than a suppression: the re-bound value is USED as the
+     * port, so a narrowed return type on `withExecutor` would fail to compile right here. */
+    const rebound: OptionRepository = original.repository.withExecutor(replacement.executor);
+
+    expect(typeof rebound.findUnusedOptions).toBe('function');
+    expect(typeof rebound.findUnusedOptionsBounded).toBe('function');
+    expect(typeof rebound.findUnusedOptionGroups).toBe('function');
+    expect(typeof rebound.findUnusedOptionGroupsBounded).toBe('function');
+    await expect(rebound.findUnusedOptionGroups('group-a')).resolves.toEqual([]);
+  });
+
+  /*
+   * ⭐ REVIEW FINDING F3 — PORT EXHAUSTIVENESS, KEYED OFF THE PORT ITSELF RATHER THAN OFF A HAND LIST.
+   * The case above proves the re-bound instance still answers the port; this one proves the list of
+   * members being checked is COMPLETE. A hand-written enumeration silently stops covering a port the
+   * day a member is added, which is the gap F3 reported; the mapped type below fails to COMPILE
+   * instead.
+   */
+  it('NET-NEW — satisfies the OptionRepository port across ALL FOUR declared members', () => {
+    const asPort: OptionRepository = recording().repository;
+
+    /* Keyed off the port's own member set, so a fifth method breaks compilation here until it is named. */
+    const everyPortMember: Record<keyof OptionRepository, true> = {
+      findUnusedOptions: true,
+      findUnusedOptionsBounded: true,
+      findUnusedOptionGroups: true,
+      findUnusedOptionGroupsBounded: true,
+    };
+
+    const declared = Object.keys(everyPortMember) as readonly (keyof OptionRepository)[];
+
+    expect(declared).toHaveLength(4);
+    for (const member of declared) {
+      expect(typeof asPort[member]).toBe('function');
+    }
+  });
+
+  it('NET-NEW — re-binding is absent from the port, so a service-side double needs no executor', () => {
+    /*
+     * The compile-time half of the boundary claim. A service may not know that a statement executor
+     * exists at all, so `withExecutor` is exposed on the CONCRETE adapter only. If anyone added it to
+     * `OptionRepository`, this literal would stop compiling and say so at the boundary rather than in
+     * a service test — and no mocking library is needed to state it, which the legacy suite does not
+     * vendor either.
+     */
+    const double: OptionRepository = {
+      findUnusedOptions: () => Promise.resolve([]),
+      findUnusedOptionsBounded: () => Promise.resolve({ rows: [], hasMore: false }),
+      findUnusedOptionGroups: () => Promise.resolve([]),
+      findUnusedOptionGroupsBounded: () => Promise.resolve({ rows: [], hasMore: false }),
+    };
+
+    expect(Object.keys(double)).not.toContain('withExecutor');
+    expect(Object.keys(double)).toHaveLength(4);
+  });
+});
+
+/* ===============================================================================================
+ * `findUnusedOptionsBounded(window, productID, existingOptionGroupIDList)`
+ * ===============================================================================================
+ * ⚠️ THE BIND-ORDER TRAP IS STILL LIVE, AND THE WINDOW SITS AFTER IT. The group identifiers bind
+ * FIRST and the product identifier LAST — statement order, the reverse of the argument order — and
+ * the two window values bind after both, in positions the legacy statement never used. So the window
+ * CANNOT disturb the legacy sequence, and that is what these cases assert.
+ * ============================================================================================= */
+
+describe('MySqlOptionRepository.findUnusedOptionsBounded — NET-NEW: the window, and only the window', () => {
+  it('NET-NEW — issues the ported statement with the window appended after its ORDER BY', async () => {
+    const { repository, double } = recording(sqlRows([]));
+
+    await repository.findUnusedOptionsBounded(WINDOW, PRODUCT_ID, 'group-a,group-b');
+
+    const text = normalize(soleCall(double).sql);
+
+    /*
+     * Written as a whole-statement equality rather than a fragment search, for the reason the two
+     * ported statements are: a fragment proves something expected is present, an equality also proves
+     * nothing UNEXPECTED is — no extra predicate, no re-ordered sort, no second `LIMIT`.
+     */
+    expect(text).toBe(clause(UNUSED_OPTIONS_STATEMENT_FOR_TWO_GROUPS, WINDOW_TAIL));
+    /* The window is the statement's LAST clause, which is the only place a `LIMIT` is meaningful:
+     * `model/dao/OptionDAO.cfc:L82-L84` orders by group name then option name, so the slice is
+     * deterministic rather than arbitrary. */
+    expect(tail(text, WINDOW_TAIL)).toBe(WINDOW_TAIL);
+    expect(text.indexOf(UNUSED_OPTIONS_ORDERING)).toBeLessThan(text.indexOf(WINDOW_TAIL));
+  });
+
+  it('NET-NEW — binds group identifiers FIRST, the product identifier LAST, and the window after both', async () => {
+    const { repository, double } = recording(sqlRows([]));
+
+    await repository.findUnusedOptionsBounded(
+      { limit: 5, offset: 10 },
+      PRODUCT_ID,
+      'group-a,group-b',
+    );
+
+    /*
+     * TR-4 — the bound array follows the LEGACY STATEMENT sequence, and the window occupies positions
+     * the legacy never had. Both legacy parameters are `string`, so a transposition compiles, throws
+     * nothing and quietly returns the wrong option set; only this ordering assertion catches it.
+     */
+    expect(soleCall(double).params).toEqual([
+      'group-a',
+      'group-b',
+      PRODUCT_ID,
+      ...windowBindings(5, 10),
+    ]);
+  });
+
+  it('NET-NEW — binds limit + 1 as the probe, and both window values as decimal TEXT', async () => {
+    const { repository, double } = recording(sqlRows([]));
+
+    await repository.findUnusedOptionsBounded({ limit: 3, offset: 0 }, PRODUCT_ID, 'group-a');
+
+    const bound = soleCall(double).params;
+
+    expect(bound.slice(-2)).toEqual(['4', '0']);
+    for (const value of bound.slice(-2)) {
+      expect(typeof value).toBe('string');
+    }
+  });
+
+  it('NET-NEW — reports hasMore TRUE and DISCARDS the probe row when one lies past the window', async () => {
+    const { repository } = recording(
+      sqlRows([unusedOptionRow(1), unusedOptionRow(2), unusedOptionRow(3)]),
+    );
+
+    const result = await repository.findUnusedOptionsBounded(WINDOW, PRODUCT_ID, 'group-a');
+
+    /*
+     * `hasMore` is OBSERVED rather than inferred from a full window: an exactly-full window is not
+     * evidence of more rows, since the match set may end on the boundary. The third row is the probe
+     * and never reaches the caller, which keeps `rows.length <= limit` an invariant.
+     */
+    expect(result.hasMore).toBe(true);
+    expect(result.rows).toHaveLength(2);
+    expect(result.rows.map((row) => row.value)).toEqual(['option-1', 'option-2']);
+  });
+
+  it('NET-NEW — reports hasMore FALSE for an EXACTLY full window, not true', async () => {
+    const { repository } = recording(sqlRows([unusedOptionRow(1), unusedOptionRow(2)]));
+
+    const result = await repository.findUnusedOptionsBounded(WINDOW, PRODUCT_ID, 'group-a');
+
+    /* Inferring `hasMore` from `rows.length === limit` would report `true` for this complete answer
+     * and send the caller on one guaranteed-empty follow-up read. */
+    expect(result.hasMore).toBe(false);
+    expect(result.rows).toHaveLength(2);
+  });
+
+  it('NET-NEW — an offset past the end is an empty window with hasMore false, not an error', async () => {
+    const { repository, double } = recording(sqlRows([]));
+
+    const result = await repository.findUnusedOptionsBounded(
+      { limit: 2, offset: 500 },
+      PRODUCT_ID,
+      'group-a',
+    );
+
+    expect(result).toEqual({ rows: [], hasMore: false });
+    expect(soleCall(double).params).toEqual(['group-a', PRODUCT_ID, ...windowBindings(2, 500)]);
+  });
+
+  it('NET-NEW — composes the label exactly as the unbounded member does, with no second format', async () => {
+    const { repository } = recording(sqlRows([unusedOptionRow(1)]));
+
+    const result = await repository.findUnusedOptionsBounded(WINDOW, PRODUCT_ID, 'group-a');
+
+    /* One label format for both readings. A second one here would drift the moment
+     * `model/dao/OptionDAO.cfc:L88`'s separator was ever revisited. */
+    expect(soleRow(result.rows).name).toBe(`Size${LABEL_SEPARATOR}Name 1`);
+  });
+
+  it('NET-NEW — an EMPTY group list still binds one placeholder to the empty string', async () => {
+    const { repository, double } = recording(sqlRows([]));
+
+    const result = await repository.findUnusedOptionsBounded(WINDOW, PRODUCT_ID, '');
+
+    /*
+     * The ordinary state of a product with no option groups yet, and neither guarded nor treated as
+     * an error on either reading. The clause becomes a membership test against a single empty string,
+     * which no real identifier satisfies.
+     */
+    expect(membershipMarkers(soleCall(double).sql, OPTION_GROUP_FILTER_COLUMN, 'IN')).toBe('?');
+    expect(soleCall(double).params).toEqual(['', PRODUCT_ID, ...windowBindings(2, 0)]);
+    expect(result.rows).toEqual([]);
+  });
+
+  it('NET-NEW — a DUPLICATED group identifier keeps its own placeholder, on the window path too', async () => {
+    const { repository, double } = recording(sqlRows([]));
+
+    await repository.findUnusedOptionsBounded(WINDOW, PRODUCT_ID, 'group-a,group-a');
+
+    /* One marker per list element, duplicates included: the port de-duplicates nothing, because
+     * `model/dao/OptionDAO.cfc:L68` builds one `<cfqueryparam>` per element. */
+    expect(membershipMarkers(soleCall(double).sql, OPTION_GROUP_FILTER_COLUMN, 'IN')).toBe('?, ?');
+    expect(soleCall(double).params).toEqual([
+      'group-a',
+      'group-a',
+      PRODUCT_ID,
+      ...windowBindings(2, 0),
+    ]);
+  });
+
+  it('NET-NEW — a hostile group identifier is BOUND, never written into the statement text', async () => {
+    const hostile = "group-a' OR 1=1 --";
+    const { repository, double } = recording(sqlRows([]));
+
+    await repository.findUnusedOptionsBounded(WINDOW, `${PRODUCT_ID}' --`, hostile);
+
+    /*
+     * S2 — the window does not open a text-composition path. Every caller value is still a bound
+     * parameter, and the only text the adapter composes is whitelist-validated identifiers plus bind
+     * markers, so no quote and no comment introducer can appear in the statement at all.
+     */
+    const { sql, params } = soleCall(double);
+    expect(params).toEqual([hostile, `${PRODUCT_ID}' --`, ...windowBindings(2, 0)]);
+    expect(sql).not.toContain(hostile);
+    expect(sql).not.toContain("'");
+    expect(sql).not.toContain('--');
+  });
+
+  it('NET-NEW — REFUSES an unusable window rather than clamping it, and issues no statement', async () => {
+    /*
+     * ⛔ THE EXPECTED SENTENCE IS PER WINDOW KIND, NOT ONE PATTERN FOR ALL SIX. Both refusals open with
+     * "A bounded read needs …", so a single `/bounded read needs/` cannot tell a rejected LIMIT from a
+     * rejected OFFSET — it would pass against an implementation that answered the wrong complaint. The
+     * limit clause and the offset clause are therefore matched separately, and every case additionally
+     * requires the "refused rather than adjusted" clause, because THAT is the behavioural claim: a
+     * clamped bound would answer a different question than the one asked and report nothing about the
+     * substitution, which is the same silent truncation the bounded members exist to avoid.
+     */
+    const unusableWindows: readonly {
+      readonly window: { readonly limit: number; readonly offset: number };
+      readonly complaint: RegExp;
+    }[] = [
+      { window: { limit: 0, offset: 0 }, complaint: /needs a positive whole row limit/ },
+      { window: { limit: -1, offset: 0 }, complaint: /needs a positive whole row limit/ },
+      { window: { limit: 1.5, offset: 0 }, complaint: /needs a positive whole row limit/ },
+      { window: { limit: Number.NaN, offset: 0 }, complaint: /needs a positive whole row limit/ },
+      { window: { limit: 2, offset: -1 }, complaint: /needs a whole, non-negative offset/ },
+      { window: { limit: 2, offset: 0.5 }, complaint: /needs a whole, non-negative offset/ },
+    ];
+
+    for (const { window, complaint } of unusableWindows) {
+      const { repository, double } = recording(sqlRows([]));
+
+      /* Refusing BEFORE any statement is issued is the observable half: a refused window costs no round
+       * trip, so the bound is not merely reported but enforced ahead of the database. */
+      await expect(
+        repository.findUnusedOptionsBounded(window, PRODUCT_ID, 'group-a'),
+      ).rejects.toThrow(complaint);
+      await expect(
+        repository.findUnusedOptionsBounded(window, PRODUCT_ID, 'group-a'),
+      ).rejects.toThrow(/refused rather than adjusted/);
+      expect(double.calls).toHaveLength(0);
+    }
+  });
+
+  it('NET-NEW — names the refusing MEMBER in the failure context, not just the window', async () => {
+    const { repository } = recording(sqlRows([]));
+
+    await expect(
+      repository.findUnusedOptionsBounded({ limit: 0, offset: 0 }, PRODUCT_ID, 'group-a'),
+    ).rejects.toMatchObject({
+      context: {
+        member: 'MySqlOptionRepository.findUnusedOptionsBounded',
+        limit: 0,
+        offset: 0,
+      },
+    });
+  });
+});
+
+/* ===============================================================================================
+ * `findUnusedOptionGroupsBounded(window, existingOptionGroupIDList)`
+ * ===============================================================================================
+ * ⚠️ THE `NOT IN` POLARITY IS THE WHOLE REASON A WINDOW IS USEFUL HERE. The unbounded member returns
+ * EVERY option group for a product that has none yet — the mirror image of its sibling — so this is
+ * the member whose result is largest exactly when a caller has least information. The polarity is
+ * untouched by the window, and the first case below is what proves it.
+ * ============================================================================================= */
+
+describe('MySqlOptionRepository.findUnusedOptionGroupsBounded — NET-NEW: the window over the NOT IN read', () => {
+  it('NET-NEW — issues the ported statement with the window appended after its single ORDER BY', async () => {
+    const { repository, double } = recording(sqlRows([]));
+
+    await repository.findUnusedOptionGroupsBounded(WINDOW, 'group-a');
+
+    const text = normalize(soleCall(double).sql);
+
+    expect(text).toBe(clause(UNUSED_OPTION_GROUPS_STATEMENT_FOR_ONE_GROUP, WINDOW_TAIL));
+    expect(tail(text, WINDOW_TAIL)).toBe(WINDOW_TAIL);
+    expect(text.indexOf(UNUSED_OPTION_GROUPS_ORDERING)).toBeLessThan(text.indexOf(WINDOW_TAIL));
+  });
+
+  it('NET-NEW — keeps the NOT IN polarity, so the window narrows rows without inverting the question', async () => {
+    const { repository, double } = recording(sqlRows([]));
+
+    await repository.findUnusedOptionGroupsBounded(WINDOW, 'group-a,group-b');
+
+    /*
+     * The two members receive the SAME argument and filter it with INVERTED predicates — the sibling
+     * keeps rows whose group IS in the list, this one keeps rows that are NOT. One token of
+     * difference, and normalising the pair in either direction would change output that reaches a
+     * rendered page. The lookup proves the operator, because the operator is part of the searched text.
+     */
+    expect(membershipMarkers(soleCall(double).sql, OPTION_GROUP_EXCLUSION_COLUMN, 'NOT IN')).toBe(
+      '?, ?',
+    );
+    expect(normalize(soleCall(double).sql)).not.toContain(
+      `${OPTION_GROUP_EXCLUSION_COLUMN} IN (?, ?)`,
+    );
+  });
+
+  it('NET-NEW — binds the group identifiers first and the window last, with no product identifier', async () => {
+    const { repository, double } = recording(sqlRows([]));
+
+    await repository.findUnusedOptionGroupsBounded({ limit: 4, offset: 8 }, 'group-a,group-b');
+
+    /*
+     * This statement takes NO product identifier — `model/dao/OptionDAO.cfc:L95` declares one
+     * argument and `:L100-L110` names no product, no join and no non-existence guard. So the window
+     * follows the group list directly, and a stray third value here would mean the two members had
+     * been merged.
+     */
+    expect(soleCall(double).params).toEqual(['group-a', 'group-b', ...windowBindings(4, 8)]);
+  });
+
+  it('NET-NEW — reports hasMore TRUE and discards the probe row', async () => {
+    const { repository } = recording(
+      sqlRows([unusedOptionGroupRow(1), unusedOptionGroupRow(2), unusedOptionGroupRow(3)]),
+    );
+
+    const result = await repository.findUnusedOptionGroupsBounded(WINDOW, 'group-a');
+
+    expect(result.hasMore).toBe(true);
+    expect(result.rows).toEqual([
+      { name: 'Group 1', value: 'group-1' },
+      { name: 'Group 2', value: 'group-2' },
+    ]);
+  });
+
+  it('NET-NEW — reports hasMore FALSE when the window reached the end of the match set', async () => {
+    const { repository } = recording(sqlRows([unusedOptionGroupRow(1)]));
+
+    const result = await repository.findUnusedOptionGroupsBounded(WINDOW, 'group-a');
+
+    expect(result.hasMore).toBe(false);
+    expect(soleRow(result.rows)).toEqual({ name: 'Group 1', value: 'group-1' });
+  });
+
+  it('NET-NEW — returns the BARE group name, never the sibling two-part label', async () => {
+    const { repository } = recording(sqlRows([unusedOptionGroupRow(1)]));
+
+    const result = await repository.findUnusedOptionGroupsBounded(WINDOW, 'group-a');
+
+    /* `model/dao/OptionDAO.cfc:L113` assembles the plain group name. The two row shapes are
+     * identical and their meanings are not, which is why the projections are never merged. */
+    expect(soleRow(result.rows).name).not.toContain(LABEL_SEPARATOR);
+  });
+
+  it('NET-NEW — an EMPTY list still binds one placeholder, so every group remains a candidate', async () => {
+    const { repository, double } = recording(
+      sqlRows([unusedOptionGroupRow(1), unusedOptionGroupRow(2)]),
+    );
+
+    const result = await repository.findUnusedOptionGroupsBounded(WINDOW, '');
+
+    /*
+     * The empty identifier excludes nothing on the NOT-IN side, so a product with no option groups
+     * yet legitimately sees EVERY group — the mirror of the sibling member's empty answer for the same
+     * input. Both are correct, and the window is what makes the largest of the two answers usable.
+     */
+    expect(membershipMarkers(soleCall(double).sql, OPTION_GROUP_EXCLUSION_COLUMN, 'NOT IN')).toBe(
+      '?',
+    );
+    expect(soleCall(double).params).toEqual(['', ...windowBindings(2, 0)]);
+    expect(result.rows).toHaveLength(2);
+  });
+
+  it('NET-NEW — REFUSES an unusable window rather than clamping it, and issues no statement', async () => {
+    for (const window of [
+      { limit: 0, offset: 0 },
+      { limit: 2, offset: -3 },
+      { limit: Number.POSITIVE_INFINITY, offset: 0 },
+    ]) {
+      const { repository, double } = recording(sqlRows([]));
+
+      await expect(repository.findUnusedOptionGroupsBounded(window, 'group-a')).rejects.toThrow(
+        /bounded read needs/,
+      );
+      expect(double.calls).toHaveLength(0);
+    }
+  });
+
+  it('NET-NEW — names its OWN member in the failure context, distinct from its sibling', async () => {
+    const { repository } = recording(sqlRows([]));
+
+    await expect(
+      repository.findUnusedOptionGroupsBounded({ limit: 0, offset: 0 }, 'group-a'),
+    ).rejects.toMatchObject({
+      context: { member: 'MySqlOptionRepository.findUnusedOptionGroupsBounded' },
+    });
+  });
+
+  it('NET-NEW — issues exactly one statement per bounded call, on both windowed members', async () => {
+    const options = recording(sqlRows([]));
+    await options.repository.findUnusedOptionsBounded(WINDOW, PRODUCT_ID, 'group-a');
+
+    const groups = recording(sqlRows([]));
+    await groups.repository.findUnusedOptionGroupsBounded(WINDOW, 'group-a');
+
+    /* The probe row is requested by widening the `LIMIT`, not by a second round trip: one statement
+     * answers both the window and the `hasMore` question. */
+    expect(options.double.calls).toHaveLength(1);
+    expect(groups.double.calls).toHaveLength(1);
   });
 });

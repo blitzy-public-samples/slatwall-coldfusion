@@ -688,7 +688,7 @@ export class Option implements AuditableEntity, ManagedEntity {
    * PORT OF [model/entity/Option.cfc:L56]:
    *   property name="sortOrder" ormtype="integer" sortContext="optionGroup";
    *
-   * F20 / TODO(boundary) — THIS FIELD IS ORM-LIFECYCLE-ASSIGNED AND NOTHING IN APPLICATION CODE
+   * F20 — THIS FIELD IS ORM-LIFECYCLE-ASSIGNED AND NOTHING IN APPLICATION CODE
    * EVER SETS IT. `setSortOrder(` matches EXACTLY ONE LINE in the whole repository —
    * [org/Hibachi/HibachiEntity.cfc:L646] — inside the `preInsert()` block at
    * [org/Hibachi/HibachiEntity.cfc:L637-L647], which reads the current top value through
@@ -710,6 +710,14 @@ export class Option implements AuditableEntity, ManagedEntity {
    * a `MAX()` aggregate and the domain layer performs no data access (S2/S4), and because
    * `src/domain/base/AuditableEntity.ts` carries an explicit negative mandate excluding this block
    * from the audit lifecycle it does own.
+   *
+   * ⭐ THE BOUNDARY OBLIGATION IS NOW DISCHARGED, AND THE `TODO(boundary)` MARKER IS WITHDRAWN WITH IT
+   * (review finding 18). `UnitOfWork.seedFirstSortOrder` takes an optional `SortOrderSeedScope`, and
+   * supplying it is what selects the `:L642` scoped read — so THIS entity passes its group's primary-key
+   * column and value, and its sibling passes nothing. The pair is inseparable in the type, which turns the
+   * `:L641` half-supplied-scope hazard into a compile error rather than a silent whole-table maximum.
+   * `SwOption.sortOrder` carries NO `required` attribute at `:L56`, so no persistence-boundary refusal
+   * applies to it — the guard belongs to the sibling, whose column IS declared required.
    *
    * TYPED OPTIONAL, DELIBERATELY, AND MORE CLEARLY CORRECT HERE THAN ON THE SIBLING. Three constraints
    * intersect and leave one honest answer: F20 forbids assigning it here, S9 forbids inventing a
@@ -1056,30 +1064,100 @@ export class Option implements AuditableEntity, ManagedEntity {
    * group's own collection exactly as [model/entity/Option.cfc:L104] does. Copying it would make the
    * removal a silent no-op.
    *
-   * ONE EDGE PATH DIVERGES, AND IT IS FLAGGED RATHER THAN PAPERED OVER (S8). When the argument is
-   * omitted AND no group is currently assigned, the legacy raised a CFML undefined-variable error at
-   * [model/entity/Option.cfc:L100] before ever reaching the collection; this port performs only the
-   * unconditional clear. That is the right resolution rather than a silent relaxation for three
-   * reasons: the path is unreachable, `removeOptionGroup` having exactly one call site
-   * [model/entity/OptionGroup.cfc:L96] which always passes the group explicitly; the legacy failure was
-   * an ENGINE diagnostic rather than application behaviour, so it is not one of the legacy `throw()`
-   * message strings `src/errors/DomainError.ts` carries; and manufacturing a replacement error type or
-   * message would invent behaviour the source does not state (S9). With no group to search there is
-   * also no collection entry that could be removed, so the clear is the only work the legacy would have
-   * performed had it got that far.
+   * `TODO(parity)` — THE OMITTED-ARGUMENT-WITH-NO-GROUP PATH FAILS, AND AN EARLIER REVISION WRONGLY
+   * RELAXED IT INTO A SUCCESS. When the argument is omitted AND no group is currently assigned,
+   * [model/entity/Option.cfc:L100] assigns `arguments.optionGroup = variables.optionGroup` from a key
+   * that does not exist — Hibernate creates no `variables` entry for a null many-to-one — so the CFML
+   * engine raises an undefined-variable diagnostic THERE. Two consequences follow, and both are
+   * reproduced below: the failure precedes the collection search at [:L102], and, decisively, it
+   * precedes the UNCONDITIONAL clear at [:L106]. The legacy never reaches that clear on this path, so a
+   * port that clears and returns has not merely relaxed the failure — it has performed a write the
+   * legacy did not.
+   *
+   * An earlier revision skipped the failure and performed only the clear, on three stated grounds. All
+   * three are false, and they are recorded here because each is the kind of reasoning that reads as
+   * diligence while removing behaviour:
+   *   1. "The path is unreachable, `removeOptionGroup` having exactly one call site
+   *      [model/entity/OptionGroup.cfc:L96] which always passes the group explicitly." True of the CFML
+   *      tree. NOT true of this port, which declares the member public with an OPTIONAL parameter, so
+   *      `option.removeOptionGroup()` is a call any consumer may write and the compiler will accept.
+   *      Unreachability in the source is not unreachability in the target, and the port widened the
+   *      surface itself by honouring the optional argument.
+   *   2. "The legacy failure was an ENGINE diagnostic rather than application behaviour, so it is not
+   *      one of the legacy `throw()` message strings `src/errors/DomainError.ts` carries." The premise
+   *      is correct and the conclusion does not follow. That the text is not one of the four verbatim
+   *      legacy `throw()` strings settles which ERROR CLASS may carry it — see below — and says nothing
+   *      about whether the call may succeed. A failure is behaviour.
+   *   3. "Manufacturing a replacement error type or message would invent behaviour the source does not
+   *      state (S9)." S9 forbids inventing SERVICE LEVELS and unstated numbers; it does not license
+   *      converting a documented failure into a silent success. Turning a raise into a no-op invents
+   *      MORE than describing the raise does.
+   *
+   * The relaxation was a behaviour repair, and AAP §0.6.7 permits exactly one — D18, the importer's SQL
+   * parameterisation, declared in §0.6.7.7. This is not it, and Refactor Discipline Guideline 4 (§0.8.2)
+   * forbids the rest. The failure is therefore restored at the same point in the statement order.
+   *
+   * ⭐ WHY `TypeError` AND NOT A DOMAIN ERROR. Two independent constraints select it, and they agree.
+   * First, fidelity of CLASS: the legacy failure is the ENGINE's own complaint about dereferencing an
+   * absent object, and `TypeError` is precisely what this runtime raises for the same mistake — it is
+   * what `removeFrom.getOptions()` would itself throw were the guard absent and the compiler not
+   * standing in the way. Reaching for an application error class would reclassify a platform diagnostic
+   * as a domain decision. Second, reachability: this file's import list is closed to its three
+   * dependency modules (S4), which is why `src/errors/DomainError.ts` is absent from it — and
+   * `LegacyParityError` could not carry this text in any case, its message parameter being narrowed to
+   * the four verbatim legacy strings, of which this is not one. `TypeError` is a global and needs no
+   * import, so the boundary stays intact. The message carries the locator so the next reader meets the
+   * defect at the point of failure rather than discovering it.
+   *
+   * ⭐ THE THREE ENTITY MODULES AGREE ON THE DOCTRINE AND DELIBERATELY DIFFER ON THE CLASS, AND THE
+   * DIFFERENCE IS A BOUNDARY FACT RATHER THAN AN OVERSIGHT. The shared rule is that an unguarded
+   * legacy dereference must FAIL, rather than be relaxed into a silent success or into a write the
+   * legacy never performs: `src/domain/sku/Sku.ts` states it once as its UNGUARDED-DEREFERENCE POLICY,
+   * and `src/domain/product/ProductType.ts` applies it at both `removeParentProductType` and
+   * `getBaseProductType`. The CLASS diverges because the files' import boundaries do. `Sku.ts` and
+   * `ProductType.ts` are each permitted `src/errors/DomainError.ts`, so where their failing member is
+   * reachable through a handler they raise `DomainError` and present neutrally there —
+   * `ProductType.getBaseProductType` is exactly that case. THIS file's permitted-import list is
+   * EXHAUSTIVE and names `errors/**` among its prohibitions, so the only faithful raise available here
+   * is a global; and `ProductType.removeParentProductType`, the exact structural analogue of this
+   * member, matches `TypeError` deliberately so that one defect shape reads the same way in both
+   * files. Do NOT "harmonise" the classes by re-adding the import here — the prohibition is enforced
+   * by a grep gate, and `TypeError` is the more faithful class for this failure regardless.
+   *
+   * NO NEW DEFECT NUMBER IS MINTED. AAP §0.6.7 registers D1-D21 and none of them is this edge path, so
+   * this is annotated as an observed legacy edge-path failure with its locator — the same convention
+   * {@link Option} already uses for the two `addExcludedOption` copy-paste defects, which are likewise
+   * recorded without a register entry.
    *
    * @param optionGroup - The group to detach from. Omit it to detach from the currently-assigned group.
+   * @throws TypeError - When the argument is omitted and no group is assigned, reproducing the CFML
+   *   engine diagnostic at [model/entity/Option.cfc:L100]. Nothing is cleared, because the legacy
+   *   never reaches its clear on this path.
    */
   removeOptionGroup(optionGroup?: OptionGroup): void {
     const removeFrom = optionGroup ?? this.optionGroup;
 
-    if (removeFrom !== undefined) {
-      const groupOptions = removeFrom.getOptions();
-      const index = groupOptions.indexOf(this);
+    if (removeFrom === undefined) {
+      // [model/entity/Option.cfc:L100] raises HERE — before the search at :L102 and before the
+      // unconditional clear at :L106. Statement order preserved: the clear below is NOT reached.
+      throw new TypeError(
+        `Option ${this.isNew() ? '(unsaved)' : this.optionID} had removeOptionGroup called with no ` +
+          'option group while none is assigned. ' +
+          'model/entity/Option.cfc:L100 defaults the argument from variables.optionGroup, a key that ' +
+          'does not exist for a null many-to-one, so the CFML engine raises an undefined-variable ' +
+          'error at that line — before the collection search at :L102 and before the unconditional ' +
+          'clear at :L106. Carried unrepaired per AAP §0.6.7 and Refactor Discipline Guideline 4: an ' +
+          'earlier revision relaxed this into a silent clear, which both suppressed the failure and ' +
+          'performed a write the legacy never performs. Pass the option group explicitly, as ' +
+          'model/entity/OptionGroup.cfc:L96 does.',
+      );
+    }
 
-      if (index !== -1) {
-        groupOptions.splice(index, 1);
-      }
+    const groupOptions = removeFrom.getOptions();
+    const index = groupOptions.indexOf(this);
+
+    if (index !== -1) {
+      groupOptions.splice(index, 1);
     }
 
     delete this.optionGroup;

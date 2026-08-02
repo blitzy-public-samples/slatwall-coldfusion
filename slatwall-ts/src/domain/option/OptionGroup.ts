@@ -454,7 +454,7 @@ export class OptionGroup implements AuditableEntity, ManagedEntity {
    * PORT OF [model/entity/OptionGroup.cfc:L58]:
    *   property name="sortOrder" ormtype="integer" required="true";
    *
-   * F20 / TODO(boundary) — THIS FIELD IS ORM-LIFECYCLE-ASSIGNED. NOTHING IN APPLICATION CODE
+   * F20 — THIS FIELD IS ORM-LIFECYCLE-ASSIGNED. NOTHING IN APPLICATION CODE
    * EVER SETS IT, on this entity or on `Option`. `setSortOrder(` matches exactly ONE line in the
    * whole repository — [org/Hibachi/HibachiEntity.cfc:L646] — inside the `preInsert()` block at
    * [org/Hibachi/HibachiEntity.cfc:L637-L647], which reads the top sort order through
@@ -468,6 +468,15 @@ export class OptionGroup implements AuditableEntity, ManagedEntity {
    * requires a `MAX()` query and the domain layer performs no data access (S2/S4), and because
    * `src/domain/base/AuditableEntity.ts` carries an explicit negative mandate excluding that block
    * from the audit lifecycle it does own.
+   *
+   * ⭐ THE BOUNDARY OBLIGATION IS NOW DISCHARGED, AND THE `TODO(boundary)` MARKER IS WITHDRAWN WITH IT
+   * (review finding 18). The owner formerly held only the READ half — `UnitOfWork.getTableTopSortOrder`,
+   * the port of `org/Hibachi/HibachiDAO.cfc:L149-L168` — so nothing anywhere performed the ASSIGNMENT at
+   * `:L646` and this slot could reach a writable-value collector still absent. Both halves now exist:
+   * `UnitOfWork.seedFirstSortOrder` assigns `topSortOrder + 1` through the WHOLE-TABLE read this entity
+   * needs, and `assertSortOrderAssigned` refuses at the persistence boundary if something bypassed the
+   * assignment. NOTHING ABOUT THIS FIELD'S DECLARATION CHANGED: it stays optional, it acquires no default
+   * here, and `model/validation/OptionGroup.json` still declares no rule for it.
    *
    * TYPED OPTIONAL, DELIBERATELY. Three constraints intersect and leave exactly one honest answer:
    * F20 forbids assigning it here, S9 forbids inventing a default such as `0`, and
@@ -767,7 +776,10 @@ export class OptionGroup implements AuditableEntity, ManagedEntity {
    * PASSING `this` EXPLICITLY IS CORRECT, and worth recording because the legacy argument is
    * OPTIONAL: `public void function removeOptionGroup(any optionGroup)`
    * [model/entity/Option.cfc:L98] falls back to its own `variables.optionGroup` when the argument is
-   * absent [:L99-L101]. The source passes the group explicitly here, so the port does too.
+   * absent [:L99-L101]. The source passes the group explicitly here, so the port does too — and that
+   * is load-bearing rather than incidental: the fallback path RAISES when no group is assigned,
+   * reproducing the CFML engine diagnostic at [model/entity/Option.cfc:L100]. Passing `this` is what
+   * makes this delegation unable to reach that failure, in the port exactly as in the legacy.
    *
    * @param option - The option to detach from this group.
    */

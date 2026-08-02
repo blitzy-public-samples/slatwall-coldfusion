@@ -814,11 +814,11 @@ describe('NET-NEW T3 — the option-bearing guard excludes option-less SKUs, emp
   /*
    * G6 — `model/dao/SkuDAO.cfc:L109-L112`. The legacy base statement opens
    * `select distinct sku from SlatwallSku as sku inner join sku.options as opt`, and the alias `opt` is
-   * NEVER referenced in the WHERE clause. It looks like scaffolding left behind by an earlier revision.
-   * It is not: an INNER JOIN through the option link table silently EXCLUDES every option-less SKU from
-   * every result, including when `selectedOptions` is empty and no existence test is appended at all.
-   * Deleting it would widen every answer with no error anywhere. The port preserves it as a separate
-   * correlated existence test so that it survives translation to a statement that has no join at all.
+   * NEVER referenced in the WHERE clause — which makes the join look removable. It is not: an INNER JOIN
+   * through the option link table silently EXCLUDES every option-less SKU from every result, including
+   * when `selectedOptions` is empty and no existence test is appended at all. Deleting it would widen
+   * every answer with no error anywhere. The port preserves it as a separate correlated existence test so
+   * that it survives translation to a statement that has no join at all.
    *
    * TODO(parity) D19 — the consequence is a real defect and is CARRIED, NOT REPAIRED. For a SKU with
    * ZERO options `optionsList` is empty, so by T5 the query answers with every option-bearing SKU of
@@ -1103,7 +1103,6 @@ describe('NET-NEW transactionExists — product-scoped isolation in ONE statemen
 
     await harness.repository.transactionExists(PRODUCT_A);
 
-    /* `soleCall` asserts the length itself, so this is the assertion and not a preamble to one. */
     expect(soleCall(harness.calls).params).toHaveLength(1);
   });
 });
@@ -2209,10 +2208,11 @@ describe('NET-NEW persistSku — DATA-04, the four owned link collections', () =
     await harness.repository.persistSku(buildFullyLinkedSku());
 
     /*
-     * Only ONE of these four used to be written. The other three collections were accepted by the entity,
-     * populated by the subscription and content-access branches of `createSkus`, reported on by
-     * validation — and then silently discarded, because no statement was ever emitted for them. The save
-     * returned successfully and a later read produced a SKU with three empty collections.
+     * ALL FOUR LINK TABLES MUST BE WRITTEN, NOT JUST THE OPTION ONE. Every one of the four collections is
+     * accepted by the entity, populated by the subscription and content-access branches of `createSkus`,
+     * and reported on by validation — so a persist that emitted a statement for only some of them would
+     * return successfully and a later read would produce a SKU with empty collections, with no error
+     * anywhere. Asserting one statement per table is what makes that failure mode loud.
      */
     for (const table of LINK_TABLES) {
       expect(statementsFor(harness.calls, table).length).toBeGreaterThan(0);
@@ -2389,7 +2389,6 @@ describe('NET-NEW searchByProductTypeBounded — the windowed form of the same c
     const base = norm(soleCall(unbounded.calls).sql);
     expect(norm(soleCall(bounded.calls).sql)).toBe(`${base} limit ? offset ?`);
 
-    /* And the shared half binds identically: the window only ever appends. */
     expect(soleCall(bounded.calls).params.slice(0, 3)).toEqual(soleCall(unbounded.calls).params);
   });
 
@@ -2525,7 +2524,6 @@ describe('NET-NEW searchByProductTypeBounded — the windowed form of the same c
 
     expect(page.rows).toEqual([]);
     expect(page.hasMore).toBe(false);
-    /* The offset is still bound, and still last. */
     expect(soleCall(harness.calls).params).toEqual(['%abc%', '3', '8']);
   });
 

@@ -39,9 +39,11 @@
 import { Product } from '../../src/domain/product/Product';
 import { ProductType } from '../../src/domain/product/ProductType';
 import { SKU_ENTITY_METADATA, Sku } from '../../src/domain/sku/Sku';
-import { DomainError } from '../../src/errors/DomainError';
+import { DomainError, ImportSourceRejectedError } from '../../src/errors/DomainError';
 import { PRODUCT_ACCESS_MATRIX, createProductHandler } from '../../src/handlers/productHandler';
 import { manageEntity } from '../../src/domain/base/populate';
+import { PRODUCT_TYPE_ENTITY_METADATA } from '../../src/domain/product/ProductType';
+import type { ProductTypeWithErrorState } from '../../src/services/ProductService';
 import type {
   LoadDataFromFileEvent,
   ProductAuthorizationEvent,
@@ -67,7 +69,7 @@ import type { TransactionalWriteRunner } from '../../src/ports/TransactionalWrit
 import type { ProductAddOption } from '../../src/domain/process/ProductAddOption';
 import type { ProductAddOptionGroup } from '../../src/domain/process/ProductAddOptionGroup';
 import type { ProductUpdateSkus } from '../../src/domain/process/ProductUpdateSkus';
-import type { SelectOption } from '../../src/services/OptionService';
+import type { FormattedOptionGroup } from '../../src/services/ProductService';
 
 /** A 32-character identifier, the width IR-6 fixes for every primary key in this schema. */
 const PRODUCT_ID = 'aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa';
@@ -112,12 +114,19 @@ function makeProduct(productID: string = PRODUCT_ID): Product {
   return product;
 }
 
-/** A product type the two product-type routes can address. */
-function makeProductType(): ProductType {
+/**
+ * A product type the two product-type routes can address.
+ *
+ * MANAGED, because `ProductTypeWithErrorState` is what `ProductService.saveProductType` resolves and what
+ * `ProductWriteGraph` now declares. `../../src/domain/product/ProductType` is forbidden to declare the six
+ * error members itself, so the surface is composed on exactly as the service composes it — with the same
+ * `manageEntity`, which mutates and returns the SAME object so identity survives.
+ */
+function makeProductType(): ProductTypeWithErrorState {
   const productType = new ProductType();
   productType.productTypeID = PRODUCT_TYPE_ID;
   productType.productTypeName = 'Merchandise';
-  return productType;
+  return manageEntity(productType, PRODUCT_TYPE_ENTITY_METADATA);
 }
 
 /** An empty page of products, so the smart-list projection has a defined shape to assert. */
@@ -146,8 +155,27 @@ interface SurfaceOptions {
    * returned instance alone would look correct.
    */
   readonly savedProduct?: Product;
+  /**
+   * An error key `saveProductType` should attach to the product type it returns, expressing a REFUSED
+   * save. Omitted means the save succeeded.
+   *
+   * ⚠️ IT IS A RETURNED FINDING AND NOT A REJECTION, WHICH IS THE WHOLE POINT.
+   * `model/service/ProductService.cfc:L310` returns `arguments.productType` on every path, so a refusal
+   * arrives on the entity's own bag. A double that rejected instead would let the boundary's commit gate
+   * look correct while never being exercised.
+   */
+  readonly productTypeSaveError?: string;
   /** What `deleteProduct` answers. `false` is a guard REFUSING the delete, not an error. */
   readonly deleteResult?: boolean;
+  /**
+   * A failure `loadDataFromFile` rejects with instead of resolving.
+   *
+   * ⚠️ THIS EXISTS FOR REVIEW FINDING F9 AND FOR NOTHING ELSE. The importer's location gate lives at the
+   * retrieval SINK — `MySqlProductRepository` — so a refusal reaches this route as a rejection from
+   * beneath it, and the only thing the route owns is how that rejection is PRESENTED. Every other member
+   * of this probe resolves, because no other member has a refusal to present.
+   */
+  readonly importFailure?: unknown;
 }
 
 /** What one invocation of the surface recorded. */
@@ -182,11 +210,26 @@ function makeSurface(options: SurfaceOptions = {}): {
     return {
       loadDataFromFile: (fileURL: string, textQualifier?: string): Promise<void> => {
         record('loadDataFromFile', [fileURL, textQualifier]);
+
+        /* Recorded BEFORE the rejection, so a case can assert the route did forward the location it was
+         * given rather than short-circuiting on a guess about it. */
+        if (options.importFailure !== undefined) {
+          const failure: unknown = options.importFailure;
+
+          return Promise.resolve().then((): void => {
+            throw failure;
+          });
+        }
+
         return Promise.resolve();
       },
-      getFormattedOptionGroups: (product: Product): Promise<Record<string, SelectOption[]>> => {
+      getFormattedOptionGroups: (product: Product): Promise<readonly FormattedOptionGroup[]> => {
         record('getFormattedOptionGroups', [product]);
-        return Promise.resolve({ Size: [{ name: 'Large', value: 'large' }] });
+        /* The service answers `FormattedOptionGroup[]` (AAP §0.4.2.1) — the group NAME travels on the
+         * entry, not as a record key — so the stub answers that shape too. */
+        return Promise.resolve([
+          { optionGroupName: 'Size', options: [{ name: 'Large', value: 'large' }] },
+        ]);
       },
       getProductSkusBySelectedOptions: (
         selectedOptions: string,
@@ -255,9 +298,22 @@ function makeSurface(options: SurfaceOptions = {}): {
       saveProductType: (
         productType: ProductType,
         data: Record<string, unknown>,
-      ): Promise<ProductType> => {
+      ): Promise<ProductTypeWithErrorState> => {
         record('saveProductType', [productType, data]);
-        return Promise.resolve(productType);
+
+        /*
+         * The double reproduces the SERVICE's contract, not a convenience: `saveProductType` returns the
+         * entity on every path and attaches its findings to that entity's own bag
+         * (`model/service/ProductService.cfc:L310`). So a failing save is expressed by seeding a finding
+         * here, never by rejecting.
+         */
+        const saved = manageEntity(productType, PRODUCT_TYPE_ENTITY_METADATA);
+
+        if (options.productTypeSaveError !== undefined) {
+          saved.addError(options.productTypeSaveError, 'refused');
+        }
+
+        return Promise.resolve(saved);
       },
       deleteProduct: (product: Product): Promise<boolean> => {
         record('deleteProduct', [product]);
@@ -703,6 +759,54 @@ describe('productHandler — API-01/M1, the importer entry point', () => {
     expect(result.statusCode).toBe(400);
     expect(probe.calls).toStrictEqual([]);
   });
+
+  it('NET-NEW — F9 — a refused import location is a 400 naming neither the location nor the policy', async () => {
+    const probe = admitAll({
+      importFailure: new ImportSourceRejectedError(
+        "The import location's scheme is not one this deployment permits retrieving from, so no " +
+          'retrieval was attempted.',
+        {
+          context: {
+            fileURL: 'file:///etc/passwd.csv',
+            scheme: 'file',
+            allowedSchemes: ['https'],
+          },
+        },
+      ),
+    });
+
+    const result = await probe.handler.loadDataFromFile({
+      queryStringParameters: { fileURL: 'file:///etc/passwd.csv' },
+      headers: {},
+    });
+
+    /*
+     * ⭐ SEC-HARDENING (D18-CLASS) — REVIEW FINDING F9 (CWE-918), ASSERTED AT THE ONE LAYER THAT OWNS
+     * PRESENTATION. The refusal itself is the adapter's — see
+     * `test/adapters/MySqlProductRepository.test.ts` — and what this route owes is a 400 rather than a
+     * 500, because the caller CAN name a permitted location and the service is working exactly as
+     * configured.
+     */
+    expect(result.statusCode).toBe(400);
+
+    /*
+     * ⛔ AND THE BODY DISCLOSES NOTHING BACK, WHICH IS THE HALF A PROBER CARES ABOUT. An allow-list is
+     * precisely what a server-side-request-forgery prober wants to enumerate, so the internal account —
+     * the location as supplied, the scheme that failed, and what the policy permits — must not travel:
+     * echoing the caller's own string would make this response a probe oracle, and naming the permitted
+     * scheme would hand over one bit of the deployment's map.
+     */
+    expect(result.body).not.toContain('passwd');
+    expect(result.body).not.toContain('file:///');
+    expect(result.body).not.toContain('https');
+    expect(result.body).not.toContain('allowedSchemes');
+    expect(result.body).toContain('The requested import location is not permitted');
+
+    /* The route did forward the location before the refusal came back, so this is the presentation of a
+     * real refusal from beneath and not a short-circuit here. */
+    expect(probe.calls.map((call) => call.member)).toStrictEqual(['loadDataFromFile']);
+    expect(probe.calls[0]?.args).toStrictEqual(['file:///etc/passwd.csv', undefined]);
+  });
 });
 
 /* ==============================================================================================
@@ -923,11 +1027,10 @@ describe('productHandler — API-01, saveProduct, saveProductType and deleteProd
     expect(probe.decisions).toStrictEqual([]);
   });
 
-  it('NET-NEW — saveProductType commits, because ProductType declares NO error surface', async () => {
-    /* `ProductType` declares none of the six error-surface members `Product` declares, so there is no
-     * accumulated-error bag for a gate to read. A refusal therefore arrives as a thrown
-     * `ValidationError` from the service — which rolls the transaction back by propagating — rather
-     * than as a gate answer. */
+  it('NET-NEW — saveProductType commits when the returned product type carries no findings', async () => {
+    /* The success half of the gate. `model/service/ProductService.cfc:L310` returns the product type on
+     * every path, so "succeeded" is expressed as a returned entity with an EMPTY bag — not as the absence
+     * of a rejection. */
     const probe = admitAll();
 
     const result = await probe.handler.saveProductType(
@@ -936,6 +1039,33 @@ describe('productHandler — API-01, saveProduct, saveProductType and deleteProd
 
     expect(result.statusCode).toBe(200);
     expect(probe.decisions).toStrictEqual(['commit']);
+    expect(probe.calls.map((call) => call.member)).toStrictEqual([
+      'getProductType',
+      'saveProductType',
+    ]);
+  });
+
+  it('NET-NEW — saveProductType ROLLS BACK and refuses when the returned product type carries findings', async () => {
+    /* ⛔ THE CASE THAT PINS THE COMMIT GATE, AND THE ONE AN EARLIER REVISION COULD NOT HAVE WRITTEN.
+     * `../../src/handlers/productHandler`'s gate was hardcoded to `() => false` on the reasoning that
+     * `ProductType` has no error surface and that `BaseService.save` raises. Both grounds are gone: the
+     * service composes the surface with `manageEntity` and resolves `ProductTypeWithErrorState`, and the
+     * base service reproduces `model/service/HibachiService.cfc:L103`'s single exit, so a validation
+     * failure RETURNS. With a constant `false` this exact request would have committed the transaction and
+     * answered 200 with a projection of a product type that was never written — a caller told its write
+     * succeeded when it did not. The gate must therefore answer `true` here, and the boundary must refuse.
+     *
+     * The findings stay ON THE ENTITY, exactly where `:L306` reads them; the roll-back is what reports the
+     * refusal, which is why nothing is lifted into a carrier at this boundary. */
+    const probe = admitAll({ productTypeSaveError: 'productTypeName' });
+
+    const result = await probe.handler.saveProductType(
+      productTypePayloadEvent('{"productTypeName":""}', PRODUCT_TYPE_ID),
+    );
+
+    expect(probe.decisions).toStrictEqual(['rollback']);
+    expect(result.statusCode).not.toBe(200);
+    /* The work still ran in full — the gate is a COMMIT decision, not a pre-check that skips the save. */
     expect(probe.calls.map((call) => call.member)).toStrictEqual([
       'getProductType',
       'saveProductType',
@@ -1083,13 +1213,18 @@ describe('productHandler — API-01, the read-only routes', () => {
     expect(probe.calls.map((call) => call.member)).toStrictEqual(['newProduct']);
   });
 
-  it('NET-NEW — getFormattedOptionGroups answers the grouped select projection', async () => {
+  it('NET-NEW — getFormattedOptionGroups answers the grouped select projection as an ARRAY', async () => {
     const probe = admitAll();
 
     const result = await probe.handler.getFormattedOptionGroups(identifierEvent(PRODUCT_ID));
 
     expect(result.statusCode).toBe(200);
-    expect(JSON.parse(result.body)).toStrictEqual({ Size: [{ name: 'Large', value: 'large' }] });
+    /* An ARRAY on the wire, one entry per option-group NAME, because that is the shape the service
+     * answers (AAP §0.4.2.1) and a JSON object's member order is not a value a client may rely on. Both
+     * option members are copied verbatim and nothing else is published — no `optionGroupID` (S9). */
+    expect(JSON.parse(result.body)).toStrictEqual([
+      { optionGroupName: 'Size', options: [{ name: 'Large', value: 'large' }] },
+    ]);
   });
 });
 

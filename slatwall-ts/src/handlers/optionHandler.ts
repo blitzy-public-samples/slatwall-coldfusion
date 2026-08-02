@@ -280,7 +280,6 @@ import {
   messageResponse,
   okResponse,
   readJsonObjectBody,
-  readBoundedReadWindow,
   readPathParameter,
   readQueryStringParameter,
   unauthorizedResponse,
@@ -521,15 +520,14 @@ function readOptionEntry(entry: unknown): Option | undefined {
  * those.
  *
  * THIS TYPE MAKES JUDGMENTS (a) AND (b) COMPILE-ENFORCED RATHER THAN MERELY DOCUMENTED, AND THAT
- * IS THE ENTIRE REASON IT EXISTS. `../services/OptionService` declares TEN public members: the three
- * `model/service/OptionService.cfc` declares, the four `onMissingMethod` fabricated at run time
- * [org/Hibachi/HibachiService.cfc:L255-L281], and three additive companions recorded there — two bounded
- * window readers and a batched identifier loader. IR-1 requires the four synthesized ones to be explicit
- * there, because internal collaborators call them; but every verified call site of all seven non-declared
- * members is INSIDE the slice, so none may be given a route here. Narrowing the injected type to the three
- * declared members means `getOption`, `getOptionGroup`, `getOptionSmartList`,
- * `getOptionGroupSmartList` and the three companions are not merely unrouted by convention — they are NOT
- * REACHABLE from this module at all, and an attempt to route one fails to compile. The narrowing is by
+ * IS THE ENTIRE REASON IT EXISTS. `../services/OptionService` declares SEVEN public members: the three
+ * `model/service/OptionService.cfc` declares and the four `onMissingMethod` fabricated at run time
+ * [org/Hibachi/HibachiService.cfc:L255-L281]. IR-1 requires the four synthesized ones to be explicit
+ * there, because internal collaborators call them; but every verified call site of all four is INSIDE the
+ * slice, so none may be given a route here. Narrowing the injected type to the three declared members
+ * means `getOption`, `getOptionGroup`, `getOptionSmartList` and `getOptionGroupSmartList` are not merely
+ * unrouted by convention — they are NOT REACHABLE from this module at all, and an attempt to route one
+ * fails to compile. The narrowing is by
  * ENUMERATION of what is admitted rather than exclusion of what is not, so a member added to the service
  * later is excluded automatically and this paragraph cannot go stale in the direction that matters. The same holds for the `new*`, `save*`, `delete*`, `count*`, `list*`, `export*` and
  * `process*` prefixes of judgment (b): none is in this type, so none can be exposed by accident.
@@ -554,11 +552,7 @@ function readOptionEntry(entry: unknown): Option | undefined {
  */
 export type OptionSurface = Pick<
   OptionService,
-  | 'getOptionsForSelect'
-  | 'getUnusedProductOptions'
-  | 'getUnusedProductOptionsBounded'
-  | 'getUnusedProductOptionGroups'
-  | 'getUnusedProductOptionGroupsBounded'
+  'getOptionsForSelect' | 'getUnusedProductOptions' | 'getUnusedProductOptionGroups'
 >;
 
 /* ================================================================================================
@@ -770,12 +764,7 @@ export const OPTION_ACCESS_MATRIX: Readonly<Record<keyof OptionHandler, OptionAc
   Object.freeze({
     getOptionsForSelect: SECURE_READ_REQUIREMENT,
     getUnusedProductOptions: ANY_LOGIN_REQUIREMENT,
-    /* ⭐ P9 — THE BOUNDED DOORS CARRY THE SAME CLASSIFICATION AS THEIR UNBOUNDED ORIGINALS, AND
-     * THEY MUST. A bound narrows how many rows arrive, never which; a looser classification would
-     * turn the bound into a way around the gate rather than a way to read within it. */
-    getUnusedProductOptionsBounded: ANY_LOGIN_REQUIREMENT,
     getUnusedProductOptionGroups: ANY_LOGIN_REQUIREMENT,
-    getUnusedProductOptionGroupsBounded: ANY_LOGIN_REQUIREMENT,
   });
 
 /**
@@ -836,22 +825,6 @@ export interface OptionHandler {
   ) => Promise<APIGatewayProxyResult>;
 
   /**
-   * The same list, read one explicitly requested window at a time.
-   *
-   * ⭐ P9 — AN ADDITIVE SECOND DOOR. {@link OptionHandler.getUnusedProductOptions} keeps its route and its
-   * unbounded result, so no existing caller is narrowed and nothing is silently truncated. This route
-   * obliges its caller to STATE the window: `limit` and `offset` are both required, neither is defaulted
-   * and neither is clamped ({@link readBoundedReadWindow}).
-   *
-   * Responses: the window and its `hasMore` flag at an OK status; a bad request naming which input was
-   * unusable; unauthorised per {@link OPTION_ACCESS_MATRIX}, with the SAME requirement as the unbounded
-   * route and decided BEFORE anything about the request is read.
-   */
-  readonly getUnusedProductOptionsBounded: (
-    event: UnusedProductOptionsEvent,
-  ) => Promise<APIGatewayProxyResult>;
-
-  /**
    * Lists the option groups not yet present on a product, as select entries.
    *
    * Reads the already-present option-group identifiers from the query string and calls the service
@@ -861,23 +834,6 @@ export interface OptionHandler {
    * decided BEFORE the query string is read; a bad request when the input is absent.
    */
   readonly getUnusedProductOptionGroups: (
-    event: UnusedProductOptionGroupsEvent,
-  ) => Promise<APIGatewayProxyResult>;
-
-  /**
-   * The same list, read one explicitly requested window at a time.
-   *
-   * ⭐ P9 — THIS IS THE ROUTE THAT MOST NEEDED A BOUND. Its set polarity is the INVERSE of the sibling's
-   * ([model/dao/OptionDAO.cfc:L107] against [:L68]), so an EMPTY option-group list resolves here to EVERY
-   * option group in the deployment. That is correct legacy behaviour and stays exactly as it is on the
-   * unbounded route; what this route adds is a way to read that answer incrementally, with the window
-   * stated by the caller rather than guessed here.
-   *
-   * Responses: the window and its `hasMore` flag at an OK status; a bad request naming which input was
-   * unusable; unauthorised per {@link OPTION_ACCESS_MATRIX}, with the SAME requirement as the unbounded
-   * route.
-   */
-  readonly getUnusedProductOptionGroupsBounded: (
     event: UnusedProductOptionGroupsEvent,
   ) => Promise<APIGatewayProxyResult>;
 }
@@ -1154,59 +1110,6 @@ export function createOptionHandler(
   };
 
   /**
-   * Ports the bounded companion — see {@link OptionHandler.getUnusedProductOptionsBounded}.
-   *
-   * The gate runs first and asks the SAME requirement as the unbounded route. The window is read next, so
-   * a malformed window is refused before either input is read and long before a statement is composed.
-   * Both required inputs are then read and forwarded exactly as the unbounded route reads and forwards
-   * them — identifier FIRST, list SECOND — with the window prepended, matching the service signature.
-   */
-  const getUnusedProductOptionsBounded = async (
-    event: UnusedProductOptionsEvent,
-  ): Promise<APIGatewayProxyResult> => {
-    const refusal = refuseUnauthorized(event, 'getUnusedProductOptionsBounded');
-
-    if (refusal !== undefined) {
-      return refusal;
-    }
-
-    const requested = readBoundedReadWindow(event);
-
-    if (!requested.present) {
-      return requested.response;
-    }
-
-    const productID = readPathParameter(event, PRODUCT_ID_PATH_PARAMETER);
-
-    if (productID === undefined) {
-      return messageResponse(HTTP_STATUS.BAD_REQUEST, PRODUCT_ID_MESSAGE);
-    }
-
-    const existingOptionGroupIDList = readQueryStringParameter(
-      event,
-      EXISTING_OPTION_GROUP_ID_LIST_QUERY_PARAMETER,
-    );
-
-    if (existingOptionGroupIDList === undefined) {
-      return messageResponse(HTTP_STATUS.BAD_REQUEST, EXISTING_OPTION_GROUP_ID_LIST_MESSAGE);
-    }
-
-    try {
-      /* Forwarded WHOLE, `hasMore` included: returning only the rows would hand back a truncated
-       * collection indistinguishable from a complete one. */
-      return okResponse(
-        await optionService.getUnusedProductOptionsBounded(
-          requested.window,
-          productID,
-          existingOptionGroupIDList,
-        ),
-      );
-    } catch (error) {
-      return errorResponse(error);
-    }
-  };
-
-  /**
    * Ports the boundary for [model/service/OptionService.cfc:L76]
    * `public array function getUnusedProductOptionGroups(required string existingOptionGroupIDList)`.
    *
@@ -1254,54 +1157,9 @@ export function createOptionHandler(
     }
   };
 
-  /**
-   * Ports the bounded companion — see {@link OptionHandler.getUnusedProductOptionGroupsBounded}.
-   *
-   * The gate runs first, then the window, then the one required input — and the EMPTY list stays a legal
-   * input here exactly as it is on the unbounded route, because it is the call that lists every
-   * assignable group for a product that has none yet.
-   */
-  const getUnusedProductOptionGroupsBounded = async (
-    event: UnusedProductOptionGroupsEvent,
-  ): Promise<APIGatewayProxyResult> => {
-    const refusal = refuseUnauthorized(event, 'getUnusedProductOptionGroupsBounded');
-
-    if (refusal !== undefined) {
-      return refusal;
-    }
-
-    const requested = readBoundedReadWindow(event);
-
-    if (!requested.present) {
-      return requested.response;
-    }
-
-    const existingOptionGroupIDList = readQueryStringParameter(
-      event,
-      EXISTING_OPTION_GROUP_ID_LIST_QUERY_PARAMETER,
-    );
-
-    if (existingOptionGroupIDList === undefined) {
-      return messageResponse(HTTP_STATUS.BAD_REQUEST, EXISTING_OPTION_GROUP_ID_LIST_MESSAGE);
-    }
-
-    try {
-      return okResponse(
-        await optionService.getUnusedProductOptionGroupsBounded(
-          requested.window,
-          existingOptionGroupIDList,
-        ),
-      );
-    } catch (error) {
-      return errorResponse(error);
-    }
-  };
-
   return Object.freeze({
     getOptionsForSelect,
     getUnusedProductOptions,
-    getUnusedProductOptionsBounded,
     getUnusedProductOptionGroups,
-    getUnusedProductOptionGroupsBounded,
   });
 }

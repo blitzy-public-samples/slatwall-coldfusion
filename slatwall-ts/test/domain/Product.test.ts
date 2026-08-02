@@ -92,24 +92,61 @@
  *     domain entity and the collaborators are interfaces.
  *
  * ==================================================================================================
+ * THE RETAINED SURFACE, AND WHAT "ONE LABELLED TEST PER CONVERTED MEMBER" MEANS HERE
+ * ==================================================================================================
+ * ⚠️ THIS SECTION EXISTS BECAUSE AN EARLIER REVISION OF THIS FILE CLAIMED THE STANDARD WITHOUT
+ * MEETING IT. The claim — one labelled test per converted member — was stated among the enterprise
+ * standards below while FIFTEEN retained `Product` paths were never invoked by any case in the file:
+ *
+ *     getSkuByID, getImages, getProductImages, getAttributeValues, getProductReviews, getTemplate,
+ *     getBrandName, removeSku, addAttributeValue, removeAttributeValue, addProductImage,
+ *     removeProductImage, addProductReview, removeProductReview, and the finder-PRESENT branch of
+ *     getUnusedProductSubscriptionTerms.
+ *
+ * That is the failure mode worth naming precisely: every one of those fifteen could have been DELETED
+ * OUTRIGHT, or had its behaviour INVERTED, and this suite would still have gone green. A claim of
+ * per-member coverage that a member's removal cannot falsify is not coverage — it is an assertion
+ * about the file's intent. The gap was closed rather than the claim softened, in the four sections at
+ * the end of this file, and every case added there is MUTATION-SENSITIVE by construction: each pins
+ * either the exact collaborator call the delegation makes, the exact array instance the accessor hands
+ * back, or the exact short-circuit the guard performs.
+ *
+ * FOUR THINGS THOSE SECTIONS DELIBERATELY DO **NOT** DO:
+ *   - They do not repair the `getBrandName` memo defect. It is carried and pinned, per
+ *     preserve-and-annotate; a case asserts the first read and the permanently-empty second read.
+ *   - They do not push into a local collection on behalf of the six relationship helpers. The legacy
+ *     bodies are pure delegations onto the MANY side, which owns the foreign key, and the cases assert
+ *     that the product's own array stays empty — because a helpful local push here would
+ *     double-register every association.
+ *   - They do not invent a shape for a subscription term. Only the finder call and the returned arity
+ *     are asserted, matching the deliberate asymmetry the production member documents.
+ *   - They do not import an adapter, a port module or a database driver to reach any of it. Every
+ *     collaborator is a typed value handed in as a parameter.
+ *
+ * ==================================================================================================
  * RULES
  * ==================================================================================================
  * No user-specified rules were provided for this project. That is not licence to lower the bar: this
  * file holds to the enterprise standards the plan names in their place — strict type safety with no
- * suppression of any kind, one labelled test per converted member, preserve-and-annotate rather than
- * repair for every carried defect, and no invented value anywhere.
+ * suppression of any kind, one labelled test per converted member (see the section directly above for
+ * what that costs and how it is now met), preserve-and-annotate rather than repair for every carried
+ * defect, and no invented value anywhere.
  */
 
 import { PRODUCT_PRIMARY_ID_PROPERTY_NAME, Product } from '../../src/domain/product/Product';
 import type {
   ProductOptionFinder,
   ProductOptionGroupFinder,
+  ProductOwnedAssociation,
   ProductSelectOption,
+  ProductSkuIdReader,
+  ProductSkuMember,
   ProductUnusedOptionFinder,
 } from '../../src/domain/product/Product';
 import type { Option } from '../../src/domain/option/Option';
 import type { OptionGroup } from '../../src/domain/option/OptionGroup';
 import {
+  DomainError,
   LegacyParityError,
   NO_SINGLE_SKU_WITHOUT_SELECTED_OPTIONS_MESSAGE,
   NotImplementedError,
@@ -172,25 +209,21 @@ import {
  * `../fixtures/productTypes`, which carries the literal values from the legacy seed-data document.
  */
 
-/** One product. */
 const PRODUCT_ID = 'aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa';
 
 /** A second, so "each product received its own answer" is observable rather than assumed. */
 const SECOND_PRODUCT_ID = 'bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb';
 
-/** One option group. */
 const OPTION_GROUP_ID = 'cccccccccccccccccccccccccccccccc';
 
 /** A second option group, for the used-versus-unused distinction. */
 const SECOND_OPTION_GROUP_ID = 'dddddddddddddddddddddddddddddddd';
 
-/** One option. */
 const OPTION_ID = 'eeeeeeeeeeeeeeeeeeeeeeeeeeeeeeee';
 
 /** A second option, in the second group. */
 const SECOND_OPTION_ID = 'ffffffffffffffffffffffffffffffff';
 
-/** One SKU. */
 const SKU_ID = '11111111111111111111111111111111';
 
 /** A second SKU, so a non-singleton SKU set can be assembled. */
@@ -198,6 +231,15 @@ const SECOND_SKU_ID = '22222222222222222222222222222222';
 
 /** A child product type whose own system code is absent, forcing the root walk. */
 const CHILD_PRODUCT_TYPE_ID = '33333333333333333333333333333333';
+
+/**
+ * A root identifier the resolver double holds NO seed for, so the root walk resolves nothing.
+ *
+ * It exists to keep the two absences apart: a product with no product type at all RAISES (unguarded at
+ * `model/entity/Product.cfc:L494`), while an ASSIGNED product type whose root cannot be resolved answers
+ * `undefined` — the guarded fall-through of `model/entity/ProductType.cfc:L110-L115`.
+ */
+const UNSEEDED_ROOT_PRODUCT_TYPE_ID = '44444444444444444444444444444444';
 
 /**
  * The URL title from `meta/tests/unit/entity/ProductTest.cfc:L59`, byte for byte.
@@ -355,7 +397,6 @@ const asValidationSubject = (
 
 /** What an option-group finder recorded, so "the query was scoped to this product" is checkable. */
 interface OptionGroupFinderRecorder {
-  /** The finder to hand to the entity. */
   readonly finder: ProductOptionGroupFinder;
   /** The product identifiers the finder was asked about, in call order. */
   readonly calls: readonly string[];
@@ -397,15 +438,12 @@ const recordingOptionGroupFinder = (
 
 /** One recorded option lookup: both identifiers, in the order the port passes them. */
 interface OptionFinderCall {
-  /** The option group asked about. */
   readonly optionGroupID: string;
-  /** The product asked about. */
   readonly productID: string;
 }
 
 /** What an option finder recorded. */
 interface OptionFinderRecorder {
-  /** The finder to hand to the entity. */
   readonly finder: ProductOptionFinder;
   /** Every lookup, in call order — the count is what proves re-querying. */
   readonly calls: readonly OptionFinderCall[];
@@ -501,7 +539,6 @@ describe('Product — the URL-formatting assertion ported from the legacy suite'
      */
     expect(productURL.startsWith('/')).toBe(true);
     expect(productURL.endsWith('/')).toBe(true);
-    /* The setting is consulted exactly once, and by the key the legacy names. */
     expect(settings.calls).toEqual([{ settingName: 'globalURLKeyProduct', context: undefined }]);
   });
 
@@ -1052,11 +1089,9 @@ describe('Product.getSkusBySelectedOptions — the positional forwarding of mode
 
     await arrangement.product.getSkusBySelectedOptions(arrangement.finder.finder, untidySelection);
 
-    /* Byte-identical at the entity boundary. */
     expect(arrangement.finder.calls).toEqual([
       { selectedOptions: untidySelection, productID: PRODUCT_ID },
     ]);
-    /* And below it: duplicates preserved, padding untouched, only the empty element dropped. */
     expect(arrangement.skuRepository.calls).toEqual([
       {
         member: 'findSkusBySelectedOptions',
@@ -1383,7 +1418,6 @@ describe('Product unused-option members — the comma-delimited list contract', 
     await product.getUnusedProductOptionGroups(unusedOptionFinder, groupFinder.finder);
     await product.getUnusedProductOptionGroups(unusedOptionFinder, groupFinder.finder);
 
-    /* One query per member, and the option-group query behind them ran once for both. */
     expect(optionRepository.calls).toHaveLength(2);
     expect(groupFinder.calls).toEqual([PRODUCT_ID]);
   });
@@ -1455,18 +1489,84 @@ describe('Product.getBaseProductType — delegation without narrowing', () => {
     );
   });
 
-  it('NET-NEW — a product with no product type answers with absence rather than a guess', async () => {
+  it('NET-NEW — a product with no product type RAISES, as model/entity/Product.cfc:L494 does', async () => {
     /*
-     * `model/validation/Product.json:L11` makes the product type required for a save, so an unsaved
-     * product legitimately has none. Absence is the honest answer, because a substituted default
-     * would name a discriminator the row does not carry, and the add-option-group gate reads
-     * exactly this value.
+     * ⭐ THE LEGACY BODY IS `return getProductType().getBaseProductType();` WITH NO GUARD, so a product
+     * carrying no product type raised a null-reference error. `model/validation/Product.json:L11` makes
+     * the product type required for a save, so an unsaved product legitimately has none — and the legacy
+     * answer for that state is a FAULT, not a value.
+     *
+     * ⛔ AN EARLIER REVISION OF THIS CASE ASSERTED `resolves.toBeUndefined()` and called absence "the
+     * honest answer". That is withdrawn under AAP §0.6.7 (preserve and annotate, do not repair): all
+     * three process contexts in `model/validation/Product.json` gate on this discriminator, so answering
+     * absence let a gate be evaluated against a value the row does not carry — a hardening encoded as
+     * parity, which is exactly what the rule forbids.
+     *
+     * The resolver is asserted UNTOUCHED: the raise happens before any root walk, as it does in CFML.
      */
     const rootResolver = createProductTypeRootResolverDouble();
     const product = buildProduct({ productID: PRODUCT_ID });
 
-    await expect(product.getBaseProductType(rootResolver.resolver)).resolves.toBeUndefined();
+    await expect(product.getBaseProductType(rootResolver.resolver)).rejects.toBeInstanceOf(
+      DomainError,
+    );
     expect(rootResolver.requestedProductTypeIds).toEqual([]);
+  });
+
+  it('NET-NEW — an ASSIGNED product type whose root cannot be RESOLVED also RAISES, one hop down at model/entity/ProductType.cfc:L112', async () => {
+    /*
+     * ⭐ THE COMPANION OF THE CASE ABOVE, AND THE SECOND UNGUARDED DEREFERENCE ON THE SAME CHAIN. The
+     * delegation `getProductType().getBaseProductType()` has TWO of them, one per hop: `:L494` reads the
+     * product type without a guard, and `model/entity/ProductType.cfc:L112` then chains
+     * `.getSystemCode()` onto a root lookup without a guard. Fixing only the near hop would have left
+     * the finding half-resolved, since the port would still answer absence where the legacy failed.
+     *
+     * ⛔ AN EARLIER REVISION OF THIS CASE ASSERTED `resolves.toBeUndefined()`, under the title "still
+     * answers absence", and it is WITHDRAWN together with the sibling module's `TODO(parity)` that
+     * licensed it. Its stated defence — that the failure stayed loud downstream at
+     * `model/service/SkuService.cfc:L204` — holds at `createSkus` and FAILS at
+     * `src/adapters/mysql/MySqlSkuRepository.ts`, where an absent discriminator adds no option join and
+     * widens the returned SKU set instead of aborting. See the withdrawal recorded on
+     * `ProductType.getBaseProductType`.
+     */
+    const rootResolver = createProductTypeRootResolverDouble();
+    const productType = buildProductType({
+      productTypeID: CHILD_PRODUCT_TYPE_ID,
+      productTypeIDPath: `${UNSEEDED_ROOT_PRODUCT_TYPE_ID},${CHILD_PRODUCT_TYPE_ID}`,
+    });
+    const product = buildProduct({ productID: PRODUCT_ID, productType });
+
+    await expect(product.getBaseProductType(rootResolver.resolver)).rejects.toBeInstanceOf(
+      DomainError,
+    );
+    // The walk WAS attempted — this is a resolution failure, not a skipped read, and it is the far hop
+    // rather than the near one that failed.
+    expect(rootResolver.requestedProductTypeIds).toEqual([UNSEEDED_ROOT_PRODUCT_TYPE_ID]);
+  });
+
+  it('NET-NEW — a resolvable root that carries NO system code answers absence, which is why the return type keeps its optional member', async () => {
+    /*
+     * ⭐ THE ONE ABSENCE THAT SURVIVES ON THIS CHAIN, AND THE ONLY REASON `| undefined` REMAINS IN THE
+     * RETURN TYPE. `model/entity/ProductType.cfc:L112` succeeds at the LOOKUP and then reads
+     * `getSystemCode()` off a real row; when that column is null CFML returns null, the method hands it
+     * back, and the caller receives absence. So absence here is the legacy answer rather than a
+     * hardening — the distinction the two cases above exist to protect.
+     *
+     * Asserted from `Product` and not only from `ProductType` because this member is a pure delegation:
+     * if the pass-through ever started coercing the absence to a value, or raising on it, no
+     * `ProductType` test would notice.
+     */
+    const rootResolver = createProductTypeRootResolverDouble([
+      { productTypeID: UNSEEDED_ROOT_PRODUCT_TYPE_ID },
+    ]);
+    const productType = buildProductType({
+      productTypeID: CHILD_PRODUCT_TYPE_ID,
+      productTypeIDPath: `${UNSEEDED_ROOT_PRODUCT_TYPE_ID},${CHILD_PRODUCT_TYPE_ID}`,
+    });
+    const product = buildProduct({ productID: PRODUCT_ID, productType });
+
+    await expect(product.getBaseProductType(rootResolver.resolver)).resolves.toBeUndefined();
+    expect(rootResolver.requestedProductTypeIds).toEqual([UNSEEDED_ROOT_PRODUCT_TYPE_ID]);
   });
 });
 
@@ -1602,12 +1702,23 @@ describe('Product image members — delegation to the default SKU', () => {
     expect(product.getImageExistsFlag()).toBe(true);
   });
 
-  it('NET-NEW — every image member answers with absence when no default SKU is attached', () => {
+  it('NET-NEW — every image member RAISES when no default SKU is attached (:L319-:L338)', () => {
     /*
-     * ⚠️ ABSENCE, NOT `false` AND NOT THE EMPTY STRING, AND THE CHOICE IS DELIBERATE. The legacy
-     * delegates without a guard, so a product with no default SKU raised. Returning `false` from the
-     * existence member would be worse than either: it asserts that the image is MISSING, when in fact the
-     * question was never answered. Absence keeps the two apart.
+     * ⭐ ALL FIVE LEGACY BODIES ARE BARE `return getDefaultSku().…` DELEGATIONS WITH NO
+     * `structKeyExists` TEST, so a product with no default SKU raised a null-reference error on every
+     * one of them. That fault is the behaviour, and it is reproduced.
+     *
+     * ⛔ AN EARLIER REVISION OF THIS CASE ASSERTED `toBeUndefined()` FOR ALL FIVE. It is withdrawn under
+     * AAP §0.6.7 — preserve and annotate, do not repair. Its reasoning was half right and is kept where
+     * it is right: returning `false` from the existence member WOULD be wrong, because it asserts the
+     * image is MISSING when the question was never answered. But `undefined` is not the legacy answer
+     * either — the legacy gives NO answer at all, and a caller that read a silent `undefined` where the
+     * legacy aborted changes what the Google feed emits.
+     *
+     * ⚠️ CONTRAST THE FOUR PRICE MEMBERS, WHICH ARE ASSERTED IN THEIR OWN CASE AND STILL ANSWER
+     * ABSENCE. `model/entity/Product.cfc:L554-L579` guards each of them with
+     * `if( structKeyExists(variables, "defaultSku") )` and falls off the end, so `undefined` there IS
+     * the transcription. The split inside this family is the legacy's own.
      *
      * The arrangement uses the legacy fixture helper and then clears the reference, which is exactly the
      * teardown shape `meta/tests/unit/Helper.cfc` established for the same fixture.
@@ -1615,11 +1726,32 @@ describe('Product image members — delegation to the default SKU', () => {
     const fixture = createMerchandiseProductFixture();
     fixture.clearDefaultSkuReference();
 
-    expect(fixture.product.getImageDirectory()).toBeUndefined();
-    expect(fixture.product.getImagePath()).toBeUndefined();
-    expect(fixture.product.getImage()).toBeUndefined();
-    expect(fixture.product.getResizedImagePath()).toBeUndefined();
-    expect(fixture.product.getImageExistsFlag()).toBeUndefined();
+    expect(() => fixture.product.getImageDirectory()).toThrow(DomainError);
+    expect(() => fixture.product.getImagePath()).toThrow(DomainError);
+    expect(() => fixture.product.getImage()).toThrow(DomainError);
+    expect(() => fixture.product.getResizedImagePath()).toThrow(DomainError);
+    expect(() => fixture.product.getImageExistsFlag()).toThrow(DomainError);
+
+    /* The diagnostic names the member's own locator, so a log identifies WHICH delegation failed
+     * rather than reporting one undifferentiated fault for the family. */
+    expect(() => fixture.product.getImagePath()).toThrow('model/entity/Product.cfc:L325');
+    expect(() => fixture.product.getImageExistsFlag()).toThrow('model/entity/Product.cfc:L337');
+  });
+
+  it('NET-NEW — the four PRICE members still answer absence, because the legacy guards them (:L554-:L579)', () => {
+    /*
+     * ⭐ THE OTHER HALF OF THE SPLIT, ASSERTED SO IT CANNOT BE "HARMONISED" WITH THE CASE ABOVE. Each of
+     * these four opens with `if( structKeyExists(variables, "defaultSku") )` and has no `else`, so CFML
+     * returns null. Making them raise would invent four faults the legacy does not have; making the five
+     * image members answer absence would delete five it does.
+     */
+    const fixture = createMerchandiseProductFixture();
+    fixture.clearDefaultSkuReference();
+
+    expect(fixture.product.getCurrencyCode()).toBeUndefined();
+    expect(fixture.product.getPrice()).toBeUndefined();
+    expect(fixture.product.getRenewalPrice()).toBeUndefined();
+    expect(fixture.product.getListPrice()).toBeUndefined();
   });
 });
 
@@ -1971,7 +2103,6 @@ describe('Product processability and deletability — the dry-run seam', () => {
       ),
     ]);
     expect(!deletableErrors.hasErrors()).toBe(true);
-    /* And neither question wrote to either entity. */
     expect(transactedProduct.hasErrors()).toBe(false);
     expect(deletableProduct.hasErrors()).toBe(false);
   });
@@ -2026,7 +2157,6 @@ describe('The validation error bag', () => {
     expect(errors.getError('missing')).toEqual([]);
     expect(errors.hasError('missing')).toBe(false);
     expect(errors.hasErrors()).toBe(false);
-    /* The entity's own surface answers identically. */
     expect(product.getError('missing')).toEqual([]);
     expect(product.hasError('missing')).toBe(false);
     expect(() => product.getError('missing')).not.toThrow();
@@ -2077,5 +2207,568 @@ describe('The validation error bag', () => {
     expect(product.getErrors()).toEqual({
       productCode: ['the first message', 'the second message'],
     });
+  });
+});
+
+/* ==================================================================================================
+ * THE RETAINED SURFACE — SUPPORT DECLARATIONS
+ * ==================================================================================================
+ * Two local recording doubles and one reader factory, declared here rather than in `../support` for the
+ * reason the support module's own header gives: a double belongs there when more than one suite needs
+ * it, and these three are read only by the four sections below.
+ *
+ * ⚠️ ALL THREE ARE PURE FACTORIES. Nothing below this comment is module-scope mutable state — no array,
+ * no map, no entity — so the M7 isolation property this file establishes at the top holds for the new
+ * sections exactly as it holds for the old ones.
+ */
+
+/** One recorded call on an association double, naming the member and the product it received. */
+interface AssociationCall {
+  readonly member: 'setProduct' | 'removeProduct';
+  /** The product the delegation passed. `undefined` records the no-argument `removeProduct()` form. */
+  readonly product: Product | undefined;
+}
+
+/** An association double together with its own call log. */
+interface AssociationRecorder {
+  readonly association: ProductOwnedAssociation;
+  readonly calls: readonly AssociationCall[];
+}
+
+/**
+ * Builds a recording {@link ProductOwnedAssociation}.
+ *
+ * WHY A RECORDER AND NOT A REAL ENTITY. The six relationship helpers this double serves are pure
+ * delegations of the form `arguments.x.setProduct( this )` — the whole observable behaviour is WHICH
+ * member was called and WITH WHAT. `AttributeValue`, `ProductImage` and `ProductReview` are all
+ * out of scope (§0.2.2.1 and §0.2.2.4), so there is no real entity to substitute and inventing one
+ * would fabricate exactly the surface S9 forbids. The structural interface the production member
+ * declares is the entire contract, and this satisfies it literally.
+ */
+const recordingAssociation = (): AssociationRecorder => {
+  const calls: AssociationCall[] = [];
+
+  return {
+    calls,
+    association: {
+      setProduct: (product: Product): void => {
+        calls.push({ member: 'setProduct', product });
+      },
+      removeProduct: (product?: Product): void => {
+        calls.push({ member: 'removeProduct', product });
+      },
+    },
+  };
+};
+
+/**
+ * Builds a {@link ProductSkuIdReader} over an identity-keyed table of identifiers.
+ *
+ * ⭐ THE READER IS A PARAMETER RATHER THAN A MEMBER, AND THAT IS THE POINT BEING EXERCISED. The
+ * production member cannot call `sku.getSkuID()` because `Product.ts` declares its SKU collaborator
+ * structurally — {@link ProductSkuMember} names only `setProduct` and `removeProduct` — so the
+ * identifier read arrives injected. Keying the table by object IDENTITY rather than by reading a field
+ * keeps this file inside that same boundary instead of quietly widening it, and it makes a mis-scan
+ * observable: a reader consulted for the wrong instance answers with the empty string, which matches
+ * no seeded identifier.
+ */
+const readingIdentifiers = (
+  identifiers: ReadonlyMap<ProductSkuMember, string>,
+): ProductSkuIdReader => {
+  return (sku: ProductSkuMember): string => identifiers.get(sku) ?? '';
+};
+
+/* ==================================================================================================
+ * THE SKU FINDER — [model/entity/Product.cfc:L162-L169]
+ * ==================================================================================================
+ * A 1-based CFML loop over `getSkus()` comparing `skus[i].getSkuID()` to the argument, falling through
+ * to CFML null when nothing matches. Three properties are load-bearing and each gets its own case: the
+ * scan reads the LIVE collection, a miss answers with absence rather than a sentinel, and the strict
+ * comparison is on the injected reader's answer rather than on any field this module can see.
+ */
+
+describe('Product.getSkuByID — the live linear scan', () => {
+  it('NET-NEW — model/entity/Product.cfc:L162-L167 — returns the matching SKU instance, not a copy of it', () => {
+    const product = buildProduct({ productID: PRODUCT_ID });
+    const first = buildSku({ skuID: SKU_ID, skuCode: 'first' });
+    const second = buildSku({ skuID: SECOND_SKU_ID, skuCode: 'second' });
+    product.addSku(first);
+    product.addSku(second);
+    const readSkuID = readingIdentifiers(
+      new Map([
+        [first, SKU_ID],
+        [second, SECOND_SKU_ID],
+      ]),
+    );
+
+    /*
+     * IDENTITY, NOT EQUALITY. The legacy returns the element itself, and callers then mutate it — so a
+     * defensive copy here would silently discard every downstream write. `toBe` is the assertion that
+     * catches that; `toEqual` would pass against a copy.
+     */
+    expect(product.getSkuByID(readSkuID, SECOND_SKU_ID)).toBe(second);
+    expect(product.getSkuByID(readSkuID, SKU_ID)).toBe(first);
+  });
+
+  it('NET-NEW — model/entity/Product.cfc:L169 — a miss answers with absence, reproducing the legacy fall-through', () => {
+    const product = buildProduct({ productID: PRODUCT_ID });
+    const sku = buildSku({ skuID: SKU_ID });
+    product.addSku(sku);
+    const readSkuID = readingIdentifiers(new Map([[sku, SKU_ID]]));
+
+    /*
+     * `:L169` ends the function with NO `return` statement, so the legacy answered CFML null. That is
+     * transcribed as an explicit `undefined` because `noImplicitReturns` requires it written out — it is
+     * a transcription of the fall-through, not a new guard, and certainly not a thrown error.
+     */
+    expect(product.getSkuByID(readSkuID, SECOND_SKU_ID)).toBeUndefined();
+    expect(product.getSkuByID(readSkuID, '')).toBeUndefined();
+  });
+
+  it('NET-NEW — the scan reads the LIVE collection, so a detached SKU stops resolving', () => {
+    const product = buildProduct({ productID: PRODUCT_ID });
+    const sku = buildSku({ skuID: SKU_ID });
+    product.addSku(sku);
+    const readSkuID = readingIdentifiers(new Map([[sku, SKU_ID]]));
+
+    expect(product.getSkuByID(readSkuID, SKU_ID)).toBe(sku);
+
+    /*
+     * MUTATION SENSITIVITY, STATED AS AN ASSERTION. The member is documented as scanning
+     * `Product.getSkus()`, and the only way to prove it reads that array rather than a snapshot taken
+     * earlier is to change the array between two calls. A memoized finder would keep answering with the
+     * detached SKU here.
+     */
+    product.removeSku(sku);
+
+    expect(product.getSkuByID(readSkuID, SKU_ID)).toBeUndefined();
+    expect(product.getSkus()).toEqual([]);
+  });
+
+  it('NET-NEW — an empty collection is scanned without raising, and answers absence', () => {
+    const product = buildProduct({ productID: PRODUCT_ID });
+
+    expect(product.getSkus()).toEqual([]);
+    expect(product.getSkuByID(readingIdentifiers(new Map()), SKU_ID)).toBeUndefined();
+  });
+});
+
+/* ==================================================================================================
+ * THE FOUR LIVE COLLECTION ACCESSORS — [model/entity/Product.cfc:L178-L180] AND THE THREE SIBLINGS
+ * ==================================================================================================
+ * `getImages` is a hand-written alias whose legacy body is the bare `return variables.productImages;`,
+ * and the framework-generated `getProductImages` reads the same slot. The other three accessors follow
+ * the same pattern over their own slots. What matters is that each hands back the LIVE array rather
+ * than a copy, and that the aliased pair share ONE array while the four slots stay distinct — a mistake
+ * in either direction (copying, or aliasing the wrong slot) is invisible to any assertion that only
+ * compares contents.
+ */
+
+describe('Product live collection accessors', () => {
+  it('NET-NEW — model/entity/Product.cfc:L178-L180 — getImages and getProductImages are TWO NAMES FOR ONE ARRAY', () => {
+    const product = buildProduct({ productID: PRODUCT_ID });
+
+    /*
+     * ⚠️ `toBe`, DELIBERATELY. The legacy exposes both names over `variables.productImages`, so a
+     * mutation through either must be visible through the other. `toEqual` would pass against two
+     * separate empty arrays and would let the alias silently become a copy.
+     */
+    expect(product.getImages()).toBe(product.getProductImages());
+    expect(product.getImages()).toBe(product.productImages);
+  });
+
+  it('NET-NEW — a push through one alias is observed through the other', () => {
+    const product = buildProduct({ productID: PRODUCT_ID });
+    const image = recordingAssociation();
+
+    product.getImages().push(image.association);
+
+    expect(product.getProductImages()).toEqual([image.association]);
+    expect(product.getProductImages()[0]).toBe(image.association);
+  });
+
+  it('NET-NEW — the four collection accessors read FOUR DISTINCT slots', () => {
+    const product = buildProduct({ productID: PRODUCT_ID });
+    const image = recordingAssociation();
+    const attributeValue = recordingAssociation();
+    const review = recordingAssociation();
+    const sku = buildSku({ skuID: SKU_ID });
+
+    product.getProductImages().push(image.association);
+    product.getAttributeValues().push(attributeValue.association);
+    product.getProductReviews().push(review.association);
+    product.addSku(sku);
+
+    /*
+     * Each collection holds exactly its own element and nothing else. Written this way, an accessor
+     * wired to a neighbouring slot fails here rather than passing every emptiness check in the file.
+     */
+    expect(product.getProductImages()).toEqual([image.association]);
+    expect(product.getAttributeValues()).toEqual([attributeValue.association]);
+    expect(product.getProductReviews()).toEqual([review.association]);
+    expect(product.getSkus()).toEqual([sku]);
+  });
+
+  it('NET-NEW — every collection starts EMPTY and each product owns its own arrays', () => {
+    const first = buildProduct({ productID: PRODUCT_ID });
+    const second = buildProduct({ productID: SECOND_PRODUCT_ID });
+
+    expect(first.getImages()).toEqual([]);
+    expect(first.getAttributeValues()).toEqual([]);
+    expect(first.getProductReviews()).toEqual([]);
+
+    /*
+     * A field initialiser on the class body gives each instance its own array; a module-scope default
+     * would give every product the SAME array, which is the failure this pins. Mutating one product must
+     * not be visible from another.
+     */
+    first.getAttributeValues().push(recordingAssociation().association);
+
+    expect(second.getAttributeValues()).toEqual([]);
+    expect(second.getAttributeValues()).not.toBe(first.getAttributeValues());
+  });
+});
+
+/* ==================================================================================================
+ * THE SEVEN RELATIONSHIP DELEGATIONS — [model/entity/Product.cfc:L680-L709]
+ * ==================================================================================================
+ * Seven hand-written helpers, every one a single statement of the form
+ * `arguments.x.setProduct( this )` or `arguments.x.removeProduct( this )`. They are declared
+ * `inverse="true"` on the collection side, which means THE MANY SIDE OWNS THE FOREIGN KEY: ownership is
+ * handed to the associated entity and the collection follows from the persistence layer.
+ *
+ * ⚠️ SO THE PRODUCT'S OWN ARRAY IS EXPECTED TO STAY EMPTY, AND EVERY CASE BELOW ASSERTS THAT. Adding a
+ * local push "for convenience" is the obvious improvement and it is wrong: it double-registers the
+ * association, and for `skus` specifically it inflates the collection length that
+ * `SkuService.createSkus` reads when it numbers generated SKU codes `-1`, `-2`, …. The one exception is
+ * `addSku`, whose collaborator maintains BOTH sides itself — which is why it is asserted differently
+ * from the other six.
+ */
+
+describe('Product relationship delegations — the many side owns the key', () => {
+  it('NET-NEW — model/entity/Product.cfc:L680-L685 — the attribute-value pair delegates and touches no local array', () => {
+    const product = buildProduct({ productID: PRODUCT_ID });
+    const attributeValue = recordingAssociation();
+
+    product.addAttributeValue(attributeValue.association);
+
+    expect(attributeValue.calls).toEqual([{ member: 'setProduct', product }]);
+    /* The delegation hands ownership over; it does NOT register locally. */
+    expect(product.getAttributeValues()).toEqual([]);
+
+    product.removeAttributeValue(attributeValue.association);
+
+    expect(attributeValue.calls).toEqual([
+      { member: 'setProduct', product },
+      { member: 'removeProduct', product },
+    ]);
+    expect(product.getAttributeValues()).toEqual([]);
+  });
+
+  it('NET-NEW — model/entity/Product.cfc:L688-L693 — the image pair delegates and touches no local array', () => {
+    const product = buildProduct({ productID: PRODUCT_ID });
+    const image = recordingAssociation();
+
+    product.addProductImage(image.association);
+    product.removeProductImage(image.association);
+
+    expect(image.calls).toEqual([
+      { member: 'setProduct', product },
+      { member: 'removeProduct', product },
+    ]);
+    expect(product.getProductImages()).toEqual([]);
+    expect(product.getImages()).toEqual([]);
+  });
+
+  it('NET-NEW — model/entity/Product.cfc:L704-L709 — the review pair delegates and touches no local array', () => {
+    const product = buildProduct({ productID: PRODUCT_ID });
+    const review = recordingAssociation();
+
+    product.addProductReview(review.association);
+    product.removeProductReview(review.association);
+
+    expect(review.calls).toEqual([
+      { member: 'setProduct', product },
+      { member: 'removeProduct', product },
+    ]);
+    expect(product.getProductReviews()).toEqual([]);
+  });
+
+  it('NET-NEW — each remove helper passes THIS product explicitly, never the no-argument form', () => {
+    const product = buildProduct({ productID: PRODUCT_ID });
+    const other = buildProduct({ productID: SECOND_PRODUCT_ID });
+    const attributeValue = recordingAssociation();
+    const image = recordingAssociation();
+    const review = recordingAssociation();
+
+    product.removeAttributeValue(attributeValue.association);
+    product.removeProductImage(image.association);
+    product.removeProductReview(review.association);
+
+    /*
+     * ⚠️ THE ARGUMENT IS NOT DECORATIVE. The collaborator's `removeProduct` defaults to the association's
+     * CURRENT product when called with no argument, so `removeProduct()` and `removeProduct(this)` differ
+     * whenever the association is attached elsewhere. The legacy passes `this` at every one of the three
+     * call sites, and that is what is asserted — including that the product passed is this one and not
+     * some other instance.
+     */
+    for (const recorder of [attributeValue, image, review]) {
+      expect(recorder.calls).toEqual([{ member: 'removeProduct', product }]);
+      expect(recorder.calls[0]?.product).toBe(product);
+      expect(recorder.calls[0]?.product).not.toBe(other);
+    }
+  });
+
+  it('NET-NEW — model/entity/Product.cfc:L696-L701 — the SKU pair delegates, and the SKU maintains BOTH sides', () => {
+    const product = buildProduct({ productID: PRODUCT_ID });
+    const sku = buildSku({ skuID: SKU_ID });
+
+    product.addSku(sku);
+
+    /*
+     * ⭐ WHY THIS ONE LOOKS DIFFERENT FROM THE OTHER SIX. `addSku`/`removeSku` are the same one-line
+     * delegations, but their collaborator is IN SCOPE and its `setProduct` is one of only two legacy
+     * members that maintain both sides of a relationship — it appends to `product.getSkus()` itself. So
+     * the collection DOES fill here, and it fills through the SKU rather than through the product.
+     */
+    expect(sku.product).toBe(product);
+    expect(product.getSkus()).toEqual([sku]);
+
+    product.removeSku(sku);
+
+    /* `removeProduct` splices the live array and then clears its own reference unconditionally. */
+    expect(product.getSkus()).toEqual([]);
+    expect(sku.product).toBeUndefined();
+  });
+
+  it('NET-NEW — removeSku detaches from THIS product, leaving another product’s collection alone', () => {
+    const product = buildProduct({ productID: PRODUCT_ID });
+    const other = buildProduct({ productID: SECOND_PRODUCT_ID });
+    const mine = buildSku({ skuID: SKU_ID });
+    const theirs = buildSku({ skuID: SECOND_SKU_ID });
+    product.addSku(mine);
+    other.addSku(theirs);
+
+    product.removeSku(mine);
+
+    expect(product.getSkus()).toEqual([]);
+    expect(other.getSkus()).toEqual([theirs]);
+    expect(theirs.product).toBe(other);
+  });
+});
+
+/* ==================================================================================================
+ * THE TEMPLATE GUARD, THE BRAND-NAME DEFECT AND THE SUBSCRIPTION-TERM BOUNDARY
+ * ==================================================================================================
+ * Three retained members that share nothing except that each one's interesting behaviour is a BRANCH,
+ * and in each case one side of the branch is what a casual reading gets wrong: the template's guard
+ * tests emptiness as well as absence; the brand-name memo is written with the wrong value and never
+ * corrected; and the subscription-term finder is optional, so its absent branch is a real path rather
+ * than a defensive one.
+ */
+
+describe('Product.getTemplate — the two-part guard and its short-circuit', () => {
+  it('NET-NEW — model/entity/Product.cfc:L215-L221 — a present, non-empty override wins and the resolver is NEVER consulted', () => {
+    const settings = createSettingResolverDouble({
+      settings: [{ settingName: 'productDisplayTemplate', value: 'default-product-template' }],
+    });
+    const product = buildProduct({ productID: PRODUCT_ID });
+    product.template = 'custom-product-template';
+
+    expect(product.getTemplate(settings.resolver)).toBe('custom-product-template');
+    /*
+     * THE SHORT-CIRCUIT IS THE ASSERTION. The legacy consults the setting only inside the fallback
+     * branch, so an override present means the out-of-scope setting engine is never reached at all. A
+     * translation that resolved the setting first and then chose between the two answers would return
+     * the same string here and still be wrong — an empty call log is what distinguishes them.
+     */
+    expect(settings.calls).toEqual([]);
+  });
+
+  it('NET-NEW — model/entity/Product.cfc:L216 — an ABSENT override falls back to the resolved setting', () => {
+    const settings = createSettingResolverDouble({
+      settings: [{ settingName: 'productDisplayTemplate', value: 'default-product-template' }],
+    });
+    const product = buildProduct({ productID: PRODUCT_ID });
+
+    expect(product.getTemplate(settings.resolver)).toBe('default-product-template');
+    expect(settings.calls).toEqual([{ settingName: 'productDisplayTemplate', context: undefined }]);
+  });
+
+  it('NET-NEW — model/entity/Product.cfc:L216 — an override present but EMPTY also falls back', () => {
+    const settings = createSettingResolverDouble({
+      settings: [{ settingName: 'productDisplayTemplate', value: 'default-product-template' }],
+    });
+    const product = buildProduct({ productID: PRODUCT_ID });
+    product.template = '';
+
+    /*
+     * ⚠️ TWO STATES, ONE OUTCOME, AND THEY ARE GENUINELY DISTINCT HERE. The legacy guard is
+     * `!structKeyExists(variables,"template") || variables.template == ""`, and under
+     * `exactOptionalPropertyTypes` "key absent" and "key present holding `''`" really are different
+     * states — so the guard is reproduced as an explicit two-part check. A truthiness test would agree
+     * with the legacy on exactly these two inputs and disagree on any other falsy value, which the
+     * legacy comparison against `""` specifically does not swallow.
+     */
+    expect(product.getTemplate(settings.resolver)).toBe('default-product-template');
+    expect(settings.calls).toHaveLength(1);
+  });
+
+  it('NET-NEW — the fallback is NOT memoized: two calls resolve twice', () => {
+    const settings = createSettingResolverDouble({
+      settings: [{ settingName: 'productDisplayTemplate', value: 'default-product-template' }],
+    });
+    const product = buildProduct({ productID: PRODUCT_ID });
+
+    product.getTemplate(settings.resolver);
+    product.getTemplate(settings.resolver);
+
+    /*
+     * The legacy body caches nothing — unlike `getTitle` and `getBrandName`, which do. Adding a cache
+     * here would be adding behaviour, and S8 is explicit that no new memoization is introduced. Two
+     * calls therefore mean two resolutions.
+     */
+    expect(settings.calls).toHaveLength(2);
+  });
+});
+
+describe('Product.getBrandName — the memo defect, carried and pinned', () => {
+  it('NET-NEW — model/entity/Product.cfc:L105 — TODO(parity): the first read answers the brand, EVERY LATER READ ANSWERS EMPTY', () => {
+    const brand = buildBrand({ brandID: SECOND_PRODUCT_ID, brandName: 'Nike' });
+    const product = buildProduct({ productID: PRODUCT_ID, brand });
+
+    /*
+     * ⚠️ THIS IS A PRESERVED DEFECT AND THE ASSERTION IS DELIBERATELY OF THE BROKEN BEHAVIOUR.
+     *
+     * The legacy body writes the EMPTY STRING into the memo slot and then returns the brand's name
+     * WITHOUT storing it. So the cache permanently holds `''`, and the second read — which finds the slot
+     * populated and trusts it — answers with the empty string for a product that plainly has a brand.
+     *
+     * Repairing it would be a one-character change and it is NOT made: preserve-and-annotate governs
+     * here, and a silent repair would make the port's output incomparable to the legacy system's for
+     * every consumer of this member. Pinning the broken behaviour is what makes the carry-over visible
+     * to a reviewer instead of being a comment nobody can check.
+     */
+    expect(product.getBrandName()).toBe('Nike');
+    expect(product.getBrandName()).toBe('');
+    expect(product.getBrandName()).toBe('');
+    /* The slot itself is observable, and it holds the wrong value rather than the brand's name. */
+    expect(product.brandName).toBe('');
+  });
+
+  it('NET-NEW — with no brand attached, every read answers the empty string', () => {
+    const product = buildProduct({ productID: PRODUCT_ID });
+
+    /*
+     * The legacy declares the return type `string`, so an absent brand yields `''` — the value CFML
+     * would have interpolated for a null. Here the defect is invisible, because the memo's wrong value
+     * and the correct answer coincide.
+     */
+    expect(product.getBrandName()).toBe('');
+    expect(product.getBrandName()).toBe('');
+  });
+
+  it('NET-NEW — a brand whose own name is absent also answers the empty string', () => {
+    const brand = buildBrand({ brandID: SECOND_PRODUCT_ID });
+    const product = buildProduct({ productID: PRODUCT_ID, brand });
+
+    expect(product.getBrandName()).toBe('');
+  });
+
+  it('NET-NEW — attaching a brand AFTER the first read cannot recover the name', () => {
+    const brand = buildBrand({ brandID: SECOND_PRODUCT_ID, brandName: 'Nike' });
+    const product = buildProduct({ productID: PRODUCT_ID });
+
+    expect(product.getBrandName()).toBe('');
+
+    product.setBrand(brand);
+
+    /*
+     * The memo was filled on the first read, so the later association is never consulted. This is the
+     * same defect observed from the other direction, and it is the shape a caller is most likely to hit
+     * in practice: read the name while building the product, then attach the brand.
+     */
+    expect(product.getBrandName()).toBe('');
+    expect(product.brand).toBe(brand);
+  });
+});
+
+describe('Product.getUnusedProductSubscriptionTerms — both branches of the optional finder', () => {
+  it('NET-NEW — model/entity/Product.cfc:L649-L654 — a PRESENT finder is called with this product’s identifier', async () => {
+    const firstTerm = { subscriptionTermID: SKU_ID };
+    const secondTerm = { subscriptionTermID: SECOND_SKU_ID };
+    const requestedProductIDs: string[] = [];
+    const product = buildProduct({ productID: PRODUCT_ID });
+
+    const terms = await product.getUnusedProductSubscriptionTerms({
+      getUnusedProductSubscriptionTerms: (productID: string): Promise<object[]> => {
+        requestedProductIDs.push(productID);
+        return Promise.resolve([firstTerm, secondTerm]);
+      },
+    });
+
+    /*
+     * Two things are pinned and nothing else is. The finder receives THIS product's 32-character
+     * identifier — not a whole entity, and not another product's identifier — and the result travels back
+     * unreshaped, element identity included.
+     *
+     * ⚠️ NO SHAPE IS ASSERTED FOR A SUBSCRIPTION TERM, AND THAT ASYMMETRY IS CORRECT. The two sibling
+     * unused-* members do assert a `{name, value}` projection, because the legacy data-access layer
+     * builds that projection literally. No such evidence exists for subscription terms: the producing
+     * member is out of scope, no in-scope code reads a field off one, and only the ARITY is consumed —
+     * by the minimum-collection gate in `model/validation/Product.json`. Asserting a projection here
+     * would be inventing one.
+     */
+    expect(requestedProductIDs).toEqual([PRODUCT_ID]);
+    expect(terms).toHaveLength(2);
+    expect(terms[0]).toBe(firstTerm);
+    expect(terms[1]).toBe(secondTerm);
+  });
+
+  it('NET-NEW — an ABSENT finder answers the empty array rather than raising', async () => {
+    const product = buildProduct({ productID: PRODUCT_ID });
+
+    /*
+     * ⚠️ THE EMPTY ARRAY IS THE CORRECT BOUNDARY ANSWER, NOT A SWALLOWED ERROR. This member's arity is
+     * read by a minimum-collection gate of one, so an empty result FAILS that gate — which is exactly the
+     * outcome the legacy produced for a product with no unused terms. Throwing instead would convert a
+     * validation failure into a runtime error, and the error message would have to be invented (S9).
+     */
+    await expect(product.getUnusedProductSubscriptionTerms()).resolves.toEqual([]);
+  });
+
+  it('NET-NEW — the absent branch is NOT memoized, so the capability can arrive later', async () => {
+    const product = buildProduct({ productID: PRODUCT_ID });
+    const term = { subscriptionTermID: SKU_ID };
+
+    await expect(product.getUnusedProductSubscriptionTerms()).resolves.toEqual([]);
+
+    /*
+     * The legacy caches this result, but that cache belonged to a member with a real implementation.
+     * Caching a boundary stub's answer would cache the ABSENCE OF A CAPABILITY for the entity's whole
+     * lifetime, which is new behaviour rather than preserved behaviour — so no cache is added, and a
+     * later call with a finder present is answered by the finder.
+     */
+    await expect(
+      product.getUnusedProductSubscriptionTerms({
+        getUnusedProductSubscriptionTerms: (): Promise<object[]> => Promise.resolve([term]),
+      }),
+    ).resolves.toEqual([term]);
+  });
+
+  it('NET-NEW — a finder rejection propagates rather than degrading to the empty array', async () => {
+    const failure = new Error('The subscription term lookup was refused.');
+    const product = buildProduct({ productID: PRODUCT_ID });
+
+    /*
+     * The empty-array answer belongs to ONE case only — the capability being absent. A finder that was
+     * supplied and failed is a different fact, and collapsing the two would report "no unused terms" for
+     * a lookup that never completed.
+     */
+    await expect(
+      product.getUnusedProductSubscriptionTerms({
+        getUnusedProductSubscriptionTerms: (): Promise<object[]> => Promise.reject(failure),
+      }),
+    ).rejects.toBe(failure);
   });
 });

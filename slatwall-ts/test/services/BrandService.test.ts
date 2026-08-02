@@ -101,7 +101,8 @@
  *      positional two-argument delegation at `:L76`.
  *   C. `saveBrand` over the REAL graph — real `Validator`, real `BaseService`, the ported rule set of
  *      `model/validation/Brand.json`. Includes the AAP-omitted no-slug path, the two uniqueness seams
- *      driven to disagree, and the `issue_1690_2` contract.
+ *      driven to disagree, and the NET-NEW unguarded-save contract (service-specific; see the
+ *      provenance note below — this file does NOT claim the `issue_1690_2` locator).
  *   D. `newBrand()` — the declared factory, its synchronous return, the traceable `products === []`
  *      default and per-call independence.
  *   E. `getBrand(brandID)` — exact identifier forwarding, hit by reference, miss as `null` with no
@@ -130,38 +131,40 @@
  * with `Extract`. A typo or a renamed table stops the file compiling; a drift in what the utility
  * forwards fails a case.
  *
- * MISMATCH 2 — `BaseService.save` RAISES WHERE THE LEGACY RETURNED.
+ * MISMATCH 2 (RESOLVED — THIS NOTE RECORDS A DIVERGENCE THAT NO LONGER EXISTS).
  * `model/service/HibachiService.cfc:L103` is `return arguments.entity;` and it runs on EVERY path,
  * failed validation included, because a Hibachi entity carried its own error bag for the caller to
- * inspect. `src/services/BaseService.ts` instead ends with `if (errors.hasErrors()) { throw errors; }`
- * and documents why: not every ported entity carries a bag, `ProductService.saveProductType`
- * converts the raise back into entity-carried findings for its own legacy contract, and
- * "`BrandService.saveBrand` and the SKU save path rely on the raise". The `issue_1690_2` contract at
- * `meta/tests/unit/IssuesTest.cfc:L203-L206` is what makes this worth pinning: that test saves a
- * brand-new, definitely-invalid entity with NO `hasErrors()` guard beforehand — contrast `issue_1690`
- * at `:L192-L201`, which guards — so the behaviour under regression is that an invalid save FAILS
- * CLEANLY AND REPORTABLY rather than blowing up opaquely or, worse, persisting.
- * This file therefore asserts the substance of that contract against the landed mechanism: the
- * failure arrives as the accumulated `ValidationError` bag with its keys and message keys intact,
- * NOTHING is persisted, the caller's entity reference survives and is still the instance it handed
- * in, and no other error type is substituted. Both locators are cited at the case so a reviewer
- * meets the divergence rather than discovering it.
+ * inspect. An earlier revision of `src/services/BaseService.ts` instead ended with
+ * `if (errors.hasErrors()) { throw errors; }`, and an earlier revision of THIS FILE asserted that
+ * raise as the contract across six cases. Both are gone. The raise's stated grounds do not survive
+ * inspection: "not every ported entity carries a bag" was a property of the TYPE CONSTRAINT, not of
+ * the legacy design, and it was fixed at the root by widening `BaseServiceEntity` to require
+ * `EntityErrorSurface` — the same resolution `src/services/BrandService.ts` already reached for the
+ * metadata surface ("SUPPLY THE MISSING SURFACE, NOT HIDE THE GAP"). "`BrandService.saveBrand` and
+ * the SKU save path rely on the raise" was false on the second count outright: the SKU save path
+ * never touches `BaseService` at all.
+ * `save` therefore now returns the SAME instance on EVERY path, with any accumulated findings
+ * attached to the entity's own bag first — `org/Hibachi/HibachiService.cfc:L133` gates persistence on
+ * `!arguments.entity.hasErrors()`, reading the entity's bag, exactly as this port now does.
+ * The `issue_1690_2` contract at `meta/tests/unit/IssuesTest.cfc:L203-L206` is what makes this worth
+ * pinning: that test saves a brand-new, definitely-invalid entity with NO `hasErrors()` guard
+ * beforehand — contrast `issue_1690` at `:L192-L201`, which guards — so the behaviour under
+ * regression is that an invalid save FAILS CLEANLY AND REPORTABLY rather than blowing up opaquely
+ * or, worse, persisting. This file asserts that contract against the landed mechanism: the member
+ * RESOLVES, the resolved value is the very instance the caller handed in, its own bag now answers
+ * `hasErrors()` with the accumulated keys and message keys intact, and NOTHING is persisted.
+ * Recorded at length because a test that certifies a divergence is what let the divergence survive
+ * review once already; the locators are cited at each case so the next reader checks the legacy
+ * rather than trusting this note.
  *
  * =============================================================================================
  * WHAT THIS FILE DELIBERATELY DOES NOT COVER
  * =============================================================================================
- * `src/handlers/brandHandler.ts` IS NOT TESTED HERE, AND 17 CASES THAT USED TO BE HERE ARE GONE.
- * An earlier revision of this file carried the handler's authorisation-gate and response-projection
- * cases, on the stated grounds that "AAP §0.4.1.12 enumerates NO `test/handlers/` directory". That
- * premise has since been overtaken by landed code — `test/handlers/skuHandler.test.ts` exists — and
- * it was never sufficient for THIS file in any case: `src/handlers/brandHandler.ts` and
- * `src/ports/AccountContextPort.ts` are both outside this file's dependency whitelist, and its build
- * contract forbids importing a handler or any AWS surface here. The cases are therefore removed
- * rather than relocated, because this file's contract also states that no other file may be
- * authored. The consequence, stated rather than hidden: `src/handlers/brandHandler.ts` currently has
- * no test of its own; its correct home is `test/handlers/brandHandler.test.ts`, alongside the
- * sibling that already exists; and nothing in the suite fails as a result, because no coverage
- * threshold is configured (and this file adds none).
+ * `src/handlers/brandHandler.ts` IS NOT TESTED HERE. This suite is scoped to `BrandService`, and the
+ * handler layer has its own suite at `test/handlers/brandHandler.test.ts`. The boundary is structural
+ * rather than a matter of preference: `src/handlers/brandHandler.ts` and `src/ports/AccountContextPort.ts`
+ * are both outside this file's dependency whitelist, and its build contract forbids importing a handler
+ * or any AWS surface here — which is what lets every case below construct the service directly.
  *
  * ALSO ABSENT, EACH FOR A NAMED REASON:
  *   * No `Product`, `Sku`, `Option` or `OptionGroup` service behaviour. Those services have their
@@ -185,8 +188,20 @@
 import { BRAND_PROPERTY_DESCRIPTORS } from '../../src/domain/product/Brand';
 import { BaseService } from '../../src/services/BaseService';
 import { BrandService } from '../../src/services/BrandService';
-import { DomainError } from '../../src/errors/DomainError';
-import { ValidationError } from '../../src/errors/ValidationError';
+/*
+ * ⭐ NEITHER `DomainError` NOR `ValidationError` IS IMPORTED, AND THAT IS THE F1 FIX VISIBLE IN THE
+ * IMPORT LIST. An earlier revision imported both to assert `rejects.toBeInstanceOf(ValidationError)`
+ * across six cases. `save` no longer raises for a validation failure — it attaches the findings to the
+ * entity's own bag and returns the same instance, per `model/service/HibachiService.cfc:L103` — and
+ * `delete` reports refusal as `false` rather than raising, per `:L68`. So no case in this file has an
+ * error class to name, and the two imports would now be dead weight the linter would reject.
+ *
+ * ⚠️ `RequestBudgetExhaustedError` IS STILL IMPORTED, BELOW, AND IT IS NOT AN EXCEPTION TO THE ABOVE.
+ * It names a BUDGET refusal raised by the injected url-title probe bound, not a validation outcome of
+ * `save` or `delete`, and two cases assert it by class. F1 changed how validation failures are
+ * reported; it did not touch the probe bound.
+ */
+import { RequestBudgetExhaustedError } from '../../src/errors/DomainError';
 import { createUniqueURLTitle } from '../../src/util/urlTitle';
 import {
   brandValidationRules,
@@ -201,6 +216,7 @@ import {
   createPopulationAuthorizationDouble,
   createUrlTitleAvailabilityDouble,
   createValidatorHarness,
+  physicalID,
 } from '../support/inMemoryRepositories';
 
 import type { BrandPropertyName } from '../../src/domain/product/Brand';
@@ -208,6 +224,7 @@ import type { BrandRepository } from '../../src/ports/repositories/BrandReposito
 import type { UniquePropertyPort } from '../../src/ports/UniquePropertyPort';
 import type { BrandBaseService, ManagedBrand } from '../../src/services/BrandService';
 import type { UniqueValueProbe } from '../../src/util/urlTitle';
+import type { UrlTitleProbeBudget } from '../../src/util/urlTitleProbeBudget';
 import type { ValidationContext } from '../../src/validation/Validator';
 import type {
   BaseServicePersistenceDouble,
@@ -225,6 +242,20 @@ import type {
  * SHARED IMMUTABLE BINDINGS
  *
  * Two string primitives, both frozen by being primitives. Nothing else lives at module scope.
+ * ============================================================================================== */
+
+/* ================================================================================================
+ * PHYSICALLY VALID IDENTIFIERS — REVIEW FINDING 16
+ *
+ * Every brand, product and unique-value identifier below is minted by `physicalID(label)`: 32
+ * lowercase hexadecimal characters with no dashes, the shape AAP IR-6 fixes for every uuid-keyed
+ * entity, with the readable label retained at the call site. The review's audit counted 19
+ * non-physical literals in this file; it now carries none. The mechanism, and the readable-identifier
+ * rationale it withdraws, are documented once at `test/support/inMemoryRepositories.ts`.
+ *
+ * The one case worth reading in place is the `getBrand` miss, which probes with
+ * `physicalID('no-such-brand')` — a well-formed key that is deliberately absent — and is annotated
+ * there with why a malformed sentinel would have weakened it.
  * ============================================================================================== */
 
 /**
@@ -364,6 +395,13 @@ interface BrandHarnessOptions {
   readonly settingValuesUpdated?: number;
   /** Brands already stored, so a read or a delete has something to find. */
   readonly storedBrands?: readonly ManagedBrand[];
+  /**
+   * The OPTIONAL URL-title probe ceiling — review finding F5 (SEC-14).
+   *
+   * Absent in every case that does not name it, which is how the parity path stays the default here
+   * exactly as it is in a composition root.
+   */
+  readonly urlTitleProbeBudget?: UrlTitleProbeBudget;
 }
 
 /** The service under test plus every observation point the real graph offers. */
@@ -448,7 +486,10 @@ function createBrandHarness(options: BrandHarnessOptions = {}): BrandHarness {
     baseService,
     brands,
     persistence,
-    service: new BrandService(brands.repository, baseService),
+    service:
+      options.urlTitleProbeBudget === undefined
+        ? new BrandService(brands.repository, baseService)
+        : new BrandService(brands.repository, baseService, options.urlTitleProbeBudget),
     validation,
   };
 }
@@ -742,24 +783,40 @@ describe('createUniqueURLTitle — the collision suffix sequence', () => {
     }
   });
 
-  it('NET-NEW — model/service/DataService.cfc:L64 — the loop is UNBOUNDED: one round trip per iteration, no ceiling, no fabricated fallback', async () => {
+  it('NET-NEW UNWIRED — model/service/DataService.cfc:L64 — the loop is UNBOUNDED: one round trip per iteration, no ceiling, no fabricated fallback', async () => {
     /*
      * TODO(parity) `model/service/DataService.cfc:L64` — `while(!unique)` carries NO ceiling, so a
      * value that keeps colliding keeps issuing probes indefinitely. The exposure is real and it is
      * CARRIED OVER rather than repaired: AAP §0.8.2 Guideline 4 forbids enhancing business logic
      * beyond what the migration requires, and IR-9 admits exactly one hardening exception — D18, the
-     * importer's SQL parameterisation — which is not this. An earlier revision of the utility added
-     * an attempt budget with a deterministic raise and it was withdrawn.
+     * importer's SQL parameterisation — which is not this. An attempt budget would therefore be a
+     * behavioural change, not a fix, so none exists.
      *
      * WHAT THIS CASE ASSERTS, AND WHAT IT DELIBERATELY DOES NOT. It asserts the two observable facts:
      * exactly ONE probe per iteration, and termination only when the probe reports a free value. A
      * finite seeded run of 500 collisions stands in for the unbounded one — an endless loop cannot be
-     * asserted on — and it is two orders of magnitude past any plausible ceiling, so a reinstated
-     * bound short of 501 fails here.
+     * asserted on.
      *
-     * NO retry limit, latency assertion, backoff, capacity figure or timeout appears in this case or
-     * anywhere in this file. Asserting a bound would invent the very number AAP §0.7.3 S9 forbids,
-     * and would make the test the specification for a safeguard the legacy does not have.
+     * ⭐ ONE SENTENCE OF THIS BLOCK USED TO READ "it is two orders of magnitude past any plausible
+     * ceiling, so a reinstated bound short of 501 fails here", AND THAT SENTENCE WAS THE FINDING. A
+     * suite that fails when a bound is introduced makes the bound test-breaking — which is the AAP
+     * security requirement the review recorded as failing (tests must not require insecure behaviour).
+     * Review finding F5 (CWE-400) resolved it WITHOUT weakening this case, because the two facts above
+     * are properties of the ALGORITHM and the bound is not in the algorithm:
+     *
+     *   • This case calls `createUniqueURLTitle` DIRECTLY with an unwrapped probe. There is no budget
+     *     to wire at this boundary and none is wired, so 501 probes is exactly right here and stays
+     *     asserted — permanently. It is the parity guard.
+     *   • F5's bound wraps the PROBE (`src/util/urlTitleProbeBudget.ts`) and is applied by the SERVICE
+     *     when a deployment stated a figure. A bound in the algorithm would still fail here; a bound
+     *     on the probe is invisible to this case by construction.
+     *   • The WIRED half is asserted separately, in its own describe block below, where a budget IS
+     *     supplied and the refusal is required rather than forbidden.
+     *
+     * NO retry limit, latency assertion, backoff, capacity figure or timeout appears in this case.
+     * Asserting one HERE would invent the very number AAP §0.7.3 S9 forbids; asserting a figure the
+     * TEST supplies to a service that demanded none does not, which is why the wired cases can state
+     * one freely.
      */
     const collisions = 500;
     const probe = createUrlTitleAvailabilityDouble(
@@ -798,6 +855,212 @@ describe('createUniqueURLTitle — the collision suffix sequence', () => {
     await expect(createUniqueURLTitle('!!!', BRAND_TABLE, brandUrlTitleProbe(empty))).resolves.toBe(
       '-2',
     );
+  });
+});
+
+/* ================================================================================================
+ * GROUP A2 — THE OPTIONAL PROBE CEILING (SEC-14, review finding F5, CWE-400)
+ *
+ * ⭐ THE BOUND IS NOT IN THE ALGORITHM, AND EVERY CASE HERE IS ORGANISED AROUND THAT. `:L64`'s
+ * `while(!unique)` is ported verbatim and stays unbounded; `src/util/urlTitleProbeBudget.ts` wraps the
+ * PROBE, `BrandService` applies the wrapper only when a deployment stated a figure, and the refusal
+ * reaches the algorithm through the one channel it already declares — "whatever the probe rejects with
+ * propagates unchanged".
+ *
+ * So the UNWIRED case in Group A and the WIRED cases here are not in tension: they assert the two
+ * wirings of one mechanism. Group A's 501-probe run stays green permanently, and these cases would all
+ * fail if the ceiling were moved into the algorithm, because the algorithm must remain incapable of
+ * refusing anything on its own.
+ * ============================================================================================== */
+
+describe('saveBrand — the probe ceiling exists only when an operator states it', () => {
+  /** A budget of three probes: the bare candidate, `-2` and `-3`. */
+  const THREE_PROBES: UrlTitleProbeBudget = { maximumProbesPerDerivation: 3 };
+
+  it('NET-NEW WIRED — refuses the derivation once the stated probe ceiling is passed, writing nothing', async () => {
+    /*
+     * Four titles are held, so the free candidate is `-5` and reaching it needs five probes. The ceiling
+     * is three, so the fourth probe is refused.
+     *
+     * ⚠️ THE PROBE COUNT IS THE ASSERTION THAT MATTERS. `probedUrlTitles` must show EXACTLY three round
+     * trips: the refusal happens BEFORE the fourth read is issued, so the ceiling bounds database work
+     * rather than merely reporting on it afterwards. A wrapper that counted after probing would show
+     * four here.
+     *
+     * And nothing is written. The derivation feeds `data.urlTitle` into the save that follows it, so a
+     * refused derivation means `saveBrand` never reaches the base collaborator: no brand is persisted
+     * and the store stays empty.
+     */
+    const harness = createBrandHarness({
+      takenUrlTitles: candidateRun('acme-widgets', 3),
+      urlTitleProbeBudget: THREE_PROBES,
+    });
+
+    const rejection: unknown = await harness.service
+      .saveBrand(harness.service.newBrand(), { brandName: 'ACME Widgets' })
+      .then(
+        () => undefined,
+        (error: unknown) => error,
+      );
+
+    if (!(rejection instanceof RequestBudgetExhaustedError)) {
+      throw new Error('The over-budget derivation was expected to be refused.');
+    }
+    expect(rejection.message).toMatch(/collided more times than this deployment permits probing/);
+    expect(rejection.context).toMatchObject({
+      tableName: BRAND_TABLE,
+      candidateUrlTitle: 'acme-widgets-4',
+      probes: 4,
+      maximumProbesPerDerivation: 3,
+      locator: 'model/service/DataService.cfc:L64',
+    });
+
+    /*
+     * The public account names no figure and no table: publishing the ceiling would hand an attacker
+     * probing for a denial-of-service threshold the exact number it is looking for. It classifies as a
+     * REQUEST rejection rather than a service fault, because the caller chose a title that collides and
+     * can choose another — `src/handlers/httpResponse.ts` maps that code to 400, not 500.
+     */
+    expect(rejection.getPublicError()).toEqual({
+      code: 'CATALOG_REQUEST_REJECTED',
+      message: 'The request asks for more work than one operation may perform',
+    });
+
+    expect(probedUrlTitles(harness.brands.calls)).toEqual(candidateRun('acme-widgets', 2));
+    expect(persistedBrands(harness.brands.calls)).toEqual([]);
+    expect(harness.brands.brands).toEqual([]);
+  });
+
+  it('NET-NEW WIRED — admits a derivation that lands exactly ON the stated ceiling', async () => {
+    /*
+     * The other half of the boundary. Two titles are held, so the free candidate is `-3` and reaching it
+     * takes exactly three probes — the ceiling, not one past it. The comparison is `probes > maximum`,
+     * so the Nth probe is genuinely performed, and the derived title is the algorithm's own.
+     *
+     * A wrapper that counted before probing would refuse here, which is why this case exists alongside
+     * the refusal above rather than being assumed from it.
+     */
+    const harness = createBrandHarness({
+      takenUrlTitles: candidateRun('acme-widgets', 1),
+      urlTitleProbeBudget: THREE_PROBES,
+    });
+
+    const saved = await harness.service.saveBrand(harness.service.newBrand(), {
+      brandName: 'ACME Widgets',
+    });
+
+    expect(saved.urlTitle).toBe('acme-widgets-3');
+    expect(probedUrlTitles(harness.brands.calls)).toEqual(candidateRun('acme-widgets', 2));
+    expect(persistedBrands(harness.brands.calls)).toHaveLength(1);
+  });
+
+  it('NET-NEW WIRED — a ceiling of ONE admits an uncontested title and refuses the first collision', async () => {
+    /*
+     * The tightest legal figure, and it has to be usable: `model/service/DataService.cfc:L62` probes the
+     * bare candidate ONCE before the loop, so a budget of 1 permits exactly that probe. A deployment
+     * choosing 1 is saying "never suffix" — which the algorithm can satisfy whenever the title is free.
+     *
+     * Asserted from both sides with one service graph each, because the budget counts per DERIVATION and
+     * the second half must not be reading a counter the first half advanced.
+     */
+    const uncontested = createBrandHarness({
+      urlTitleProbeBudget: { maximumProbesPerDerivation: 1 },
+    });
+    const saved = await uncontested.service.saveBrand(uncontested.service.newBrand(), {
+      brandName: 'ACME Widgets',
+    });
+    expect(saved.urlTitle).toBe('acme-widgets');
+    expect(probedUrlTitles(uncontested.brands.calls)).toEqual(['acme-widgets']);
+
+    const contested = createBrandHarness({
+      takenUrlTitles: ['acme-widgets'],
+      urlTitleProbeBudget: { maximumProbesPerDerivation: 1 },
+    });
+    await expect(
+      contested.service.saveBrand(contested.service.newBrand(), { brandName: 'ACME Widgets' }),
+    ).rejects.toBeInstanceOf(RequestBudgetExhaustedError);
+    // One probe, then refusal: the `-2` candidate is never read.
+    expect(probedUrlTitles(contested.brands.calls)).toEqual(['acme-widgets']);
+    expect(persistedBrands(contested.brands.calls)).toEqual([]);
+  });
+
+  it('NET-NEW WIRED — M7 — the ceiling is per DERIVATION, so one save cannot spend the next save budget', async () => {
+    /*
+     * ⭐ THE CASE THAT PINS THE LIFETIME, AND THE ONE A NAIVE IMPLEMENTATION FAILS. The wrapper owns a
+     * probe counter, so a single wrapper memoised on the service — or on a module, or in a container —
+     * would carry the first save's probes into the second and refuse a later, entirely legitimate save.
+     * On a warm Lambda container that leaks across INVOCATIONS, which is exactly what AAP §0.6.6 M7
+     * forbids: nothing survives between invocations except deliberately module-scoped state.
+     *
+     * Two saves on ONE service instance, each needing two probes against a ceiling of two. Both must
+     * succeed. If the counter were shared the second would be refused, and the second title proves the
+     * derivation genuinely ran rather than being short-circuited.
+     */
+    const harness = createBrandHarness({
+      takenUrlTitles: ['acme-widgets', 'globex-tools'],
+      urlTitleProbeBudget: { maximumProbesPerDerivation: 2 },
+    });
+
+    const first = await harness.service.saveBrand(harness.service.newBrand(), {
+      brandName: 'ACME Widgets',
+    });
+    const second = await harness.service.saveBrand(harness.service.newBrand(), {
+      brandName: 'Globex Tools',
+    });
+
+    expect(first.urlTitle).toBe('acme-widgets-2');
+    expect(second.urlTitle).toBe('globex-tools-2');
+    expect(probedUrlTitles(harness.brands.calls)).toEqual([
+      'acme-widgets',
+      'acme-widgets-2',
+      'globex-tools',
+      'globex-tools-2',
+    ]);
+    expect(persistedBrands(harness.brands.calls)).toHaveLength(2);
+  });
+
+  it('NET-NEW — a mis-wired ceiling is refused when the graph is built, not on the first save', () => {
+    /*
+     * Zero, a negative, a fraction, `Infinity` and `NaN` are all rejected in the constructor. `NaN` is
+     * the decisive one: every comparison against it is false, so a `NaN` ceiling would admit EVERY
+     * derivation while appearing to be configured — finding F5 would be open and the deployment would
+     * believe it closed. `Infinity` is refused because it is indistinguishable in effect from stating
+     * nothing, and stating nothing is already how a deployment asks for unbounded probing.
+     *
+     * ⛔ AND AN ABSENT BUDGET IS NOT A MIS-WIRING. The two-argument construction is asserted here to
+     * NOT throw, because it is the parity path every other case in this file relies on.
+     */
+    for (const maximum of [0, -1, 1.5, Number.POSITIVE_INFINITY, Number.NaN]) {
+      expect(() =>
+        createBrandHarness({ urlTitleProbeBudget: { maximumProbesPerDerivation: maximum } }),
+      ).toThrow(/URL-title probe budget must be a positive safe integer/);
+    }
+
+    expect(() =>
+      createBrandHarness({ urlTitleProbeBudget: { maximumProbesPerDerivation: 1 } }),
+    ).not.toThrow();
+    expect(() => createBrandHarness()).not.toThrow();
+  });
+
+  it('NET-NEW UNWIRED — the same service with NO budget derives the title the legacy would, however many probes it takes', async () => {
+    /*
+     * The service-level parity guard, complementing Group A's utility-level one. Nine held titles force
+     * ten probes through the real `BrandService` with no budget wired, and the derivation completes.
+     *
+     * ⚠️ THIS CASE MUST KEEP RESOLVING. It is what proves the ceiling added for finding F5 is genuinely
+     * absent by default — that no deployment inherits a capacity figure this port invented (AAP §0.7.3
+     * S9, IR-12) — and it is the service-level statement of the same fact `src/util/urlTitle.ts` records
+     * about the algorithm itself.
+     */
+    const harness = createBrandHarness({ takenUrlTitles: candidateRun('acme-widgets', 8) });
+
+    const saved = await harness.service.saveBrand(harness.service.newBrand(), {
+      brandName: 'ACME Widgets',
+    });
+
+    expect(saved.urlTitle).toBe('acme-widgets-10');
+    expect(probedUrlTitles(harness.brands.calls)).toEqual(candidateRun('acme-widgets', 9));
+    expect(persistedBrands(harness.brands.calls)).toHaveLength(1);
   });
 });
 
@@ -1294,8 +1557,12 @@ describe('saveBrand — the by-reference payload write and the delegation at L76
 /* ================================================================================================
  * GROUP C — `saveBrand` THROUGH THE REAL GRAPH: the ported rule set, the real `Validator`, the real
  * `BaseService`
- * `model/validation/Brand.json`, `model/service/HibachiService.cfc:L86-L104`,
- * `meta/tests/unit/IssuesTest.cfc:L203-L206`
+ * `model/validation/Brand.json`, `model/service/HibachiService.cfc:L86-L104`
+ *
+ * ⛔ NO LEGACY LOCATOR IS CLAIMED BY THIS GROUP. An earlier revision listed
+ * `meta/tests/unit/IssuesTest.cfc:L203-L206` here; it is withdrawn, because that test saves a PRODUCT and
+ * its ported contract RESOLVES while `saveBrand` RAISES. See the provenance correction in the file header.
+ * `test/regression/issues.test.ts` holds that locator.
  *
  * Nothing is doubled here except the four seams a `BaseService` cannot be constructed without. The
  * verdicts below are produced by `src/validation/rules/brand.rules.ts` evaluated by
@@ -1353,7 +1620,7 @@ describe('saveBrand — the real validation path', () => {
     const { brand } = createManagedBrand();
     const data: Record<string, unknown> = { brandName: '!!!' };
 
-    const raised = await harness.service.saveBrand(brand, data).catch((error: unknown) => error);
+    const saved = await harness.service.saveBrand(brand, data);
 
     // The derivation ran and produced the empty slug, which is what reached the payload.
     expect(data.urlTitle).toBe('');
@@ -1362,14 +1629,14 @@ describe('saveBrand — the real validation path', () => {
     expect(brand.urlTitle).toBeUndefined();
     expect(brand.brandName).toBe('!!!');
 
-    expect(raised).toBeInstanceOf(ValidationError);
-    if (raised instanceof ValidationError) {
-      expect(raised.getErrors()).toEqual({
-        urlTitle: ['validate.save.Brand.urlTitle.required'],
-      });
-    }
+    // ⭐ THE MEMBER RESOLVES WITH THE CALLER'S OWN ENTITY, and the finding rides on its bag —
+    // `model/service/HibachiService.cfc:L103` returns on every path, failed validation included.
+    expect(saved).toBe(brand);
+    expect(saved.hasErrors()).toBe(true);
+    expect(saved.getErrors()).toEqual({
+      urlTitle: ['validate.save.Brand.urlTitle.required'],
+    });
 
-    // THE PERSISTER IS NOT CALLED. That gate is the whole point of the refusal.
     expect(persistedBrands(harness.brands.calls)).toEqual([]);
     expect(harness.brands.brands).toEqual([]);
   });
@@ -1391,18 +1658,17 @@ describe('saveBrand — the real validation path', () => {
     const { brand } = createManagedBrand();
     const data: Record<string, unknown> = {};
 
-    const raised = await harness.service.saveBrand(brand, data).catch((error: unknown) => error);
+    const saved = await harness.service.saveBrand(brand, data);
 
     expect(data).not.toHaveProperty('urlTitle');
     expect(harness.brands.calls).toEqual([]);
 
-    expect(raised).toBeInstanceOf(ValidationError);
-    if (raised instanceof ValidationError) {
-      expect(raised.getErrors()).toEqual({
-        brandName: ['validate.save.Brand.brandName.required'],
-        urlTitle: ['validate.save.Brand.urlTitle.required'],
-      });
-    }
+    expect(saved).toBe(brand);
+    expect(saved.hasErrors()).toBe(true);
+    expect(saved.getErrors()).toEqual({
+      brandName: ['validate.save.Brand.brandName.required'],
+      urlTitle: ['validate.save.Brand.urlTitle.required'],
+    });
     expect(persistedBrands(harness.brands.calls)).toEqual([]);
   });
 
@@ -1431,7 +1697,7 @@ describe('saveBrand — the real validation path', () => {
     const harness = createBrandHarness({
       uniqueValues: [
         {
-          entityID: 'incumbent-brand-id',
+          entityID: physicalID('incumbent-brand-id'),
           entityName: BRAND_ENTITY_NAME_FOR_SEEDS,
           propertyName: 'urlTitle',
           value: 'acme-widgets',
@@ -1440,9 +1706,7 @@ describe('saveBrand — the real validation path', () => {
     });
     const { brand } = createManagedBrand();
 
-    const raised = await harness.service
-      .saveBrand(brand, { brandName: 'ACME Widgets' })
-      .catch((error: unknown) => error);
+    const saved = await harness.service.saveBrand(brand, { brandName: 'ACME Widgets' });
 
     // ONE table-value probe, and it said "free" — no suffix was ever considered.
     expect(probedUrlTitles(harness.brands.calls)).toEqual(['acme-widgets']);
@@ -1452,12 +1716,11 @@ describe('saveBrand — the real validation path', () => {
     const entityUniqueness: UniquePropertyPort = harness.validation.uniqueProperty.uniqueProperty;
     await expect(entityUniqueness.isUniqueProperty('urlTitle', brand)).resolves.toBe(false);
 
-    expect(raised).toBeInstanceOf(ValidationError);
-    if (raised instanceof ValidationError) {
-      expect(raised.getErrors()).toEqual({
-        urlTitle: ['validate.save.Brand.urlTitle.unique'],
-      });
-    }
+    expect(saved).toBe(brand);
+    expect(saved.hasErrors()).toBe(true);
+    expect(saved.getErrors()).toEqual({
+      urlTitle: ['validate.save.Brand.urlTitle.unique'],
+    });
     expect(persistedBrands(harness.brands.calls)).toEqual([]);
   });
 
@@ -1469,9 +1732,12 @@ describe('saveBrand — the real validation path', () => {
      * self-exclusion clause distinguishes.
      */
     const harness = createBrandHarness();
-    const { brand } = createManagedBrand({ brandID: 'brand-1', urlTitle: 'acme-widgets' });
+    const { brand } = createManagedBrand({
+      brandID: physicalID('brand-1'),
+      urlTitle: 'acme-widgets',
+    });
     harness.validation.uniqueProperty.take({
-      entityID: 'brand-1',
+      entityID: physicalID('brand-1'),
       entityName: BRAND_ENTITY_NAME_FOR_SEEDS,
       propertyName: 'urlTitle',
       value: 'acme-widgets',
@@ -1495,95 +1761,110 @@ describe('saveBrand — the real validation path', () => {
      * attribute is a DISPLAY hint consumed by the admin rendering layer, which is out of scope; it is
      * not read by validation and carries no constraint. The live rule is the JSON one, and no maximum
      * length is derived from either, because neither declares one.
+     *
+     * ⚠️ EACH ARM ASSERTS THE BAG, NOT MERELY THAT THE CALL RESOLVED. Since `save` returns the entity
+     * on every path (`model/service/HibachiService.cfc:L103`), resolution no longer discriminates a
+     * pass from a refusal — an earlier revision of these arms leaned on `.resolves.toBe(brand)` alone
+     * and would now accept a validation failure as a pass. `hasErrors()` and the persistence probe are
+     * what separate the branches.
      */
     const absent = createBrandHarness();
     const absentBrand = createManagedBrand().brand;
-    await expect(absent.service.saveBrand(absentBrand, { brandName: 'No Website' })).resolves.toBe(
-      absentBrand,
-    );
+    const savedAbsent = await absent.service.saveBrand(absentBrand, { brandName: 'No Website' });
+
+    expect(savedAbsent).toBe(absentBrand);
+    expect(savedAbsent.hasErrors()).toBe(false);
+    expect(persistedBrands(absent.brands.calls)).toEqual([absentBrand]);
 
     const malformed = createBrandHarness();
     const malformedBrand = createManagedBrand().brand;
-    const raised = await malformed.service
-      .saveBrand(malformedBrand, { brandName: 'Bad Website', brandWebsite: 'not a url at all' })
-      .catch((error: unknown) => error);
+    const savedMalformed = await malformed.service.saveBrand(malformedBrand, {
+      brandName: 'Bad Website',
+      brandWebsite: 'not a url at all',
+    });
 
-    expect(raised).toBeInstanceOf(ValidationError);
-    if (raised instanceof ValidationError) {
-      expect(raised.getErrors()).toEqual({
-        brandWebsite: ['validate.save.Brand.brandWebsite.dataType.url'],
-      });
-    }
+    expect(savedMalformed).toBe(malformedBrand);
+    expect(savedMalformed.hasErrors()).toBe(true);
+    expect(savedMalformed.getErrors()).toEqual({
+      brandWebsite: ['validate.save.Brand.brandWebsite.dataType.url'],
+    });
     expect(persistedBrands(malformed.brands.calls)).toEqual([]);
 
     const wellFormed = createBrandHarness();
     const wellFormedBrand = createManagedBrand().brand;
-    await expect(
-      wellFormed.service.saveBrand(wellFormedBrand, {
-        brandName: 'Good Website',
-        brandWebsite: 'https://example.test/acme',
-      }),
-    ).resolves.toBe(wellFormedBrand);
+    const savedWellFormed = await wellFormed.service.saveBrand(wellFormedBrand, {
+      brandName: 'Good Website',
+      brandWebsite: 'https://example.test/acme',
+    });
+
+    expect(savedWellFormed).toBe(wellFormedBrand);
+    expect(savedWellFormed.hasErrors()).toBe(false);
     expect(persistedBrands(wellFormed.brands.calls)).toEqual([wellFormedBrand]);
   });
 });
 
-describe('saveBrand — the issue_1690_2 contract, and the one place the port diverges from it', () => {
+describe('saveBrand — the issue_1690_2 contract, kept whole rather than adapted to', () => {
   it('NET-NEW — meta/tests/unit/IssuesTest.cfc:L203-L206 — a validation failure is a KEYED, RECOVERABLE bag: nothing persisted, findings intact, entity reference alive', async () => {
     /*
-     * WHAT THE LEGACY REGRESSION ACTUALLY ASSERTS. `issue_1690_2` at `:L203-L206` creates a new
-     * entity and saves it with NO guard around the call — contrast `issue_1690` at `:L192-L201`, which
-     * wraps its assertions in `if(!product.hasErrors())`. The unguarded form is the assertion: saving
-     * an entity that cannot pass validation must not blow the request up. The findings come back on
-     * the entity, the caller inspects them, and the caller stays in control.
+     * ⛔ NET-NEW, AND THE TITLE SAYS WHAT IT IS NOT. There is no legacy `BrandService` test of any kind,
+     * and no brand variant of `issue_1690_2`: `meta/tests/unit/IssuesTest.cfc:L204` is
+     * `newEntity("Product")`. An earlier revision titled this case with that locator and is WITHDRAWN —
+     * the locator belongs to `test/regression/issues.test.ts`, where the Product behaviour it exercises
+     * is asserted as `resolves`. Presenting it here would offer parity evidence for the OPPOSITE
+     * contract, since this case asserts a RAISE.
      *
-     * ⚠️ MISMATCH — THE LANDED CONTRACT RAISES WHERE THE LEGACY RETURNED. `src/services/BaseService.ts`
-     * documents this at its `:L103` note: `model/service/HibachiService.cfc:L103` returned
-     * `arguments.entity` on EVERY path because the entity carried its own bag, and not every ported
-     * entity carries one, so the accumulated bag is THROWN instead — deliberately, after the
-     * two-part gate at `:L91` has been evaluated so both of its arms stay live. The divergence is a
-     * layer decision with a named exception: `src/services/ProductService.ts` catches it and returns
-     * the entity, because `model/service/ProductService.cfc:L310` returns on every path and its own
-     * `:L306` gate reads `hasErrors()`. `BrandService.saveBrand` is explicitly one of the callers that
-     * RELIES on the raise.
+     * WHY THE PROPERTY IS STILL WORTH PINNING, WITH THE LEGACY PAIR AS CONTEXT RATHER THAN AS EVIDENCE.
+     * `issue_1690` at `:L192-L201` wraps its save in `if(!product.hasErrors())`; `issue_1690_2` at
+     * `:L203-L206` drops the guard. The unguarded form is the interesting one: saving an entity that
+     * cannot pass validation must not blow the request up. The findings come back, the caller inspects
+     * them, and the caller stays in control. That property is what this case asserts FOR BRANDS, where
+     * the mechanism carrying it is a thrown bag rather than a returned entity.
      *
-     * THE MISMATCH IS EXPOSED, AND THE SUBSTANCE IS STILL PINNED. This case asserts every element of
-     * the legacy contract that survived the change of mechanism, and asserts the mechanism itself
-     * rather than pretending it did not change:
-     *   1. The findings are keyed by property and carry their legacy-shaped message keys, unaltered.
-     *   2. Nothing was persisted — the failure is recoverable, not half-applied.
-     *   3. The caller's entity reference is the same object and carries what population wrote, so a
-     *      caller can still inspect and correct it exactly as `issue_1690` does.
-     *   4. The failure is a `ValidationError`, which is a `DomainError` — the recoverable, serialisable
-     *      family — and NOT a `ConfigurationError`, a `DataIntegrityError` or a bare `Error`. "Does not
-     *      throw solely because validation failed" becomes "does not fail in an UNRECOVERABLE way",
-     *      which is the part of the guarantee the port can keep.
+     * ⭐ THE PORT NOW KEEPS THAT CONTRACT WHOLE, AND AN EARLIER REVISION DID NOT.
+     * `model/service/HibachiService.cfc:L103` returns `arguments.entity` on EVERY path because the
+     * entity carries its own bag. An earlier `src/services/BaseService.ts` THREW the accumulated bag
+     * instead, and an earlier revision of this very case certified the raise — `.catch(...)`,
+     * `toBeInstanceOf(ValidationError)` — while calling it a mismatch in its own prose. Certifying a
+     * divergence is not exposing it; it is what let the divergence pass review. Both are corrected:
+     * `save` attaches the findings to the entity's own bag and returns the same instance, matching
+     * `org/Hibachi/HibachiService.cfc:L133`, which gates persistence on
+     * `!arguments.entity.hasErrors()` — the ENTITY's bag, not a raised one.
+     *
+     * EVERY ELEMENT OF THE LEGACY CONTRACT, ASSERTED DIRECTLY:
+     *   1. The call RESOLVES. It does not reject, which is the whole point of the unguarded legacy
+     *      form: saving an entity that cannot pass validation must not blow the request up.
+     *   2. The resolved value IS the caller's entity — same object identity, so a caller can inspect
+     *      and correct it exactly as `issue_1690` does.
+     *   3. The findings ride on that entity, keyed by property, carrying their legacy-shaped message
+     *      keys unaltered, and per-property so an accepted value contributes no key.
+     *   4. Nothing was persisted — the failure is recoverable, not half-applied.
+     *   5. What population managed to write is still on the entity.
      */
     const harness = createBrandHarness();
     const { brand } = createManagedBrand();
 
-    const raised = await harness.service
-      .saveBrand(brand, { brandWebsite: 'https://example.test/acme' })
-      .catch((error: unknown) => error);
+    // 1 — it RESOLVES. No `.catch`, no `.rejects`: a rejection here fails the case outright.
+    const saved = await harness.service.saveBrand(brand, {
+      brandWebsite: 'https://example.test/acme',
+    });
 
-    // 1 — the findings, keyed and intact.
-    expect(raised).toBeInstanceOf(ValidationError);
-    expect(raised).toBeInstanceOf(DomainError);
-    if (raised instanceof ValidationError) {
-      expect(raised.hasErrors()).toBe(true);
-      expect(raised.hasError('brandName')).toBe(true);
-      expect(raised.getError('brandName')).toEqual(['validate.save.Brand.brandName.required']);
-      expect(raised.getError('urlTitle')).toEqual(['validate.save.Brand.urlTitle.required']);
-      // The well-formed website was accepted, so its key is absent — findings are per-property.
-      expect(raised.hasError('brandWebsite')).toBe(false);
-      expect(Object.keys(raised.getErrors()).sort()).toEqual(['brandName', 'urlTitle']);
-    }
+    // 2 — the resolved value is the caller's own entity.
+    expect(saved).toBe(brand);
 
-    // 2 — nothing persisted: no repository write call, and the store is still empty.
+    // 3 — the findings, keyed and intact, on the entity's own bag.
+    expect(saved.hasErrors()).toBe(true);
+    expect(saved.hasError('brandName')).toBe(true);
+    expect(saved.getError('brandName')).toEqual(['validate.save.Brand.brandName.required']);
+    expect(saved.getError('urlTitle')).toEqual(['validate.save.Brand.urlTitle.required']);
+    // The well-formed website was accepted, so its key is absent — findings are per-property.
+    expect(saved.hasError('brandWebsite')).toBe(false);
+    expect(Object.keys(saved.getErrors()).sort()).toEqual(['brandName', 'urlTitle']);
+
+    // 4 — nothing persisted: no repository write call, and the store is still empty.
     expect(persistedBrands(harness.brands.calls)).toEqual([]);
     expect(harness.brands.brands).toEqual([]);
 
-    // 3 — the caller's reference survives, carrying what population managed to write.
+    // 5 — the caller's reference carries what population managed to write.
     expect(brand.brandWebsite).toBe('https://example.test/acme');
     expect(brand.brandName).toBeUndefined();
   });
@@ -1634,19 +1915,18 @@ describe('saveBrand — the issue_1690_2 contract, and the one place the port di
     const harness = createBrandHarness();
     const { brand } = createManagedBrand();
 
-    const raised = await harness.baseService.save(brand).catch((error: unknown) => error);
+    const saved = await harness.baseService.save(brand);
 
     expect(harness.authorization.calls).toEqual([]);
-    expect(raised).toBeInstanceOf(ValidationError);
-    if (raised instanceof ValidationError) {
-      expect(raised.getErrors()).toEqual({
-        brandName: ['validate.save.Brand.brandName.required'],
-        urlTitle: ['validate.save.Brand.urlTitle.required'],
-      });
-      for (const messages of Object.values(raised.getErrors())) {
-        for (const message of messages) {
-          expect(message.startsWith('validate.save.Brand.')).toBe(true);
-        }
+    expect(saved).toBe(brand);
+    expect(saved.hasErrors()).toBe(true);
+    expect(saved.getErrors()).toEqual({
+      brandName: ['validate.save.Brand.brandName.required'],
+      urlTitle: ['validate.save.Brand.urlTitle.required'],
+    });
+    for (const messages of Object.values(saved.getErrors())) {
+      for (const message of messages) {
+        expect(message.startsWith('validate.save.Brand.')).toBe(true);
       }
     }
     expect(persistedBrands(harness.brands.calls)).toEqual([]);
@@ -1771,7 +2051,7 @@ describe('newBrand — the explicitly declared factory', () => {
     expect(factoryCallCount(harness.brands.calls)).toBe(2);
 
     first.brandName = 'First Brand';
-    first.getProducts().push(buildProduct({ productID: 'product-1' }));
+    first.getProducts().push(buildProduct({ productID: physicalID('product-1') }));
 
     expect(second.brandName).toBeUndefined();
     expect(second.getProducts()).toEqual([]);
@@ -1835,18 +2115,18 @@ describe('getBrand — the explicitly declared read', () => {
      * the same identifier the caller will save under. A copy would break both.
      */
     const stored = createManagedBrand({
-      brandID: 'brand-1',
+      brandID: physicalID('brand-1'),
       brandName: 'ACME Widgets',
       urlTitle: 'acme-widgets',
     }).brand;
     const harness = createBrandHarness({ storedBrands: [stored] });
 
-    const found = await harness.service.getBrand('brand-1');
+    const found = await harness.service.getBrand(physicalID('brand-1'));
 
     expect(found).toBe(stored);
     expect(found?.brandName).toBe('ACME Widgets');
     expect(found?.urlTitle).toBe('acme-widgets');
-    expect(requestedBrandIDs(harness.brands.calls)).toEqual(['brand-1']);
+    expect(requestedBrandIDs(harness.brands.calls)).toEqual([physicalID('brand-1')]);
   });
 
   it('NET-NEW — org/Hibachi/HibachiService.cfc:L258 — a MISS resolves null, and fabricates nothing to fill the gap', async () => {
@@ -1865,16 +2145,24 @@ describe('getBrand — the explicitly declared read', () => {
      * `toBeNull` rather than a falsy check, because `null` and `undefined` are different answers under
      * `strict` and only one of them is declared.
      */
-    const stored = createManagedBrand({ brandID: 'brand-1' }).brand;
+    const stored = createManagedBrand({ brandID: physicalID('brand-1') }).brand;
     const harness = createBrandHarness({ storedBrands: [stored] });
 
-    const found = await harness.service.getBrand('no-such-brand');
+    /* ⭐ REVIEW FINDING 16 — the miss is probed with a PHYSICALLY VALID identifier, not a readable
+     * sentinel. The distinction matters precisely here: `physicalID('no-such-brand')` is a well-formed
+     * IR-6 key that simply is not present, so a miss can only be the store's answer. A malformed
+     * sentinel such as the literal `'no-such-brand'` would leave the case unable to distinguish "not
+     * found" from "rejected, ignored or silently normalised because the key was the wrong shape", which
+     * is the one thing the assertions below are trying to establish. */
+    const found = await harness.service.getBrand(physicalID('no-such-brand'));
 
     expect(found).toBeNull();
     expect(found).not.toBeUndefined();
     expect(factoryCallCount(harness.brands.calls)).toBe(0);
     expect(persistedBrands(harness.brands.calls)).toEqual([]);
-    expect(harness.brands.calls).toEqual([{ brandID: 'no-such-brand', member: 'getBrand' }]);
+    expect(harness.brands.calls).toEqual([
+      { brandID: physicalID('no-such-brand'), member: 'getBrand' },
+    ]);
     // The store is untouched by a miss.
     expect(harness.brands.brands).toEqual([stored]);
   });
@@ -1887,15 +2175,18 @@ describe('getBrand — the explicitly declared read', () => {
      * — on a warm container it would serve one tenant's brand to the next request. Two identical reads
      * therefore produce two recorded calls.
      */
-    const stored = createManagedBrand({ brandID: 'brand-1' }).brand;
+    const stored = createManagedBrand({ brandID: physicalID('brand-1') }).brand;
     const harness = createBrandHarness({ storedBrands: [stored] });
 
-    const first = await harness.service.getBrand('brand-1');
-    const second = await harness.service.getBrand('brand-1');
+    const first = await harness.service.getBrand(physicalID('brand-1'));
+    const second = await harness.service.getBrand(physicalID('brand-1'));
 
     expect(first).toBe(stored);
     expect(second).toBe(stored);
-    expect(requestedBrandIDs(harness.brands.calls)).toEqual(['brand-1', 'brand-1']);
+    expect(requestedBrandIDs(harness.brands.calls)).toEqual([
+      physicalID('brand-1'),
+      physicalID('brand-1'),
+    ]);
   });
 });
 
@@ -1913,18 +2204,25 @@ describe('deleteBrand — the delete guards', () => {
      * guards, and it is the reason `model/entity/Brand.cfc:L61` can declare its one-to-many with NO
      * cascade: the application refuses the delete rather than orphaning or cascading rows.
      *
-     * THE VERDICT IS A BOOLEAN AND NOT A RAISE, and that asymmetry against `save` is deliberate.
+     * THE VERDICT IS A BOOLEAN, AND THE FINDINGS DO NOT RIDE ON THE ENTITY EITHER — so `delete` is
+     * asymmetric with `save` in BOTH directions, deliberately, and the asymmetry is the legacy's.
      * `model/service/HibachiService.cfc:L83` returns `deleteOK` unchanged, and
      * `src/services/BaseService.ts` keeps it that way because
      * `model/service/ProductService.cfc:L326-L333` clears a product's default SKU before calling and
-     * restores it only on `false`. Raising instead would strand that caller.
+     * restores it only on `false`. Raising instead would strand that caller. Where `save` answers
+     * `:L103` by returning the entity with its bag populated, `delete` answers `:L83` by returning a
+     * bare boolean and leaving the entity's bag untouched: a caller learns THAT the delete was refused,
+     * not which guard refused it. Faithful, and not to be harmonised with `save` for tidiness.
      *
      * The relationship is built through `addProduct`, which delegates to `Product.setBrand` and pushes
      * into the brand's own live array — the same path production uses, so the guard sees what it would
      * really see rather than a hand-stuffed array.
      */
-    const brand = createManagedBrand({ brandID: 'brand-1', urlTitle: 'acme-widgets' }).brand;
-    brand.addProduct(buildProduct({ productID: 'product-1', productName: 'Widget' }));
+    const brand = createManagedBrand({
+      brandID: physicalID('brand-1'),
+      urlTitle: 'acme-widgets',
+    }).brand;
+    brand.addProduct(buildProduct({ productID: physicalID('product-1'), productName: 'Widget' }));
     const harness = createBrandHarness({ storedBrands: [brand] });
 
     const removed = await harness.service.deleteBrand(brand);
@@ -1946,7 +2244,10 @@ describe('deleteBrand — the delete guards', () => {
      * the ported rule reads the array rather than a possibly-absent property. A brand from
      * `newBrand()` satisfies it by the traceable `products === []` default of Group D.
      */
-    const brand = createManagedBrand({ brandID: 'brand-1', urlTitle: 'acme-widgets' }).brand;
+    const brand = createManagedBrand({
+      brandID: physicalID('brand-1'),
+      urlTitle: 'acme-widgets',
+    }).brand;
     const harness = createBrandHarness({ storedBrands: [brand] });
 
     const removed = await harness.service.deleteBrand(brand);
@@ -1979,7 +2280,10 @@ describe('deleteBrand — the delete guards', () => {
      * cross-log ordering assertion would be asserting the harness rather than the port. It is recorded
      * here rather than faked.
      */
-    const brand = createManagedBrand({ brandID: 'brand-1', urlTitle: 'acme-widgets' }).brand;
+    const brand = createManagedBrand({
+      brandID: physicalID('brand-1'),
+      urlTitle: 'acme-widgets',
+    }).brand;
     const harness = createBrandHarness({ storedBrands: [brand] });
 
     await expect(harness.service.deleteBrand(brand)).resolves.toBe(true);
@@ -1995,7 +2299,7 @@ describe('deleteBrand — the delete guards', () => {
     expect(harness.persistence.commentCleanups[0]).toBe(brand);
     // And the ref members the ports actually read resolve to the brand's own metadata.
     expect(harness.persistence.settingCleanups[0]?.getClassName()).toBe('Brand');
-    expect(harness.persistence.settingCleanups[0]?.getPrimaryIDValue()).toBe('brand-1');
+    expect(harness.persistence.settingCleanups[0]?.getPrimaryIDValue()).toBe(physicalID('brand-1'));
   });
 
   it('NET-NEW — model/validation/Brand.json:L7 + model/entity/Brand.cfc:L71 — the physicalCounts guard is INERT, and is preserved unrenamed', async () => {
@@ -2029,8 +2333,8 @@ describe('deleteBrand — the delete guards', () => {
      *      on the delete that the products guard refuses — the run where every delete rule is
      *      evaluated.
      */
-    const brand = createManagedBrand({ brandID: 'brand-1' }).brand;
-    brand.addProduct(buildProduct({ productID: 'product-1' }));
+    const brand = createManagedBrand({ brandID: physicalID('brand-1') }).brand;
+    brand.addProduct(buildProduct({ productID: physicalID('product-1') }));
     const harness = createBrandHarness({ storedBrands: [brand] });
 
     // 1 — the identifier is preserved byte for byte, and the rule is in the live set.
@@ -2078,7 +2382,7 @@ describe('deleteBrand — the delete guards', () => {
      * the behaviour the legacy has, and is not obviously right until you notice that a row already in
      * the database may predate a rule.
      */
-    const brand = createManagedBrand({ brandID: 'brand-1' }).brand;
+    const brand = createManagedBrand({ brandID: physicalID('brand-1') }).brand;
     const harness = createBrandHarness({ storedBrands: [brand] });
 
     expect(brand.brandName).toBeUndefined();
@@ -2094,14 +2398,22 @@ describe('deleteBrand — the delete guards', () => {
      * populates and never persists. Zero authorisation requests is the sharpest evidence for the
      * first, because `populate` consults the authorisation port once per payload key it intends to
      * write and the delete path supplies no payload at all.
+     *
+     * THE THIRD CLAIM IN THE TITLE IS NOW ASSERTABLE RATHER THAN MERELY STATED. This subject has no
+     * `brandName` and no `urlTitle`, so a SAVE-context run would put two required-field findings on its
+     * bag; a DELETE-context run produces none, because both delete guards pass. An empty bag afterwards
+     * therefore proves two things at once — the save-context rules did not run, and `delete` attaches
+     * nothing of its own (`model/service/HibachiService.cfc:L83` returns a bare boolean).
      */
-    const brand = createManagedBrand({ brandID: 'brand-1' }).brand;
+    const brand = createManagedBrand({ brandID: physicalID('brand-1') }).brand;
     const harness = createBrandHarness({ storedBrands: [brand] });
 
     await expect(harness.service.deleteBrand(brand)).resolves.toBe(true);
 
     expect(harness.authorization.calls).toEqual([]);
     expect(persistedBrands(harness.brands.calls)).toEqual([]);
+    expect(brand.hasErrors()).toBe(false);
+    expect(brand.getErrors()).toEqual({});
   });
 });
 
@@ -2133,12 +2445,12 @@ describe('the inactive-entity settings sweep of the local save override', () => 
      * exactly.
      */
     const harness = createBrandHarness({ settingValuesUpdated: 3 });
-    const { brand } = createManagedBrand({ brandID: 'brand-1' });
+    const { brand } = createManagedBrand({ brandID: physicalID('brand-1') });
 
     await harness.service.saveBrand(brand, { activeFlag: false, brandName: 'ACME Widgets' });
 
     expect(brand.activeFlag).toBe(false);
-    expect(harness.persistence.settingValueScrubs).toEqual(['brand-1']);
+    expect(harness.persistence.settingValueScrubs).toEqual([physicalID('brand-1')]);
     /*
      * `:L98` — `settingsRemoved gt 0` is the FIRST arm of the disjunction and the only one that can
      * ever match for a brand: the second arm lists Currency, FulfillmentMethod, OrderOrigin,
@@ -2150,17 +2462,17 @@ describe('the inactive-entity settings sweep of the local save override', () => 
 
   it('NET-NEW — model/service/HibachiService.cfc:L98 — a ZERO scrub count leaves the settings cache alone, because Brand is not one of the five listed classes', async () => {
     const harness = createBrandHarness();
-    const { brand } = createManagedBrand({ brandID: 'brand-1' });
+    const { brand } = createManagedBrand({ brandID: physicalID('brand-1') });
 
     await harness.service.saveBrand(brand, { activeFlag: false, brandName: 'ACME Widgets' });
 
-    expect(harness.persistence.settingValueScrubs).toEqual(['brand-1']);
+    expect(harness.persistence.settingValueScrubs).toEqual([physicalID('brand-1')]);
     expect(harness.persistence.settingsCacheClears()).toBe(0);
   });
 
   it('NET-NEW — model/service/HibachiService.cfc:L94 — an ACTIVE brand skips the sweep entirely', async () => {
     const harness = createBrandHarness({ settingValuesUpdated: 3 });
-    const { brand } = createManagedBrand({ brandID: 'brand-1' });
+    const { brand } = createManagedBrand({ brandID: physicalID('brand-1') });
 
     await harness.service.saveBrand(brand, { activeFlag: true, brandName: 'ACME Widgets' });
 
@@ -2176,11 +2488,12 @@ describe('the inactive-entity settings sweep of the local save override', () => 
      * along with the persist. Nothing half-applies.
      */
     const harness = createBrandHarness({ settingValuesUpdated: 3 });
-    const { brand } = createManagedBrand({ brandID: 'brand-1' });
+    const { brand } = createManagedBrand({ brandID: physicalID('brand-1') });
 
-    await expect(harness.service.saveBrand(brand, { activeFlag: false })).rejects.toBeInstanceOf(
-      ValidationError,
-    );
+    const saved = await harness.service.saveBrand(brand, { activeFlag: false });
+
+    expect(saved).toBe(brand);
+    expect(saved.hasErrors()).toBe(true);
 
     expect(persistedBrands(harness.brands.calls)).toEqual([]);
     expect(harness.persistence.settingValueScrubs).toEqual([]);
@@ -2244,7 +2557,7 @@ describe('M7 — nothing leaks between independently constructed service graphs'
     const graphA = createBrandHarness({
       uniqueValues: [
         {
-          entityID: 'incumbent-brand-id',
+          entityID: physicalID('incumbent-brand-id'),
           entityName: BRAND_ENTITY_NAME_FOR_SEEDS,
           propertyName: 'urlTitle',
           value: 'acme-widgets',
@@ -2253,27 +2566,34 @@ describe('M7 — nothing leaks between independently constructed service graphs'
     });
     const graphB = createBrandHarness();
 
-    await expect(
-      graphA.service.saveBrand(graphA.service.newBrand(), { brandName: 'ACME Widgets' }),
-    ).rejects.toBeInstanceOf(ValidationError);
+    const savedA = await graphA.service.saveBrand(graphA.service.newBrand(), {
+      brandName: 'ACME Widgets',
+    });
+
+    expect(savedA.hasErrors()).toBe(true);
+    expect(savedA.getError('urlTitle')).toEqual(['validate.save.Brand.urlTitle.unique']);
     expect(persistedBrands(graphA.brands.calls)).toEqual([]);
 
     const brandB = graphB.service.newBrand();
-    await expect(graphB.service.saveBrand(brandB, { brandName: 'ACME Widgets' })).resolves.toBe(
-      brandB,
-    );
+    const savedB = await graphB.service.saveBrand(brandB, { brandName: 'ACME Widgets' });
+
+    expect(savedB).toBe(brandB);
+    expect(savedB.hasErrors()).toBe(false);
     expect(persistedBrands(graphB.brands.calls)).toEqual([brandB]);
     expect(graphA.validation.uniqueProperty.calls).not.toBe(graphB.validation.uniqueProperty.calls);
   });
 
   it('NET-NEW — AAP §0.6.6 M7 — the store, the factory count and the cleanup logs are all per-graph', async () => {
-    const stored = createManagedBrand({ brandID: 'brand-1', urlTitle: 'acme-widgets' }).brand;
+    const stored = createManagedBrand({
+      brandID: physicalID('brand-1'),
+      urlTitle: 'acme-widgets',
+    }).brand;
     const graphA = createBrandHarness({ storedBrands: [stored] });
     const graphB = createBrandHarness();
 
     // A read that HITS in A must MISS in B, from the same identifier.
-    await expect(graphA.service.getBrand('brand-1')).resolves.toBe(stored);
-    await expect(graphB.service.getBrand('brand-1')).resolves.toBeNull();
+    await expect(graphA.service.getBrand(physicalID('brand-1'))).resolves.toBe(stored);
+    await expect(graphB.service.getBrand(physicalID('brand-1'))).resolves.toBeNull();
 
     // A delete in A leaves B's store — which never held the row — exactly as it was.
     await expect(graphA.service.deleteBrand(stored)).resolves.toBe(true);
@@ -2325,7 +2645,7 @@ describe('M7 — nothing leaks between independently constructed service graphs'
 });
 
 describe('the declared surface — no synthesis, no dead injection, no invented collaborator', () => {
-  it('NET-NEW — model/service/BrandService.cfc:L51 — the constructor takes EXACTLY TWO collaborators, and BrandService has no dead injection to drop', async () => {
+  it('NET-NEW — model/service/BrandService.cfc:L51 — the constructor takes EXACTLY TWO REQUIRED collaborators, and BrandService has no dead injection to drop', async () => {
     /*
      * ⭐ BRANDSERVICE IS THE ONE SERVICE IN THE SLICE WITH NO DEAD INJECTION, AND THAT IS A FINDING
      * WORTH PINNING RATHER THAN A GAP. AAP §0.6.3.5 counts four dead injections across the slice —
@@ -2342,13 +2662,29 @@ describe('the declared surface — no synthesis, no dead injection, no invented 
      * only `createUniqueURLTitle` was ever used out of a 203-line service — AAP §0.6.3.3 classifies it
      * as "genuine but narrow".
      *
-     * WHAT AN ARITY OF EXACTLY 2 RULES OUT, which is the point: no injected setting resolver, no
-     * account context, no attempt budget, no image port, no logger — nothing beyond what the legacy
-     * line declares.
+     * WHAT THE REQUIRED SET RULES OUT, which is the point: no injected setting resolver, no account
+     * context, no image port, no logger — nothing beyond what the legacy line declares is DEMANDED of a
+     * composition root.
+     *
+     * ⭐ AND ONE OPTIONAL THIRD PARAMETER EXISTS, WHICH THIS CASE NOW PINS AS OPTIONAL RATHER THAN
+     * DENYING (review finding F5, SEC-14). An earlier revision of this case asserted
+     * `BrandService.length` was 2 and listed "no attempt budget" among the things that ruled out. Both
+     * halves needed correcting, and the second is why:
+     *
+     *   • `Function.length` COUNTS a TypeScript optional (`?`) parameter. `?` erases to nothing at
+     *     run time — only a DEFAULT VALUE or a rest element stops the count — so the arity is 3 the
+     *     moment an optional parameter is declared, whether or not anyone passes it. Measured, not
+     *     assumed: this assertion failed at 3 when the parameter landed.
+     *   • The third parameter is `UrlTitleProbeBudget | undefined` and it carries NO DEFAULT, so a
+     *     deployment that states nothing gets `model/service/DataService.cfc:L64`'s unbounded probing
+     *     exactly. The claim worth pinning is therefore not "there is no budget" but "no composition
+     *     root is OBLIGED to invent one" — and the two-argument construction two lines below is what
+     *     proves it, since a required parameter would not compile there.
      */
-    expect(BrandService.length).toBe(2);
+    expect(BrandService.length).toBe(3);
 
-    // And the graph really is constructible from just those two, which the harness demonstrates.
+    // And the graph really is constructible from just the two REQUIRED collaborators — the optional
+    // budget is genuinely omissible, and every other case in this file omits it.
     const harness = createBrandHarness();
     expect(harness.service).toBeInstanceOf(BrandService);
     await expect(

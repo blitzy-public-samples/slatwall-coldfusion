@@ -18,9 +18,21 @@
 //      `ts-node`, and any other loader name rejected outright. Read it in the installed
 //      copy: `node_modules/jest-config/build/index.js` computes
 //      `docblockPragmas['jest-config-loader'] || 'ts-node'`.
-//   3. Node 20.20.2, the pinned runtime (.nvmrc; engines ">=20.19.0"), reports no
+//   3. Node 20.20.2, the runtime .nvmrc pins (engines ">=20.19.0"), reports no
 //      type-stripping support at all: `process.features.typescript` is `undefined`,
 //      measured on this host, because that flag first appears in the 22.x line.
+//      ⚠️ READ THE TWO FIGURES AS THE TWO DIFFERENT THINGS THEY ARE. `.nvmrc` pins the EXACT
+//      version this toolchain was verified against, 20.20.2. `package.json` declares the FLOOR, and
+//      the floor is ">=20.19.0" — AAP 0.5.3.1 derives that value and requires it verbatim, because
+//      eslint@10.8.0's `^20.19.0` is the highest lower bound anywhere in the dependency graph and a
+//      bare ">=20" would let an install land on 20.0-20.18 and fail lint. A pin is not a floor, and
+//      quoting one where the other belongs is the near-miss this line exists to prevent.
+//      ⛔ AND THE FLOOR IS NOT RAISED TO 20.20.2 TO MAKE THE TWO MATCH. Fact 3 above needs only that
+//      the runtime be on the 20.x line, which every version at or above the floor satisfies; raising
+//      the floor to the pin would invent a constraint no dependency states, which AAP 0.5.3.1
+//      forbids by construction. Review finding F12 (CWE-1104) turns on the `engines` field, so it is
+//      quoted here exactly as the manifest declares it — a disclosure argued from a misquoted floor
+//      is worth nothing. build/esbuild.mjs carries the F12 lifecycle gate itself.
 //
 // The wiring that follows is therefore the plain one: this file IS the config file, Jest
 // finds it by implicit resolution — package.json declares no `jest` key at all, so there is

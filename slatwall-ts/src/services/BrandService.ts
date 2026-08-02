@@ -82,12 +82,20 @@
  * rather than chosen.
  *
  * `BaseService` is generic over `TEntity extends BaseServiceEntity<TPropertyName>`, and
- * `BaseServiceEntity` demands `getClassName()`, `hasProperty()` and `getPrimaryIDValue()` in addition to
- * the audit and population contracts. `../domain/product/Brand` deliberately declares none of those
- * three, because they lived on the framework base classes AAP 0.8.3.2 retires for this slice. So
- * `BaseService<Brand, BrandPropertyName>` is a constraint violation, and no type argument can rescue it:
- * if `Brand` were assignable to some `T extends BaseServiceEntity`, `Brand` would have to carry those
- * members after all.
+ * `BaseServiceEntity` demands the audit and population contracts, the introspection members
+ * `getClassName()`, `hasProperty()` and `getPrimaryIDValue()`, AND the six error members of
+ * `EntityErrorSurface`. `../domain/product/Brand` declares the introspection three itself — `:L809`,
+ * `:L819`, `:L830` and `:L847` — because `../validation/Validator` and the uniqueness probe read them
+ * directly. It declares NONE of the six error members, and is forbidden to: they lived on the framework
+ * base classes AAP 0.8.3.2 retires for this slice. So `BaseService<Brand, BrandPropertyName>` is a
+ * constraint violation, and no type argument can rescue it: if `Brand` were assignable to some
+ * `T extends BaseServiceEntity`, `Brand` would have to carry those members after all.
+ *
+ * ⚠️ WHY THE ERROR MEMBERS ARE PART OF THAT CONSTRAINT AT ALL, since an earlier revision of this note
+ * predates them. `model/service/HibachiService.cfc:L103` returns the entity on every path and the caller
+ * asks it `hasErrors()`, so the base service cannot report a failure unless the entity can carry one. The
+ * constraint is what makes that reproducible; the alternative — having `save` raise — changed this
+ * service's own published contract, which is exactly what {@link BrandService.saveBrand} now records.
  *
  * THE RESOLUTION IS TO SUPPLY THE MISSING SURFACE, NOT TO HIDE THE GAP. Those members were inherited
  * in the legacy — observably so: `model/entity/Sku.cfc:L843-L855` overrides `getPropertyMetaData` and
@@ -185,6 +193,9 @@ import type {
   ManagedBrand as PortManagedBrand,
 } from '../ports/repositories/BrandRepository';
 import { createUniqueURLTitle } from '../util/urlTitle';
+import type { UniqueValueProbe } from '../util/urlTitle';
+import { assertUrlTitleProbeBudget, boundUniqueValueProbe } from '../util/urlTitleProbeBudget';
+import type { UrlTitleProbeBudget } from '../util/urlTitleProbeBudget';
 import type { ValidationContext } from '../validation/Validator';
 import type { BrandValidationSubject } from '../validation/rules/brand.rules';
 import type { BaseService, BaseServiceEntity } from './BaseService';
@@ -557,11 +568,31 @@ export class BrandService {
    * resolve to the LOCAL overrides at `model/service/HibachiService.cfc:L86` and `:L68` (IR-8). It
    * is INJECTED, never extended (R3), and it owns the populate/validate/persist sequence and the
    * rule sets ported from `model/validation/Brand.json`; this service reproduces none of that.
+   * @param urlTitleProbeBudget - OPTIONAL, and there is no default (review finding F5, SEC-14). Supply
+   * it only if this deployment has measured how many uniqueness probes one URL-title derivation may
+   * issue; omit it and the derivation probes without a ceiling, exactly as
+   * `model/service/DataService.cfc:L64` does. It is LAST so the two established parameters keep their
+   * positions, and it is validated at construction rather than at first use. See
+   * `../util/urlTitleProbeBudget.ts` for why an optional collaborator is not the fabricated ceiling
+   * that was once withdrawn from `../util/urlTitle.ts`.
    */
   public constructor(
     private readonly brandRepository: BrandRepository,
     private readonly baseService: BrandBaseService,
-  ) {}
+    private readonly urlTitleProbeBudget?: UrlTitleProbeBudget,
+  ) {
+    /*
+     * ⭐ SEC-HARDENING (D18-CLASS) — SEC-14, review finding F5 (CWE-400). Fail fast on a mis-wired
+     * ceiling rather than on the first save, for the reasons `../util/urlTitleProbeBudget.ts` gives —
+     * chiefly that a `NaN` figure would admit every derivation while appearing configured. An ABSENT
+     * budget is the documented default and is deliberately not checked: it is how a deployment asks for
+     * `model/service/DataService.cfc:L64`'s unbounded probing, which is what the two-argument
+     * construction throughout this port's tests and examples continues to get.
+     */
+    if (urlTitleProbeBudget !== undefined) {
+      assertUrlTitleProbeBudget(urlTitleProbeBudget);
+    }
+  }
 
   /**
    * Assigns a unique URL title when none was supplied, then delegates the save.
@@ -614,16 +645,30 @@ export class BrandService {
    * delegation to the injected collaborator, with `context` left to the `"save"` default declared at
    * `model/service/HibachiService.cfc:L86`. The result is returned unchanged and uncast.
    *
-   * A validation failure surfaces as the `ValidationError` the base collaborator raises once it has
-   * evaluated the whole rule set; the legacy returned an entity carrying its own error bag, and
-   * `./BaseService` documents that translation. Nothing is caught or reshaped here.
+   * ⭐ A VALIDATION FAILURE COMES BACK ON THE BRAND, NOT AS AN EXCEPTION, AND THAT IS THE LEGACY
+   * CONTRACT. `:L76` is a bare `return super.save(...)` with no try/catch anywhere near it, and the local
+   * override it resolves to returns the entity on every path at
+   * `model/service/HibachiService.cfc:L103`. `./BaseService` reproduces that single exit and attaches the
+   * accumulated findings to the entity's own bag, so a caller asks the RETURNED BRAND —
+   * `saved.hasErrors()` and `saved.getErrors()`, the ported form of the legacy
+   * `arguments.brand.hasErrors()` read. Nothing is caught or reshaped here, because there is nothing to
+   * catch.
+   *
+   * ⚠️ AN EARLIER REVISION DOCUMENTED THE OPPOSITE — that the base collaborator RAISED a
+   * `ValidationError` and that this member simply let it through. That was accurate about the port at the
+   * time and wrong about the port: it made this member's published failure mode an exception where the
+   * legacy's was a return value, which is a change to the observable contract AAP §0.4.2.3 pins. The base
+   * service was corrected; this note records the change so a caller written against the raise is not left
+   * believing it still holds. `../handlers/brandHandler` is the in-tree caller and reads the bag.
    *
    * NET-NEW coverage (AAP 0.6.5.2): no legacy `BrandServiceTest` exists.
    *
    * @param brand - The brand to save. Required and positional, per `:L67`.
    * @param data - The inbound payload. Required and positional, per `:L67`. MUTATED in place when a
    * URL title is derived, reproducing the by-reference write at `:L70` and `:L72`.
-   * @returns The saved brand, as returned by the base collaborator.
+   * @returns The brand, as returned by the base collaborator — the SAME instance that was passed in,
+   *   whether the save succeeded or failed. On failure nothing was persisted and the findings are on the
+   *   returned brand's own bag; on success it is the persisted instance.
    */
   public async saveBrand(
     brand: ManagedBrand,
@@ -780,15 +825,45 @@ export class BrandService {
    * transformation belongs to `createUniqueURLTitle`.
    * @returns A URL title free on `SwBrand`, suffixed `-2`, `-3`, … on successive collisions.
    *
-   * THREE ARGUMENTS, AND THERE IS DELIBERATELY NO FOURTH. The utility's collision loop is unbounded,
-   * exactly as `model/service/DataService.cfc:L64` is; the attempt budget an earlier checkpoint passed
-   * through here has been removed, and `../util/urlTitle` records why. Whatever the probe rejects with
-   * propagates unchanged — this member adds no failure of its own, matching the legacy member's
-   * `returntype="string"`.
+   * THE UTILITY STILL TAKES THREE ARGUMENTS, AND THERE IS STILL DELIBERATELY NO FOURTH — BUT THE
+   * LOOP IS NO LONGER NECESSARILY UNBOUNDED, AND THE DIFFERENCE IS WHERE THE BOUND LIVES. The attempt
+   * budget an earlier checkpoint passed through here as a fourth argument stays removed, and
+   * `../util/urlTitle` records why: a REQUIRED ceiling relocates a fabricated number rather than
+   * avoiding it. Review finding F5 (CWE-400) reinstated the bound in the one place that objection does
+   * not reach — wrapped around the PROBE, optional, with no default — so `createUniqueURLTitle` keeps
+   * its three parameters and its unbounded `while (!unique)` untouched. See
+   * `../util/urlTitleProbeBudget.ts`.
+   *
+   * Whatever the probe rejects with propagates unchanged — this member still adds no failure of its
+   * own, matching the legacy member's `returntype="string"`. When a budget IS wired, the refusal is
+   * the probe's, arriving through that same declared channel.
    */
   private createUniqueBrandUrlTitle(titleString: string): Promise<string> {
-    return createUniqueURLTitle(titleString, BRAND_TABLE_NAME, (_tableName, candidateUrlTitle) =>
-      this.brandRepository.isUrlTitleAvailable(candidateUrlTitle),
+    const probe: UniqueValueProbe = (_tableName, candidateUrlTitle) =>
+      this.brandRepository.isUrlTitleAvailable(candidateUrlTitle);
+
+    /*
+     * ⭐ SEC-HARDENING (D18-CLASS) — SEC-14, review finding F5 (CWE-400). THE BOUND IS APPLIED TO THE
+     * PROBE, NOT TO THE ALGORITHM, WHICH IS WHY `../util/urlTitle.ts` IS UNCHANGED.
+     *
+     * The wrapper is created HERE, on every derivation, because it owns a probe counter and a counter
+     * shared between derivations would leak across invocations on a warm container and refuse a later
+     * legitimate save (mismatch M7). That is the same reason the probe itself is already documented as
+     * "created fresh on every derivation and never memoised" — the budget inherits that lifetime
+     * exactly.
+     *
+     * With no budget wired this is the identity: the unwrapped probe is passed, the loop at
+     * `model/service/DataService.cfc:L64` runs without a ceiling, and this member still adds no failure
+     * of its own. With one wired, the refusal arrives through the utility's own declared channel —
+     * "whatever the probe rejects with propagates unchanged" — so no signature, arity or return type
+     * changes anywhere (TR-1).
+     */
+    return createUniqueURLTitle(
+      titleString,
+      BRAND_TABLE_NAME,
+      this.urlTitleProbeBudget === undefined
+        ? probe
+        : boundUniqueValueProbe(probe, this.urlTitleProbeBudget),
     );
   }
 }

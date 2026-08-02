@@ -114,6 +114,7 @@ import type {
   SubPropertyPopulator,
 } from '../base/populate';
 import {
+  DomainError,
   LegacyParityError,
   NotImplementedError,
   NO_SINGLE_SKU_WITHOUT_SELECTED_OPTIONS_MESSAGE,
@@ -2237,13 +2238,36 @@ export class Product implements AuditableEntity, ManagedEntity {
    * boundary is a type error, not a comment.
    *
    * G6 JUDGMENT CALL — THE FIVE IMAGE MEMBERS DEREFERENCE THE DEFAULT SKU WITH NO PRESENCE GUARD
-   * [`:L320-L338`], so in the legacy a product without one FAILED AT RUNTIME with a null dereference.
-   * That failure cannot be reproduced literally: the field is optional because five other members
-   * branch on its absence, and manufacturing an error to throw would mean authoring a message string
-   * that exists nowhere in the legacy source, which S9 forbids. The four price members show the way —
-   * they DO guard, and they return a null the legacy left implicit. So all nine members surface
-   * absence uniformly as `undefined`, and the divergence is recorded here rather than hidden: a
-   * product with no default SKU yields no image path instead of raising.
+   * [`:L320-L338`], SO THEY RAISE HERE TOO. The split inside this family is the legacy's own and it is
+   * reproduced exactly rather than smoothed over:
+   *
+   *   GUARDED IN THE LEGACY, THEREFORE ABSENT HERE — `currencyCode` [`:L554-L558`], `price`
+   *   [`:L560-L567`], `renewalPrice` [`:L569-L573`] and `listPrice` [`:L575-L579`]. Each opens with
+   *   `if( structKeyExists(variables, "defaultSku") )` and falls off the end when it fails, yielding
+   *   CFML null. Those four return `undefined`, which is a transcription of the legacy fall-through.
+   *
+   *   UNGUARDED IN THE LEGACY, THEREFORE RAISING HERE — `imageDirectory`, `imagePath`, `image`,
+   *   `resizedImagePath` and `imageExistsFlag` [`:L319-L338`]. Every one is a bare
+   *   `return getDefaultSku().…` with no `structKeyExists` test at all, so a product with no default
+   *   SKU raised a null-reference error in CFML. These five throw a {@link DomainError} naming the
+   *   member and its locator.
+   *
+   * ⛔ AN EARLIER REVISION OF THIS BLOCK MADE ALL NINE ANSWER `undefined`, AND THAT IS WITHDRAWN. Its
+   * argument was that "manufacturing an error to throw would mean authoring a message string that
+   * exists nowhere in the legacy source, which S9 forbids". That reads S9 too broadly. S9 forbids
+   * inventing BEHAVIOUR the source does not state — service levels, capacities, defaults — not
+   * authoring a diagnostic for a failure the source genuinely has; `src/errors/DomainError.ts` says so
+   * itself, distinguishing the four verbatim {@link LegacyParityError} texts from the authored
+   * diagnostics every other throw site in this deliverable carries. And `src/domain/sku/Sku.ts` had
+   * already settled the same question the other way: its UNGUARDED-DEREFERENCE POLICY block states
+   * "where the legacy would have raised, this port raises too", and it raises with exactly this kind of
+   * authored message. Two sibling entity modules answering one question two ways is drift, and the
+   * softer answer was the wrong one — a product with no default SKU silently yielded no image path
+   * where the legacy aborted, which changes what the Google feed emits and what a process gate sees.
+   *
+   * ⚠️ THE RAISE IS A DIAGNOSTIC, NOT A DISCLOSURE. A plain `DomainError` presents as a neutral
+   * service fault at `src/handlers/httpResponse.ts`, so the locator and the member name reach a log and
+   * never a caller — the same treatment `Sku`'s equivalents receive.
    *
    * TODO(boundary): the rightful owners are `PricingPort` for the price reads and `ImagePathPort` for
    * the image reads (§0.2.2.7). Both are declared in `src/ports/**`, which this module does not
@@ -2335,30 +2359,56 @@ export class Product implements AuditableEntity, ManagedEntity {
   }
 
   /**
+   * Reads this product's default SKU where the legacy dereferenced it without a guard.
+   *
+   * The five image members [`:L319-L338`] all open with a bare `return getDefaultSku().…`, so each
+   * raised a null-reference error on a product with no default SKU. This helper is where that outcome
+   * is produced, once, so the five members stay the one-line delegations their legacy counterparts are.
+   * It is the direct counterpart of `#requireProduct` in `src/domain/sku/Sku.ts`, and it follows that
+   * module's UNGUARDED-DEREFERENCE POLICY rather than inventing a second one.
+   *
+   * ⛔ IT IS NOT USED BY THE FOUR PRICE MEMBERS, and must not be. Those four ARE guarded in the legacy
+   * and return CFML null; routing them through here would convert four legacy fall-throughs into four
+   * new failures. See the G6 judgment call above for the line-by-line split.
+   *
+   * @param locator the `model/entity/Product.cfc:L###` site whose behaviour is being reproduced
+   * @returns the default-SKU delegate
+   * @throws {DomainError} when no default SKU is assigned, reproducing the legacy null dereference
+   */
+  private requireDefaultSkuDelegate(locator: string): ProductDefaultSkuDelegate {
+    const assignedDefaultSku = this.defaultSku;
+    if (assignedDefaultSku === undefined) {
+      throw new DomainError(
+        `Product ${this.isNew() ? '(unsaved)' : this.productID} has no default SKU, so ${locator} ` +
+          `cannot resolve. The legacy code dereferences the default SKU without a guard at that line ` +
+          `and raises here too.`,
+        { context: { productID: this.productID, locator } },
+      );
+    }
+    return assignedDefaultSku;
+  }
+
+  /**
    * The directory holding this product's images — [model/entity/Product.cfc:L320-L322].
    *
-   * A bare delegation with NO presence guard in the legacy; absence surfaces as `undefined` per the
-   * G6 judgment call recorded on this section. TODO(boundary): `ImagePathPort`.
+   * A bare delegation with NO presence guard in the legacy, so absence RAISES per the G6 judgment call
+   * recorded on this section. TODO(boundary): `ImagePathPort`.
+   *
+   * @throws {DomainError} when no default SKU is assigned
    */
-  getImageDirectory(): string | undefined {
-    const assignedDefaultSku = this.defaultSku;
-    if (assignedDefaultSku !== undefined) {
-      return assignedDefaultSku.getImageDirectory();
-    }
-    return undefined;
+  getImageDirectory(): string {
+    return this.requireDefaultSkuDelegate('model/entity/Product.cfc:L321').getImageDirectory();
   }
 
   /**
    * The path of this product's image — [model/entity/Product.cfc:L324-L326].
    *
-   * TODO(boundary): `ImagePathPort`.
+   * Unguarded in the legacy, so absence RAISES. TODO(boundary): `ImagePathPort`.
+   *
+   * @throws {DomainError} when no default SKU is assigned
    */
-  getImagePath(): string | undefined {
-    const assignedDefaultSku = this.defaultSku;
-    if (assignedDefaultSku !== undefined) {
-      return assignedDefaultSku.getImagePath();
-    }
-    return undefined;
+  getImagePath(): string {
+    return this.requireDefaultSkuDelegate('model/entity/Product.cfc:L325').getImagePath();
   }
 
   /**
@@ -2373,14 +2423,12 @@ export class Product implements AuditableEntity, ManagedEntity {
    * divergence is recorded here. `src/domain/sku/Sku.ts` owns the real signature; when it exists, any
    * caller needing sized variants uses {@link Product.getResizedImagePath}, which has the same shape.
    *
-   * TODO(boundary): `ImagePathPort`.
+   * Unguarded in the legacy, so absence RAISES. TODO(boundary): `ImagePathPort`.
+   *
+   * @throws {DomainError} when no default SKU is assigned
    */
-  getImage(): string | undefined {
-    const assignedDefaultSku = this.defaultSku;
-    if (assignedDefaultSku !== undefined) {
-      return assignedDefaultSku.getImage();
-    }
-    return undefined;
+  getImage(): string {
+    return this.requireDefaultSkuDelegate('model/entity/Product.cfc:L329').getImage();
   }
 
   /**
@@ -2394,32 +2442,31 @@ export class Product implements AuditableEntity, ManagedEntity {
    * calls out. Those keys are resolved behind `SettingResolverPort` inside the image boundary, NOT by
    * this entity's three-key resolver — which is why they are absent from {@link ProductSettingName}.
    *
-   * TODO(boundary): `ImagePathPort`.
+   * Unguarded in the legacy, so absence RAISES. TODO(boundary): `ImagePathPort`.
+   *
+   * @throws {DomainError} when no default SKU is assigned
    */
-  getResizedImagePath(): string | undefined {
-    const assignedDefaultSku = this.defaultSku;
-    if (assignedDefaultSku !== undefined) {
-      return assignedDefaultSku.getResizedImagePath();
-    }
-    return undefined;
+  getResizedImagePath(): string {
+    return this.requireDefaultSkuDelegate('model/entity/Product.cfc:L333').getResizedImagePath();
   }
 
   /**
    * Whether this product's image file exists — [model/entity/Product.cfc:L336-L338].
    *
-   * The legacy declares a `boolean` return and delegates without a guard. Absence surfaces as
-   * `undefined` rather than `false`, deliberately: `false` would assert that the image is MISSING,
-   * whereas absence of a default SKU means the question was never answered. Conflating them would
-   * invent a fact.
+   * The legacy declares a `boolean` return and delegates WITHOUT a guard, so a product with no default
+   * SKU raised rather than answering. This member raises for the same input.
+   *
+   * ⚠️ IT DOES NOT ANSWER `false`, AND IT DOES NOT ANSWER `undefined` EITHER. `false` would assert that
+   * the image is MISSING when the question was never answered — that reasoning stands and is kept. An
+   * earlier revision concluded from it that `undefined` was therefore the right answer; that conclusion
+   * is withdrawn, because the legacy answers NEITHER value. It aborts, and so does this.
    *
    * TODO(boundary): `ImagePathPort`.
+   *
+   * @throws {DomainError} when no default SKU is assigned
    */
-  getImageExistsFlag(): boolean | undefined {
-    const assignedDefaultSku = this.defaultSku;
-    if (assignedDefaultSku !== undefined) {
-      return assignedDefaultSku.getImageExistsFlag();
-    }
-    return undefined;
+  getImageExistsFlag(): boolean {
+    return this.requireDefaultSkuDelegate('model/entity/Product.cfc:L337').getImageExistsFlag();
   }
 
   /* ==============================================================================================
@@ -2669,19 +2716,52 @@ export class Product implements AuditableEntity, ManagedEntity {
    * does through an injected resolver rather than by assuming the parent chain is already loaded. That
    * resolver is forwarded straight through; this member adds no resolution logic of its own.
    *
-   * `productType` is optional, so its absence is handled with an explicit guard and yields `undefined`
-   * — matching both the legacy null dereference outcome as closely as is expressible without inventing
-   * an error message (S9), and the sibling member's own `undefined` return for an unresolvable root.
+   * ⭐ THREE OUTCOMES MEET HERE ACROSS TWO HOPS, AND ONLY ONE OF THEM IS A VALUE. Conflating them is
+   * the mistake this paragraph exists to prevent, and BOTH hops of
+   * `getProductType().getBaseProductType()` dereference without a guard:
+   *
+   *   NO PRODUCT TYPE AT ALL — [`:L494`] is a bare `return getProductType().getBaseProductType();`
+   *   with no guard, so a product carrying no product type raised a null-reference error. This member
+   *   RAISES for that input. An earlier revision returned `undefined`, reasoning that a literal
+   *   reproduction would require "inventing an error message (S9)"; that is withdrawn for the reasons
+   *   set out in the G6 judgment call on the image family, and because the softened answer was load
+   *   bearing in the wrong direction — `model/validation/Product.json` gates all three process contexts
+   *   on this value, so answering absence let `isProcessable('addOptionGroup')` be evaluated against a
+   *   discriminator the row does not carry.
+   *
+   *   A PRODUCT TYPE WHOSE ROOT LOOKUP FINDS NOTHING — the FAR hop raises, at
+   *   [model/entity/ProductType.cfc:L112], where `.getSystemCode()` is chained straight onto the
+   *   lookup result. The raise propagates through this delegation untouched. An earlier revision of
+   *   the sibling module answered `undefined` here under a `TODO(parity)`, and that is withdrawn: the
+   *   defence that the failure stayed loud downstream at `model/service/SkuService.cfc:L204` holds at
+   *   `createSkus` and fails at `src/adapters/mysql/MySqlSkuRepository.ts`, where an absent
+   *   discriminator adds no option join and silently WIDENS the returned SKU set. See the withdrawal
+   *   recorded on `ProductType.getBaseProductType` itself.
+   *
+   *   A ROOT THAT RESOLVES BUT CARRIES NO SYSTEM CODE — the only case that answers `undefined`, and
+   *   therefore the only reason the return type keeps its optional member. The legacy getter returns
+   *   CFML null off a real row and hands it back, so absence IS the legacy answer here. It is passed
+   *   straight through UNCHANGED; this member adds no coercion and no fault of its own.
    *
    * @param rootProductTypeResolver - Forwarded to `ProductType.getBaseProductType`.
-   * @returns The base product type code, or `undefined` when no product type is assigned.
+   * @returns The base product type code, or `undefined` when the assigned product type's root resolves
+   *   without a system code. Never `undefined` for a missing product type or an unresolvable root —
+   *   both of those raise.
+   * @throws {DomainError} when no product type is assigned, reproducing the legacy null dereference
+   *   at [`:L494`]; and, propagated from the sibling module, when the root lookup finds nothing
+   *   [model/entity/ProductType.cfc:L112].
    */
   async getBaseProductType(
     rootProductTypeResolver: ProductTypeRootResolver,
   ): Promise<BaseProductTypeCode | undefined> {
     const assignedProductType = this.productType;
     if (assignedProductType === undefined) {
-      return undefined;
+      throw new DomainError(
+        `Product ${this.isNew() ? '(unsaved)' : this.productID} has no product type, so ` +
+          'model/entity/Product.cfc:L494 cannot resolve. The legacy code dereferences the product ' +
+          'type without a guard at that line and raises here too.',
+        { context: { productID: this.productID, locator: 'model/entity/Product.cfc:L494' } },
+      );
     }
     return assignedProductType.getBaseProductType(rootProductTypeResolver);
   }

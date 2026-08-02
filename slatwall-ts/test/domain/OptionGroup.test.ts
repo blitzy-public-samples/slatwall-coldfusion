@@ -1387,6 +1387,15 @@ describe('OptionGroup — NET-NEW — declarative validation fidelity, model/val
      *
      * NOTHING IS ERASED BY THIS. The ORM requirement at `:L58` still stands; it is simply enforced
      * somewhere this test does not reach, and section C records who assigns the value.
+     *
+     * ⭐ AND "SOMEWHERE THIS TEST DOES NOT REACH" IS NOW A NAMED, TESTED PLACE (review finding 18). The
+     * review's concern was never this assertion — it is correct and must stay — but that NOTHING
+     * downstream noticed an unset group. `test/adapters/UnitOfWork.test.ts` now covers both halves of
+     * `org/Hibachi/HibachiEntity.cfc:L637-L647`: `UnitOfWork.seedFirstSortOrder` assigns
+     * `topSortOrder + 1` from the WHOLE-TABLE read this entity's missing `sortContext` selects, and
+     * `assertSortOrderAssigned` refuses at the persistence boundary when something bypassed the
+     * assignment. So the two requirement systems are each enforced where they belong, and neither has
+     * been taught the other's job.
      */
     expect(errors.hasErrors()).toBe(false);
     expect(errors.getErrors()).toEqual({});

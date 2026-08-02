@@ -1010,20 +1010,69 @@ function assignAuditColumns(entity: AuditableEntity, row: MySqlRow): void {
  *     reference is a delegate whose every member RAISES until it is replaced. A surviving reference
  *     there is a loud failure by construction.
  *
- *   AND `ProductType.parentProductType` IS DELIBERATELY NOT IN THE LIST, though BOTH product-type
- *   write paths round-trip it the same way — `MySqlProductTypeRepository.saveProductType` through its
- *   `collectWritableValues`, and `MySqlProductPersistence.saveProductType` through its
- *   `collectProductTypeValues`. Each reads `parentProductType?.productTypeID ?? null`, so a product
- *   type that was READ through this module and then written back stores `NULL` in
- *   `parentProductTypeID` and is detached from its parent. Both sites are named because the gap is
- *   auditable from either one, and naming only the first would leave the second looking clean.
- *   `ProductType.getSimpleRepresentation` walks the parent chain and
- *   returns `undefined` as soon as any link's name is absent, so a parent reference would turn the
- *   feed's `g:product_type` from `Parent &raquo; Child` into an EMPTY element — a reference that lies,
- *   which is the one thing rule 3a forbids. Its round-trip gap is therefore recorded here and left
- *   alone rather than closed with a mechanism that would corrupt a rendered field. `Option.optionGroup`
- *   stays out for the original reason: `OptionGroup` declares a defaulted scalar, so a reference could
- *   answer `getImageGroupFlag()` with the class default, which is the very example above.
+ *   AND `ProductType.parentProductType` IS STILL DELIBERATELY NOT IN THE LIST — BUT ITS ROUND TRIP IS
+ *   NO LONGER LEFT OPEN. It is closed by RULE 3b below instead, and the reason it needed a different
+ *   mechanism from the other four is worth stating precisely, because the two halves of the problem
+ *   pull in opposite directions:
+ *
+ *     THE ROUND-TRIP HALF. BOTH product-type write paths serialize the association the same way —
+ *     `MySqlProductTypeRepository.saveProductType` through its `collectWritableValues`, and
+ *     `MySqlProductPersistence.saveProductType` through its `collectProductTypeValues`. Each read
+ *     `parentProductType?.productTypeID ?? null`, so a product type READ through this module and then
+ *     written back stored `NULL` in `parentProductTypeID` and was detached from its parent — the same
+ *     silent data loss obligation (ii) describes for the other four keys. Both sites are named because
+ *     the gap is auditable from either one, and naming only the first would leave the second looking
+ *     clean.
+ *
+ *     THE LYING HALF, WHICH IS WHY A REFERENCE CANNOT BE THE ANSWER HERE.
+ *     `ProductType.getSimpleRepresentation` walks the parent chain and returns `undefined` as soon as
+ *     ANY link's name is absent. An identifier-only parent carries no `productTypeName`, so attaching
+ *     one would turn the feed's `g:product_type` from `Child` into an EMPTY element — a reference that
+ *     lies, which is the one thing rule 3a forbids. Nor can the parent's name simply be fetched here:
+ *     the legacy statement at `model/dao/ProductTypeDAO.cfc:L52-L62` is a bare
+ *     `SELECT *, (…count…), (…count…) FROM SlatwallProductType`, so adding a join for the parent's name
+ *     would be work the legacy read never performs, which G4 forbids.
+ *
+ *   SO THE TWO HALVES ARE SEPARATED RATHER THAN TRADED OFF: the raw foreign key is preserved for the
+ *   WRITE paths WITHOUT populating the association the READ paths render from. Rule 3b is that
+ *   mechanism. `Option.optionGroup` stays out for the original reason: `OptionGroup` declares a
+ *   defaulted scalar, so a reference could answer `getImageGroupFlag()` with the class default, which is
+ *   the very example above — and it has no write-path round trip to close, because no persister in this
+ *   folder serializes it.
+ *
+ * RULE 3b — THE PRODUCT-TYPE PARENT FOREIGN KEY IS PRESERVED BESIDE THE ENTITY, NOT INSIDE IT.
+ *
+ *   `mapProductTypeRow` reads `parentProductTypeID` and records it against the instance it just
+ *   produced, in {@link readHydratedParentProductTypeID}'s backing table. The association slot is left
+ *   exactly as it was — ABSENT — so every read path behaves identically to before this rule existed and
+ *   no rendered field changes. The write paths then resolve the column as
+ *   `association ?? preserved ?? null`, which is what closes the round trip.
+ *
+ *   THE VALUE IS NOT STORED ON THE ENTITY, and that is a requirement rather than a preference.
+ *   `model/entity/ProductType.cfc:L52-L88` declares twenty-five properties and `parentProductTypeID` is
+ *   not among them — it is the `fkcolumn` of the many-to-one at `:L62`, a physical column name, not a
+ *   property. Adding a twenty-sixth field would put a value in the domain surface that the legacy
+ *   entity has no accessor for, widen `ProductTypePropertyName`, and hand `../../validation/Validator`
+ *   and `../../domain/base/populate` a property to reason about that no legacy rule mentions. S9
+ *   forbids exactly that.
+ *
+ *   ⚠️ THE BACKING TABLE IS A `WeakMap` KEYED BY THE ENTITY OBJECT, AND THAT IS THE ONLY FORM OF
+ *   MODULE-SCOPE STATE THIS RULE PERMITS. S8/M7 forbid a module-scope CACHE because a warm Lambda
+ *   container survives between invocations and a value-keyed table would let one request observe
+ *   another's rows. An object-keyed weak table cannot: its keys ARE the per-invocation entity
+ *   instances, a later invocation constructs different objects and can therefore reach no entry, and
+ *   every entry becomes unreachable and collectable the moment its entity does. It holds no rows, it is
+ *   never enumerated, and nothing can look a value up without already holding the exact instance the
+ *   value describes. It is provenance attached to one object's lifetime, not a cache.
+ *
+ *   ⚠️ AN EXPLICIT DETACH MUST CALL {@link forgetHydratedParentProductTypeID}. Once the association is
+ *   absent the entity cannot distinguish "never resolved" from "deliberately cleared" — both are a
+ *   missing own key, because `ProductType.removeParentProductType` ports
+ *   `structDelete(variables, "parentProductType")` as `delete this.parentProductType`. The write
+ *   fallback therefore treats absence as "never resolved", which is the correct reading for every path
+ *   that exists in this slice, and a caller that genuinely means to null the column says so by
+ *   forgetting the preserved value first. That member is exported and tested for exactly this purpose;
+ *   without it, preserving the key would trade one silent wrong answer for another.
  *
  *   ⛔ A REFERENCE IS NOT A LOADED ENTITY AND MUST NOT BE TREATED AS ONE. Rule 3's guarantee still
  *   holds for every field a reference does not carry: it is genuinely absent. A consumer that needs a
@@ -1197,6 +1246,77 @@ export function brandReference(brandID: string): ManagedEntity<Brand> {
   const brand = manageEntity(new Brand(), BRAND_ENTITY_METADATA);
   brand.brandID = brandID;
   return brand;
+}
+
+/* ================================================================================================
+ * RULE 3b — THE PRESERVED PRODUCT-TYPE PARENT FOREIGN KEY
+ * ================================================================================================
+ * The full rationale is in the RULE 3b section of the module header: the association slot must stay
+ * absent so no read path renders from a parent that carries no name, while the write paths still need
+ * the key so a read-modify-save does not detach the child. These three members are that separation.
+ * ============================================================================================== */
+
+/**
+ * The provenance table behind rule 3b: for each product type hydrated from a row, the
+ * `parentProductTypeID` that row carried.
+ *
+ * ⚠️ WEAK AND OBJECT-KEYED, WHICH IS WHAT MAKES IT LEGAL UNDER S8/M7. It is not a cache: no value can
+ * be reached without already holding the exact instance it describes, a later invocation on a warm
+ * container constructs different instances and so can reach nothing, and each entry dies with its
+ * entity. The header states the full argument, including why a value-keyed table would be a
+ * cross-request leak and this is not.
+ *
+ * `object` rather than `ProductType` as the key type so a `ManagedEntity<ProductType>` — an
+ * intersection, not a `ProductType` — is accepted without a cast at either end.
+ */
+const hydratedParentProductTypeIds = new WeakMap<object, string>();
+
+/**
+ * Records the `parentProductTypeID` a row supplied for a product type, without touching the
+ * association slot.
+ *
+ * Called by {@link mapProductTypeRow} only. Kept private to this module because recording provenance
+ * is a hydration act: a caller that invented a value here would be asserting a row it never read.
+ *
+ * @param productType - The instance just hydrated from the row.
+ * @param parentProductTypeID - The row's foreign-key value, already narrowed to a present string.
+ */
+function recordHydratedParentProductTypeID(productType: object, parentProductTypeID: string): void {
+  hydratedParentProductTypeIds.set(productType, parentProductTypeID);
+}
+
+/**
+ * The `parentProductTypeID` this product type was hydrated with, if it was hydrated from a row at all.
+ *
+ * THE WRITE PATHS' FALLBACK, AND ONLY EVER A FALLBACK. Both persisters resolve the column as
+ * `productType.parentProductType?.productTypeID ?? readHydratedParentProductTypeID(productType) ?? null`,
+ * so a resolved association always wins and this value is consulted only where the previous code would
+ * have written `NULL` over a parent it had simply never loaded.
+ *
+ * @param productType - Any product type. A freshly constructed one, or one this module never mapped,
+ *   yields `undefined` — there is nothing to preserve for it, and `NULL` is then the correct column
+ *   value because the entity is a genuine root.
+ * @returns The preserved identifier, or `undefined` when none was recorded or it has been forgotten.
+ */
+export function readHydratedParentProductTypeID(productType: object): string | undefined {
+  return hydratedParentProductTypeIds.get(productType);
+}
+
+/**
+ * Discards the preserved `parentProductTypeID`, so a subsequent write stores `NULL` and the detach is
+ * durable.
+ *
+ * ⚠️ THIS IS THE DECLARED WAY TO DETACH A HYDRATED CHILD, and it exists because the entity cannot
+ * express the difference on its own. `ProductType.removeParentProductType` ports
+ * `structDelete(variables, "parentProductType")` as `delete this.parentProductType`, so after a detach
+ * the association is ABSENT — indistinguishable from an association that was never resolved. The write
+ * fallback reads absence as "never resolved", which is right for every path in this slice; a caller
+ * that means `NULL` says so here. Calling it on a product type with nothing recorded is a no-op.
+ *
+ * @param productType - The product type whose preserved parent key should be dropped.
+ */
+export function forgetHydratedParentProductTypeID(productType: object): void {
+  hydratedParentProductTypeIds.delete(productType);
 }
 
 /**
@@ -1484,15 +1604,23 @@ export function mapSkuRow(row: MySqlRow): ManagedEntity<Sku> {
  * `src/domain/product/ProductType.ts` records. The literals themselves belong to
  * `src/domain/BaseProductType.ts` and are deliberately not restated in this module.
  *
- * Not read: the self-referencing foreign key `parentProductTypeID` at `:L62`, the three collections at
- * `:L65-L67`, and the eight inverse many-to-many collections at `:L70-L77`. All three seeded rows
- * carry a null parent, so absence is also the ordinary state for a root — and it is genuine absence:
- * `parentProductType` is declared with `declare`, so a mapped product type carries no such own key at
- * all, per RULE 3 in the module header.
+ * Not assigned: the three collections at `:L65-L67` and the eight inverse many-to-many collections at
+ * `:L70-L77`. They are left empty and live.
+ *
+ * ⭐ THE PARENT ASSOCIATION IS STILL LEFT ABSENT, BUT ITS FOREIGN KEY IS NOW PRESERVED (RULE 3b). The
+ * `parentProductTypeID` column at `:L62` is read and recorded against this instance for the write
+ * paths, while the `parentProductType` slot itself is untouched — so every READ path sees exactly what
+ * it saw before, including `ProductType.getSimpleRepresentation`, and no rendered field changes. The
+ * header's RULE 3b states why the two have to be separated: attaching an identifier-only parent would
+ * empty the feed's `g:product_type`, and writing `NULL` over an unloaded parent detached the child.
+ * All three seeded rows carry a null parent, so nothing is recorded for them and absence remains the
+ * ordinary state for a root. The absence is genuine either way: `parentProductType` is declared with
+ * `declare`, so a mapped product type carries no such own key at all, per RULE 3.
  *
  * @param row - One `SwProductType` row.
- * @returns A MANAGED product type (RULE 5) carrying every persistent column the row supplied, with
- *   its parent unresolved and its collections empty and live.
+ * @returns A MANAGED product type (RULE 5) carrying every persistent column the row supplied, with its
+ *   parent association unresolved, its parent foreign key preserved beside it, and its collections
+ *   empty and live.
  * @throws {DomainError} When a column holds a value whose runtime type does not match its field.
  */
 export function mapProductTypeRow(row: MySqlRow): ManagedEntity<ProductType> {
@@ -1513,6 +1641,15 @@ export function mapProductTypeRow(row: MySqlRow): ManagedEntity<ProductType> {
 
   assignOptional(productType, 'remoteID', readOptionalString(row, 'remoteID'));
   assignAuditColumns(productType, row);
+
+  /* RULE 3b — the self-referencing foreign key at [model/entity/ProductType.cfc:L62]. Recorded BESIDE
+   * the entity rather than assigned into `parentProductType`, because the association is what read
+   * paths render from and an identifier-only parent would empty `getSimpleRepresentation`. A null
+   * column records nothing, which is the ordinary state for a root. */
+  const parentProductTypeID = readOptionalString(row, 'parentProductTypeID');
+  if (parentProductTypeID !== undefined) {
+    recordHydratedParentProductTypeID(productType, parentProductTypeID);
+  }
 
   return productType;
 }

@@ -44,16 +44,33 @@
  * =================================================================================================
  * WHAT THIS FILE COVERS
  * =================================================================================================
- * The adapter's single READ member, `findAllForTree()`, and nothing else. Specifically: the
- * translated statement's shape, its physical table names (D22), its two correlated scalar
- * subselects, its two derived aliases, its single flat ordering, its empty bound-value list, the
- * numeric-not-boolean nature of both counts, and the two legacy comments that misdescribe what the
- * member returns.
+ * THE ADAPTER'S WHOLE PUBLIC SURFACE — the one ported read member and the three additive members,
+ * not the read member alone.
+ *
+ * THE PORTED READ, `findAllForTree()`, is the subject of the first six suites and carries the legacy
+ * behaviour: the translated statement's shape, its physical table names (D22), its two correlated
+ * scalar subselects, its two derived aliases, its single flat ordering, its empty bound-value list,
+ * the numeric-not-boolean nature of both counts, and the two legacy comments that misdescribe what
+ * the member returns.
+ *
+ * THE THREE MEMBERS WITH NO LEGACY COUNTERPART are the subject of the suites at the foot of this
+ * file. Each is labelled **NET-NEW** for a second and stronger reason than the rest of the file —
+ * not merely "no legacy test exists" but "no legacy MEMBER exists" — and each is covered because it
+ * is LIVE public code, and an uncovered live member can be deleted or inverted with every other case
+ * here still passing:
+ *   - `withExecutor(executor)` — re-binding to a transaction-scoped executor. It exists only because
+ *     mismatch M5 removed the ambient ORM session a legacy DAO simply participated in, so there is
+ *     nothing in `model/dao/ProductTypeDAO.cfc` for it to be a port OF. Its cases pin that it answers
+ *     a NEW instance and that the receiver it was called on is left untouched.
+ *   - `saveProductType(productType)` — the insert-or-update write. `model/dao/ProductTypeDAO.cfc`
+ *     declares no write at all; persistence reached the database through the framework's flush, which
+ *     M5 also removed. Its cases pin the identifier discipline (IR-6), the ORDER of the entity
+ *     lifecycle hook against value collection, the audit actor's provenance, and the exact column
+ *     list, placeholder count and bind order of both branches.
+ *   - `removeProductType(productType)` — the removal. Its cases pin that a transient entity is
+ *     refused before any statement is composed, and that a persisted one emits exactly one `DELETE`.
  *
  * ⛔ WHAT IT DELIBERATELY DOES NOT COVER, so each absence reads as a decision:
- *   - The write and removal members the port also declares. They belong to the save path that
- *     reaches persistence through the base service, and the read member is the one
- *     `model/dao/ProductTypeDAO.cfc` actually declares.
  *   - Any single-product-type read, factory member, paginated-list member, counting, listing or
  *     exporting member. Those resolved through the framework's missing-method dispatch (IR-1,
  *     `org/Hibachi/HibachiService.cfc:L255-L281`) and AAP §0.4.2.5 declares the single read on
@@ -63,10 +80,15 @@
  *     an excluded domain family, so nothing here touches it and no excluded collaborator is
  *     imported.
  *   - The parameterisation-hardening exception D18. It belongs exclusively to the product importer's
- *     adapter, whose legacy statements interpolate values taken from an uploaded file. The statement
- *     under test binds nothing and interpolates no caller value, because its member takes no
- *     argument, so there is no such site here. Stated positively so the absence reads as a verified
- *     property.
+ *     adapter, whose legacy statements interpolate values taken from an uploaded file. NO STATEMENT
+ *     THIS ADAPTER CAN EMIT HAS AN INTERPOLATED VALUE SITE AT ALL, and with the write members now
+ *     covered that is a verified property of the whole surface rather than a consequence of the read
+ *     taking no argument: the read binds an empty list, and each of the three write statements binds
+ *     EVERY caller-supplied value through a `?` placeholder while composing its identifiers from the
+ *     schema whitelist. The cases at the foot of this file assert exactly that, including one that
+ *     drives a quote-bearing value through the insert and finds it in the bound array rather than in
+ *     the statement text. Stated positively so the absence reads as a verified property, and no
+ *     hardening exception is claimed here.
  *
  * REGISTER DISCIPLINE. This file MINTS NO new defect or mismatch identifier. It cites D22 (the
  * logical-names-in-native-SQL finding, defined in `src/ports/repositories/SkuRepository.ts`, which
@@ -86,7 +108,7 @@ import {
   PRODUCT_TYPE_TREE_BOUND_VALUES,
   PRODUCT_TYPE_TREE_STATEMENT,
 } from '../../src/adapters/mysql/MySqlProductTypeRepository';
-import { assertTableName } from '../../src/adapters/mysql/QueryRunner';
+import { assertColumnName, assertTableName } from '../../src/adapters/mysql/QueryRunner';
 import { ProductType } from '../../src/domain/product/ProductType';
 import {
   ALL_SEEDED_PRODUCT_TYPES,
@@ -98,12 +120,17 @@ import {
   SUBSCRIPTION_PRODUCT_TYPE_ID,
 } from '../fixtures/productTypes';
 import {
+  TEST_ADMIN_ACCOUNT_ID,
+  createAbsentAccountContextDouble,
   createAccountContextDouble,
   createSqlExecutorDouble,
+  persistedNonAdminAccount,
+  sqlAffectedRows,
   sqlRows,
 } from '../support/inMemoryRepositories';
 
 import type { ProductTypeStatementExecutor } from '../../src/adapters/mysql/MySqlProductTypeRepository';
+import type { AccountContextPort } from '../../src/ports/AccountContextPort';
 import type {
   ProductTypeRepository,
   ProductTypeTreeRow,
@@ -242,9 +269,40 @@ function exactlyOne<T>(items: readonly T[], what: string): T {
  * ⚠️ THIS IS AN HONEST ROOT-LEVEL TEST SETUP, AND EVERY COLUMN COMES FROM THE SOURCE. The seven
  * column values are taken from `test/fixtures/productTypes.ts`, which transcribes them verbatim from
  * `config/dbdata/SlatwallProductType.xml.cfm:L13-L15` — including `productTypeIDPath` equal to the
- * row's own identifier, `parentProductTypeID` as the literal four-character string the seed document
- * renders, and `activeFlag` as the literal `'1'` it renders. Nothing is invented, nothing is
- * regenerated and no representation is derived from another.
+ * row's own identifier and `activeFlag` as the literal `'1'` it renders. Nothing is invented,
+ * nothing is regenerated and no representation is derived from another.
+ *
+ * ⭐ ONE COLUMN IS TRANSLATED RATHER THAN TRANSCRIBED, AND THIS IS THE REASON. An earlier revision
+ * of this helper passed `parentProductTypeID` through as the literal four-character string `'NULL'`,
+ * on the stated ground that this is what the seed document renders. That ground is true about the
+ * DOCUMENT and false about the ROW, and the distinction is the whole point of this helper: a
+ * `CannedRow` models WHAT THE DRIVER HANDS BACK, not what the seed file contains.
+ *
+ * The seed importer proves which of the two this column is. `Application.cfc:L92` calls
+ * `DataService.loadDataFromXMLDirectory` (`model/service/DataService.cfc:L73`), which reaches
+ * `loadDataFromXMLRaw` (`:L108`) and passes each raw XML attribute through unchanged as
+ * `columnRecord.value`. That value lands in `model/dao/DataDAO.cfc`, and BOTH write paths there test
+ * it against the sentinel and bind a real null instead:
+ *   - `:L71-L72`   (`recordUpdate`) — `<cfif ... .value eq "NULL">` -> `<cfqueryparam ... null="yes">`
+ *   - `:L104-L105` (`recordInsert`) — the identical test -> `<cfqueryparam ... null="yes">`
+ *
+ * So `SwProductType.parentProductTypeID` holds a GENUINE SQL NULL for all three seeded roots, and
+ * the four-character string never reaches a row. `mysql2` therefore returns JS `null` here, which is
+ * exactly what this helper now supplies. Feeding `'NULL'` instead would model a row the database
+ * provably cannot produce, and would make every assertion built on it a statement about a fiction.
+ *
+ * `test/fixtures/productTypes.ts` is deliberately NOT changed: it transcribes the seed DOCUMENT, and
+ * its own note at `:202-203` is accurate about that document. The document-to-row translation
+ * belongs at this boundary, where a row is built, and nowhere else.
+ *
+ * ⛔ AND NOT IN PRODUCTION CODE EITHER. `src/adapters/mysql/rowMappers.ts` deliberately carries no
+ * comparison against `'NULL'`: `readOptionalString` (`:L444-L453`) maps both `null` and `undefined`
+ * to `undefined`, which is the correct and complete handling for a column the importer nulls out.
+ * Adding a string comparison there would invent behaviour the source does not have (AAP §0.7.3 S9)
+ * and would be unreachable against any real driver. The one place the legacy genuinely does compare
+ * against the literal is `org/Hibachi/HibachiSmartList.cfc:L580`/`:L593`, ported at
+ * `src/adapters/mysql/SmartListQueryBuilder.ts:1287` — but that is a caller-supplied FILTER TOKEN
+ * meaning `IS NULL`, an API input, never a stored column value.
  *
  * The two counts are supplied per case because they are QUERY-COMPUTED and have no column in the
  * seed document at all: they are what the two correlated subselects at
@@ -258,7 +316,9 @@ function seededTreeRow(
   return {
     productTypeID: seeded.productTypeID,
     productTypeIDPath: seeded.productTypeIDPath,
-    parentProductTypeID: seeded.parentProductTypeID,
+    // The document renders `"NULL"`; `model/dao/DataDAO.cfc:L104-L105` binds it as a real null, so
+    // the driver hands back `null`. Translated, not transcribed — see this function's note above.
+    parentProductTypeID: seeded.parentProductTypeID === 'NULL' ? null : seeded.parentProductTypeID,
     productTypeName: seeded.productTypeName,
     systemCode: seeded.systemCode,
     urlTitle: seeded.urlTitle,
@@ -761,6 +821,15 @@ describe('NET-NEW: MySqlProductTypeRepository.findAllForTree — the "tree sorte
      * unresolved even though every canned row carries a `parentProductTypeID` column, because
      * assembling descendants is not this member's job and the row mapper deliberately resolves no
      * association.
+     *
+     * ⭐ AN ABSENT ASSOCIATION IS NOT A LOST FOREIGN KEY, AND THIS FILE NO LONGER IMPLIES OTHERWISE.
+     * The association is left unresolved on purpose: an identifier-only parent would make
+     * `ProductType.getSimpleRepresentation` return `undefined` at the parent's absent name, emptying
+     * the Google feed's `g:product_type` element. Rule 3b in `src/adapters/mysql/rowMappers.ts`
+     * therefore preserves the row's raw parent key BESIDE the entity, so a read-modify-save no longer
+     * writes `NULL` and detaches the child. That round trip is proved on both write paths in
+     * `test/adapters/MySqlProductPersistence.test.ts` ("the parent round trip (rule 3b)"), which is
+     * where it belongs — this member is a read, and this file's surface is closed at `findAllForTree`.
      */
     for (const row of rows) {
       expect(row).toBeInstanceOf(ProductType);
@@ -903,7 +972,9 @@ describe('NET-NEW: MySqlProductTypeRepository.findAllForTree — the seeded disc
        * place and the fixture never has to guess a representation the document does not contain.
        */
       expect(row.activeFlag).toBe(true);
-      /* Still flat: no parent resolved, no children inferred. */
+      /* Still flat: no parent resolved, no children inferred. These three are ROOTS in any case — the
+       * seed gives them no parent at all, so there is no key here for rule 3b to preserve and the
+       * write path nulls the column because that is the truth, not because anything was dropped. */
       expect(row.parentProductType).toBeUndefined();
       expect(row.childProductTypes).toEqual([]);
       expect(row.isAssigned).toBe(0);
@@ -995,6 +1066,12 @@ describe('NET-NEW: MySqlProductTypeRepository.findAllForTree — an explicitly c
      * does not infer descendants from `parentProductTypeID`, does not attach the child to the parent,
      * and does not order by the ancestry path. Every one of those would be work the legacy statement
      * never performs, and the parent/child pair is exactly the input that would expose it.
+     *
+     * ⚠️ THE CHILD'S PARENT KEY IS NEVERTHELESS NOT DISCARDED. `testOnlyChildRow` supplies a real
+     * `parentProductTypeID`, and rule 3b preserves it beside the entity even though no association is
+     * attached here — which is what stops a later save from writing `NULL` over it and what keeps the
+     * two-element `productTypeIDPath` asserted above from being rebuilt as a one-element path. Both are
+     * proved in `test/adapters/MySqlProductPersistence.test.ts` ("the parent round trip (rule 3b)").
      */
     for (const row of rows) {
       expect(row).toBeInstanceOf(ProductType);
@@ -1050,5 +1127,746 @@ describe('NET-NEW: MySqlProductTypeRepository.findAllForTree — an explicitly c
     /* The parent's one is NOT the child's four plus one: the counts are per-row and independent. */
     expect(rows[0]?.childCount).toBe(1);
     expect(rows[1]?.childCount).toBe(4);
+  });
+});
+
+/* =================================================================================================
+ * 7. THE THREE ADDITIVE MEMBERS — re-binding, the write, and the removal
+ * =================================================================================================
+ * Everything above this banner exercises the one member `model/dao/ProductTypeDAO.cfc` declares.
+ * Everything below it exercises the three members it does NOT, and the distinction is why their
+ * labels carry a second justification: for the read, **NET-NEW** means "no legacy test exists"; for
+ * these three it also means "no legacy MEMBER exists", so there is no legacy statement, no legacy
+ * bind order and no legacy return contract for a case to be traceable to. Each expectation below is
+ * derived from the production source alone, and nothing here should be read as a port of anything.
+ *
+ * WHY THEY EXIST AT ALL, briefly, because a reviewer is entitled to ask before reading their cases:
+ * a legacy DAO participated in an ambient ORM session that the framework flushed at request end, so
+ * it needed neither a transaction handle nor a write member. Mismatch M5 removed both the session and
+ * the request-end hook, so a stateless invocation has to name its own connection (`withExecutor`) and
+ * issue its own statements (`saveProductType`, `removeProductType`).
+ *
+ * A NOTE ON THE HARNESS. `createTreeReadHarness` above types its repository as the PORT, which is
+ * right for read cases and wrong for these: `withExecutor` is deliberately absent from the port, so
+ * a port-typed reference cannot reach it. The write harness below therefore holds the CONCRETE class,
+ * and it also exposes the account double's read count because two of these members consult it.
+ * ===============================================================================================*/
+
+/** A write-path harness: the concrete adapter, its recorded statements, and its account seam. */
+interface WriteHarness {
+  /**
+   * Typed as the CONCRETE adapter rather than the port, because `withExecutor` is not on the port
+   * and must not be put there — a service may not know a statement executor exists at all. Reaching
+   * it through the concrete class here mirrors the only layer that legitimately holds one.
+   */
+  readonly repository: MySqlProductTypeRepository;
+  /** Every statement issued, byte for byte and in issue order. Live view. */
+  readonly calls: readonly SqlExecutorCall[];
+  /** How many times an acting account was resolved. */
+  readonly accountReads: () => number;
+}
+
+/**
+ * Build the adapter over a recording executor for the write path.
+ *
+ * An unconfigured write answers `0` affected rows, which is the double's documented default and is
+ * all these cases need: not one of them reads the count, because the member returns `void` for the
+ * removal and the entity for the write. Where a case wants a specific acknowledgement it queues one.
+ *
+ * @param account - The account context to inject. Defaults to the shared persisted admin.
+ */
+function createWriteHarness(
+  account: {
+    accountContext: AccountContextPort;
+    callCount: () => number;
+  } = createAccountContextDouble(),
+): WriteHarness {
+  const executorDouble = createSqlExecutorDouble();
+
+  return {
+    repository: new MySqlProductTypeRepository(executorDouble.executor, account.accountContext),
+    calls: executorDouble.calls,
+    accountReads: account.callCount,
+  };
+}
+
+/**
+ * The physical write columns, resolved through the same whitelist the adapter uses.
+ *
+ * The adapter keeps its column list module-private, so these expectations resolve each name the same
+ * way it does rather than importing its internals or retyping a literal. The ORDER here is the order
+ * the adapter's own list declares, and that order IS the assertion in the bind-order cases below: a
+ * column moved in production without being moved here shifts a binding, and these cases fail.
+ */
+const WRITE_COLUMNS = Object.freeze([
+  'productTypeIDPath',
+  'activeFlag',
+  'publishedFlag',
+  'urlTitle',
+  'productTypeName',
+  'productTypeDescription',
+  'systemCode',
+  'parentProductTypeID',
+  'remoteID',
+  'createdDateTime',
+  'createdByAccountID',
+  'modifiedDateTime',
+  'modifiedByAccountID',
+] as const).map((column) => assertColumnName(PRODUCT_TYPE_TABLE, column));
+
+/** The identifier column, resolved the same way. */
+const PRODUCT_TYPE_ID_COLUMN = assertColumnName(PRODUCT_TYPE_TABLE, 'productTypeID');
+
+/** IR-6's identifier shape: 32 lowercase hexadecimal characters, no dashes. */
+const HEX_32 = /^[0-9a-f]{32}$/;
+
+/**
+ * A transient product type carrying the field values a save should persist.
+ *
+ * `productTypeID` is left at the constructor's empty string, which is what makes `isNew()` answer
+ * true and is therefore what selects the insert branch. Nothing here pre-assigns an identifier.
+ */
+function transientProductType(overrides: Partial<ProductType> = {}): ProductType {
+  const productType = new ProductType();
+  productType.productTypeName = 'Test Product Type';
+  productType.urlTitle = 'test-product-type';
+  productType.activeFlag = true;
+  productType.publishedFlag = true;
+  return Object.assign(productType, overrides);
+}
+
+/** Return the single recorded statement, or fail naming what was expected. */
+function soleStatement(calls: readonly SqlExecutorCall[]): SqlExecutorCall {
+  return exactlyOne(calls, 'statement');
+}
+
+describe('NET-NEW: MySqlProductTypeRepository.withExecutor — re-binding, and its isolation', () => {
+  it('NET-NEW — answers a NEW instance of the same class rather than mutating the receiver', () => {
+    const { repository } = createWriteHarness();
+    const replacement = createSqlExecutorDouble();
+
+    const rebound = repository.withExecutor(replacement.executor);
+
+    /*
+     * A NEW instance is the whole point. Mutating in place would make the repository's connection
+     * depend on WHEN it was used rather than on WHICH instance was used — an ambient
+     * current-transaction slot in all but name, which is what `UnitOfWork` refuses to keep (M7).
+     */
+    expect(rebound).not.toBe(repository);
+    expect(rebound).toBeInstanceOf(MySqlProductTypeRepository);
+  });
+
+  it('NET-NEW — every statement the re-bound instance issues lands on the REPLACEMENT executor', async () => {
+    const original = createSqlExecutorDouble();
+    const replacement = createSqlExecutorDouble();
+    const repository = new MySqlProductTypeRepository(
+      original.executor,
+      createAccountContextDouble().accountContext,
+    );
+
+    await repository.withExecutor(replacement.executor).findAllForTree();
+
+    expect(replacement.calls).toHaveLength(1);
+    /* The receiver's own executor saw nothing, which is the isolation half of the contract. */
+    expect(original.calls).toHaveLength(0);
+  });
+
+  it('NET-NEW — the ORIGINAL keeps its own executor and stays usable after the re-binding', async () => {
+    const original = createSqlExecutorDouble();
+    const replacement = createSqlExecutorDouble();
+    const repository = new MySqlProductTypeRepository(
+      original.executor,
+      createAccountContextDouble().accountContext,
+    );
+
+    repository.withExecutor(replacement.executor);
+    await repository.findAllForTree();
+
+    /*
+     * The pool-bound instance a composition root built is still valid and still pool-bound AFTER the
+     * call. This is the case that fails if `withExecutor` is ever "simplified" into an assignment.
+     */
+    expect(original.calls).toHaveLength(1);
+    expect(replacement.calls).toHaveLength(0);
+  });
+
+  it('NET-NEW — two re-bindings of one receiver cannot observe each other', async () => {
+    const original = createSqlExecutorDouble();
+    const firstBoundary = createSqlExecutorDouble();
+    const secondBoundary = createSqlExecutorDouble();
+    const repository = new MySqlProductTypeRepository(
+      original.executor,
+      createAccountContextDouble().accountContext,
+    );
+
+    await repository.withExecutor(firstBoundary.executor).findAllForTree();
+    await repository.withExecutor(secondBoundary.executor).findAllForTree();
+
+    /* Two concurrent boundaries on one warm container get two instances (M7). */
+    expect(firstBoundary.calls).toHaveLength(1);
+    expect(secondBoundary.calls).toHaveLength(1);
+    expect(original.calls).toHaveLength(0);
+  });
+
+  it('NET-NEW — carries the ACCOUNT CONTEXT across, so a re-bound write still stamps its actor', async () => {
+    const accountDouble = createAccountContextDouble();
+    const original = createSqlExecutorDouble();
+    const boundary = createSqlExecutorDouble();
+    const repository = new MySqlProductTypeRepository(
+      original.executor,
+      accountDouble.accountContext,
+    );
+
+    await repository.withExecutor(boundary.executor).saveProductType(transientProductType());
+
+    /*
+     * Re-binding replaces ONE collaborator. The account context is passed through to the new
+     * instance, so a write issued inside a transaction boundary still resolves an acting account —
+     * had it been dropped, the audit columns would silently bind null on every transactional write.
+     */
+    expect(accountDouble.callCount()).toBe(1);
+    const statement = soleStatement(boundary.calls);
+    expect(statement.params).toContain(TEST_ADMIN_ACCOUNT_ID);
+  });
+
+  it('NET-NEW — the re-bound instance still answers the whole ProductTypeRepository port', async () => {
+    const { repository } = createWriteHarness();
+    const boundary = createSqlExecutorDouble({ outcomes: [sqlRows([])] });
+
+    /*
+     * Annotating the re-bound instance as the PORT is the assertion: it compiles only while the
+     * re-bound value still satisfies the declared contract, so a `withExecutor` that started
+     * answering some narrower shape would fail the typecheck rather than surviving until a service
+     * broke. Re-binding itself is absent from this interface by design.
+     */
+    const port: ProductTypeRepository = repository.withExecutor(boundary.executor);
+
+    expect(typeof port.findAllForTree).toBe('function');
+    expect(typeof port.saveProductType).toBe('function');
+    expect(typeof port.removeProductType).toBe('function');
+    await expect(port.findAllForTree()).resolves.toEqual([]);
+  });
+
+  /*
+   * ⭐ REVIEW FINDING F3 — PORT EXHAUSTIVENESS, KEYED OFF THE PORT ITSELF RATHER THAN OFF A HAND LIST.
+   * The case above proves the re-bound instance still answers the port; this one proves the list of
+   * members being checked is COMPLETE. A hand-written enumeration silently stops covering a port the
+   * day a member is added, which is the gap F3 reported; the mapped type below fails to COMPILE
+   * instead.
+   */
+  it('NET-NEW — satisfies the ProductTypeRepository port across ALL THREE declared members', () => {
+    const asPort: ProductTypeRepository = createWriteHarness().repository;
+
+    /* Keyed off the port's own member set, so a fourth method breaks compilation until it is named. */
+    const everyPortMember: Record<keyof ProductTypeRepository, true> = {
+      findAllForTree: true,
+      saveProductType: true,
+      removeProductType: true,
+    };
+
+    const declared = Object.keys(everyPortMember) as readonly (keyof ProductTypeRepository)[];
+
+    expect(declared).toHaveLength(3);
+    for (const member of declared) {
+      expect(typeof asPort[member]).toBe('function');
+    }
+  });
+});
+
+describe('NET-NEW: MySqlProductTypeRepository.saveProductType — the INSERT branch', () => {
+  it('NET-NEW — mints a 32-character identifier for a transient entity and binds it FIRST', async () => {
+    const harness = createWriteHarness();
+    const productType = transientProductType();
+
+    expect(productType.isNew()).toBe(true);
+
+    await harness.repository.saveProductType(productType);
+
+    /*
+     * IR-6: `generator="uuid"` produced 32 hexadecimal characters with no dashes, and it produced
+     * them in application code rather than by auto-increment. An RFC-4122 dashed string would not fit
+     * the column, so the shape is asserted rather than merely the presence of something.
+     */
+    expect(productType.productTypeID).toMatch(HEX_32);
+    expect(productType.isNew()).toBe(false);
+
+    const statement = soleStatement(harness.calls);
+    /* An insert LISTS the identifier, so it is the first bound value, ahead of every column value. */
+    expect(statement.params[0]).toBe(productType.productTypeID);
+  });
+
+  it('NET-NEW — fires the entity lifecycle hook BEFORE collecting values, so the ancestry path is fresh', async () => {
+    const harness = createWriteHarness();
+    /*
+     * ⭐ THE MUTATION-SENSITIVE CASE FOR THE ORDER OF TWO STATEMENTS IN PRODUCTION.
+     *
+     * The entity arrives carrying a DELIBERATELY STALE path — the shape a re-parented product type
+     * would hold before its hook ran. `preInsert` rebuilds `productTypeIDPath` from the parent chain
+     * and `collectWritableValues` then reads that field, so the order is fixed: hook first, collect
+     * second. Were the hook invoked afterwards, the statement would be composed from PRE-hook values
+     * and would bind the stale string below — and, as the production note records, nothing would fail
+     * loudly. This case is what makes that silent failure loud.
+     */
+    const productType = transientProductType({
+      productTypeIDPath: 'stale-path-from-a-former-parent',
+    });
+
+    await harness.repository.saveProductType(productType);
+
+    const statement = soleStatement(harness.calls);
+    const pathIndex = WRITE_COLUMNS.indexOf(
+      assertColumnName(PRODUCT_TYPE_TABLE, 'productTypeIDPath'),
+    );
+
+    /* Root-first, self last: a root product type's path is its own freshly minted identifier. */
+    expect(productType.productTypeIDPath).toBe(productType.productTypeID);
+    expect(statement.params[pathIndex + 1]).toBe(productType.productTypeID);
+    expect(statement.params).not.toContain('stale-path-from-a-former-parent');
+  });
+
+  it('NET-NEW — rebuilds a CHILD ancestry path root-first from the parent chain', async () => {
+    const harness = createWriteHarness();
+    const parent = new ProductType();
+    parent.productTypeID = MERCHANDISE_PRODUCT_TYPE_ID;
+    parent.productTypeName = 'Merchandise';
+
+    const child = transientProductType();
+    child.parentProductType = parent;
+
+    await harness.repository.saveProductType(child);
+
+    /*
+     * The path is materialised ancestry, comma-delimited, root first and self last — which is why the
+     * hook has to run after the identifier is minted as well as before values are collected.
+     */
+    expect(child.productTypeIDPath).toBe(`${MERCHANDISE_PRODUCT_TYPE_ID},${child.productTypeID}`);
+    const statement = soleStatement(harness.calls);
+    expect(statement.params).toContain(`${MERCHANDISE_PRODUCT_TYPE_ID},${child.productTypeID}`);
+    /* The hierarchy also reaches its own foreign-key column, not only the path. */
+    const parentIndex = WRITE_COLUMNS.indexOf(
+      assertColumnName(PRODUCT_TYPE_TABLE, 'parentProductTypeID'),
+    );
+    expect(statement.params[parentIndex + 1]).toBe(MERCHANDISE_PRODUCT_TYPE_ID);
+  });
+
+  it('NET-NEW — stamps the audit actor resolved from the ACCOUNT CONTEXT PORT, read exactly once', async () => {
+    const accountDouble = createAccountContextDouble();
+    const harness = createWriteHarness(accountDouble);
+    const productType = transientProductType();
+
+    await harness.repository.saveProductType(productType);
+
+    /*
+     * The legacy hook read its actor from a request-scoped framework lookup, which S3 forbids here,
+     * so the actor arrives through a declared port. One resolution per write: a second read would
+     * mean the adapter consulted the seam twice and could stamp two different actors on one row.
+     */
+    expect(accountDouble.callCount()).toBe(1);
+    expect(productType.createdByAccount).toBe(TEST_ADMIN_ACCOUNT_ID);
+    expect(productType.modifiedByAccount).toBe(TEST_ADMIN_ACCOUNT_ID);
+
+    const statement = soleStatement(harness.calls);
+    const createdByIndex = WRITE_COLUMNS.indexOf(
+      assertColumnName(PRODUCT_TYPE_TABLE, 'createdByAccountID'),
+    );
+    const modifiedByIndex = WRITE_COLUMNS.indexOf(
+      assertColumnName(PRODUCT_TYPE_TABLE, 'modifiedByAccountID'),
+    );
+    expect(statement.params[createdByIndex + 1]).toBe(TEST_ADMIN_ACCOUNT_ID);
+    expect(statement.params[modifiedByIndex + 1]).toBe(TEST_ADMIN_ACCOUNT_ID);
+  });
+
+  it('NET-NEW — refuses to attribute a persisted NON-ADMIN actor, preserving the legacy second gate', async () => {
+    const accountDouble = createAccountContextDouble(persistedNonAdminAccount());
+    const harness = createWriteHarness(accountDouble);
+    const productType = transientProductType();
+
+    await harness.repository.saveProductType(productType);
+
+    /*
+     * ⚠️ TWO GATES, NOT ONE, AND THE SECOND IS EASY TO LOSE. The legacy condition is
+     * `!getAccount().isNew() && getAccount().getAdminAccountFlag()`, byte-identical at all three of
+     * its call sites, so an actor must be BOTH persisted AND administrative to be recorded. A
+     * persisted non-admin account therefore stamps NO attribution — the timestamps are still written
+     * because they depend on the clock rather than the actor.
+     *
+     * This case exists because dropping the administrative half is a one-token change that makes a
+     * system MORE permissive while every other audit assertion keeps passing. Note that the actor is
+     * still RESOLVED: the gate rejects the value it was handed, it does not avoid asking.
+     */
+    expect(accountDouble.callCount()).toBe(1);
+    expect(productType.createdDateTime).toBeInstanceOf(Date);
+    expect(productType.modifiedDateTime).toBeInstanceOf(Date);
+    expect(productType.createdByAccount).toBeUndefined();
+    expect(productType.modifiedByAccount).toBeUndefined();
+
+    const statement = soleStatement(harness.calls);
+    const createdByIndex = WRITE_COLUMNS.indexOf(
+      assertColumnName(PRODUCT_TYPE_TABLE, 'createdByAccountID'),
+    );
+    expect(statement.params[createdByIndex + 1]).toBeNull();
+    expect(statement.params).not.toContain(persistedNonAdminAccount().accountID);
+  });
+
+  it('NET-NEW — stamps the timestamps but leaves the actor columns NULL when no account is present', async () => {
+    const absent = createAbsentAccountContextDouble();
+    const harness = createWriteHarness(absent);
+    const productType = transientProductType();
+
+    await harness.repository.saveProductType(productType);
+
+    /*
+     * An absent account is a real state — an unauthenticated or system-initiated write — and it is a
+     * DISTINCT input from an actor present with the administrative flag false, even though both
+     * correctly yield "do not stamp". The timestamps are still written because they depend on the
+     * clock rather than the actor, and the two account columns bind null rather than an empty string:
+     * the difference between "nobody was recorded" and "an account whose identifier is blank".
+     */
+    expect(absent.callCount()).toBe(1);
+    expect(productType.createdDateTime).toBeInstanceOf(Date);
+    expect(productType.modifiedDateTime).toBeInstanceOf(Date);
+    expect(productType.createdByAccount).toBeUndefined();
+
+    const statement = soleStatement(harness.calls);
+    const createdByIndex = WRITE_COLUMNS.indexOf(
+      assertColumnName(PRODUCT_TYPE_TABLE, 'createdByAccountID'),
+    );
+    expect(statement.params[createdByIndex + 1]).toBeNull();
+  });
+
+  it('NET-NEW — emits the exact column list, one placeholder per column, identifier included', async () => {
+    const harness = createWriteHarness();
+
+    await harness.repository.saveProductType(transientProductType());
+
+    const statement = soleStatement(harness.calls);
+    const expectedColumns = [PRODUCT_TYPE_ID_COLUMN, ...WRITE_COLUMNS].join(', ');
+    const expectedPlaceholders = [PRODUCT_TYPE_ID_COLUMN, ...WRITE_COLUMNS]
+      .map(() => '?')
+      .join(', ');
+
+    /*
+     * Whole-statement equality rather than a substring probe. A column added to the list but not to
+     * the value array — or the reverse — shifts every binding after it, and only an exact comparison
+     * of both halves catches that.
+     */
+    expect(statement.sql).toBe(
+      `INSERT INTO ${PRODUCT_TYPE_TABLE} (${expectedColumns}) VALUES (${expectedPlaceholders})`,
+    );
+    expect(statement.params).toHaveLength(WRITE_COLUMNS.length + 1);
+    expect((statement.sql.match(/\?/g) ?? []).length).toBe(statement.params.length);
+  });
+
+  it('NET-NEW — binds an ABSENT optional field as null rather than dropping it from the statement', async () => {
+    const harness = createWriteHarness();
+    const productType = new ProductType();
+    productType.productTypeName = 'Sparse Product Type';
+
+    await harness.repository.saveProductType(productType);
+
+    const statement = soleStatement(harness.calls);
+    const descriptionIndex = WRITE_COLUMNS.indexOf(
+      assertColumnName(PRODUCT_TYPE_TABLE, 'productTypeDescription'),
+    );
+
+    /*
+     * Dropping the column would let the database apply its own default, which is a DIFFERENT outcome
+     * from storing the absence the entity actually holds — and on an update it would leave a stale
+     * value in place. The placeholder count above already proves nothing is dropped; this proves the
+     * value bound in its place is null.
+     */
+    expect(statement.params[descriptionIndex + 1]).toBeNull();
+    expect(statement.params).toHaveLength(WRITE_COLUMNS.length + 1);
+  });
+
+  it('NET-NEW — BINDS a quote-bearing value instead of writing it into the statement text', async () => {
+    const harness = createWriteHarness();
+    const hostile = "Robert'); DROP TABLE SwProductType; --";
+
+    await harness.repository.saveProductType(transientProductType({ productTypeName: hostile }));
+
+    const statement = soleStatement(harness.calls);
+
+    /*
+     * This is the positive form of the D18 note in the header. The importer's legacy statements
+     * interpolate values taken from an uploaded file; this write interpolates nothing, so the hostile
+     * string appears in the bound array and NOWHERE in the statement text. No hardening exception is
+     * being claimed — binding throughout is ordinary compliance, and this case is its evidence.
+     */
+    expect(statement.params).toContain(hostile);
+    expect(statement.sql).not.toContain('DROP TABLE');
+    expect(statement.sql).not.toContain("'");
+  });
+
+  it('NET-NEW — returns the SAME entity instance it was handed, not a copy', async () => {
+    const harness = createWriteHarness();
+    const productType = transientProductType();
+
+    const returned = await harness.repository.saveProductType(productType);
+
+    /*
+     * The caller keeps its reference and reads the minted identifier off it, which is how
+     * `ProductService.saveProductType` gets the identifier back. Returning a copy would leave the
+     * caller holding a transient entity that reports `isNew()` forever.
+     */
+    expect(returned).toBe(productType);
+  });
+});
+
+describe('NET-NEW: MySqlProductTypeRepository.saveProductType — the UPDATE branch', () => {
+  /** A persisted product type: a non-empty identifier is what makes `isNew()` answer false. */
+  function persistedProductType(): ProductType {
+    const productType = transientProductType();
+    productType.productTypeID = SUBSCRIPTION_PRODUCT_TYPE_ID;
+    return productType;
+  }
+
+  it('NET-NEW — PRESERVES the stored identifier and mints no replacement', async () => {
+    const harness = createWriteHarness();
+    const productType = persistedProductType();
+
+    expect(productType.isNew()).toBe(false);
+
+    await harness.repository.saveProductType(productType);
+
+    /*
+     * `generator="uuid"` assigned only while an entity was transient, so an update keeps the
+     * identifier its stored row is keyed on. Re-minting here would compose an update whose predicate
+     * matched no row, and the write would silently affect nothing.
+     */
+    expect(productType.productTypeID).toBe(SUBSCRIPTION_PRODUCT_TYPE_ID);
+  });
+
+  it('NET-NEW — emits a SET assignment per writable column and binds the identifier LAST', async () => {
+    const harness = createWriteHarness();
+    /*
+     * A CHILD is used here rather than a root, and the reason is a trap worth naming. For a ROOT
+     * product type the materialised ancestry path IS its own identifier, so the identifier legitimately
+     * appears in the FIRST bound position as well as the last, and a case asserting "the identifier is
+     * not bound first" would fail against correct production code. Giving the entity a parent makes
+     * the path `parent,self` and the two positions genuinely distinguishable.
+     */
+    const parent = new ProductType();
+    parent.productTypeID = MERCHANDISE_PRODUCT_TYPE_ID;
+    const productType = persistedProductType();
+    productType.parentProductType = parent;
+
+    await harness.repository.saveProductType(productType);
+
+    const statement = soleStatement(harness.calls);
+    const expectedAssignments = WRITE_COLUMNS.map((column) => `${column} = ?`).join(', ');
+
+    expect(statement.sql).toBe(
+      `UPDATE ${PRODUCT_TYPE_TABLE} SET ${expectedAssignments} ` +
+        `WHERE ${PRODUCT_TYPE_ID_COLUMN} = ?`,
+    );
+    /*
+     * The identifier is bound LAST here and FIRST on the insert, because an insert LISTS it while an
+     * update MATCHES on it. Transposing the two would compose a statement that keys the row on a
+     * column value — the single most damaging binding error this member could make.
+     */
+    expect(statement.params).toHaveLength(WRITE_COLUMNS.length + 1);
+    expect(statement.params[statement.params.length - 1]).toBe(SUBSCRIPTION_PRODUCT_TYPE_ID);
+    expect(statement.params[0]).toBe(
+      `${MERCHANDISE_PRODUCT_TYPE_ID},${SUBSCRIPTION_PRODUCT_TYPE_ID}`,
+    );
+  });
+
+  it('NET-NEW — fires the UPDATE hook, refreshing the ancestry path before values are collected', async () => {
+    const harness = createWriteHarness();
+    const productType = persistedProductType();
+    productType.productTypeIDPath = 'stale-path-from-a-former-parent';
+
+    await harness.repository.saveProductType(productType);
+
+    /*
+     * `preUpdate` refreshes the same path `preInsert` does, so a re-parented product type's stored
+     * ancestry is corrected on every write rather than only at creation. Its first parameter — the
+     * pre-image Hibernate used to supply — is passed as `undefined` deliberately: this adapter has no
+     * snapshot to offer and composes a full-column assignment rather than a diff, so fabricating one
+     * would imply a change-detection capability neither system has.
+     */
+    expect(productType.productTypeIDPath).toBe(SUBSCRIPTION_PRODUCT_TYPE_ID);
+    const statement = soleStatement(harness.calls);
+    expect(statement.params).not.toContain('stale-path-from-a-former-parent');
+    expect(statement.params).toContain(SUBSCRIPTION_PRODUCT_TYPE_ID);
+  });
+
+  it('NET-NEW — refreshes the MODIFIED audit pair without disturbing a stored CREATED pair', async () => {
+    const harness = createWriteHarness();
+    const productType = persistedProductType();
+    const storedCreation = new Date('2019-03-04T05:06:07.000Z');
+    productType.createdDateTime = storedCreation;
+    productType.createdByAccount = 'aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa';
+
+    await harness.repository.saveProductType(productType);
+
+    /*
+     * An update stamps only the modified half. Overwriting the created half would rewrite history on
+     * every save, and because the update binds a full column assignment the stored creation values
+     * have to survive the round trip through the entity to be re-bound unchanged.
+     */
+    expect(productType.createdDateTime).toBe(storedCreation);
+    expect(productType.createdByAccount).toBe('aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa');
+    expect(productType.modifiedByAccount).toBe(TEST_ADMIN_ACCOUNT_ID);
+    expect(productType.modifiedDateTime).toBeInstanceOf(Date);
+
+    const statement = soleStatement(harness.calls);
+    const createdAtIndex = WRITE_COLUMNS.indexOf(
+      assertColumnName(PRODUCT_TYPE_TABLE, 'createdDateTime'),
+    );
+    /*
+     * ⚠️ NO `+ 1` HERE, UNLIKE EVERY INSERT CASE ABOVE, AND THE ASYMMETRY IS THE CONTRACT. An insert
+     * binds the identifier FIRST and so shifts every column value one position right; an update binds
+     * the writable values from position zero and appends the identifier at the end. Reusing the
+     * insert's offset on this path would silently read the NEXT column's value — which is exactly the
+     * off-by-one this pair of index expressions exists to keep visible.
+     */
+    expect(statement.params[createdAtIndex]).toBe(storedCreation);
+  });
+
+  it('NET-NEW — issues exactly ONE statement, with no read-back probe before it', async () => {
+    const harness = createWriteHarness();
+
+    await harness.repository.saveProductType(persistedProductType());
+
+    /*
+     * The insert-or-update decision comes from the entity, not from a probe — deliberately unlike
+     * `MySqlSkuRepository.persistSku`, which probes because a SKU can arrive carrying an identifier
+     * for a row that does not exist yet. A product type reaches this member either freshly
+     * constructed or loaded from a row, so `isNew()` answers exactly and a round trip would buy
+     * nothing. One statement per save is the observable form of that decision.
+     */
+    expect(harness.calls).toHaveLength(1);
+    expect(harness.calls[0]?.sql.startsWith('UPDATE ')).toBe(true);
+  });
+
+  it('NET-NEW — chooses its branch from the ENTITY, so one adapter answers both shapes', async () => {
+    const harness = createWriteHarness();
+
+    await harness.repository.saveProductType(transientProductType());
+    await harness.repository.saveProductType(persistedProductType());
+
+    /* Two saves, two different statements, from one instance and with no configuration between. */
+    expect(harness.calls).toHaveLength(2);
+    expect(harness.calls[0]?.sql.startsWith('INSERT INTO ')).toBe(true);
+    expect(harness.calls[1]?.sql.startsWith('UPDATE ')).toBe(true);
+  });
+
+  it('NET-NEW — does not read the affected-row count, so a zero-row update still resolves', async () => {
+    const executorDouble = createSqlExecutorDouble({ outcomes: [sqlAffectedRows(0)] });
+    const repository = new MySqlProductTypeRepository(
+      executorDouble.executor,
+      createAccountContextDouble().accountContext,
+    );
+    const productType = persistedProductType();
+
+    /*
+     * The legacy write primitive is declared `void` and reported nothing, so a caller never learned
+     * whether a row was present. Resolving on a zero-row acknowledgement preserves that contract; a
+     * member that raised here would invent a failure mode the legacy did not have.
+     */
+    await expect(repository.saveProductType(productType)).resolves.toBe(productType);
+  });
+});
+
+describe('NET-NEW: MySqlProductTypeRepository.removeProductType — refusal and the DELETE', () => {
+  it('NET-NEW — REFUSES a transient entity and issues NO statement at all', async () => {
+    const harness = createWriteHarness();
+    const productType = transientProductType();
+
+    /*
+     * A transient entity carries the empty unsaved identifier, so a removal keyed on it would compose
+     * `WHERE productTypeID = ''` — a predicate matching nothing in a sound table and an arbitrary row
+     * in an unsound one. Refusing BEFORE composing anything is the observable half, and it is not a
+     * hardening: it refuses an input the legacy could not express, rather than one it accepted.
+     */
+    await expect(harness.repository.removeProductType(productType)).rejects.toThrow(
+      /cannot be removed before it has been persisted/,
+    );
+    expect(harness.calls).toHaveLength(0);
+  });
+
+  it('NET-NEW — names the refused product type in the failure context', async () => {
+    const harness = createWriteHarness();
+
+    await expect(
+      harness.repository.removeProductType(
+        transientProductType({ productTypeName: 'Unsaved Type' }),
+      ),
+    ).rejects.toMatchObject({ context: { productTypeName: 'Unsaved Type' } });
+  });
+
+  it('NET-NEW — emits exactly one DELETE keyed on the identifier, bound and not interpolated', async () => {
+    const harness = createWriteHarness();
+    const productType = transientProductType();
+    productType.productTypeID = CONTENT_ACCESS_PRODUCT_TYPE_ID;
+
+    await harness.repository.removeProductType(productType);
+
+    const statement = soleStatement(harness.calls);
+
+    expect(statement.sql).toBe(
+      `DELETE FROM ${PRODUCT_TYPE_TABLE} WHERE ${PRODUCT_TYPE_ID_COLUMN} = ?`,
+    );
+    expect(statement.params).toEqual([CONTENT_ACCESS_PRODUCT_TYPE_ID]);
+    /* The identifier is a bound value, so it can never be read as statement syntax (R4). */
+    expect(statement.sql).not.toContain(CONTENT_ACCESS_PRODUCT_TYPE_ID);
+  });
+
+  it('NET-NEW — resolves to undefined and reads no affected-row count', async () => {
+    const executorDouble = createSqlExecutorDouble({ outcomes: [sqlAffectedRows(0)] });
+    const repository = new MySqlProductTypeRepository(
+      executorDouble.executor,
+      createAccountContextDouble().accountContext,
+    );
+    const productType = transientProductType();
+    productType.productTypeID = CONTENT_ACCESS_PRODUCT_TYPE_ID;
+
+    /*
+     * For a removal the count is exact, but the legacy primitive is declared `void` and reports
+     * nothing, so a caller never learned whether a row was present. `void` keeps that contract, and a
+     * zero-row acknowledgement is therefore not an error.
+     */
+    await expect(repository.removeProductType(productType)).resolves.toBeUndefined();
+  });
+
+  it('NET-NEW — resolves NO acting account, because a removal stamps nothing', async () => {
+    const accountDouble = createAccountContextDouble();
+    const harness = createWriteHarness(accountDouble);
+    const productType = transientProductType();
+    productType.productTypeID = CONTENT_ACCESS_PRODUCT_TYPE_ID;
+
+    await harness.repository.removeProductType(productType);
+
+    /*
+     * There is no audit stamp on a row that is being deleted, so consulting the account seam would be
+     * work with no observable effect — and would couple a removal to a collaborator it does not need.
+     */
+    expect(accountDouble.callCount()).toBe(0);
+  });
+
+  it('NET-NEW — cascades nothing: no child, product or assignment statement accompanies the DELETE', async () => {
+    const harness = createWriteHarness();
+    const productType = transientProductType();
+    productType.productTypeID = CONTENT_ACCESS_PRODUCT_TYPE_ID;
+    productType.childProductTypes = [transientProductType()];
+
+    await harness.repository.removeProductType(productType);
+
+    /*
+     * Cascade and validation both belong to layers above, which the port records. A product type
+     * carrying children still produces exactly ONE statement here — the delete guards that decide
+     * whether a removal is permissible at all live in the validation rule set, not in this adapter.
+     *
+     * ⚠️ THE PRODUCT TABLE IS MATCHED ON A WORD BOUNDARY, NOT AS A SUBSTRING. `SwProductType`
+     * CONTAINS `SwProduct`, so a naive `includes(PRODUCT_TABLE)` reports the product table as touched
+     * by every statement naming the product-type table and this case would fail against correct code.
+     * The trailing boundary is what distinguishes the two names.
+     */
+    expect(harness.calls).toHaveLength(1);
+    expect(harness.calls.every((call) => call.sql.startsWith('DELETE FROM '))).toBe(true);
+    const productTableReference = new RegExp(`\\b${PRODUCT_TABLE}\\b`);
+    expect(harness.calls.some((call) => productTableReference.test(call.sql))).toBe(false);
   });
 });

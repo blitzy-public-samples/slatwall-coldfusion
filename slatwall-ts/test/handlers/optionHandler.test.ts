@@ -47,10 +47,6 @@ import type {
   UnusedProductOptionsEvent,
 } from '../../src/handlers/optionHandler';
 import type {
-  BoundedReadResult,
-  BoundedReadWindow,
-} from '../../src/ports/repositories/BoundedRead';
-import type {
   AccountReference,
   EntityAuthorizationRequest,
   RequestAuthorizationResolver,
@@ -134,34 +130,6 @@ describe('optionHandler — SEC-03, the gate and the two classifications', () =>
         serviceCalls.push('getUnusedProductOptionGroups');
         forwarded.push([existingOptionGroupIDList]);
         return Promise.resolve([{ name: 'Group', value: 'group-1' }]);
-      },
-      /* ⭐ THE TWO BOUNDED COMPANIONS ARE PART OF THE SURFACE, SO THE DOUBLE DECLARES THEM.
-       * `OptionSurface` is a `Pick` over the service, and the service declares a bounded twin beside
-       * each unused-* member, so a three-member double does not satisfy it. They are recorded here for
-       * the same reason the unbounded members are — the gate is keyed on `keyof OptionHandler`, and
-       * `OPTION_ACCESS_MATRIX` gives the bounded twins the SAME classification as their originals, so
-       * a case that asserts the matrix is complete needs them present to observe that. Neither is
-       * reached by the cases below; the window is echoed back so a reach would be visible rather than
-       * silent. */
-      getUnusedProductOptionsBounded: (
-        window: BoundedReadWindow,
-        productID: string,
-        existingOptionGroupIDList: string,
-      ): Promise<BoundedReadResult<SelectOption>> => {
-        serviceCalls.push('getUnusedProductOptionsBounded');
-        forwarded.push([window, productID, existingOptionGroupIDList]);
-        return Promise.resolve({
-          rows: [{ name: 'Group - Option', value: 'option-1' }],
-          hasMore: false,
-        });
-      },
-      getUnusedProductOptionGroupsBounded: (
-        window: BoundedReadWindow,
-        existingOptionGroupIDList: string,
-      ): Promise<BoundedReadResult<SelectOption>> => {
-        serviceCalls.push('getUnusedProductOptionGroupsBounded');
-        forwarded.push([window, existingOptionGroupIDList]);
-        return Promise.resolve({ rows: [{ name: 'Group', value: 'group-1' }], hasMore: false });
       },
     };
 
@@ -353,17 +321,18 @@ describe('optionHandler — SEC-03, the gate and the two classifications', () =>
   });
 
   it('NET-NEW — every routed member carries a requirement, and the matrix is frozen through and through', () => {
-    /* ⭐ THE SET IS FIVE, NOT THREE, AND THE TWO EXTRA KEYS ARE THE POINT OF THE CASE.
-     * The landed handler mounts a BOUNDED twin beside each unused-* member. The assertion here is not
-     * "there are three members" — it is "the set is CLOSED and every member in it is classified", so it
-     * enumerates the five the boundary actually mounts. The next case states the other half: growing to
-     * five did not open a door to any of the four members the legacy fabricated at run time. */
+    /* ⛔ THE SET IS EXACTLY THREE, ONE PER DECLARED SERVICE MEMBER, AND CLOSURE IS THE ASSERTION.
+     * The claim is not merely "every mounted member is classified" — `toStrictEqual` over the sorted keys
+     * makes it bidirectional, so an unclassified addition and an invented fourth route both fail here.
+     * Two bounded twins were previously mounted beside the unused-* members and were withdrawn: AAP
+     * §0.4.1.8 and §0.4.2.4-§0.4.2.5 fix `OptionService` at seven public members, and §0.8.3.1 makes that
+     * surface the artefact a reviewer checks method by method, so a route to a member that is not on it
+     * could not survive. The next case states the other half: no door opened to any of the four members
+     * the legacy fabricated at run time either. */
     expect(Object.keys(OPTION_ACCESS_MATRIX).sort()).toStrictEqual([
       'getOptionsForSelect',
       'getUnusedProductOptionGroups',
-      'getUnusedProductOptionGroupsBounded',
       'getUnusedProductOptions',
-      'getUnusedProductOptionsBounded',
     ]);
 
     expect(OPTION_ACCESS_MATRIX.getOptionsForSelect).toStrictEqual({
@@ -376,16 +345,6 @@ describe('optionHandler — SEC-03, the gate and the two classifications', () =>
     expect(OPTION_ACCESS_MATRIX.getUnusedProductOptionGroups).toStrictEqual({
       classification: 'anyLogin',
     });
-
-    /* ⭐ P9 — A BOUND NARROWS HOW MANY ROWS ARRIVE, NEVER WHICH. Each bounded twin therefore carries
-     * the IDENTICAL requirement to its unbounded original; anything looser would turn the bound into a
-     * way around the gate rather than a way to read within it. */
-    expect(OPTION_ACCESS_MATRIX.getUnusedProductOptionsBounded).toStrictEqual(
-      OPTION_ACCESS_MATRIX.getUnusedProductOptions,
-    );
-    expect(OPTION_ACCESS_MATRIX.getUnusedProductOptionGroupsBounded).toStrictEqual(
-      OPTION_ACCESS_MATRIX.getUnusedProductOptionGroups,
-    );
 
     expect(Object.isFrozen(OPTION_ACCESS_MATRIX)).toBe(true);
     for (const requirement of Object.values(OPTION_ACCESS_MATRIX)) {
@@ -400,9 +359,7 @@ describe('optionHandler — SEC-03, the gate and the two classifications', () =>
     expect(Object.keys(probe.handler).sort()).toStrictEqual([
       'getOptionsForSelect',
       'getUnusedProductOptionGroups',
-      'getUnusedProductOptionGroupsBounded',
       'getUnusedProductOptions',
-      'getUnusedProductOptionsBounded',
     ]);
     for (const synthesized of [
       'getOption',

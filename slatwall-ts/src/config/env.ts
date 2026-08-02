@@ -21,6 +21,8 @@
  * src/adapters/mysql/UnitOfWork.ts.
  */
 
+import { isIPv6 } from 'node:net';
+
 import { DomainError } from '../errors/DomainError';
 
 /* ==============================================================================================
@@ -244,31 +246,82 @@ import { DomainError } from '../errors/DomainError';
  * completeness rule the other nine variables obey. It is a configuration-completeness rule, NOT a
  * security control.
  *
- * WHY NO SYNTAX RULE RUNS ANYWHERE, HERE OR DOWNSTREAM
- * ---------------------------------------------------
- * This module checks PRESENCE and NON-BLANKNESS only, exactly as it does for DB_HOST — and nothing
- * further checks the value at any later layer either.
+ * ⭐ SEC-HARDENING (D18-CLASS) — A HOST-SYNTAX RULE RUNS HERE, AND ENCODING RUNS DOWNSTREAM
+ * ------------------------------------------------------------------------------------------
+ * This section previously read "WHY NO SYNTAX RULE RUNS ANYWHERE, HERE OR DOWNSTREAM", and that
+ * reading is WITHDRAWN. It bundled two separable concerns into one all-or-nothing refusal and then
+ * rejected the bundle: an INVENTED authority policy, and a TRANSCRIBED grammar. Only the first is
+ * forbidden.
  *
- * ⛔ AN EARLIER REVISION DEFERRED AN AUTHORITY-SYNTAX RULE TO THE SERIALIZER, AND THAT RULE IS
- * WITHDRAWN. It was a character allowlist plus a DNS-label ceiling whose miss RAISED, declared as
- * `validateFeedHostAuthority` / DECISION G-1 in src/integrations/google/ProductFeedBuilder.ts, and it
- * was paired with a fail-closed membership gate over an `allowedHosts` list. Both are gone. The legacy
- * performs NO check, so refusing a configured host is an outcome change: AAP §0.8.2 guideline 4 forbids
- * enhancement beyond what the migration requires, and D18 (AAP §0.6.7.7) is the SOLE declared
- * behaviour-hardening exception — a precedent only for a divergence that removes a flaw class WITHOUT
- * changing an outcome, which parameterised SQL does and a refusal does not. The character allowlist and
- * the 63-octet ceiling were also invented figures the source states nowhere (S9, IR-12).
+ * ⛔ WHAT STAYS WITHDRAWN is DECISION G-1's THREE INVENTIONS, not the member that carried them: a
+ * character allowlist of its own devising, a 63-octet DNS-label ceiling the source states nowhere, and
+ * a fail-closed membership gate over an `allowedHosts` list. Each is a figure or a policy with no source
+ * locator (standard S9, IR-12), and an `allowedHosts` gate additionally refuses hosts a conforming
+ * deployment may legitimately name. All three remain withdrawn and none returns.
  *
- * ⚠️ THE RESIDUAL EXPOSURE IS FLAGGED, NOT CLOSED (S8). XML markup in this value lands inside four
- * element text nodes and can add or replace feed fields; a bare ampersand leaves the document with no
- * defined XML parse; and every product, image and additional-image URL is built on whatever authority
- * it names. All three are carried from :L14, :L15, :L22, :L23 and :L24. Because the value is
- * configuration rather than a caller-supplied header, it is the operator's own to get right, and the
- * serializer's WITHDRAWN RAW-SINK VALIDATION note carries the full argument.
+ * ⭐ BUT `validateFeedHostAuthority` ITSELF IS REINSTATED, IN A THREAT-SHAPED FORM THAT CARRIES NONE OF
+ * THEM (review findings F7 and SEC-06). An earlier revision of this note said the member "stays
+ * withdrawn"; that is now wrong and is corrected here rather than left to contradict the code. It is
+ * exported from src/integrations/google/ProductFeedBuilder.ts and refuses exactly two things: a blank
+ * host, and a host carrying a character that would MOVE THE ORIGIN of the absolute URLs the feed builds
+ * on it — the host sits immediately after `http://` at every one of those sites, so
+ * `good.example@evil.example` redirects the whole document and escaping cannot reach it, `@` being no
+ * XML metacharacter. It is a DENY rule over origin-moving characters, not the withdrawn positive
+ * grammar: `&` PASSES it, correctly, because `&` cannot move an authority.
  *
- * The arrow direction is unchanged and no new import appears in this file. Config does NOT reach up
- * into src/integrations/**; src/handlers/googleFeedHandler.ts reads `config.googleFeed.host` from here
- * and hands it to the render context unmodified.
+ * ⭐ SO TWO RULES RUN, AT TWO LAYERS, AND THEY ARE CONCORDANT RATHER THAN DUPLICATED. This module
+ * refuses a malformed GOOGLE_FEED_HOST once, at configuration-read time, so a deployment fails fast
+ * before the graph builds. The serializer refuses an origin-moving host at the sink, where the URL is
+ * actually composed, so the invariant holds for any caller — including the tests, which construct a
+ * render context directly and never pass through this loader. Neither rule invents the other's policy,
+ * both accept the RFC 3986 sub-delimiters, and both refuse userinfo, so no value is accepted by one and
+ * rejected by the other.
+ *
+ * ✅ WHAT NOW RUNS, AND ITS SOURCE: {@link requireHostAuthorityValue} transcribes RFC 3986 §3.2.2
+ * `host` with RFC 3986 §3.2.3's optional `port`. RFC 9110 §7.2 defines the HTTP `Host` field value as
+ * exactly that — adopting `host` and `port` from the URI generic syntax, and requiring that any
+ * userinfo subcomponent and its `@` delimiter be excluded. `CGI.HTTP_HOST` IS that field value, so a
+ * value outside the production could never have reached :L14, :L15, :L22, :L23 or :L24 in the first
+ * place. Refusing it therefore removes no outcome the legacy was designed to produce, which is D18's
+ * licensing property (AAP §0.6.7.7) rather than the enhancement AAP §0.8.2 guideline 4 forbids. The
+ * grammar is transcribed, not chosen: what it accepts is what RFC 3986 accepts, including the
+ * percent-encoding and sub-delimiters (`&`, `'` among them) that a narrower rule would have invented
+ * its way out of.
+ *
+ * ✅ AND WHAT RUNS DOWNSTREAM IS ENCODING, NOT GRAMMAR. src/integrations/google/ProductFeedBuilder.ts
+ * escapes every dynamic text node it emits (review finding F1), so the host reaches each of the six
+ * absolute URLs built on it as XML character data. A `&` accepted here lands as `&amp;` and the
+ * document keeps a defined parse. One concern per layer: grammar here, encoding there, neither
+ * inventing the other's policy.
+ *
+ * ⚠️ WHAT REMAINS FLAGGED, NOT CLOSED (S8): this rule constrains the SHAPE of the authority, never
+ * its IDENTITY. An operator who names a host they do not control still gets a feed whose product,
+ * image and additional-image URLs point at that host, exactly as the legacy would have done for any
+ * `Host` header it was handed. Deciding WHICH authority is legitimate is a deployment question with
+ * no source in the legacy code, and inventing an answer is what the withdrawn `allowedHosts` gate did.
+ *
+ * ⛔ WHAT STAYS WITHDRAWN, WHICH IS WHY THIS SECTION IS NOT SIMPLY REVERSED. The earlier deferred rule was
+ * a character ALLOWLIST plus a 63-octet DNS-label ceiling, paired with a fail-closed membership gate over
+ * an `allowedHosts` list. All three are gone and stay gone: an allowlist and a ceiling are invented
+ * figures the source states nowhere (S9, IR-12), and a membership gate refuses hosts that are perfectly
+ * legal authorities. What returns is a DENY set of authority delimiters, whitespace and control
+ * characters, which refuses nothing a deployment could have published to its own configured origin.
+ *
+ * ⚠️ AND THE REASONING THAT WITHDREW IT WAS WRONG ON ITS OWN EXAMPLE, RECORDED SO IT IS NOT REPEATED. It
+ * held that D18 (AAP §0.6.7.7) licenses only a divergence that removes a flaw class WITHOUT changing an
+ * outcome, "which parameterised SQL does and a refusal does not". Parameterised SQL does not: for an
+ * input containing a quote it returns the operator's rows INSTEAD OF executing the attacker's statement,
+ * which is a different outcome. D18's actual test is that the divergence falls only on inputs where the
+ * legacy's own behaviour was the flaw, and both reinstated controls meet it.
+ *
+ * ⚠️ ONE HALF OF THE EXPOSURE IS STILL CARRIED, NOT CLOSED (S8). XML markup in this value is now escaped
+ * at every sink it reaches, so it can no longer add or replace feed fields; and an origin-moving character
+ * is refused. What remains is that every product, image and additional-image URL is built on whatever
+ * authority the operator names — a configured value is still the operator's own to get right. The
+ * serializer's RAW-SINK POLICY note carries the full control-by-control argument.
+ *
+ * src/handlers/googleFeedHandler.ts reads `config.googleFeed.host` from here, checks it, and hands it to
+ * the render context UNMODIFIED — the check refuses or does nothing, and never rewrites.
  * ============================================================================================ */
 
 /* ==============================================================================================
@@ -303,12 +356,26 @@ import { DomainError } from '../errors/DomainError';
  *     so every possible value of one is a fabricated number. Passing the fabrication to the caller
  *     as a required argument relocated the invention; it did not avoid it." The collision loop at
  *     model/service/DataService.cfc:L64 is unbounded in the legacy and is unbounded in the port.
- *   - src/services/SkuService.ts, on its removed `SkuCombinationBudget`: "Requiring the composition
+ *     ⭐ AND A BOUND HAS SINCE BEEN REINSTATED FOR THAT LOOP TOO, by review finding F5 — but NOT inside
+ *     the algorithm and NOT as configuration. `src/util/urlTitleProbeBudget.ts` wraps the injected PROBE,
+ *     optionally, with no default, and `src/util/urlTitle.ts` is unchanged. THE DECISION IN THIS FILE IS
+ *     UNAFFECTED for the same reason as the budget below: an optional collaborator obliges no deployment
+ *     to state a figure, so there is still nothing here to load.
+ *   - src/services/SkuService.ts, on its then-removed `SkuCombinationBudget`: "Requiring the composition
  *     root to supply the maximum RELOCATED the fabrication rather than avoiding it: the number still
  *     had to be invented by somebody before the graph could be built at all."
- *   - src/ports/repositories/ProductRepository.ts, on the whole SEC-08 gate its
- *     `ProductImportSourcePolicy` configured: "the policy object itself was five invented
- *     configuration values, which AAP §0.7.3 standard 9 and IR-12 forbid outright."
+ *   - src/ports/repositories/ProductRepository.ts, on the `ProductImportSourcePolicy` its SEC-08 gate
+ *     was configured by: an implementation "must still NOT invent a host allow-list, a byte cap, a
+ *     timeout or a redirect count. The source names no host and states no figure, so every possible
+ *     value of each is a fabrication that AAP §0.7.3 standard 9 and IR-12 forbid."
+ *
+ * ⚠️ THE THIRD ENTRY WAS RE-ADJUDICATED BY REVIEW FINDING F8, AND THE CONCLUSION HERE SURVIVES IT
+ * UNCHANGED. The SEC-08 gate is no longer withdrawn — a hostile import location IS refused — but every
+ * control that came back is a FIXED LITERAL rather than a configurable value: the approved schemes are
+ * what `cfhttp` can speak, and the blocked address ranges are defined by RFCs 1122, 1918, 3927, 4193 and
+ * 4291. The four things a deployment would have had to supply are precisely the four that STAYED
+ * withdrawn, which is why no `ProductImportConfig` returns with the gate and the quotation above is
+ * taken from the clause that still forbids them.
  *
  * KEEPING THEIR LOADERS AFTER THE COLLABORATORS WENT WOULD HAVE BEEN THE SAME RELOCATION ALL THREE
  * REJECT. Seven environment variables — five import-policy values, one URL-title budget, one
@@ -468,10 +535,50 @@ export interface GoogleFeedConfig {
  * no-default collaborator input below the config layer, and every one of those inputs has since been
  * withdrawn on AAP authority: the URL-title attempt budget and the SKU combination budget as invented
  * ceilings the legacy states nowhere (AAP §0.8.2 guideline 4, §0.7.3 standard 9, IR-12), and the
- * importer's `ProductImportSourcePolicy` with the whole SEC-08 branded-source gate, because refusing a
- * location the legacy would have fetched changes an outcome and D18 is the SOLE declared
- * behaviour-preservation exception (AAP §0.6.7.7). See the loader note further down for each
- * withdrawing file's own words, and DECISION G for the one collaborator that still reads from here.
+ * importer's `ProductImportSourcePolicy` along with the branded source type its SEC-08 gate produced.
+ *
+ * ⚠️ AND THE IMPORT ENTRY NEEDS ITS REASON RESTATED, BECAUSE THE ONE ORIGINALLY GIVEN HERE HAS BEEN
+ * DISPROVED. This said the gate went "because refusing a location the legacy would have fetched changes
+ * an outcome and D18 is the SOLE declared behaviour-preservation exception (AAP §0.6.7.7)". Review
+ * finding F8 re-opened that: the legacy CANNOT fetch any location at all, because the
+ * `utilityTagService` bean its retrieval calls does not exist anywhere in the legacy tree, so there was
+ * no outcome for a refusal to change. The gate is therefore back, and
+ * `src/ports/repositories/ProductRepository.ts` carries the full re-adjudication.
+ *
+ * ⭐ WHAT DID NOT COME BACK IS EXACTLY WHAT THIS FILE WOULD HAVE HAD TO SUPPLY. The reinstated controls
+ * are fixed literals — the schemes `cfhttp` can speak, and address ranges defined by RFCs 1122, 1918,
+ * 3927, 4193 and 4291 — while the host allow-list, byte cap, timeout and redirect count stayed withdrawn
+ * as invented figures. A `ProductImportConfig` would have had nothing left to carry, so none is
+ * reinstated and this removal stands.
+ *
+ * ⚠️ THREE OF THE FOUR WITHDRAWALS LISTED ABOVE HAVE SINCE BEEN REVERSED BELOW THE CONFIG LAYER, AND THE
+ * LIST IS CORRECTED HERE RATHER THAN LEFT TO CONTRADICT THE CODE. What is actually in the tree now:
+ *
+ *   `SkuCombinationBudget`            REINSTATED (finding F3) and exported from ../services/SkuService.ts,
+ *                                     wired as an OPTIONAL constructor parameter with NO DEFAULT.
+ *   `UrlTitleProbeBudget`             REINSTATED (finding F5) in ../util/urlTitleProbeBudget.ts, wrapped
+ *                                     around the injected probe so the ported algorithm in
+ *                                     ../util/urlTitle.ts is untouched.
+ *   `ProductImportSourcePolicy`       REINSTATED (findings F8, F9) and, unlike the two budgets, REQUIRED
+ *                                     rather than optional — ../ports/repositories/ProductRepository.ts
+ *                                     calls it "THE REQUIRED CONTRACT SEC-08 DESCRIBES", and
+ *                                     ../adapters/mysql/MySqlProductRepository.ts declares
+ *                                     `readonly sourcePolicy` with no `?`.
+ *   `ValidatedProductImportSource`    NOT withdrawn: it is declared and exported by that same port and is
+ *                                     what `validateSource` returns. AAP §0.4.2.6 ratifies a plain
+ *                                     `string` for the public ARGUMENT, and that is unchanged; the brand
+ *                                     is the internal evidence that the argument was checked, and it is
+ *                                     unforgeable outside the module because its key is never exported.
+ *
+ * ⭐ AND NOT ONE OF THE FOUR CHANGES THIS FILE'S DECISION, WHICH IS WHY THE CORRECTION COSTS THE LOADER
+ * NOTHING. Two are optional and oblige no deployment to state anything. The third is required, but it is
+ * required of the COMPOSITION ROOT as a constructor collaborator, not of the ENVIRONMENT as a variable to
+ * read — the operator hands over an object, and every scheme, host, address range and bound inside it is
+ * the operator's own. The fourth is a type, not a value. So `loadProductImportConfig` stays removed and
+ * no environment name returns for any of them.
+ *
+ * See the loader note further down for each withdrawing file's own words, and DECISION G for the one
+ * collaborator that still reads from here.
  */
 
 /**
@@ -666,6 +773,93 @@ const LOOPBACK_HOST_NAMES: readonly string[] = [
   '[0:0:0:0:0:0:0:1]',
 ];
 
+/* ==============================================================================================
+ * ⭐ SEC-HARDENING (D18-CLASS) — THE FIVE CONSTANTS BELOW AND {@link requireHostAuthorityValue}
+ * TRANSCRIBE THE RFC 3986 §3.2.2 `host` PRODUCTION SO THAT A CONFIGURED FEED HOST WHICH COULD NEVER
+ * HAVE BEEN A LEGAL `CGI.HTTP_HOST` IS REFUSED AT LOAD.
+ *
+ * WHAT THE EARLIER READING SAID, AND WHY IT IS WITHDRAWN. DECISION F below recorded that "NO SYNTAX
+ * RULE RUNS ANYWHERE, HERE OR DOWNSTREAM", on the ground that the legacy view performs no check and
+ * that refusing a configured host is therefore an outcome change forbidden by AAP §0.8.2 guideline 4.
+ * That reading conflated two different things. The withdrawn rule it was arguing against was an
+ * INVENTED policy: a character allowlist of its own devising, a 63-octet DNS-label ceiling the source
+ * states nowhere, and a fail-closed `allowedHosts` membership gate — all three genuinely inventions
+ * (standard S9, IR-12), and all three still withdrawn. What replaces none of them, and what this
+ * block adds, is a TRANSCRIBED GRAMMAR with a published source.
+ *
+ * WHY THE TRANSCRIPTION CHANGES NO OUTCOME THE LEGACY COULD PRODUCE. The legacy value is
+ * `CGI.HTTP_HOST` [integrationServices/google/views/feed/product.cfm:L14, :L15, :L22, :L23, :L24],
+ * which is the HTTP `Host` field value. RFC 9110 §7.2 defines that field as a host authority with an
+ * optional port, adopting the `host` and `port` productions from the URI generic syntax (RFC 3986
+ * §3.2.2, §3.2.3), and requires a client that sends it to exclude any userinfo subcomponent and its
+ * `@` delimiter. A value outside that grammar is therefore not a Host field value at all: no
+ * conforming request could have carried it, so no legacy invocation could have interpolated it, so
+ * refusing it removes no outcome the legacy was designed to produce. That is exactly D18's licensing
+ * property (AAP §0.6.7.7) — divergence confined to inputs that attack the composition mechanism
+ * rather than to inputs the original accepted — and it is the same discipline already applied twice
+ * in this port: {@link requireTcpPortValue} refuses a port outside the protocol's own 16-bit field,
+ * and src/integrations/google/ProductFeedBuilder.ts transcribes the XML 1.0 `Char` production rather
+ * than inventing a character policy.
+ *
+ * WHY IT BELONGS HERE RATHER THAN DOWNSTREAM. The value is deployment configuration, not a
+ * caller-supplied header (DECISION F), and this module already refuses malformed configuration for
+ * nine other names — a non-integer port, an out-of-range port, an unknown TLS mode, cleartext to a
+ * non-loopback host, a sub-unit resource bound. A tenth completeness rule at the same boundary is
+ * the consistent placement, and it is the placement that lets `.env.example` state one enforced
+ * trust boundary instead of describing a rule that runs nowhere (review finding F13).
+ *
+ * WHAT IS DELIBERATELY STILL ACCEPTED. RFC 3986 `reg-name` admits percent-encoding and every
+ * sub-delimiter, which includes `&` and `'`. Narrowing those away would be invention again, so they
+ * are accepted here — and since review finding F1 the serializer escapes every dynamic text node it
+ * emits, so an accepted `&` reaches the feed as `&amp;` and leaves the document well-formed. The two
+ * files therefore split one concern in two: this boundary owns the GRAMMAR, the serializer owns the
+ * ENCODING, and neither invents the other's policy.
+ * ============================================================================================ */
+
+/**
+ * RFC 3986 §3.2.2 `reg-name`, transcribed: `*( unreserved / pct-encoded / sub-delims )`.
+ *
+ * `unreserved` is ALPHA / DIGIT / `-` / `.` / `_` / `~`; `pct-encoded` is `%` followed by exactly two
+ * hex digits; `sub-delims` is `!` `$` `&` `'` `(` `)` `*` `+` `,` `;` `=`. The production's `*`
+ * repetition is written `+` here because the empty host is already refused one layer earlier by
+ * {@link requireNonBlankValue}, so admitting it would only move the same failure.
+ *
+ * An `IPv4address` needs no separate alternative: its digits and dots are all `unreserved`, so a
+ * dotted quad matches this pattern as a registered name, exactly as RFC 3986 §3.2.2 notes a
+ * registered name may look like one.
+ */
+const REGISTERED_NAME_PATTERN = /^(?:[A-Za-z0-9\-._~!$&'()*+,;=]|%[0-9A-Fa-f]{2})+$/;
+
+/** Opening delimiter of the RFC 3986 §3.2.2 `IP-literal` form, `"[" ( IPv6address / IPvFuture ) "]"`. */
+const IP_LITERAL_OPEN = '[';
+
+/** Closing delimiter of the RFC 3986 §3.2.2 `IP-literal` form. */
+const IP_LITERAL_CLOSE = ']';
+
+/**
+ * The complete character set of the RFC 3986 §3.2.2 `IPv6address` production — HEXDIG, `:` and the
+ * `.` of an embedded `IPv4address` — and nothing else.
+ *
+ * Applied in addition to the runtime's own address parser because that parser is more permissive
+ * than this production: `require('node:net').isIPv6('fe80::1%eth0')` answers true, accepting the
+ * zone identifier of RFC 6874's separate `IPv6addrz` extension, which RFC 3986 does not admit. The
+ * character test refuses the `%` that carries a zone identifier, so the pair together accept the
+ * production and nothing beyond it.
+ */
+const IPV6_ADDRESS_CHARACTERS_PATTERN = /^[0-9A-Fa-f:.]+$/;
+
+/**
+ * RFC 3986 §3.2.2 `IPvFuture`, transcribed: `"v" 1*HEXDIG "." 1*( unreserved / sub-delims / ":" )`.
+ *
+ * Carried for completeness of the transcription rather than because any deployment is expected to
+ * use it: leaving the alternative out would make this rule stricter than the production it cites,
+ * which is the invention the block above refuses to repeat.
+ */
+const IP_FUTURE_PATTERN = /^v[0-9A-Fa-f]+\.[A-Za-z0-9\-._~!$&'()*+,;=:]+$/;
+
+/** The `:` that separates a host from its optional port in RFC 3986 §3.2.2's `host [ ":" port ]`. */
+const HOST_PORT_SEPARATOR = ':';
+
 /**
  * Reads a variable that must be present, and returns it verbatim.
  *
@@ -773,6 +967,135 @@ function requireTcpPortValue(variableName: string, rawValue: string | undefined)
   }
 
   return port;
+}
+
+/**
+ * Locates the `:` that introduces the optional port of an RFC 3986 §3.2.2 `host [ ":" port ]`.
+ *
+ * For a bracketed `IP-literal` the search starts after the closing bracket, because the address
+ * inside the brackets is itself full of colons; that is precisely why RFC 3986 requires the brackets.
+ * For every other form the FIRST colon is the separator, since `reg-name` admits no colon at all — so
+ * an unbracketed IPv6 address splits into an empty host and a malformed port and is refused, which is
+ * the outcome RFC 3986 §3.2.2 intends for an unbracketed literal.
+ *
+ * @param value the raw variable value, un-trimmed
+ * @returns the index of the port separator, or `-1` when the value carries no port
+ */
+function findHostPortSeparatorIndex(value: string): number {
+  if (!value.startsWith(IP_LITERAL_OPEN)) {
+    return value.indexOf(HOST_PORT_SEPARATOR);
+  }
+
+  const closingBracketIndex = value.indexOf(IP_LITERAL_CLOSE);
+
+  // No closing bracket means there is no well-formed IP-literal to take a port after. Reporting "no
+  // port" hands the whole value to the host check, which refuses it and names the host as the fault
+  // — a better diagnostic than blaming a port the operator never wrote.
+  if (closingBracketIndex === -1) {
+    return -1;
+  }
+
+  return value.indexOf(HOST_PORT_SEPARATOR, closingBracketIndex + 1);
+}
+
+/**
+ * Decides whether `host` matches the RFC 3986 §3.2.2 `host` production.
+ *
+ * `host = IP-literal / IPv4address / reg-name`. The bracketed `IP-literal` alternative is checked
+ * against {@link IPV6_ADDRESS_CHARACTERS_PATTERN} together with the runtime's own address parser, or
+ * against {@link IP_FUTURE_PATTERN}; every other spelling is checked against
+ * {@link REGISTERED_NAME_PATTERN}, which subsumes `IPv4address`.
+ *
+ * @param host the host portion of the value, with any port already removed
+ * @returns true when the host matches the production, false otherwise
+ */
+function isHostProduction(host: string): boolean {
+  if (!host.startsWith(IP_LITERAL_OPEN)) {
+    return REGISTERED_NAME_PATTERN.test(host);
+  }
+
+  if (!host.endsWith(IP_LITERAL_CLOSE)) {
+    return false;
+  }
+
+  const literal = host.slice(IP_LITERAL_OPEN.length, host.length - IP_LITERAL_CLOSE.length);
+
+  if (IP_FUTURE_PATTERN.test(literal)) {
+    return true;
+  }
+
+  return IPV6_ADDRESS_CHARACTERS_PATTERN.test(literal) && isIPv6(literal);
+}
+
+/**
+ * Reads a variable that must be present and must denote an RFC 3986 §3.2.2 host authority.
+ *
+ * The rule, its citations and the reason it is a transcription rather than a policy are recorded in
+ * the SEC-HARDENING (D18-CLASS) block above {@link REGISTERED_NAME_PATTERN}; DECISION F records why
+ * the value is configuration in the first place. In short: the legacy interpolated an HTTP `Host`
+ * field value, RFC 9110 §7.2 defines that field as this production with an optional port, and a value
+ * outside it could never have reached the legacy view.
+ *
+ * The value is validated as supplied and returned VERBATIM — never trimmed. Trimming would accept a
+ * value whose stored form differs from the operator's variable and would then emit that different
+ * form into every feed URL; refusing it instead is both the simpler contract and the correct one,
+ * since space is outside `reg-name`. Every other consequence follows from the production rather than
+ * from a list assembled here: a scheme is refused because `/` is not in `reg-name`, a path, query and
+ * fragment likewise, userinfo because `@` is not either, and `<`, `>` and `"` because they are
+ * outside `reg-name` as well.
+ *
+ * @param variableName name of the environment variable, used verbatim in the failure message
+ * @param rawValue the value read from the environment, still possibly absent
+ * @returns the value exactly as supplied, un-trimmed
+ * @throws DomainError naming `variableName` when the variable is absent, blank, carries a host
+ *   outside the RFC 3986 §3.2.2 production, or carries a port that is not an addressable TCP port
+ */
+function requireHostAuthorityValue(variableName: string, rawValue: string | undefined): string {
+  const value = requireNonBlankValue(variableName, rawValue);
+
+  const separatorIndex = findHostPortSeparatorIndex(value);
+  const host = separatorIndex === -1 ? value : value.slice(0, separatorIndex);
+
+  if (!isHostProduction(host)) {
+    throw new DomainError(
+      `Environment variable ${variableName} must be a bare host authority — a registered name, an ` +
+        'IPv4 literal, or a bracketed IPv6 literal — optionally followed by ":" and a port, as ' +
+        'defined by RFC 3986 section 3.2.2. A scheme, a path, a userinfo prefix, a query, a ' +
+        'fragment, whitespace and the markup characters "<", ">" and \'"\' are all outside that ' +
+        'grammar and are rejected.',
+      { context: { variable: variableName } },
+    );
+  }
+
+  if (separatorIndex === -1) {
+    return value;
+  }
+
+  const portText = value.slice(separatorIndex + HOST_PORT_SEPARATOR.length);
+
+  // RFC 3986 §3.2.3 writes `port = *DIGIT`, which admits both an empty port and a value no transport
+  // can address. The narrowing to the addressable range is the same published 16-bit protocol limit
+  // {@link requireTcpPortValue} applies to DB_PORT, which is the one category of number this port may
+  // state without a source locator (standard S9) — not an invented bound.
+  const port = Number(portText);
+
+  if (
+    !UNSIGNED_INTEGER_PATTERN.test(portText) ||
+    !Number.isInteger(port) ||
+    port < LOWEST_ADDRESSABLE_TCP_PORT ||
+    port > HIGHEST_ADDRESSABLE_TCP_PORT
+  ) {
+    throw new DomainError(
+      `Environment variable ${variableName} carries a port that is not addressable. When a ":" is ` +
+        'present it must be followed by a plain base-ten TCP port number between ' +
+        `${LOWEST_ADDRESSABLE_TCP_PORT} and ${HIGHEST_ADDRESSABLE_TCP_PORT}. A scheme prefix such ` +
+        'as "http://" and a "user:password@" prefix are both reported here, because the first ":" ' +
+        'in the value is read as the port separator and neither belongs in a bare host authority.',
+      { context: { variable: variableName } },
+    );
+  }
+
+  return value;
 }
 
 /**
@@ -1019,17 +1342,21 @@ function loadDatabaseConfig(): DatabaseConfig {
 /**
  * Reads and validates the Google feed section, then freezes it.
  *
- * One environment read, checked for presence and non-blankness only. A blank host cannot identify
- * an origin, so a blank one is a misconfiguration indistinguishable in effect from an absent one —
- * the same reasoning {@link requireNonBlankValue} applies to DB_HOST and DB_NAME.
+ * One environment read, checked for presence, non-blankness and RFC 3986 §3.2.2 host syntax. A blank
+ * host cannot identify an origin, so a blank one is a misconfiguration indistinguishable in effect
+ * from an absent one — the same reasoning {@link requireNonBlankValue} applies to DB_HOST and DB_NAME.
  *
- * NO AUTHORITY-SYNTAX RULE RUNS HERE, AND NONE RUNS DOWNSTREAM EITHER. The rule that used to run in
- * src/integrations/google/ProductFeedBuilder.ts is withdrawn; DECISION F carries the argument and the
- * flagged residual exposure.
+ * ⭐ SEC-HARDENING (D18-CLASS) — THE AUTHORITY-SYNTAX RULE RUNS HERE, AT CONFIGURATION LOAD.
+ * {@link requireHostAuthorityValue} transcribes the production RFC 9110 §7.2 adopts for the HTTP
+ * `Host` field, so a value that could never have been the `CGI.HTTP_HOST` the legacy view interpolated
+ * is refused before any feed renders. It is a grammar transcription with a published source, NOT the
+ * character allowlist, DNS-label ceiling and `allowedHosts` membership gate an earlier revision put in
+ * src/integrations/google/ProductFeedBuilder.ts — those were invented policy (standard S9, IR-12) and
+ * remain withdrawn. DECISION F carries the full argument and the residual exposure that stays flagged.
  */
 function loadGoogleFeedConfig(): GoogleFeedConfig {
   return Object.freeze({
-    host: requireNonBlankValue('GOOGLE_FEED_HOST', process.env.GOOGLE_FEED_HOST),
+    host: requireHostAuthorityValue('GOOGLE_FEED_HOST', process.env.GOOGLE_FEED_HOST),
   });
 }
 
@@ -1042,12 +1369,26 @@ function loadGoogleFeedConfig(): GoogleFeedConfig {
  *   - `src/util/urlTitle.ts` on its removed `UrlTitleAttemptBudget`: "The legacy states no ceiling, so
  *     every possible value of one is a fabricated number. Passing the fabrication to the caller as a
  *     required argument relocated the invention; it did not avoid it."
- *   - `src/services/SkuService.ts` on its removed `SkuCombinationBudget`: "Requiring the composition
+ *     ⭐ AND A BOUND HAS SINCE BEEN REINSTATED FOR THAT LOOP TOO, by review finding F5 — but NOT inside
+ *     the algorithm and NOT as configuration. `src/util/urlTitleProbeBudget.ts` wraps the injected PROBE,
+ *     optionally, with no default, and `src/util/urlTitle.ts` is unchanged. THE DECISION IN THIS FILE IS
+ *     UNAFFECTED for the same reason as the budget below: an optional collaborator obliges no deployment
+ *     to state a figure, so there is still nothing here to load.
+ *   - `src/services/SkuService.ts` on its then-removed `SkuCombinationBudget`: "Requiring the composition
  *     root to supply the maximum RELOCATED the fabrication rather than avoiding it: the number still
  *     had to be invented by somebody before the graph could be built at all."
- *   - `src/ports/repositories/ProductRepository.ts` on its withdrawn SEC-08 gate: "the policy object
- *     itself was five invented configuration values, which AAP §0.7.3 standard 9 and IR-12 forbid
- *     outright."
+ *   - `src/ports/repositories/ProductRepository.ts` on the four controls its re-adjudicated SEC-08 gate
+ *     still refuses to invent. It says this in two places, and they are quoted separately here rather
+ *     than run together, because they are not adjacent in that file: at its member note, an
+ *     implementation "must still NOT invent a host allow-list, a byte cap, a timeout or a redirect
+ *     count"; and in its head block, "The source names no host and states no figure, so every possible
+ *     value of each is a fabrication that AAP §0.7.3 standard 9 and IR-12 forbid."
+ *
+ * ⚠️ THE THIRD FILE NO LONGER WITHDRAWS ITS GATE, ONLY THE CONFIGURABLE PART OF IT — AND THAT IS STILL
+ * THE WHOLE OF WHAT THIS LOADER WOULD HAVE READ. Review finding F8 reinstated the scheme, credential and
+ * address-literal refusals as fixed literals; the four values a deployment would have had to supply are
+ * exactly the four that remain withdrawn. So `loadProductImportConfig` would still have nothing to load,
+ * and its removal is unaffected.
  *
  * Keeping the loaders would also have made a deployment supply SEVEN environment variables — five
  * import-policy values plus the two budgets — before this module would build at all, for no

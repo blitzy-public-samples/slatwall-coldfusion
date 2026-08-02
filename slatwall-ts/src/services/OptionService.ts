@@ -19,15 +19,28 @@
  * explicitly declared, typed member below. The dispatcher itself is never ported, and `org/Hibachi/**`
  * is read for contract only and never imported (AAP §0.8.3.2).
  *
- * ⚠️ AND THE CLASS DECLARES TEN MEMBERS, NOT SEVEN — SEVEN OF PARITY PLUS THREE RECORDED ADDITIONS.
- * The three are {@link OptionService.getUnusedProductOptionsBounded},
- * {@link OptionService.getUnusedProductOptionGroupsBounded} and {@link OptionService.getOptionsByIDs};
- * each carries its own justification at its declaration, each leaves the parity member it accompanies
- * byte-for-byte untouched, and none of the three is reachable by widening a frozen signature. Earlier
- * revisions of this header, and of the placement argument further down the class, asserted a flat
- * SEVEN — which stopped being true once those three landed and, worse, was used as the REASON for a
- * placement decision it could no longer support. The count is stated here and the additive rule is
- * stated with it, because a bare arity is a fact that drifts while a rule does not.
+ * ⛔ THE CLASS DECLARES EXACTLY SEVEN PUBLIC MEMBERS, AND THREE ADDITIONS WERE WITHDRAWN TO GET BACK
+ * TO THAT NUMBER. An earlier revision also declared `getUnusedProductOptionsBounded`,
+ * `getUnusedProductOptionGroupsBounded` and `getOptionsByIDs` — two window-at-a-time companions and one
+ * identifier-batch loader — each argued for on the ground that it left the parity member it accompanied
+ * untouched. That argument is not sufficient and the additions are gone. AAP §0.4.1.8 fixes this file at
+ * "All 3 declared public members plus the four synthesized members the slice depends on"; §0.8.3.1 makes
+ * the public surface the thing that must be checkable member by member, which a superset defeats; and
+ * standard S9 forbids inventing a "default page size, cache, eager load, ordering, batch" the source does
+ * not state — a bound and a batch are two of the named examples. A public member with no legacy
+ * counterpart is therefore an interface-parity breach whether or not it displaces one, and the surface is
+ * now closed at seven. {@link OptionService.getUnusedProductOptions} and
+ * {@link OptionService.getUnusedProductOptionGroups} answer the whole list, exactly as
+ * `model/dao/OptionDAO.cfc:L51-L116` does; a caller that cannot hold a whole list is an operator concern
+ * for whichever adapter implements {@link OptionRepository}, which still declares its own bounded
+ * members, and not a reason to widen this service.
+ *
+ * ⚠️ THE BATCH LOADER'S REMOVAL RESTORED A LEGACY CALL PATTERN AS WELL AS A LEGACY SURFACE.
+ * `getOptionsByIDs` existed so `SkuService`'s combination engine could resolve a whole option list in one
+ * statement; the legacy resolves it ONE IDENTIFIER AT A TIME, calling `optionService.getOption(id)` per
+ * list position at `model/service/SkuService.cfc:L75`. That caller now does the same through
+ * {@link OptionService.getOption}, so removing the batch made the port MORE faithful rather than less
+ * capable.
  *
  * SYNTHESIS IS REPRODUCED ONLY WHERE IT IS USED. The legacy dispatcher would have answered `newOption`,
  * `saveOption`, `deleteOption`, `countOption`, `listOption`, `exportOption` and `processOption*` just as
@@ -67,7 +80,7 @@
  * `model/service/OptionService.cfc:L58` leaked to on a CFC singleton.
  *
  * TEST PROVENANCE — ENTIRELY NET-NEW. No legacy `OptionServiceTest` exists, and the legacy suite
- * contains no service test for any of the four in-scope services (AAP §0.6.5.2), so all ten members
+ * contains no service test for any of the four in-scope services (AAP §0.6.5.2), so all seven members
  * below are net-new coverage and no parity with a legacy test is implied (AAP §0.8.3.7). The class is
  * deliberately constructible from two plain object literals, so the planned shared test doubles can
  * satisfy both ports by hand — necessary because the legacy repository vendors no mocking library at
@@ -85,7 +98,6 @@ import type {
   SmartListQueryPort,
   SmartListResult,
 } from '../ports/SmartListQueryPort';
-import type { BoundedReadResult, BoundedReadWindow } from '../ports/repositories/BoundedRead';
 import type { OptionRepository } from '../ports/repositories/OptionRepository';
 import { translateSmartListInput } from '../util/smartListInput';
 
@@ -332,12 +344,13 @@ function buildIdentifierQuery<TEntity extends SmartListEntityName>(
 /**
  * The Catalog's option and option-group service.
  *
- * TEN public members: a SEVEN-member parity surface — the three declared by
- * `model/service/OptionService.cfc` plus the four the legacy synthesized at run time — and THREE
- * additive companions, each recorded at its own declaration and each leaving the parity member it
- * accompanies untouched. See the module header for the full provenance, for why a bare arity is not what
- * the AAP freezes, for the dependency untangling that reduced two injected properties to one, and for
- * the M7 statelessness guarantee.
+ * SEVEN public members and no eighth: the three declared by `model/service/OptionService.cfc` plus the
+ * four the legacy synthesized at run time. The surface is CLOSED at seven — AAP §0.4.1.8 fixes the
+ * membership and §0.8.3.1 makes it the artefact a reviewer checks member by member, so a superset is a
+ * parity breach even when every added member leaves its neighbour untouched. See the module header for
+ * the full provenance, for the three additions that were withdrawn to restore this count, for the
+ * dependency untangling that reduced two injected properties to one, and for the M7 statelessness
+ * guarantee.
  */
 export class OptionService {
   /**
@@ -508,47 +521,6 @@ export class OptionService {
   }
 
   /**
-   * The same list, read one explicitly requested window at a time.
-   *
-   * ⭐ P9 — AN ADDITIVE COMPANION, NOT A REPLACEMENT. {@link OptionService.getUnusedProductOptions} is
-   * the AAP §0.4.2.4 parity contract for [model/service/OptionService.cfc:L72] and is untouched: same
-   * name, same argument order, same unbounded return. This member exists because the underlying
-   * statement's result set is bounded only by how many options the deployment has, and a caller that
-   * cannot hold all of them previously had no honest alternative.
-   *
-   * ⛔ NO DEFAULT WINDOW IS EVER APPLIED TO THE UNBOUNDED MEMBER. A caller that asks for the list still
-   * receives all of it. There is no implicit page size and no cap, because introducing one would change
-   * what an existing call returns (S9).
-   *
-   * ⚠️ THE SELECTION IS IDENTICAL — the bound narrows HOW MANY rows arrive, never WHICH. The label
-   * composition of [model/dao/OptionDAO.cfc:L88], which joins the group name and the option name into one
-   * `name`, and the `IS IN` set polarity of [:L68] are both the adapter's and are unchanged; in
-   * particular the empty-list behaviour that resolves to NO rows is preserved, and is NOT rewritten into
-   * an error or into a full listing.
-   *
-   * ⚠️ THE CALLER MUST READ {@link BoundedReadResult.hasMore}, or the bound is a silent truncation.
-   *
-   * TEST PROVENANCE: NET-NEW.
-   *
-   * @param window - The requested window; validated by the adapter, refused rather than clamped.
-   * @param productID - Exactly as the unbounded member declares it.
-   * @param existingOptionGroupIDList - Exactly as the unbounded member declares it. An empty string
-   *   remains a legal input with its own legacy meaning.
-   * @returns The rows inside the window in the statement's own order, plus whether more lie past it.
-   */
-  public getUnusedProductOptionsBounded(
-    window: BoundedReadWindow,
-    productID: string,
-    existingOptionGroupIDList: string,
-  ): Promise<BoundedReadResult<SelectOption>> {
-    return this.optionRepository.findUnusedOptionsBounded(
-      window,
-      productID,
-      existingOptionGroupIDList,
-    );
-  }
-
-  /**
    * Lists the option groups not yet present on a product, as select entries.
    *
    * PORT OF [model/service/OptionService.cfc:L76-L78]:
@@ -583,37 +555,6 @@ export class OptionService {
    */
   public getUnusedProductOptionGroups(existingOptionGroupIDList: string): Promise<SelectOption[]> {
     return this.optionRepository.findUnusedOptionGroups(existingOptionGroupIDList);
-  }
-
-  /**
-   * The same list, read one explicitly requested window at a time.
-   *
-   * ⭐ P9 — AN ADDITIVE COMPANION, NOT A REPLACEMENT. {@link OptionService.getUnusedProductOptionGroups}
-   * is the AAP §0.4.2.4 parity contract for [model/service/OptionService.cfc:L76] and is untouched.
-   *
-   * ⚠️ THIS IS THE WIDEST READ IN THIS SERVICE, WHICH IS PRECISELY WHY IT EARNS A BOUND. Its set polarity
-   * is the INVERSE of the sibling member's — [model/dao/OptionDAO.cfc:L107] keeps rows whose group is NOT
-   * IN the supplied list, against [:L68] which keeps rows that ARE — so an EMPTY list resolves here to
-   * EVERY option group in the deployment. That is correct legacy behaviour and is fully preserved: the
-   * bound gives a caller a way to read that answer incrementally, and it does NOT reject, default or
-   * narrow the empty input, because doing so would suppress the single most useful call the member has.
-   *
-   * ⛔ NO DEFAULT WINDOW IS EVER APPLIED TO THE UNBOUNDED MEMBER, and neither the plain group-name label
-   * of [:L113] nor the ordering changes. The bound narrows HOW MANY rows arrive, never WHICH.
-   *
-   * ⚠️ THE CALLER MUST READ {@link BoundedReadResult.hasMore}, or the bound is a silent truncation.
-   *
-   * TEST PROVENANCE: NET-NEW.
-   *
-   * @param window - The requested window; validated by the adapter, refused rather than clamped.
-   * @param existingOptionGroupIDList - Exactly as the unbounded member declares it, empty string included.
-   * @returns The rows inside the window in the statement's own order, plus whether more lie past it.
-   */
-  public getUnusedProductOptionGroupsBounded(
-    window: BoundedReadWindow,
-    existingOptionGroupIDList: string,
-  ): Promise<BoundedReadResult<SelectOption>> {
-    return this.optionRepository.findUnusedOptionGroupsBounded(window, existingOptionGroupIDList);
   }
 
   /**
@@ -679,83 +620,6 @@ export class OptionService {
     );
 
     return records[0] ?? null;
-  }
-
-  /**
-   * Loads many options by identifier in ONE statement, keyed by identifier.
-   *
-   * ⭐ WHY THIS EXISTS, AND WHY IT IS NOT A NEW CAPABILITY. `model/service/SkuService.cfc:L73-L79`
-   * walks a comma-delimited option list and calls the dispatcher's `getOption(id)` ONCE PER ELEMENT —
-   * including once per REPEATED element, because that loop deliberately retains duplicates. Every one
-   * of those calls resolves the same way, through `entityLoadByPK` at
-   * [org/Hibachi/HibachiDAO.cfc:L13]. This member answers the same question for the whole list at once
-   * so the odometer pays one statement for the distinct identifiers instead of one per list position.
-   * {@link OptionService.getOption} keeps its single-identifier contract untouched for every other
-   * caller.
-   *
-   * ⚠️ THIS IS NOT A SESSION CACHE AND IT HOLDS NO STATE. The map is constructed, returned and owned by
-   * the caller, so it dies with the invocation (M7). Nothing is memoised on this service.
-   *
-   * ⭐ WHY RETURNING ONE SHARED INSTANCE PER IDENTIFIER IS MORE FAITHFUL THAN LESS. Hibernate's
-   * session-level identity map returns THE SAME OBJECT for two `entityLoadByPK` calls on one primary
-   * key within one request, so a legacy list of `a,a` already bucketed one instance twice. The domain
-   * confirms sharing is inert here regardless: `Sku.addOption` appends to the SKU's own collection and
-   * does not write to the option, so no combination can observe another's option through a shared
-   * reference.
-   *
-   * ⚠️ HYDRATION IS DELIBERATELY IDENTICAL TO THE SINGLE-IDENTIFIER PATH, INCLUDING ITS LIMITS. Both
-   * run through {@link SmartListQueryPort.executeRecords} and therefore through the same `SwOption` row
-   * mapper, so a caller that reaches for a member the mapper does not populate — `optionGroup` is the
-   * one that matters, and `src/adapters/mysql/rowMappers.ts` documents it as deliberately not read —
-   * gets exactly the same outcome it gets today from {@link OptionService.getOption}. Nothing is
-   * hydrated here that was not hydrated there; batching changes HOW MANY statements run, never WHAT
-   * they select.
-   *
-   * ⚠️ AN EMPTY INPUT ISSUES NO STATEMENT AT ALL, and that guard is load-bearing rather than tidy.
-   * The in-filter compiler treats a value that splits to nothing as a single literal and emits
-   * `IN (?)` bound to the raw text, which would match nothing while still costing a round trip. An
-   * empty list means "no identifiers to resolve", so it resolves to an empty map directly.
-   *
-   * ⚠️ NO ELEMENT CAN CONTAIN THE IN-FILTER DELIMITER, WHICH IS WHY JOINING ON `,` IS SAFE. Every
-   * caller derives its identifiers by splitting a CFML list on `,`, so a comma cannot survive into an
-   * element; the join is therefore the exact inverse of the split that produced it.
-   *
-   * TEST PROVENANCE: NET-NEW. No legacy `OptionServiceTest` exists (AAP §0.6.5.2).
-   *
-   * @param optionIDs - The identifiers to resolve. Duplicates are permitted and are resolved once;
-   *   order is irrelevant to the result because the answer is keyed rather than sequential.
-   * @returns A map from identifier to option, holding an entry ONLY for identifiers that matched a row.
-   *   A caller reconstructs its own order, its own duplicates and its own missing-identifier handling
-   *   from this map.
-   */
-  public async getOptionsByIDs(optionIDs: readonly string[]): Promise<Map<string, Option>> {
-    const resolvedOptions = new Map<string, Option>();
-
-    /* First-seen order, duplicates collapsed. Order does not affect the answer, but building the list
-     * deterministically keeps the compiled statement stable for a given input. */
-    const distinctIDs: string[] = [];
-    for (const optionID of optionIDs) {
-      if (!distinctIDs.includes(optionID)) {
-        distinctIDs.push(optionID);
-      }
-    }
-
-    if (distinctIDs.length === 0) {
-      return resolvedOptions;
-    }
-
-    const records = await this.smartListQueryPort.executeRecords({
-      entityName: OPTION_ENTITY_NAME,
-      whereGroups: [
-        { inFilters: [{ propertyIdentifier: OPTION_ID_PROPERTY, value: distinctIDs.join(',') }] },
-      ],
-    });
-
-    for (const option of records) {
-      resolvedOptions.set(option.optionID, option);
-    }
-
-    return resolvedOptions;
   }
 
   /**
@@ -857,15 +721,16 @@ export class OptionService {
    *     service and neither does this port. An earlier revision put them on the class, which is what the
    *     review flagged.
    *
-   *     ⚠️ AND THE ARGUMENT THAT SENTENCE ORIGINALLY MADE HAS BEEN WITHDRAWN, because it does not
-   *     survive its own file. It read: "AAP §0.4.2.4 declares THREE public members and AAP §0.4.2.5 adds
-   *     FOUR synthesized ones; that is the whole surface, and an eighth and ninth member would widen a
-   *     parity contract the AAP freezes." An arity budget is not what the AAP freezes — SIGNATURES are.
-   *     Three additive members now sit on this class under the P9 rule, each recorded at its own
-   *     declaration and each leaving its parity sibling untouched, and every sibling service carries
-   *     additive members the same way. Had the budget reading been right, those three would be
-   *     violations; they are not, and keeping the sentence would have made this file argue against its
-   *     own contents.
+   *     ⚠️ AND THE MEMBERSHIP ARGUMENT REINFORCES THE OWNERSHIP ONE RATHER THAN COMPETING WITH IT.
+   *     AAP §0.4.2.4 declares THREE public members and AAP §0.4.2.5 adds FOUR synthesized ones; that IS
+   *     the whole surface, so an eighth member widens a contract the AAP freezes. An intermediate
+   *     revision of this note withdrew that reading on the ground that "an arity budget is not what the
+   *     AAP freezes — SIGNATURES are", and used the three additive members then present as its proof.
+   *     That inverted the evidence: the additions were the defect, not the licence. AAP §0.8.3.1 asks
+   *     for parity "checkable method-by-method", which a superset defeats however carefully each extra
+   *     member is documented, and the three have since been withdrawn. Both readings therefore now point
+   *     the same way — these two queries answer the ENTITY's question and would not belong on this class
+   *     even if the surface had room for them.
    * The resolution is MODULE SCOPE in this file: {@link findProductOptionGroups} and
    * {@link findProductOptionsByOptionGroup} below, bound together by
    * {@link createProductOptionFinders}. They stay reviewable, testable and citable against the legacy

@@ -110,19 +110,37 @@
  * HOW A FAILED SAVE IS SURFACED — AND WHY `delete` DOES THE OPPOSITE
  * =============================================================================================
  * In CFML every entity carries its own error bag, so `model/service/HibachiService.cfc:L103` could
- * return an entity that had already failed validation and let the caller ask it. The ported entities
- * carry NO bag — `../validation/Validator` returns the bag instead, so the engine depends on no
- * entity-side error accessor. Something must therefore carry a failure out of `save`, and the subtree
- * already fixes which: `src/handlers/httpResponse.ts` tests `error instanceof ValidationError` as its
- * FIRST branch. So `save` accumulates exactly as the legacy flow did, evaluates the whole
- * post-processing gate, and only then raises the accumulated bag.
+ * return an entity that had already failed validation and let the caller ask it. `save` HERE DOES THE
+ * SAME THING, and that is the whole of it: it accumulates exactly as the legacy flow did, evaluates the
+ * gates, attaches any findings to the entity, and returns that same entity on every path. There is one
+ * exit and no branch, matching the single exit at [:L103].
  *
- * Nothing is lost by raising rather than returning, because `populate` MUTATES ITS TARGET IN PLACE and
- * hands the same object back: a caller that supplied the entity still holds the populated entity after
- * the raise, which is what the legacy caller inspected. Returning an `{ entity, errors }` pair was
- * rejected — it would force every delegating service to destructure where the legacy line was
- * `return super.save(arguments.brand, arguments.data);`, and it would let a caller ignore a failure
- * silently, which the legacy `hasErrors()` gate never permitted.
+ * WHAT MAKES IT POSSIBLE IS A TYPE CONSTRAINT, NOT A NEW MECHANISM. {@link BaseServiceEntity} intersects
+ * `EntityErrorSurface`, the six error members `../domain/base/populate` already declares and
+ * `manageEntity` already attaches to every entity this subtree mints. The port therefore has the same
+ * entity-side bag the legacy gates were written against, and `save` needs no channel of its own.
+ *
+ * ⚠️ AN EARLIER REVISION RAISED THE BAG INSTEAD, AND THAT REVISION WAS WRONG ON EVERY COUNT IT CLAIMED.
+ * Its premise was "the ported entities carry NO bag". They do: `Product` declares all six members
+ * directly, and `Brand`, `Sku`, `ProductType`, `Option` and `OptionGroup` receive them through
+ * `manageEntity`, which `Object.assign`s onto the entity and returns the SAME reference so identity
+ * survives. What actually lacked the bag was this file's own generic bound — a constraint, fixable here,
+ * and now fixed. Meanwhile the raise cost three things the legacy had: it inverted the polarity of the
+ * only failure signal the legacy offered, turning a value the caller inspects into control flow the
+ * caller must intercept; it changed the published contract of `BrandService.saveBrand`, whose legacy line
+ * is `return super.save(arguments.brand, arguments.data);` with no try/catch anywhere near it; and it
+ * forced `ProductService.saveProductType` to catch-and-reattach for no purpose but to undo it. AAP
+ * Goal B, TR-1 and IR-8 all read the same way, and a returned `{ entity, errors }` pair is rejected for
+ * the same reason: the legacy returned an ENTITY, so this returns an entity.
+ *
+ * HOW A CALLER READS THE RESULT, which is the legacy question asked in the legacy way: ask the returned
+ * entity. `entity.hasErrors()` is the port of `arguments.entity.hasErrors()` at
+ * [org/Hibachi/HibachiService.cfc:L133] and [model/service/HibachiService.cfc:L91], and
+ * `entity.getErrors()` yields the same keyed bag `src/handlers/httpResponse.ts` serialises once a caller
+ * lifts it into a `ValidationError`. That handler's `error instanceof ValidationError` branch is
+ * unchanged and still first; what changed is that `save` no longer manufactures the throw for it —
+ * `src/handlers/brandHandler.ts` and `src/handlers/skuHandler.ts` construct it from the findings they
+ * read, which is the same shape `skuHandler` already used for its batch failures.
  *
  * `delete` is deliberately ASYMMETRIC and must NOT raise. `org/Hibachi/HibachiService.cfc:L79` returns
  * a boolean verdict on validation failure, and `model/service/ProductService.cfc:L326-L333` depends on
@@ -131,11 +149,13 @@
  *
  * ONE CONSEQUENCE, FLAGGED RATHER THAN SMOOTHED OVER. Because `delete` returns only a boolean, the
  * messages produced by the delete-context guards in the seven catalog validation documents are not
- * surfaced through it. That matches the legacy member's own declaration —
- * `model/service/HibachiService.cfc:L68` returns the verdict and nothing else, and the messages were
- * reachable only through the entity's own bag, which the port's entities do not carry. A caller that
- * needs them can run the same rule set under the `delete` context through the validator's dry-run
- * mode. No new surface is invented here to carry them.
+ * surfaced through its RETURN VALUE. That matches the legacy member's own declaration —
+ * `model/service/HibachiService.cfc:L68` returns the verdict and nothing else. Unlike `save`, `delete`
+ * does not attach its findings to the entity either, and that asymmetry is faithful rather than an
+ * oversight: the legacy delete path leaves the entity's bag populated only as a side effect of
+ * validation, and `model/service/ProductService.cfc:L326-L333` reads the BOOLEAN and nothing else. A
+ * caller that needs the messages can run the same rule set under the `delete` context through the
+ * validator's dry-run mode. No new surface is invented here to carry them.
  *
  * =============================================================================================
  * THE FOUR OUT-OF-SCOPE CALLS — CROSSED THROUGH TWO DECLARED PORTS (TR-5), NOT LEFT EMPTY
@@ -290,6 +310,7 @@
 import type { AuditableEntity } from '../domain/base/AuditableEntity';
 import {
   populate,
+  type EntityErrorSurface,
   type PopulationTarget,
   type PropertyDescriptorSet,
 } from '../domain/base/populate';
@@ -508,12 +529,26 @@ export interface EntityCommentCleanupPort {
 /**
  * What this collaborator requires of a persistent catalog entity, and nothing more.
  *
- * An intersection of three already-declared contracts plus one accessor, so no member is re-typed here
+ * An intersection of four already-declared contracts plus one accessor, so no member is re-typed here
  * that a sibling already owns:
  *
  *   - `ValidationSubject` from `../validation/Validator` supplies `getClassName()`, read by the
  *     disjunction at [model/service/HibachiService.cfc:L98], and `hasProperty()`, read by the gate at
  *     [:L91].
+ *   - `EntityErrorSurface` from `../domain/base/populate` supplies the six error members, and it is
+ *     the contract the legacy gates were written against rather than an addition to them. Both save
+ *     gates read the ENTITY'S OWN bag: [org/Hibachi/HibachiService.cfc:L133] gates persistence on
+ *     `!arguments.entity.hasErrors()`, and the local override's post-processing gate at
+ *     [model/service/HibachiService.cfc:L91] opens with the same call. Neither reads a bag returned
+ *     from validation, because [org/Hibachi/HibachiTransient.cfc:L408-L459] wrote its findings INTO
+ *     the entity and never cleared them. So a `save` that returns the entity on every path — which is
+ *     what [:L103] does — has no way to report a failure unless the entity can carry it, and this is
+ *     the member set that lets it. See the FAILURE REPORTING section of the module header.
+ *
+ *     ⚠️ THIS DOES NOT MOVE THE TWO GATES ONTO THE ENTITY, AND DELIBERATELY SO. `../validation/Validator`
+ *     RETURNS its bag rather than writing into the subject, so both gates inside `save` are asked of the
+ *     returned bag — the translation STEP 2 records at its own locator. Requiring the surface here is
+ *     what lets the single exit report a failure; it is not a second source of truth for the gates.
  *   - `AuditableEntity` from `../domain/base/AuditableEntity` is the four-field audit block declared
  *     byte-identically on all six in-scope entities. It is the right shape constraint for this
  *     collaborator because `save` is the write path, and the audit fields are exactly what the legacy
@@ -535,6 +570,7 @@ export interface EntityCommentCleanupPort {
  */
 export type BaseServiceEntity<TPropertyName extends string> = ValidationSubject &
   AuditableEntity &
+  EntityErrorSurface &
   PopulationTarget<TPropertyName> & {
     /**
      * The entity's primary identifier value — the port of
@@ -943,12 +979,12 @@ export class BaseService<
    *   2. [:L91] the two-part gate: no failures, AND the entity declares `activeFlag`.
    *   3. [:L93-L96] the removed-settings counter, declared once and assigned inside the branch.
    *   4. [:L98-L100] the cache-clearing disjunction, retained in full.
-   *   5. [:L103] `return arguments.entity;` — the persisted instance, with an accumulated failure
-   *      raised instead when validation did not pass. See HOW A FAILED SAVE IS SURFACED in the module
-   *      header for why raising is the faithful translation and what was rejected.
+   *   5. [:L103] `return arguments.entity;` — the same instance, on every path, with any accumulated
+   *      findings attached to its own bag first. See HOW A FAILED SAVE IS SURFACED in the module header
+   *      for why the single exit is the faithful translation and what a raise cost.
    *
-   * @param entity - The entity to save. Populated IN PLACE, so the caller's reference stays valid
-   *   even when this method raises.
+   * @param entity - The entity to save. Populated IN PLACE and returned, so the caller's reference and
+   *   the return value are the same object whether the save succeeded or failed.
    * @param data - The incoming payload. Defaults to an empty payload exactly as [:L86] does, and
    *   population runs unconditionally as a result — see the subtlety recorded in the module header.
    *   Keys matching no declared property are silently ignored, as they were in CFML.
@@ -964,13 +1000,17 @@ export class BaseService<
    *   parameter here is what stops a request-supplied value from selecting the bypass. DECISION V-1
    *   on {@link ValidationContext} carries the enumeration proving no legacy call site selected it
    *   either, so this is behaviour preservation rather than a behavioural change.
-   * @returns The persisted entity — the value produced by the persistence step, never merely the
-   *   argument that was handed in.
-   * @throws {ValidationError} the accumulated failure bag, keyed by property identifier, when the
-   *   entity did not pass validation. Nothing is persisted in that case, and the entity referenced by
-   *   the argument is the one the legacy `super.save()` would have returned — which is what lets
-   *   `ProductService.saveProductType` convert the raise back into entity-carried findings. See the
-   *   note at the return statement.
+   * @returns The entity, ON EVERY PATH, exactly as [:L103] does. On success it is the value produced by
+   *   the persistence step rather than merely the argument that was handed in. On a validation failure
+   *   nothing is persisted, the accumulated bag is merged into the entity's own through `addErrors`, and
+   *   the caller asks `hasErrors()` / `getErrors()` — the ported form of the legacy
+   *   `arguments.entity.hasErrors()` read at [org/Hibachi/HibachiService.cfc:L133].
+   *
+   *   ⚠️ THIS METHOD DOES NOT RAISE FOR A VALIDATION FAILURE, AND A CALLER MUST NOT ASSUME IT DOES. It
+   *   can still raise for a POPULATION failure — `populate` throws a `DomainError` for a payload key
+   *   that no descriptor authorises — and that raise propagates deliberately, because it reports a
+   *   programming or authorisation fault rather than invalid user data. The two are different failure
+   *   classes and the legacy separated them the same way.
    */
   public async save(
     entity: TEntity,
@@ -1110,26 +1150,38 @@ export class BaseService<
     /*
      * [:L103] `return arguments.entity;`
      *
-     * The legacy line returned the entity whether or not it had failed, because the entity carried its
-     * own bag for the caller to inspect. Not every ported entity carries one, so an accumulated failure
-     * is raised here instead — after the post-processing gate has been evaluated, so the two-part gate at
-     * [:L91] keeps both of its arms live. The bag is raised as-is, with its keys and message keys
-     * untouched, so `src/handlers/httpResponse.ts` can serialise it exactly as it expects.
+     * ⭐ THE ENTITY IS RETURNED ON EVERY PATH, FAILED OR NOT, AND THAT IS THE CONTRACT. The legacy line
+     * has no branch: `model/service/HibachiService.cfc:L103` is the single exit of the local override
+     * and it hands back the same entity whether validation passed or failed. The caller then asks the
+     * ENTITY whether it failed, which it can do because [org/Hibachi/HibachiTransient.cfc:L408-L459]
+     * wrote the findings into the entity's own bag and never cleared them.
      *
-     * ⚠️ THE RAISE IS THIS MEMBER'S CONTRACT, BUT IT IS NOT EVERY CALLER'S CONTRACT, AND ONE CALLER
-     * CONVERTS IT BACK. `model/service/ProductService.cfc:L310` returns `arguments.productType` on every
-     * path and its own `:L306` gate then reads `hasErrors()`, so `saveProductType` must NOT raise on a
-     * validation failure. `src/services/ProductService.ts` therefore catches this `ValidationError`,
-     * attaches its findings to the product type through a composed error surface, and returns the
-     * entity — restoring that member's legacy failure semantics without changing this one's. Two facts
-     * make that conversion exact rather than approximate: on the failure path nothing has been persisted,
-     * because the gate above [:L154-L155] skips `persist`; and `savedEntity` is still the very instance
-     * the caller passed in, because `populate` mutates in place and returns its target. The other two
-     * in-slice callers of this member — `BrandService.saveBrand` and the SKU save path — rely on the
-     * raise and are unaffected.
+     * ⚠️ AN EARLIER REVISION RAISED HERE INSTEAD, AND THAT WAS A DIVERGENCE, NOT A TRANSLATION. Its
+     * stated reason was that "not every ported entity carries a bag" — but that was a property of the
+     * TYPE CONSTRAINT, not of the legacy design, and the constraint was the thing to fix. Raising
+     * changed the observable contract of every caller of this member, which is what
+     * `BrandService.saveBrand` publishes to its own callers; it inverted the polarity of the ONLY signal
+     * the legacy offered, turning a value the caller inspects into control flow the caller must
+     * intercept; and it forced `ProductService.saveProductType` to catch-and-reattach purely to undo it.
+     * {@link BaseServiceEntity} now intersects `EntityErrorSurface`, so the bag has a home and the
+     * legacy single-exit shape is reproduced directly. AAP Goal B (behaviour preserved at the interface
+     * boundary), TR-1 (public surface preserved) and IR-8 (these are the LOCAL overrides the in-scope
+     * services actually inherit) all point the same way.
+     *
+     * ⭐ WHY THE ATTACH IS LOSSLESS AND WHY THE ORDER IS RIGHT. `addErrors` merges the accumulated bag
+     * into the entity's own with its keys and message keys untouched, so `src/handlers/httpResponse.ts`
+     * still serialises exactly what it did before once a caller lifts them back out. The attach happens
+     * AFTER the post-processing block so the two-part gate at [:L91] keeps both of its arms live, and
+     * it cannot retroactively open a gate that has already been evaluated.
+     *
+     * ⭐ AND NOTHING WAS WRITTEN ON THE FAILURE PATH. The gate above [:L154-L155] skipped `persist`, and
+     * `savedEntity` is still the very instance the caller passed in — `populate` mutates in place and
+     * returns its target, and `addErrors` mutates in place too. So a caller holding the entity it passed
+     * in observes the findings on that same reference, which is precisely the legacy relationship
+     * between the argument and the return value.
      */
     if (errors.hasErrors()) {
-      throw errors;
+      savedEntity.addErrors(errors.getErrors());
     }
 
     return savedEntity;

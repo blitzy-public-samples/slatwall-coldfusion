@@ -87,8 +87,6 @@
  *     `src/ports/repositories/SkuRepository.ts`.
  */
 
-import type { BoundedReadResult, BoundedReadWindow } from './BoundedRead';
-
 /**
  * The element type returned by {@link ProductRepository.findAttributeSets}.
  *
@@ -152,47 +150,204 @@ export interface ProductSearchRow {
 }
 
 /* ================================================================================================
- * SEC-08 IS WITHDRAWN — AN IMPORT LOCATION IS A PLAIN `string`, AND THE RISK IS FLAGGED, NOT CLOSED
+ * SEC-08, RE-ADJUDICATED — THE LOCATION STAYS A PLAIN `string`, AND REFUSING A HOSTILE ONE IS NOW
+ * AN OBLIGATION OF EVERY IMPLEMENTATION
  * ================================================================================================
- * ⚠️ WHAT WAS HERE, AND WHY IT IS GONE. An earlier revision narrowed the location argument of
+ * ⚠️ WHAT WAS HERE, AND WHAT HAS CHANGED. An earlier revision narrowed the location argument of
  * {@link ProductRepository.importFromFile} to an unforgeable branded `ProductImportSource`, produced only
  * by a `validateProductImportSource` gate run against an operator-supplied `ProductImportSourcePolicy`
  * of allowed schemes, allowed hosts, byte cap, timeout and redirect count — and it laid four
  * address-level obligations (resolve-then-vet, connect-to-the-vetted-address, re-validate every redirect
- * hop, enforce bounds while streaming) on any adapter. All of it has been removed.
+ * hop, enforce bounds while streaming) on any adapter. A later revision withdrew ALL of it. Review
+ * finding F8 (CWE-918) re-opened that decision, and the outcome is neither of the two extremes: the
+ * BRANDED TYPE stays withdrawn, and the REFUSAL is now required.
  *
- * ⛔ THE REASON IS THE MINIMAL CHANGE CLAUSE, NOT A REASSESSMENT OF THE RISK. AAP §0.6.7.7 declares D18
- * — parameterising `model/dao/ProductDAO.cfc`'s 21 interpolated statements — as THE SOLE deliberate
- * departure from behaviour preservation, and AAP §0.8.2 guideline 4 forbids enhancing or optimising
- * business logic beyond what the migration requires. A location the legacy would have fetched was being
- * REFUSED, which is a behavioural divergence; and the policy object itself was five invented
- * configuration values, which AAP §0.7.3 standard 9 and IR-12 forbid outright. The earlier block argued
- * the exception "on the D18 precedent", but D18 is a precedent for a divergence that removes an entire
- * class of flaw WITHOUT changing a single outcome the legacy produced — parameterised SQL returns exactly
- * the rows interpolated SQL returned. Refusing a fetch changes an outcome, so the two are not analogous.
+ * ⛔ THE ONE GROUND THAT DOES NOT SURVIVE. The withdrawal argued that "D18 is a precedent for a
+ * divergence that removes an entire class of flaw WITHOUT changing a single outcome the legacy produced
+ * — parameterised SQL returns exactly the rows interpolated SQL returned. Refusing a fetch changes an
+ * outcome, so the two are not analogous." THE PREMISE IS FALSIFIED BY D18'S OWN EXAMPLE: a product name
+ * of `O'Brien` reaching `model/dao/ProductDAO.cfc:L183` yields a syntax error or an injection from the
+ * interpolated statement and a correct row from the parameterised one. The outcome does change — on
+ * exactly the inputs where the legacy's own behaviour was the flaw. D18's real shape is therefore: for
+ * every input on which the legacy produced a well-defined, intended result, the port produces the same
+ * result, and the divergence falls only where the legacy's behaviour was itself the defect.
  *
- * ⭐ WHAT THE LEGACY ACTUALLY DOES, STATED SO NOTHING IS ASSUMED. `model/service/ProductService.cfc:L65`
- * takes `required string fileURL` and performs NO check of any kind on it;
- * `model/dao/ProductDAO.cfc:L73` takes the same untouched string; and `model/dao/ProductDAO.cfc:L87`
- * retrieves it SERVER-SIDE with `cfhttp`, with a `new http()` fallback at `:L88-L90` for tab-delimited
- * files. There is no scheme list, no host list, no size cap, no timeout, no redirect policy and no
- * address check anywhere on that path. The port therefore declares a plain `string`, exactly as AAP
- * §0.4.2.6 specifies for `ProductRepository.importFromFile(fileURL, textQualifier)`.
+ * ⭐⭐ AND ON THIS PATH THERE IS NO LEGACY OUTCOME TO CHANGE AT ALL. `model/dao/ProductDAO.cfc:L87`
+ * retrieves through `getService("utilityTagService").cfhttp(...)`, and NO `utilityTagService` bean is
+ * declared anywhere in the legacy repository — the single occurrence of that name in the whole tree is
+ * the call itself — while the `new http()` block at `:L89-L98` is commented out. The set of inputs on
+ * which this path produced a well-defined, intended result is EMPTY. That makes the gate
+ * outcome-preserving by vacuity, which is the strongest form of the D18 test available, and it puts the
+ * member in the same class as D4 and D5: a caller delegating to something that is not there. Recorded
+ * by locator; no register identifier is minted.
  *
- * ⚠️ THE RISK IS REAL AND IS RECORDED AS MISMATCH M4, WHICH IS THE TREATMENT AAP §0.8.3.6 PRESCRIBES.
- * A caller-named location fetched from inside a VPC can reach internal services, a loopback admin port
- * or an instance-metadata endpoint, and the response is then parsed and written into the catalog — the
- * shape CWE-918 describes. That is a property of the LEGACY DESIGN, it is inherited by the port along
- * with everything else, and AAP §0.6.6 M4 already carries it ("Remote file fetch inside the request").
- * Closing it is a PRODUCT DECISION for the operator of the migrated service, taken with knowledge of the
- * network the Lambda runs in; it is not something this port may decide on the operator's behalf while
- * claiming behaviour preservation. No new mismatch identifier is minted: M4 is the entry.
+ * ⚠️ AND THE ACCOUNT OF THE LEGACY ABOVE USED TO BE WRONG IN ONE DETAIL, WHICH IS CORRECTED HERE. It
+ * described "a `new http()` fallback at `:L88-L90` for tab-delimited files", repeating an error in AAP
+ * §0.6.6. `:L88` is a COMMENT recording why the script-based approach was abandoned, and `:L89-L98` is a
+ * commented-out block. There is no live fallback. `src/adapters/mysql/MySqlProductRepository.ts` already
+ * carried this correction, so for a time two files in one subtree contradicted each other; they now
+ * agree.
  *
- * ⛔ CONSEQUENTLY THERE IS NOTHING FOR AN ADAPTER TO ENFORCE HERE. An implementation reproduces the
- * legacy retrieval and the legacy parse, and nothing more. It must not invent a scheme list, a host
- * list, a byte cap, a timeout, a redirect limit or an address check, because each of those would be a
- * number or a rule the source does not state.
+ * ⭐ WHAT IS NOW REQUIRED OF AN IMPLEMENTATION, AND WHAT IS STILL FORBIDDEN. An implementation MUST
+ * refuse a location whose scheme is anything but HTTP or HTTPS, one carrying credentials in the URL, and
+ * one whose host is an address literal in a loopback, private, link-local, unique-local, unspecified or
+ * instance-metadata range. None of those is invented configuration: the scheme pair is what `cfhttp` can
+ * speak, credentials were separate attributes it could not read from a URL, and the ranges are literals
+ * defined by RFCs 1122, 1918, 3927, 4193 and 4291. It MUST also resolve the host, refuse a result in
+ * those ranges, connect to the address it vetted, and re-validate every redirect hop.
+ *
+ * ⛔ IT MUST STILL NOT INVENT A HOST ALLOW-LIST, A BYTE CAP, A TIMEOUT OR A REDIRECT COUNT. The source
+ * names no host and states no figure, so every possible value of each is a fabrication that AAP §0.7.3
+ * standard 9 and IR-12 forbid. The legacy's only budget is the 3600-second REQUEST timeout at
+ * `model/service/ProductService.cfc:L65-L68`, carried as mismatch M1.
+ *
+ * ⭐ THE ARGUMENT STAYS A PLAIN `string`, WHICH IS WHY THIS BLOCK IS PROSE AND NOT A TYPE. AAP §0.4.2.6
+ * ratifies `ProductRepository.importFromFile(fileURL, textQualifier)`; re-branding the argument would
+ * change that ratified shape, force every caller to mint a branded value, and turn this type-only module
+ * into one that emits code. The obligation is therefore stated as a contract, and the shipped
+ * implementation discharges the decidable part of it at its single retrieval seam — see
+ * `assertRetrievableImportSource` in `src/adapters/mysql/MySqlProductRepository.ts`.
+ *
+ * ⚠️ THE RESIDUAL RISK IS REAL AND STAYS ON THE REGISTER AS MISMATCH M4, WHICH IS THE TREATMENT AAP
+ * §0.8.3.6 PRESCRIBES. A host given as a NAME that resolves into a refused range cannot be convicted
+ * without a lookup, and no layer that may only import `domain`, `ports`, `util` and `errors` can perform
+ * one. That part is the implementation's to close, under the resolve-then-vet obligation above, and AAP
+ * §0.6.6 M4 ("Remote file fetch inside the request") remains its register entry. No new mismatch
+ * identifier is minted.
  * ============================================================================================== */
+
+/**
+ * A unique symbol that brands a location which has passed an operator-supplied import-source policy.
+ *
+ * Declared and never exported, so {@link ValidatedProductImportSource} cannot be produced anywhere
+ * outside this module. That unforgeability is the entire mechanism described under SEC-08 above.
+ */
+declare const validatedProductImportSourceBrand: unique symbol;
+
+/**
+ * An import location that has been through {@link ProductImportSourcePolicy.validateSource}.
+ *
+ * ⭐ IT IS A `string` AT RUNTIME AND CARRIES NO OVERHEAD. The brand exists only in the type system, so
+ * a validated source is passed to a transport client exactly as a plain location would be. What the
+ * brand buys is that {@link ProductImportSourceReader}-shaped members cannot be reached with a location
+ * that never met a policy, which prose obligations could not enforce.
+ *
+ * ⛔ THIS TYPE NEVER APPEARS ON {@link ProductRepository.importFromFile}. That member's signature is
+ * fixed by AAP §0.4.2.6 and takes a plain `string`; see SEC-08 above for why branding it was revision
+ * 1's defect.
+ */
+export type ValidatedProductImportSource = string & {
+  readonly [validatedProductImportSourceBrand]: true;
+};
+
+/**
+ * The transfer bounds an import reader must enforce while retrieving a file.
+ *
+ * ⛔ EVERY MEMBER IS REQUIRED AND NONE HAS A DEFAULT, WHICH IS THE POINT. AAP §0.7.3 standard 9 and
+ * IR-12 forbid inventing configuration the source does not state, and the legacy states no cap of any
+ * kind. This interface therefore declares WHICH decisions must be made without making any of them: the
+ * implementer supplies all three values, and this subtree supplies none.
+ */
+export interface ProductImportSourceBounds {
+  /**
+   * The maximum number of bytes the reader may accept before abandoning the transfer.
+   *
+   * Guards against a response large enough to exhaust the function's memory, which matters more here
+   * than in the legacy because the retrieved file is parsed into records before any row is written.
+   */
+  readonly maxBytes: number;
+
+  /**
+   * The maximum wall-clock milliseconds the reader may spend on the transfer before abandoning it.
+   *
+   * ⚠️ DISTINCT FROM THE LEGACY'S 3600-SECOND REQUEST BUDGET (mismatch M1). That budget is a
+   * whole-request setting at `model/service/ProductService.cfc:L65-L68`, not a transfer timeout, and it
+   * is not a default for this member. This is the retrieval's own bound, and its value is the
+   * implementer's to choose.
+   */
+  readonly maxMilliseconds: number;
+
+  /**
+   * The maximum number of redirect hops the reader may follow.
+   *
+   * Zero is a legitimate choice and means "follow none". Each hop that IS followed must be put through
+   * {@link ProductImportSourcePolicy.revalidateRedirectHop} before it is fetched.
+   */
+  readonly maxRedirectHops: number;
+}
+
+/**
+ * One redirect hop, presented for re-validation before it is followed.
+ *
+ * ⭐ IT CARRIES THE RESOLVED ADDRESS, NOT ONLY THE LOCATION, AND THAT IS THE WHOLE REASON THIS TYPE
+ * EXISTS. Vetting a hostname and then handing the name to a client that resolves it again is the classic
+ * DNS-rebinding hole: the name that passed and the address that is connected to need not be the same. A
+ * policy can only close that if it is shown the address the reader will actually connect to.
+ */
+export interface ProductImportRedirectHop {
+  /** The location the previous response redirected to, exactly as that response gave it. */
+  readonly location: string;
+
+  /**
+   * The address the reader resolved {@link ProductImportRedirectHop.location} to and will connect to.
+   *
+   * Presented as text so that both IPv4 and IPv6 forms are expressible without this port choosing a
+   * representation for either.
+   */
+  readonly resolvedAddress: string;
+}
+
+/**
+ * The operator-supplied policy every import reader must satisfy before it retrieves anything.
+ *
+ * ⭐ THIS INTERFACE IS THE REQUIRED CONTRACT SEC-08 DESCRIBES, AND IT DELIBERATELY DECIDES NOTHING. It
+ * states which judgments an implementation must make — whether a location may be fetched, whether each
+ * redirect hop may be followed given the address it resolves to, and what the transfer bounds are —
+ * while naming no scheme, host, address range or number itself. That division is what lets the
+ * obligation be mandatory without violating AAP §0.7.3 standard 9.
+ *
+ * ⛔ NO IMPLEMENTATION IN THIS SUBTREE RETRIEVES ANYTHING, so none of these members is answered with a
+ * real policy here. The shipped reader refuses, for the reason established under SEC-08: the legacy
+ * import cannot fetch at all, so a working retrieval client would ADD a capability the ported system
+ * does not have.
+ */
+export interface ProductImportSourcePolicy {
+  /**
+   * Vet a caller-supplied location and brand it, or raise.
+   *
+   * Called with the location exactly as it reached
+   * {@link ProductRepository.importFromFile} — unmodified, because normalising it before the policy sees
+   * it would let a normalisation difference decide what the policy is shown.
+   *
+   * @param fileURL - the caller's location, forwarded verbatim.
+   * @returns the same location, branded, when the policy admits it.
+   */
+  validateSource(fileURL: string): Promise<ValidatedProductImportSource>;
+
+  /**
+   * Vet one redirect hop, given the address the reader will connect to, and brand it, or raise.
+   *
+   * ⛔ MUST BE CALLED FOR EVERY HOP, INCLUDING THE SECOND AND SUBSEQUENT ONES. Validating only the
+   * first response's `Location` leaves a chain that begins externally and ends at a loopback or
+   * metadata address fully exploitable.
+   *
+   * @param hop - the location and the address it resolved to.
+   * @returns the hop's location, branded, when the policy admits it.
+   */
+  revalidateRedirectHop(hop: ProductImportRedirectHop): Promise<ValidatedProductImportSource>;
+
+  /**
+   * The bounds this policy requires of the transfer.
+   *
+   * ⭐ A METHOD RATHER THAN A PROPERTY, SO THAT A NON-RETRIEVING POLICY CAN REFUSE INSTEAD OF INVENTING
+   * FIGURES. A property would force every implementation — including the refusing one shipped here — to
+   * name a byte cap, a timeout and a redirect cap, and those numbers would be exactly the invented
+   * configuration AAP §0.7.3 standard 9 and IR-12 forbid.
+   *
+   * @returns the byte, time and redirect bounds the reader must enforce.
+   */
+  readBounds(): ProductImportSourceBounds;
+}
 
 /**
  * Optional invocation-scoped controls on one import.
@@ -246,8 +401,14 @@ export interface ProductImportOptions {
 }
 
 /**
- * The product-side repository boundary: the three public members of
- * `model/dao/ProductDAO.cfc`, typed.
+ * The product-side repository boundary: SIX members, of which the three public members of
+ * `model/dao/ProductDAO.cfc` are the ported core and three are additive. The count is stated up front
+ * rather than only in the reconciliation below, because review finding F3 was caused by a leading
+ * three-member claim being read as the whole surface.
+ *
+ * The count was SEVEN in an earlier revision. The seventh was a bounded product search that no service,
+ * handler or integration ever reached; its deliberate removal is recorded in full under the ⛔ heading
+ * below, so the drop from seven to six is a documented withdrawal rather than an omission.
  *
  * Method names follow the renames fixed by AAP 0.4.2.6. Argument names, argument order and
  * required-versus-optional status are preserved exactly as declared in the legacy source, per
@@ -263,12 +424,10 @@ export interface ProductImportOptions {
  * observed contract rather than an inconsistency to resolve; harmonising the types would
  * silently change behaviour at whichever call path was "corrected".
  *
- * ⚠️ AND THE MEMBER COUNT IS NOW SEVEN, NOT THREE, WITHOUT THAT CONTRADICTING THE SENTENCE ABOVE. Three
- * members are the legacy's three public DAO members. The other FOUR are ADDITIVE and each is documented
+ * ⚠️ AND THE MEMBER COUNT IS NOW SIX, NOT THREE, WITHOUT THAT CONTRADICTING THE SENTENCE ABOVE. Three
+ * members are the legacy's three public DAO members. The other THREE are ADDITIVE and each is documented
  * at its own declaration:
  *
- *   `searchByProductTypeBounded`     an explicitly windowed companion to the unbounded search, issuing
- *                                    the same statement with the same match set.
  *   `backfillImportDerivedColumns`   exposes the two untransacted statements `importFromFile` already
  *                                    runs at `model/dao/ProductDAO.cfc:L287-L325`, so the out-of-band M1
  *                                    workflow can run them once per logical import.
@@ -276,9 +435,52 @@ export interface ProductImportOptions {
  *                                    F03 account is on the declaration itself.
  *   `removeProduct`                  its delete-path mirror, reached through `EntityRemover`.
  *
- * None adds behaviour and none replaces a legacy member. The first two re-express statements the legacy
- * already issued; the second two port writes the mapping layer emitted IMPLICITLY at flush time from the
+ * None adds behaviour and none replaces a legacy member. The first re-expresses statements the legacy
+ * already issued; the other two port writes the mapping layer emitted IMPLICITLY at flush time from the
  * property metadata at `model/entity/Product.cfc:L52-L99`, which AAP §0.4.1.7 gives to the adapter layer.
+ *
+ * ==================================================================================================
+ * ⛔ A BOUNDED PRODUCT SEARCH IS DELIBERATELY ABSENT, AND IT USED TO BE DECLARED HERE
+ * ==================================================================================================
+ * An earlier revision declared `searchByProductTypeBounded(window, term?, productTypeIDs?)` beside the
+ * unbounded search, with a full implementation in `../../adapters/mysql/MySqlProductRepository` and a
+ * member on the in-memory double. It has been REMOVED, and the removal is recorded here rather than left
+ * silent, because "the bounded sibling is missing" is otherwise indistinguishable from an oversight.
+ *
+ * IT HAD NO CALLER ANYWHERE. A repository-wide search found references in exactly three places — this
+ * declaration, that implementation, and the test double — and none in any service, handler or
+ * integration.
+ *
+ * ⚠️ AND THAT IS NO LONGER A CONTRAST WITH ITS SIBLINGS, WHICH IS WORTH STATING PLAINLY RATHER THAN
+ * LEAVING AS A CLAIM THAT HAS QUIETLY EXPIRED. This paragraph used to add that every OTHER bounded member
+ * in the slice was reached from a routed service member — `SkuRepository.searchByProductTypeBounded` from
+ * `SkuService.searchSkusByProductTypeBounded`, and the two `OptionRepository` bounded reads from
+ * `OptionService`. That is now FALSE in both halves: the routed service members were themselves withdrawn
+ * for exceeding the surfaces AAP §0.4.2.2 and §0.4.2.4 ratify, so `SkuRepository.searchByProductTypeBounded`
+ * and both `OptionRepository` bounded reads are today reached from no service, handler or integration
+ * either. They remain declared, implemented, doubled and gated in their own adapter suites.
+ *
+ * ⭐ THE ASYMMETRY IS THEREFORE FLAGGED, NOT RESOLVED HERE, AND THE WITHDRAWAL DOES NOT REST ON IT. Three
+ * bounded repository members are retained while a fourth was removed, and after the service-side
+ * withdrawals the four are alike in having no caller. What still separates this one is the paragraph
+ * below: a caller for it could not be added without declaring a SIXTEENTH `ProductService` member, whereas
+ * the other three sit behind services whose ratified surfaces could legitimately regain a bounded member.
+ * Callerlessness was the observation that prompted the removal; the ratified-surface argument is the ground
+ * that carries it.
+ *
+ * AND IT COULD NOT ACQUIRE ONE WITHOUT BREAKING THE RATIFIED SURFACE. AAP §0.4.2.1 fixes
+ * `ProductService` at FIFTEEN public members and none of them is a product search — the legacy
+ * `model/dao/ProductDAO.cfc:L419` member is reached from the out-of-scope admin layer, not from
+ * `model/service/ProductService.cfc`. Wiring a caller would therefore have meant declaring a sixteenth
+ * member the AAP does not ratify, which TR-1 and AAP §0.8.2 guideline 4 both forbid. Keeping an
+ * unreachable member instead would have meant carrying tested-but-dead adapter code, and coverage of a
+ * member nothing calls is not coverage of this system.
+ *
+ * ⭐ THE UNBOUNDED `searchByProductType` STAYS EXACTLY AS IT WAS. It is the AAP §0.4.2.6 port of
+ * `model/dao/ProductDAO.cfc:L419-L437` and remains unbounded, because that statement is unbounded and
+ * capping it would substitute a short answer for a complete one (AAP §0.7.3 S9). Nothing about this
+ * removal narrows it. Should a ratified caller ever need a window, the bounded shape is fully specified
+ * by `BoundedRead` and by the two sibling ports that still declare one.
  */
 export interface ProductRepository {
   /**
@@ -413,11 +615,14 @@ export interface ProductRepository {
    * at `model/dao/ProductDAO.cfc:L262` it reads a Mura CMS content table, which belongs to a
    * different application altogether and has no port in this plan.
    *
-   * ⛔ THE LOCATION IS A PLAIN, UNCHECKED `string`, AND SEC-08'S WITHDRAWAL BLOCK ABOVE CARRIES THE WHOLE
-   * ACCOUNT. In short: the legacy checks nothing on this path, the risk that follows is mismatch M4, and
-   * an implementation must NOT invent a scheme list, host list, byte cap, timeout, redirect limit or
-   * address check to close it — closing it is the operator's decision, taken with knowledge of the
-   * network the function runs in.
+   * ⛔ THE LOCATION IS A PLAIN `string`, BUT IT IS NOT A PLAIN *UNCHECKED* STRING, AND THE SEC-08 BLOCK
+   * ABOVE CARRIES THE WHOLE ACCOUNT. In short: the legacy checks nothing on this path, and because its
+   * retrieval collaborator does not exist there is no legacy outcome a refusal could change — so an
+   * implementation MUST refuse a non-HTTP(S) scheme, credentials embedded in the URL, and a host that is
+   * an address literal in a loopback, private, link-local, unique-local, unspecified or
+   * instance-metadata range; and it MUST resolve the host, vet the result, connect to the address it
+   * vetted, and re-validate every redirect. It must still NOT invent a host allow-list, a byte cap, a
+   * timeout or a redirect count. The part only a lookup can decide stays on the register as mismatch M4.
    *
    * ⚠️ AND THE ONE THING NOT TO DO: do not fetch inside the per-row transaction. Mismatch M4 records
    * that the legacy performs network retrieval inside the transaction-bearing request, compounding M1
@@ -428,7 +633,10 @@ export interface ProductRepository {
    *   caller supplied it. Occupies the first argument position of `model/dao/ProductDAO.cfc:L73`, where
    *   it is declared `required string fileURL`; the name, type, arity and argument order all match that
    *   declaration (TR-1). The file type is still derived from the extension inside the implementation,
-   *   at `model/dao/ProductDAO.cfc:L74`.
+   *   at `model/dao/ProductDAO.cfc:L74`. ⚠️ "EXACTLY AS THE CALLER SUPPLIED IT" IS NOW LOAD-BEARING
+   *   RATHER THAN INCIDENTAL: no caller may trim, normalise, re-encode or otherwise rewrite this
+   *   argument, because the refusals the SEC-08 block requires are evaluated against the string that
+   *   arrives here, and a transformation applied upstream of them would be evaluated against nothing.
    * @param textQualifier - Optional text qualifier, defaulting to empty per
    *   `model/dao/ProductDAO.cfc:L73`.
    * @param options - Optional invocation-scoped controls. Both are ADDITIONS with no legacy origin and
@@ -548,42 +756,6 @@ export interface ProductRepository {
    */
   searchByProductType(term?: string, productTypeIDs?: string): Promise<ProductSearchRow[]>;
 
-  /**
-   * The same search as {@link ProductRepository.searchByProductType}, restricted to a caller-stated
-   * window.
-   *
-   * ⚠️ ADDITIONAL SURFACE, NOT A REPLACEMENT. The unbounded member above is the port of
-   * `model/dao/ProductDAO.cfc:L419-L437` and stays unbounded, because that statement is unbounded and
-   * capping it would substitute a short answer for a complete one with nothing to show for the
-   * substitution (AAP §0.8.2 Guideline 4, §0.7.3 S9). This member gives a caller that can state a
-   * ceiling a place to state it.
-   *
-   * THE MATCH SET IS IDENTICAL IN EVERY RESPECT. Same `LIKE` predicate with the wildcards still added
-   * by the implementation at the binding site, so callers still pass a BARE term; the same
-   * `len()`-not-`trim()` guard on the product-type list, which stays deliberately looser than the
-   * SKU-side equivalent (Discrepancy 6); the same list splitting; the same bind order of term first
-   * then product-type identifiers; and the same failure when the term is omitted. The window is
-   * applied last and changes only how many qualifying rows are returned.
-   *
-   * ⚠️ NO ORDERING IS ADDED. `model/dao/ProductDAO.cfc:L421` declares no `ORDER BY` and none may be
-   * introduced, so successive windows are not guaranteed disjoint or exhaustive. This bounds COST, not
-   * page stability; `BoundedRead` states the limitation once for all bounded members.
-   *
-   * THE WINDOW COMES FIRST because both search arguments are optional and an optional parameter cannot
-   * precede a required one. That is the only departure from the unbounded member's argument order.
-   *
-   * @param window - the caller's row ceiling and zero-based offset. Both required; neither defaulted.
-   * @param term - bare product-name fragment. Same contract as the unbounded member, including that
-   *   omitting it raises.
-   * @param productTypeIDs - optional comma-delimited product-type identifier list. Plural by
-   *   preservation; a string, not an array.
-   * @returns the window's rows, plus whether at least one further match lies past it. Never null.
-   */
-  searchByProductTypeBounded(
-    window: BoundedReadWindow,
-    term?: string,
-    productTypeIDs?: string,
-  ): Promise<BoundedReadResult<ProductSearchRow>>;
   /**
    * Write one product — insert when it is transient, update when it is not.
    *

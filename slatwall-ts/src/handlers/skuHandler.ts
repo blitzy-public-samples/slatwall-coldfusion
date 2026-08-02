@@ -82,27 +82,32 @@
  *         model/entity/Sku.cfc:L594      -> getTransactionExistsFlag( skuID = this.getSkuID() )
  *         model/entity/Product.cfc:L626  -> getTransactionExistsFlag( productID = this.getProductID() )
  *
- *     ADJUDICATION. AAP §0.1.1.3 IR-1 governs every place CFML's metaprogramming passes something a
- *     declaration does not name, and rules that it "becomes an explicitly declared, typed method"
- *     because strict TypeScript has no equivalent facility. So ../services/SkuService declares
- *     `(skuID?, productID?)` and forwards both, and this handler binds both from the query string.
- *     AAP §0.4.2.2's Discrepancy 4 sentence ("The narrower service contract is preserved") is honoured
- *     rather than overridden: what the service does NOT inherit from the DAO is its REQUIREDNESS —
- *     both parameters remain optional and no caller must supply either. AAP §0.4.2.6 keeps the
- *     separately named `SkuRepository.transactionExists(productID?, skuID?)`, which is where the
- *     argument order flips to the DAO's own sequence; ../services/SkuService performs that swap once.
+ *     ADJUDICATION. AAP §0.4.2.2's target signature for this row is
+ *     `getTransactionExistsFlag(): Promise<boolean>`, and its Discrepancy 4 gives the reason in its own
+ *     words: "the service member takes no arguments while the underlying DAO member accepts optional
+ *     productID and skuID. The narrower service contract is preserved." The plan is FROZEN and is
+ *     aligned to, never reinterpreted (AAP §0.1.2.1), so ../services/SkuService declares ZERO
+ *     parameters and this handler reads and forwards nothing. IR-1's requirement that CFML's implicitly
+ *     passed argument become an explicit declaration is satisfied where AAP §0.4.2.6 places the
+ *     filtered capability — `SkuRepository.transactionExists(productID?, skuID?)` — and on the two
+ *     entity checker contracts that consume it through `createTransactionExistenceChecker` in
+ *     ../adapters/mysql/MySqlSkuRepository.
  *
- *     ⚠️ AN EARLIER REVISION DECLARED THE SERVICE MEMBER WITH ZERO PARAMETERS AND FORWARDED NOTHING.
- *     That was not a narrower contract but a non-functional one: the repository raises when neither
- *     identifier is supplied, reproducing [model/dao/SkuDAO.cfc:L90], so the two
- *     `transactionExistsFlag` delete guards could never be evaluated and no product or SKU could be
- *     deleted. See {@link SkuHandler.getTransactionExistsFlag}.
+ *     ⚠️ A REVISION WIDENED THE SERVICE MEMBER TO `(skuID?, productID?)` AND BOUND BOTH IDENTIFIERS
+ *     HERE, ON THE GROUND THAT THE NARROW FORM LEFT THE TWO `transactionExistsFlag` DELETE GUARDS
+ *     UNABLE TO ANSWER. That ground was false: neither guard consumes the service member. Both are
+ *     entity-level reads served by the branded checkers named above, so each keeps its identifier
+ *     scoping whatever this route does. The widening also republished, as an HTTP capability, a probe
+ *     the legacy exposes through no action at all — invented surface under AAP §0.7.3 S9 and §0.8.2
+ *     Guideline 4. It is withdrawn; see {@link SkuHandler.getTransactionExistsFlag}.
  *
- * (b) TODO(parity) D24 — `processImageUpload` RETURNS A BOOLEAN, NEVER A SKU. AAP 0.4.2.2's target
- *     column says `Promise<Sku>`, and the body at model/service/SkuService.cfc:L210-L218 disagrees
- *     with it in the plainest possible way: it returns `true` at [:L214] and `false` at [:L216] and
- *     never returns the entity at all. ../services/SkuService ratified `Promise<boolean>`, so this
- *     handler serialises the boolean. THE LEGACY PARAMETER IS ALSO SPELLED WITH A CAPITAL S —
+ * (b) TODO(parity) D24 — `processImageUpload` ANSWERS THE ENTITY, WHILE THE LEGACY BODY RETURNS A
+ *     BOOLEAN. AAP 0.4.2.2's target column resolves the legacy's loose `returntype="any"` to
+ *     `Promise<Sku>`, and the body at model/service/SkuService.cfc:L210-L218 disagrees with it in the
+ *     plainest possible way: it returns `true` at [:L214] and `false` at [:L216] and never returns the
+ *     entity at all. The plan is frozen (D1 precedence 1), so ../services/SkuService answers with the
+ *     SKU and this handler PROJECTS it (judgment (k)); the lost verdict is flagged on that member and at
+ *     the route rather than compensated for. THE LEGACY PARAMETER IS ALSO SPELLED WITH A CAPITAL S —
  *     `required any Sku` at [:L210], read back as `arguments.Sku` at [:L211] — which is CFML idiom
  *     rather than behavior; the service renamed it `sku` and this file uses the same spelling, which
  *     AAP 0.8.1 expressly permits ("It does not mean preserving CFML idioms in TypeScript").
@@ -244,7 +249,6 @@ import {
   messageResponse,
   notFoundResponse,
   okResponse,
-  readBoundedReadWindow,
   readJsonObjectBody,
   readPathParameter,
   readQueryStringParameter,
@@ -328,27 +332,20 @@ const TERM_QUERY_PARAMETER = 'term';
  */
 const PRODUCT_TYPE_ID_QUERY_PARAMETER = 'productTypeID';
 
-/**
- * The query parameter carrying the SKU identifier that scopes the transaction-existence question.
- *
- * A QUERY PARAMETER RATHER THAN A PATH PARAMETER, and the distinction is behavioural rather than
- * stylistic. A path parameter ADDRESSES a resource, which is why {@link readSkuIdentifier} treats the
- * unsaved sentinel as "nothing addressed". This value FILTERS a question instead: it is the identifier
- * `model/entity/Sku.cfc:L594` passes as a named argument, both identifiers are optional at
- * [model/dao/SkuDAO.cfc:L53-L55], and either may be supplied alone or with the other. Spelled exactly as
- * the legacy names the argument, so the wire name and the legacy name cannot drift.
+/*
+ * ⛔ THERE IS DELIBERATELY NO `skuID` AND NO `productID` QUERY PARAMETER CONSTANT HERE, AND THE ABSENCE
+ * IS THE CONTRACT RATHER THAN AN OMISSION. A revision declared both and bound them in
+ * {@link SkuHandler.getTransactionExistsFlag}, on the reading that IR-1 required this boundary to make
+ * CFML's implicitly passed identifiers explicit. AAP §0.4.2.2 freezes the SERVICE member at ZERO
+ * arguments (Discrepancy 4, "The narrower service contract is preserved"), and this file is the
+ * AWS-facing face of that service member — so there is nothing for either parameter to be forwarded to.
+ * The identifier-scoped form of the probe is the REPOSITORY's, reached by the two entity checkers
+ * (`SkuTransactionExistenceChecker` in ../domain/sku/Sku and `ProductTransactionExistenceChecker` in
+ * ../domain/product/Product, both implemented once by `createTransactionExistenceChecker` in
+ * ../adapters/mysql/MySqlSkuRepository), and it is not re-published as an HTTP capability: the legacy has
+ * no action for it, and minting one would be an invented route (AAP §0.7.3 S9, §0.8.2 Guideline 4). The
+ * account is at {@link SkuHandler.getTransactionExistsFlag} and judgment (a).
  */
-const SKU_ID_QUERY_PARAMETER = 'skuID';
-
-/**
- * The query parameter carrying the product identifier that scopes the transaction-existence question.
- *
- * The twin of {@link SKU_ID_QUERY_PARAMETER}; the identifier `model/entity/Product.cfc:L626` passes.
- * ⚠️ SUPPLYING BOTH IS LEGAL AND `skuID` WINS — the branch test at [model/dao/SkuDAO.cfc:L58-L64] takes
- * the SKU path whenever a SKU identifier is present, and the product path only at its `<cfelse>` [:L61].
- * That precedence belongs to the repository, which ports it; this layer neither enforces nor pre-empts it.
- */
-const PRODUCT_ID_QUERY_PARAMETER = 'productID';
 
 /**
  * The identifier value that means "this record has never been persisted".
@@ -501,12 +498,12 @@ const FETCH_OPTIONS_NOT_BOOLEAN_MESSAGE = `The "${FETCH_OPTIONS_QUERY_PARAMETER}
  *
  * THE TEN MEMBERS, WITH THE SOURCE LOCATOR AND THE CARRIED FINDING FOR EACH:
  *   createSkus                [:L58]  the combination engine; `data` unreshaped — judgment (e), M6
- *   processImageUpload        [:L210] returns a BOOLEAN — judgment (b), D24
+ *   processImageUpload        [:L210] answers the ENTITY per AAP 0.4.2.2 — judgment (b), D24
  *   getProductSkus            [:L220] `sorted` REQUIRED — Discrepancy 2; carries D13
  *   getSortedProductSkus      [:L246] carries D13
  *   searchSkusByProductType   [:L271] BOTH arguments optional — Discrepancy 3; SINGULAR — judgment (f)
  *   getSkuStocksDeletableFlag [:L281] delegates to an absent DAO member — judgment (c), D4
- *   getTransactionExistsFlag  [:L285] ZERO declared, TWO passed — judgment (a), Discrepancy 4 / D23
+ *   getTransactionExistsFlag  [:L285] ZERO declared, and ZERO ported — judgment (a), Discrepancy 4 / D23
  *   getSkuBySkuCode           [:L289] optional argument, `null` on a miss
  *   getSkuSmartList           [:L309] entity, three joins, five keyword properties
  *   newSku                    no legacy declaration at all — IR-1; DECLARED HERE, NOT ROUTED
@@ -525,7 +522,6 @@ export type SkuSurface = Pick<
   | 'getProductSkus'
   | 'getSortedProductSkus'
   | 'searchSkusByProductType'
-  | 'searchSkusByProductTypeBounded'
   | 'getSkuStocksDeletableFlag'
   | 'getTransactionExistsFlag'
   | 'getSkuBySkuCode'
@@ -735,9 +731,12 @@ export type ProductSkuCreationBoundary = (
  * Compose the writing boundary: one transaction per invocation, over collaborators built for it.
  *
  * ⭐ WHAT IS AND IS NOT DECIDED HERE. This function fixes the SEQUENCE and the GATE — resolve the
- * product, then create its SKUs, then keep the work only if the product is still clean — because those
- * are behaviour, ported from `model/service/ProductService.cfc:L273-L288` and from the three branch
- * preconditions `SkuService.createSkus` records at `[:L143]`, `[:L148]` and `[:L176]`. It fixes NOTHING
+ * product, then create its SKUs, then keep the work only if NEITHER the product NOR any SKU it produced
+ * carries a finding — because those are behaviour, ported from
+ * `model/service/ProductService.cfc:L273-L288` and from the three branch preconditions
+ * `SkuService.createSkus` records at `[:L143]`, `[:L148]` and `[:L176]`. "Still clean" means the whole
+ * batch, not the product alone; the gate below carries the full reasoning and the withdrawal of the
+ * narrower reading an earlier revision shipped. It fixes NOTHING
  * about which repositories exist or how they are constructed: `buildGraph` is supplied by the composition
  * root, which is the only layer that may name a concrete adapter (AAP 0.4.1.3).
  *
@@ -779,9 +778,35 @@ export function createProductSkuCreationBoundary<TScope, TGraph extends SkuCreat
          * read above used, so each insert is visible to the next SKU's uniqueness read (AAP 0.6.2). */
         return { product, created: await graph.skuService.createSkus(product, data) };
       },
-      /* The M5 gate — `model/service/ProductService.cfc:L286-L288` re-read, on the product itself. */
+      /*
+       * The M5 gate — `model/service/ProductService.cfc:L286-L288` re-read, over the WHOLE batch.
+       *
+       * ⛔ THE COMPLETE PREDICATE, AND AN EARLIER REVISION OF THIS FACTORY GOT IT WRONG. This gate read
+       * `settled.product.hasErrors()` and described itself as a re-read "on the product itself". That
+       * withdrawn reading commits an invalid batch for the commonest failure there is. Per-SKU rule
+       * findings deliberately never merge upward — `HibachiValidationService.validate(…, setErrors=true)`
+       * writes the error bean back onto the entity it validated
+       * [org/Hibachi/HibachiValidationService.cfc:L193] and never onto its parent — so a batch in which
+       * every SKU failed its `skuCode` uniqueness rule leaves `product.hasErrors()` FALSE. Meanwhile
+       * `createSkus` returns an unconditional `true` at [model/service/SkuService.cfc:L207], so neither
+       * the product's bag nor the return value carries the failure. The SKUs do, and only
+       * `skuBatchHasErrors` looks there.
+       *
+       * ⚠️ THE GROUND THE WITHDRAWN VERSION STOOD ON WAS REAL BUT NARROWER THAN IT CLAIMED.
+       * `:L286-L288` does re-read the product, and the product's bag IS one of the two places a finding
+       * can land — the three branch preconditions at [model/service/SkuService.cfc:L143], `[:L148]` and
+       * `[:L176]` write there via `product.addError(…)`. `skuBatchHasErrors` checks the product FIRST for
+       * exactly that reason, so nothing the old gate caught is lost; it adds the second place. What the
+       * legacy actually gated on at request end was `getORMHasErrors()`, which saw the WHOLE ORM session
+       * — every entity in the graph, not one of them (AAP §0.6.6 M5).
+       *
+       * ⚠️ AND THE SIBLING LIVE ROUTE IN THIS FILE ALREADY DID IT CORRECTLY, which is what made the
+       * divergence a latent trap rather than a uniform behaviour: `createSkuHandler` gates on
+       * `skuBatchHasErrors` and lifts `collectSkuBatchErrors` on the failure path, so the delivered
+       * factory and the route it exists to serve disagreed about when to roll back. They now agree.
+       */
       (settled: SkuCreationOutcome): boolean =>
-        settled.product !== null && settled.product.hasErrors(),
+        settled.product !== null && skuBatchHasErrors(settled.product),
     );
 
     return outcome.created;
@@ -844,18 +869,6 @@ export type SortedProductSkusEvent = Pick<APIGatewayProxyEvent, 'pathParameters'
 export type SearchSkusEvent = Pick<APIGatewayProxyEvent, 'queryStringParameters' | 'headers'>;
 
 /**
- * The slice the bounded search needs — the same one, because the window travels in the query string too.
- *
- * Declared as its own alias rather than reusing {@link SearchSkusEvent} so the two routes' contracts can
- * diverge later without one silently widening the other, and so a reader sees at the type that the
- * bounded route reads more from the same container.
- */
-export type BoundedSearchSkusEvent = Pick<
-  APIGatewayProxyEvent,
-  'queryStringParameters' | 'headers'
->;
-
-/**
  * The slice {@link SkuHandler.getSkuStocksDeletableFlag} reads: the SKU identifier from the path.
  */
 export type SkuIdentifierEvent = Pick<APIGatewayProxyEvent, 'pathParameters' | 'headers'>;
@@ -866,23 +879,23 @@ export type SkuIdentifierEvent = Pick<APIGatewayProxyEvent, 'pathParameters' | '
 export type SkuCodeEvent = Pick<APIGatewayProxyEvent, 'pathParameters' | 'headers'>;
 
 /**
- * The slice {@link SkuHandler.getTransactionExistsFlag} reads: the query string, for the two optional
- * identifiers that scope the question, plus the headers the authorisation resolver is given.
+ * The slice {@link SkuHandler.getTransactionExistsFlag} reads: the headers, and nothing else.
  *
- * ⚠️ THIS SLICE PREVIOUSLY EXCLUDED THE QUERY STRING, AND THE EXCLUSION WAS A DEFECT RATHER THAN A
- * FAITHFUL NARROWING. It rested on reading [model/service/SkuService.cfc:L285]'s empty parameter list as
- * "there is no input to bind", but [:L286] forwards the whole `arguments` scope with
- * `argumentCollection=arguments`, and CFML places an UNDECLARED named argument into that scope, so both
- * real callers' identifiers do reach the query — `skuID` from [model/entity/Sku.cfc:L594] and `productID`
- * from [model/entity/Product.cfc:L626]. With nothing bound the query has no identifier at all and the
- * DAO's else-branch dereferences an undefined key at [model/dao/SkuDAO.cfc:L90], so every request failed.
- * AAP §0.1.1.3 IR-1 requires exactly this correction: what CFML passed implicitly becomes an explicit
- * declaration. ../services/SkuService carries the full account under D23.
+ * ⭐ THE QUERY STRING IS ABSENT BECAUSE THE SERVICE MEMBER TAKES NO ARGUMENTS. AAP §0.4.2.2's target
+ * signature for [model/service/SkuService.cfc:L285] is `getTransactionExistsFlag(): Promise<boolean>` and
+ * its Discrepancy 4 states why: "the service member takes no arguments while the underlying DAO member
+ * accepts optional `productID` and `skuID`. The narrower service contract is preserved." A slice
+ * carrying `queryStringParameters` would advertise inputs this boundary has nowhere to send.
+ *
+ * ⚠️ A REVISION WIDENED THIS SLICE TO INCLUDE THE QUERY STRING AND BOUND BOTH IDENTIFIERS. It is
+ * withdrawn. The identifiers CFML smuggles through the empty signature reach the query in the port
+ * through the REPOSITORY member AAP §0.4.2.6 names for that purpose, consumed by the two entity checkers
+ * — which is where both real legacy call sites ([model/entity/Sku.cfc:L594] and
+ * [model/entity/Product.cfc:L626]) live. Neither is an HTTP request. ../services/SkuService carries the
+ * full account under D23, including why the "the delete guards could not otherwise be evaluated" reading
+ * that justified the widening was factually wrong.
  */
-export type TransactionExistsEvent = Pick<
-  APIGatewayProxyEvent,
-  'queryStringParameters' | 'headers'
->;
+export type TransactionExistsEvent = Pick<APIGatewayProxyEvent, 'headers'>;
 
 /**
  * The slice {@link SkuHandler.getSkuSmartList} reads: the whole query-string container, which stands in
@@ -1038,16 +1051,9 @@ export interface SkuSmartListResponse {
 /**
  * What one routed SKU operation requires of a principal, in the legacy's own vocabulary.
  *
- * ⭐ A DISCRIMINATED UNION, BECAUSE THE TWO CLASSIFICATIONS ASK DIFFERENT NUMBERS OF QUESTIONS. An
- * `'anyLogin'` item is decided by the logged-in gate alone: the branch that authorises it
- * [org/Hibachi/HibachiAuthenticationService.cfc:L63-L70] returns true without ever naming a CRUD type or
- * an entity. A `'secure'` item is decided by a per-permission-group verdict, which needs both. Expressing
- * that as a union rather than as optional members makes the mismatch inexpressible: `'anyLogin'` cannot
- * carry a CRUD type, and `'secure'` cannot omit one — neither compiles.
- *
- * ⭐ THE TWO LITERALS ARE TIED TO THE PORT'S UNION RATHER THAN RE-TYPED. `Extract` resolves against
+ * ⭐ THE LITERAL IS TIED TO THE PORT'S UNION RATHER THAN RE-TYPED. `Extract` resolves against
  * `HandlerAccessClassification`, so if a classification is ever renamed there the extraction yields
- * `never` and every literal below stops compiling. Restating `'anyLogin'` as a bare literal would let the
+ * `never` and every literal below stops compiling. Restating `'secure'` as a bare literal would let the
  * two vocabularies drift silently in opposite directions.
  *
  * ⭐ `crudTypes` IS A NON-EMPTY TUPLE, NOT AN ARRAY, AND IS ASKED IN ORDER — see
@@ -1057,19 +1063,38 @@ export interface SkuSmartListResponse {
  * {@link SKU_ENTITY_NAME} for the evidence; it is the one structural difference between this matrix and
  * ./optionHandler's.
  *
- * ⛔ NO `'public'` ARM AND NO `'anyAdmin'` ARM EXIST, BECAUSE NO ROW NEEDS ONE. The union is exactly as
- * wide as the evidence in {@link SKU_ACCESS_MATRIX}. A `'public'` arm in particular would put "reachable
- * with no account at all" one keystroke away from a row that has no evidence for it — and the only public
- * action anywhere in this slice is `this.publicMethods="product"` at
- * [integrationServices/google/controllers/feed.cfc:L54], which belongs to ./googleFeedHandler.
+ * ⛔ ONE CLASSIFICATION, BECAUSE EVERY ROW NEEDS EXACTLY ONE. The set is exactly as wide as the
+ * evidence in {@link SKU_ACCESS_MATRIX}, which is the same rule that keeps a `'public'` arm out: a
+ * `'public'` arm would put "reachable with no account at all" one keystroke away from a row that has no
+ * evidence for it — and the only public action anywhere in this slice is `this.publicMethods="product"`
+ * at [integrationServices/google/controllers/feed.cfc:L54], which belongs to ./googleFeedHandler. An
+ * `'anyAdmin'` arm is absent for the same reason.
+ *
+ * ⭐ SEC-HARDENING (D18-CLASS) — AND THE `'anyLogin'` ARM IS ABSENT BY THE SAME RULE, AS OF REVIEW
+ * FINDING F2. This was a two-arm discriminated union while `processImageUpload` was classified
+ * `'anyLogin'`, and its rationale read: "A DISCRIMINATED UNION, BECAUSE THE TWO CLASSIFICATIONS ASK
+ * DIFFERENT NUMBERS OF QUESTIONS. An `'anyLogin'` item is decided by the logged-in gate alone: the branch
+ * that authorises it [org/Hibachi/HibachiAuthenticationService.cfc:L63-L70] returns true without ever
+ * naming a CRUD type or an entity." That reasoning was sound and its citation is accurate; what changed is
+ * the matrix. With the image write reclassified, NO SKU ROW is decided by the logged-in gate alone, so
+ * keeping the arm would leave an arm no row selects and a gate branch that can never execute — dead code
+ * carrying a comment explaining why it is unreachable. Removing it also makes an any-login SKU row a
+ * COMPILE ERROR rather than a one-word edit, which is the same protective property the missing `'public'`
+ * arm already provides.
+ *
+ * ⚠️ NOTHING IS LOST FROM THE PORT, AND THIS IS MEASURED RATHER THAN ASSUMED. `'anyLogin'` remains in
+ * `../ports/AccountContextPort`'s `HandlerAccessClassification`, and ./optionHandler keeps its own
+ * `'anyLogin'` arm with FOUR live rows — `getUnusedProductOptions`, `getUnusedProductOptionsBounded`,
+ * `getUnusedProductOptionGroups` and `getUnusedProductOptionGroupsBounded` — each carrying its own traced
+ * evidence. The classification is therefore still exercised by the deliverable; it is simply not
+ * exercised by any SKU row, and AAP 0.4.2.5's rule that surface is reproduced "only where used" applies to
+ * a classification arm as much as to a synthesized method.
  */
-type SkuAccessRequirement =
-  | { readonly classification: Extract<HandlerAccessClassification, 'anyLogin'> }
-  | {
-      readonly classification: Extract<HandlerAccessClassification, 'secure'>;
-      readonly entityName: string;
-      readonly crudTypes: SkuCrudQuestions;
-    };
+type SkuAccessRequirement = {
+  readonly classification: Extract<HandlerAccessClassification, 'secure'>;
+  readonly entityName: string;
+  readonly crudTypes: SkuCrudQuestions;
+};
 
 /**
  * The ordered, non-empty list of CRUD questions one `'secure'` row asks, first grant winning.
@@ -1107,13 +1132,40 @@ const READ_CRUD_QUESTIONS = Object.freeze<SkuCrudQuestions>(['read']);
 const SAVE_CRUD_QUESTIONS = Object.freeze<SkuCrudQuestions>(['create', 'update']);
 
 /**
- * The requirement `'anyLogin'` states: a logged-in account, and nothing further.
+ * The one question an image WRITE asks: `update`.
  *
- * `'anyLogin'` is not a word chosen here: it names the `this.anyLoginMethods` declaration a legacy
- * controller writes and the ladder reads at [org/Hibachi/HibachiAuthenticationService.cfc:L33-L35].
+ * ⭐ SEC-HARDENING (D18-CLASS) — review finding F2, CWE-434's least-privilege half.
+ *
+ * `'update'` is the legacy CRUD value and this is the legacy's own single-question shape: the `edit`
+ * prefix [org/Hibachi/HibachiAuthenticationService.cfc:L59-L60] resolves to exactly one
+ * `authenticateEntityCrudByAccount(crudType="update", …)` call and nothing more. It is deliberately NOT
+ * {@link SAVE_CRUD_QUESTIONS}: that pair exists because a `save` item cannot know whether the record is
+ * new [:L71-L77], whereas this member CANNOT create anything — it resolves an existing SKU by code and
+ * answers `notFoundResponse()` when there is none, so `create` is a question with no situation behind it.
+ *
+ * Frozen, and typed as {@link SkuCrudQuestions} so it stays a NON-EMPTY TUPLE, for the reasons recorded at
+ * {@link READ_CRUD_QUESTIONS}.
  */
-const ANY_LOGIN_REQUIREMENT: SkuAccessRequirement = Object.freeze({
-  classification: 'anyLogin',
+const IMAGE_WRITE_CRUD_QUESTIONS = Object.freeze<SkuCrudQuestions>(['update']);
+
+/**
+ * The requirement the SKU IMAGE WRITE states: a logged-in account whose permission groups grant `update`
+ * on `Sku`.
+ *
+ * ⭐ SEC-HARDENING (D18-CLASS) — review finding F2 (CWE-22 + CWE-434), AND WHY THIS IS NOT A BEHAVIOUR
+ * CHANGE. The full evidence, and the earlier `'anyLogin'` reading it replaces, are recorded at the
+ * `processImageUpload` row of {@link SKU_ACCESS_MATRIX}. The short form: the set of callers the legacy
+ * admitted to this member is EMPTY — measured, not assumed — so a tighter requirement refuses nobody.
+ *
+ * The question is recorded at {@link IMAGE_WRITE_CRUD_QUESTIONS} and the ENTITY is `Sku`, because the SKU
+ * is the record this member modifies: the ladder derives the entity from the item name at
+ * [org/Hibachi/HibachiAuthenticationService.cfc:L60], and the addressed record here is the one whose
+ * `imageFile` names the file being written [model/service/SkuService.cfc:L211].
+ */
+const SECURE_SKU_IMAGE_WRITE_REQUIREMENT: SkuAccessRequirement = Object.freeze({
+  classification: 'secure',
+  entityName: SKU_ENTITY_NAME,
+  crudTypes: IMAGE_WRITE_CRUD_QUESTIONS,
 });
 
 /**
@@ -1177,19 +1229,52 @@ const SECURE_PRODUCT_SAVE_REQUIREMENT: SkuAccessRequirement = Object.freeze({
  * THE ROWS, AND THE EVIDENCE FOR EACH
  * -----------------------------------
  *   `createSkus` — SECURE, `create` then `update` on `Product`. Reached only from a Product `save` item;
- *     see {@link SECURE_PRODUCT_SAVE_REQUIREMENT}. It is the one row in this file that WRITES, and the one
- *     row that asks about a second entity.
+ *     see {@link SECURE_PRODUCT_SAVE_REQUIREMENT}. It is the one row that asks about a SECOND ENTITY, and
+ *     the one that asks TWO questions. An earlier wording called it "the one row in this file that WRITES",
+ *     which was true while `processImageUpload` was classified as `'anyLogin'` and is not true now that
+ *     the image write is a permission-checked write too.
  *
- *   `processImageUpload` — ANY LOGIN. This is the row a reader is most likely to expect to be `'secure'`,
- *     and the evidence says otherwise, so it is spelled out. The member's legacy name begins with
- *     `process`, and the ladder's `process` branch [org/Hibachi/HibachiAuthenticationService.cfc:L69-L70]
- *     is a bare `return true` — it asks NO permission question and names NO entity. That branch sits
- *     INSIDE the logged-in gate at [:L30], so a principal is still required; what is not required is a
- *     CRUD grant. Asking an entity question here would REFUSE callers the legacy admitted, which is a
- *     behavior change dressed up as caution (AAP 0.8.2 Guideline 4). Note also that the member has ZERO
+ *   `processImageUpload` — SECURE, `update` on `Sku`; see {@link SECURE_SKU_IMAGE_WRITE_REQUIREMENT}. It
+ *     is the second row in this file that WRITES, and the only row whose classification was re-derived
+ *     rather than transcribed, so the whole derivation is set out here.
+ *
+ *     ⭐ SEC-HARDENING (D18-CLASS) — review finding F2 (CWE-434, least-privilege write authorization).
+ *     An earlier reading of this row said ANY LOGIN, and argued it thus: "The member's legacy name begins
+ *     with `process`, and the ladder's `process` branch
+ *     [org/Hibachi/HibachiAuthenticationService.cfc:L69-L70] is a bare `return true` — it asks NO
+ *     permission question and names NO entity. That branch sits INSIDE the logged-in gate at [:L30], so a
+ *     principal is still required; what is not required is a CRUD grant. Asking an entity question here
+ *     would REFUSE callers the legacy admitted, which is a behavior change dressed up as caution
+ *     (AAP 0.8.2 Guideline 4)." Every CITATION in that argument is accurate and has been re-verified line
+ *     by line. Its CONCLUSION does not follow, for two measured reasons.
+ *
+ *     REASON ONE — THE SET OF CALLERS THE LEGACY ADMITTED IS EMPTY, so a tighter requirement refuses
+ *     nobody. `grep -rn processImageUpload --include=*.cfc --include=*.cfm` over the whole legacy tree
+ *     returns EXACTLY ONE line, and it is the declaration itself at
+ *     [model/service/SkuService.cfc:L210]. No controller invokes it, no view links to it and no item
+ *     names it. The earlier reading recorded this fact in its own closing sentence — "the member has ZERO
  *     callers anywhere in the legacy repository and sits outside the dispatcher's
- *     `process<Class>_<context>` convention, so no legacy item existed for it at all; the prefix branch is
- *     the closest evidence there is, and it is used rather than invented around.
+ *     `process<Class>_<context>` convention, so no legacy item existed for it at all" — and then treated
+ *     it as a reason to reach for the nearest analogy. It is the opposite: "would refuse callers the
+ *     legacy admitted" is a claim about a non-empty set, and this set is empty. That is exactly the D18
+ *     licensing shape (AAP 0.6.7.7) — a divergence that changes no outcome for any input the legacy was
+ *     designed to accept — which is why this tightening is licensed where refusing a stored display path
+ *     is not.
+ *
+ *     REASON TWO — THE LADDER TESTS AN ITEM NAME, NOT A SERVICE METHOD NAME. `left(itemName, 7)` at
+ *     [:L69] reads the FW/1 *item* (a subsystem:section.item action), and every branch around it —
+ *     `create`, `detail`, `delete`, `edit`, `list`, `save` at [:L53-L77] — reads the same variable. A
+ *     service member is not an item and never reaches that switch, so the `process` prefix branch is not
+ *     weak evidence about this member; it is evidence about a different namespace. Applying it here was an
+ *     analogy, and it is the analogy that is withdrawn, not any of its citations.
+ *
+ *     ⚠️ WHAT THIS ROW DOES *NOT* CLAIM. No new classification, vocabulary or grant is invented: `update`
+ *     and `Sku` are both the legacy's own values, taken from the `edit` branch at [:L59-L60]. The 401/403
+ *     ladder is unchanged. The `'anyLogin'` arm of {@link SkuAccessRequirement} and the gate step that
+ *     served it are GONE, because this row was the only one that reached either — that consequence is
+ *     reasoned out at {@link SkuAccessRequirement}, including the measurement that ./optionHandler keeps
+ *     the classification alive with four live rows of its own, so the legacy branch remains ported
+ *     somewhere it is actually used.
  *
  *   The seven READ rows — SECURE, `read` on `Sku`; see {@link SECURE_SKU_READ_REQUIREMENT}. Each is
  *     reached through a `detail` or `list` item, both of which resolve to `read`
@@ -1212,14 +1297,10 @@ const SECURE_PRODUCT_SAVE_REQUIREMENT: SkuAccessRequirement = Object.freeze({
 export const SKU_ACCESS_MATRIX: Readonly<Record<keyof SkuHandler, SkuAccessRequirement>> =
   Object.freeze({
     createSkus: SECURE_PRODUCT_SAVE_REQUIREMENT,
-    processImageUpload: ANY_LOGIN_REQUIREMENT,
+    processImageUpload: SECURE_SKU_IMAGE_WRITE_REQUIREMENT,
     getProductSkus: SECURE_SKU_READ_REQUIREMENT,
     getSortedProductSkus: SECURE_SKU_READ_REQUIREMENT,
     searchSkusByProductType: SECURE_SKU_READ_REQUIREMENT,
-    /* ⭐ P9 — THE SAME CLASSIFICATION AS THE UNBOUNDED ROUTE, AND IT MUST BE. A bound narrows how
-     * many rows arrive, never which; classifying the bounded door more loosely would make the bound
-     * a way around the gate rather than a way to read within it. */
-    searchSkusByProductTypeBounded: SECURE_SKU_READ_REQUIREMENT,
     getSkuStocksDeletableFlag: SECURE_SKU_READ_REQUIREMENT,
     getTransactionExistsFlag: SECURE_SKU_READ_REQUIREMENT,
     getSkuBySkuCode: SECURE_SKU_READ_REQUIREMENT,
@@ -1293,12 +1374,10 @@ export interface SkuHandler {
    * The AWS-facing face of `processImageUpload` at [model/service/SkuService.cfc:L210]. Addresses the SKU
    * by its code — judgment (j) — and forwards the upload-result payload unchanged.
    *
-   * Responses: the service's BOOLEAN at an OK status, never a SKU — judgment (b), carried defect D24;
+   * Responses: the PROJECTED SKU at an OK status, per AAP 0.4.2.2 — judgment (b), carried divergence D24;
    * unauthorised when no logged-in principal is established; a bad request when no SKU code is addressed
-   * or the body is absent, malformed or not a JSON object; not found when no SKU carries that code; a bad
-   * request again when the SKU's own stored `imageFile` is not a valid file name, which the service
-   * refuses rather than sanitising; and not implemented when the image boundary declines the write —
-   * judgment (g).
+   * or the body is absent, malformed or not a JSON object; not found when no SKU carries that code; and
+   * not implemented when the image boundary declines the write by raising — judgment (g).
    */
   readonly processImageUpload: (event: ProcessImageUploadEvent) => Promise<APIGatewayProxyResult>;
 
@@ -1347,27 +1426,6 @@ export interface SkuHandler {
   readonly searchSkusByProductType: (event: SearchSkusEvent) => Promise<APIGatewayProxyResult>;
 
   /**
-   * The same search, read one explicitly requested window at a time.
-   *
-   * ⭐ P9 — AN ADDITIVE SECOND DOOR, NOT A REPLACEMENT. {@link SkuHandler.searchSkusByProductType} keeps
-   * its route, its arguments and its unbounded result, so no existing caller is narrowed and nothing is
-   * ever silently truncated. This route exists for a caller that must read a `%term%` scan over an
-   * arbitrarily large catalog without holding all of it, and it obliges that caller to STATE the window:
-   * `limit` and `offset` are both required, neither is defaulted and neither is clamped
-   * ({@link readBoundedReadWindow}).
-   *
-   * ⚠️ THE SUBSTRING SEMANTICS ARE UNCHANGED. `term` is still forwarded untrimmed, unfolded and
-   * unwrapped, and `productTypeID` is still SINGULAR and still second — the bound is the only difference.
-   *
-   * Responses: the window and its `hasMore` flag at an OK status; a bad request naming which bound was
-   * unusable; unauthorised or forbidden per {@link SKU_ACCESS_MATRIX}, asked with the SAME requirement as
-   * the unbounded route.
-   */
-  readonly searchSkusByProductTypeBounded: (
-    event: BoundedSearchSkusEvent,
-  ) => Promise<APIGatewayProxyResult>;
-
-  /**
    * Reports whether a SKU's stock records may be deleted — and never actually answers.
    *
    * The AWS-facing face of `getSkuStocksDeletableFlag` at [model/service/SkuService.cfc:L281], whose
@@ -1380,24 +1438,23 @@ export interface SkuHandler {
   readonly getSkuStocksDeletableFlag: (event: SkuIdentifierEvent) => Promise<APIGatewayProxyResult>;
 
   /**
-   * Reports whether any transaction references a SKU or product.
+   * Publishes the transaction-existence probe exactly as the service declares it: with no input at all.
    *
    * The AWS-facing face of `getTransactionExistsFlag` at [model/service/SkuService.cfc:L285]. That
-   * declaration names no formal parameter, but [:L286] forwards the whole `arguments` scope to the DAO,
-   * which declares `string productID, string skuID` [model/dao/SkuDAO.cfc:L53-L55] — so the member is
-   * two-argument in behaviour and zero-argument in declaration. That is carried defect D23, and AAP
-   * §0.1.1.3 IR-1 makes the implicit passing explicit: this boundary binds BOTH optional identifiers from
-   * the query string, in the service's own order.
+   * declaration names no formal parameter, and AAP §0.4.2.2 freezes the ported signature the same way
+   * (Discrepancy 4, "The narrower service contract is preserved") — so this boundary reads nothing from
+   * the request beyond the headers the gate needs. Carried defect D23 records the CFML facility that let
+   * the two ENTITY call sites pass an identifier through that empty signature anyway; in the port that
+   * capability is the repository's, reached by the branded entity checkers rather than by a route.
    *
-   * ⚠️ EITHER, BOTH OR NEITHER IS A LEGAL REQUEST, and the three outcomes differ. One identifier scopes
-   * the question to that SKU or that product. Both is legal and `skuID` wins, per the branch test at
-   * [model/dao/SkuDAO.cfc:L58-L64]. NEITHER still raises, because the legacy raises: the else-branch
-   * dereferences `arguments.productID` at [:L90] after the `structKeyExists` test at [:L58] has failed.
-   * That failure is left to surface from the repository rather than pre-empted here, since pre-empting
-   * would move a legacy failure to a new place and invent a message the legacy never had.
+   * ⚠️ SO EVERY AUTHORISED REQUEST SURFACES THE LEGACY'S OWN REFUSAL. The DAO's else-branch dereferences
+   * an unbound `arguments.productID` at [model/dao/SkuDAO.cfc:L90] after the `structKeyExists` test at
+   * [:L58] has failed, which is what a literal zero-argument legacy invocation does. The failure is left
+   * to surface from the repository rather than pre-empted here, and nothing is substituted for it —
+   * the same treatment judgment (c) gives `getSkuStocksDeletableFlag`, and for the same TR-5 reason.
    *
-   * Responses: unauthorised or forbidden per {@link SKU_ACCESS_MATRIX}; a bad request when neither
-   * identifier is supplied, surfaced from the layer that owns the failure; otherwise the flag.
+   * Responses: unauthorised or forbidden per {@link SKU_ACCESS_MATRIX}; otherwise the refusal the
+   * repository raises, shaped by {@link errorResponse} at the layer that owns it.
    */
   readonly getTransactionExistsFlag: (
     event: TransactionExistsEvent,
@@ -1801,13 +1858,17 @@ export function createSkuHandler(
    *      the test below is on `newFlag` being TRUE rather than false — `AccountReference.newFlag`
    *      carries `isNew()` itself, not the logged-in flag derived from it. Inverting that would admit
    *      exactly the callers the legacy refused.
-   *   3. AN `'anyLogin'` MEMBER IS ALREADY DECIDED HERE. The branch that authorises its legacy item
-   *      [:L63-L70] `return true`s outright, asking no permission question and naming no entity, so
-   *      this gate must stop for that row. Asking an entity question there would REFUSE callers the
-   *      legacy admitted — a behavior change dressed up as caution (AAP 0.8.2 Guideline 4).
-   *   4. A `'secure'` MEMBER CONTINUES TO THE ENTITY QUESTION at [:L43-L49], whose verdict comes from
+   *   3. EVERY MEMBER CONTINUES TO THE ENTITY QUESTION at [:L43-L49], whose verdict comes from
    *      the injected port. That port resolves the super-user bypass at [:L88-L90] and the
    *      permission-group walk at [:L93-L98] behind the boundary and returns one boolean.
+   *
+   * ⭐ SEC-HARDENING (D18-CLASS) — THERE USED TO BE A STEP BETWEEN 2 AND 3, AND REVIEW FINDING F2
+   * REMOVED THE ONLY ROW THAT REACHED IT. It read: "AN `'anyLogin'` MEMBER IS ALREADY DECIDED HERE. The
+   * branch that authorises its legacy item [:L63-L70] `return true`s outright, asking no permission
+   * question and naming no entity, so this gate must stop for that row." That is a faithful reading of
+   * [:L63-L70] and ./optionHandler still implements it, for the four rows it still has evidence for. This
+   * file no longer has such a row, so the step is gone rather than retained as an unreachable branch — see
+   * {@link SkuAccessRequirement} for why the classification arm went with it.
    *
    * ⭐ THE CRUD TYPES ARE ASKED IN ORDER AND THE FIRST GRANT WINS, WHICH IS THE `save` BRANCH'S OWN
    * SHAPE. [:L71-L77] asks for `create` first, returns true if that is granted, and only then asks for
@@ -1820,7 +1881,7 @@ export function createSkuHandler(
    * two names it can be are the module constants {@link SKU_ENTITY_NAME} and
    * {@link PRODUCT_ENTITY_NAME}.
    *
-   * Steps 1 and 2 answer 401 and step 4 answers 403, and the distinction is about the PRINCIPAL rather
+   * Steps 1 and 2 answer 401 and step 3 answers 403, and the distinction is about the PRINCIPAL rather
    * than the resource: see {@link unauthorizedResponse} and {@link forbiddenResponse}, where the
    * translation from the legacy login redirect is recorded.
    *
@@ -1854,12 +1915,7 @@ export function createSkuHandler(
       return unauthorizedResponse();
     }
 
-    // Step 3. Nothing below this line runs for the one 'anyLogin' row.
-    if (requirement.classification === 'anyLogin') {
-      return undefined;
-    }
-
-    // Step 4. Asked in the matrix row's own order; the first grant authorises the invocation.
+    // Step 3. Asked in the matrix row's own order; the first grant authorises the invocation.
     for (const crudType of requirement.crudTypes) {
       if (
         authorization.entityAuthorization.authenticateEntity({
@@ -2037,13 +2093,21 @@ export function createSkuHandler(
    * `sku` and this file follows, which AAP 0.8.1 expressly permits because a parameter name is idiom
    * rather than behavior — judgment (b).
    *
-   * ⚠️ IT RETURNS A BOOLEAN, NEVER A SKU — TODO(parity) D24. The body contains exactly two returns,
-   * `return true;` at [:L214] and `return false;` at [:L216], and never returns the entity at all, even
-   * though [org/Hibachi/HibachiService.cfc:L117] states that "all process methods should return an
-   * entity" and AAP 0.4.2.2's target column says `Promise<Sku>`. ../services/SkuService ratified
-   * `Promise<boolean>` and records the full adjudication, including the two occasions the widening was
-   * attempted and reverted. This boundary serialises the boolean and does NOT substitute the SKU:
-   * AAP 0.8.2 Guideline 4 forbids repairing it, and doing so would change an observable return value.
+   * ⭐ IT ANSWERS WITH THE SKU, PROJECTED — AAP 0.4.2.2's target column for this row is `Promise<Sku>`,
+   * and ../services/SkuService implements it. TODO(parity) D24 records the divergence that makes the row
+   * worth reading twice: the legacy BODY returns the image-write verdict instead, `return true;` at
+   * [:L214] and `return false;` at [:L216], and never the entity — even though
+   * [org/Hibachi/HibachiService.cfc:L117] states that "all process methods should return an entity".
+   * The plan is frozen and resolves the loose `returntype="any"` to the entity, so that is the contract;
+   * the service's own block carries the adjudication, including the revision that declared
+   * `Promise<boolean>` and the three grounds for it that do not carry.
+   *
+   * ⚠️ THE IMAGE SERVICE'S VERDICT IS THEREFORE NOT VISIBLE AT THIS BOUNDARY, AND THAT IS FLAGGED RATHER
+   * THAN PAPERED OVER (S8). A declined write and a stored one produce the SAME response here, because
+   * the service consumes the boolean internally and neither raises nor records on the entity — exactly as
+   * [:L213-L217] does neither. An operator who needs the distinction closes it in their `ImagePathPort`
+   * adapter, by rejecting a declined write; this file invents no second channel for it, and substitutes
+   * no status of its own.
    *
    * G6 TRANSLATION DECISION (g) — THE HIDDEN DYNAMIC DEPENDENCY AND THE BOUNDARY STUB, TR-5. [:L212]
    * reaches the image service through `getService("imageService")`, which is NEVER DECLARED AS A
@@ -2062,17 +2126,30 @@ export function createSkuHandler(
    * option rather than a preference: the column is `unique="true"` [model/entity/Sku.cfc:L54], so it
    * addresses exactly one row, and no new dependency is introduced to reach it.
    *
-   * ⚠️ THE SERVICE ALSO REFUSES A CORRUPT STORED FILE NAME RATHER THAN SANITISING IT, and that refusal
-   * arrives here as a bad request through the same single mapping. It is deliberately NOT pre-empted by
-   * a check in this file: the validation belongs to the layer that owns the write.
+   * ⭐ SEC-HARDENING (D18-CLASS) — THE SERVICE REFUSES A CORRUPT STORED FILE NAME RATHER THAN SANITISING
+   * IT (review finding F2, CWE-22 + CWE-434). `SkuService.processImageUpload` gates the stored
+   * `imageFile` through its own basename-and-extension check before composing anything, and that refusal
+   * is deliberately NOT pre-empted by a check in this file: the validation belongs to the layer that owns
+   * the write, and duplicating it here would put the policy in two places that can disagree.
    *
-   * ⛔ THE GATE RUNS FIRST, AND THIS IS THE ONE `'anyLogin'` ROW. The legacy `process` branch
-   * [org/Hibachi/HibachiAuthenticationService.cfc:L69-L70] is a bare `return true` inside the logged-in
-   * gate, so a principal is required and no CRUD grant is — see {@link SKU_ACCESS_MATRIX} for why
-   * asking an entity question here would refuse callers the legacy admitted.
+   * ⚠️ AND IT ARRIVES AS `false`, NOT AS AN ERROR OF ANY STATUS. An earlier wording of the paragraph
+   * above said the refusal "arrives here as a bad request through the same single mapping". That was
+   * written in anticipation of a gate that was then withdrawn, and it was wrong twice over: a draft gate
+   * did raise, but a plain `DomainError` maps through {@link errorResponse} BRANCH 4 to 500 rather than to
+   * 400 — and the gate no longer raises at all. `model/service/SkuService.cfc:L213-L217` is a two-branch
+   * boolean that raises nothing, so a refused image file name resolves the SAME `false` a rejected upload
+   * resolves, and this member serialises it through {@link okResponse} exactly as it serialises any other
+   * verdict (carried defect D24). Nothing is disclosed, no status is invented, and no branch of
+   * {@link errorResponse} is involved.
+   *
+   * ⛔ THE GATE RUNS FIRST, AND THIS ROW IS `'secure'`: `update` on `Sku`. It was `'anyLogin'` until
+   * review finding F2; {@link SKU_ACCESS_MATRIX} carries the full derivation, including the measurement
+   * that the member has zero callers anywhere in the legacy tree and therefore no callers for a tighter
+   * requirement to refuse.
    *
    * @param event the proxy event, or any object carrying its body, path-parameters and headers members
-   * @returns the image service's own boolean verdict, or the response describing why it was not reached
+   * @returns the addressed SKU, PROJECTED per judgment (k), or the response describing why the write was
+   *          not reached
    */
   const processImageUpload = async (
     event: ProcessImageUploadEvent,
@@ -2103,8 +2180,12 @@ export function createSkuHandler(
         return notFoundResponse();
       }
 
-      /* D24: the BOOLEAN is serialised exactly as returned. Do not replace it with `sku`. The upload
-       * result is forwarded opaquely, because the port consumes it and this layer does not read it. */
+      /* D24: the BOOLEAN is serialised exactly as returned. Do not replace it with `sku`. The member
+       * answers with the image-write verdict rather than the entity — [model/service/SkuService.cfc:L213-L217]
+       * contains exactly two returns, `return true;` and `return false;` — and that inconsistency with the
+       * framework's own "process methods return an entity" note is carried defect D24, not repaired here.
+       * The upload result is forwarded opaquely, because the port consumes it and this layer does not
+       * read it. */
       return okResponse(await skuService.processImageUpload(sku, body.value));
     } catch (error) {
       return errorResponse(error);
@@ -2319,47 +2400,6 @@ export function createSkuHandler(
   };
 
   /**
-   * Ports the bounded companion of the same search — see {@link SkuHandler.searchSkusByProductTypeBounded}.
-   *
-   * The gate runs first and asks the SAME requirement as the unbounded route, for the reason recorded on
-   * that matrix row. The window is read next and a refusal is returned before the service is reached, so
-   * a malformed window never becomes a statement.
-   */
-  const searchSkusByProductTypeBounded = async (
-    event: BoundedSearchSkusEvent,
-  ): Promise<APIGatewayProxyResult> => {
-    const refusal = refuseUnauthorized(event, 'searchSkusByProductTypeBounded');
-
-    if (refusal !== undefined) {
-      return refusal;
-    }
-
-    const requested = readBoundedReadWindow(event);
-
-    if (!requested.present) {
-      return requested.response;
-    }
-
-    /* Read exactly as the unbounded route reads them, and forwarded exactly as it forwards them. */
-    const term: string | undefined = readQueryStringParameter(event, TERM_QUERY_PARAMETER);
-    const productTypeID: string | undefined = readQueryStringParameter(
-      event,
-      PRODUCT_TYPE_ID_QUERY_PARAMETER,
-    );
-
-    try {
-      /* The result carries `rows` and `hasMore` and is forwarded WHOLE. Returning only the rows would
-       * hand back a truncated collection indistinguishable from a complete one, which is the exact
-       * failure the bounded members exist to avoid. */
-      return okResponse(
-        await skuService.searchSkusByProductTypeBounded(requested.window, term, productTypeID),
-      );
-    } catch (error) {
-      return errorResponse(error);
-    }
-  };
-
-  /**
    * Ports the boundary for [model/service/SkuService.cfc:L281]
    * `public boolean function getSkuStocksDeletableFlag( required string skuID )`.
    *
@@ -2424,54 +2464,49 @@ export function createSkuHandler(
    * Ports the boundary for [model/service/SkuService.cfc:L285]
    * `public boolean function getTransactionExistsFlag()`.
    *
-   * ⚠️⚠️ TODO(parity) D23 — ZERO ARGUMENTS DECLARED, TWO ARGUMENTS PASSED. Judgment (a) carries the
-   * whole account. The short version is that [:L285] declares no formal parameter of any kind while
+   * ⚠️⚠️ TODO(parity) D23 — ZERO ARGUMENTS DECLARED, AND THE PORT KEEPS IT AT ZERO. Judgment (a) carries
+   * the whole account. The short version is that [:L285] declares no formal parameter of any kind while
    * [:L286] forwards `argumentCollection=arguments` to a DAO member that DOES declare two
-   * [model/dao/SkuDAO.cfc:L54-L55], and CFML puts an undeclared named argument into that scope — so both
-   * real callers' identifiers reach the query: `skuID` from [model/entity/Sku.cfc:L594] and `productID`
-   * from [model/entity/Product.cfc:L626]. AAP §0.1.1.3 IR-1 is the governing rule for exactly this
-   * situation ("each such call site becomes an explicitly declared, typed method"), so
-   * ../services/SkuService declares `(skuID?, productID?)` and this boundary binds both from the query
-   * string. AAP §0.4.2.2's Discrepancy 4 sentence is not amended by that: both parameters stay OPTIONAL,
-   * which is what its "narrower service contract" rules out inheriting from the DAO.
+   * [model/dao/SkuDAO.cfc:L54-L55], and CFML puts an undeclared named argument into that scope — which is
+   * how the two ENTITY call sites, [model/entity/Sku.cfc:L594] and [model/entity/Product.cfc:L626],
+   * smuggle an identifier through a signature that names none. AAP §0.4.2.2 freezes the SERVICE member at
+   * `getTransactionExistsFlag(): Promise<boolean>` (Discrepancy 4, "The narrower service contract is
+   * preserved"), so this boundary — the AWS-facing face of that member — reads nothing and forwards
+   * nothing.
    *
-   * ⚠️ THE PREVIOUS REVISION OF THIS BOUNDARY READ NOTHING FROM THE REQUEST, AND THAT WAS A DEFECT
-   * RATHER THAN PARITY. With neither identifier bound, every request reached the DAO's else-branch,
-   * which dereferences `arguments.productID` [model/dao/SkuDAO.cfc:L90] after the `structKeyExists` test
-   * at [:L58] has failed — so the route could only ever fail, and the `transactionExistsFlag` delete
-   * guards in `model/validation/Sku.json` and `model/validation/Product.json` could never be evaluated.
-   * A neither-identifier request STILL fails, for that same legacy reason, and that failure is still not
-   * pre-empted with a guard here; what changed is that a request CARRYING an identifier now answers.
+   * ⚠️ A REVISION OF THIS BOUNDARY BOUND BOTH IDENTIFIERS FROM THE QUERY STRING. It is withdrawn, for
+   * three reasons, none of them stylistic:
+   *   1. AAP §0.4.2.2 is FROZEN and names THIS member's target signature. IR-1's requirement that the
+   *      implicitly passed argument become explicit is satisfied where AAP §0.4.2.6 puts it — on
+   *      `SkuRepository.transactionExists(productID?, skuID?)` — and on the two entity checker contracts
+   *      that consume it.
+   *   2. THE LEGACY HAS NO ACTION FOR THIS MEMBER AT ALL. Both real call sites are entity-level
+   *      validation-support reads, not requests. An identifier-taking HTTP capability is therefore
+   *      invented surface, which AAP §0.7.3 S9 and §0.8.2 Guideline 4 forbid.
+   *   3. THE JUSTIFICATION GIVEN FOR THE WIDENING WAS FACTUALLY WRONG. It claimed a zero-argument service
+   *      member left both `transactionExistsFlag` delete guards unable to answer. Neither guard consumes
+   *      this member: each entity receives a branded checker whose single implementation is
+   *      `createTransactionExistenceChecker` in ../adapters/mysql/MySqlSkuRepository, and both keep their
+   *      identifier scoping regardless of what this route does.
    *
-   * ⛔ THIS IS NOT A SECOND SPELLING OF THE REPOSITORY MEMBER. The filtered capability AAP §0.4.2.6 puts
-   * on `SkuRepository.transactionExists(productID?, skuID?)` is still reached by the entity-level
-   * checkers for the entity-driven delete guards; this route is the AWS-facing face of the SERVICE
-   * member, and it forwards to the same service the checkers use. One capability, one implementation.
+   * ⚠️ SO THIS ROUTE ANSWERS WITH THE LEGACY'S OWN REFUSAL, AND THAT IS PARITY RATHER THAN A GAP. With an
+   * empty `arguments` scope the DAO's `structKeyExists(arguments,"skuID")` test at
+   * [model/dao/SkuDAO.cfc:L58] fails and its else-branch dereferences an unbound `arguments.productID` at
+   * [:L90]. The repository reproduces that refusal and {@link errorResponse} shapes it. No guard
+   * pre-empts it here, no identifier is invented to fill either slot, and the answer is NOT collapsed
+   * into a global "does any transaction exist anywhere" — the one answer the legacy can never give.
    *
-   * ⛔ THE ORDER IS THE SERVICE'S, NOT THE REPOSITORY'S, AND GETTING IT WRONG IS DESTRUCTIVE RATHER THAN
-   * MERELY WRONG. `(skuID?, productID?)` here and in ../services/SkuService, matching both entity checker
-   * contracts; `(productID?, skuID?)` on the repository per AAP §0.4.2.6, with the service performing that
-   * swap itself in one visible place. Both identifiers are 32-character strings (IR-6), so an inverted
-   * forward TYPE-CHECKS and silently interrogates the wrong column — and because this flag gates a DELETE,
-   * a wrongly-scoped `false` PERMITS a destructive delete the legacy blocks.
+   * ⭐ THE ROUTE STAYS MOUNTED, WHICH IS TR-5 APPLIED THE SAME WAY JUDGMENT (c) APPLIES IT TO
+   * `getSkuStocksDeletableFlag`: "The member is never quietly dropped from the interface." A member the
+   * legacy cannot satisfy is published and reports honestly; it is not removed, and no `true`, `false`,
+   * `null` or fabricated result is ever substituted on that path.
    *
-   * ⛔ THE GATE RUNS BEFORE EITHER IDENTIFIER IS READ, WHICH IS THE ANTI-ENUMERATION PROPERTY. Because
-   * the refusal is decided without consulting the query string or the repository, an unauthorised caller
-   * receives the SAME response for an identifier that exists and one that does not. `read` on `Sku`
-   * ({@link SKU_ACCESS_MATRIX}).
+   * ⛔ THE GATE STILL RUNS FIRST, WHICH IS THE ANTI-ENUMERATION PROPERTY. Because the refusal is decided
+   * without consulting the repository, an unauthorised caller cannot tell this route's failure apart from
+   * any other. `read` on `Sku` ({@link SKU_ACCESS_MATRIX}).
    *
-   * ⚠️ BOTH VALUES ARE FORWARDED BYTE FOR BYTE, AND AN EMPTY ONE IS NOT COLLAPSED TO ABSENCE — which is
-   * the opposite of what {@link readSkuIdentifier} and {@link readProductIdentifier} do, deliberately.
-   * Those two ADDRESS a record, so the `unsavedvalue=""` sentinel cannot name one. Here the empty string
-   * is a VALUE the legacy genuinely binds: [model/entity/Product.cfc:L626] passes
-   * `this.getProductID()`, which is `''` for an unpersisted product, and the query then matches no row
-   * and answers `false`. Collapsing it would turn that answer into the neither-identifier failure, which
-   * is a different outcome. ../httpResponse's pass-through rule applies unchanged: nothing is trimmed,
-   * case-folded or validated here.
-   *
-   * @param event the invocation's event, or any object carrying its query-string-parameters and headers
-   *        members
-   * @returns the flag, the refusal, or the failure the service raises when neither identifier is supplied
+   * @param event the invocation's event, or any object carrying its headers member
+   * @returns the refusal, or the failure the service raises because the legacy raises for this call shape
    */
   const getTransactionExistsFlag = async (
     event: TransactionExistsEvent,
@@ -2482,25 +2517,15 @@ export function createSkuHandler(
       return refusal;
     }
 
-    /* D23: the two identifiers CFML forwards through `argumentCollection=arguments`, declared explicitly
-     * per IR-1. SKU first — the service's order and both entity checkers' order; the swap to the
-     * repository's `(productID, skuID)` happens inside ../services/SkuService, once. */
-    const skuID: string | undefined = readQueryStringParameter(event, SKU_ID_QUERY_PARAMETER);
-    const productID: string | undefined = readQueryStringParameter(
-      event,
-      PRODUCT_ID_QUERY_PARAMETER,
-    );
-
     try {
       /*
-       * ⛔ SKU FIRST, PRODUCT SECOND — the SERVICE's order, which is the INVERSE of the repository's.
-       * ../services/SkuService declares `getTransactionExistsFlag(skuID?, productID?)` to match the two
-       * entity checker contracts and performs the swap to the repository's `(productID?, skuID?)`
-       * itself. Both identifiers are 32-character strings (IR-6), so passing them the wrong way round
-       * here would type-check and silently ask about the wrong column. When a caller supplies both, the
-       * SKU wins, exactly as [model/dao/SkuDAO.cfc:L58-L64] branches.
+       * ⛔ NO ARGUMENT IS PASSED, AND NONE MAY BE ADDED. The service member declares none (AAP §0.4.2.2
+       * Discrepancy 4), so this is the whole of the legacy's `[:L286]` forward with an empty `arguments`
+       * scope. The identifier-scoped probe belongs to the repository and is reached by the entity
+       * checkers; re-routing it through here would republish it as an HTTP capability the legacy never
+       * had.
        */
-      return okResponse(await skuService.getTransactionExistsFlag(skuID, productID));
+      return okResponse(await skuService.getTransactionExistsFlag());
     } catch (error) {
       return errorResponse(error);
     }
@@ -2627,7 +2652,6 @@ export function createSkuHandler(
     getProductSkus,
     getSortedProductSkus,
     searchSkusByProductType,
-    searchSkusByProductTypeBounded,
     getSkuStocksDeletableFlag,
     getTransactionExistsFlag,
     getSkuBySkuCode,

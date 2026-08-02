@@ -142,6 +142,29 @@ import type {
   RelatedEntityLoader,
   SubPropertyPopulator,
 } from '../base/populate';
+/*
+ * `src/errors/DomainError.ts` IS A PERMITTED IMPORT FOR A `domain/` MODULE, AND AN EARLIER REVISION
+ * OF THIS FILE ASSERTED THE OPPOSITE. S4 (AAP §0.7.3, hexagonal separation) forbids `domain/` →
+ * `adapters/`, `services/`, `config/`, `validation/`, `handlers/` and `integrations/`; `errors/` is
+ * in none of those groups. It is a leaf module with no imports of its own beyond the type system,
+ * sitting BELOW the domain layer exactly as `src/util/` does, and all three sibling entity modules
+ * import it — `../../errors/DomainError` at `src/domain/product/Product.ts`,
+ * `src/domain/sku/Sku.ts` and `src/domain/option/Option.ts`. Reading S4's per-file "permitted"
+ * enumeration as a CLOSED list was the error: that enumeration records what the file needed when it
+ * was written, and the same passage says `src/util/` "would be permitted, but this file needs
+ * nothing from it". The correction is load-bearing rather than cosmetic, because the false claim was
+ * being used as the justification for a behavioural divergence — see the withdrawal recorded on
+ * {@link ProductType.getBaseProductType}.
+ *
+ * THE IMPORT IS USED BY EXACTLY ONE MEMBER, AND THAT IS DELIBERATE.
+ * {@link ProductType.getBaseProductType} raises `DomainError` because it is reachable through a
+ * handler and must present neutrally there. {@link ProductType.removeParentProductType} raises the
+ * GLOBAL `TypeError` instead, on fidelity grounds: it reproduces a CFML engine undefined-variable
+ * diagnostic, and it matches its exact structural analogue `removeOptionGroup` in
+ * `src/domain/option/Option.ts`, whose own file prohibits this import outright. Both choices are
+ * intentional; neither is a leftover, and neither should be "harmonised" into the other.
+ */
+import { DomainError } from '../../errors/DomainError';
 import type { Product } from './Product';
 
 /*
@@ -999,19 +1022,48 @@ export class ProductType implements AuditableEntity {
    * the full reasoning. Narrowing it to the three seeded codes would statically delete the
    * `model/service/SkuService.cfc:L204` fallthrough.
    *
-   * WHY `undefined` RATHER THAN A THROW WHEN THE ROOT CANNOT BE RESOLVED. The legacy chains
-   * `.getSystemCode()` straight onto the lookup result [`:L112`], so a missing root raises a CFML
-   * engine null-reference error there — and that IS reachable: a brand-new root product type has an
-   * empty `productTypeIDPath`, so the lookup identifier is empty. The port cannot reproduce a CFML
-   * engine error, must not invent a domain error message (S9), and cannot reach
-   * `src/errors/DomainError.ts` because S4 closes this file's import list to its three dependency
-   * modules. So the condition is surfaced as `undefined` — which is ALSO what the legacy returns
-   * when the root resolves but carries a null `systemCode`, since CFML returns null from that
-   * getter. `TODO(parity)`: the legacy distinguishes those two cases by raising on the first; this
-   * port converges them on `undefined`. The failure stays loud at the same place it was loud before,
-   * because `undefined` matches none of the three branch keys and
-   * `model/service/SkuService.cfc:L204` throws — so no caller silently succeeds where the legacy
-   * failed.
+   * ⭐ AN UNRESOLVABLE ROOT RAISES, BECAUSE THE LEGACY DEREFERENCES THE LOOKUP RESULT WITHOUT A
+   * GUARD (AAP §0.6.7). `:L112` chains `.getSystemCode()` straight onto
+   * `getService("ProductService").getProductType(...)`, so when no such row exists CFML fails right
+   * there, before any value is returned. The state is ordinary rather than exotic: a brand-new root
+   * product type has an empty `productTypeIDPath`, so the lookup identifier is the empty string and
+   * no row can match it. {@link ProductTypeRootResolver.getProductType} already documents its
+   * `undefined` as "the state in which the legacy expression dereferenced a null" — this method now
+   * treats it that way instead of absorbing it.
+   *
+   * ⚠️ EXACTLY ONE ABSENCE SURVIVES, AND THE RETURN TYPE KEEPS `| undefined` FOR IT: the root
+   * resolves but carries no `systemCode`, or an empty one. There the legacy getter returns CFML null
+   * and the method hands that null back to its caller, so `undefined` IS the legacy answer. After
+   * this correction `undefined` therefore means one thing only — "root found, root has no code" —
+   * where it previously meant that OR "root missing", two states the legacy keeps distinguishable.
+   *
+   * ⛔ AN EARLIER REVISION RETURNED `undefined` FOR THE MISSING ROOT TOO, UNDER A `TODO(parity)`, AND
+   * IT IS WITHDRAWN. Its four grounds are answered in turn:
+   *   (a) "THE PORT CANNOT REPRODUCE A CFML ENGINE ERROR." It is not asked to. What must be preserved
+   *       is the FACT that the call fails, not the engine's wording — the same answer this deliverable
+   *       gives at `src/domain/option/Option.ts` and `src/domain/sku/Sku.ts`.
+   *   (b) "IT MUST NOT INVENT A DOMAIN ERROR MESSAGE (S9)." S9 forbids inventing BEHAVIOUR the source
+   *       does not state. The source states a failure, so authoring a diagnostic FOR a real failure is
+   *       not invention — whereas answering a value the legacy never produced is. `DomainError.ts`
+   *       reserves `LegacyParityError` for its four verbatim legacy texts and expects every other
+   *       throw site to carry an authored diagnostic; this is one of those.
+   *   (c) "IT CANNOT REACH `src/errors/DomainError.ts` BECAUSE S4 CLOSES THIS FILE'S IMPORT LIST."
+   *       FACTUALLY WRONG, and it was the load-bearing ground. See the correction recorded at the
+   *       import site: S4 names six forbidden groups and `errors/` is in none of them.
+   *   (d) "THE FAILURE STAYS LOUD ANYWAY AT `model/service/SkuService.cfc:L204`." TRUE AT ONE
+   *       CONSUMER AND FALSE AT ANOTHER, which is what makes it unusable as a defence. `createSkus`
+   *       does re-raise, because `undefined` matches none of its three branch keys. But
+   *       `src/adapters/mysql/MySqlSkuRepository.ts` reads this value to decide which option join to
+   *       add for `fetchOptions` [`model/dao/SkuDAO.cfc:L154-L161`], and an unrecognised-or-absent
+   *       code there adds NO join and returns EVERY SKU of the product — a WIDER result set, silently,
+   *       where the legacy call aborted. That is a permissive divergence of exactly the shape this
+   *       remediation rejected elsewhere, and no aggregate claim of loudness survives it.
+   *
+   * ⛔ AND STILL NO THROW ON AN UNRECOGNISED CODE. The two conditions are not the same one. A root
+   * that resolves and carries `'widget'` is returned untouched, because the legacy returns it
+   * untouched and `model/service/SkuService.cfc:L204` owns the decision to reject it. Only the failed
+   * LOOKUP raises. Conflating the two would statically delete the fallthrough this file works hardest
+   * to keep reachable — see {@link BaseProductTypeCode}.
    *
    * `resolveBaseProductType` from `../BaseProductType` is deliberately NOT called here; recognition
    * belongs to the consumer, and each consumer treats an unrecognised code differently. See
@@ -1032,9 +1084,31 @@ export class ProductType implements AuditableEntity {
     // `buildIDPathList` prepends.
     const rootProductTypeID = listFirstIdentifier(this.getProductTypeIDPath());
     const rootProductType = await rootProductTypeResolver.getProductType(rootProductTypeID);
+
     if (rootProductType === undefined) {
-      return undefined;
+      /* Legacy `:L112` chains `.getSystemCode()` onto this lookup with no guard, so a missing row
+       * fails here rather than yielding a value. An empty `rootProductTypeID` — the brand-new-root
+       * case — reaches this same branch, because no row carries an empty identifier. */
+      throw new DomainError(
+        `Product type ${this.isNew() ? '(unsaved)' : this.productTypeID} carries no systemCode of ` +
+          `its own, and its root product type ${rootProductTypeID === '' ? '(empty identifier path)' : rootProductTypeID} ` +
+          'could not be resolved, so model/entity/ProductType.cfc:L112 has nothing to read a ' +
+          'systemCode from. The legacy code dereferences the unresolved lookup without a guard, and ' +
+          'raises here too.',
+        {
+          context: {
+            productTypeID: this.productTypeID,
+            rootProductTypeID,
+            productTypeIDPath: this.getProductTypeIDPath(),
+            locator: 'model/entity/ProductType.cfc:L112',
+          },
+        },
+      );
     }
+
+    /* May be `undefined`: the root exists but holds no `systemCode`. The legacy getter returns CFML
+     * null there and the caller receives it, so this absence IS the legacy answer — the one the
+     * return type's `| undefined` now exclusively denotes. */
     return rootProductType.systemCode;
   }
 
@@ -1358,24 +1432,83 @@ export class ProductType implements AuditableEntity {
    * `exactOptionalPropertyTypes` that would be a different state, and `../base/populate` distinguishes
    * them the same way.
    *
-   * ONE DOCUMENTED DIVERGENCE, made explicit rather than hidden: when the argument is omitted AND
-   * this entity has no parent, the legacy dereferences a null at `:L159` and raises a CFML engine
-   * error. The port cannot reproduce a CFML engine error and may not invent a domain error message
-   * (S9), so it skips the reverse-side removal — there is nothing to remove from — and still performs
-   * the unconditional delete, leaving the observable local state identical to the success path.
+   * `TODO(parity)` — THE OMITTED-ARGUMENT-WITH-NO-PARENT PATH FAILS, AND AN EARLIER REVISION WRONGLY
+   * RELAXED IT INTO A SUCCESS. When the argument is omitted AND this entity has no parent, `:L157`
+   * assigns `arguments.parentProductType = variables.parentProductType` from a key that does not exist
+   * — Hibernate creates no `variables` entry for a null many-to-one — so the CFML engine raises an
+   * undefined-variable diagnostic THERE. That failure precedes the collection search at `:L159` and,
+   * decisively, precedes the UNCONDITIONAL delete at `:L163`. The legacy never reaches that delete on
+   * this path, so a port that deletes and returns has not merely relaxed the failure: it has performed
+   * a write the legacy does not.
+   *
+   * The earlier revision's stated grounds were that "the port cannot reproduce a CFML engine error and
+   * may not invent a domain error message (S9)". Both halves fail. This runtime raises a `TypeError` for
+   * exactly the same mistake — dereferencing an absent object — so the engine diagnostic reproduces in
+   * CLASS, not merely in spirit; and S9 forbids inventing service levels and unstated numbers, not
+   * describing a failure the source states plainly. Converting a raise into a no-op invents more than
+   * describing the raise does. The relaxation was a behaviour repair, and AAP §0.6.7 permits exactly one
+   * — D18, the importer's SQL parameterisation (§0.6.7.7). This is not it, and Refactor Discipline
+   * Guideline 4 (§0.8.2) forbids the rest.
+   *
+   * ⭐ WHY `TypeError` SPECIFICALLY — A FIDELITY ARGUMENT, NOT AN IMPORT-BOUNDARY ONE IN THIS FILE.
+   * This runtime raises a `TypeError` for exactly the mistake the CFML engine reports here, reading a
+   * member off an absent object, so the diagnostic reproduces in CLASS rather than merely in spirit. It
+   * also keeps this member identical to `src/domain/option/Option.ts`'s `removeOptionGroup`, its exact
+   * structural analogue, so the one defect shape reads the same way in both files — and that file has
+   * no choice in the matter, its permitted-import list being EXHAUSTIVE and naming `errors/**` among
+   * its prohibitions. An earlier revision of this paragraph additionally claimed the choice was FORCED
+   * here because `src/errors/DomainError.ts` "is absent from this module"; that is withdrawn as
+   * factually wrong. The import IS present and IS permitted — see the correction recorded at the import
+   * site, and the raise at {@link ProductType.getBaseProductType}, which uses `DomainError` on purpose
+   * because it is reachable through a handler and must present neutrally there. `LegacyParityError`
+   * could not carry this text in either case: its message parameter is narrowed to the four verbatim
+   * legacy `throw()` strings, and an engine diagnostic is none of them.
+   *
+   * ⚠️ AND {@link ProductType.getBaseProductType} FAILS ON ITS OWN MISSING-ROOT PATH TOO, SO THIS IS
+   * NOT AN EXEMPTION. An earlier revision of this paragraph exempted that member on the ground that
+   * "the failure stays LOUD downstream, because `undefined` matches none of the three branch keys and
+   * `model/service/SkuService.cfc:L204` throws". That ground is withdrawn: it holds at ONE consumer and
+   * fails at others. A census of every `getBaseProductType` consumer outside `org/Hibachi/` finds
+   * `model/dao/SkuDAO.cfc:L154-L161`, which appends NO fetch join for an unrecognised-or-absent code and
+   * therefore returns EVERY SKU of the product instead of aborting, and `model/entity/Sku.cfc:L577-L586`,
+   * whose three `eq` branches have NO `else` and therefore MEMOIZE an empty `skuDefinition` instead of
+   * raising. Both silently succeed where the legacy failed, so no aggregate claim of loudness survives.
+   * What that member does keep is the distinction between the TWO absences: a root that cannot be
+   * resolved RAISES, while a root that resolves and carries no `systemCode` still returns `undefined`,
+   * because that one IS the legacy answer and it is what keeps the `SkuService.cfc:L204` fallthrough
+   * genuinely reachable.
+   *
+   * NO NEW DEFECT NUMBER IS MINTED. AAP §0.6.7 registers D1-D21 and none is this edge path, so it is
+   * annotated as an observed legacy edge-path failure with its locator.
+   *
+   * @throws TypeError - When the argument is omitted and no parent is assigned, reproducing the CFML
+   *   engine diagnostic at `:L157`. Nothing is deleted, because the legacy never reaches its delete.
    */
   removeParentProductType(parentProductType?: ProductType): void {
     // Legacy `if(!structKeyExists(arguments, "parentProductType"))` [`:L156-L158`]: default the
     // target from this entity's own reference when the caller supplied none.
     const targetParentProductType = parentProductType ?? this.parentProductType;
 
-    if (targetParentProductType !== undefined) {
-      const childProductTypes = targetParentProductType.getChildProductTypes();
-      const index = childProductTypes.indexOf(this);
-      // `arrayFind` 0-when-absent / 1-based  ->  `indexOf` -1-when-absent / 0-based [`:L159-L161`].
-      if (index !== -1) {
-        childProductTypes.splice(index, 1);
-      }
+    if (targetParentProductType === undefined) {
+      // `:L157` raises HERE — before the search at `:L159` and before the unconditional delete at
+      // `:L163`. Statement order preserved: the delete below is NOT reached.
+      throw new TypeError(
+        'ProductType.removeParentProductType was called with no parent product type while none is ' +
+          'assigned. model/entity/ProductType.cfc:L157 defaults the argument from ' +
+          'variables.parentProductType, a key that does not exist for a null many-to-one, so the CFML ' +
+          'engine raises an undefined-variable error at that line — before the collection search at ' +
+          ':L159 and before the unconditional delete at :L163. Carried unrepaired per AAP §0.6.7 and ' +
+          'Refactor Discipline Guideline 4: an earlier revision relaxed this into a silent delete, ' +
+          'which both suppressed the failure and performed a write the legacy never performs. Pass the ' +
+          'parent product type explicitly, as model/entity/ProductType.cfc:L171 does.',
+      );
+    }
+
+    const childProductTypes = targetParentProductType.getChildProductTypes();
+    const index = childProductTypes.indexOf(this);
+    // `arrayFind` 0-when-absent / 1-based  ->  `indexOf` -1-when-absent / 0-based [`:L159-L161`].
+    if (index !== -1) {
+      childProductTypes.splice(index, 1);
     }
 
     // `structDelete(variables, "parentProductType")` [`:L163`] — UNCONDITIONAL, outside the guard.
@@ -1411,7 +1544,11 @@ export class ProductType implements AuditableEntity {
    * `removechildProductType` on exactly the grounds recorded on
    * {@link ProductType.addChildProductType}. Note that the delegation passes `this` explicitly, so
    * the optional-argument defaulting inside
-   * {@link ProductType.removeParentProductType} is never exercised on this path.
+   * {@link ProductType.removeParentProductType} is never exercised on this path — and that is now
+   * load-bearing rather than merely incidental: the defaulting path RAISES when no parent is assigned,
+   * reproducing the CFML engine diagnostic at `model/entity/ProductType.cfc:L157`. Passing `this`
+   * explicitly is what makes this delegation unable to reach that failure, exactly as it is in the
+   * legacy, where `:L171` passes `this` for the same reason.
    */
   removeChildProductType(childProductType: ProductType): void {
     childProductType.removeParentProductType(this);

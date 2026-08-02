@@ -66,13 +66,33 @@
      *
      * THE BLAST RADIUS IS SMALL BY CONSTRUCTION, AND A LATER MOVE IS MECHANICAL. Infrastructure as
      * code is out of scope, so no `Runtime: nodejs20.x` string is authored anywhere in this
-     * subtree. Exactly four artifacts are version-coupled — `--target=node20` in
-     * build/esbuild.mjs, the `engines` field together with .nvmrc, the @types/node pin, and the
-     * version statements in the subtree README — and the hexagonal boundary confines every AWS
-     * type to src/handlers/**, so a runtime bump touches those four plus this "target"/"lib" pair
-     * and nothing under src/domain/**, src/ports/**, src/services/** or src/adapters/**. None of
-     * the above is a performance, latency, throughput or availability claim; no such figure is
+     * subtree — verified by grep, not assumed: the only occurrences of `nodejs20` are in prose,
+     * here and in build/esbuild.mjs. FOUR couplings exist IN THE REPOSITORY and a runtime bump
+     * moves them together:
+     *   1. `--target=node20` in build/esbuild.mjs (and `NODE_TARGET` there);
+     *   2. the `engines` field of package.json together with .nvmrc;
+     *   3. the @types/node pin, which AAP 0.5.3.2 requires to track the runtime;
+     *   4. this "target"/"lib" pair.
+     * ⚠️ AN EARLIER REVISION OF THIS LIST NAMED A FIFTH — "the version statements in the subtree
+     * README" — AND THAT FILE DOES NOT EXIST. AAP 0.2.1.7 and 0.4.1.2 do declare
+     * slatwall-ts/README.md as a CREATE target, but it was never generated; the only README in the
+     * subtree is src/integrations/google/README.md, which states no version. The count is corrected
+     * to what is measurably here rather than to what the plan intended, because a reader auditing
+     * the couplings before a bump must be able to find every one of them, and a fifth entry
+     * pointing at a missing file would leave them looking for a version statement that is nowhere.
+     * The absent README is recorded as a gap, not silently absorbed.
+     *
+     * The hexagonal boundary confines every AWS type to src/handlers/**, so a bump touches those
+     * four and nothing under src/domain/**, src/ports/**, src/services/** or src/adapters/**. None
+     * of the above is a performance, latency, throughput or availability claim; no such figure is
      * stated anywhere in this port (AAP IR-12).
+     *
+     * ⭐ AND THE GATE ITSELF NOW LIVES AT THE PACKAGING STEP (review finding F12). This comment
+     * explains the decision to a reader who opens this file; it cannot reach an operator running a
+     * build. build/esbuild.mjs therefore ANNOUNCES the lifecycle gate on every `npm run build`,
+     * without failing it — failing the step would make AAP 0.8.3.10's own acceptance criterion
+     * unreachable. That file also records why the two machine-read pins the finding cites,
+     * package.json's `engines` and .nvmrc, are left byte-identical.
      *
      * "lib" is pinned to ES2022 alone, so the browser (window / document / fetch-era) typings
      * TypeScript would otherwise make ambiently available are deliberately absent. This is a

@@ -43,6 +43,33 @@
  * and the constraints vanish rather than degrading to a database guarantee. Carried as observed:
  * no `unique="true"` is proposed and no compensating behaviour is invented (AAP §0.7.3 S7).
  *
+ * ⭐ SEC-HARDENING (D18-CLASS) — WHAT THIS PREDICATE NOW GUARANTEES, AND WHAT DIVERGENCE 1 STILL
+ * LEAVES OPEN. Review finding F6 (CWE-367) observed that a predicate of this shape is the READ half
+ * of a check-then-write, so two concurrent saves could both be told the value was free and both
+ * commit it. Two things changed, and neither is a change of outcome:
+ *
+ *   1. SERIALIZATION, IN THE ADAPTER. `src/adapters/mysql/UniquePropertyChecker.ts` takes a LOCKING
+ *      read when — and only when — it has been re-bound to a transaction boundary's executor, so the
+ *      check and the write that follows it inside that boundary are serialized against a concurrent
+ *      boundary asking the same question. A locking read returns exactly the rows the same statement
+ *      returns without one; it orders concurrent transactions and changes no verdict, which is why it
+ *      is licensed on the D18 footing (AAP §0.6.7.7) rather than forbidden by AAP §0.8.2 Guideline 4.
+ *      The legacy framework serializes the analogous sort-order read-then-write the same way, with a
+ *      table-keyed lock at org/Hibachi/HibachiDAO.cfc:L182.
+ *
+ *   2. REPORTING, AT THE EXECUTION BOUNDARY. A write that loses the race against a real database
+ *      constraint now arrives as a typed `UniqueConstraintViolationError` classified as a request
+ *      rejection, instead of as an unclassified driver error indistinguishable from a service fault.
+ *      That is a reporting change only: the same writes succeed and fail, at the same moment.
+ *
+ * ⚠️ AND HERE IS WHY DIVERGENCE 1 STILL MATTERS AFTER BOTH. Point 2 depends on a database constraint
+ * existing to lose the race AGAINST, and for these two properties none does. Point 1 depends on the
+ * write happening inside the boundary that performed the check. So for `optionCode` and
+ * `optionGroupCode` specifically, a write issued outside any boundary is still arbitrated by nothing
+ * at all. The repair that would close it — adding the two missing unique indexes — is FORBIDDEN, not
+ * overlooked: AAP §0.2.2.5 places schema migration outside this refactoring entirely, and the `Sw*`
+ * tables are read and written as they are. Flagged, not claimed closed (AAP §0.7.3 S8).
+ *
  * CONSUMERS. src/validation/Validator.ts evaluates the `unique` constraint through this port, and
  * src/services/** runs validation before delegating to `BaseService.save`. That mirrors the legacy
  * dispatch: `validate_unique` at org/Hibachi/HibachiValidationService.cfc:L467-L470 returns the

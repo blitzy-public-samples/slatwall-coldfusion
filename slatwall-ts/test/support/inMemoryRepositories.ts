@@ -61,6 +61,8 @@
 // No user-specified rules were provided for this project; the nine enterprise
 // standards of AAP §0.7.3 govern instead, and the bar is not lowered.
 
+import { createHash } from 'node:crypto';
+
 import {
   resolveBaseProductType,
   SEEDED_PRODUCT_TYPES_BY_SYSTEM_CODE,
@@ -74,7 +76,7 @@ import { Sku } from '../../src/domain/sku/Sku';
 import { DataIntegrityError, DomainError } from '../../src/errors/DomainError';
 import { ValidationError } from '../../src/errors/ValidationError';
 import type { ValidationErrors } from '../../src/errors/ValidationError';
-import { toImageWebPath } from '../../src/ports/ImagePathPort';
+import { toImageWebPath, SKU_IMAGE_PATH_SEGMENT } from '../../src/ports/ImagePathPort';
 import { Validator } from '../../src/validation/Validator';
 import { ALL_SEEDED_PRODUCT_TYPES, MERCHANDISE_PRODUCT_TYPE_ID } from '../fixtures/productTypes';
 import { createTestMerchandiseProductData } from '../fixtures/testProduct';
@@ -196,6 +198,122 @@ import type {
   TestMerchandiseProductData,
   TestMerchandiseProductDataOverrides,
 } from '../fixtures/testProduct';
+
+/* =================================================================================================
+ * PHYSICALLY VALID TEST IDENTIFIERS — REVIEW FINDING 16
+ * -------------------------------------------------------------------------------------------------
+ * AAP IR-6 fixes the physical shape of every primary key in this schema: 107 of 113 entities declare
+ * `fieldtype="id" generator="uuid" ormtype="string" length="32"`, and `model/dao/HibachiDAO.cfc`
+ * mints one with `replace(lcase(createUUID()), '-', '', 'all')`. An identifier is therefore EXACTLY
+ * 32 lowercase hexadecimal characters with no dashes — never an auto-increment integer, never a
+ * dashed RFC-4122 string, and never a short readable token.
+ *
+ * ⛔ A WITHDRAWN RATIONALE, ANSWERED RATHER THAN DISMISSED
+ *
+ * An earlier revision of the suites below argued for short readable identifiers (`og-size`, `o-red`)
+ * on three grounds, all recorded here so the reversal is checkable rather than merely asserted:
+ *
+ *   1. "Sibling suites already do it." They did — and others did the opposite. The tree was
+ *      inconsistent in BOTH directions, which is not a convention, and the review's audit counted the
+ *      violations precisely: 78 in the ProductService suite, 19 in the BrandService suite, five in the
+ *      Sku suite.
+ *   2. "Inventing a fresh UUID adds an unverifiable literal for no assertive gain." The first half is
+ *      a fair objection and this helper answers it directly: nothing here is INVENTED. Every value is
+ *      DERIVED from the label at the call site by a documented, deterministic function, so it is
+ *      reproducible by anyone reading the source and no opaque literal is hand-typed anywhere.
+ *   3. "A readable identifier makes a failure message legible." Also fair, and preserved: the LABEL
+ *      stays at the call site and in the constant's name, so the source remains as readable as it was.
+ *      Only the value changes.
+ *
+ * The assertive gain the earlier rationale could not see is specific, not stylistic. A member that
+ * silently assumes something about an identifier's physical shape — a fixed width, a lowercase
+ * comparison, a dash-stripping step, an arithmetic slice, a `LIKE` fragment — cannot be caught by a
+ * fixture whose identifiers are seven characters of lowercase ASCII with a hyphen in the middle. The
+ * bug and the fixture agree by coincidence. Feeding members the shape production actually hands them
+ * removes that coincidence, which is the whole point of a fidelity fixture.
+ *
+ * ⭐ THAT GAIN WAS MEASURED, NOT ASSERTED. The claim above is the kind that is easy to make and easy to
+ * be wrong about, so it was tested directly. One character of real bug was introduced into
+ * `src/domain/sku/Sku.ts` — the option identifier feeding `hasUniqueOptions`' selected-options string
+ * truncated with `.slice(0, 16)`, a plausible width assumption — and the Sku suite was run twice
+ * against it, once with each fixture:
+ *
+ *   • with the identifiers minted here (32 hexadecimal characters): 5 of 63 cases FAILED;
+ *   • with the previous readable identifiers (`o-red`, `o-large`, all shorter than 16 characters):
+ *     63 of 63 cases PASSED, because truncating a five-character token to sixteen characters does
+ *     nothing at all.
+ *
+ * The same defect was therefore fatal to one fixture and invisible to the other. That is the entire
+ * argument for this helper, reduced to a number, and it is why the conversion is a fidelity fix rather
+ * than a cosmetic one. Both files were restored byte-for-byte afterwards and re-verified.
+ *
+ * ⚠️ SCOPE, STATED PLAINLY. The review examined every suite in this subtree and flagged non-physical
+ * identifiers in exactly three of them; it PASSED `test/adapters/MySqlOptionRepository.test.ts`,
+ * `test/validation/rules.test.ts` and `test/regression/issues.test.ts`, each of which still carries
+ * readable identifiers. Those are deliberately left as they are — rewriting suites a reviewer read and
+ * accepted would be unrequested churn (AAP §0.8.2 guideline 1). The claim this helper makes is
+ * therefore "physically valid by default in the suites that were flagged", not "uniform tree-wide".
+ * ============================================================================================== */
+
+/**
+ * The registry that makes injectivity MECHANICAL rather than assumed.
+ *
+ * Two distinct labels colliding onto one identifier would be the worst possible failure mode here: a
+ * test asserting that two entities are different would pass while comparing one entity to itself. The
+ * probability is negligible and the consequence is silent, which is exactly the combination that
+ * deserves a guard rather than a comment.
+ */
+const mintedPhysicalIdentifiers = new Map<string, string>();
+
+/** IR-6's shape, asserted against the helper's own output rather than trusted. */
+const PHYSICAL_IDENTIFIER_SHAPE = /^[0-9a-f]{32}$/;
+
+/**
+ * Derive a physically valid identifier from a readable label.
+ *
+ * The value is `md5(label)`, chosen for one property and one only: its hexadecimal digest is exactly
+ * 32 lowercase characters with no dashes, which is IR-6's shape reached without a padding or
+ * truncation rule that a reader would have to trust. No security property is claimed or needed — this
+ * is fixture derivation, not hashing of anything sensitive, and nothing in the port hashes identifiers.
+ *
+ * DIAGNOSING A FAILURE. An assertion prints the hexadecimal value, not the label. To go back the other
+ * way, either read the call site (every identifier in the flagged suites is minted through this
+ * function, so the label is always adjacent in source) or evaluate the derivation directly:
+ *
+ * ```
+ * node -e "console.log(require('node:crypto').createHash('md5').update('og-size').digest('hex'))"
+ * ```
+ *
+ * CASE-SENSITIVITY PROBES. A member that must be shown to compare identifiers case-sensitively is
+ * given `physicalID(label).toUpperCase()`. That is strictly stronger than the uppercase readable token
+ * it replaces: it is the SAME identifier in a different case, so the only thing the assertion can be
+ * responding to is the case difference.
+ *
+ * @param label a readable name for the entity this identifier belongs to; it never reaches the port.
+ * @returns 32 lowercase hexadecimal characters, matching IR-6.
+ */
+export function physicalID(label: string): string {
+  const minted = createHash('md5').update(label, 'utf8').digest('hex');
+
+  /* Defensive, and cheap: if a future Node ever changed digest formatting, every suite that depends on
+   * IR-6's shape would start passing for the wrong reason instead of failing here. */
+  if (!PHYSICAL_IDENTIFIER_SHAPE.test(minted)) {
+    throw new Error(
+      `physicalID('${label}') produced '${minted}', which is not 32 lowercase hexadecimal characters.`,
+    );
+  }
+
+  const previousLabel = mintedPhysicalIdentifiers.get(minted);
+  if (previousLabel !== undefined && previousLabel !== label) {
+    throw new Error(
+      `physicalID collision: '${label}' and '${previousLabel}' both derive '${minted}'. ` +
+        `Rename one label; two entities sharing an identifier would make an inequality assertion pass vacuously.`,
+    );
+  }
+  mintedPhysicalIdentifiers.set(minted, label);
+
+  return minted;
+}
 
 /*
  * ---------------------------------------------------------------------------------------------------
@@ -461,6 +579,189 @@ export function createSqlExecutorDouble(options: SqlExecutorDoubleOptions = {}):
 
 /*
  * ---------------------------------------------------------------------------------------------------
+ * 1.1 THE FANNING EXECUTOR — the seam that makes `SELECT DISTINCT` falsifiable.
+ *
+ * ⚠️ WHY A QUEUE-BASED DOUBLE CANNOT ASSERT DISTINCTNESS, WHICH IS THE DEFECT THIS CLOSES. The queue
+ * form above answers the Nth statement with the Nth seeded outcome, whatever that statement SAYS. So a
+ * case that seeds two already-distinct product rows and asserts two records passes identically whether
+ * the builder emitted `SELECT DISTINCT` or `SELECT` — the executor was never asked to behave like a
+ * join. `issue_1296` is a DISTINCTNESS regression
+ * (`meta/tests/unit/IssuesTest.cfc`, page-record distinctness on `getProductSmartList()`), so a case
+ * that cannot fail when `DISTINCT` is removed does not cover the issue it is named for.
+ *
+ * ═══════════════════════════════════════════════════════════════════════════════════════════════════
+ * WHAT THIS DOUBLE DOES DIFFERENTLY, IN ONE SENTENCE
+ * ═══════════════════════════════════════════════════════════════════════════════════════════════════
+ * It reads each statement's OWN TEXT and answers the way MySQL would — a fanning join returns one row
+ * per matched pair, `SELECT DISTINCT` collapses them, `COUNT(DISTINCT pk)` counts owners, and
+ * `LIMIT ? OFFSET ?` windows whichever row set the projection produced. Nothing is queued and nothing
+ * is consumed in order, so no assertion can be satisfied by luck of sequence.
+ *
+ * ⭐ AND THAT IS WHAT MAKES THE ASSERTIONS FAIL WHEN THE FIX IS REMOVED. Drop `DISTINCT` from
+ * `composeSelectClause` in `src/adapters/mysql/SmartListQueryBuilder.ts` and this executor returns the
+ * duplicate rows; `materialiseRows` pushes ONE ARRAY ELEMENT PER ROW (it shares instances through the
+ * identity map but never collapses the array), so `records.length` grows while `recordsCount` — read
+ * from `COUNT(DISTINCT …)`, which is always distinct — does not. The divergence is the assertion.
+ *
+ * ⛔ IT MODELS NO SQL ENGINE. It does not parse, plan, filter, join or order: the WHERE clause is not
+ * evaluated at all, and the seeded rows are taken as the statement's already-filtered result. Only the
+ * four behaviours above are modelled, because those four are the ones the builder's contract turns on.
+ * A case that needs filtering to be honoured needs a database, and AAP §0.8.4 records that the `Sw*`
+ * tables do not exist in this environment.
+ * ---------------------------------------------------------------------------------------------------
+ */
+
+/**
+ * The column the counting statement projects its total into.
+ *
+ * Transcribed from `RECORDS_COUNT_COLUMN_ALIAS` in `src/adapters/mysql/SmartListQueryBuilder.ts`, which
+ * is module-private there. Transcribing rather than exporting it is deliberate: the alias is part of the
+ * statement the builder EMITS, so a test double reading it is reading the emitted contract, and widening
+ * the builder's exports purely to let a test peek would be the tail wagging the dog. Every sibling case
+ * in `test/adapters/SmartListQueryBuilder.test.ts` already spells the same literal in `sqlRows`.
+ */
+const SMART_LIST_RECORDS_COUNT_COLUMN = 'recordsCount';
+
+/** One association statement's answer, matched by a substring of the statement the builder emits. */
+export interface FanningAssociationSeed {
+  /**
+   * A substring that identifies the association statement, matched case-sensitively.
+   *
+   * A substring rather than the whole statement, because the whole statement is composed from the join
+   * registry and would have to be duplicated here to match — which would make this double assert the
+   * builder's text rather than answer it. `'FROM SwOption '` is the kind of fragment that is stable and
+   * still unambiguous.
+   */
+  readonly matching: string;
+  /** The rows that statement returns, including the aliased owner key each row must carry. */
+  readonly rows: readonly MySqlRow[];
+}
+
+/** Seed configuration for {@link createFanningSqlExecutorDouble}. */
+export interface FanningSqlExecutorDoubleOptions {
+  /**
+   * The rows the ROOT statement returns, WITH the duplicates a fanning join produces, in order.
+   *
+   * Duplicates are the whole point: seed the same owner twice and the executor will hand both back for
+   * a non-distinct projection and one for a distinct one. Seeding an already-distinct set makes the
+   * double behave exactly like the queue form and asserts nothing about distinctness.
+   */
+  readonly rootRows: readonly MySqlRow[];
+  /** The root's primary-key column — the value a fanning join repeats and `DISTINCT` collapses. */
+  readonly rootIdentityColumn: string;
+  /** Association statements, consulted BEFORE the root classification so a hydration read is answered. */
+  readonly associations?: readonly FanningAssociationSeed[];
+}
+
+/** The executor plus its factory-local observation state. */
+export interface FanningSqlExecutorDouble {
+  /** The seam itself. Typed mutation-capable so it satisfies every executor seam, as the queue form is. */
+  readonly executor: TransactionalSqlExecutor;
+  /** Every call, in issue order, recorded losslessly. */
+  readonly calls: readonly SqlExecutorCall[];
+  /** Just the SQL text of each call, in order — the shape a statement-ORDER assertion wants. */
+  statements(): readonly string[];
+  /** How many distinct owners the seeded root rows describe — what `COUNT(DISTINCT …)` answers. */
+  distinctRootCount(): number;
+}
+
+/**
+ * Create an executor that answers from each statement's own text, the way a fanning join would.
+ *
+ * @param options - The root row set (duplicates included), its identity column, and any association
+ *   statements the hydration pass will issue.
+ * @returns The executor plus its call log.
+ */
+export function createFanningSqlExecutorDouble(
+  options: FanningSqlExecutorDoubleOptions,
+): FanningSqlExecutorDouble {
+  const { rootRows, rootIdentityColumn } = options;
+  const associations = options.associations ?? [];
+
+  /**
+   * The root rows with each owner kept ONCE, first occurrence winning.
+   *
+   * First-occurrence order is what `SELECT DISTINCT … ORDER BY` produces for a deterministic ordering,
+   * and preserving order matters because the sorted-SKU odometer and the feed both read position.
+   */
+  const distinctRootRows: MySqlRow[] = [];
+  const seenIdentities = new Set<string>();
+  for (const row of rootRows) {
+    const identity = row[rootIdentityColumn];
+    if (typeof identity !== 'string' || identity === '') {
+      /*
+       * A row with no usable identity cannot be collapsed onto another, and `materialiseRows` says the
+       * same thing about the same case — so it survives into the distinct set rather than being dropped.
+       */
+      distinctRootRows.push(row);
+      continue;
+    }
+    if (seenIdentities.has(identity)) {
+      continue;
+    }
+    seenIdentities.add(identity);
+    distinctRootRows.push(row);
+  }
+
+  /**
+   * Slice a window off a row set, reading the bound limit and offset from the statement's parameters.
+   *
+   * The builder binds both as DIGIT STRINGS — `['10', '0']`, per `src/util/smartListInput.ts` — so they
+   * are read through `Number` rather than assumed numeric. They are the LAST two parameters because the
+   * page statement is the record statement plus `LIMIT ? OFFSET ?`, so the filter binds come first.
+   */
+  const windowOf = (rows: readonly MySqlRow[], params: readonly unknown[]): MySqlRow[] => {
+    const limit = Number(params[params.length - 2]);
+    const offset = Number(params[params.length - 1]);
+
+    if (!Number.isFinite(limit) || !Number.isFinite(offset)) {
+      throw new DomainError(
+        'A bounded smart-list statement reached the fanning executor without a readable limit and ' +
+          'offset in its last two parameters, so no window could be applied.',
+        { context: { params: snapshotParams(params) } },
+      );
+    }
+
+    return rows.slice(offset, offset + limit);
+  };
+
+  const respond: SqlExecutorResponder = (call: SqlExecutorCall): SqlExecutorOutcome | undefined => {
+    /* Associations first: a hydration statement also begins `SELECT` and would otherwise be classified
+     * as a root read and answered with root rows, which the association mapper would then reject. */
+    for (const association of associations) {
+      if (call.sql.includes(association.matching)) {
+        return sqlRows(association.rows);
+      }
+    }
+
+    /* The counting statement. Always DISTINCT on the primary key, whatever the record projection does —
+     * `SMARTLIST_DISTINCT_ASYMMETRY.countProjectionIsAlwaysDistinct` declares exactly that — so the
+     * answer is the owner count and never the row count. */
+    if (call.sql.includes('COUNT(DISTINCT ')) {
+      return sqlRows([{ [SMART_LIST_RECORDS_COUNT_COLUMN]: distinctRootRows.length }]);
+    }
+
+    /* A root row statement. WHICH row set it gets is decided by the projection the builder emitted,
+     * which is the single behaviour that makes the distinctness assertions falsifiable. */
+    const projected = call.sql.startsWith('SELECT DISTINCT ') ? distinctRootRows : rootRows;
+
+    return sqlRows(
+      call.sql.includes(' LIMIT ? OFFSET ?') ? windowOf(projected, call.params) : projected,
+    );
+  };
+
+  const recording = createSqlExecutorDouble({ respond });
+
+  return {
+    executor: recording.executor,
+    calls: recording.calls,
+    statements: (): readonly string[] => recording.calls.map((call) => call.sql),
+    distinctRootCount: (): number => distinctRootRows.length,
+  };
+}
+
+/*
+ * ---------------------------------------------------------------------------------------------------
  * 2. The product-type root resolver.
  *
  * Every `getBaseProductType()` in the slice takes one: `Product.getBaseProductType(resolver)`,
@@ -493,10 +794,19 @@ export interface ProductTypeRootResolverDouble {
  * `config/dbdata/SlatwallProductType.xml.cfm:L13-L15` (AAP §0.1.1.3 IR-7). This file does not restate
  * them: duplicating a fixed identifier is exactly how traceability rots.
  *
- * An unseeded identifier resolves to `undefined`, which is the honest answer — the legacy walk simply
- * finds no row — and it is what drives the "neither of the three" fallthrough that
- * `MySqlSkuRepository.findByProduct` leaves un-joined and `SkuService.createSkus` turns into its
- * unexpected-error branch at `model/service/SkuService.cfc:L204`.
+ * An unseeded identifier resolves to `undefined`, which is the honest answer at THIS layer — the
+ * legacy walk simply finds no row, and that is exactly what
+ * {@link ProductTypeRootResolver.getProductType} declares its `undefined` to mean.
+ *
+ * ⚠️ BUT AN UNSEEDED IDENTIFIER IS NO LONGER THE WAY TO REACH THE "NEITHER OF THE THREE" FALLTHROUGH,
+ * AND AN EARLIER VERSION OF THIS PARAGRAPH SAID IT WAS. `ProductType.getBaseProductType` now RAISES on
+ * a lookup that finds nothing, reproducing the unguarded dereference at
+ * `model/entity/ProductType.cfc:L112`, so an unseeded root produces a `DomainError` rather than an
+ * absent discriminator. To exercise the unrecognised-code paths — the un-joined branch of
+ * `MySqlSkuRepository.findByProduct` and the unexpected-error branch of `SkuService.createSkus` at
+ * `model/service/SkuService.cfc:L204` — SEED A ROW whose `systemCode` is a string outside the three
+ * discriminators, or leave `systemCode` off a seeded row to get the one surviving absence. Both of
+ * those are states the legacy also reaches by returning a value; a missing row is not.
  */
 export function createProductTypeRootResolverDouble(
   seeds: readonly ProductTypeSystemCodeSeed[] = ALL_SEEDED_PRODUCT_TYPES,
@@ -1616,11 +1926,12 @@ export function createTransactionExistenceChecker(
  * Both members answer with the port's own `{name, value}` projection rows, and `OptionService` returns
  * them straight through without mapping, so the label format is this repository's responsibility.
  *
- * TODO(parity) D25 — `model/service/ProductService.cfc:L70-L80`: the neighbouring formatted-groups member
- * builds a plain structure keyed by option-group NAME, so two groups sharing a name overwrite each other
- * and the earlier one is lost. No named type is introduced for that shape anywhere in this file — a record
- * keyed by group name is exactly what the legacy produces, and giving it a type name would imply a
- * structure the legacy does not guarantee.
+ * D25 — `model/service/ProductService.cfc:L70-L80`: the neighbouring formatted-groups member builds a
+ * plain CFML structure keyed by option-group NAME, so two groups sharing a name overwrite each other and
+ * the earlier one is lost. The port answers `FormattedOptionGroup[]` per AAP §0.4.2.1 and preserves that
+ * collapse by accumulating through a `Map`; the element type is declared in `src/services/ProductService`
+ * and is NOT redeclared here, because the projection rows this file returns feed that member rather than
+ * being it.
  * ---------------------------------------------------------------------------------------------------
  */
 
@@ -1859,10 +2170,17 @@ export function createInMemoryOptionRepository(
  * ---------------------------------------------------------------------------------------------------
  * 6. The product repository.
  *
- * Three members, and two of them are deliberately thin because the port itself is thin. Widening this
- * double to model the importer's schema would fabricate exactly the tables AAP §0.7.3 S9 forbids
- * inventing — the injection-surface hardening of defect D18 belongs to the real MySQL adapter, which is
- * where `pool.execute()` with `?` placeholders replaces the twenty-one interpolated statements.
+ * SEVEN members, and the read-side ones are deliberately thin. The count is stated exactly because it
+ * was previously stated as "three": `ProductRepository` grew a bounded search, a separately invocable
+ * back-fill step and the two write members, and this header did not follow. That stale three is the same
+ * miscount review finding F3 recorded against `test/adapters/MySqlProductRepository.test.ts`, which
+ * claimed parity for "all three declared members" while the port declared seven — so the number is now
+ * kept in step with {@link ProductRepositoryCall}, whose arms are the authoritative list.
+ *
+ * Widening this double to model the importer's schema would fabricate exactly the tables AAP §0.7.3 S9
+ * forbids inventing — the injection-surface hardening of defect D18 belongs to the real MySQL adapter,
+ * which is where `pool.execute()` with `?` placeholders replaces the twenty-one interpolated statements,
+ * and `test/adapters/MySqlProductRepository.test.ts` is where every one of the seven is now driven.
  * ---------------------------------------------------------------------------------------------------
  */
 
@@ -1879,9 +2197,24 @@ export type ProductRepositoryCall =
        * The location, recorded verbatim as a plain `string`.
        *
        * An earlier revision typed this as a branded `ProductImportSource`, which obliged every test to
-       * mint an approved value before it could record a call. That brand is withdrawn — the port takes
-       * an unchecked `string` because `model/dao/ProductDAO.cfc:L73-L87` checks nothing — so the double
-       * records what the port receives.
+       * mint an approved value before it could record a call. That brand STAYS withdrawn, and the port
+       * type STAYS a plain `string`: AAP §0.4.2.6 ratifies `importFromFile(fileURL, textQualifier)` with
+       * an unbranded location, and a brand would have made the type system the enforcement point for a
+       * rule the type system cannot actually check.
+       *
+       * What is NO LONGER true is the sentence this note used to carry — that the location is simply
+       * "unchecked". Under the re-adjudicated SEC-08, `../../src/ports/repositories/ProductRepository.ts`
+       * states refusing a hostile location as AN OBLIGATION OF EVERY IMPLEMENTATION, and
+       * `../../src/adapters/mysql/MySqlProductRepository.ts` discharges it at its single egress seam. The
+       * type is unbranded; the CONTRACT is not unchecked.
+       *
+       * This double still applies NO gate, and that is deliberate rather than an omission. The obligation
+       * binds implementations that RETRIEVE, because the exposure is the outbound request; this double
+       * opens no socket, so there is nothing here for a gate to protect. Gating here would instead make
+       * the double the authority on a contract the adapter owns — the same reasoning the `options` note
+       * below gives for recording rather than interpreting — and would silently prevent a test from
+       * asserting that a caller forwards a hostile-looking location BYTE-FOR-BYTE, which is exactly the
+       * negative obligation `../../src/services/ProductService.ts` carries and two of its tests certify.
        */
       readonly fileURL: string;
       readonly textQualifier: string | undefined;
@@ -1894,12 +2227,6 @@ export type ProductRepositoryCall =
     }
   | {
       readonly member: 'searchByProductType';
-      readonly term: string | undefined;
-      readonly productTypeIDs: string | undefined;
-    }
-  | {
-      readonly member: 'searchByProductTypeBounded';
-      readonly window: BoundedReadWindow;
       readonly term: string | undefined;
       readonly productTypeIDs: string | undefined;
     }
@@ -2086,29 +2413,13 @@ export function createInMemoryProductRepository(
     },
 
     /*
-     * The windowed form, delegating to the unbounded member so the looser `len()` gate — which ACCEPTS a
-     * whitespace-only product-type list, unlike the SKU side — stays decided in one place. The window is
-     * applied with the production helpers, so validation and the `hasMore` verdict match the adapter.
+     * ⛔ NO `searchByProductTypeBounded` HERE, AND THERE WAS ONE. `ProductRepository` no longer declares a
+     * bounded product search: it had no caller in any service, handler or integration, and AAP §0.4.2.1
+     * fixes `ProductService` at fifteen members with no product search among them, so it could not
+     * acquire one without adding an unratified sixteenth. The full reasoning lives at the site of the
+     * removed declaration. The SKU-side and option-side bounded members are unaffected and are still
+     * implemented on their own doubles below.
      */
-    searchByProductTypeBounded: async (
-      window: BoundedReadWindow,
-      term?: string,
-      productTypeIDs?: string,
-    ): Promise<BoundedReadResult<ProductSearchRow>> => {
-      calls.push(
-        Object.freeze({ member: 'searchByProductTypeBounded', window, term, productTypeIDs }),
-      );
-      const bound = prepareBoundedRead(
-        window,
-        'InMemoryProductRepository.searchByProductTypeBounded',
-      );
-      const all = await repository.searchByProductType(term, productTypeIDs);
-
-      return settleBoundedRead(
-        all.slice(bound.offset, bound.offset + bound.probeLimit),
-        bound.limit,
-      );
-    },
 
     /*
      * F03 — the product write seam that `ProductService.saveProduct` reaches through. It mirrors
@@ -2721,6 +3032,199 @@ export function createUrlTitleAvailabilityDouble(
  */
 
 /*
+ * ---------------------------------------------------------------------------------------------------
+ * 10.0 GATED SETTLEMENT — the seam that makes "sequential" distinguishable from "concurrent".
+ *
+ * ⚠️ WHY THIS EXISTS AT ALL, STATED AS THE DEFECT IT CLOSES RATHER THAN AS A FEATURE. Every asynchronous
+ * double below used to answer with an ALREADY-RESOLVED promise. A resolved promise settles on the next
+ * microtask, so a consumer written as `for (const x of xs) { await f(x) }` and a consumer written as
+ * `await Promise.all(xs.map(f))` produce the SAME recorded call order: the concurrent form still STARTS
+ * its calls in input order, and nothing observable distinguishes it from the sequential form. Any test
+ * asserting order against immediate promises therefore passes for both — which means it does not assert
+ * ordering at all.
+ *
+ * `src/integrations/google/ProductFeedBuilder.ts` is the consumer where that matters. Its record loop and
+ * its per-record image loop are DELIBERATELY sequential `for...of` + `await`, and
+ * `src/ports/SmartListQueryPort.ts` and `src/adapters/mysql/UnitOfWork.ts` both record why nothing in this
+ * subtree may be quietly parallelised: the executor a boundary hands out may be bound to ONE
+ * transaction-scoped connection, and a connection cannot carry overlapping statements. So the sequencing
+ * is behaviour, and behaviour needs a test that fails when it changes.
+ *
+ * ═══════════════════════════════════════════════════════════════════════════════════════════════════
+ * WHAT A GATED DOUBLE ADDS, IN ONE SENTENCE
+ * ═══════════════════════════════════════════════════════════════════════════════════════════════════
+ * It separates the moment a call STARTS from the moment it RESOLVES, and puts the second one under the
+ * test's control — so a test can prove that call N+1 has not started while call N is still outstanding.
+ * Under `Promise.all` every call starts before any resolves, and the very same assertion fails.
+ *
+ * ⚠️ IT IS OPT-IN, AND EVERY EXISTING CASE KEEPS ITS OLD BEHAVIOUR. The flag defaults to off, in which
+ * case each member answers immediately exactly as it always did. Nothing about the answers changes when
+ * it is on either: the value a parked call will resolve with is computed at CALL time, from the same
+ * seeds, and only its DELIVERY waits. A gated double therefore cannot answer something an immediate
+ * double would not have.
+ *
+ * ⛔ NO TIMER, NO DELAY, NO SCHEDULER. Nothing here calls `setTimeout`, and no duration is named anywhere:
+ * a test settles a parked call explicitly. AAP §0.7.3 S9 forbids minting a figure the source does not
+ * state, and a gate needs no figure — which is also why it is deterministic where a delay would be flaky.
+ * ---------------------------------------------------------------------------------------------------
+ */
+
+/**
+ * A promise whose settlement the test performs, rather than the double.
+ *
+ * The two settle members are captured out of the executor callback, which runs synchronously inside the
+ * `Promise` constructor — so both are assigned before the constructor returns and neither can be
+ * `undefined` by the time a caller could reach it. They are typed as definitely assigned for that reason,
+ * and the initialisation below is what earns it.
+ *
+ * @typeParam T - Whatever the parked call will answer with.
+ */
+export interface Deferred<T> {
+  readonly promise: Promise<T>;
+  resolve(value: T): void;
+  reject(reason: unknown): void;
+}
+
+/**
+ * Create a deferred promise.
+ *
+ * @typeParam T - Whatever the parked call will answer with.
+ * @returns The promise together with its two settle members.
+ */
+export function createDeferred<T>(): Deferred<T> {
+  let resolveCapture: ((value: T) => void) | undefined;
+  let rejectCapture: ((reason: unknown) => void) | undefined;
+
+  const promise = new Promise<T>((resolve, reject) => {
+    resolveCapture = resolve;
+    rejectCapture = reject;
+  });
+
+  const capturedResolve = resolveCapture;
+  const capturedReject = rejectCapture;
+
+  if (capturedResolve === undefined || capturedReject === undefined) {
+    /*
+     * Unreachable: the executor of a `Promise` runs synchronously during construction, so both captures
+     * are assigned above. It is stated rather than asserted away with a cast, because a cast would also
+     * hide a genuine regression if that ever stopped being true.
+     */
+    throw new DomainError(
+      'A deferred promise was constructed without capturing its settle members, so the test could ' +
+        'never have settled it.',
+    );
+  }
+
+  return { promise, resolve: capturedResolve, reject: capturedReject };
+}
+
+/**
+ * One call that has STARTED and has not yet been settled.
+ *
+ * `describe` is a short, stable description of what the call asked for — the product identifier for a
+ * pricing read, the member and its subject for an image read. It is what a test compares against to prove
+ * WHICH call is outstanding, rather than merely how many are.
+ */
+export interface PendingCall {
+  /** What the call asked for, in a form a test can compare. */
+  readonly describe: string;
+  /** Deliver the answer the immediate double would have given, computed when the call started. */
+  settle(): void;
+  /** Deliver a failure instead, so the consumer's error path is reachable under gating too. */
+  reject(failure: unknown): void;
+}
+
+/**
+ * Park a call, or answer it immediately, according to the double's configuration.
+ *
+ * Shared by the two gated doubles so neither can drift into a different gating rule. The `answer` is
+ * computed by the CALLER before this is reached, which is what guarantees a gated double answers exactly
+ * what an ungated one would.
+ *
+ * @typeParam T - The member's answer type.
+ * @param gate - The double's gate, or `undefined` when the double settles immediately.
+ * @param describe - What the call asked for.
+ * @param answer - The value the immediate double would have resolved with.
+ * @param onResolved - Records the RESOLUTION, as distinct from the start. Called once, when the answer is
+ *   actually delivered, so a test can compare start order against resolution order.
+ * @returns The member's promise.
+ */
+function settleThroughGate<T>(
+  gate: PendingCall[] | undefined,
+  describe: string,
+  answer: T,
+  onResolved: () => void,
+): Promise<T> {
+  if (gate === undefined) {
+    onResolved();
+
+    return Promise.resolve(answer);
+  }
+
+  const deferred = createDeferred<T>();
+
+  /*
+   * ⭐ THE GATE HOLDS ONLY OUTSTANDING CALLS, so a settled entry is REMOVED rather than marked. That is
+   * what lets `pending` be read directly as "what the consumer is currently waiting on" — the assertion
+   * every ordering case actually wants — instead of a growing log a test would have to filter. Removal is
+   * by identity, so settling out of order (which a test may legitimately do) leaves the rest intact.
+   */
+  const forget = (): boolean => {
+    const position = gate.indexOf(entry);
+
+    if (position === -1) {
+      return false;
+    }
+    gate.splice(position, 1);
+
+    return true;
+  };
+
+  const entry: PendingCall = Object.freeze({
+    describe,
+    settle: (): void => {
+      if (!forget()) {
+        return;
+      }
+      onResolved();
+      deferred.resolve(answer);
+    },
+    reject: (failure: unknown): void => {
+      if (!forget()) {
+        return;
+      }
+      deferred.reject(failure);
+    },
+  });
+
+  gate.push(entry);
+
+  return deferred.promise;
+}
+
+/**
+ * Settle the OLDEST outstanding call, and refuse loudly when there is none.
+ *
+ * Refusing rather than returning quietly is the point: a test that settles more calls than were started
+ * has mis-modelled the consumer, and a silent no-op there would look like a passing ordering assertion.
+ *
+ * @param gate - The double's outstanding calls, oldest first.
+ * @param what - Names the double in the refusal, so the message identifies which one ran dry.
+ */
+function settleOldestPendingCall(gate: readonly PendingCall[], what: string): void {
+  const [oldest] = gate;
+
+  if (oldest === undefined) {
+    throw new DomainError(
+      `A test asked the ${what} double to settle a call, but no call is outstanding — so the ` +
+        'consumer had not reached the point the test assumed it had.',
+    );
+  }
+
+  oldest.settle();
+}
+
+/*
  * 10.1 The setting resolver.
  *
  * SYNCHRONOUS, single member, no promise anywhere. That is not a simplification: `setting()` is called
@@ -2883,9 +3387,18 @@ export function createSettingResolverDouble(
  * as a WEB path, and `model/service/SkuService.cfc:L211-L212` hands the same composed value to the WRITE
  * member as `filePath`. That mismatch is flagged, not resolved: resolving it would change which file the
  * legacy looked for and which file it wrote. An earlier revision DID resolve it — the port refused a
- * composed path and validated a basename instead — and that hardening is withdrawn; see
- * `src/ports/ImagePathPort.ts`. This double therefore keys existence on the composed path and records the
- * `filePath` it was handed.
+ * composed path and validated a basename instead — and that particular hardening stays withdrawn, because
+ * a basename carries no destination, so substituting one destroyed the write rather than confining it
+ * (`src/ports/ImagePathPort.ts` DECISION I-1 control (4)). This double therefore keys existence on the
+ * composed path and records the `filePath` it was handed.
+ *
+ * ⭐ THE WRITE IS NEVERTHELESS GATED NOW — UPSTREAM OF THIS DOUBLE, WHICH IS WHY THIS DOUBLE DID NOT
+ * CHANGE. Review finding F6 screens the stored `imageFile` in `src/services/SkuService.ts` BEFORE a path is
+ * composed, so a name the legacy's own generator could not have produced never reaches `getImagePath` or
+ * `saveImageFile` here at all — a refused upload leaves `calls` empty. Note the consequence for tests:
+ * `saveImageFile` below answers `true` UNCONDITIONALLY and enforces no `allowedExtensions` policy of its
+ * own, so a `true` from this double has never been evidence that the legacy would have stored the file. It
+ * is evidence only that the service asked.
  *
  * No `getImageDirectory` member is invented on the SKU side, and no extension is added to the
  * `jpg,jpeg,png,gif` list the upload seam carries — this double records the list it is handed so a test
@@ -2893,9 +3406,10 @@ export function createSettingResolverDouble(
  *
  * TODO(parity) D24 — `model/service/SkuService.cfc:L210-L218`: `processImageUpload` is named and shaped
  * like the other `process*` members, every one of which returns its entity, but this one returns whatever
- * the dynamically resolved image service returned — a BOOLEAN. `saveImageFile` here therefore answers
- * `boolean` rather than a SKU, which is what makes that legacy return type observable instead of quietly
- * corrected to match its siblings.
+ * the dynamically resolved image service returned — a BOOLEAN. `saveImageFile` here answers `boolean`
+ * because that is the PORT's contract and the legacy's own verdict; the SERVICE member answers with the
+ * SKU, per AAP §0.4.2.2, and consumes this boolean internally. Recording the verdict here is what lets a
+ * case still assert WHICH way the write went even though the service no longer publishes it.
  */
 
 /** One recorded call on the image path port. */
@@ -2904,6 +3418,34 @@ export type ImagePathCall =
   | { readonly member: 'getResizedImagePath'; readonly request: ResizedImagePathRequest }
   | { readonly member: 'getImageExistsFlag'; readonly imagePath: ImageWebPath }
   | { readonly member: 'saveImageFile'; readonly request: SaveImageFileRequest };
+
+/**
+ * The base image URL every suite composes image paths from.
+ *
+ * The legacy value is whatever `getHibachiScope().getBaseImageURL()` returns at run time
+ * (`model/entity/Sku.cfc:L146`), which no source file pins — so this is a TEST value and nothing more.
+ * It is declared once, here, because six construction sites and several path assertions must agree on
+ * it; a per-file literal would let one drift and turn a containment assertion into a false pass.
+ */
+export const TEST_IMAGE_BASE_URL = '/assets/images';
+
+/**
+ * The product-image directory every image expectation in the suite is composed against.
+ *
+ * ⭐ COMPOSED FROM THE LEGACY'S OWN SEGMENT CONSTANT, NOT TYPED OUT. Concatenating
+ * {@link TEST_IMAGE_BASE_URL} with `SKU_IMAGE_PATH_SEGMENT` reproduces exactly the shape
+ * `model/entity/Sku.cfc:L145` composes, so a path a test asserts on is the one the production
+ * composition would produce rather than a look-alike string.
+ *
+ * ⛔ IT IS A PLAIN STRING, AND IT IS NOT A CONTAINMENT ROOT. A revision branded this value through a
+ * `toImageStorageRoot` helper and wired it into `SkuService` as an eleventh constructor parameter, so
+ * that writes could be required to land beneath it. Both are withdrawn: the legacy never checks
+ * containment and had no such value to derive, so the root and its enforcement were invented
+ * configuration (AAP §0.7.3 S9, IR-12). The write-side rule that IS the legacy's — one dot, a sanitised
+ * stem and an allowed extension — is enforced by `isWritableSkuImageFileName` in
+ * `src/services/SkuService.ts`. This constant survives only as the base for composing expected paths.
+ */
+export const TEST_IMAGE_STORAGE_ROOT = `${TEST_IMAGE_BASE_URL}${SKU_IMAGE_PATH_SEGMENT}`;
 
 /** Seed configuration for {@link createImagePathDouble}. */
 export interface ImagePathDoubleOptions {
@@ -2922,14 +3464,49 @@ export interface ImagePathDoubleOptions {
   readonly existingImageFiles?: readonly string[];
   /** Answer for `saveImageFile`. Defaults to `true`. */
   readonly saveSucceeds?: boolean;
+  /**
+   * Park every read until the test settles it, instead of answering on the next microtask.
+   *
+   * Defaults to `false`, which is the immediate behaviour every existing case relies on. Section 10.0
+   * records why the immediate form cannot distinguish a sequential consumer from a concurrent one, and
+   * `src/integrations/google/ProductFeedBuilder.ts`'s per-record image loop is the consumer that needs the
+   * distinction: it awaits the SKU's own resized path and then each additional image's, strictly in the
+   * order `integrationServices/google/views/feed/product.cfm:L24-L26` emitted them.
+   *
+   * The answers are unchanged — each parked call already holds the value the immediate double computed
+   * from the same seeds — so gating changes WHEN an answer arrives and never WHAT it is.
+   */
+  readonly deferSettlement?: boolean;
 }
 
 /** The port plus its factory-local observation state. */
 export interface ImagePathDouble {
   readonly imagePaths: ImagePathPort;
   readonly calls: readonly ImagePathCall[];
+  /**
+   * Reads that have STARTED and not yet been settled, oldest first.
+   *
+   * Always empty unless {@link ImagePathDoubleOptions.deferSettlement} is on. `calls` is the START log and
+   * this is the OUTSTANDING set, and it is the difference between the two that a concurrent implementation
+   * cannot fake: a sequential consumer never has two outstanding at once.
+   */
+  readonly pending: readonly PendingCall[];
+  /**
+   * Reads that have RESOLVED, in resolution order, described exactly as {@link PendingCall.describe} does.
+   *
+   * Populated on both the immediate and the gated path, so a case can compare start order against
+   * resolution order without knowing which mode it is in.
+   */
+  readonly resolved: readonly string[];
   /** Mark an image file as existing. */
   addExistingImageFile(imageFile: string): void;
+  /**
+   * Settle the oldest outstanding read with the answer it already holds.
+   *
+   * @throws {DomainError} When no read is outstanding — see {@link settleOldestPendingCall} for why that
+   *   is a failure rather than a no-op.
+   */
+  settleNextRead(): void;
 }
 
 /**
@@ -2951,28 +3528,76 @@ export function createImagePathDouble(options: ImagePathDoubleOptions = {}): Ima
   const resizedImagePath = options.resizedImagePath;
   const saveSucceeds = options.saveSucceeds ?? true;
 
+  /*
+   * `undefined` rather than an empty array when gating is off, because `settleThroughGate` reads the
+   * ABSENCE of a gate as "answer immediately". Section 10.0 explains why that default is preserved.
+   */
+  const pending: PendingCall[] | undefined = options.deferSettlement === true ? [] : undefined;
+  const resolved: string[] = [];
+  const note = (describe: string): (() => void) => {
+    return (): void => {
+      resolved.push(describe);
+    };
+  };
+
   return {
     calls,
+    pending: pending ?? [],
+    resolved,
     imagePaths: {
       getImagePath: (imageFile: string): Promise<ImageWebPath> => {
         calls.push(Object.freeze({ member: 'getImagePath', imageFile }));
-        return Promise.resolve(toImageWebPath(imagePathsByImageFile[imageFile] ?? imageFile));
+        const describe = `getImagePath:${imageFile}`;
+
+        return settleThroughGate(
+          pending,
+          describe,
+          toImageWebPath(imagePathsByImageFile[imageFile] ?? imageFile),
+          note(describe),
+        );
       },
       getResizedImagePath: (request: ResizedImagePathRequest): Promise<ImageWebPath> => {
         calls.push(Object.freeze({ member: 'getResizedImagePath', request }));
-        return Promise.resolve(toImageWebPath(resizedImagePath ?? request.imagePath));
+        /* The size travels in the description because the feed asks for the SAME path at two sizes. */
+        const describe = `getResizedImagePath:${request.imagePath}${
+          request.size === undefined ? '' : `@${request.size}`
+        }`;
+
+        return settleThroughGate(
+          pending,
+          describe,
+          toImageWebPath(resizedImagePath ?? request.imagePath),
+          note(describe),
+        );
       },
       getImageExistsFlag: (imagePath: ImageWebPath): Promise<boolean> => {
         calls.push(Object.freeze({ member: 'getImageExistsFlag', imagePath }));
-        return Promise.resolve(existingImageFiles.has(imagePath));
+        const describe = `getImageExistsFlag:${imagePath}`;
+
+        /*
+         * The answer is read HERE, at call time, not when the gate opens. That matters: a test that marks
+         * a file as existing while a probe is parked must not change the parked probe's answer, because an
+         * immediate double could never have behaved that way either.
+         */
+        return settleThroughGate(
+          pending,
+          describe,
+          existingImageFiles.has(imagePath),
+          note(describe),
+        );
       },
       saveImageFile: (request: SaveImageFileRequest): Promise<boolean> => {
         calls.push(Object.freeze({ member: 'saveImageFile', request }));
-        return Promise.resolve(saveSucceeds);
+        const describe = `saveImageFile:${request.filePath}`;
+
+        return settleThroughGate(pending, describe, saveSucceeds, note(describe));
       },
     },
     addExistingImageFile: (imageFile: string): void => {
       existingImageFiles.add(imageFile);
+    },
+    settleNextRead: (): void => {
+      settleOldestPendingCall(pending ?? [], 'image path');
     },
   };
 }
@@ -3193,14 +3818,41 @@ export function buildSalePriceDetails(seed: {
 export interface PricingDoubleOptions {
   /** Sale-price details per product identifier, keyed within by SKU identifier. */
   readonly detailsByProductId?: Readonly<Record<string, SalePriceDetailsBySkuId>>;
+  /**
+   * Park every read until the test settles it, instead of answering on the next microtask.
+   *
+   * Defaults to `false`, the immediate behaviour every existing case relies on. Section 10.0 records why
+   * the immediate form cannot distinguish a sequential consumer from a concurrent one. This port's
+   * consumer is `src/integrations/google/ProductFeedBuilder.ts`, whose record loop awaits one record's
+   * sale-price read before starting the next — and whose per-build memo means two SKUs of the SAME product
+   * share ONE read, so a case proving the sequencing must use two DIFFERENT products.
+   */
+  readonly deferSettlement?: boolean;
 }
 
 /** The port plus its factory-local observation state. */
 export interface PricingDouble {
   readonly pricing: PricingPort;
+  /** Every read's product identifier, in START order. */
   readonly requestedProductIds: readonly string[];
+  /**
+   * Reads that have STARTED and not yet been settled, oldest first.
+   *
+   * Always empty unless {@link PricingDoubleOptions.deferSettlement} is on. One outstanding read at a time
+   * is what a sequential consumer produces; two at once is what `Promise.all` produces, and no concurrent
+   * implementation can present the first shape.
+   */
+  readonly pending: readonly PendingCall[];
+  /** Product identifiers whose read has RESOLVED, in resolution order. */
+  readonly resolvedProductIds: readonly string[];
   /** Seed or overwrite one product's details after construction. */
   set(productId: string, details: SalePriceDetailsBySkuId): void;
+  /**
+   * Settle the oldest outstanding read with the answer it already holds.
+   *
+   * @throws {DomainError} When no read is outstanding.
+   */
+  settleNextRead(): void;
 }
 
 /**
@@ -3214,17 +3866,34 @@ export function createPricingDouble(options: PricingDoubleOptions = {}): Pricing
     Object.entries(options.detailsByProductId ?? {}),
   );
   const requestedProductIds: string[] = [];
+  const resolvedProductIds: string[] = [];
+  const pending: PendingCall[] | undefined = options.deferSettlement === true ? [] : undefined;
 
   return {
     requestedProductIds,
+    resolvedProductIds,
+    pending: pending ?? [],
     pricing: {
       getSalePriceDetailsForProductSkus: (productId: string): Promise<SalePriceDetailsBySkuId> => {
         requestedProductIds.push(productId);
-        return Promise.resolve(detailsByProductId.get(productId) ?? {});
+
+        /* Read at call time, so a `set` performed while a read is parked cannot rewrite that read's
+         * answer — an immediate double could not have behaved that way either. */
+        return settleThroughGate(
+          pending,
+          productId,
+          detailsByProductId.get(productId) ?? {},
+          (): void => {
+            resolvedProductIds.push(productId);
+          },
+        );
       },
     },
     set: (productId: string, details: SalePriceDetailsBySkuId): void => {
       detailsByProductId.set(productId, details);
+    },
+    settleNextRead: (): void => {
+      settleOldestPendingCall(pending ?? [], 'pricing');
     },
   };
 }
@@ -4067,8 +4736,11 @@ export function createEntityRemoverDouble<TEntity>(failure?: Error): EntityRemov
  *   M5 — `run` commits only when the caller's error gate reports clean; when the gate reports errors it
  *        ROLLS BACK and raises, so nothing the work wrote survives, and it disposes of the connection in
  *        a `finally` on both the success and the failure path. Production releases only a connection
- *        whose transaction state is KNOWN and destroys it otherwise; this double's settlement cannot
- *        fail, so it only ever records a release.
+ *        whose transaction state is KNOWN and DESTROYS it otherwise, and this double reproduces that
+ *        rule rather than assuming the happy path: {@link UnitOfWorkDoubleOptions.settlement} can fail
+ *        `begin`, `commit` or `rollback` on any transaction, and the disposal event a failed settlement
+ *        produces is `destroy`. See {@link UnitOfWorkSettlementResponder} for why a double that could
+ *        not fail a settlement let dirty-connection handling regress while every test stayed green.
  *   M3 — `runPerItem` and `runPerItemWithoutResults` are STRICTLY SEQUENTIAL with one independent
  *        transaction per item, which is the importer's per-row commit at
  *        `model/dao/ProductDAO.cfc:L176-L177`. If item two fails, item one stays committed and items
@@ -4097,9 +4769,59 @@ export function createEntityRemoverDouble<TEntity>(failure?: Error): EntityRemov
  * of `getTableTopSortOrder` collapse into one optional-parameter signature that satisfies both call forms.
  */
 
-/** What happened, in the order it happened. */
+/**
+ * What happened, in the order it happened.
+ *
+ * `release` and `destroy` are the two DISPOSALS, and they are mutually exclusive per checkout: exactly
+ * one of them closes every acquire. Which one appears is the whole of the contract this double exists to
+ * make observable — see {@link UnitOfWorkSettlementResponder}.
+ *
+ * ⚠️ A SETTLEMENT EVENT RECORDS AN ATTEMPT, NOT A SUCCESS. `commit` is emitted when the commit is
+ * attempted, so a commit the boundary tried and failed is distinguishable from a commit that never
+ * happened at all; the `transactionsCommitted()` and `transactionsRolledBack()` counters continue to
+ * count SUCCESSES only, so the two views together say what was tried and what worked.
+ */
 export type UnitOfWorkEventKind =
-  'acquire' | 'begin' | 'commit' | 'rollback' | 'release' | 'poolWork';
+  'acquire' | 'begin' | 'commit' | 'rollback' | 'release' | 'destroy' | 'poolWork';
+
+/**
+ * A hook invoked as each settlement step is ATTEMPTED. Throw from it to fail that step.
+ *
+ * ⭐ WHY A DOUBLE HAS TO BE ABLE TO FAIL ITS OWN SETTLEMENT. `src/adapters/mysql/UnitOfWork.ts` keeps a
+ * per-checkout `knownClean` flag: it is cleared immediately BEFORE `beginTransaction` and restored only
+ * by a settlement that actually SUCCEEDED, and the `finally` releases a clean connection while
+ * DESTROYING a dirty one. Every interesting half of that rule is on the failing side — a failed begin, a
+ * failed commit and a failed roll-back all destroy — so a double whose settlement could not fail
+ * exercised only the release branch. Dirty-connection handling could then be deleted outright and every
+ * consumer test would still pass, which is the regression this hook closes.
+ *
+ * The step is reported together with its 1-based transaction number so a test can fail exactly one
+ * transaction of a per-item run — the M3 shape, where item two's commit fails and the connection shared
+ * by the whole list is destroyed while items one's commit stands.
+ *
+ * ⚠️ WHAT THIS DOUBLE DELIBERATELY DOES NOT REPRODUCE. The real boundary additionally reduces an
+ * abandoned failure to a SANITISED, length-bounded class name before attaching it to the compound
+ * roll-back failure, so that neither the failure's message (CWE-532) nor its control characters
+ * (CWE-117) reach a log. That reduction is production logic; it is pinned against the real class in
+ * `test/adapters/UnitOfWork.test.ts` rather than re-implemented here, because a second implementation in
+ * test support could agree with itself while disagreeing with the code that ships.
+ */
+export type UnitOfWorkSettlementResponder = (
+  step: 'begin' | 'commit' | 'rollback',
+  transaction: number,
+) => void;
+
+/**
+ * The double's copy of production's per-checkout `ConnectionState`.
+ *
+ * Mirrors `src/adapters/mysql/UnitOfWork.ts`: one record per ACQUIRE, not per transaction, which is what
+ * makes a per-item run's shared connection answerable as a whole. Not exported — a consumer asserts on
+ * the disposal EVENT rather than on this flag, exactly as it can only observe `release` versus `destroy`
+ * against the real pool.
+ */
+interface DoubleConnectionState {
+  knownClean: boolean;
+}
 
 /** One lifecycle event, attributed to its transaction. */
 export interface UnitOfWorkEvent {
@@ -4169,6 +4891,46 @@ export interface UnitOfWorkTestSupport {
   ): Promise<number>;
 }
 
+/*
+ * WHERE EACH SETTLEMENT FAULT LEAVES THE CONNECTION — the table the responder below is read against.
+ *
+ * ⛔ THE `UnitOfWorkSettlementFault` INTERFACE THIS TABLE USED TO DOCUMENT IS REMOVED. It described a
+ * declarative `{ step, transaction, error }` row supplied through a `settlementFaults` list, and that
+ * list was never read by the factory — so the type was reachable, exported, and inert. An exported
+ * shape that looks like a working seam is worse than no seam: the next case to reach for it would have
+ * asserted a fault that never fired. The retained seam is {@link UnitOfWorkSettlementResponder}, which
+ * is asked per step per transaction; the table itself is evidence about production and is kept.
+ *
+ * One driver-level settlement failure to inject.
+ *
+ * ═══════════════════════════════════════════════════════════════════════════════════════════════════
+ * WHY THIS EXISTS — THE POOL-SAFETY INVARIANT IT MAKES FALSIFIABLE
+ * ═══════════════════════════════════════════════════════════════════════════════════════════════════
+ * `src/adapters/mysql/UnitOfWork.ts` carries a real defect fix, `returnConnection`: a connection is
+ * RELEASED back to the pool only when its transaction state is KNOWN — as handed over, after a successful
+ * commit, or after a successful roll-back — and on every other path it is DESTROYED, so a connection with
+ * a possibly-open transaction never re-enters a warm pool for the next invocation to begin work on top of.
+ * That is the cross-invocation bleed M7 exists to prevent, and it is silent when it happens.
+ *
+ * A double whose `beginTransaction`, `commit` and `roll-back` always succeed can never reach the destroy
+ * branch, so a regression that released an unknown-state connection would pass every assertion built on
+ * it. Injecting the failure is the only way to reach it without a real driver.
+ *
+ * ⚠️ WHAT IS MODELLED, AND EXACTLY WHERE EACH FAULT LEAVES THE CONNECTION. Each row below is read from
+ * `UnitOfWork.runTransaction`, `runWorkInside` and `rollBack`, not invented:
+ *
+ *   `begin`     `state.knownClean` is set FALSE immediately before `connection.beginTransaction()`, so a
+ *               begin failure propagates RAW and the connection is DESTROYED. No `begin` event is recorded,
+ *               because no transaction was begun.
+ *   `commit`    a commit failure propagates RAW with `knownClean` still false, so the connection is
+ *               DESTROYED. No `commit` event is recorded.
+ *   `rollback`  `rollBack` wraps a roll-back failure in a `DomainError` whose `cause` is the driver
+ *               failure, leaves `knownClean` false, and the connection is DESTROYED. No `rollback` event
+ *               is recorded. Reached either from a work failure or from the M5 error gate.
+ *
+ * ⛔ NOTHING RETRIES, WAITS OR RECOVERS, here or in production. A destroyed connection is simply out of
+ * service; the pool opens a fresh one. No count, delay or backoff is introduced (AAP §0.7.3 S9).
+ */
 /** Seed configuration for {@link createUnitOfWorkDouble}. */
 export interface UnitOfWorkDoubleOptions {
   /**
@@ -4179,6 +4941,14 @@ export interface UnitOfWorkDoubleOptions {
    * shared with the repositories when a test needs both views to agree.
    */
   readonly sqlExecutor?: SqlExecutorDouble;
+  /*
+   * ⛔ THERE IS NO `settlementFaults` MEMBER, AND ITS ABSENCE IS DELIBERATE. A declarative list of
+   * driver-level failures to inject was declared here and never read by the factory, so a case that
+   * supplied one would have had it SILENTLY IGNORED and would have passed while asserting a fault that
+   * never fired. The capability itself is retained in the form that has consumers — {@link settlement},
+   * the responder below, which is asked per step per transaction and can therefore express everything a
+   * static list could and the interleavings it could not.
+   */
   /**
    * The current maximum sort order per table.
    *
@@ -4186,6 +4956,14 @@ export interface UnitOfWorkDoubleOptions {
    * derived by the CONSUMER — the production code adds one — and is deliberately not pre-computed here.
    */
   readonly tableTopSortOrder?: Readonly<Record<string, number>>;
+  /**
+   * Fails a settlement step. Absent by default, in which case every settlement succeeds.
+   *
+   * See {@link UnitOfWorkSettlementResponder}. Optional and defaultless on purpose: an existing consumer
+   * that wires nothing observes exactly the event sequence it observed before this hook existed, so the
+   * hook adds a reachable failure path without re-writing the suites that assert the success path.
+   */
+  readonly settlement?: UnitOfWorkSettlementResponder;
 }
 
 /**
@@ -4223,6 +5001,10 @@ export interface UnitOfWorkDouble {
   transactionsStarted(): number;
   transactionsCommitted(): number;
   transactionsRolledBack(): number;
+  /** Connections handed BACK to the pool, because their transaction state was known. */
+  connectionsReleased(): number;
+  /** Connections taken permanently out of service, because their transaction state was not. */
+  connectionsDestroyed(): number;
   /** Every top-sort-order call, in order, with the scope exactly as it was supplied. */
   topSortOrderCalls(): readonly TopSortOrderCall[];
 }
@@ -4242,6 +5024,72 @@ export function createUnitOfWorkDouble(options: UnitOfWorkDoubleOptions = {}): U
   };
 
   /**
+   * Attempts one settlement step: records the ATTEMPT, then lets the responder fail it.
+   *
+   * ⭐ THE EVENT IS RECORDED BEFORE THE RESPONDER RUNS, and the order matters. A commit the boundary
+   * issued and the driver then rejected was still attempted, and it left the transaction in a state no
+   * caller can describe; recording only successful settlements would make that indistinguishable from a
+   * commit that never happened, which is precisely the confusion the disposal rule turns on.
+   *
+   * @param step - The settlement step being attempted.
+   * @param transaction - The 1-based transaction number the step belongs to.
+   * @throws Whatever the responder throws, unchanged.
+   */
+  const attemptSettlement = (step: 'begin' | 'commit' | 'rollback', transaction: number): void => {
+    note(step, transaction);
+
+    if (options.settlement !== undefined) {
+      options.settlement(step, transaction);
+    }
+  };
+
+  /**
+   * Rolls one transaction back, mirroring `UnitOfWork`'s own `rollBack` on both outcomes.
+   *
+   * On success the connection regains its known-clean standing and the caller's own failure is re-raised
+   * by whoever called this. On FAILURE the connection's standing is withheld — so the `finally` destroys
+   * it — and a COMPOUND failure is raised carrying the roll-back failure as its `cause`, because at that
+   * point nothing can be reported about what the database retained.
+   *
+   * @param transaction - The 1-based transaction number.
+   * @param state - The checkout's disposition record, updated in place.
+   * @param rolledBackBecause - Which path asked for the roll-back.
+   * @throws {DomainError} When the roll-back itself fails.
+   */
+  const rollBackTransaction = (
+    transaction: number,
+    state: DoubleConnectionState,
+    rolledBackBecause: 'workFailure' | 'accumulatedErrors',
+  ): void => {
+    try {
+      attemptSettlement('rollback', transaction);
+    } catch (rollBackFailure) {
+      throw new DomainError(
+        'The test unit of work could not roll back after the work inside it was abandoned, so nothing ' +
+          'can be reported about what the database retained.',
+        { cause: rollBackFailure, context: { transaction, rolledBackBecause } },
+      );
+    }
+
+    transactionsRolledBack += 1;
+    state.knownClean = true;
+  };
+
+  /**
+   * Disposes of one checkout, exactly as production's `returnConnection` does.
+   *
+   * Releases a connection whose transaction state is KNOWN and destroys one whose state is not, so that a
+   * connection of unknown state never re-enters a warm pool (M7). Never raises: it runs from a `finally`,
+   * where a throw would replace the failure the caller is already reporting.
+   *
+   * @param state - The checkout's disposition record.
+   * @param transaction - The transaction number the acquire was attributed to.
+   */
+  const returnConnection = (state: DoubleConnectionState, transaction: number): void => {
+    note(state.knownClean ? 'release' : 'destroy', transaction);
+  };
+
+  /**
    * One transaction on an ALREADY-ACQUIRED connection: begin, work, settle. No acquire, no release.
    *
    * Split out for the same reason the real boundary splits it: the single-boundary member acquires
@@ -4249,15 +5097,27 @@ export function createUnitOfWorkDouble(options: UnitOfWorkDoubleOptions = {}): U
    * per item on that same connection. Modelling the acquire inside the transaction would make the
    * double emit an acquire/release pair per row that production no longer emits, and the event log
    * would then assert the opposite of the behaviour it exists to pin.
+   *
+   * ⭐ THE CHECKOUT'S DISPOSITION IS TAKEN AS A PARAMETER RATHER THAN CREATED HERE, for the same reason
+   * `runTransaction` takes it in production: a per-item run settles MANY transactions on ONE connection,
+   * so the record of whether that connection is still recyclable belongs to the acquire and outlives
+   * every individual transaction. It is cleared before `begin` and restored only by a settlement that
+   * actually succeeded.
    */
   const runSettled = async <T>(
     work: (scope: TransactionScope) => Promise<T>,
     hasErrors: () => boolean,
+    state: DoubleConnectionState,
   ): Promise<T> => {
     transactionsStarted += 1;
     const transaction = transactionsStarted;
     {
-      note('begin', transaction);
+      /*
+       * Withdrawn BEFORE the begin is attempted, never after, because a begin that fails part-way
+       * through leaves the connection in exactly the state this flag exists to describe.
+       */
+      state.knownClean = false;
+      attemptSettlement('begin', transaction);
       let settlement: { readonly decision: 'commit' | 'rollback'; readonly result: T };
       try {
         /*
@@ -4271,8 +5131,13 @@ export function createUnitOfWorkDouble(options: UnitOfWorkDoubleOptions = {}): U
         const result = await work(Object.freeze({ executor: sqlExecutor.executor }));
         settlement = { decision: hasErrors() ? 'rollback' : 'commit', result };
       } catch (failure) {
-        note('rollback', transaction);
-        transactionsRolledBack += 1;
+        /*
+         * The caller's own failure is re-raised UNCHANGED when the roll-back succeeds, so a test can
+         * assert on it by identity. When the roll-back itself fails, `rollBackTransaction` raises the
+         * compound failure instead and this `throw` is never reached — which is production's behaviour
+         * too, and the reason the compound form carries the roll-back failure as its `cause`.
+         */
+        rollBackTransaction(transaction, state, 'workFailure');
         throw failure;
       }
       if (settlement.decision === 'rollback') {
@@ -4281,49 +5146,58 @@ export function createUnitOfWorkDouble(options: UnitOfWorkDoubleOptions = {}): U
          * ignored a silent "nothing was kept" would carry on as though the write had happened. The message
          * is authored here; no legacy or sibling text is reused.
          */
-        note('rollback', transaction);
-        transactionsRolledBack += 1;
+        rollBackTransaction(transaction, state, 'accumulatedErrors');
         throw new DomainError(
           'The test unit of work rolled back because the error gate reported accumulated findings, so ' +
             'nothing written inside the boundary was kept.',
           { context: { transaction } },
         );
       }
-      note('commit', transaction);
+      attemptSettlement('commit', transaction);
       transactionsCommitted += 1;
+      /* Restored only now: the commit is the step that makes the connection recyclable again. */
+      state.knownClean = true;
       return settlement.result;
     }
   };
 
   /**
-   * One acquire, one transaction, one release — the single-boundary shape.
+   * One acquire, one transaction, one DISPOSAL — the single-boundary shape.
    *
-   * The release is in a `finally` so it is recorded on BOTH paths, which is the property a leaked
-   * connection would violate. The real boundary DESTROYS rather than releases when a settlement itself
-   * failed, so that a connection of unknown transaction state never re-enters a warm pool; this double
-   * emits only `release` because its commit and roll-back cannot fail, and inventing a `destroy` event
-   * it could never reach would be a contract nothing exercises.
+   * The disposal is in a `finally` so it is recorded on BOTH paths, which is the property a leaked
+   * connection would violate. WHICH disposal it is follows production exactly: `release` for a connection
+   * whose transaction state is known, `destroy` for one whose settlement failed, so that a connection of
+   * unknown state never re-enters a warm pool (M7). Both branches are reachable here — the settlement
+   * responder on {@link UnitOfWorkDoubleOptions} is what reaches the second — because a double that could
+   * only release would let dirty-connection handling be removed with every consumer test still green.
    */
   const run = async <T>(
     work: (scope: TransactionScope) => Promise<T>,
     hasErrors: () => boolean,
   ): Promise<T> => {
     const transaction = transactionsStarted + 1;
+    /* Per checkout, exactly as production's is, and `true` because nothing has been done to it yet. */
+    const state: DoubleConnectionState = { knownClean: true };
     note('acquire', transaction);
     try {
-      return await runSettled(work, hasErrors);
+      return await runSettled(work, hasErrors, state);
     } finally {
-      note('release', transaction);
+      returnConnection(state, transaction);
     }
   };
 
   /**
    * The per-item loop, shared by the collecting and non-collecting members.
    *
-   * ONE ACQUIRE FOR THE WHOLE LIST, one transaction per item, one release at the end — and an empty
+   * ONE ACQUIRE FOR THE WHOLE LIST, one transaction per item, one disposal at the end — and an empty
    * list acquires nothing at all, which the importer legitimately reaches for a header-only file or the
    * `.xls` branch. M3 is unchanged by the sharing: each item is still its own independent transaction,
    * settled before the next begins.
+   *
+   * ⚠️ THE SHARED CONNECTION IS WHAT A FAILED PER-ITEM SETTLEMENT ENDANGERS, and one disposition record
+   * spans the whole list for that reason. If item two's commit fails, item one's commit still stands —
+   * that is M3 — but the connection every item ran on is now of unknown state, so the list ends in a
+   * `destroy` rather than a `release`.
    */
   const runEachItem = async <TItem, TResult>(
     items: PerItemSource<TItem>,
@@ -4331,15 +5205,19 @@ export function createUnitOfWorkDouble(options: UnitOfWorkDoubleOptions = {}): U
     collect: ((result: TResult) => void) | undefined,
   ): Promise<void> => {
     /*
-     * ⚠️ THE CHECKOUT IS ON DEMAND, AND AN EMPTY SOURCE STILL BORROWS NOTHING — but that property is now
-     * STRUCTURAL rather than a length test, exactly as `UnitOfWork.runEachItem` makes it. An earlier
-     * revision returned early on `items.length === 0`, which a LAZY source cannot answer without being
-     * consumed: reading `.length` off an `AsyncIterable` yields `undefined`, the guard silently fell
-     * through, and the synchronous `for..of` below then threw `items is not iterable`. So the double was
-     * unusable for the one member that actually feeds a lazy source, `importFromFile`'s row loop.
-     * Deriving the acquire from the FIRST item instead reproduces production's behaviour for both arms.
+     * ⚠️ THE CHECKOUT IS ON DEMAND, AND THAT IS STRUCTURAL RATHER THAN A LENGTH TEST — exactly as
+     * `UnitOfWork.runEachItem` makes it. The acquire is derived from the arrival of the FIRST item, so a
+     * source that yields is charged for one connection and a source that yields nothing is charged for
+     * none, without either arm being inspected up front. The release below is conditional on the same
+     * fact, so the two always agree.
+     *
+     * A LENGTH TEST IS NOT AVAILABLE HERE, WHICH IS WHY THERE ISN'T ONE. `PerItemSource` admits an
+     * `AsyncIterable` — see the note on `runPerItem` above — and a lazy source cannot report its size
+     * without being consumed. Deriving the acquire from the first item is what lets ONE loop serve the
+     * materialised and the lazy arm under one set of settlement semantics.
      */
     let acquisition: number | undefined;
+    const state: DoubleConnectionState = { knownClean: true };
 
     try {
       /*
@@ -4353,7 +5231,6 @@ export function createUnitOfWorkDouble(options: UnitOfWorkDoubleOptions = {}): U
        * array arm gains no concurrency and no extra tick of observable delay.
        */
       for await (const item of items) {
-        // The first item pays for the checkout; every later item reuses it. See the note above.
         if (acquisition === undefined) {
           acquisition = transactionsStarted + 1;
           note('acquire', acquisition);
@@ -4362,15 +5239,15 @@ export function createUnitOfWorkDouble(options: UnitOfWorkDoubleOptions = {}): U
         const result = await runSettled(
           (scope) => work(item, scope),
           () => false,
+          state,
         );
         if (collect !== undefined) {
           collect(result);
         }
       }
     } finally {
-      // Released only when a connection was actually obtained, for the same reason.
       if (acquisition !== undefined) {
-        note('release', acquisition);
+        returnConnection(state, acquisition);
       }
     }
   };
@@ -4479,6 +5356,17 @@ export function createUnitOfWorkDouble(options: UnitOfWorkDoubleOptions = {}): U
     transactionsStarted: (): number => transactionsStarted,
     transactionsCommitted: (): number => transactionsCommitted,
     transactionsRolledBack: (): number => transactionsRolledBack,
+    /*
+     * ⭐ DERIVED FROM THE EVENT LOG, NOT FROM A COUNTER. Two disposal mechanisms met here: a pair of
+     * incrementing counters, and `note('release' | 'destroy')` on the shared log. The log won, because
+     * `returnConnection` chooses the kind from `state.knownClean` exactly as production's does and the
+     * ordering of a disposal relative to its transaction is only observable on the log. The counters were
+     * left declared and never incremented, so BOTH accessors answered a constant zero — a case asserting
+     * "one connection was destroyed" would have failed, and one asserting "none was" would have passed
+     * vacuously. Counting the log makes them answer the same question the log answers.
+     */
+    connectionsReleased: (): number => events.filter((event) => event.kind === 'release').length,
+    connectionsDestroyed: (): number => events.filter((event) => event.kind === 'destroy').length,
     topSortOrderCalls: (): readonly TopSortOrderCall[] => topSortOrderCalls,
   };
 }

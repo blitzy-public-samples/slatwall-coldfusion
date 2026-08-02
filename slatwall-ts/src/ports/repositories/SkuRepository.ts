@@ -156,11 +156,18 @@
  *          an argument its signature never declares (`model/service/SkuService.cfc:L285-L287`). The
  *          service-side consequence is recorded at `src/services/SkuService.ts` and the entity-side
  *          reading at `src/domain/sku/Sku.ts`; both CITE this number rather than minting it.
- *     D24  `src/services/SkuService.ts` — `processImageUpload` returns a boolean rather than the
- *          `Promise<Sku>` AAP §0.4.2.2 tabulates (`model/service/SkuService.cfc:L210-L218`).
- *     D25  `src/services/ProductService.ts` — `getFormattedOptionGroups` returns a MAP keyed by
- *          option-group NAME rather than the array AAP §0.4.2.1 tabulates
- *          (`model/service/ProductService.cfc:L70-L80`).
+ *     D24  `src/services/SkuService.ts` — the legacy `processImageUpload` body returns the image-write
+ *          BOOLEAN rather than the entity its own framework convention asks for
+ *          [org/Hibachi/HibachiService.cfc:L117], at `model/service/SkuService.cfc:L210-L218`. The port
+ *          answers with the entity, because AAP §0.4.2.2 tabulates `Promise<Sku>` and the plan is
+ *          frozen; the divergence, and the verdict that is consequently no longer observable at the
+ *          service boundary, are annotated at that member.
+ *     D25  `src/services/ProductService.ts` — the legacy `getFormattedOptionGroups` answers a plain
+ *          CFML STRUCT keyed by option-group NAME, so two groups sharing a name collapse to one entry
+ *          and the earlier one is lost (`model/service/ProductService.cfc:L70-L80`). The port answers
+ *          `FormattedOptionGroup[]`, because AAP §0.4.2.1 tabulates that array and the plan is frozen;
+ *          the name-collapse behaviour is preserved by accumulating through a `Map` before the array is
+ *          materialised, and the divergence is annotated at that member.
  *
  *   THE MISMATCH REGISTER IS EXTENDED THE SAME WAY, BY EXACTLY ONE ENTRY. AAP §0.6.6 allocates
  *   M1–M8; `src/services/SkuService.ts` mints M9, because CFML specifies no iteration order for a

@@ -127,42 +127,55 @@ import {
   createSkusBySelectedOptionsLookup,
   createUniquePropertyDouble,
   createValidatorHarness,
+  physicalID,
 } from '../support/inMemoryRepositories';
 
 /* =================================================================================================
- * TEST-LOCAL IDENTIFIERS
+ * TEST-LOCAL IDENTIFIERS — PHYSICALLY VALID, PER REVIEW FINDING 16
  * -------------------------------------------------------------------------------------------------
- * Readable, non-UUID identifiers, which is the convention every landed sibling suite in this subtree
- * already follows (`og-1`, `grp-1`, `o-1`). Deliberately NOT 32-character hexadecimal literals: the
- * only identifier literals this slice is entitled to reproduce verbatim are the three seeded
- * product-type discriminators, and those are imported from `../fixtures/productTypes` rather than
- * retyped. Inventing a fresh UUID here would add an unverifiable literal for no assertive gain, and a
- * readable identifier makes a failure message legible.
+ * Every identifier below is minted by `physicalID(label)`, so its VALUE is 32 lowercase hexadecimal
+ * characters with no dashes — the shape AAP IR-6 fixes for every primary key in this schema — while its
+ * LABEL stays readable at the call site and in the constant's name. The mechanism, and the three
+ * grounds of the readable-identifier rationale it withdraws, are documented once at
+ * `test/support/inMemoryRepositories.ts` rather than restated here.
  *
- * The identifiers below are string CONSTANTS, not shared entity instances. Every entity is rebuilt
+ * ⛔ WHAT THIS BLOCK USED TO SAY, AND WHY IT WAS WRONG
+ *
+ * It claimed the readable form was "the convention every landed sibling suite already follows". That
+ * was the specific factual error the review corrected: sibling suites split both ways, and several —
+ * `test/domain/Product.test.ts`, `test/services/OptionService.test.ts`, `test/handlers/*.test.ts` —
+ * deliberately pinned the physical contract. Citing half a divided tree as a convention is how a
+ * fixture drifts away from the schema it is supposed to be faithful to.
+ *
+ * It also claimed a physical identifier offered "no assertive gain". It does, and this file is the
+ * clearest place in the subtree to see it: the members under test here compare, group, memoise and
+ * struct-key on identifiers, and every one of those operations can hold a shape assumption that a
+ * seven-character ASCII token would satisfy by accident.
+ *
+ * The identifiers below remain string CONSTANTS, not shared entity instances. Every entity is rebuilt
  * inside the case that uses it, so no mutable state crosses a case boundary — which matters more than
  * usual in this file, because several members under test memoise on first call.
  * ============================================================================================== */
 
-const SIZE_OPTION_GROUP_ID = 'og-size';
+const SIZE_OPTION_GROUP_ID = physicalID('og-size');
 const SIZE_OPTION_GROUP_CODE = 'SIZE';
 const SIZE_OPTION_GROUP_NAME = 'Size';
 
-const COLOUR_OPTION_GROUP_ID = 'og-colour';
+const COLOUR_OPTION_GROUP_ID = physicalID('og-colour');
 const COLOUR_OPTION_GROUP_CODE = 'COLOUR';
 const COLOUR_OPTION_GROUP_NAME = 'Colour';
 
-const LARGE_OPTION_ID = 'o-large';
+const LARGE_OPTION_ID = physicalID('o-large');
 const LARGE_OPTION_NAME = 'Large';
 
-const RED_OPTION_ID = 'o-red';
+const RED_OPTION_ID = physicalID('o-red');
 const RED_OPTION_NAME = 'Red';
 
-const CATALOG_PRODUCT_ID = 'p-catalog-1';
-const PERSISTED_SKU_ID = 'sku-persisted-1';
-const SIBLING_SKU_ID = 'sku-sibling-1';
-const SECOND_SIBLING_SKU_ID = 'sku-sibling-2';
-const OPTIONLESS_SKU_ID = 'sku-optionless-1';
+const CATALOG_PRODUCT_ID = physicalID('p-catalog-1');
+const PERSISTED_SKU_ID = physicalID('sku-persisted-1');
+const SIBLING_SKU_ID = physicalID('sku-sibling-1');
+const SECOND_SIBLING_SKU_ID = physicalID('sku-sibling-2');
+const OPTIONLESS_SKU_ID = physicalID('sku-optionless-1');
 const CATALOG_SKU_CODE = 'CATALOG-SKU-1';
 
 /**
@@ -932,7 +945,10 @@ describe('Sku — getSkuDefinition across the three seeded product types', () =>
      * the boundary type for the excluded `Subscription*` family — whereas the entity's own
      * `SubscriptionTermRef` also admits the display name this member renders. Reaching for the setter
      * keeps the narrower boundary type intact instead of widening a port to suit a test. */
-    sku.setSubscriptionTerm({ subscriptionTermID: 'st-monthly', subscriptionTermName: 'Monthly' });
+    sku.setSubscriptionTerm({
+      subscriptionTermID: physicalID('st-monthly'),
+      subscriptionTermName: 'Monthly',
+    });
     const { resolver } = createProductTypeRootResolverDouble();
 
     /* `:L585` builds `"#rbKey('entity.subscriptionTerm')#: #getSubscriptionTerm().getSubscriptionTermName()#"`.
@@ -951,7 +967,7 @@ describe('Sku — getSkuDefinition across the three seeded product types', () =>
       product: newProductOfType(SUBSCRIPTION_PRODUCT_TYPE.productTypeID),
     });
     relabelledSku.setSubscriptionTerm({
-      subscriptionTermID: 'st-monthly',
+      subscriptionTermID: physicalID('st-monthly'),
       subscriptionTermName: 'Monthly',
     });
     await expect(relabelledSku.getSkuDefinition(resolver, 'Subscription Term')).resolves.toBe(
@@ -974,14 +990,39 @@ describe('Sku — getSkuDefinition across the three seeded product types', () =>
     await expect(sku.getSkuDefinition(resolver)).resolves.toBe(first);
     expect(requestedProductTypeIds).toHaveLength(1);
 
-    /* No product means no base product type, so `:L576` matches nothing and the definition stays the
-     * empty string it was initialised to. The legacy behaves identically — `getProduct()` returns null
-     * and the comparison at `:L577` simply fails — and no branch is invented to cover the gap. */
-    const unassociatedSku = buildSku({
-      skuID: OPTIONLESS_SKU_ID,
-      options: [newLargeOption(newSizeGroup())],
-    });
-    await expect(unassociatedSku.getSkuDefinition(resolver)).resolves.toBe('');
+    /*
+     * ⭐ AN UNASSOCIATED SKU RAISES ON THE FIRST CALL AND THEN ANSWERS `''` ON EVERY LATER ONE, AND
+     * BOTH HALVES ARE THE LEGACY'S. `:L576` writes `variables.skuDefinition = ""` BEFORE `:L577`
+     * evaluates `getBaseProductType()`, and that evaluation reaches the bare
+     * `return getProduct().getBaseProductType();` at `:L357` — so the first call fails with the memo
+     * already seeded, and the `:L575` cache guard then short-circuits every subsequent call.
+     *
+     * ⛔ THIS BLOCK PREVIOUSLY ASSERTED `''` ON THE FIRST CALL, claiming "the legacy behaves
+     * identically — `getProduct()` returns null and the comparison at `:L577` simply fails".
+     * WITHDRAWN: the comparison is never reached, because the CALL raises first. Reading a null and
+     * comparing it is not what `:L577` does.
+     */
+    const buildUnassociatedSku = (): Sku =>
+      buildSku({ skuID: OPTIONLESS_SKU_ID, options: [newLargeOption(newSizeGroup())] });
+
+    /* A FRESH instance per rejection assertion, deliberately: the memo below means the same instance
+     * answers differently on a second call, so reusing one here would assert the opposite thing. */
+    await expect(buildUnassociatedSku().getSkuDefinition(resolver)).rejects.toBeInstanceOf(
+      DomainError,
+    );
+    await expect(buildUnassociatedSku().getSkuDefinition(resolver)).rejects.toThrow(
+      /model\/entity\/Sku\.cfc:L357/,
+    );
+
+    /* And the memo the FAILED call already seeded then takes over, exactly as `:L575-L576` make it: the
+     * second call raises nothing and answers the empty string. Asserted rather than left implicit
+     * because it is the whole difference between porting `:L576`'s POSITION faithfully and hoisting it
+     * to the end of the method for tidiness — the tidy version would have raised here forever. */
+    const memoisedAfterFailure = buildUnassociatedSku();
+    await expect(memoisedAfterFailure.getSkuDefinition(resolver)).rejects.toBeInstanceOf(
+      DomainError,
+    );
+    await expect(memoisedAfterFailure.getSkuDefinition(resolver)).resolves.toBe('');
   });
 });
 
@@ -1051,7 +1092,7 @@ describe('Sku — D16 deprecated members, three distinct outcomes', () => {
      * name collapse onto one key and the later option overwrites the earlier. Contrast D1's
      * first-wins intent. Both are preserved as written. */
     const duplicateNameGroup = buildOptionGroup({
-      optionGroupID: 'og-size-duplicate',
+      optionGroupID: physicalID('og-size-duplicate'),
       optionGroupCode: 'SIZE-2',
       optionGroupName: SIZE_OPTION_GROUP_NAME,
     });
@@ -1090,10 +1131,31 @@ describe('Sku — D16 deprecated members, three distinct outcomes', () => {
       expect(sku.isNotDefaultSku(readDefaultSkuId)).toBe(!sku.getDefaultFlag(readDefaultSkuId));
     }
 
-    /* A SKU with no product is nobody's default, so it reports NOT-default — true, and correctly so. */
+    /* ⭐ A SKU WITH NO PRODUCT GETS NO ANSWER FROM EITHER MEMBER, BECAUSE `:L443` DEREFERENCES TWICE
+     * WITH NO GUARD — `getProduct()` and then `getDefaultSku()` — and CFML raises on the first hop.
+     * `:L909` negates the RESULT of that call, so there is nothing to negate and the deprecated member
+     * raises too. The inverse relationship is therefore intact for every input that HAS one.
+     *
+     * ⛔ AN EARLIER REVISION ASSERTED `false` AND `true` HERE, on the reading that "a SKU with no product
+     * is nobody's default". That is withdrawn under AAP §0.6.7 (preserve and annotate, do not repair):
+     * `model/validation/Sku.json:L3` gates deletion on `defaultFlag eq false`, so answering `false`
+     * PASSED the delete guard and permitted a delete the legacy system aborted — a hardening encoded as
+     * parity, in the one direction where being wrong destroys data. */
     const unassociatedSku = buildSku({ skuID: OPTIONLESS_SKU_ID });
-    expect(unassociatedSku.getDefaultFlag(() => OPTIONLESS_SKU_ID)).toBe(false);
-    expect(unassociatedSku.isNotDefaultSku(() => OPTIONLESS_SKU_ID)).toBe(true);
+    expect(() => unassociatedSku.getDefaultFlag(() => OPTIONLESS_SKU_ID)).toThrow(DomainError);
+    expect(() => unassociatedSku.isNotDefaultSku(() => OPTIONLESS_SKU_ID)).toThrow(DomainError);
+    expect(() => unassociatedSku.getDefaultFlag(() => OPTIONLESS_SKU_ID)).toThrow(
+      'model/entity/Sku.cfc:L443',
+    );
+
+    /* ⭐ AND THE SECOND HOP RAISES ON ITS OWN, WHICH IS A DIFFERENT INPUT AND A DIFFERENT MESSAGE. A SKU
+     * that HAS a product whose `defaultSku` is unset reaches `getDefaultSku()` and fails there. Both
+     * dereferences at `:L443` are unguarded, so both are reproduced rather than only the first. */
+    const { sku: orphanedSku } = buildTwoOptionSku();
+    expect(() => orphanedSku.getDefaultFlag(() => PERSISTED_SKU_ID)).toThrow(DomainError);
+    expect(() => orphanedSku.getDefaultFlag(() => PERSISTED_SKU_ID)).toThrow(
+      'which has no default SKU',
+    );
   });
 
   it('NET-NEW — model/entity/Sku.cfc:L884-L891 — displayOptions() is a FOURTH deprecated member outside the D16 registration, and it forwards the caller-supplied delimiter unchanged', () => {
@@ -1153,9 +1215,24 @@ describe('Sku — hasUniqueOptions selected-options assembly at the domain seam'
     /* `:L758-L760` uses `listAppend` with the DEFAULT delimiter, so a comma, and appends in the order
      * `getOptions()` yields — nothing reorders it. */
     expect(recording.received).toEqual([`${RED_OPTION_ID},${LARGE_OPTION_ID}`]);
-    expect(recording.received).toEqual(['o-red,o-large']);
 
-    /* And the string really is unsorted: sorting the same identifiers gives the other order. */
+    /* ⭐ REVIEW FINDING 16, ASSERTED RATHER THAN ASSUMED. The line above compares against the same
+     * two constants the fixture was built from, so it would hold for any identifier shape whatsoever —
+     * including the short readable tokens this file used to carry. This line pins the SHAPE of what
+     * actually crossed the seam: two IR-6 identifiers, 32 lowercase hexadecimal characters each, joined
+     * by exactly one comma and nothing else. It is the assertion that would catch a padding step, a
+     * case fold, a dash reinsertion or a stray delimiter, none of which a seven-character ASCII fixture
+     * can distinguish from correct behaviour. (It replaces a duplicate restatement of the line above
+     * that hard-coded the readable literals.) */
+    expect(recording.received[0]).toMatch(/^[0-9a-f]{32},[0-9a-f]{32}$/);
+
+    /* And the string really is unsorted: sorting the same identifiers gives the other order.
+     *
+     * ⚠️ The proof depends on the pair being out of sorted order to begin with, which is a property of
+     * the two derived values and not something the member controls. Asserting that precondition
+     * explicitly means a future label change fails HERE, with a legible reason, instead of turning the
+     * `not.toBe` below into a passing tautology. */
+    expect(RED_OPTION_ID > LARGE_OPTION_ID).toBe(true);
     const sortedEquivalent = [RED_OPTION_ID, LARGE_OPTION_ID].slice().sort().join(',');
     expect(recording.received[0]).not.toBe(sortedEquivalent);
 
@@ -1491,7 +1568,7 @@ describe('Sku — hasOneOptionPerOptionGroup, the pure in-memory validator', () 
     /* Three distinct groups, to show the walk keeps accumulating rather than comparing only neighbours.
      * A pairwise-adjacent implementation would agree on two options and diverge on three. */
     const materialGroup = buildOptionGroup({
-      optionGroupID: 'og-material',
+      optionGroupID: physicalID('og-material'),
       optionGroupCode: 'MATERIAL',
       optionGroupName: 'Material',
     });
@@ -1514,7 +1591,10 @@ describe('Sku — hasOneOptionPerOptionGroup, the pure in-memory validator', () 
     /* EARLY RETURN, PROVEN BY WHAT IS NEVER EXAMINED. `:L776-L777` returns the moment a group repeats,
      * so any option AFTER the repeat is never inspected. An option carrying NO option group is the
      * instrument: dereferencing it raises, so its silence is evidence the walk stopped. */
-    const optionAfterRepeat = buildOption({ optionID: 'o-groupless-tail', optionName: 'Tail' });
+    const optionAfterRepeat = buildOption({
+      optionID: physicalID('o-groupless-tail'),
+      optionName: 'Tail',
+    });
     const earlyReturnSku = buildSku({
       skuID: SIBLING_SKU_ID,
       product,
@@ -1539,7 +1619,7 @@ describe('Sku — hasOneOptionPerOptionGroup, the pure in-memory validator', () 
       product,
       options: [
         newLargeOption(newSizeGroup()),
-        buildOption({ optionID: 'o-groupless-head', optionName: 'Head' }),
+        buildOption({ optionID: physicalID('o-groupless-head'), optionName: 'Head' }),
         newOption(newSizeGroup(), 'o-small', 'Small', 'Sm'),
       ],
     });
@@ -1726,7 +1806,6 @@ describe('Sku — D4, the stocks-deletable boundary', () => {
 
 describe('Sku — M7, memoization is per instance and never bleeds between simulated invocations', () => {
   it('NET-NEW — model/entity/Sku.cfc:L525 — a second Sku computes its own option-identifier list and sees nothing of the first', () => {
-    /* Invocation one. */
     const firstSku = buildSku({
       skuID: PERSISTED_SKU_ID,
       product: newMerchandiseProduct(),
@@ -1780,7 +1859,7 @@ describe('Sku — M7, memoization is per instance and never bleeds between simul
       product: newProductOfType(SUBSCRIPTION_PRODUCT_TYPE.productTypeID),
     });
     thirdSku.setSubscriptionTerm({
-      subscriptionTermID: 'st-annual',
+      subscriptionTermID: physicalID('st-annual'),
       subscriptionTermName: 'Annual',
     });
     const thirdResolver = createProductTypeRootResolverDouble();
@@ -1917,7 +1996,7 @@ describe('Sku — image file name generation', () => {
 
     /* Two image groups: both contribute, each prefixed by the delimiter, in options-array order. */
     const secondImageGroup = buildOptionGroup({
-      optionGroupID: 'og-material',
+      optionGroupID: physicalID('og-material'),
       optionGroupCode: 'MATERIAL',
       optionGroupName: 'Material',
       imageGroupFlag: true,
@@ -2113,8 +2192,6 @@ describe('Sku — image paths and existence, entirely through ImagePathPort', ()
       'productImageSmallHeight',
     ]);
 
-    /* An explicit width and height suppress the mapping entirely, so a caller can bypass the alias
-     * table — and then no size setting is read at all. */
     const explicitDouble = createSettingResolverDouble({
       settings: [
         { settingName: 'imageMissingImagePath', value: '/custom/assets/images/missing.png' },
@@ -2183,9 +2260,6 @@ describe('Sku — image paths and existence, entirely through ImagePathPort', ()
       { size: 'm' },
     );
 
-    /* `:L165-L167` reads the alt template from configuration and expands it only when it is non-empty;
-     * `:L179-L180` maps `m` to Medium and reads the two dimension settings; `:L186` forwards
-     * `resizeMethod="scaleBest"`. */
     expect(expandedTemplates).toEqual(['${productName} - ${skuDefinition}']);
     expect(renderedRequests).toEqual([
       {

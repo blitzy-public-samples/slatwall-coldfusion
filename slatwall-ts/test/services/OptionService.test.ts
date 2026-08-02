@@ -71,7 +71,10 @@
  * =================================================================================================
  * WHAT THIS FILE COVERS, AND WHAT IT DELIBERATELY DOES NOT
  * =================================================================================================
- * COVERED — the seven-member parity surface, one labelled case minimum per member:
+ * COVERED — THE WHOLE PUBLIC SURFACE, in two labelled groups, one case minimum per member.
+ *
+ * The seven-member PARITY surface (AAP §0.4.2.4 for the declared members, §0.4.2.5 for the
+ * synthesized ones):
  *   1. `getOptionsForSelect`            [model/service/OptionService.cfc:L55-L63]  (declared)
  *   2. `getUnusedProductOptions`        [:L72-L74]                                 (declared)
  *   3. `getUnusedProductOptionGroups`   [:L76-L78]                                 (declared)
@@ -80,33 +83,72 @@
  *   6. `getOptionSmartList`             synthesized; IR-1, AAP §0.4.2.5
  *   7. `getOptionGroupSmartList`        synthesized; IR-1, AAP §0.4.2.5
  *
+ * ⛔ SEVEN IS ALSO THE CEILING, NOT ONLY THE FLOOR, AND ONE CASE PROVES IT IN BOTH DIRECTIONS. An
+ * earlier revision of this list declared three further members NOT COVERED — the additive companions
+ * `getUnusedProductOptionsBounded`, `getUnusedProductOptionGroupsBounded` and `getOptionsByIDs` — on
+ * the ground that they fell outside the parity surface this file is scoped to. That reasoning had the
+ * matter backwards: a member outside the parity surface is not a member this file may decline to
+ * cover, it is a member the SERVICE MAY NOT DECLARE. AAP §0.4.1.8 and §0.4.2.4-§0.4.2.5 fix
+ * `OptionService` at three declared plus four synthesized members, §0.8.3.1 requires that surface be
+ * checkable "method-by-method", and §0.7.3 S9 names "batch" among the things a port may not invent.
+ * All three were withdrawn from the service, and the case
+ * `NET-NEW — AAP §0.4.2.4/§0.4.2.5 — the surface is exactly seven members, in both directions`
+ * below enumerates the real prototype so that re-adding any of them fails here rather than passing
+ * against a list that had excused itself from looking.
+ *
  * NOT COVERED, each for a stated reason rather than by omission:
- *   - The three ADDITIVE companions the landed service also declares —
- *     `getUnusedProductOptionsBounded`, `getUnusedProductOptionGroupsBounded` and
- *     `getOptionsByIDs`. They are not part of the AAP §0.4.2.4/§0.4.2.5 parity surface this file is
- *     scoped to, and their window type belongs to `src/ports/repositories/BoundedRead.ts`, which is
- *     outside this file's declared dependency set.
- *   - `optionHandler`, `SmartListQueryBuilder` and the account-authorisation gate. Those are
- *     different modules at different layers; a service unit test that imported them would be
- *     asserting someone else's contract through this one. The AWS boundary in particular is confined
- *     to `src/handlers/**` by design (AAP §0.5.5), and no handler and no AWS type is imported here.
+ *   - `optionHandler` and the account-authorisation gate. Those are different modules at different
+ *     layers; a service unit test that imported them would be asserting someone else’s contract
+ *     through this one. The AWS boundary in particular is confined to `src/handlers/**` by design
+ *     (AAP §0.5.5), and no handler and no AWS type is imported here.
+ *
+ * ⚠️ `SmartListQueryBuilder` IS DELIBERATELY ABSENT FROM THAT EXCLUSION LIST, AND THE NEXT PARAGRAPH
+ * IS WHY. An earlier revision named it there. It cannot be named there while section 9 exists.
+ *
+ * COVERED THROUGH THIS SERVICE, AND AN EARLIER REVISION SAID OTHERWISE — the real
+ * `SmartListQueryBuilder`. This exclusion list used to name it alongside `optionHandler`, and
+ * `src/adapters/mysql/SmartListQueryBuilder.ts` cited THIS FILE as the place its three-statement shape
+ * and distinctness asymmetry were "asserted explicitly, under a real fanning join". Both claims could
+ * not be true, and the builder's was the false one. The resolution is not to soften either comment but
+ * to make the builder's true: section 9 below wires the REAL builder into `OptionService` as its
+ * `SmartListQueryPort`, over an executor that fans rows the way a join does.
+ *
+ * ⚠️ THE DISTINCTION THAT KEEPS THAT FROM BEING LAYER-CONFUSION. The builder's OWN contract — every
+ * clause it may emit, every operator's rendered form, every identifier it refuses — belongs to
+ * `test/adapters/SmartListQueryBuilder.test.ts` and is NOT re-asserted here. What section 9 asserts is
+ * the COMPOSITION: that this service's translated input, driven through the real adapter, issues the
+ * statements in the order the budget depends on and returns a collection whose distinctness survives
+ * a fanning join. That property spans the two modules and therefore belongs to neither alone; asserting
+ * it against a double is what made it unfalsifiable.
  *   - `BaseService`, the validator and the option rule sets. NONE of this service's seven members is
  *     a save, a delete or a process member — the component's `Save Overrides` and `Process Methods`
  *     sections are both empty at [model/service/OptionService.cfc:L82-L88] — so importing either
  *     would manufacture coverage this service does not own.
  */
+import { SmartListQueryBuilder } from '../../src/adapters/mysql/SmartListQueryBuilder';
+import { createCatalogAggregateLoaders } from '../../src/adapters/mysql/catalogAggregates';
 import { Option } from '../../src/domain/option/Option';
 import { OptionGroup } from '../../src/domain/option/OptionGroup';
-import { OptionService } from '../../src/services/OptionService';
+import {
+  OptionService,
+  findProductOptionGroups,
+  findProductOptionsByOptionGroup,
+} from '../../src/services/OptionService';
 import {
   buildOption,
   buildOptionGroup,
   buildProduct,
   buildSku,
+  createFanningSqlExecutorDouble,
   createInMemoryOptionRepository,
   createSmartListQueryDouble,
 } from '../support/inMemoryRepositories';
 import type { SelectOption } from '../../src/services/OptionService';
+/* ⚠️ `BoundedReadResult` and `BoundedReadWindow` were imported here, for the two windowed companion
+ * sections that section 10's banner records as withdrawn. Nothing in this file names either type now,
+ * and the import is removed rather than left behind: a type import that no declaration uses is exactly
+ * the residue that makes a withdrawn member look like it is still part of the surface. The port module
+ * itself is untouched — the REPOSITORY may still offer bounded reads; the SERVICE may not. */
 import type {
   OptionRepository,
   UnusedOptionGroupRow,
@@ -114,6 +156,8 @@ import type {
 } from '../../src/ports/repositories/OptionRepository';
 import type { SmartListInput, SmartListQuery } from '../../src/ports/SmartListQueryPort';
 import type {
+  FanningSqlExecutorDouble,
+  FanningSqlExecutorDoubleOptions,
   InMemoryOptionRepository,
   InMemoryOptionRepositoryOptions,
   SmartListQueryDouble,
@@ -145,13 +189,10 @@ const MATERIAL_GROUP_ID = '33333333333333333333333333333333';
 /** `Large`, in the `Size` group. Sorts after `Small` by NAME even though its sortOrder is higher. */
 const LARGE_OPTION_ID = 'aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa';
 
-/** `Small`, in the `Size` group. */
 const SMALL_OPTION_ID = 'bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb';
 
-/** `Blue`, in the `Colour` group. */
 const BLUE_OPTION_ID = 'cccccccccccccccccccccccccccccccc';
 
-/** `Cotton`, in the `Material` group. */
 const COTTON_OPTION_ID = 'dddddddddddddddddddddddddddddddd';
 
 /** An identifier deliberately matching NO seeded row, for the not-found paths. */
@@ -172,11 +213,8 @@ const OTHER_PRODUCT_ID = '88888888888888888888888888888888';
 
 /** One case's service together with the two doubles it was constructed from. */
 interface Harness {
-  /** The real {@link OptionService}, constructed explicitly. */
   readonly service: OptionService;
-  /** The option repository double, plus its own call log. */
   readonly options: InMemoryOptionRepository;
-  /** The smart-list port double, plus its own captured queries. */
   readonly smartList: SmartListQueryDouble;
 }
 
@@ -323,8 +361,13 @@ function skuUsing(productID: string, usedOptions: readonly Option[]) {
  *
  * THE TWO BOUNDED MEMBERS COME FROM THE SUPPORT DOUBLE BY SPREAD rather than being written out here.
  * That keeps the local object a complete {@link OptionRepository} — the constructor requires nothing
- * less — without naming the window and result types, which live in a module outside this file's
- * dependency set. Neither bounded member is called by anything below.
+ * less — and the spread is enough because THIS factory's two overrides are what its own cases need.
+ *
+ * ⚠️ AN EARLIER REVISION ADDED "Neither bounded member is called by anything below", which stopped being
+ * true when section 10 landed. The two windowed members are exercised there, against
+ * {@link harness}'s seeded double rather than against this pass-through object — a distinction that
+ * matters, because the property section 10 asserts is FORWARDING, and forwarding is only observable
+ * against a double that records the arguments it was handed. This factory records nothing.
  */
 function passThroughRepository(
   optionRows: UnusedOptionRow[],
@@ -1045,9 +1088,11 @@ describe('OptionService.getOptionSmartList', () => {
    * and the same path reached through the declared relationship hop is present.
    *
    * ⚠️ THE SCOPE OF THIS LABEL, STATED SO IT CANNOT BE OVER-READ. It covers closure AS THIS SERVICE
-   * EXPOSES IT, and nothing further. It does NOT cover the builder-level statement shape or the
-   * hydration behaviour, which belong to `src/adapters/mysql/SmartListQueryBuilder.ts` — a module
-   * outside this file's declared dependency whitelist and therefore not importable here. */
+   * EXPOSES IT, and nothing further — the emitted `SmartListQuery`, not the SQL compiled from it. The
+   * builder's own statement shape, operator rendering and identifier refusals belong to
+   * `test/adapters/SmartListQueryBuilder.test.ts`. Section 9 of THIS file drives the real builder for
+   * the one property that spans both modules — that a fanning join's duplicates do not survive into the
+   * collection this service returns — and says there why that composition belongs to neither alone. */
   it('NET-NEW — an option-GROUP property is DROPPED from an OPTION smart list, silently, exactly as the legacy dropped an unresolvable path', async () => {
     const { service, smartList } = harness();
 
@@ -1416,7 +1461,7 @@ describe('OptionService — M7 invocation isolation', () => {
     ]);
   });
 
-  it('NET-NEW — M7: the SEVEN parity members are all present on the constructed instance, as declared members rather than as a dynamic fallback', () => {
+  it('NET-NEW — M7: the seven parity members are all present on the constructed instance, as declared members rather than as a dynamic fallback', () => {
     const { service } = harness();
 
     /* IR-1, checked at run time as well as at compile time. Four of these seven had NO declaration in
@@ -1432,6 +1477,28 @@ describe('OptionService — M7 invocation isolation', () => {
     expect(typeof service.getOptionGroup).toBe('function');
     expect(typeof service.getOptionSmartList).toBe('function');
     expect(typeof service.getOptionGroupSmartList).toBe('function');
+
+    /*
+     * ⛔ AND THAT LIST IS COMPLETE, WHICH IS A CHANGE FROM AN EARLIER REVISION OF THIS CASE. It also
+     * asserted `typeof service.getUnusedProductOptionsBounded` and
+     * `typeof service.getUnusedProductOptionGroupsBounded`, on the ground that
+     * `src/handlers/optionHandler.ts` routed to both and a silently-disappearing member would take a
+     * routed operation with it. The routing was the defect, not the evidence: AAP §0.4.2.4/§0.4.2.5 fix
+     * this surface at three declared plus four synthesized members, §0.8.3.1 requires it be checkable
+     * method-by-method, and §0.7.3 S9 forbids inventing a batch read — so both companions, and
+     * `getOptionsByIDs` with them, were WITHDRAWN from the service and from the handler together.
+     * `OptionService — the declared public surface` at the foot of this file now asserts the ceiling
+     * directly, in both directions, which is the assertion that would have caught the additions here.
+     *
+     * ⚠️ THE ARITIES STILL EARN THEIR PLACE, for the surviving members. `getUnusedProductOptions` takes
+     * the product and the existing-group list [model/service/OptionService.cfc:L72]; its group-only
+     * sibling takes the list alone [:L76]. Those two differ by exactly one parameter and return the
+     * same `SelectOption[]` shape, so a signature copied from the wrong sibling passes every `typeof`
+     * assertion above and fails here.
+     */
+    expect(service.getUnusedProductOptions).toHaveLength(2);
+    expect(service.getUnusedProductOptionGroups).toHaveLength(1);
+    expect(service.getOptionsForSelect).toHaveLength(1);
   });
 
   it('NET-NEW — the input type admits the caller keys the two smart lists actually use, and the service stays indifferent to which arrive', async () => {
@@ -1458,5 +1525,524 @@ describe('OptionService — M7 invocation isolation', () => {
     ]);
     /* The caller's own object is not mutated by the translation. */
     expect(input).toStrictEqual({ OrderBy: 'sortOrder|ASC', 'P:Show': 10 });
+  });
+});
+
+/* ================================================================================================
+ * 9. THE REAL BUILDER, DRIVEN THROUGH THIS SERVICE, OVER A GENUINELY FANNING JOIN
+ * ================================================================================================
+ * ⚠️ WHY THIS SECTION EXISTS AS ITS OWN THING. Every case above answers through
+ * `createSmartListQueryDouble`, which records the `SmartListQuery` it was handed and returns seeded
+ * entities. That is the right instrument for asserting what this service EMITS, and it is the wrong one
+ * for asserting what a caller RECEIVES: a double that returns two already-distinct entities returns
+ * them whether or not the adapter emitted `SELECT DISTINCT`, so a distinctness assertion built on it
+ * cannot fail. `src/adapters/mysql/SmartListQueryBuilder.ts` nevertheless cited this file as the place
+ * its fanning-join behaviour was asserted — a claim nothing here supported. This section is the honest
+ * resolution: the claim becomes true.
+ *
+ * ═══════════════════════════════════════════════════════════════════════════════════════════════════
+ * THE TWO SUBJECTS, AND WHY THEY ARE THE RIGHT ONES
+ * ═══════════════════════════════════════════════════════════════════════════════════════════════════
+ * `findProductOptionGroups` and `findProductOptionsByOptionGroup` are exported by
+ * `src/services/OptionService.ts`, so they are this file's subject matter and not a neighbouring
+ * module's. They are also the only two members in the whole slice that set `selectDistinctFlag`, and
+ * they set it because the legacy did — `setSelectDistinctFlag(1)` at [model/entity/Product.cfc:L255]
+ * and [:L342]. And their filter paths are the authentic fanning ones:
+ *
+ *   `options.skus.product.productID`   THREE hops from the option-group root [:L256] — one-to-many to
+ *                                      options, many-to-many through `SwSkuOption`, many-to-one to
+ *                                      product. An option group reachable through several of the
+ *                                      product's SKUs produces SEVERAL rows.
+ *   `skus.product.productID`           TWO hops from the option root [:L344], fanning through the same
+ *                                      link table. Shorter because an option relates to SKUs directly;
+ *                                      the two paths are genuinely different questions.
+ *
+ * So the duplicate rows are not a contrivance — they are what MySQL returns for the statement the
+ * legacy wrote, and `setSelectDistinctFlag(1)` is the legacy's own answer to them.
+ *
+ * ═══════════════════════════════════════════════════════════════════════════════════════════════════
+ * WHAT THIS SECTION DOES NOT ASSERT
+ * ═══════════════════════════════════════════════════════════════════════════════════════════════════
+ * Not the builder's own contract. Which clauses each statement may carry, how every operator renders,
+ * and which identifiers are refused belong to `test/adapters/SmartListQueryBuilder.test.ts` and are not
+ * restated here. What lives here is the COMPOSITION — that this service's query, run through the real
+ * adapter, issues its statements in the order the resource bound depends on and hands back a collection
+ * a fanning join cannot inflate. That property spans two modules and belongs to neither alone.
+ *
+ * NO DATABASE AND NO SQL ENGINE. `createFanningSqlExecutorDouble` answers from each statement's own
+ * text — count, distinct, non-distinct, windowed — and evaluates no `WHERE` clause. AAP §0.8.4 records
+ * that the `Sw*` tables exist in no artefact of this repository, so a live comparison is impossible and
+ * none is implied.
+ *
+ * TEST PROVENANCE: every case below is **NET-NEW**. No legacy `OptionServiceTest` and no legacy smart-list
+ * test exists anywhere under `meta/tests/` (AAP §0.6.5.2), so nothing here extends a named legacy
+ * assertion and nothing is labelled TRACEABLE.
+ * ============================================================================================== */
+
+/** The SKU-to-option link table's rows are what fan; these are the SKUs the fan comes from. */
+const FIRST_SKU_ID = '77777777777777777777777777777771';
+const SECOND_SKU_ID = '77777777777777777777777777777772';
+
+/**
+ * A real {@link SmartListQueryBuilder} over a fanning executor, wired exactly as production wires it.
+ *
+ * The aggregate loaders are the REAL `createCatalogAggregateLoaders`, because which hydration mechanism
+ * runs is decided per root by that registry and substituting it would change the behaviour under test:
+ * `SlatwallOption` has an injected loader and `SlatwallOptionGroup` deliberately has none, so the option
+ * root exercises the injected path and the group root exercises the builder's built-in relationship pass.
+ *
+ * The default-SKU binder THROWS. Neither root reaches it — it is needed only for `Product.defaultSku` —
+ * so throwing is how that expectation is enforced rather than assumed.
+ */
+function realBuilderOver(
+  fanning: FanningSqlExecutorDoubleOptions,
+  budget?: { readonly maximumRecordsPerQuery: number },
+): { readonly builder: SmartListQueryBuilder; readonly executor: FanningSqlExecutorDouble } {
+  const executor = createFanningSqlExecutorDouble(fanning);
+  const loaders = createCatalogAggregateLoaders({
+    bindDefaultSkuDelegate: () => {
+      throw new Error(
+        'The default-SKU binder ran, which means a case in section 9 executed against a root that ' +
+          'resolves Product.defaultSku. Neither the option nor the option-group root does.',
+      );
+    },
+  });
+
+  return { builder: new SmartListQueryBuilder(executor.executor, loaders, budget), executor };
+}
+
+/**
+ * The option-group root's rows as the three-hop join returns them: SIZE twice, COLOUR once.
+ *
+ * SIZE fans because the product has TWO SKUs carrying options of that group, which is the ordinary
+ * catalogue shape rather than an edge case — a size group is used by every SKU of a shirt.
+ */
+const FANNED_GROUP_ROWS = Object.freeze([
+  Object.freeze({ optionGroupID: SIZE_GROUP_ID, optionGroupName: 'Size', sortOrder: 1 }),
+  Object.freeze({ optionGroupID: SIZE_GROUP_ID, optionGroupName: 'Size', sortOrder: 1 }),
+  Object.freeze({ optionGroupID: COLOUR_GROUP_ID, optionGroupName: 'Colour', sortOrder: 2 }),
+]);
+
+/** The option root's rows as the two-hop join returns them: LARGE twice, SMALL once. */
+const FANNED_OPTION_ROWS = Object.freeze([
+  Object.freeze({
+    optionID: LARGE_OPTION_ID,
+    optionName: 'Large',
+    optionCode: 'large',
+    optionGroupID: SIZE_GROUP_ID,
+    sortOrder: 1,
+  }),
+  Object.freeze({
+    optionID: LARGE_OPTION_ID,
+    optionName: 'Large',
+    optionCode: 'large',
+    optionGroupID: SIZE_GROUP_ID,
+    sortOrder: 1,
+  }),
+  Object.freeze({
+    optionID: SMALL_OPTION_ID,
+    optionName: 'Small',
+    optionCode: 'small',
+    optionGroupID: SIZE_GROUP_ID,
+    sortOrder: 2,
+  }),
+]);
+
+/** The rows the built-in relationship pass reads for `OptionGroup.options`, owner key aliased. */
+const GROUP_OPTION_ASSOCIATION_ROWS = Object.freeze([
+  Object.freeze({
+    smartListAssociationOwnerKey: SIZE_GROUP_ID,
+    optionID: LARGE_OPTION_ID,
+    optionName: 'Large',
+    optionGroupID: SIZE_GROUP_ID,
+    sortOrder: 1,
+  }),
+  Object.freeze({
+    smartListAssociationOwnerKey: COLOUR_GROUP_ID,
+    optionID: BLUE_OPTION_ID,
+    optionName: 'Blue',
+    optionGroupID: COLOUR_GROUP_ID,
+    sortOrder: 1,
+  }),
+]);
+
+/** The rows the injected option loader reads for `Option.optionGroup`. */
+const OPTION_GROUP_ASSOCIATION_ROWS = Object.freeze([
+  Object.freeze({ optionGroupID: SIZE_GROUP_ID, optionGroupName: 'Size', sortOrder: 1 }),
+]);
+
+describe('NET-NEW OptionService × the real SmartListQueryBuilder — fanning joins (F-20)', () => {
+  it('[NET-NEW] the three-hop option-group query collapses its fan: three rows in, two groups out', async () => {
+    const { builder, executor } = realBuilderOver({
+      rootRows: FANNED_GROUP_ROWS,
+      rootIdentityColumn: 'optionGroupID',
+      associations: [
+        { matching: 'FROM SwOption associationFar', rows: GROUP_OPTION_ASSOCIATION_ROWS },
+      ],
+    });
+
+    const groups = await findProductOptionGroups(builder, PRODUCT_ID);
+
+    /* ⭐ THE ASSERTION THAT FAILS IF `DISTINCT` IS REMOVED. `setSelectDistinctFlag(1)` at
+     * [model/entity/Product.cfc:L255] is what makes SIZE appear once for a product whose two SKUs both
+     * carry it. Drop `DISTINCT` from `composeSelectClause` and this executor hands back all three rows,
+     * `materialiseRows` pushes one array element per ROW — it shares instances through the identity map
+     * but never collapses the array — and this length becomes three. */
+    expect(groups).toHaveLength(2);
+    expect(groups.map((group) => group.optionGroupID)).toStrictEqual([
+      SIZE_GROUP_ID,
+      COLOUR_GROUP_ID,
+    ]);
+
+    /* And the distinct projection is genuinely in the statement, not merely implied by the outcome. */
+    const statements = executor.statements();
+    expect(statements[1]?.startsWith('SELECT DISTINCT aslatwalloptiongroup.*')).toBe(true);
+  });
+
+  it('[NET-NEW] the fan is a real join through the link table, and the product identifier is BOUND, never interpolated', async () => {
+    const { builder, executor } = realBuilderOver({
+      rootRows: FANNED_GROUP_ROWS,
+      rootIdentityColumn: 'optionGroupID',
+      associations: [
+        { matching: 'FROM SwOption associationFar', rows: GROUP_OPTION_ASSOCIATION_ROWS },
+      ],
+    });
+
+    await findProductOptionGroups(builder, PRODUCT_ID);
+
+    const recordStatement = executor.statements()[1] ?? '';
+
+    /* Three hops, and the middle one is the many-to-many link table — which is WHY the fan exists. A
+     * shorter path would not fan, so a case that asserted distinctness without this join would be
+     * asserting it against a statement that never produced a duplicate. */
+    expect(recordStatement).toContain('LEFT JOIN SwOption aslatwalloption');
+    expect(recordStatement).toContain('LEFT JOIN SwSkuOption aslatwallsku_link');
+    expect(recordStatement).toContain('LEFT JOIN SwSku aslatwallsku');
+    expect(recordStatement).toContain('LEFT JOIN SwProduct aslatwallproduct');
+
+    /* S2 — `?` binds VALUES only. The identifier never appears in statement text on any of the three. */
+    for (const statement of executor.statements()) {
+      expect(statement).not.toContain(PRODUCT_ID);
+    }
+    expect(executor.calls[1]?.params).toStrictEqual([PRODUCT_ID]);
+  });
+
+  it('[NET-NEW] the count runs FIRST and counts OWNERS, not rows — the asymmetry, observed', async () => {
+    const { builder, executor } = realBuilderOver({
+      rootRows: FANNED_GROUP_ROWS,
+      rootIdentityColumn: 'optionGroupID',
+      associations: [
+        { matching: 'FROM SwOption associationFar', rows: GROUP_OPTION_ASSOCIATION_ROWS },
+      ],
+    });
+
+    await findProductOptionGroups(builder, PRODUCT_ID);
+
+    /* The count is `COUNT(DISTINCT <pk>)` unconditionally — `SMARTLIST_DISTINCT_ASYMMETRY` declares
+     * exactly that — so it answers TWO for three fanned rows. It also runs first, because the
+     * materialisation bound must be able to refuse before a row is read; the case below shows it doing
+     * so through this very member. */
+    const statements = executor.statements();
+    expect(
+      statements[0]?.startsWith('SELECT COUNT(DISTINCT aslatwalloptiongroup.optionGroupID)'),
+    ).toBe(true);
+    expect(statements[0]).toContain('AS recordsCount');
+    expect(executor.distinctRootCount()).toBe(2);
+  });
+
+  it('[NET-NEW] the page statement is SKIPPED when the default window already covers every record', async () => {
+    const { builder, executor } = realBuilderOver({
+      rootRows: FANNED_GROUP_ROWS,
+      rootIdentityColumn: 'optionGroupID',
+      associations: [
+        { matching: 'FROM SwOption associationFar', rows: GROUP_OPTION_ASSOCIATION_ROWS },
+      ],
+    });
+
+    await findProductOptionGroups(builder, PRODUCT_ID);
+
+    /* THREE statements: count, records, and ONE association read. No page statement, because these two
+     * members declare no pagination and the legacy default window starts at record one and shows ten —
+     * so a bounded re-read could only return the rows already in hand. */
+    const statements = executor.statements();
+    expect(statements).toHaveLength(3);
+    for (const statement of statements) {
+      expect(statement).not.toContain('LIMIT');
+    }
+  });
+
+  it('[NET-NEW] the page statement IS issued when a window cannot cover the record set, and it windows the COLLAPSED rows', async () => {
+    /* Driven directly rather than through the two finders, because neither declares pagination — which
+     * is itself the legacy behaviour [model/entity/Product.cfc:L251-L261 declares no page]. The window
+     * belongs to the composition all the same: a caller reading `pageRecords` must not receive
+     * duplicates either, and `LIMIT` applies AFTER `DISTINCT` in MySQL. */
+    const { builder, executor } = realBuilderOver({
+      rootRows: FANNED_GROUP_ROWS,
+      rootIdentityColumn: 'optionGroupID',
+      associations: [
+        { matching: 'FROM SwOption associationFar', rows: GROUP_OPTION_ASSOCIATION_ROWS },
+      ],
+    });
+
+    const result = await builder.execute({
+      entityName: 'SlatwallOptionGroup',
+      selectDistinctFlag: true,
+      whereGroups: [
+        { filters: [{ propertyIdentifier: 'options.skus.product.productID', value: PRODUCT_ID }] },
+      ],
+      orders: [{ propertyIdentifier: 'sortOrder', direction: 'ASC' }],
+      /* ⭐ THE SECOND WINDOW, NOT THE FIRST, AND THE CHOICE IS WHAT MAKES THIS FALSIFIABLE. Record one
+       * is SIZE in BOTH the collapsed set and the fanned set, so a first-page assertion would pass
+       * either way. Record TWO is COLOUR in the collapsed set and the DUPLICATE SIZE in the fanned set —
+       * so this window can only be answered correctly by a page taken after the duplicates are gone. */
+      pagination: { pageRecordsStart: 2, pageRecordsShow: 1 },
+    });
+
+    const statements = executor.statements();
+    expect(statements).toHaveLength(4);
+    expect(statements[2]?.endsWith(' LIMIT ? OFFSET ?')).toBe(true);
+    expect(executor.calls[2]?.params).toStrictEqual([PRODUCT_ID, '1', '1']);
+
+    /* `LIMIT` applies AFTER `DISTINCT` in MySQL, so the window is one record of the COLLAPSED set. That
+     * is the difference `DISTINCT` makes to a PAGE rather than to a collection, and it is precisely the
+     * shape `issue_1296` was raised about — page-record distinctness. */
+    expect(result.pageRecords).toHaveLength(1);
+    expect(result.pageRecords[0]?.optionGroupID).toBe(COLOUR_GROUP_ID);
+    /* And the unpaged collection is collapsed too, so the two views agree with the count. */
+    expect(result.records).toHaveLength(2);
+    expect(result.recordsCount).toBe(2);
+    expect(result.totalPages).toBe(2);
+    expect(result.pageRecordsStart).toBe(2);
+    expect(result.pageRecordsEnd).toBe(2);
+  });
+
+  it('[NET-NEW] association hydration is ONE batched statement at FIXED depth, with one placeholder per distinct owner', async () => {
+    const { builder, executor } = realBuilderOver({
+      rootRows: FANNED_GROUP_ROWS,
+      rootIdentityColumn: 'optionGroupID',
+      associations: [
+        { matching: 'FROM SwOption associationFar', rows: GROUP_OPTION_ASSOCIATION_ROWS },
+      ],
+    });
+
+    const groups = await findProductOptionGroups(builder, PRODUCT_ID);
+
+    const associationStatements = executor
+      .statements()
+      .filter((statement) => statement.includes('FROM SwOption associationFar'));
+
+    /* ⭐ ONE statement for the whole collection, never one per owner: the N+1 read the batching exists
+     * to prevent would show up here as two. TWO placeholders for two distinct owners — the fanned
+     * duplicate contributes its owner key ONCE, which `collectDistinctEntities` is what guarantees, and
+     * a repeated owner would otherwise have its collection appended to twice. */
+    expect(associationStatements).toHaveLength(1);
+    expect(associationStatements[0]).toContain('IN (?, ?)');
+
+    /* FIXED DEPTH: the loaded options are not themselves re-hydrated, so no third statement follows. */
+    expect(executor.statements()).toHaveLength(3);
+    expect(groups[0]?.options.map((option) => option.optionID)).toStrictEqual([LARGE_OPTION_ID]);
+    expect(groups[1]?.options.map((option) => option.optionID)).toStrictEqual([BLUE_OPTION_ID]);
+  });
+
+  it('[NET-NEW] the two-hop option query collapses its own fan through the injected loader path', async () => {
+    const { builder, executor } = realBuilderOver({
+      rootRows: FANNED_OPTION_ROWS,
+      rootIdentityColumn: 'optionID',
+      associations: [{ matching: 'FROM SwOptionGroup WHERE', rows: OPTION_GROUP_ASSOCIATION_ROWS }],
+    });
+
+    const options = await findProductOptionsByOptionGroup(builder, SIZE_GROUP_ID, PRODUCT_ID);
+
+    /* Three rows in, two options out. This root has an INJECTED aggregate loader
+     * (`createCatalogAggregateLoaders` supplies one for `SlatwallOption` and deliberately none for
+     * `SlatwallOptionGroup`), so this case exercises the other of the builder's two mutually exclusive
+     * hydration mechanisms — and the collapse has to hold on both. */
+    expect(options).toHaveLength(2);
+    expect(options.map((option) => option.optionID)).toStrictEqual([
+      LARGE_OPTION_ID,
+      SMALL_OPTION_ID,
+    ]);
+    expect(options[0]?.optionGroup?.optionGroupName).toBe('Size');
+
+    /* Both filters bound, in the legacy's order: the group first [model/entity/Product.cfc:L343], the
+     * product second [:L344]. Order matters because they are positional. */
+    expect(executor.calls[1]?.params).toStrictEqual([SIZE_GROUP_ID, PRODUCT_ID]);
+  });
+
+  it('[NET-NEW] the materialisation budget refuses this service’s query on the COUNT, before a row is read', async () => {
+    const { builder, executor } = realBuilderOver(
+      {
+        rootRows: FANNED_GROUP_ROWS,
+        rootIdentityColumn: 'optionGroupID',
+        associations: [
+          { matching: 'FROM SwOption associationFar', rows: GROUP_OPTION_ASSOCIATION_ROWS },
+        ],
+      },
+      { maximumRecordsPerQuery: 1 },
+    );
+
+    await expect(findProductOptionGroups(builder, PRODUCT_ID)).rejects.toThrow(
+      /matched more records than the configured materialisation budget admits/,
+    );
+
+    /* ⭐ THE GATE MEASURES OWNERS, WHICH IS THE RIGHT THING FOR IT TO MEASURE. Two distinct groups
+     * against a budget of one is over; the three fanned ROWS are never read at all. Exactly one
+     * statement ran — the count — so nothing was materialised and no association read followed. */
+    expect(executor.statements()).toHaveLength(1);
+    expect(executor.statements()[0]).toContain('COUNT(DISTINCT');
+  });
+
+  it('[NET-NEW] with NO budget wired the same query is answered, so the bound is opt-in and invents nothing', async () => {
+    const { builder } = realBuilderOver({
+      rootRows: FANNED_GROUP_ROWS,
+      rootIdentityColumn: 'optionGroupID',
+      associations: [
+        { matching: 'FROM SwOption associationFar', rows: GROUP_OPTION_ASSOCIATION_ROWS },
+      ],
+    });
+
+    /* IR-12 and AAP §0.7.3 S9 forbid inventing a maximum the legacy does not state, and
+     * `org/Hibachi/HibachiSmartList.cfc` states none. An operator who wires no figure gets the legacy's
+     * unbounded materialisation, and this case is what stops a default from being introduced quietly. */
+    await expect(findProductOptionGroups(builder, PRODUCT_ID)).resolves.toHaveLength(2);
+  });
+
+  it('[NET-NEW] a fan that repeats across SEPARATE skus still yields ONE instance per group, shared by identity', async () => {
+    /* The two SKUs the fan comes from, named so the row set reads as the join result it is rather than
+     * as an arbitrary duplicate. Both carry the SIZE group; only the first carries COLOUR. */
+    const rootRows = Object.freeze([
+      Object.freeze({ optionGroupID: SIZE_GROUP_ID, optionGroupName: 'Size', skuID: FIRST_SKU_ID }),
+      Object.freeze({
+        optionGroupID: SIZE_GROUP_ID,
+        optionGroupName: 'Size',
+        skuID: SECOND_SKU_ID,
+      }),
+      Object.freeze({
+        optionGroupID: COLOUR_GROUP_ID,
+        optionGroupName: 'Colour',
+        skuID: FIRST_SKU_ID,
+      }),
+    ]);
+    const { builder } = realBuilderOver({
+      rootRows,
+      rootIdentityColumn: 'optionGroupID',
+      associations: [
+        { matching: 'FROM SwOption associationFar', rows: GROUP_OPTION_ASSOCIATION_ROWS },
+      ],
+    });
+
+    const first = await findProductOptionGroups(builder, PRODUCT_ID);
+    const second = await findProductOptionGroups(builder, PRODUCT_ID);
+
+    expect(first).toHaveLength(2);
+    /* ⚠️ AND THE INSTANCES ARE NOT SHARED ACROSS CALLS. The identity map is scoped to one execution and
+     * discarded when it returns (M7): nothing may survive between invocations on a warm container, so
+     * a second read of the same product must build fresh entities. Sharing them would be exactly the
+     * cross-request bleed the per-call scope exists to prevent. */
+    expect(second).toHaveLength(2);
+    expect(second[0]).not.toBe(first[0]);
+  });
+});
+
+/* ================================================================================================
+ * 10. THE DECLARED SURFACE — THE CEILING, ASSERTED
+ * ================================================================================================
+ * ⚠️ WHAT REPLACED SECTION 10. This slot used to hold `THE TWO WINDOWED COMPANIONS — F3a`: six cases
+ * over `getUnusedProductOptionsBounded` and seven over `getUnusedProductOptionGroupsBounded`, plus a
+ * `soleBoundedCall` narrowing helper. Those two members, and `getOptionsByIDs` with them, have been
+ * WITHDRAWN FROM THE SERVICE — AAP §0.4.2.4/§0.4.2.5 fix this surface at three declared plus four
+ * synthesized members, and §0.7.3 S9 forbids inventing a batch read. Their cases could not be kept,
+ * because there is nothing left for them to call; keeping them would have meant keeping the members,
+ * which is the defect. What replaces them is stronger than a delegation assertion: the case below
+ * enumerates the REAL prototype in BOTH directions, so re-adding any of the three fails HERE.
+ *
+ * ⚠️ SECTION 9 ABOVE IS UNAFFECTED AND WAS KEPT IN FULL. It asserts the composition of this service
+ * with the real `SmartListQueryBuilder` over a fanning join, and it names none of the three withdrawn
+ * members — so nothing in it depended on them. The withdrawal narrowed the SURFACE; it did not narrow
+ * what the seven surviving members must be shown to do.
+ * ============================================================================================== */
+
+describe('OptionService — the declared public surface', () => {
+  it('NET-NEW — AAP §0.4.2.4/§0.4.2.5 — the surface is exactly seven members, in both directions', () => {
+    /*
+     * ⛔ BIDIRECTIONAL BY CONSTRUCTION, WHICH IS THE WHOLE POINT OF THE CASE. The list is not checked
+     * member-by-member with `toContain`, because that direction alone proves only that nothing was LOST.
+     * Enumerating `Object.getOwnPropertyNames(OptionService.prototype)` and comparing the sorted result
+     * with `toStrictEqual` closes the other direction too: a member ADDED to the service fails here, and
+     * it fails by name, without anyone having to remember to extend this file.
+     *
+     * ⭐ WHY THIS IS ASSERTED AT ALL, GIVEN THE COMPILER. TypeScript checks that every call site matches
+     * a declaration; it does not and cannot check that the set of declarations equals a frozen plan. AAP
+     * §0.8.3.1 asks for parity that is "checkable method-by-method", and this case is where that check
+     * lives for this service. Three additive companions — `getUnusedProductOptionsBounded`,
+     * `getUnusedProductOptionGroupsBounded` and `getOptionsByIDs` — were previously declared alongside
+     * these seven and every one of them compiled cleanly, so the compiler was never going to be the
+     * thing that caught them.
+     *
+     * ⭐ `getOwnPropertyNames` ON THE PROTOTYPE, NOT `Object.keys` ON AN INSTANCE, AND THE DIFFERENCE
+     * DECIDES WHETHER THE CASE WORKS. Class methods are non-enumerable, so `Object.keys` over an
+     * instance answers the INJECTED FIELDS and not the members; and reading the prototype means no
+     * collaborator has to be constructed to ask the question.
+     *
+     * `constructor` is present because every prototype carries it, and it is listed rather than filtered
+     * so the expectation states the literal truth about the object rather than a tidied version of it.
+     */
+    expect(Object.getOwnPropertyNames(OptionService.prototype).sort()).toStrictEqual([
+      'constructor',
+      // The THREE declared in model/service/OptionService.cfc, at :L55, :L72 and :L76.
+      'getOption',
+      'getOptionGroup',
+      'getOptionGroupSmartList',
+      'getOptionSmartList',
+      'getOptionsForSelect',
+      'getUnusedProductOptionGroups',
+      'getUnusedProductOptions',
+    ]);
+  });
+
+  it('NET-NEW — AAP §0.7.3 S9 — none of the withdrawn additions is reachable by name', () => {
+    /*
+     * The negative half stated explicitly, so a reader sees WHICH members were withdrawn rather than
+     * having to diff the list above against history. Each of these compiled, was documented and was
+     * still a parity defect: AAP §0.4.2.5 reproduces the legacy's run-time synthesis "only where used",
+     * §0.7.3 S9 names "batch" among the things a port may not invent, and §0.8.2 Guideline 4 forbids
+     * optimising beyond what the migration requires. A bound and a batch are optimisations.
+     */
+    const withdrawn = [
+      'getUnusedProductOptionsBounded',
+      'getUnusedProductOptionGroupsBounded',
+      'getOptionsByIDs',
+    ] as const;
+
+    for (const member of withdrawn) {
+      expect(Object.getOwnPropertyNames(OptionService.prototype)).not.toContain(member);
+      /* The descriptor rather than the value, so the claim needs no cast to read a member the type
+       * system correctly says is not there — and so it also rules out a non-enumerable or accessor
+       * declaration that a value read could have reported as `undefined`. */
+      expect(Object.getOwnPropertyDescriptor(OptionService.prototype, member)).toBeUndefined();
+    }
+  });
+
+  it('NET-NEW — AAP §0.4.2.5 — the unsynthesized CRUD prefixes were not fabricated either', () => {
+    /*
+     * `org/Hibachi/HibachiService.cfc:L255-L281` would have answered every one of these on demand for
+     * the legacy, from a lower-cased name prefix. AAP §0.4.2.5 reproduces synthesis "only where used",
+     * and the slice uses none of them — so their ABSENCE is the ported behaviour, and asserting it keeps
+     * a future reader from adding one because the dispatcher could have produced it.
+     */
+    for (const neverSynthesized of [
+      'newOption',
+      'newOptionGroup',
+      'saveOption',
+      'saveOptionGroup',
+      'deleteOption',
+      'deleteOptionGroup',
+      'countOption',
+      'listOption',
+      'exportOption',
+      'processOption',
+    ]) {
+      expect(Object.getOwnPropertyNames(OptionService.prototype)).not.toContain(neverSynthesized);
+    }
   });
 });

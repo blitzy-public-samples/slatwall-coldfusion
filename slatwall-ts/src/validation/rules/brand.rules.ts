@@ -341,26 +341,37 @@ export const brandNamePropertyValidation = Object.freeze({
  * THE URL PREDICATE ITSELF BELONGS TO `../Validator`. This file only declares the constraint; it
  * does not implement, inline, approximate or supplement the check.
  *
- * ⛔ THIS DECLARATION SELECTS NO POLICY, BECAUSE THERE IS NO POLICY TO SELECT — SEC-15 IS WITHDRAWN.
- * An earlier revision split `../Validator`'s `url` data type into two policies, required every
- * declaration to name one, and had this declaration name `'webAddress'`: a normalised HTTP(S) address
- * admitting only `http` and `https` and additionally rejecting embedded credentials and ASCII control
- * characters. It was declared as a departure from byte-for-byte preservation on the D18 precedent.
+ * ⛔ THIS DECLARATION SELECTS NO POLICY, BECAUSE THERE IS NO POLICY TO SELECT — SEC-15's POLICY SPLIT
+ * STAYS WITHDRAWN. An earlier revision split `../Validator`'s `url` data type into two policies,
+ * required every declaration to name one, and had this declaration name `'webAddress'`: a normalised
+ * HTTP(S) address admitting only `http` and `https` and additionally rejecting embedded credentials and
+ * ASCII control characters. It was declared as a departure from byte-for-byte preservation on the D18
+ * precedent.
  *
- * That departure is withdrawn. D18 (AAP 0.6.7.7) is the SOLE declared behaviour-hardening exception,
- * and it is a precedent only for a divergence that removes a flaw class WITHOUT changing an outcome.
- * A REJECTION is a different outcome: the engine's six documented `url` protocols include FTP, FILE,
- * MAILTO and NEWS, so a brand carrying `file:///etc/passwd` SAVED under `:L259` and failed validation
+ * The PROTOCOL NARROWING half of that departure is withdrawn and stays withdrawn. D18 (AAP 0.6.7.7) is
+ * a precedent for a divergence that removes a flaw class without refusing a value the legacy accepted
+ * AND MEANT, and the engine's six documented `url` protocols include FTP, FILE, MAILTO and NEWS — so a
+ * brand carrying `file:///etc/passwd` or a contact `mailto:` SAVED under `:L259` and failed validation
  * under the withdrawn policy. AAP 0.8.2 guideline 4 forbids enhancement beyond what the migration
  * requires, AAP 0.6.7 mandates "preserve and annotate, do not repair", and AAP 0.2.1.5 states this
- * document's contract as `brandWebsite` "typed as a URL" with no narrowing to web schemes. THE
- * SIX-PROTOCOL URL CHECK IS THE WHOLE CHECK in `../Validator` carries the full record, including the
- * flagged residual exposure and the reason this slice's own output does not reach it.
+ * document's contract as `brandWebsite` "typed as a URL" with no narrowing to web schemes.
  *
- * THE MESSAGE KEY WAS UNAFFECTED BY EITHER STATE. It is composed from `constraintValue`, which is
- * `'url'`, so this rule emits `validate.save.Brand.brandWebsite.dataType.url` byte-for-byte before and
- * after the withdrawal. Introducing a new `constraintValue` such as `'webUrl'` would have changed that
- * key and broken comparability with legacy output, and was rejected for that reason at the time.
+ * ⭐ TWO SYNTACTIC RULES DID COME BACK, AND DELIBERATELY NOT AS A POLICY MEMBER. `../Validator`'s single
+ * predicate now also refuses any value carrying an ASCII control character (a parity CORRECTION — RFC
+ * 3986 §2 admits no raw control character in a URI, so `isValid(…, "url")` was never accepting one as
+ * valid) and any value whose AUTHORITY carries userinfo credentials (a narrow DECLARED departure —
+ * CWE-601 deceptive authority, and RFC 3986 §3.2.1 deprecates the form). Neither rejects a protocol, so
+ * all six still pass here. They are unconditional inside the predicate rather than selectable from this
+ * declaration, which is both simpler and stricter than a policy union: there is no member a future
+ * declaration could set to opt out. THE SIX-PROTOCOL URL CHECK IS STILL THE WHOLE CHECK in
+ * `../Validator` carries the full record, including the residual non-web-scheme exposure that remains
+ * flagged and the reason this slice's own output does not reach it.
+ *
+ * THE MESSAGE KEY IS UNAFFECTED BY ANY OF THESE STATES. It is composed from `constraintValue`, which is
+ * `'url'`, so this rule emits `validate.save.Brand.brandWebsite.dataType.url` byte-for-byte before the
+ * split, after its withdrawal, and after the two reinstated rules. Introducing a new `constraintValue`
+ * such as `'webUrl'` would have changed that key and broken comparability with legacy output, and was
+ * rejected for that reason at the time.
  *
  * NOTHING ELSE IS INFERRED FROM THE PROPERTY. `model/entity/Brand.cfc:L57` carries no `required`, no
  * pattern and no `length`, so no presence rule is added — an unset website is legal and the data-type

@@ -23,7 +23,7 @@
  * THE FIFTEEN DECLARED MEMBERS, IN SOURCE ORDER (AAP §0.4.2.1)
  * ==================================================================================================
  *   `:L65`   loadDataFromFile                        M1 — the one-hour budget has no single-invocation form
- *   `:L70`   getFormattedOptionGroups                D25 — returns a MAP keyed by group NAME, not an array
+ *   `:L70`   getFormattedOptionGroups                D25 — the legacy STRUCT collapses same-named groups
  *   `:L104`  getProductSkusBySelectedOptions         the prompt's worked example; T1–T5 in §0.6.1.3
  *   `:L113`  processProductAddOptionGroup            D14 — only the FIRST option reaches existing SKUs
  *   `:L128`  processProductAddOption                 case-insensitive option matching and de-duplication
@@ -176,11 +176,7 @@ import type {
 import { Sku } from '../domain/sku/Sku';
 import type { DefaultSkuIdReader, SkuSettingResolver } from '../domain/sku/Sku';
 import { DomainError, NotImplementedError } from '../errors/DomainError';
-import {
-  FILE_UPLOAD_RBKEY,
-  PROCESS_OBJECTS_ERROR_KEY,
-  ValidationError,
-} from '../errors/ValidationError';
+import { FILE_UPLOAD_RBKEY, PROCESS_OBJECTS_ERROR_KEY } from '../errors/ValidationError';
 import type { AccountContextPort, AccountReference } from '../ports/AccountContextPort';
 import type { PopulationAuthorizationPort } from '../ports/AccountContextPort';
 import type {
@@ -215,6 +211,8 @@ import type {
 } from '../validation/Validator';
 import { translateSmartListInput } from '../util/smartListInput';
 import { createUniqueURLTitle } from '../util/urlTitle';
+import { assertUrlTitleProbeBudget, boundUniqueValueProbe } from '../util/urlTitleProbeBudget';
+import type { UrlTitleProbeBudget } from '../util/urlTitleProbeBudget';
 import { toExactDecimal, type ExactDecimal } from '../util/formatting';
 import type { UniqueValueProbe } from '../util/urlTitle';
 import type { BaseService, BaseServiceEntity, EntityPersister } from './BaseService';
@@ -519,14 +517,20 @@ export type ProductTypeBaseService = Pick<
 /**
  * A product type carrying its own error bag — the shape `saveProductType` returns.
  *
- * ⚠️ THIS EXISTS BECAUSE THE LEGACY MEMBER RETURNS A FAILED ENTITY RATHER THAN RAISING, AND AN EARLIER
- * REVISION OF THIS SERVICE LET THE RAISE ESCAPE. `model/service/ProductService.cfc:L310` is
- * `return arguments.productType;` on EVERY path — the same statement is reached whether validation
- * passed or failed, because a Hibachi entity carries its findings on itself and the caller inspects
- * them with `hasErrors()`. `:L306`'s first clause does exactly that. Letting
- * {@link ProductTypeBaseService.save}'s `ValidationError` propagate replaced that contract with a
- * thrown error, which is a change to the OBSERVABLE PUBLIC SURFACE of a member AAP §0.4.2.1 pins — and
- * it is neither D18 nor one of the accepted D23-D25 corrections, so it had to go.
+ * ⚠️ THIS EXISTS BECAUSE THE LEGACY MEMBER RETURNS A FAILED ENTITY RATHER THAN RAISING.
+ * `model/service/ProductService.cfc:L310` is `return arguments.productType;` on EVERY path — the same
+ * statement is reached whether validation passed or failed, because a Hibachi entity carries its findings
+ * on itself and the caller inspects them with `hasErrors()`. `:L306`'s first clause does exactly that.
+ *
+ * ⭐ AND THE SAME IS NOW TRUE ONE LAYER DOWN, WHICH IS WHY THIS SERVICE NO LONGER CATCHES ANYTHING.
+ * `../services/BaseService.save` reproduces `model/service/HibachiService.cfc:L103` directly: one exit,
+ * the entity returned on every path, findings attached to its own bag. So the shape this alias describes
+ * is the shape the base service HANDS BACK, not a shape this service reconstructs after intercepting a
+ * raise. Two earlier revisions got here the hard way — the first let a `ValidationError` escape from
+ * `saveProductType` and so changed the OBSERVABLE PUBLIC SURFACE of a member AAP §0.4.2.1 pins; the
+ * second caught it here, which was right for this member and left every other caller of the base service
+ * still diverging. Neither divergence was D18 or one of the accepted D23-D25 corrections, so the fix
+ * belongs at the root.
  *
  * ⛔ AND IT IS A COMPOSED VIEW, NOT A NEW MEMBER ON THE ENTITY CLASS. `../domain/product/ProductType`
  * is forbidden to declare `hasErrors`, `getErrors` or `addError` — that class's own header records the
@@ -556,6 +560,38 @@ export type ProductTypeWithErrorState = ManagedEntity<ProductType>;
  * two functions and no uniqueness port.
  */
 export type ProductProcessValidator = Pick<Validator, 'validate' | 'validateProcess'>;
+
+/**
+ * One option group and its selectable options, as `getFormattedOptionGroups` answers them.
+ *
+ * ⭐ THE SHAPE AAP §0.4.2.1 NAMES. Its target column for `model/service/ProductService.cfc:L70` is
+ * `getFormattedOptionGroups(product: Product): FormattedOptionGroup[]`, and this is that element type.
+ * The plan is frozen and is aligned to, never reinterpreted (AAP §0.1.2.1, D1 precedence 1).
+ *
+ * ⭐ TWO MEMBERS AND NO MORE, BECAUSE THE LEGACY CARRIES EXACTLY TWO PIECES OF INFORMATION. `:L76` is
+ * `AvailableOptions[ productObjectGroups[i].getOptionGroupName() ] = getOptionService().getOptionsForSelect(…)`
+ * — a NAME and a projected option list. `optionGroupID`, `sortOrder`, `optionGroupType` and every other
+ * column of `model/entity/OptionGroup.cfc` are deliberately absent: the legacy entry cannot carry them,
+ * so adding one would publish information this member never produced (S9).
+ *
+ * ⚠️ TODO(parity) D24-CLASS — THE NAME IS THE IDENTITY, WHICH IS WHY IT IS NOT ACCOMPANIED BY AN
+ * IDENTIFIER. Because the legacy KEYS by name, two groups sharing a name collapse to one entry and the
+ * LAST one wins. An entry carrying `optionGroupID` would have to choose which group's identifier to
+ * report for a collapsed entry, and there is no legacy answer to that question.
+ *
+ * ⚠️ M9 — THE ARRAY ORDER IS A TRANSLATION DECISION, CITED RATHER THAN RE-MINTED. A CFML struct has no
+ * specified iteration order, so the legacy's own key order is unspecified; the port emits FIRST-SEEN
+ * order, which is the order `Product.getOptionGroups()` yields the groups in. That is the same reading
+ * `../services/SkuService` records as mismatch M9 for the combination engine's struct traversal, and it is
+ * stable across runs and platforms. Nothing is sorted: sorting would impose an order the legacy never had.
+ *
+ * Both members are `readonly`, and the option list is `readonly` too: an entry is a projection computed
+ * for display, never an object written back.
+ */
+export interface FormattedOptionGroup {
+  readonly optionGroupName: string;
+  readonly options: readonly SelectOption[];
+}
 
 /* ================================================================================================
  * SECTION 4 — STRUCTURAL CONTRACTS FOR THE THREE OUT-OF-SCOPE PROCESS OBJECTS
@@ -723,6 +759,19 @@ export interface ProductServiceCollaborators {
    * second, table-specific probe would duplicate that parameter in the type system.
    */
   readonly isUrlTitleAvailable: UniqueValueProbe;
+
+  /**
+   * OPTIONAL ceiling on the uniqueness probes ONE URL-title derivation may issue — review finding F5
+   * (CWE-400), SEC-14.
+   *
+   * NO DEFAULT, AND ABSENCE IS THE PARITY PATH. Omit it and both derivations below probe without a
+   * ceiling, exactly as `model/service/DataService.cfc:L64` does, so no deployment inherits a figure
+   * this port invented (AAP §0.7.3 S9, IR-12). Supply it only if this deployment has measured its own
+   * capacity. One budget serves both tables for the same reason one probe does. See
+   * `../util/urlTitleProbeBudget.ts` for why an optional collaborator is not the fabricated ceiling
+   * that was withdrawn from `../util/urlTitle.ts`.
+   */
+  readonly urlTitleProbeBudget?: UrlTitleProbeBudget;
 
   /**
    * The direct persister behind `getHibachiDAO().save(target=arguments.product)` at
@@ -1311,6 +1360,8 @@ export class ProductService {
 
   private readonly isUrlTitleAvailable: UniqueValueProbe;
 
+  private readonly urlTitleProbeBudget?: UrlTitleProbeBudget;
+
   private readonly persistProduct: EntityPersister<Product>;
 
   /** @see ProductServiceCollaborators.defaultSkuIdReader */
@@ -1348,6 +1399,17 @@ export class ProductService {
     this.productPropertyDescriptors = collaborators.productPropertyDescriptors;
     this.populationAuthorization = collaborators.populationAuthorization;
     this.isUrlTitleAvailable = collaborators.isUrlTitleAvailable;
+    /*
+     * ⭐ SEC-HARDENING (D18-CLASS) — SEC-14, review finding F5. Assigned only when supplied, because
+     * `exactOptionalPropertyTypes` forbids writing an explicit `undefined` onto an optional field, and
+     * validated at construction so a mis-wired figure — above all `NaN`, which would admit every
+     * derivation while appearing configured — fails when the graph is built rather than on the first
+     * save. An ABSENT budget is not a mis-wiring and is not checked: it is the parity default.
+     */
+    if (collaborators.urlTitleProbeBudget !== undefined) {
+      assertUrlTitleProbeBudget(collaborators.urlTitleProbeBudget);
+      this.urlTitleProbeBudget = collaborators.urlTitleProbeBudget;
+    }
     this.persistProduct = collaborators.persistProduct;
     this.defaultSkuIdReader = collaborators.defaultSkuIdReader;
   }
@@ -1627,18 +1689,44 @@ export class ProductService {
    * PRE-INCREMENTED so the first collision suffix is `-2` rather than `-1`. Nothing about the algorithm
    * is restated here; this member supplies the table discriminator and the injected probe.
    *
-   * THREE ARGUMENTS, AND THERE IS DELIBERATELY NO FOURTH. The utility's collision loop is unbounded,
-   * exactly as `:L64` of the ported member is; the attempt budget an earlier checkpoint threaded through
-   * this service has been removed, and `../util/urlTitle` records the three authorities behind that.
-   * This service consequently states no number of its own and adds no failure of its own.
+   * THE UTILITY STILL TAKES THREE ARGUMENTS AND THERE IS STILL NO FOURTH — BUT WHETHER THE LOOP IS
+   * BOUNDED IS NOW THE DEPLOYMENT'S CHOICE, MADE OUTSIDE THE ALGORITHM. The attempt budget an earlier
+   * checkpoint threaded through this service as a fourth argument stays removed, and `../util/urlTitle`
+   * records the three authorities behind that removal, the decisive one being that a REQUIRED ceiling
+   * relocates a fabricated number instead of avoiding it. Review finding F5 (CWE-400) reinstated the
+   * bound where that objection does not reach — wrapped around the PROBE, optional, no default — so
+   * this service still states no number of its own and adds no failure of its own. With no budget wired
+   * both derivations below probe exactly as `:L64` does. See {@link boundProbe} and
+   * `../util/urlTitleProbeBudget.ts`.
    */
   private createUniqueProductUrlTitle(titleString: string): Promise<string> {
-    return createUniqueURLTitle(titleString, PRODUCT_TABLE_NAME, this.isUrlTitleAvailable);
+    return createUniqueURLTitle(titleString, PRODUCT_TABLE_NAME, this.boundProbe());
   }
 
   /** The same derivation against `SwProductType` — `model/service/ProductService.cfc:L297`, `:L299`. */
   private createUniqueProductTypeUrlTitle(titleString: string): Promise<string> {
-    return createUniqueURLTitle(titleString, PRODUCT_TYPE_TABLE_NAME, this.isUrlTitleAvailable);
+    return createUniqueURLTitle(titleString, PRODUCT_TYPE_TABLE_NAME, this.boundProbe());
+  }
+
+  /**
+   * The injected uniqueness probe, wrapped in this deployment's probe ceiling when it stated one.
+   *
+   * ⭐ SEC-HARDENING (D18-CLASS) — SEC-14, review finding F5 (CWE-400). CALLED PER DERIVATION, NEVER
+   * MEMOISED, AND THAT IS A CORRECTNESS REQUIREMENT (mismatch M7). The wrapper owns a probe counter, so
+   * a single instance shared between derivations would carry one save's collisions into the next and
+   * would leak across invocations on a warm container — refusing a later, entirely legitimate save.
+   * Both call sites above therefore invoke this member rather than holding its result.
+   *
+   * With no budget wired it returns the injected probe unchanged, so the derivation is byte-for-byte
+   * the one that ran before this member existed. One probe and one budget serve BOTH tables, because
+   * the probe's own contract takes the table name as its first parameter.
+   *
+   * @returns the probe to hand to `createUniqueURLTitle`
+   */
+  private boundProbe(): UniqueValueProbe {
+    return this.urlTitleProbeBudget === undefined
+      ? this.isUrlTitleAvailable
+      : boundUniqueValueProbe(this.isUrlTitleAvailable, this.urlTitleProbeBudget);
   }
 
   /**
@@ -1699,32 +1787,49 @@ export class ProductService {
    * `model/dao/ProductDAO.cfc:L87`.
    *
    * ==============================================================================================
-   * ⚠️ SEC-08 IS WITHDRAWN — THERE IS NO POLICY GATE HERE, AND THAT IS DELIBERATE
+   * ⚠️ SEC-08 — THE LOCATION IS GATED, AND THE GATE IS DELIBERATELY NOT IN THIS FILE
    * ==============================================================================================
    * An earlier revision of this member ran the caller's `fileURL` through a
    * `validateProductImportSource` gate against an injected allow-list policy and raised a `DomainError`
-   * when the location was not approved. That gate has been REMOVED, together with the policy
-   * collaborator, the branded source type and the four address-level obligations the port used to place
-   * on an adapter. The port's own withdrawal block carries the full account; the two facts that decide it
-   * are that `model/service/ProductService.cfc:L65-L68` performs NO check of any kind on this argument,
-   * and that AAP §0.6.7.7 makes D18 the SOLE declared departure from behaviour preservation while AAP
-   * §0.8.2 guideline 4 forbids enhancing logic beyond what the migration requires. Refusing a location
-   * the legacy would have fetched changes an outcome; the invented policy values — schemes, hosts, byte
-   * cap, timeout, redirect count — are five numbers and rules the source does not state, which AAP
-   * §0.7.3 standard 9 and IR-12 forbid.
+   * when the location was not approved. A later revision removed all of it — the gate, the policy
+   * collaborator, the branded source type and the four address-level obligations the port placed on an
+   * adapter. Review finding F8 (CWE-918) re-opened that, and the location IS now refused when it is
+   * hostile: a scheme other than HTTP or HTTPS, credentials embedded in the URL, or a host that is an
+   * address literal in a loopback, private, link-local, unique-local, unspecified or instance-metadata
+   * range. `src/ports/repositories/ProductRepository.ts` states that as an obligation of EVERY
+   * implementation of the port this member calls, and the shipped implementation discharges it in
+   * `assertRetrievableImportSource`, immediately before its one retrieval seam.
    *
-   * THE RISK IS NOT DENIED, IT IS FLAGGED, WHICH IS WHAT AAP §0.8.3.6 ASKS FOR. A caller-named location
-   * fetched server-side from inside a VPC is the shape CWE-918 describes, and it is a property of the
-   * legacy design that the port inherits along with everything else. It is already on the register as
-   * MISMATCH M4 — `model/dao/ProductDAO.cfc:L87`, remote fetch inside the request — and closing it is a
-   * decision for the operator of the migrated service, who knows what network the function runs in. No
-   * new mismatch identifier is minted.
+   * ⭐ WHY THE PREDICATE IS NOT ALSO COPIED HERE, WHICH IS A JUDGMENT AND NOT AN OMISSION. Three reasons,
+   * in order of weight. First, this service may not import `src/adapters/**` (S4), so a check here could
+   * not BE the same check — it would be a second, independent copy, and two copies of a security
+   * predicate drift. Second, the retriever is reached from exactly one place in the whole subtree, so a
+   * gate there is not merely equivalent to a gate here, it is strictly stronger: nothing can reach a
+   * retriever by any other route, including routes this service is not on. Third, a reviewer asked to
+   * believe a duplicated predicate has to prove the two agree before trusting either, which converts one
+   * checkable fact into two.
+   *
+   * ⚠️ WHAT THIS MEMBER THEREFORE OWES IS A NEGATIVE OBLIGATION, AND IT IS AS REAL AS A CHECK. It must
+   * forward `fileURL` BYTE-FOR-BYTE — no trim, no normalisation, no re-encoding, no rewriting of any
+   * kind — because the refusals downstream are evaluated against the string this member passes on. Any
+   * transformation applied here would be applied to a value the gate never sees, which is exactly how a
+   * normalisation step upstream of a validator becomes a bypass. The one-line body below is the whole of
+   * that obligation, and it is asserted by test rather than left to inspection.
+   *
+   * ⚠️ AND THE RESIDUAL RISK IS STILL FLAGGED, WHICH IS WHAT AAP §0.8.3.6 ASKS FOR. A host given as a
+   * NAME that resolves into a refused range cannot be convicted without a lookup, and no layer here may
+   * import a resolver. That part stays with the retriever, as the resolve-then-vet obligation on
+   * `ProductImportSourceReader`, and on the register as MISMATCH M4 —
+   * `model/dao/ProductDAO.cfc:L87`, remote fetch inside the request. No new mismatch identifier is
+   * minted.
    *
    * TEST PROVENANCE: NET-NEW. No legacy test touches this member; `model/dao/ProductDAO.cfc`'s importer
    * has no test either (AAP §0.6.5.2).
    *
-   * @param fileURL - The location the caller asks to import from, forwarded to the repository UNTOUCHED
-   *   and UNCHECKED, exactly as `:L67` forwards it.
+   * @param fileURL - The location the caller asks to import from, forwarded to the repository UNTOUCHED,
+   *   exactly as `:L67` forwards it. Untouched, but no longer unchecked: the port obliges every
+   *   implementation to refuse a hostile location, and forwarding it unmodified is what lets that
+   *   refusal see what the caller actually asked for.
    * @param textQualifier - The optional text qualifier, defaulting to the empty string as `:L65` does.
    * @param options - Optional invocation-scoped import controls, forwarded to the port unchanged.
    * @returns Nothing. `model/dao/ProductDAO.cfc:L73` reports no row count and no error summary, and
@@ -1735,21 +1840,21 @@ export class ProductService {
     textQualifier: string = '',
     options?: ProductImportOptions,
   ): Promise<void> {
-    /* ⚠️ NO CHECK OF ANY KIND, AND THE ABSENCE IS THE BEHAVIOUR. `model/service/ProductService.cfc:L65`
-     * declares `required string fileURL` and `:L67` hands it straight to the DAO, which retrieves it
-     * server-side at `model/dao/ProductDAO.cfc:L87`. There is no scheme list, no host list and no address
-     * check anywhere on that path. An earlier revision refused a location this service's policy did not
-     * approve; that is withdrawn, because refusing a fetch the legacy would have performed changes an
-     * OUTCOME, and AAP §0.6.7.7 makes D18 the sole licensed divergence. The risk is carried as mismatch
-     * M4 (AAP §0.6.6) and the operator closes it, if they choose to, by binding a
-     * `ProductImportSourceReader` of their own that enforces their policy before it fetches.
+    /* ⚠️ ONE STATEMENT, AND ITS RESTRAINT IS THE POINT. `model/service/ProductService.cfc:L65` declares
+     * `required string fileURL` and `:L67` hands it straight to the DAO, which retrieves it server-side at
+     * `model/dao/ProductDAO.cfc:L87`. Nothing on that legacy path inspects the location, and nothing here
+     * rewrites it: the argument reaches the port exactly as the caller wrote it, which is precisely what
+     * lets the port's SEC-08 refusals judge what the caller actually asked for (review finding F8).
+     * Trimming or normalising it here would hand the gate downstream a string the caller never supplied.
      *
-     * ⚠️ NO SUCH READER SHIPS, AND THAT IS DELIBERATE RATHER THAN AN OVERSIGHT. The only implementation in
-     * the subtree is `unresolvableProductImportSourceReader` in
-     * `src/adapters/mysql/MySqlProductRepository.ts`, which refuses every location and says why; the port
-     * interface a replacement must satisfy is declared in that same file. Two concrete HTTP readers were
-     * written and both were removed — the account is on the port declaration there. Naming a shipped
-     * reader here would point a reader at a file that does not exist. */
+     * ⚠️ NO RETRIEVER SHIPS, AND THAT IS DELIBERATE RATHER THAN AN OVERSIGHT — nor is it what closes F8.
+     * The only implementation in the subtree is `unresolvableProductImportSourceReader` in
+     * `src/adapters/mysql/MySqlProductRepository.ts`, which refuses every location and says why; the
+     * interface a replacement must satisfy is declared in that same file, and it carries the
+     * resolve-then-vet, connect-to-the-vetted-address and revalidate-every-redirect obligations that only
+     * a retriever can discharge. Two concrete HTTP readers were written and both were removed — the
+     * account is on that declaration. The scheme, credential and address-literal refusals do NOT depend
+     * on which reader is bound: they run at the seam, before any reader is invoked. */
     await this.productRepository.importFromFile(fileURL, textQualifier, options);
   }
 
@@ -1761,27 +1866,51 @@ export class ProductService {
    * Groups a product's selectable options by option-group name.
    *
    * ==============================================================================================
-   * TODO(parity) D25 — `model/service/ProductService.cfc:L70-L80`: THE RESULT IS A MAP, NOT AN ARRAY
+   * D25 — `model/service/ProductService.cfc:L70-L80`: THE LEGACY ANSWERS A NAME-KEYED STRUCT; THE
+   * PORT ANSWERS THE ARRAY AAP §0.4.2.1 TABULATES, AND THAT DIVERGENCE IS THE ANNOTATION
    * ==============================================================================================
    * `:L71` initialises `var AvailableOptions = {}` — a CFML STRUCT — and `:L76` assigns into it with
    * `AvailableOptions[ productObjectGroups[i].getOptionGroupName() ] = …`, keyed by the option group's
-   * NAME. `:L79` returns that struct. The result is therefore a keyed map, and an earlier reading of
-   * this member as returning `FormattedOptionGroup[]` was wrong: an array would lose the keys the one
-   * consumer indexes by, and would silently turn same-named groups into two entries.
+   * NAME. `:L79` returns that struct.
    *
-   * The honest signature is `Promise<Record<string, SelectOption[]>>`. It is a promise because
-   * `Product.getOptionGroups(finder)` and `Product.getOptionsByOptionGroup(finder, id)` are both
-   * asynchronous in the ported domain — the legacy resolved both through lazy ORM relationships that
-   * looked synchronous only because the engine blocked — and forcing a synchronous signature here would
-   * mean either duplicating those queries or fabricating their results.
+   * ⭐⭐ THE TARGET SIGNATURE IS NOT DERIVED FROM THAT STRUCT — IT IS READ OFF THE PLAN. AAP §0.4.2.1
+   * tabulates this member as `getFormattedOptionGroups(product: Product): FormattedOptionGroup[]`, and
+   * D1 precedence 1 makes the plan the authority that code is aligned TO. An earlier revision typed the
+   * result `Promise<Record<string, SelectOption[]>>` on the ground that the legacy struct's keys are the
+   * honest shape; that reading is WITHDRAWN. It was a reinterpretation of a frozen row, which §0.1.2.1
+   * forbids — "align code to it; never edit, weaken, or reinterpret it" — and each of the three grounds
+   * it rested on is answered here rather than left standing:
+   *   (a) "AN ARRAY LOSES THE KEYS THE CONSUMER INDEXES BY." It does not. The key is a group NAME, and
+   *       `FormattedOptionGroup.optionGroupName` carries that same name in the entry itself. Every
+   *       consumer that read `formatted[name]` reads `entry.optionGroupName` instead; the one shipped
+   *       consumer, `toFormattedOptionGroupsResponse` in `src/handlers/productHandler.ts`, was already
+   *       destructuring `Object.entries` back into name/options pairs — which is precisely this array.
+   *   (b) "AN ARRAY TURNS SAME-NAMED GROUPS INTO TWO ENTRIES." Only a naive `map` would. The body below
+   *       accumulates through a `Map` keyed by name, so a repeated name still OVERWRITES and still
+   *       yields ONE entry; see behaviour 2.
+   *   (c) "`Record` IS THE HONEST TRANSLATION OF A STRUCT." A CFML struct is not an ordered map, so
+   *       `Record` is not a neutral translation either — it silently adopts JavaScript's own key-order
+   *       rules. The array makes the order an explicit, documented decision instead; see M9 on
+   *       `FormattedOptionGroup`.
+   *
+   * It is a promise because `Product.getOptionGroups(finder)` and
+   * `Product.getOptionsByOptionGroup(finder, id)` are both asynchronous in the ported domain — the legacy
+   * resolved both through lazy ORM relationships that looked synchronous only because the engine blocked
+   * — and forcing a synchronous signature here would mean either duplicating those queries or fabricating
+   * their results. AAP §0.4.2.1's column omits the `Promise` for the same reason its `loadDataFromFile`
+   * row carries one: the plan tabulates the member's SHAPE, and asynchrony is the execution-model
+   * consequence recorded across §0.6.6.
    *
    * FOUR BEHAVIOURS PRESERVED EXACTLY, each one a place a well-meant improvement would change results:
-   *   1. THE KEY IS THE GROUP NAME, never the group ID. Switching to IDs would be more robust and would
-   *      break every consumer that indexes by the label it renders.
+   *   1. THE LABEL IS THE GROUP NAME, never the group ID. `:L76` keys by `getOptionGroupName()`, so the
+   *      name is what identifies an entry. Adding an ID would publish something the legacy entry cannot
+   *      carry (S9), and see the D24-class note on `FormattedOptionGroup` for why a collapsed entry has
+   *      no single ID to report.
    *   2. SAME-NAMED GROUPS OVERWRITE. `:L76` is a plain struct assignment, so the LAST group with a
    *      given name wins and the earlier entry is lost. No multimap, no array-of-arrays, no suffixing
-   *      and no de-duplication is introduced.
-   *   3. NO SORTING. The map is built in the order `Product.getOptionGroups()` yields, and the legacy
+   *      and no de-duplication is introduced — and, because a repeated name overwrites in place, the
+   *      array never grows a second entry for it.
+   *   3. NO SORTING. Entries appear in the order `Product.getOptionGroups()` yields, and the legacy
    *      neither sorts the groups nor sorts within a group.
    *   4. THE OPTIONS PROJECTION IS THE SIBLING'S. `OptionService.getOptionsForSelect` owns the
    *      `{name, value}` shape; this member does not re-derive it, and `SelectOption` is imported
@@ -1802,11 +1931,23 @@ export class ProductService {
    * TEST PROVENANCE: NET-NEW.
    *
    * @param product - The product whose option groups are read.
-   * @returns Selectable options keyed by option-group name, in group order.
+   * @returns One `FormattedOptionGroup` per distinct option-group name, in first-seen group order.
    * @throws {DomainError} when an option group carries no name, matching the legacy's unguarded read.
    */
-  public async getFormattedOptionGroups(product: Product): Promise<Record<string, SelectOption[]>> {
-    const availableOptions: Record<string, SelectOption[]> = {};
+  public async getFormattedOptionGroups(
+    product: Product,
+  ): Promise<readonly FormattedOptionGroup[]> {
+    /* ⭐ A `Map`, NOT AN ARRAY THAT IS PUSHED TO, AND THE CHOICE IS BEHAVIOURAL. `:L76`'s struct
+     * assignment makes the group NAME the identity of an entry, so a repeated name must overwrite
+     * rather than append (behaviour 2). A `Map` reproduces that exactly: `set` on an existing key
+     * replaces the value AND KEEPS THE ORIGINAL INSERTION POSITION, so the surviving entry is the LAST
+     * group's options sitting at the FIRST occurrence's place. That is the closest observable analogue
+     * of a CFML struct, whose key order is unspecified but whose overwrite semantics are not.
+     *
+     * ⛔ DO NOT REPLACE THIS WITH `array.push` PLUS A `find`. It would either grow a second entry for a
+     * repeated name — the failure ground (b) of the doc block above correctly warns about — or turn an
+     * O(1) overwrite into an O(n) scan for no gain. */
+    const availableOptions = new Map<string, readonly SelectOption[]>();
 
     const productObjectGroups: OptionGroup[] = await product.getOptionGroups(
       this.productOptionFinders,
@@ -1816,7 +1957,7 @@ export class ProductService {
       const optionGroupName = optionGroup.optionGroupName;
       if (optionGroupName === undefined) {
         throw new DomainError(
-          'An option group has no name, so it cannot key the formatted-option-group map.',
+          'An option group has no name, so it cannot label a formatted option group.',
           {
             context: {
               productID: product.productID,
@@ -1856,10 +1997,14 @@ export class ProductService {
         optionGroup.optionGroupID,
       );
 
-      availableOptions[optionGroupName] = this.optionService.getOptionsForSelect(options);
+      availableOptions.set(optionGroupName, this.optionService.getOptionsForSelect(options));
     }
 
-    return availableOptions;
+    /* Materialised once, at the end, in `Map` insertion order — which is first-seen group order (M9). */
+    return Array.from(availableOptions, ([optionGroupName, options]) => ({
+      optionGroupName,
+      options,
+    }));
   }
 
   /* ==============================================================================================
@@ -3275,9 +3420,21 @@ export class ProductService {
    * ⛔ STEP 4a IS NOT GATED ON THE BATCH SUCCEEDING, AND THAT IS THE SAME JUDGMENT
    * {@link SkuService.validateNewSku} MAKES FOR THE SKU WRITES. A product row must exist before its SKUs
    * can be written, so it cannot wait for their outcome. What discards a failed batch is the enclosing
-   * transaction's error gate — `UnitOfWork.run(work, () => product.hasErrors())` rolls the whole graph
-   * back — not a skipped write here. Step 5 remains gated, so a batch that recorded findings never gets
-   * its `defaultSkuID` written and never commits.
+   * transaction's error gate — `UnitOfWork.runScoped(…, () => skuBatchHasErrors(product))` rolls the whole
+   * graph back — not a skipped write here. Step 5 remains gated, so a batch that recorded findings never
+   * gets its `defaultSkuID` written and never commits.
+   *
+   * ⚠️ AND THE TRANSACTION GATE IS `skuBatchHasErrors`, NOT `product.hasErrors()`. An earlier revision of
+   * this note named the narrower predicate. It is withdrawn: per-SKU rule findings deliberately never
+   * merge upward onto the product [org/Hibachi/HibachiValidationService.cfc:L193], so a batch whose SKU
+   * codes collide leaves the product's own bag EMPTY while `createSkus` still returns an unconditional
+   * `true` [model/service/SkuService.cfc:L207] — and a product-only gate would commit it. The legacy
+   * gated on `getORMHasErrors()`, which saw every entity in the session (AAP §0.6.6 M5).
+   *
+   * ⚠️ DO NOT CONFUSE THAT WITH STEP 5's OWN GATE, WHICH IS AND REMAINS `hasErrors()` ON THE PRODUCT.
+   * Step 5 decides whether to write THIS product's row, which is what `:L286-L288` re-reads; the
+   * transaction gate decides whether to keep the whole graph. Two different questions about two
+   * different scopes, and only the second one changed.
    *
    * ⚠️ THE THREE WRITES ARE ONE TRANSACTION, AND THIS MEMBER STILL DOES NOT OPEN IT. Splitting them
    * across boundaries would leave a product row with no SKUs, or SKUs with no default, after a partial
@@ -3286,14 +3443,21 @@ export class ProductService {
    * ⭐ AND THE HOLDER OF THAT BOUNDARY IS NOW NAMEABLE, WHICH IT WAS NOT WHEN THE LINE ABOVE WAS
    * WRITTEN. `UnitOfWork.runScoped` is the member; a writing route reaches it through a boundary that
    * builds this service's whole collaborator graph FROM the transaction's scope and then settles on
-   * `product.hasErrors()` — the same re-read step 5 performs below. `src/handlers/skuHandler.ts`
-   * carries the delivered shape for SKU creation (`createProductSkuCreationBoundary`), and it is the
-   * shape every route that calls THIS member is obliged to reuse — the obligation belongs to the
-   * handler layer, so it is stated here rather than discharged here.
+   * `skuBatchHasErrors(product)` — the complete batch predicate, NOT the product-only re-read step 5
+   * performs below. `src/handlers/skuHandler.ts` carries the delivered shape for SKU creation
+   * (`createProductSkuCreationBoundary`), and it is the shape every route that calls THIS member is
+   * obliged to reuse — the obligation belongs to the handler layer, so it is stated here rather than
+   * discharged here.
+   *
+   * ⛔ THAT SENTENCE PREVIOUSLY CANONIZED A WEAKER GATE THAN THE FACTORY OUGHT TO HAVE HAD, and pointing
+   * every future route at it would have propagated the defect. The factory now uses the complete
+   * predicate and agrees with the live route beside it; this note is corrected in step with it so the
+   * "obliged to reuse" instruction names the right shape.
+   *
    * The distinction that matters to THIS file is unchanged:
    * this member neither opens nor settles anything, and it must not learn how to — its steps are
-   * sequential and its gate is `hasErrors()`, exactly as the legacy has them, whichever boundary
-   * encloses the call.
+   * sequential and its own step-5 gate is `hasErrors()` on the product, exactly as the legacy has it,
+   * whichever boundary encloses the call.
    *
    * TEST PROVENANCE: NET-NEW as a service member, with TRACEABLE neighbours.
    * `meta/tests/unit/IssuesTest.cfc:L51-L71` (`issue_1097`) populates, saves and deletes a product with
@@ -3406,22 +3570,27 @@ export class ProductService {
    * collaborator, not by inheritance (R3), which is what keeps this service composed rather than
    * subclassed.
    *
-   * ⚠️ `:L306`'s FIRST CLAUSE IS LIVE, AND AN EARLIER REVISION OF THIS NOTE ARGUED THE OPPOSITE. It
-   * claimed that because `../services/BaseService.save` THROWS a `ValidationError` on failure, a normal
-   * return proved there were no findings, so `!arguments.productType.hasErrors()` was "satisfied by
-   * control flow" and re-testing it would be dead code. That reasoning was sound about the port and
-   * WRONG about the port being right: the legacy member does not raise at all.
+   * ⚠️ `:L306`'s FIRST CLAUSE IS LIVE, AND TWO EARLIER REVISIONS OF THIS NOTE GOT THERE BY DIFFERENT
+   * WRONG ROUTES. The first claimed that because `../services/BaseService.save` THREW a `ValidationError`
+   * on failure, a normal return proved there were no findings, so `!arguments.productType.hasErrors()`
+   * was "satisfied by control flow" and re-testing it would be dead code. That was sound about the port
+   * and wrong about the port being right: the legacy member does not raise at all.
    * `model/service/ProductService.cfc:L310` returns `arguments.productType` on every path, and a failed
-   * Hibachi entity carries its findings for the caller to read — so the raise was a change to this
-   * member's observable failure semantics, not a faithful expression of it. The raise is now CAUGHT, the
-   * findings are attached to the entity through {@link ProductTypeWithErrorState}, and the gate below
-   * genuinely tests them.
+   * Hibachi entity carries its findings for the caller to read. The second revision accepted that and
+   * fixed it HERE, by catching the base service's raise and re-attaching its findings — which restored
+   * this member's semantics but left the base service still diverging from
+   * `model/service/HibachiService.cfc:L103` for every other caller.
    *
-   * ⛔ ONLY A `ValidationError` IS CAUGHT, AND EVERYTHING ELSE PROPAGATES UNTOUCHED. `populate` raises a
-   * `DomainError` when a payload value has no representation in its property's declared value type, and
-   * that is NOT a recoverable field finding — swallowing it would present a malformed request as a
-   * validation failure the rule sets never modelled. The catch is therefore narrowed by `instanceof`,
-   * and a non-validation failure is re-thrown as-is.
+   * ⭐ IT IS NOW FIXED AT THE ROOT INSTEAD. `../services/BaseService.save` returns the entity on every
+   * path with its findings attached, so `:L303` translates literally, nothing is caught here, and the
+   * gate below reads the very entity that member returned. `:L306`'s first clause is live because the
+   * base service makes it live, not because this service reconstructs the condition.
+   *
+   * ⛔ A POPULATION FAILURE STILL PROPAGATES, AND THAT IS A DIFFERENT FAILURE CLASS. `populate` raises a
+   * `DomainError` when a payload value has no representation in its property's declared value type. That
+   * is NOT a recoverable field finding — presenting a malformed request as a validation failure the rule
+   * sets never modelled would be wrong — so it travels as an exception and this member does not intercept
+   * it. Nothing here catches anything.
    *
    * ==============================================================================================
    * `:L306-L308` — THE PARENT-PRODUCT-TYPE INHERITANCE, PORTED IN FULL
@@ -3486,39 +3655,30 @@ export class ProductService {
     /*
      * `:L303` — the LOCAL base override, reached by composition, and reassigned from its return.
      *
-     * The raise is converted back into entity-carried findings here, and NOWHERE ELSE: the base service
-     * keeps its throwing contract for the other two in-slice callers, which depend on it. On the failure
-     * path the base service has already populated the entity in place and has deliberately NOT
-     * persisted it, and the entity it would have returned is the very object passed in — so attaching
-     * the bag to `managedProductType` reproduces `super.save()`'s return exactly.
+     * ⭐ NO try/catch, AND THAT IS THE POINT. `./BaseService`'s `save` returns the entity on every path,
+     * exactly as `model/service/HibachiService.cfc:L103` does, attaching any accumulated findings to the
+     * entity's own bag on the way out. So this line is now the literal translation of `:L303` —
+     * `arguments.productType = super.save(arguments.productType, arguments.data);` — and the `:L306` gate
+     * below reads the returned entity, which is what `:L306` reads too.
+     *
+     * An earlier revision wrapped this call in a try/catch that narrowed on `ValidationError` and
+     * re-attached its findings, because the base service raised. That conversion existed only to undo the
+     * raise; with the raise gone it would be dead code, and keeping it would leave a reader believing
+     * this member has a failure mode the base service no longer has. Removing it is therefore part of the
+     * same correction, not a separate simplification.
      */
-    let savedProductType: ProductTypeWithErrorState = managedProductType;
+    const returnedProductType = await this.productTypeBaseService.save(managedProductType, data);
 
-    try {
-      const returnedProductType = await this.productTypeBaseService.save(managedProductType, data);
-
-      /*
-       * `persist` may hand back a DIFFERENT instance, and that instance needs the same surface for the
-       * gate below to be askable. The identity test avoids re-composing the common case, because a
-       * second `manageEntity` call installs a FRESH bag and would discard anything already recorded.
-       */
-      savedProductType =
-        returnedProductType === managedProductType
-          ? managedProductType
-          : manageEntity(returnedProductType, PRODUCT_TYPE_ENTITY_METADATA);
-    } catch (error) {
-      /* Narrowed deliberately — see the `:L306` note. A non-validation failure is not a field finding. */
-      if (!(error instanceof ValidationError)) {
-        throw error;
-      }
-
-      /*
-       * `addErrors` APPENDS per key, matching `addErrors()` at [org/Hibachi/HibachiTransient.cfc:L66-L68],
-       * so every message survives with its original key and message key untouched — which is what keeps
-       * a failure comparable to the legacy output and serialisable by `../handlers/httpResponse`.
-       */
-      managedProductType.addErrors(error.getErrors());
-    }
+    /*
+     * `persist` may hand back a DIFFERENT instance, and that instance needs the same surface for the
+     * gate below to be askable. The identity test avoids re-composing the common case, because a
+     * second `manageEntity` call installs a FRESH bag and would discard anything already recorded —
+     * including the findings `save` has just attached.
+     */
+    const savedProductType: ProductTypeWithErrorState =
+      returnedProductType === managedProductType
+        ? managedProductType
+        : manageEntity(returnedProductType, PRODUCT_TYPE_ENTITY_METADATA);
 
     /* `:L306-L308` — all three clauses, and the first one is now genuinely evaluated. */
     if (!savedProductType.hasErrors()) {
@@ -3714,11 +3874,37 @@ export class ProductService {
    * page number, so none is invented (S9); `translateSmartListInput` maps only what the caller provides,
    * and the adapter behind the port emits the statement.
    *
+   * ==============================================================================================
+   * THE THREE JOINS CANNOT FAN, AND THIS MEMBER SELECTS NO DISTINCT — BOTH ON PURPOSE
+   * ==============================================================================================
+   * `model/entity/Product.cfc:L67-L69` declares all three joined properties `many-to-one`: `brand`
+   * (`fkcolumn="brandID"`), `productType` (`fkcolumn="productTypeID"`) and `defaultSku`
+   * (`fkcolumn="defaultSkuID"`). In each one the PRODUCT row holds the foreign key, so a product matches
+   * at most one row on the other side and no join above can multiply a product into several rows. Join
+   * DIRECTION is what fans; NULL-tolerance is not. The property that would fan is `skus` at
+   * `model/entity/Product.cfc:L72` (`one-to-many fkcolumn="productID" inverse="true"`), and `:L347-L349`
+   * does not register it.
+   *
+   * Consequently this member states NO `selectDistinctFlag`, exactly as `:L343-L357` states none.
+   * `org/Hibachi/HibachiSmartList.cfc:L59` seeds the flag zero and `:L506-L520` makes the record
+   * projection flag-driven while `:L504` counts distinct unconditionally, so the emitted projection is a
+   * plain non-distinct select. That asymmetry is CARRIED, not repaired (S7): the only two members in this
+   * slice that set the flag are `findProductOptionGroups` and `findProductOptionsByOptionGroup` in
+   * `./OptionService`, transcribed from `model/entity/Product.cfc:L255` and `:L342` where the legacy sets
+   * it. Adding it here would change results this member is not entitled to change.
+   *
+   * ⚠️ CORRECTION. An earlier revision of this block said `issue_1296` "asserts PAGE-RECORD DISTINCTNESS —
+   * which is what the three joins make necessary, since joining `skus` fans rows out". Both halves were
+   * false: `skus` is NOT joined by this member, and no distinctness is selected. What `issue_1296`
+   * actually asserts is that consecutive one-record PAGE WINDOWS advance, which the offset arithmetic
+   * delivers and which the many-to-one join set is what makes safe. `test/regression/issues.test.ts`
+   * asserts both halves against the real builder, including the absence of any fanning
+   * `ON <child>.productID = aslatwallproduct.productID` clause.
+   *
    * TEST PROVENANCE: NET-NEW as a service member, and the BEST-COVERED member in the file by legacy
-   * regression. Three `meta/tests/unit/IssuesTest.cfc` cases are TRACEABLE:
-   * `issue_1296` asserts PAGE-RECORD DISTINCTNESS — which is what the three joins make necessary, since
-   * joining `skus` fans rows out; `issue_1329` exercises this member directly; and `issue_1331` covers
-   * the neighbouring processability gate.
+   * regression. Three `meta/tests/unit/IssuesTest.cfc` cases are TRACEABLE: `issue_1296` asserts that
+   * consecutive single-record pages advance; `issue_1329` exercises this member directly; and
+   * `issue_1331` covers the neighbouring processability gate.
    *
    * @param data - Optional smart-list input: keywords, ordering, filters, pagination.
    * @param _currentURL - Accepted for signature parity and unused; see Discrepancy 1 above.

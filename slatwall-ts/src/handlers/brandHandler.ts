@@ -152,12 +152,22 @@
  *   - Any read of the process environment. src/config/env.ts is the only module in the subtree
  *     permitted to do that (AAP 0.4.3.5, 0.8.3.9), and no credential, host, endpoint, region,
  *     account identifier or resource-name literal appears either.
- *   - Any import of ../errors/DomainError or ../errors/ValidationError. That omission is a
- *     DECISION, not a gap: a validation failure raised by the base collaborator and every legacy
- *     thrown message string travel THROUGH this file as thrown values and are recognised and shaped
- *     exclusively by {@link errorResponse}, which is the single error-to-response mapping in the
- *     folder and which preserves the keyed error structure AAP 0.4.1.11 requires. Naming either
- *     class here would duplicate that mapping and would add an unused import.
+ *   - Any import of ../errors/DomainError. Every legacy thrown message string travels THROUGH this
+ *     file as a thrown value and is recognised and shaped exclusively by {@link errorResponse}, which
+ *     is the single error-to-response mapping in the folder and which preserves the keyed error
+ *     structure AAP 0.4.1.11 requires. Naming that class here would duplicate the mapping and add an
+ *     unused import.
+ *
+ *     ⚠️ ../errors/ValidationError IS IMPORTED, AND AN EARLIER REVISION OF THIS LIST SAID IT WAS NOT.
+ *     That revision was correct while ../services/BrandService's collaborator RAISED on a validation
+ *     failure, because then the failure arrived as a thrown value and {@link errorResponse} saw it
+ *     without this file naming anything. The service was corrected to the legacy contract at
+ *     model/service/HibachiService.cfc:L103 — the entity is RETURNED on every path with its findings on
+ *     its own bag — so a failed save no longer throws, and a boundary that did not ask would answer
+ *     200. {@link saveBrand} therefore asks the returned brand and LIFTS its findings into a
+ *     `ValidationError` unchanged. The mapping is still {@link errorResponse}'s alone: this file
+ *     constructs the carrier, never a status code, never a body. ./skuHandler does the same for its
+ *     batch failures, so the pattern is the folder's, not this member's.
  *   - Any validation rule or delete guard. model/validation/Brand.json declares `brandName`
  *     required on save, `brandWebsite` typed as a url, `urlTitle` required and unique, and
  *     `maxCollection: 0` delete guards on `products` and `physicalCounts`. Those are evaluated by
@@ -225,6 +235,7 @@ import type {
   RequestAuthorizationContext,
   RequestAuthorizationResolver,
 } from '../ports/AccountContextPort';
+import { ValidationError } from '../errors/ValidationError';
 import type { BrandService, ManagedBrand } from '../services/BrandService';
 
 import {
@@ -445,6 +456,35 @@ export const BRAND_ACCESS_MATRIX: Readonly<
  * NOT AN INVENTED ENVELOPE. There is no wrapper object, no `data` member, no type discriminator, no
  * link section, no embedded resource and no pagination shell (AAP 0.7.3 S9). The body is the brand's
  * own fields and nothing else.
+ *
+ * =============================================================================================
+ * ⚠️ WHAT `brandWebsite` GUARANTEES TO A CONSUMER, AND WHAT IT DOES NOT
+ * =============================================================================================
+ * This is the ONE boundary in the deliverable that hands `brandWebsite` to a consumer, so the residual
+ * exposure the validation layer flags is stated HERE too rather than only at the predicate. A consumer
+ * that renders the value in a link position needs both halves.
+ *
+ * GUARANTEED, because `../validation/Validator`'s `dataType: 'url'` rule enforces it on every save
+ * (`model/validation/Brand.json:L4`):
+ *   - the value parses as a URL in one of the six protocols CFML's own `isValid(…, "url")` accepts;
+ *   - it carries NO ASCII control character anywhere — U+0000 to U+001F and U+007F are all refused, so
+ *     a stored value can never be a CR-LF header-injection or log-injection payload;
+ *   - its authority carries NO userinfo credentials, so it cannot be the `https://acme.test@evil.test/`
+ *     deceptive-authority form.
+ * The last two are SEC-HARDENING (D18-CLASS) rules; see THE SIX-PROTOCOL URL CHECK IS STILL THE WHOLE
+ * CHECK in `../validation/Validator` for which is a parity correction and which is a declared departure.
+ *
+ * NOT GUARANTEED, and deliberately so: the SCHEME is unconstrained beyond those six. A brand may
+ * legitimately carry `file:`, `ftp:`, `mailto:` or `news:`, because the legacy engine accepted all four
+ * and refusing them would decline a save the legacy performed and meant (AAP §0.8.2 guideline 2). A
+ * CONSUMER that puts this value in an `href`, a redirect target or a fetch URL must therefore apply its
+ * OWN scheme policy — typically `http`/`https` only — at that point. That policy belongs to the
+ * rendering or fetching surface, which is outside this deliverable: AAP §0.3.4 records that the target
+ * is a headless service with no user-interface surface, so there is no in-scope renderer to place it in.
+ *
+ * THE VALUE IS EMITTED VERBATIM, per the pass-through rule below. It is not re-encoded, canonicalised
+ * or scheme-filtered on the way out, because doing any of those here would make the response
+ * disagree with the stored record and with the legacy's own admin views.
  */
 export interface BrandResponse {
   readonly brandID: string;
@@ -847,8 +887,10 @@ export function createBrandHandler(
    * arguments 1 and 2 at org/Hibachi/HibachiService.cfc:L556.
    *
    * A validation failure — `brandName` required, `brandWebsite` a url, `urlTitle` required and
-   * unique, per model/validation/Brand.json — is raised by the base collaborator as a keyed failure
-   * and shaped by {@link errorResponse}, keys intact. Nothing is pre-checked here.
+   * unique, per model/validation/Brand.json — comes back ON THE RETURNED BRAND rather than as a thrown
+   * value, because model/service/HibachiService.cfc:L103 returns the entity on every path. This member
+   * asks the brand and lifts its findings into a keyed failure for {@link errorResponse}, keys intact.
+   * Nothing is pre-checked here, and nothing about the rule set is duplicated here.
    *
    * NET-NEW coverage (AAP 0.6.5.2): no legacy BrandServiceTest and no legacy controller test exist.
    *
@@ -900,8 +942,38 @@ export function createBrandHandler(
       }
 
       // model/service/BrandService.cfc:L67 — brand first, payload second, positional, unaltered.
+      const saved: ManagedBrand = await brandService.saveBrand(brand, body.value);
+
+      /*
+       * ⭐ THE FAILURE IS READ OFF THE RETURNED BRAND, BECAUSE THAT IS WHERE THE SERVICE PUTS IT.
+       * `model/service/BrandService.cfc:L76` returns whatever the local override at
+       * `model/service/HibachiService.cfc:L103` returns, and that member returns the ENTITY on every
+       * path — a failed save comes back as a brand carrying findings, not as a raised error. So the
+       * boundary must ASK, and this is the ask.
+       *
+       * ⚠️ WITHOUT THIS GATE A FAILED SAVE WOULD ANSWER 200 WITH A PROJECTION OF AN UNPERSISTED BRAND —
+       * the single most damaging shape this member could have, because the caller would be told its
+       * write succeeded. An earlier revision had exactly that gap for as long as the base collaborator
+       * raised: the `catch` below was the only failure path, and it stopped being reachable for a
+       * validation failure the moment the service was corrected to the legacy's single exit.
+       *
+       * THE KEYS TRAVEL UNCHANGED, AND THE MAPPING IS STILL {@link errorResponse}'s ALONE. The findings
+       * are lifted into a `../errors/ValidationError` verbatim — no key renamed, no message rewritten,
+       * no ordering imposed — so the response body is byte-identical to the one the raise produced, and
+       * AAP 0.4.1.11's requirement that the error-key structure stay comparable to legacy output is
+       * met by copying rather than by reshaping. This is the same lift `./skuHandler` already performs
+       * for its batch failures, for the same reason.
+       */
+      if (saved.hasErrors()) {
+        const failure = new ValidationError();
+
+        failure.addErrors(saved.getErrors());
+
+        return errorResponse(failure);
+      }
+
       // The saved entity is PROJECTED, never serialised whole; see {@link BrandResponse}.
-      return okResponse(toBrandResponse(await brandService.saveBrand(brand, body.value)));
+      return okResponse(toBrandResponse(saved));
     } catch (error) {
       return errorResponse(error);
     }

@@ -234,7 +234,7 @@
 import { assertColumnName, assertTableName } from './QueryRunner';
 import { createSlatwallUUID } from '../../util/uuid';
 import { DomainError } from '../../errors/DomainError';
-import { mapProductTypeTreeRow, mapRows } from './rowMappers';
+import { mapProductTypeTreeRow, mapRows, readHydratedParentProductTypeID } from './rowMappers';
 
 import type { ProductType } from '../../domain/product/ProductType';
 import type { SqlExecutor } from './QueryRunner';
@@ -392,30 +392,6 @@ const CHILD_COUNT_ALIAS = 'childCount' satisfies keyof ProductTypeTreeRow;
 const SELF_REFERENCE_ALIAS = 'spt';
 
 /* ================================================================================================
- * ⚠️ THREE DERIVED-TABLE CONSTANTS STOOD HERE AND HAVE BEEN REMOVED WITH THE REWRITE THEY SERVED.
- * ================================================================================================
- * They were `ASSIGNED_COUNT_SOURCE_ALIAS`, `CHILD_COUNT_SOURCE_ALIAS` and `DERIVED_COUNT_COLUMN`, and
- * they named the two pre-aggregated derived tables and the count column inside them that an earlier
- * revision of {@link composeProductTypeTreeStatement} joined onto the outer query. That revision
- * replaced the legacy's two CORRELATED SCALAR SUBQUERIES with `GROUP BY` pre-aggregations plus two
- * `LEFT JOIN`s and two `COALESCE` wrappers.
- *
- * IT WAS A FORBIDDEN REWRITE, EVEN THOUGH IT COMPUTED THE SAME NUMBERS. AAP §0.4.1.7 specifies this
- * file as "the tree-sorted query with its `isAssigned` and `childCount` SUBSELECTS"; AAP §0.8.2
- * Guideline 4 forbids optimising beyond what the migration requires; and AAP §0.3.3.1 has already
- * settled the identical question for the sibling statement in `./MySqlSkuRepository.ts`, keeping N
- * correlated `EXISTS` clauses "rather than an `IN` list or a `GROUP BY … HAVING COUNT` rewrite".
- * Moving the evaluation point from once-per-outer-row to once-per-statement is a PERFORMANCE change,
- * which is the one category of change this port is not licensed to make. `./rowMappers.ts` had also
- * gone on documenting the legacy as "two correlated count sub-selects" throughout, so the folder
- * disagreed with itself.
- *
- * The three constants have no reader now and are deleted rather than left in place, because an unread
- * constant naming a structure the statement no longer has is exactly the kind of stale signal a
- * reviewer would try to reconcile. Nothing outside this module ever referenced them.
- * ============================================================================================== */
-
-/* ================================================================================================
  * THE STATEMENT
  * ============================================================================================== */
 
@@ -449,17 +425,16 @@ const SELF_REFERENCE_ALIAS = 'spt';
  *                       `spt.parentProductTypeID = SwProductType.productTypeID`, where `spt` is the
  *                       legacy's own alias for the self-reference
  *
- *     ⛔ THE PRE-AGGREGATED REWRITE IS FORBIDDEN AND WAS REVERTED. An earlier revision replaced both
- *     subqueries with `GROUP BY` derived tables, two `LEFT JOIN`s and two `COALESCE` wrappers. It
- *     computed the same numbers — a `GROUP BY` yields at most one row per key, so multiplicity was
- *     preserved too — and it was still wrong, for reasons that have nothing to do with the answer:
- *     AAP §0.4.1.7 specifies "its `isAssigned` and `childCount` SUBSELECTS"; AAP §0.8.2 Guideline 4
- *     forbids optimising beyond what the migration requires; and AAP §0.3.3.1 settled the identical
- *     question for the sibling statement in `./MySqlSkuRepository.ts` by keeping N correlated `EXISTS`
- *     clauses "rather than an `IN` list or a `GROUP BY … HAVING COUNT` rewrite". Moving the evaluation
- *     point from once-per-outer-row to once-per-statement is a PERFORMANCE change, which is the single
- *     category of change this port has no licence to make. The removal note above the alias constants
- *     records what went with it.
+ *     ⛔ A PRE-AGGREGATED REWRITE IS FORBIDDEN HERE, EVEN THOUGH IT WOULD COMPUTE THE SAME NUMBERS.
+ *     Replacing both subqueries with `GROUP BY` derived tables, two `LEFT JOIN`s and two `COALESCE`
+ *     wrappers yields identical values and identical row multiplicity — a `GROUP BY` produces at most
+ *     one row per key — and is still not permitted, for reasons that have nothing to do with the
+ *     answer: AAP §0.4.1.7 specifies "its `isAssigned` and `childCount` SUBSELECTS"; AAP §0.8.2
+ *     Guideline 4 forbids optimising beyond what the migration requires; and AAP §0.3.3.1 settled the
+ *     identical question for the sibling statement in `./MySqlSkuRepository.ts` by keeping N correlated
+ *     `EXISTS` clauses "rather than an `IN` list or a `GROUP BY … HAVING COUNT` rewrite". Moving the
+ *     evaluation point from once-per-outer-row to once-per-statement is a PERFORMANCE change, which is
+ *     the single category of change this port has no licence to make.
  *
  *     ⛔ ALSO FORBIDDEN, AND NEVER PRESENT: joining the base tables directly and aggregating in the
  *     outer query — `LEFT JOIN SwProduct ON … GROUP BY SwProductType.productTypeID`. That fans the
@@ -847,18 +822,23 @@ export class MySqlProductTypeRepository implements ProductTypeRepository {
       productType.productTypeName ?? null,
       productType.productTypeDescription ?? null,
       productType.systemCode ?? null,
-      /* The hierarchy lives in this key. Read from the association, mirroring the mapping declaration
-       * at `model/entity/ProductType.cfc:L62`.
+      /* The hierarchy lives in this key. The association comes first, mirroring the mapping
+       * declaration at `model/entity/ProductType.cfc:L62`.
        *
-       * ⚠️ AND THIS KEY HAS A KNOWN ROUND-TRIP GAP, RECORDED RATHER THAN CLOSED. `./rowMappers.ts`
-       * leaves `parentProductType` entirely unhydrated under its rule 3, so a product type READ
-       * through that module carries no parent association and this expression stores `NULL`,
-       * detaching it from its parent. The gap is deliberate — an identifier-only parent would make
-       * `ProductType.getSimpleRepresentation` return `undefined` and empty the feed's
-       * `g:product_type` element, which rule 3a forbids. The full account, and the identical gap in
-       * `./MySqlProductPersistence.ts`'s `collectProductTypeValues`, are recorded at the rule 3a
-       * discussion in `./rowMappers.ts`. */
-      productType.parentProductType?.productTypeID ?? null,
+       * ⭐ AND THE PRESERVED FOREIGN KEY IS THE FALLBACK, WHICH IS WHAT CLOSES THE ROUND TRIP. This
+       * expression used to end at `?? null`, so a product type READ through `./rowMappers.ts` — which
+       * leaves `parentProductType` unhydrated on purpose, because an identifier-only parent would make
+       * `ProductType.getSimpleRepresentation` return `undefined` and empty the feed's `g:product_type`
+       * element — was written back with `NULL` here and silently DETACHED from its parent. Rule 3b in
+       * `./rowMappers.ts` preserves the row's key beside the entity for exactly this read, so the
+       * association still wins whenever one is resolved and the column is nulled only when there is
+       * genuinely no parent to record. A caller that means to detach a hydrated child calls
+       * `forgetHydratedParentProductTypeID` first; the same fallback is applied by
+       * `./MySqlProductPersistence.ts`'s `collectProductTypeValues`, and both sites are named at the
+       * rule 3b discussion. */
+      productType.parentProductType?.productTypeID ??
+        readHydratedParentProductTypeID(productType) ??
+        null,
       productType.remoteID ?? null,
       productType.createdDateTime ?? null,
       productType.createdByAccount ?? null,
@@ -925,11 +905,48 @@ export class MySqlProductTypeRepository implements ProductTypeRepository {
      * is therefore accurate, and fabricating a snapshot would imply a change-detection capability neither
      * system has.
      */
+    /*
+     * ⭐ RULE 3b, SECOND HALF — THE HOOK REBUILDS THE ANCESTRY PATH FROM THE ASSOCIATION THIS ADAPTER
+     * DELIBERATELY LEAVES UNRESOLVED, SO THE REBUILD HAS TO BE ALLOWED TO FAIL SAFE.
+     *
+     * `ProductType.preInsert` / `preUpdate` port `:L306` and `:L311`, which recompute
+     * `productTypeIDPath` by walking `parentProductType` to the root. Hibernate could always make that
+     * walk, because the parent was loaded or lazily loadable inside the ORM session. This adapter has no
+     * session and, under rule 3b in `./rowMappers.ts`, does not attach a parent — so for a HYDRATED
+     * CHILD the walk finds no parent and yields the child's own identifier alone. Writing that would
+     * FLATTEN the ancestry, and now that the parent column is preserved it would also leave the row
+     * self-contradictory: a `parentProductTypeID` pointing at a parent that the path claims does not
+     * exist. `ProductType.getBaseProductType` reads `listFirst` of this very path to find the root, so a
+     * flattened path silently changes a product's discriminator.
+     *
+     * THE ROW ALREADY KNOWS THE ANSWER, WHICH IS WHY RESTORING IS CORRECT AND RECOMPUTING IS NOT. The
+     * hydrated `productTypeIDPath` is the database's own value for the full chain; the grandparents it
+     * names cannot be derived from the preserved key, which identifies only the immediate parent. So the
+     * authoritative value is captured before the hook and put back exactly when the rebuild demonstrably
+     * had nothing to walk while the row demonstrably HAS a parent.
+     *
+     * EVERY OTHER CASE STILL GETS THE HOOK'S VALUE, which is what keeps the re-parenting behaviour the
+     * hook exists for: a resolved association means the walk was real, so the rebuild stands; a detach
+     * that has forgotten its preserved key leaves nothing to restore, so the flattened path is the
+     * correct one; and a genuine root records no key and rebuilds to its own identifier, which is what
+     * `config/dbdata/SlatwallProductType.xml.cfm:L13-L15` seeds for all three.
+     */
+    const hydratedProductTypeIDPath = productType.productTypeIDPath;
+    const preservedParentProductTypeID = readHydratedParentProductTypeID(productType);
+
     const auditActor = this.accountContext.getCurrentAccount();
     if (isInsert) {
       productType.preInsert(auditActor);
     } else {
       productType.preUpdate(undefined, auditActor);
+    }
+
+    if (
+      productType.parentProductType === undefined &&
+      preservedParentProductTypeID !== undefined &&
+      hydratedProductTypeIDPath !== undefined
+    ) {
+      productType.productTypeIDPath = hydratedProductTypeIDPath;
     }
 
     const writableValues = this.collectWritableValues(productType);

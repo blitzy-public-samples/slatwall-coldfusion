@@ -102,7 +102,11 @@ import type {
 } from '../../src/integrations/google/ProductFeedBuilder';
 import type { ProductFeedSkuSource } from '../../src/integrations/google/ProductFeedQuery';
 import type { Sku } from '../../src/domain/sku/Sku';
-import type { SmartListInput, SmartListJoin } from '../../src/ports/SmartListQueryPort';
+import type {
+  SmartListInput,
+  SmartListJoin,
+  SmartListResult,
+} from '../../src/ports/SmartListQueryPort';
 
 import { MERCHANDISE_PRODUCT_TYPE, MERCHANDISE_PRODUCT_TYPE_ID } from '../fixtures/productTypes';
 import { createTestMerchandiseProductData } from '../fixtures/testProduct';
@@ -300,16 +304,32 @@ function createHandlerScenario(seed: ScenarioSeed = {}): HandlerScenario {
   const selectionCalls: SelectionCall[] = [];
   let selectedSkus: readonly Sku[] = [sku];
   const skuSource: ProductFeedSkuSource = {
-    getSkuSmartListRecords: (
+    /* The parity-frozen reading `model/service/SkuService.cfc:L309` declares, answering the WHOLE
+     * `SmartListResult`. `ProductFeedQuery` reads only `records` off it, so the remaining views are
+     * populated consistently with that single page rather than left absent — an absent view would let a
+     * consumer that started reading one pass a type error instead of a failing assertion. */
+    getSkuSmartList: (
       data?: SmartListInput,
+      _currentURL?: string,
       additionalJoins?: readonly SmartListJoin[],
-    ): Promise<Sku[]> => {
+    ): Promise<SmartListResult<Sku>> => {
       selectionCalls.push({ data, additionalJoins });
 
       if (seed.selectionFailure !== undefined) {
         return Promise.reject(seed.selectionFailure);
       }
-      return Promise.resolve([...selectedSkus]);
+
+      const records: readonly Sku[] = [...selectedSkus];
+
+      return Promise.resolve({
+        records,
+        pageRecords: records,
+        recordsCount: records.length,
+        pageRecordsStart: records.length === 0 ? 0 : 1,
+        pageRecordsEnd: records.length,
+        currentPage: 1,
+        totalPages: records.length === 0 ? 0 : 1,
+      });
     },
   };
 
@@ -589,18 +609,83 @@ describe('NET-NEW googleFeedHandler — the configured host reaches every absolu
     expect(scenario.hostReads.reads).toBe(1);
   });
 
-  it('[NET-NEW] uses whatever host configuration supplies, without validating or normalising it', async () => {
+  it('[NET-NEW] passes a legal host through unmodified — the gate refuses or does nothing', async () => {
     const scenario = createHandlerScenario({ host: SECOND_RENDER_HOST });
     const { response } = await invoke(scenario.handler);
 
     /*
-     * ⛔ WITHDRAWN HOST GATE. The grammar validator and the `allowedHosts` membership check that once
-     * wrapped this read are both withdrawn, and `googleFeedHandler.ts:L717-L720` records the residual
-     * exposure rather than re-adding them. The QA finding INFO-1 covers the same decision. What is
-     * asserted is the CURRENT behaviour: the configured value is passed through unmodified.
+     * ⭐ THE TITLE USED TO SAY "without validating or normalising it", AND HALF OF THAT IS NO LONGER
+     * TRUE. Review findings F7 and SEC-06 reinstated `validateFeedHostAuthority`, so the value IS
+     * validated — at construction here and again per render in the serializer. The other half still
+     * holds and is what this case pins: a host that passes is used EXACTLY as configured. Nothing is
+     * trimmed, case-folded, punycoded, stripped of a default port or upgraded to a secure scheme, so
+     * the emitted bytes for a legal host are the configured bytes.
      */
     expect(response.body).toContain(`<link>http://${SECOND_RENDER_HOST}</link>`);
     expect(response.body).not.toContain(RENDER_HOST);
+  });
+
+  it('[NET-NEW] refuses a host whose userinfo delimiter would move the origin, at construction', () => {
+    /*
+     * ⭐ THE ONE EXPOSURE ESCAPING CANNOT CLOSE, WHICH IS WHY THE GATE EXISTS. `@` is not an XML
+     * metacharacter, so it survives `escapeFeedText` untouched — and because the host sits immediately
+     * after `http://` at `product.cfm:L14`, `:L15`, `:L22`, `:L23` and `:L24`, a value of
+     * `<configured>@evil.example` makes every absolute URL in the feed resolve to `evil.example`.
+     *
+     * ⚠️ IT FAILS AT CONSTRUCTION, NOT ON THE FIRST INVOCATION. The host is deployment configuration,
+     * identical for the life of the container, so a bad one is a deployment fault and must surface while
+     * the container initialises rather than once per request forever.
+     */
+    expect(() => createHandlerScenario({ host: `${RENDER_HOST}@evil.example` })).toThrow(
+      DataIntegrityError,
+    );
+  });
+
+  it.each([
+    ['a path delimiter', `${RENDER_HOST}/evil`],
+    [
+      'a backslash, which a special-scheme parser reads as a path delimiter',
+      `${RENDER_HOST}\\evil`,
+    ],
+    ['a query delimiter', `${RENDER_HOST}?x=1`],
+    ['a fragment delimiter, which collapses every URL onto one page', `${RENDER_HOST}#x`],
+    ['an embedded space', `${RENDER_HOST} evil`],
+    ['an embedded newline', `${RENDER_HOST}\nevil`],
+    ['nothing but whitespace', '   '],
+    ['nothing at all', ''],
+  ])('[NET-NEW] refuses a configured host carrying %s', (_label, host) => {
+    /*
+     * Each value either terminates the authority component or is illegal inside one. None could have
+     * been published by a legacy deployment to the origin it configured, which is what makes the
+     * refusal D18-shaped rather than an outcome change — see the serializer's RAW-SINK POLICY note.
+     */
+    expect(() => createHandlerScenario({ host })).toThrow(DataIntegrityError);
+  });
+
+  it('[NET-NEW] admits an IPv6 literal, a port and an underscore, because no grammar was invented', async () => {
+    /*
+     * ⛔ THE WITHDRAWN RFC 1035 GRAMMAR AND ITS 63-OCTET CEILING STAY WITHDRAWN, AND THIS CASE IS WHY.
+     * A positive grammar of "legal hostnames" refuses values real deployments use, and refusing a
+     * legitimate authority is the outcome change AAP §0.8.2 guideline 4 actually forbids. The gate is a
+     * DENY set of authority delimiters instead, so each of these passes and is emitted verbatim.
+     */
+    for (const host of ['[2001:db8::1]:8080', 'shop.example.test:8443', 'my_host.example.test.']) {
+      const { response } = await invoke(createHandlerScenario({ host }).handler);
+      expect(response.body).toContain(`<link>http://${host}</link>`);
+    }
+  });
+
+  it('[NET-NEW] escapes an ampersand in the host rather than refusing it', async () => {
+    /*
+     * ⭐ THE TWO CONTROLS DIVIDE THE EXPOSURE, AND THIS CASE PINS THE SEAM. `&` cannot move an
+     * authority, so the gate has no business refusing it; but emitted raw it would leave the channel
+     * link with no defined XML parse. So it passes the gate and is ESCAPED at the sink — a working
+     * document where a refusal would have published none.
+     */
+    const { response } = await invoke(createHandlerScenario({ host: 'a&b.example.test' }).handler);
+
+    expect(response.body).toContain('<link>http://a&amp;b.example.test</link>');
+    expect(response.body).not.toContain('<link>http://a&b.example.test</link>');
   });
 });
 

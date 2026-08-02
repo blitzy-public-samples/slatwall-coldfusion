@@ -77,6 +77,7 @@ import {
   type ProductTypePopulationCollaborators,
   type ProductTypePropertyName,
 } from '../../src/domain/product/ProductType';
+import { DomainError } from '../../src/errors/DomainError';
 import { ValidationError } from '../../src/errors/ValidationError';
 import type { ValidationContext } from '../../src/validation/Validator';
 import {
@@ -1031,20 +1032,41 @@ describe('ProductType — the self-referencing hierarchy', () => {
     expect(Object.hasOwn(child, 'parentProductType')).toBe(false);
   });
 
-  it('NET-NEW — model/entity/ProductType.cfc:L156-L158 — the doubly-degenerate call, no argument on a ROOT, is a safe no-op rather than a raise', () => {
+  it('NET-NEW — model/entity/ProductType.cfc:L157 — the doubly-degenerate call, no argument on a ROOT, FAILS exactly as the legacy does', () => {
+    /*
+     * ⭐ THIS CASE CERTIFIED A "SAFE NO-OP" AND CALLED IT A HARDENING. Both are withdrawn.
+     * Its previous title was "...is a safe no-op rather than a raise" and its comment described the
+     * port guarding the whole body as "a deliberate hardening of an unreachable-in-practice path rather
+     * than a behaviour change". A hardening that turns a failure into a success IS a behaviour change,
+     * and AAP §0.6.7 admits exactly one behaviour repair — D18, the importer's SQL parameterisation
+     * (§0.6.7.7). This was not it, so the failure is restored.
+     *
+     * THE UNREACHABILITY ARGUMENT WAS ALSO WRONG ON ITS OWN TERMS, TWICE OVER. It claimed the member is
+     * "only invoked from the setter and from an administrative unassign, both of which hold a parent" —
+     * but `setParentProductType` at `:L149-L154` never calls it, and the sole legacy call site is
+     * `removechildProductType` at `:L171`, which passes `this` explicitly. More decisively:
+     * unreachability in the CFML tree is not unreachability in the port, which declares the member
+     * public with an OPTIONAL parameter, so `root.removeParentProductType()` is a call any consumer may
+     * write and the compiler accepts. This very case is the proof — it is a caller reaching the path.
+     *
+     * WHAT THE LEGACY DOES. Nothing supplied AND nothing held, so `:L157` assigns from an undefined
+     * `variables.parentProductType` and the CFML engine raises THERE — before the search at `:L159`
+     * and before the unconditional delete at `:L163`.
+     */
     const root = buildProductType({ productTypeID: MERCHANDISE_PRODUCT_TYPE_ID });
 
-    // Nothing was supplied AND nothing is held, so the default resolves to absent. The legacy would
-    // then have dereferenced a null at `:L159`'s `arguments.parentProductType.getChildProductTypes()`
-    // and raised; the port guards the whole body instead, which is a deliberate hardening of an
-    // unreachable-in-practice path rather than a behaviour change — no in-scope caller reaches it,
-    // because `model/entity/ProductType.cfc:L155-L164` is only invoked from the setter and from an
-    // administrative unassign, both of which hold a parent.
-    root.removeParentProductType();
+    expect(() => {
+      root.removeParentProductType();
+    }).toThrow(TypeError);
+    // The diagnostic names the legacy locator, so the parity story travels with the failure.
+    expect(() => {
+      root.removeParentProductType();
+    }).toThrow(/model\/entity\/ProductType\.cfc:L157/);
 
+    // NOTHING MOVED. The legacy raises before its delete, so a failed call performs no write — the
+    // root is exactly as it was, and no partial state distinguishes a failure from a success.
     expect(root.parentProductType).toBeUndefined();
     expect(root.getChildProductTypes()).toEqual([]);
-    expect(root.isNew()).toBe(false);
   });
 
   it('NET-NEW — model/entity/ProductType.cfc:L160-L163 — the parent reference is cleared even when the child was never in that parent collection', () => {
@@ -1470,23 +1492,41 @@ describe('ProductType — getBaseProductType', () => {
     );
   });
 
-  it('NET-NEW — model/entity/ProductType.cfc:L112 — an unresolvable root yields no base product type rather than a fabricated one', async () => {
+  it('NET-NEW — model/entity/ProductType.cfc:L112 — an UNRESOLVABLE root RAISES, while a root that resolves without a code answers absence', async () => {
+    // ⭐ THE TWO ABSENCES THE LEGACY KEEPS DISTINGUISHABLE, AND THIS CASE IS WHERE THEY SEPARATE.
+    // `:L112` reads `getService("ProductService").getProductType(listFirst(...)).getSystemCode()` —
+    // one expression with two distinct failure modes:
+    //   • the LOOKUP yields nothing  → `.getSystemCode()` dereferences a null → CFML RAISES.
+    //   • the lookup yields a row that holds no code → the getter returns CFML null → the METHOD
+    //     RETURNS null, and the caller receives it.
+    //
+    // ⛔ AN EARLIER REVISION OF THIS CASE ASSERTED `undefined` FOR BOTH, under the title "an
+    // unresolvable root yields no base product type rather than a fabricated one", and it is
+    // WITHDRAWN. Reporting absence was never the objection — the objection is that it merged a state
+    // the legacy FAILS in with a state the legacy SUCCEEDS in, which is what let a permissive outcome
+    // through at `src/adapters/mysql/MySqlSkuRepository.ts`: an absent code adds no option join there
+    // and returns EVERY SKU of the product, where the legacy call had aborted.
     const root = buildProductType({ productTypeID: MERCHANDISE_PRODUCT_TYPE_ID });
     const child = buildProductType({
       productTypeID: SUBSCRIPTION_PRODUCT_TYPE_ID,
       parentProductType: root,
     });
 
-    // An empty seed set means the walk finds no row — the state in which `:L112` chained
-    // `.getSystemCode()` straight off a null. The port reports the absence instead of inventing a
-    // code for it, and the honest answer is surfaced to the caller rather than swallowed.
+    // ── Absence 1: NO ROW. An empty seed set means the walk finds nothing, so the port raises.
     const emptyResolver = createProductTypeRootResolverDouble([]);
 
-    await expect(child.getBaseProductType(emptyResolver.resolver)).resolves.toBeUndefined();
+    await expect(child.getBaseProductType(emptyResolver.resolver)).rejects.toBeInstanceOf(
+      DomainError,
+    );
+    // The resolver WAS consulted, with the root identifier — the raise follows a real lookup rather
+    // than short-circuiting ahead of one.
     expect(emptyResolver.requestedProductTypeIds).toEqual([MERCHANDISE_PRODUCT_TYPE_ID]);
+    await expect(
+      child.getBaseProductType(createProductTypeRootResolverDouble([]).resolver),
+    ).rejects.toThrow(/model\/entity\/ProductType\.cfc:L112/);
 
-    // A root whose row exists but carries no code resolves the same way, because the code is what is
-    // read — not the row.
+    // ── Absence 2: ROW PRESENT, NO CODE. Still `undefined`, because that IS the legacy answer, and
+    // the return type's `| undefined` now denotes exactly this one state.
     const codelessRootResolver = createProductTypeRootResolverDouble([
       { productTypeID: MERCHANDISE_PRODUCT_TYPE_ID },
     ]);
@@ -1500,16 +1540,29 @@ describe('ProductType — getBaseProductType', () => {
     ).resolves.toBeUndefined();
   });
 
-  it('NET-NEW — org/Hibachi/HibachiEntity.cfc:L308-L324 — a brand-new entity with no code resolves the blank first identifier, because that is what the blank path yields', async () => {
+  it('NET-NEW — org/Hibachi/HibachiEntity.cfc:L308-L324 — a brand-new entity resolves the blank first identifier and RAISES, because no row carries a blank identifier', async () => {
     const brandNew = new ProductType();
     const rootResolver = createProductTypeRootResolverDouble();
 
     // The blank path has no non-empty segment, so the identifier handed to the resolver is the empty
-    // string, no seeded row matches it, and the answer is an absent base product type. Recorded
-    // because it is the state `SkuService`'s discriminator sees for an unsaved product type, and it
-    // is reached without any special-casing in the entity.
-    await expect(brandNew.getBaseProductType(rootResolver.resolver)).resolves.toBeUndefined();
+    // string. No row can match it, which puts this squarely in absence 1 above — and the legacy
+    // reached the same dereference for the same reason, because `listFirst` of a blank path is blank.
+    //
+    // ⛔ THE PREVIOUS TITLE CLAIMED THIS "resolves the blank first identifier, because that is what
+    // the blank path yields" AND ASSERTED `undefined`. The first half is retained because it is true
+    // and worth pinning; the assertion is WITHDRAWN, because an unsaved product type is exactly the
+    // state `SkuService`'s discriminator meets most often and it must fail here rather than travel on
+    // as a value.
+    await expect(brandNew.getBaseProductType(rootResolver.resolver)).rejects.toBeInstanceOf(
+      DomainError,
+    );
     expect(rootResolver.requestedProductTypeIds).toEqual(['']);
+
+    // The diagnostic names the blank path rather than printing a bare empty string, so the state is
+    // legible in a log without disclosing anything: `DomainError` presents neutrally at the handler.
+    await expect(
+      new ProductType().getBaseProductType(createProductTypeRootResolverDouble().resolver),
+    ).rejects.toThrow(/\(empty identifier path\)/);
   });
 });
 

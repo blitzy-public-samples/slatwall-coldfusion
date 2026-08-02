@@ -44,11 +44,15 @@
  * mutable state, and {@link buildHarness} constructs a new service, new repositories, new ports, new
  * entities and new process objects for every single test.
  *
- * NET-NEW COVERAGE, STATED PLAINLY. `meta/tests/` contains NO `ProductServiceTest.cfc` — AAP §0.6.5.2
- * verified its absence — so every one of the fifteen public members exercised below is NET-NEW coverage
- * and says so in its own test name. The one exception is the `issue_1690` regression, which is
- * traceable to `meta/tests/unit/IssuesTest.cfc:L192-L201` and is labelled TRACEABLE rather than
- * NET-NEW. Nothing here implies parity with a legacy test that does not exist.
+ * NET-NEW COVERAGE, STATED PLAINLY AND WITHOUT EXCEPTION. `meta/tests/` contains NO
+ * `ProductServiceTest.cfc` — AAP §0.6.5.2 verified its absence — so EVERY assertion in this file is
+ * NET-NEW coverage, and every test name says so. Two cases carry a legacy locator anyway, and the
+ * distinction matters: `meta/tests/unit/IssuesTest.cfc:L192-L201` (`issue_1690`) and
+ * `meta/tests/unit/Helper.cfc:L52-L77` (the merchandise fixture) supply the SCENARIO and the fixture
+ * LITERALS this file reuses, but neither contains a single `assert` statement, so there is no legacy
+ * assertion for those cases to extend. They are labelled NET-NEW with the legacy locator named, which is
+ * the honest form: the locator earns traceability of the scenario, not of a verdict. Nothing here implies
+ * parity with a legacy assertion that does not exist (AAP §0.8.3.7).
  *
  * WHAT IS COVERED, IN ORDER. The fifteen declared members of AAP §0.4.2.1 each get their own block:
  * `loadDataFromFile`, `getFormattedOptionGroups`, `getProductSkusBySelectedOptions`,
@@ -68,11 +72,11 @@
  *      NOT PORTED. Unported code gets no test. This paragraph exists so a reviewer counting members
  *      does not read the absence as a hole in the matrix.
  *
- *   2. The AWS handler surface. An earlier revision of this path held a `productHandler` suite. The AAP
- *      enumerates no `slatwall-ts/test/handlers/productHandler.test.ts` (AAP §0.4.1.12) and this file's
- *      mandate is the service's own fifteen-member matrix, which that revision explicitly left
- *      uncovered. No AWS type, event, context or handler module is imported here — all AWS coupling
- *      belongs to `src/handlers/**` (AAP §0.7.3, hexagonal separation).
+ *   2. The AWS handler surface. This file's mandate is `ProductService`'s own fifteen-member matrix, not
+ *      the layer in front of it; `test/handlers/productHandler.test.ts` owns that. No AWS type, event,
+ *      context or handler module is imported here — all AWS coupling belongs to `src/handlers/**`
+ *      (AAP §0.7.3, hexagonal separation), and keeping it out of this file is what lets every case below
+ *      construct the service directly.
  *
  *   3. The sixteen excluded calculated members of AAP §0.2.2.6 — `salePrice`, `livePrice`, `qats`,
  *      `currencyDetails`, `eligibleFulfillmentMethods` and the rest. Nothing below reads them, and no
@@ -125,6 +129,7 @@ import {
   type ProductRepositoryCall,
   type SettingResolverCall,
   type SettingSeed,
+  physicalID,
   type SkuRepositoryCall,
   type SmartListResponder,
   TEST_ADMIN_ACCOUNT_ID,
@@ -144,6 +149,7 @@ import { BaseService, type MaintenanceEntityRef } from '../../src/services/BaseS
 import { OptionService, type SelectOption } from '../../src/services/OptionService';
 import {
   ProductService,
+  type FormattedOptionGroup,
   type ProductBaseService,
   type ProductProcessValidator,
   type ProductServiceCollaborators,
@@ -168,7 +174,12 @@ import {
   ProductType,
 } from '../../src/domain/product/ProductType';
 import { Sku } from '../../src/domain/sku/Sku';
-import { DomainError, NotImplementedError } from '../../src/errors/DomainError';
+import {
+  DomainError,
+  ImportSourceRejectedError,
+  NotImplementedError,
+  RequestBudgetExhaustedError,
+} from '../../src/errors/DomainError';
 import {
   FILE_UPLOAD_RBKEY,
   PROCESS_OBJECTS_ERROR_KEY,
@@ -189,8 +200,10 @@ import {
   type ValidationRuleSet,
   type ValidationSubject,
 } from '../../src/validation/Validator';
+import type { ProductImportOptions } from '../../src/ports/repositories/ProductRepository';
 import type { SmartListQuery } from '../../src/ports/SmartListQueryPort';
 import type { UniqueValueProbe } from '../../src/util/urlTitle';
+import type { UrlTitleProbeBudget } from '../../src/util/urlTitleProbeBudget';
 
 /**
  * The physical tables the URL-title utility is asked about. `model/service/ProductService.cfc:L269`
@@ -236,6 +249,35 @@ const AUTO_APPROVE_REVIEWS_SETTING: SettingSeed = {
 };
 
 // ==================================================================================================
+// PHYSICALLY VALID IDENTIFIERS — REVIEW FINDING 16
+//
+// Every entity identifier in this file is minted by `physicalID(label)`, so its value is 32 lowercase
+// hexadecimal characters with no dashes — the shape AAP IR-6 fixes for all 107 uuid-keyed entities in
+// this schema — while the readable label stays at the call site. The mechanism and the rationale it
+// withdraws are documented once, at `test/support/inMemoryRepositories.ts`; this file was the largest
+// contributor to the review's audit (78 non-physical literals) and now contributes none.
+//
+// TWO CLASSES OF CASE DESERVE THEIR OWN NOTE, because the review's resolution explicitly anticipated
+// identifiers that "intentionally require readable/case-sensitive values". Both are preserved, and
+// both are STRONGER in the physical form rather than merely converted:
+//
+//   1. ABSENT-IDENTIFIER PROBES — `physicalID('o-nowhere')` and `physicalID('og-does-not-exist')`.
+//      These stand for keys that are deliberately not in the store. A malformed sentinel would leave
+//      the case unable to separate "looked up and not found" from "rejected because the key was the
+//      wrong shape"; a well-formed key that simply is not present can only produce the former.
+//
+//   2. THE CASE-SENSITIVITY PROBE — `physicalID('o-small').toUpperCase()`, the option the tests call
+//      `smallShouted`. It was the literal `'O-SMALL'`. The uppercase HEX form is the same identifier
+//      in a different case, so when `getUnusedProductOptions` declines to list it the only property
+//      the assertion can be responding to is the case difference. The readable pair `o-small`/`O-SMALL`
+//      also differed in nothing but case, so no assertive power is lost — but the physical form
+//      additionally exercises the width and alphabet the port will really receive.
+//
+// No identifier here is hand-typed: every value is derived from its label, so a reader can reproduce
+// any of them without trusting a literal (AAP §0.8.5's artifact-trail requirement, applied to fixtures).
+// ==================================================================================================
+
+// ==================================================================================================
 // Strict-mode reading helpers
 //
 // `noUncheckedIndexedAccess` makes every indexed read `T | undefined`, and this file may not use a
@@ -254,14 +296,35 @@ function requireAt<TItem>(items: readonly TItem[], index: number): TItem {
   return item;
 }
 
-function requireEntry<TValue>(record: Readonly<Record<string, TValue>>, key: string): TValue {
-  const value = record[key];
-  if (value === undefined) {
+/**
+ * The option-group NAMES an answer carries, in the order it carries them.
+ *
+ * `getFormattedOptionGroups` answers `FormattedOptionGroup[]` (AAP §0.4.2.1), so the labels are read off
+ * the entries rather than off a record's keys. Order is asserted through this helper because it is a
+ * documented behaviour — first-seen group order, mismatch M9 — and not an accident of the shape.
+ */
+function groupNames(groups: readonly FormattedOptionGroup[]): readonly string[] {
+  return groups.map((group) => group.optionGroupName);
+}
+
+/**
+ * Finds one formatted option group by NAME, failing loudly when no entry carries it.
+ *
+ * The name is the identity `model/service/ProductService.cfc:L76` keys by, so it is the only sound way to
+ * address an entry; the failure message lists the labels that ARE present so a mismatch reads as a
+ * mismatch rather than as an `undefined` dereference.
+ */
+function requireGroup(
+  groups: readonly FormattedOptionGroup[],
+  optionGroupName: string,
+): FormattedOptionGroup {
+  const group = groups.find((candidate) => candidate.optionGroupName === optionGroupName);
+  if (group === undefined) {
     throw new Error(
-      `Expected a "${key}" entry but the record holds [${Object.keys(record).join(', ')}].`,
+      `Expected a "${optionGroupName}" option group but the answer holds [${groupNames(groups).join(', ')}].`,
     );
   }
-  return value;
+  return group;
 }
 
 /**
@@ -584,14 +647,31 @@ interface HarnessOptions {
     readonly tableName: UrlTitleTableName;
     readonly value: string;
   }[];
-  /** Makes the product-type base service throw, exercising the landed catch path. */
+  /**
+   * Makes the product-type base service REJECT, so a non-validation failure can be observed
+   * propagating. `BaseService.save` itself no longer rejects for a validation failure — see
+   * {@link SurfaceOptions.productTypeSaveFindings} for that path.
+   */
   readonly productTypeSaveFailure?: Error;
+  /**
+   * Makes the product-type base service attach findings to the entity and RESOLVE with it, which is
+   * what the landed `BaseService.save` does on a validation failure
+   * (`model/service/HibachiService.cfc:L103` returns `arguments.entity` on every path).
+   */
+  readonly productTypeSaveFindings?: Readonly<Record<string, readonly string[]>>;
   /** Makes the product-entity smart-list stream reject, so a port failure can be observed. */
   readonly smartListFailure?: Error;
   /** Which account the review member sees. */
   readonly account?: AccountPosture;
   /** Subscription-term identifiers the boundary port resolves. */
   readonly subscriptionTermIDs?: readonly string[];
+  /**
+   * The OPTIONAL URL-title probe ceiling — review finding F5 (SEC-14), CWE-400.
+   *
+   * Absent in every case that does not name it, which is the parity default: both derivations probe
+   * without a ceiling exactly as `model/service/DataService.cfc:L64` does.
+   */
+  readonly urlTitleProbeBudget?: UrlTitleProbeBudget;
 }
 
 interface Harness {
@@ -776,6 +856,16 @@ function buildHarness(options: HarnessOptions = {}): Harness {
       if (options.productTypeSaveFailure !== undefined) {
         return Promise.reject(options.productTypeSaveFailure);
       }
+      /*
+       * ⭐ A VALIDATION FAILURE RESOLVES, IT DOES NOT REJECT, and this double has to model that or the
+       * cases built on it would certify a contract the real collaborator no longer has. The landed
+       * `BaseService.save` attaches the accumulated findings to the entity's own bag and returns the
+       * same instance — `org/Hibachi/HibachiService.cfc:L133` gates persistence on
+       * `!arguments.entity.hasErrors()`, reading that bag. So the findings arrive ON the entity here too.
+       */
+      if (options.productTypeSaveFindings !== undefined) {
+        entity.addErrors(options.productTypeSaveFindings);
+      }
       return Promise.resolve(entity);
     },
   };
@@ -810,6 +900,12 @@ function buildHarness(options: HarnessOptions = {}): Harness {
     productPropertyDescriptors: PRODUCT_PROPERTY_DESCRIPTORS,
     populationAuthorization: populationAuthorization.populationAuthorization,
     isUrlTitleAvailable,
+    /* Conditional spread rather than an explicit `undefined`: `exactOptionalPropertyTypes` makes an
+     * explicitly-undefined optional member a different type from an absent one, and ABSENT is the
+     * parity path the service checks for (review finding F5). */
+    ...(options.urlTitleProbeBudget === undefined
+      ? {}
+      : { urlTitleProbeBudget: options.urlTitleProbeBudget }),
     persistProduct: productPersister.persist,
     defaultSkuIdReader: (delegate: object): string => defaultSkuIdsByDelegate.get(delegate) ?? '',
   };
@@ -922,6 +1018,256 @@ describe('loadDataFromFile — the import boundary', () => {
     // the catalog half-written, so the rejection must reach the caller rather than be absorbed here.
     await expect(harness.service.loadDataFromFile('/import/broken.txt')).rejects.toBe(failure);
   });
+
+  /*
+   * ==============================================================================================
+   * The third argument — F9a
+   * ==============================================================================================
+   *
+   * ⭐ WHY THIS SUB-SECTION EXISTS. `loadDataFromFile` takes a THIRD parameter the legacy does not have:
+   * `options?: ProductImportOptions`, carrying a caller-supplied `AbortSignal` and the `deferBackfills`
+   * switch. Its whole value is that it arrives at the adapter UNTOUCHED — the service is a forwarding
+   * boundary, and the adapter is where the four cancellation checkpoints live
+   * (`test/adapters/MySqlProductRepository.test.ts`). A service that substituted its own signal, wrapped
+   * the object, spread a copy of it or supplied a default would break cancellation in a way NO adapter
+   * test could see, because the adapter would simply never receive the caller's signal.
+   *
+   * ⛔ AND IT MUST NOT MINT A BUDGET. M1 records the legacy's 3600-second request timeout as
+   * unrepresentable in one invocation, and S9/IR-12 forbid substituting a number for it. The cases below
+   * therefore assert the ABSENCE of any invented control as firmly as the presence of the caller's own:
+   * with no third argument, `undefined` reaches the adapter — not `{}`, not a signal this service made.
+   *
+   * Every case is NET-NEW: §0.6.5.2 records that no `ProductServiceTest` exists, and this parameter has
+   * no legacy counterpart at all.
+   */
+  it('NET-NEW: forwards the caller options object BY REFERENCE, with the same AbortSignal instance', async () => {
+    const controller = new AbortController();
+    const options: ProductImportOptions = { signal: controller.signal };
+    const harness = buildHarness();
+
+    await harness.service.loadDataFromFile('/import/catalog.txt', '"', options);
+
+    const importCalls = harness.productCalls.filter(isProductCall('importFromFile'));
+    expect(importCalls).toHaveLength(1);
+
+    /*
+     * ⭐ IDENTITY, NOT EQUALITY, AND THE DISTINCTION IS THE WHOLE POINT. `toBe` on the object rejects a
+     * defensive `{ ...options }` copy, and `toBe` on the signal rejects a re-derived or wrapped signal.
+     * A structural comparison would accept both, and both would break cancellation: an `AbortSignal` is
+     * only useful to the code holding the SAME instance the caller's controller can abort.
+     */
+    expect(requireAt(importCalls, 0).options).toBe(options);
+    expect(requireAt(importCalls, 0).options?.signal).toBe(controller.signal);
+
+    /* Forwarding does not consume the signal, and the earlier two arguments still travel in source
+     * order alongside it. */
+    expect(controller.signal.aborted).toBe(false);
+    expect(requireAt(importCalls, 0)).toMatchObject({
+      fileURL: '/import/catalog.txt',
+      textQualifier: '"',
+    });
+  });
+
+  it('NET-NEW: an already-aborted signal is forwarded UNCHANGED — the service does not pre-empt the adapter', async () => {
+    const controller = new AbortController();
+    controller.abort();
+    const options: ProductImportOptions = { signal: controller.signal };
+    const failure = new Error('cancelled at the adapter boundary');
+    const harness = buildHarness({ onImport: () => Promise.reject(failure) });
+
+    await expect(harness.service.loadDataFromFile('/import/catalog.txt', '', options)).rejects.toBe(
+      failure,
+    );
+
+    /*
+     * ⭐ THE SERVICE DOES NOT SHORT-CIRCUIT, AND THAT IS DELIBERATE. It would be easy for this member to
+     * inspect `aborted` and raise before delegating, and it would be wrong: the adapter's own
+     * `beforeRetrieval` checkpoint raises a `DomainError` naming the phase and the file, and that context
+     * is what a cancelling caller reads. A service-level short-circuit would produce a DIFFERENT error
+     * with a different shape — or worse, the same message with no phase — so the call is made and the
+     * adapter decides.
+     */
+    const importCalls = harness.productCalls.filter(isProductCall('importFromFile'));
+    expect(importCalls).toHaveLength(1);
+    expect(requireAt(importCalls, 0).options).toBe(options);
+    expect(requireAt(importCalls, 0).options?.signal?.aborted).toBe(true);
+  });
+
+  it('NET-NEW: omitting the third argument forwards undefined — no default object and no invented budget', async () => {
+    const harness = buildHarness();
+
+    await harness.service.loadDataFromFile('/import/catalog.txt');
+
+    const importCalls = harness.productCalls.filter(isProductCall('importFromFile'));
+    expect(importCalls).toHaveLength(1);
+
+    /*
+     * ⚠️ `undefined`, NOT `{}`. The distinction matters because it is the observable proof that no control
+     * was minted on the caller's behalf: no signal, no deadline, no timeout standing in for the 3600
+     * seconds of `model/service/ProductService.cfc:L66`, and no back-fill policy the caller did not ask
+     * for. IR-12 forbids the number; this assertion is how its absence is checked rather than assumed.
+     */
+    expect(requireAt(importCalls, 0).options).toBeUndefined();
+    expect(requireAt(importCalls, 0).textQualifier).toBe('');
+  });
+
+  it('NET-NEW: forwards deferBackfills exactly as supplied, in either position, without interpreting it', async () => {
+    const deferred: ProductImportOptions = { deferBackfills: true };
+    const immediate: ProductImportOptions = { deferBackfills: false };
+    const harness = buildHarness();
+
+    await harness.service.loadDataFromFile('/import/a.txt', '', deferred);
+    await harness.service.loadDataFromFile('/import/b.txt', '', immediate);
+
+    const importCalls = harness.productCalls.filter(isProductCall('importFromFile'));
+    expect(importCalls).toHaveLength(2);
+
+    /* Both values travel, and both travel BY REFERENCE. The service has no opinion about which one is
+     * correct — the back-fill schedule is the adapter's contract, not this boundary's. */
+    expect(requireAt(importCalls, 0).options).toBe(deferred);
+    expect(requireAt(importCalls, 1).options).toBe(immediate);
+    expect(requireAt(importCalls, 0).options?.deferBackfills).toBe(true);
+    expect(requireAt(importCalls, 1).options?.deferBackfills).toBe(false);
+  });
+
+  it('NET-NEW: the options object reaches the import handler itself, not only the recorded call', async () => {
+    const controller = new AbortController();
+    const options: ProductImportOptions = { signal: controller.signal, deferBackfills: true };
+    const seen: (ProductImportOptions | undefined)[] = [];
+    const onImport: ProductImportHandler = (_fileURL, _textQualifier, forwardedOptions) => {
+      seen.push(forwardedOptions);
+      return Promise.resolve();
+    };
+    const harness = buildHarness({ onImport });
+
+    await harness.service.loadDataFromFile('/import/catalog.txt', '', options);
+
+    /*
+     * The recorded call and the handler are two independent observation points on the same argument, and
+     * asserting both closes the last gap: a double that recorded the caller's object but handed its own
+     * copy onward would satisfy the cases above while still starving a real adapter of the signal.
+     */
+    expect(seen).toHaveLength(1);
+    expect(requireAt(seen, 0)).toBe(options);
+  });
+
+  it('NET-NEW: F9 — forwards a hostile location UNCHANGED, holding no policy of its own', async () => {
+    const harness = buildHarness();
+    const hostile = 'file:///etc/passwd.csv?x=%2F+1';
+
+    await harness.service.loadDataFromFile(hostile);
+
+    /*
+     * ⭐ SEC-HARDENING (D18-CLASS) — REVIEW FINDING F9 (CWE-918). THE GATE IS AT THE SINK, AND THIS CASE
+     * IS WHAT PINS IT THERE. This member is the port of `model/service/ProductService.cfc:L65-L68`, whose
+     * whole body is a request-budget call and a positional delegation; it opens no socket and dereferences
+     * nothing. The refusal therefore belongs to the adapter that actually retrieves — see
+     * `enforceProductImportSourcePolicy` and the `.xls` exemption in
+     * `test/adapters/MySqlProductRepository.test.ts`.
+     *
+     * ⛔ AND A GATE HERE WOULD BE THE WRONG SHAPE, NOT MERELY A REDUNDANT ONE. A check on this member
+     * protects only callers that arrive THROUGH this member, while the composition root and this suite
+     * both construct the adapter directly; a caller reaching `importFromFile` any other way would bypass
+     * it. Duplicating the policy would also give a deployment two places to configure and one to forget.
+     *
+     * So the assertion is deliberately that NOTHING happens here: the location travels byte-for-byte,
+     * query string and percent-encoding intact, because `model/dao/ProductDAO.cfc:L74` derives the file
+     * type from the RAW string and re-encoding it would change which delimiter the import chooses.
+     */
+    const importCalls = harness.productCalls.filter(isProductCall('importFromFile'));
+    expect(importCalls).toHaveLength(1);
+    expect(requireAt(importCalls, 0).fileURL).toBe(hostile);
+    expect(requireAt(importCalls, 0).textQualifier).toBe('');
+  });
+
+  it("NET-NEW: F9 — propagates the adapter's refusal without translating or absorbing it", async () => {
+    const refusal = new ImportSourceRejectedError(
+      'The import location cannot be read as an absolute URL, so no policy clause can be evaluated ' +
+        'against it and no retrieval was attempted.',
+      { context: { fileURL: 'file:///etc/passwd.csv' } },
+    );
+    const harness = buildHarness({ onImport: () => Promise.reject(refusal) });
+
+    /*
+     * The service adds no catch, no re-wrap and no fallback, so the adapter's refusal reaches the handler
+     * with its public presentation intact — which is what lets `httpResponse` answer 400 with a message
+     * naming neither the location nor the policy. Identity, not shape: a re-wrap would lose
+     * `getPublicError` and the refusal would present as an unclassified 500.
+     */
+    await expect(harness.service.loadDataFromFile('file:///etc/passwd.csv')).rejects.toBe(refusal);
+  });
+
+  /**
+   * ⭐ SEC-08 / REVIEW FINDING F8 (CWE-918) — THE OBLIGATION THIS MEMBER ACTUALLY CARRIES.
+   *
+   * The scheme, credential and address-literal refusals are NOT asserted here, and their absence from
+   * this suite is deliberate. They live at the single retrieval seam in
+   * `src/adapters/mysql/MySqlProductRepository.ts`, are required of every implementation of the port by
+   * `src/ports/repositories/ProductRepository.ts`, and are asserted in
+   * `test/adapters/MySqlProductRepository.test.ts`. This service may not import that adapter (S4), so a
+   * check here could not be the same check — it would be an independent second copy of a security
+   * predicate, free to drift, and a reviewer would then have to prove the two agree before trusting
+   * either.
+   *
+   * WHAT IS LEFT FOR THIS MEMBER IS A NEGATIVE OBLIGATION, AND IT IS AS REAL AS A CHECK. Every refusal
+   * downstream is evaluated against the string this member forwards. So the string it forwards must be
+   * the caller's own, byte for byte: a trim, a lower-casing, a re-encode or a "helpful" normalisation
+   * here would be applied to a value the gate never sees, which is the classic shape of a
+   * normalise-then-validate bypass. That is what these two cases hold.
+   */
+  it('NET-NEW: forwards a hostile-looking location BYTE-FOR-BYTE, neither refusing nor rewriting it', async () => {
+    const harness = buildHarness();
+
+    /*
+     * Each of these is refused downstream, and each is a shape a normaliser would be tempted to touch:
+     * mixed case, a trailing dot on the host, surrounding whitespace, embedded credentials, an
+     * IPv4-mapped IPv6 host, and a percent-encoded path segment. The service must hand every one on
+     * unchanged.
+     */
+    const locations: readonly string[] = [
+      'HTTP://169.254.169.254/latest/meta-data/',
+      '  https://feeds.example/catalog.csv  ',
+      'https://operator:secret@feeds.example/catalog.csv',
+      'http://[::ffff:127.0.0.1]/catalog.csv',
+      'https://feeds.example./catalog.csv',
+      'https://feeds.example/cat%2Falog.csv?since=1#top',
+      'file:///etc/passwd',
+    ];
+
+    for (const location of locations) {
+      await harness.service.loadDataFromFile(location);
+    }
+
+    /*
+     * ⚠️ TWO THINGS AT ONCE, AND BOTH MATTER. The forwarded list being identical to the supplied list
+     * proves no rewriting; the list being COMPLETE proves no refusal — this member does not short-circuit
+     * on a location it dislikes, because deciding that is not its job and a second opinion here would be
+     * the drifting copy described above.
+     */
+    const importCalls = harness.productCalls.filter(isProductCall('importFromFile'));
+    expect(importCalls.map((call) => call.fileURL)).toEqual(locations);
+  });
+
+  it('NET-NEW: adds no policy argument to the port call, so nothing here configures the refusals', async () => {
+    const harness = buildHarness();
+
+    await harness.service.loadDataFromFile('https://feeds.example/catalog.csv');
+
+    /*
+     * An earlier revision of the port took a `ProductImportSourcePolicy` — allowed schemes, allowed
+     * hosts, byte cap, timeout, redirect count — and this member supplied it. The four configurable ones
+     * stayed withdrawn when F8 reinstated the gate, precisely because the source states no host and no
+     * figure, so every possible value of each is invented (S9, IR-12). The reinstated controls are fixed
+     * literals instead, and this member therefore passes exactly the two arguments `:L67` passes plus the
+     * optional invocation-scoped controls — and no policy of any kind.
+     */
+    const importCalls = harness.productCalls.filter(isProductCall('importFromFile'));
+    expect(importCalls).toHaveLength(1);
+    expect(Object.keys(requireAt(importCalls, 0)).sort()).toEqual(
+      ['fileURL', 'member', 'options', 'textQualifier'].sort(),
+    );
+    expect(requireAt(importCalls, 0).options).toBeUndefined();
+  });
 });
 
 // ==================================================================================================
@@ -945,110 +1291,156 @@ describe('getFormattedOptionGroups — the option-group projection', () => {
    * `processProduct_addOptionGroup`, and is noted there too. No shared mutable state is fabricated here
    * to simulate the leak.
    */
-  it('NET-NEW: X16 — answers a record keyed by optionGroupName, not an array (:L71-:L79)', async () => {
-    const sizeGroup = buildOptionGroup({ optionGroupID: 'og-size', optionGroupName: 'Size' });
-    const colorGroup = buildOptionGroup({ optionGroupID: 'og-color', optionGroupName: 'Color' });
-    const small = buildOption({ optionID: 'o-small', optionName: 'Small' });
-    const medium = buildOption({ optionID: 'o-medium', optionName: 'Medium' });
-    const red = buildOption({ optionID: 'o-red', optionName: 'Red' });
+  it('NET-NEW: X16 — answers an ARRAY of name-and-options entries per AAP §0.4.2.1 (:L71-:L79)', async () => {
+    const sizeGroup = buildOptionGroup({
+      optionGroupID: physicalID('og-size'),
+      optionGroupName: 'Size',
+    });
+    const colorGroup = buildOptionGroup({
+      optionGroupID: physicalID('og-color'),
+      optionGroupName: 'Color',
+    });
+    const small = buildOption({ optionID: physicalID('o-small'), optionName: 'Small' });
+    const medium = buildOption({ optionID: physicalID('o-medium'), optionName: 'Medium' });
+    const red = buildOption({ optionID: physicalID('o-red'), optionName: 'Red' });
 
     const harness = buildHarness({
       optionCatalog: {
         optionGroups: [sizeGroup, colorGroup],
-        optionsByOptionGroupID: { 'og-size': [small, medium], 'og-color': [red] },
+        optionsByOptionGroupID: {
+          [physicalID('og-size')]: [small, medium],
+          [physicalID('og-color')]: [red],
+        },
       },
     });
-    const product = buildProduct({ productID: 'p-formatted' });
+    const product = buildProduct({ productID: physicalID('p-formatted') });
 
     const formatted = await harness.service.getFormattedOptionGroups(product);
 
-    // `:L71` initialises a STRUCT and `:L77` writes `AvailableOptions[groupName]`. A struct is a record,
-    // not an array, and the port keeps it a record.
-    expect(Array.isArray(formatted)).toBe(false);
-    expect(Object.keys(formatted)).toEqual(['Size', 'Color']);
-    expect(requireEntry(formatted, 'Size')).toEqual([
-      { name: 'Small', value: 'o-small' },
-      { name: 'Medium', value: 'o-medium' },
+    // AAP §0.4.2.1 tabulates `getFormattedOptionGroups(product: Product): FormattedOptionGroup[]`, and
+    // the plan is frozen (D1 precedence 1). An earlier revision of this case asserted
+    // `Array.isArray(formatted) === false` on the ground that `:L71` initialises a CFML STRUCT; that is
+    // WITHDRAWN — the legacy struct is defect D25, annotated on the member, not a licence to retype it.
+    expect(Array.isArray(formatted)).toBe(true);
+
+    // The LABEL is carried on the entry, so nothing was lost by moving off a keyed record. Order is
+    // first-seen group order (M9): `Size` was yielded first and appears first.
+    expect(groupNames(formatted)).toEqual(['Size', 'Color']);
+    expect(requireGroup(formatted, 'Size').options).toEqual([
+      { name: 'Small', value: physicalID('o-small') },
+      { name: 'Medium', value: physicalID('o-medium') },
     ]);
-    expect(requireEntry(formatted, 'Color')).toEqual([{ name: 'Red', value: 'o-red' }]);
+    expect(requireGroup(formatted, 'Color').options).toEqual([
+      { name: 'Red', value: physicalID('o-red') },
+    ]);
+
+    // ⛔ AND NO IDENTIFIER IS PUBLISHED ALONGSIDE THE NAME (S9). `:L76` keys by name alone, so an entry
+    // carrying `optionGroupID` would report something the legacy entry cannot hold.
+    expect(Object.keys(requireGroup(formatted, 'Size')).sort()).toEqual([
+      'optionGroupName',
+      'options',
+    ]);
   });
 
   it('NET-NEW: X14 — the values are OptionService bare-option-name projections, never the DAO composite label', async () => {
-    const sizeGroup = buildOptionGroup({ optionGroupID: 'og-size', optionGroupName: 'Size' });
-    const small = buildOption({ optionID: 'o-small', optionName: 'Small' });
+    const sizeGroup = buildOptionGroup({
+      optionGroupID: physicalID('og-size'),
+      optionGroupName: 'Size',
+    });
+    const small = buildOption({ optionID: physicalID('o-small'), optionName: 'Small' });
 
     const harness = buildHarness({
       optionCatalog: {
         optionGroups: [sizeGroup],
-        optionsByOptionGroupID: { 'og-size': [small] },
+        optionsByOptionGroupID: { [physicalID('og-size')]: [small] },
       },
     });
 
     const formatted = await harness.service.getFormattedOptionGroups(
-      buildProduct({ productID: 'p-projection' }),
+      buildProduct({ productID: physicalID('p-projection') }),
     );
 
     // `model/service/OptionService.cfc:L55-L63` builds `{name = getOptionName(), value = getOptionID()}`
     // — the BARE option name. `model/dao/OptionDAO.cfc:L51-L91` builds the composite
     // "<group> - <option>" label instead, and that is a DIFFERENT projection used by a DIFFERENT member.
     // Mixing them up is the easiest way to break this member, so the distinction is asserted.
-    const sizeOptions: readonly SelectOption[] = requireEntry(formatted, 'Size');
+    const sizeOptions: readonly SelectOption[] = requireGroup(formatted, 'Size').options;
     expect(requireAt(sizeOptions, 0).name).toBe('Small');
     expect(requireAt(sizeOptions, 0).name).not.toContain(' - ');
   });
 
-  it('NET-NEW: answers an empty record when the product carries no option groups', async () => {
+  it('NET-NEW: answers an empty array when the product carries no option groups', async () => {
     const harness = buildHarness();
 
     const formatted = await harness.service.getFormattedOptionGroups(
-      buildProduct({ productID: 'p-bare' }),
+      buildProduct({ productID: physicalID('p-bare') }),
     );
 
-    // `:L75` iterates `arrayLen(productObjectGroups)` times, which is zero, so `:L71`'s empty struct is
-    // returned untouched.
-    expect(formatted).toEqual({});
-    expect(Object.keys(formatted)).toHaveLength(0);
+    // `:L75` iterates `arrayLen(productObjectGroups)` times, which is zero, so nothing is accumulated and
+    // the answer is empty. It is EMPTY rather than absent: the member always answers a collection.
+    expect(formatted).toEqual([]);
+    expect(formatted).toHaveLength(0);
   });
 
   it('NET-NEW: two groups sharing a name collide and the LAST write wins (:L77), preserved as observed', async () => {
-    const firstSize = buildOptionGroup({ optionGroupID: 'og-1', optionGroupName: 'Size' });
-    const secondSize = buildOptionGroup({ optionGroupID: 'og-2', optionGroupName: 'Size' });
-    const small = buildOption({ optionID: 'o-small', optionName: 'Small' });
-    const huge = buildOption({ optionID: 'o-huge', optionName: 'Huge' });
+    const firstSize = buildOptionGroup({
+      optionGroupID: physicalID('og-1'),
+      optionGroupName: 'Size',
+    });
+    const secondSize = buildOptionGroup({
+      optionGroupID: physicalID('og-2'),
+      optionGroupName: 'Size',
+    });
+    const small = buildOption({ optionID: physicalID('o-small'), optionName: 'Small' });
+    const huge = buildOption({ optionID: physicalID('o-huge'), optionName: 'Huge' });
 
     const harness = buildHarness({
       optionCatalog: {
         optionGroups: [firstSize, secondSize],
-        optionsByOptionGroupID: { 'og-1': [small], 'og-2': [huge] },
+        optionsByOptionGroupID: { [physicalID('og-1')]: [small], [physicalID('og-2')]: [huge] },
       },
     });
 
     const formatted = await harness.service.getFormattedOptionGroups(
-      buildProduct({ productID: 'p-collision' }),
+      buildProduct({ productID: physicalID('p-collision') }),
     );
 
-    // `:L77` keys the struct by NAME, so the second group overwrites the first. The port keeps that:
-    // it does NOT re-key by optionGroupID and does NOT concatenate the two option lists, because either
-    // change would make the member answer something the legacy never answered.
-    expect(Object.keys(formatted)).toEqual(['Size']);
-    expect(requireEntry(formatted, 'Size')).toEqual([{ name: 'Huge', value: 'o-huge' }]);
+    // `:L77` keys the struct by NAME, so the second group overwrites the first. The port keeps that
+    // exactly: the answer holds ONE entry, it does NOT re-label by optionGroupID and it does NOT
+    // concatenate the two option lists, because either change would make the member answer something the
+    // legacy never answered.
+    //
+    // ⭐ THE ARRAY DOES NOT DILUTE THIS. Accumulating through a `Map` keyed by name is what keeps a
+    // repeated name to a single entry — a naive `push` would have produced two, which is exactly the
+    // failure the withdrawn record-shaped reading warned about.
+    expect(formatted).toHaveLength(1);
+    expect(groupNames(formatted)).toEqual(['Size']);
+    expect(requireGroup(formatted, 'Size').options).toEqual([
+      { name: 'Huge', value: physicalID('o-huge') },
+    ]);
   });
 
   it('NET-NEW: M7 — a second, independently constructed invocation sees none of the first one memoised groups', async () => {
-    const firstGroup = buildOptionGroup({ optionGroupID: 'og-a', optionGroupName: 'Alpha' });
-    const secondGroup = buildOptionGroup({ optionGroupID: 'og-b', optionGroupName: 'Beta' });
-    const alphaOption = buildOption({ optionID: 'o-a', optionName: 'A' });
-    const betaOption = buildOption({ optionID: 'o-b', optionName: 'B' });
+    const firstGroup = buildOptionGroup({
+      optionGroupID: physicalID('og-a'),
+      optionGroupName: 'Alpha',
+    });
+    const secondGroup = buildOptionGroup({
+      optionGroupID: physicalID('og-b'),
+      optionGroupName: 'Beta',
+    });
+    const alphaOption = buildOption({ optionID: physicalID('o-a'), optionName: 'A' });
+    const betaOption = buildOption({ optionID: physicalID('o-b'), optionName: 'B' });
 
     const first = buildHarness({
       optionCatalog: {
         optionGroups: [firstGroup],
-        optionsByOptionGroupID: { 'og-a': [alphaOption] },
+        optionsByOptionGroupID: { [physicalID('og-a')]: [alphaOption] },
       },
     });
-    const firstProduct = buildProduct({ productID: 'p-first' });
+    const firstProduct = buildProduct({ productID: physicalID('p-first') });
 
-    expect(Object.keys(await first.service.getFormattedOptionGroups(firstProduct))).toEqual([
+    expect(groupNames(await first.service.getFormattedOptionGroups(firstProduct))).toEqual([
       'Alpha',
     ]);
 
@@ -1073,26 +1465,30 @@ describe('getFormattedOptionGroups — the option-group projection', () => {
     const second = buildHarness({
       optionCatalog: {
         optionGroups: [secondGroup],
-        optionsByOptionGroupID: { 'og-b': [betaOption] },
+        optionsByOptionGroupID: { [physicalID('og-b')]: [betaOption] },
       },
     });
     const secondFormatted = await second.service.getFormattedOptionGroups(
-      buildProduct({ productID: 'p-second' }),
+      buildProduct({ productID: physicalID('p-second') }),
     );
 
-    expect(Object.keys(secondFormatted)).toEqual(['Beta']);
-    expect(requireEntry(secondFormatted, 'Beta')).toEqual([{ name: 'B', value: 'o-b' }]);
+    expect(groupNames(secondFormatted)).toEqual(['Beta']);
+    expect(requireGroup(secondFormatted, 'Beta').options).toEqual([
+      { name: 'B', value: physicalID('o-b') },
+    ]);
   });
 
-  it('NET-NEW: refuses a nameless option group rather than keying the record with undefined (:L76)', async () => {
-    const namelessGroup = buildOptionGroup({ optionGroupID: 'og-nameless' });
+  it('NET-NEW: refuses a nameless option group rather than labelling an entry with undefined (:L76)', async () => {
+    const namelessGroup = buildOptionGroup({ optionGroupID: physicalID('og-nameless') });
 
     const harness = buildHarness({
       optionCatalog: { optionGroups: [namelessGroup], optionsByOptionGroupID: {} },
     });
 
     await expect(
-      harness.service.getFormattedOptionGroups(buildProduct({ productID: 'p-nameless' })),
+      harness.service.getFormattedOptionGroups(
+        buildProduct({ productID: physicalID('p-nameless') }),
+      ),
     ).rejects.toBeInstanceOf(DomainError);
   });
 });
@@ -1102,8 +1498,8 @@ describe('getFormattedOptionGroups — the option-group projection', () => {
 // ==================================================================================================
 
 describe('getProductSkusBySelectedOptions — option-to-SKU resolution', () => {
-  const PRODUCT_ID = 'p-resolve';
-  const OTHER_PRODUCT_ID = 'p-other';
+  const PRODUCT_ID = physicalID('p-resolve');
+  const OTHER_PRODUCT_ID = physicalID('p-other');
 
   interface ResolutionFixture {
     readonly harness: Harness;
@@ -1115,20 +1511,46 @@ describe('getProductSkusBySelectedOptions — option-to-SKU resolution', () => {
   }
 
   function buildResolutionFixture(): ResolutionFixture {
-    const sizeGroup = buildOptionGroup({ optionGroupID: 'og-size', optionGroupName: 'Size' });
-    const colorGroup = buildOptionGroup({ optionGroupID: 'og-color', optionGroupName: 'Color' });
-    const red = buildOption({ optionID: 'o-red', optionName: 'Red', optionGroup: colorGroup });
-    const small = buildOption({ optionID: 'o-small', optionName: 'Small', optionGroup: sizeGroup });
-    const large = buildOption({ optionID: 'o-large', optionName: 'Large', optionGroup: sizeGroup });
+    const sizeGroup = buildOptionGroup({
+      optionGroupID: physicalID('og-size'),
+      optionGroupName: 'Size',
+    });
+    const colorGroup = buildOptionGroup({
+      optionGroupID: physicalID('og-color'),
+      optionGroupName: 'Color',
+    });
+    const red = buildOption({
+      optionID: physicalID('o-red'),
+      optionName: 'Red',
+      optionGroup: colorGroup,
+    });
+    const small = buildOption({
+      optionID: physicalID('o-small'),
+      optionName: 'Small',
+      optionGroup: sizeGroup,
+    });
+    const large = buildOption({
+      optionID: physicalID('o-large'),
+      optionName: 'Large',
+      optionGroup: sizeGroup,
+    });
 
     const product = buildProduct({ productID: PRODUCT_ID });
     const otherProduct = buildProduct({ productID: OTHER_PRODUCT_ID });
 
-    const redSmall = buildSku({ skuID: 'sku-red-small', product, options: [red, small] });
-    const redLarge = buildSku({ skuID: 'sku-red-large', product, options: [red, large] });
-    const optionless = buildSku({ skuID: 'sku-optionless', product });
+    const redSmall = buildSku({
+      skuID: physicalID('sku-red-small'),
+      product,
+      options: [red, small],
+    });
+    const redLarge = buildSku({
+      skuID: physicalID('sku-red-large'),
+      product,
+      options: [red, large],
+    });
+    const optionless = buildSku({ skuID: physicalID('sku-optionless'), product });
     const otherProductRedSmall = buildSku({
-      skuID: 'sku-other-red-small',
+      skuID: physicalID('sku-other-red-small'),
       product: otherProduct,
       options: [red, small],
     });
@@ -1148,7 +1570,10 @@ describe('getProductSkusBySelectedOptions — option-to-SKU resolution', () => {
   it('NET-NEW: forwards both required arguments to the repository member findSkusBySelectedOptions', async () => {
     const fixture = buildResolutionFixture();
 
-    await fixture.harness.service.getProductSkusBySelectedOptions('o-red,o-small', PRODUCT_ID);
+    await fixture.harness.service.getProductSkusBySelectedOptions(
+      `${physicalID('o-red')},${physicalID('o-small')}`,
+      PRODUCT_ID,
+    );
 
     // ⚠️ THE NAME MISMATCH IS PRESERVED, NOT MECHANICALLY RENAMED. The service member is
     // `getProductSkusBySelectedOptions` (`model/service/ProductService.cfc:L104`) and the collaborator
@@ -1157,7 +1582,7 @@ describe('getProductSkusBySelectedOptions — option-to-SKU resolution', () => {
     // break the port, so the asymmetry is asserted.
     const calls = fixture.harness.skuCalls.filter(isSkuCall('findSkusBySelectedOptions'));
     expect(calls).toHaveLength(1);
-    expect(requireAt(calls, 0).optionIds).toEqual(['o-red', 'o-small']);
+    expect(requireAt(calls, 0).optionIds).toEqual([physicalID('o-red'), physicalID('o-small')]);
     expect(requireAt(calls, 0).productId).toBe(PRODUCT_ID);
   });
 
@@ -1165,7 +1590,7 @@ describe('getProductSkusBySelectedOptions — option-to-SKU resolution', () => {
     const fixture = buildResolutionFixture();
 
     const matches = await fixture.harness.service.getProductSkusBySelectedOptions(
-      'o-red,o-small',
+      `${physicalID('o-red')},${physicalID('o-small')}`,
       PRODUCT_ID,
     );
 
@@ -1187,7 +1612,7 @@ describe('getProductSkusBySelectedOptions — option-to-SKU resolution', () => {
     const fixture = buildResolutionFixture();
 
     const matches = await fixture.harness.service.getProductSkusBySelectedOptions(
-      'o-red,o-small',
+      `${physicalID('o-red')},${physicalID('o-small')}`,
       PRODUCT_ID,
     );
 
@@ -1201,7 +1626,10 @@ describe('getProductSkusBySelectedOptions — option-to-SKU resolution', () => {
   it('NET-NEW: T1 — duplicate option identifiers are retained, not collapsed', async () => {
     const fixture = buildResolutionFixture();
 
-    await fixture.harness.service.getProductSkusBySelectedOptions('o-red,o-red', PRODUCT_ID);
+    await fixture.harness.service.getProductSkusBySelectedOptions(
+      `${physicalID('o-red')},${physicalID('o-red')}`,
+      PRODUCT_ID,
+    );
 
     // The legacy loop appends one clause per LIST ELEMENT, so a duplicated entry produces two identical
     // EXISTS clauses. A `GROUP BY … HAVING COUNT(*) = N` rewrite diverges on exactly this input, and a
@@ -1209,7 +1637,7 @@ describe('getProductSkusBySelectedOptions — option-to-SKU resolution', () => {
     expect(
       requireAt(fixture.harness.skuCalls.filter(isSkuCall('findSkusBySelectedOptions')), 0)
         .optionIds,
-    ).toEqual(['o-red', 'o-red']);
+    ).toEqual([physicalID('o-red'), physicalID('o-red')]);
   });
 
   it('NET-NEW: T3 — option-less SKUs stay excluded because the vestigial join is load-bearing', async () => {
@@ -1228,7 +1656,7 @@ describe('getProductSkusBySelectedOptions — option-to-SKU resolution', () => {
     const fixture = buildResolutionFixture();
 
     const matches = await fixture.harness.service.getProductSkusBySelectedOptions(
-      'o-red,o-small',
+      `${physicalID('o-red')},${physicalID('o-small')}`,
       PRODUCT_ID,
     );
 
@@ -1259,9 +1687,9 @@ describe('getProductSkusBySelectedOptions — option-to-SKU resolution', () => {
 // ==================================================================================================
 
 describe('processProductAddOptionGroup — adding a whole option group', () => {
-  const PRODUCT_ID = 'p-add-group';
-  const EXISTING_GROUP_ID = 'og-size';
-  const NEW_GROUP_ID = 'og-color';
+  const PRODUCT_ID = physicalID('p-add-group');
+  const EXISTING_GROUP_ID = physicalID('og-size');
+  const NEW_GROUP_ID = physicalID('og-color');
 
   interface AddOptionGroupFixture {
     readonly harness: Harness;
@@ -1283,13 +1711,13 @@ describe('processProductAddOptionGroup — adding a whole option group', () => {
       imageGroupFlag: false,
     });
     const small = buildOption({
-      optionID: 'o-small',
+      optionID: physicalID('o-small'),
       optionName: 'Small',
       optionCode: 'SM',
       optionGroup: existingGroup,
     });
     const large = buildOption({
-      optionID: 'o-large',
+      optionID: physicalID('o-large'),
       optionName: 'Large',
       optionCode: 'LG',
       optionGroup: existingGroup,
@@ -1304,13 +1732,13 @@ describe('processProductAddOptionGroup — adding a whole option group', () => {
     // group, so `newGroup.getOptions()` is [red, blue] in declaration order — and that order is what
     // decides which single option D14 propagates.
     const red = buildOption({
-      optionID: 'o-red',
+      optionID: physicalID('o-red'),
       optionName: 'Red',
       optionCode: 'RD',
       ...(overrides.newGroupOptions === 'none' ? {} : { optionGroup: newGroup }),
     });
     const blue = buildOption({
-      optionID: 'o-blue',
+      optionID: physicalID('o-blue'),
       optionName: 'Blue',
       optionCode: 'BL',
       ...(overrides.newGroupOptions === 'none' ? {} : { optionGroup: newGroup }),
@@ -1328,8 +1756,18 @@ describe('processProductAddOptionGroup — adding a whole option group', () => {
       productType,
     });
 
-    const firstSku = buildSku({ skuID: 'sku-small', skuCode: 'SM', product, options: [small] });
-    const secondSku = buildSku({ skuID: 'sku-large', skuCode: 'LG', product, options: [large] });
+    const firstSku = buildSku({
+      skuID: physicalID('sku-small'),
+      skuCode: 'SM',
+      product,
+      options: [small],
+    });
+    const secondSku = buildSku({
+      skuID: physicalID('sku-large'),
+      skuCode: 'LG',
+      product,
+      options: [large],
+    });
 
     const processObject: ProductAddOptionGroup = { product, optionGroup: NEW_GROUP_ID };
 
@@ -1410,7 +1848,7 @@ describe('processProductAddOptionGroup — adding a whole option group', () => {
 
   it('NET-NEW: X17 — chains updateDefaultImageFileNames with no payload and returns THAT call product (:L123)', async () => {
     const fixture = buildAddOptionGroupFixture();
-    const chained = buildProduct({ productID: 'p-returned-by-the-chain' });
+    const chained = buildProduct({ productID: physicalID('p-returned-by-the-chain') });
 
     // `:L123` is `arguments.product = this.processProduct(arguments.product, {}, 'updateDefaultImageFileNames');`
     // — an ASSIGNMENT, so the value the chained call answers with is what `:L125` returns. Proving the
@@ -1485,7 +1923,7 @@ describe('processProductAddOptionGroup — adding a whole option group', () => {
     const fixture = buildAddOptionGroupFixture();
     const strayProcessObject: ProductAddOptionGroup = {
       product: fixture.product,
-      optionGroup: 'og-does-not-exist',
+      optionGroup: physicalID('og-does-not-exist'),
     };
 
     await expect(
@@ -1505,7 +1943,7 @@ describe('processProductAddOptionGroup — adding a whole option group', () => {
       systemCode: 'merchandise',
     });
     const product = buildProduct({ productID: PRODUCT_ID, productType });
-    const sku = buildSku({ skuID: 'sku-only', product });
+    const sku = buildSku({ skuID: physicalID('sku-only'), product });
 
     const harness = buildHarness({
       optionCatalog: {
@@ -1534,9 +1972,9 @@ describe('processProductAddOptionGroup — adding a whole option group', () => {
 // ==================================================================================================
 
 describe('processProductAddOption — adding one option to the SKU set', () => {
-  const PRODUCT_ID = 'p-add-option';
-  const SIZE_GROUP_ID = 'og-size';
-  const COLOR_GROUP_ID = 'og-color';
+  const PRODUCT_ID = physicalID('p-add-option');
+  const SIZE_GROUP_ID = physicalID('og-size');
+  const COLOR_GROUP_ID = physicalID('og-color');
   const DEFAULT_SKU_PRICE = '100';
   const DEFAULT_SKU_LIST_PRICE = '150';
 
@@ -1567,31 +2005,31 @@ describe('processProductAddOption — adding one option to the SKU set', () => {
     });
 
     const small = buildOption({
-      optionID: 'o-small',
+      optionID: physicalID('o-small'),
       optionName: 'Small',
       optionCode: 'SM',
       optionGroup: sizeGroup,
     });
     const large = buildOption({
-      optionID: 'o-large',
+      optionID: physicalID('o-large'),
       optionName: 'Large',
       optionCode: 'LG',
       optionGroup: sizeGroup,
     });
     const smallShouted = buildOption({
-      optionID: 'O-SMALL',
+      optionID: physicalID('o-small').toUpperCase(),
       optionName: 'SMALL',
       optionCode: 'SMU',
       optionGroup: sizeGroup,
     });
     const green = buildOption({
-      optionID: 'o-green',
+      optionID: physicalID('o-green'),
       optionName: 'Green',
       optionCode: 'GR',
       optionGroup: colorGroup,
     });
     const red = buildOption({
-      optionID: 'o-red',
+      optionID: physicalID('o-red'),
       optionName: 'Red',
       optionCode: 'RD',
       optionGroup: colorGroup,
@@ -1610,12 +2048,12 @@ describe('processProductAddOption — adding one option to the SKU set', () => {
 
     // Order matters: `product.getSkus()` is walked in insertion order, and that fixes the order of the
     // comma-delimited list the member builds.
-    const firstSku = buildSku({ skuID: 'sku-1', product, options: [small, green] });
-    buildSku({ skuID: 'sku-2', product, options: [smallShouted] });
-    buildSku({ skuID: 'sku-3', product, options: [large] });
+    const firstSku = buildSku({ skuID: physicalID('sku-1'), product, options: [small, green] });
+    buildSku({ skuID: physicalID('sku-2'), product, options: [smallShouted] });
+    buildSku({ skuID: physicalID('sku-3'), product, options: [large] });
 
     const defaultSku = buildSku({
-      skuID: 'sku-default',
+      skuID: physicalID('sku-default'),
       product,
       price: DEFAULT_SKU_PRICE,
       listPrice: DEFAULT_SKU_LIST_PRICE,
@@ -1656,7 +2094,7 @@ describe('processProductAddOption — adding one option to the SKU set', () => {
       harness.attachDefaultSku(product, defaultSku);
     }
 
-    return { harness, product, processObject: { product, option: 'o-red' }, red };
+    return { harness, product, processObject: { product, option: physicalID('o-red') }, red };
   }
 
   it('NET-NEW: builds a comma-delimited option list that STARTS with the new option identifier (:L131)', async () => {
@@ -1672,7 +2110,9 @@ describe('processProductAddOption — adding one option to the SKU set', () => {
     // `:L131` seeds the list with `newOption.getOptionID()`, so the new option is FIRST. Then `:L140-:L148`
     // appends. `o-green` is skipped because it shares the new option's group, and `O-SMALL` is skipped
     // because `listFindNoCase` at `:L144` already found `o-small`.
-    expect(passedData['options']).toBe('o-red,o-small,o-large');
+    expect(passedData['options']).toBe(
+      `${physicalID('o-red')},${physicalID('o-small')},${physicalID('o-large')}`,
+    );
     // ⚠️ THE COMMA-DELIMITED BOUNDARY IS PRESERVED, NOT MODERNISED INTO AN ARRAY. `:L150` hands the
     // struct straight to `createSkus`, whose merchandise branch parses a CFML list, so converting it
     // here would break the collaborator contract.
@@ -1721,23 +2161,23 @@ describe('processProductAddOption — adding one option to the SKU set', () => {
     const listed = String(passedData['options']).split(',');
 
     // `:L144`'s two clauses, asserted separately.
-    expect(listed).not.toContain('o-green'); // same group as the new option
-    expect(listed).not.toContain('O-SMALL'); // already listed, differing only in case
-    expect(listed).toEqual(['o-red', 'o-small', 'o-large']);
+    expect(listed).not.toContain(physicalID('o-green')); // same group as the new option
+    expect(listed).not.toContain(physicalID('o-small').toUpperCase()); // already listed, differing only in case
+    expect(listed).toEqual([physicalID('o-red'), physicalID('o-small'), physicalID('o-large')]);
     expect(new Set(listed).size).toBe(listed.length);
   });
 
   it('NET-NEW: resolves the option through the explicit getOption member, then chains X17 and returns its product', async () => {
     const fixture = buildAddOptionFixture();
     jest.spyOn(fixture.harness.skuService, 'createSkus').mockResolvedValue(true);
-    const chained = buildProduct({ productID: 'p-chained-add-option' });
+    const chained = buildProduct({ productID: physicalID('p-chained-add-option') });
     const chainSpy = jest
       .spyOn(fixture.harness.service, 'processProductUpdateDefaultImageFileNames')
       .mockResolvedValue(chained);
 
     // `getOption` is a second IR-1 synthesis victim: `model/service/ProductService.cfc:L130` calls it
     // and no source file declares it.
-    expect(await fixture.harness.optionService.getOption('o-red')).toBe(fixture.red);
+    expect(await fixture.harness.optionService.getOption(physicalID('o-red'))).toBe(fixture.red);
 
     const answer = await fixture.harness.service.processProductAddOption(
       fixture.product,
@@ -1765,7 +2205,7 @@ describe('processProductAddOption — adding one option to the SKU set', () => {
     await expect(
       strayFixture.harness.service.processProductAddOption(strayFixture.product, {
         product: strayFixture.product,
-        option: 'o-nowhere',
+        option: physicalID('o-nowhere'),
       }),
     ).rejects.toBeInstanceOf(DomainError);
   });
@@ -1784,14 +2224,18 @@ describe('processProductAddOption — adding one option to the SKU set', () => {
 
   it('NET-NEW: stops before the body when the addOption rules refuse the entity', async () => {
     const sizeGroup = buildOptionGroup({ optionGroupID: SIZE_GROUP_ID, optionGroupName: 'Size' });
-    const small = buildOption({ optionID: 'o-small', optionName: 'Small', optionGroup: sizeGroup });
+    const small = buildOption({
+      optionID: physicalID('o-small'),
+      optionName: 'Small',
+      optionGroup: sizeGroup,
+    });
     const productType = buildProductType({
       productTypeID: MERCHANDISE_PRODUCT_TYPE_ID,
       productTypeIDPath: MERCHANDISE_PRODUCT_TYPE_ID,
       systemCode: 'merchandise',
     });
     const product = buildProduct({ productID: PRODUCT_ID, productType });
-    const sku = buildSku({ skuID: 'sku-uses-everything', product, options: [small] });
+    const sku = buildSku({ skuID: physicalID('sku-uses-everything'), product, options: [small] });
 
     // Every option of the only group is already in use, so `unusedProductOptions` is empty and
     // `model/validation/Product.json:L13` refuses the entity.
@@ -1808,7 +2252,7 @@ describe('processProductAddOption — adding one option to the SKU set', () => {
 
     const answer = await harness.service.processProductAddOption(product, {
       product,
-      option: 'o-small',
+      option: physicalID('o-small'),
     });
 
     expect(answer).toBe(product);
@@ -1844,7 +2288,7 @@ describe('processProductAddOption — adding one option to the SKU set', () => {
 // ==================================================================================================
 
 describe('processProductUpdateSkus — the flag-gated bulk price update', () => {
-  const PRODUCT_ID = 'p-update-skus';
+  const PRODUCT_ID = physicalID('p-update-skus');
   const SEEDED_PRICE = 10;
   const SEEDED_LIST_PRICE = 15;
 
@@ -1877,14 +2321,14 @@ describe('processProductUpdateSkus — the flag-gated bulk price update', () => 
             productType,
           });
     const first = buildSku({
-      skuID: 'sku-update-1',
+      skuID: physicalID('sku-update-1'),
       skuCode: `${TEST_MERCHANDISE_PRODUCT_CODE}-1`,
       price: SEEDED_PRICE,
       listPrice: SEEDED_LIST_PRICE,
       product,
     });
     const second = buildSku({
-      skuID: 'sku-update-2',
+      skuID: physicalID('sku-update-2'),
       skuCode: `${TEST_MERCHANDISE_PRODUCT_CODE}-2`,
       price: SEEDED_PRICE,
       listPrice: SEEDED_LIST_PRICE,
@@ -2220,9 +2664,8 @@ describe('processProductUpdateSkus — the flag-gated bulk price update', () => 
 // ==================================================================================================
 
 describe('processProductAddProductReview — the review boundary', () => {
-  const PRODUCT_ID = 'p-add-review';
+  const PRODUCT_ID = physicalID('p-add-review');
 
-  /** One recorded call against the out-of-scope ProductReview target. */
   interface ReviewRecorder {
     readonly activeFlags: number[];
     readonly accounts: { readonly accountID: string; readonly newFlag: boolean }[];
@@ -2420,9 +2863,9 @@ describe('processProductAddProductReview — the review boundary', () => {
 });
 
 describe('processProductAddSubscriptionTerm — the subscription boundary', () => {
-  const PRODUCT_ID = 'p-add-term';
-  const SUBSCRIPTION_TERM_ID = 'st-monthly';
-  const EXISTING_SKU_ID = 'sku-term-1';
+  const PRODUCT_ID = physicalID('p-add-term');
+  const SUBSCRIPTION_TERM_ID = physicalID('st-monthly');
+  const EXISTING_SKU_ID = physicalID('sku-term-1');
 
   interface SubscriptionFixture {
     readonly product: Product;
@@ -2646,7 +3089,7 @@ describe('processProductAddSubscriptionTerm — the subscription boundary', () =
 });
 
 describe('processProductDeleteDefaultImage — the filesystem boundary', () => {
-  const PRODUCT_ID = 'p-delete-image';
+  const PRODUCT_ID = physicalID('p-delete-image');
 
   function buildImageProduct(): Product {
     const productType = buildProductType({
@@ -2726,29 +3169,29 @@ describe('processProductDeleteDefaultImage — the filesystem boundary', () => {
 });
 
 describe('processProductUpdateDefaultImageFileNames — regenerating the image file names', () => {
-  const PRODUCT_ID = 'p-image-names';
+  const PRODUCT_ID = physicalID('p-image-names');
 
   it('NET-NEW: regenerates each SKU name from the product code and the IMAGE-GROUP options only, then persists every SKU (:L208-:L214)', async () => {
     const imageGroup = buildOptionGroup({
-      optionGroupID: 'og-size',
+      optionGroupID: physicalID('og-size'),
       optionGroupCode: 'size',
       optionGroupName: 'Size',
       imageGroupFlag: true,
     });
     const nonImageGroup = buildOptionGroup({
-      optionGroupID: 'og-material',
+      optionGroupID: physicalID('og-material'),
       optionGroupCode: 'material',
       optionGroupName: 'Material',
       imageGroupFlag: false,
     });
     const small = buildOption({
-      optionID: 'o-sm',
+      optionID: physicalID('o-sm'),
       optionCode: 'sm',
       optionName: 'Small',
       optionGroup: imageGroup,
     });
     const cotton = buildOption({
-      optionID: 'o-cotton',
+      optionID: physicalID('o-cotton'),
       optionCode: 'cotton',
       optionName: 'Cotton',
       optionGroup: nonImageGroup,
@@ -2765,12 +3208,16 @@ describe('processProductUpdateDefaultImageFileNames — regenerating the image f
       productType,
     });
     const sized = buildSku({
-      skuID: 'sku-sized',
+      skuID: physicalID('sku-sized'),
       imageFile: 'stale.jpg',
       product,
       options: [small, cotton],
     });
-    const plain = buildSku({ skuID: 'sku-plain', imageFile: 'also-stale.jpg', product });
+    const plain = buildSku({
+      skuID: physicalID('sku-plain'),
+      imageFile: 'also-stale.jpg',
+      product,
+    });
     const harness = buildHarness({ settings: IMAGE_FILE_NAME_SETTINGS });
 
     const answer = await harness.service.processProductUpdateDefaultImageFileNames(product);
@@ -2795,7 +3242,7 @@ describe('processProductUpdateDefaultImageFileNames — regenerating the image f
       productCode: TEST_MERCHANDISE_PRODUCT_CODE,
       productType,
     });
-    const sku = buildSku({ skuID: 'sku-untouched', imageFile: 'stale.jpg', product });
+    const sku = buildSku({ skuID: physicalID('sku-untouched'), imageFile: 'stale.jpg', product });
     product.addError('productName', 'seeded by an earlier pass');
     const harness = buildHarness({ settings: IMAGE_FILE_NAME_SETTINGS });
 
@@ -2811,7 +3258,7 @@ describe('processProductUpdateDefaultImageFileNames — regenerating the image f
 });
 
 describe('processProductUploadDefaultImage — the upload boundary', () => {
-  const PRODUCT_ID = 'p-upload-image';
+  const PRODUCT_ID = physicalID('p-upload-image');
   const UPLOADED_FILE = 'shirt-sm.jpg';
 
   interface UploadRecorder {
@@ -2945,7 +3392,7 @@ describe('processProductUploadDefaultImage — the upload boundary', () => {
 // ==================================================================================================
 
 describe('N3 — the two-pass process orchestration', () => {
-  const PRODUCT_ID = 'p-n3';
+  const PRODUCT_ID = physicalID('p-n3');
 
   function buildN3ProductType(): ProductType {
     return buildProductType({
@@ -2963,7 +3410,7 @@ describe('N3 — the two-pass process orchestration', () => {
       productCode: TEST_MERCHANDISE_PRODUCT_CODE,
       productType: buildN3ProductType(),
     });
-    const sku = buildSku({ skuID: 'sku-n3', price: 10, product });
+    const sku = buildSku({ skuID: physicalID('sku-n3'), price: 10, product });
     const harness = buildHarness();
 
     await harness.service.processProductUpdateSkus(product, {
@@ -2996,7 +3443,7 @@ describe('N3 — the two-pass process orchestration', () => {
 
   it('NET-NEW: an add context supplies NO process-object rule set, because Product.json carries those rules itself', async () => {
     const optionGroup = buildOptionGroup({
-      optionGroupID: 'og-n3',
+      optionGroupID: physicalID('og-n3'),
       optionGroupCode: 'n3',
       optionGroupName: 'Finish',
     });
@@ -3006,7 +3453,7 @@ describe('N3 — the two-pass process orchestration', () => {
       productCode: TEST_MERCHANDISE_PRODUCT_CODE,
       productType: buildN3ProductType(),
     });
-    buildSku({ skuID: 'sku-n3-add', product });
+    buildSku({ skuID: physicalID('sku-n3-add'), product });
     const harness = buildHarness({
       settings: IMAGE_FILE_NAME_SETTINGS,
       optionCatalog: {
@@ -3019,7 +3466,7 @@ describe('N3 — the two-pass process orchestration', () => {
 
     await harness.service.processProductAddOptionGroup(product, {
       product,
-      optionGroup: 'og-n3',
+      optionGroup: physicalID('og-n3'),
     });
 
     // AAP §0.2.1.5: there is NO `model/validation/Product_AddOptionGroup.json` and no
@@ -3140,7 +3587,6 @@ describe('N3 — the two-pass process orchestration', () => {
   });
 
   it('NET-NEW: save defaults its context, delete hard-codes its own, and a process context is supplied explicitly', async () => {
-    // Three mechanisms, three harnesses, so no shared recorder can blur them together.
     const saveHarness = buildHarness({ settings: [PRODUCT_TITLE_STRING_SETTING] });
     const saveProduct = buildProduct({ productType: buildN3ProductType() });
 
@@ -3157,7 +3603,7 @@ describe('N3 — the two-pass process orchestration', () => {
 
     const deleteHarness = buildHarness();
     const deleteTarget = buildProduct({
-      productID: 'p-n3-delete',
+      productID: physicalID('p-n3-delete'),
       productName: TEST_MERCHANDISE_PRODUCT_NAME,
       productCode: TEST_MERCHANDISE_PRODUCT_CODE,
       productType: buildN3ProductType(),
@@ -3173,7 +3619,7 @@ describe('N3 — the two-pass process orchestration', () => {
 
     const processHarness = buildHarness();
     const processTarget = buildProduct({
-      productID: 'p-n3-process',
+      productID: physicalID('p-n3-process'),
       productName: TEST_MERCHANDISE_PRODUCT_NAME,
       productCode: TEST_MERCHANDISE_PRODUCT_CODE,
       productType: buildN3ProductType(),
@@ -3207,9 +3653,14 @@ describe('N3 — the two-pass process orchestration', () => {
       productCode: TEST_MERCHANDISE_PRODUCT_CODE,
       productType,
     });
-    const sku = buildSku({ skuID: 'sku-n3-refused', imageFile: 'stale.jpg', price: 10, product });
+    const sku = buildSku({
+      skuID: physicalID('sku-n3-refused'),
+      imageFile: 'stale.jpg',
+      price: 10,
+      product,
+    });
     const optionGroup = buildOptionGroup({
-      optionGroupID: 'og-n3-refused',
+      optionGroupID: physicalID('og-n3-refused'),
       optionGroupCode: 'refused',
       optionGroupName: 'Refused',
     });
@@ -3225,7 +3676,7 @@ describe('N3 — the two-pass process orchestration', () => {
 
     const answer = await harness.service.processProductAddOptionGroup(product, {
       product,
-      optionGroup: 'og-n3-refused',
+      optionGroup: physicalID('og-n3-refused'),
     });
 
     expect(answer).toBe(product);
@@ -3308,7 +3759,7 @@ describe('saveProduct — populate, title, validate, create, persist', () => {
             productType: buildMerchandiseProductType(),
           });
     const defaultSku = buildSku({
-      skuID: 'sku-save-default',
+      skuID: physicalID('sku-save-default'),
       skuCode: `${TEST_MERCHANDISE_PRODUCT_CODE}-1`,
       price: TEST_MERCHANDISE_PRODUCT_PRICE,
       product,
@@ -3333,24 +3784,23 @@ describe('saveProduct — populate, title, validate, create, persist', () => {
 
     expect(answer).toBe(product);
 
-    // 1. Population happened first, from the payload.
     expect(product.productName).toBe(TEST_MERCHANDISE_PRODUCT_NAME);
     expect(product.productCode).toBe(TEST_MERCHANDISE_PRODUCT_CODE);
 
-    // 2. The URL title was generated from the product TITLE — the rendered `productTitleString`, not
+    // 1. The URL title was generated from the product TITLE — the rendered `productTitleString`, not
     //    the raw product name — and probed against `SwProduct`.
     expect(product.urlTitle).toBe(PRODUCT_TITLE_SLUG);
     expect(harness.urlTitleProbes).toEqual([
       { tableName: PRODUCT_TABLE, value: PRODUCT_TITLE_SLUG },
     ]);
 
-    // 3. Exactly one validation pass, in the `save` context, with no process orchestration.
+    // 2. Exactly one validation pass, in the `save` context, with no process orchestration.
     expect(harness.validations).toEqual([
       { kind: 'validate', className: 'Product', context: 'save' },
     ]);
     expect(product.hasErrors()).toBe(false);
 
-    // 4. SKU creation receives the SAME payload the caller supplied, and the image-name chain runs
+    // 3. SKU creation receives the SAME payload the caller supplied, and the image-name chain runs
     //    AFTER it — the legacy order at `:L282` then `:L284`.
     expect(createSkus).toHaveBeenCalledTimes(1);
     expect(requireAt(createSkus.mock.calls, 0)).toEqual([product, data]);
@@ -3360,7 +3810,7 @@ describe('saveProduct — populate, title, validate, create, persist', () => {
       requireAt(chain.mock.invocationCallOrder, 0),
     );
 
-    // 5. The new-product path persists TWICE — once at `:L280` so the SKUs have a saved parent to
+    // 4. The new-product path persists TWICE — once at `:L280` so the SKUs have a saved parent to
     //    attach to, and again at `:L290`. Carried exactly: collapsing it to one write would change
     //    what the SKU creation sees.
     expect(harness.persistedProducts()).toEqual([product, product]);
@@ -3388,6 +3838,62 @@ describe('saveProduct — populate, title, validate, create, persist', () => {
       { tableName: PRODUCT_TABLE, value: `${PRODUCT_TITLE_SLUG}-2` },
     ]);
     expect(product.urlTitle).toBe(`${PRODUCT_TITLE_SLUG}-2`);
+  });
+
+  it('NET-NEW WIRED — SEC-14 (F5) — an operator-stated probe ceiling refuses the save before anything is populated onto the product or persisted', async () => {
+    /*
+     * ⭐ SEC-HARDENING (D18-CLASS) — SEC-14, review finding F5 (CWE-400). THE SECOND SEAM. `BrandService`
+     * has one derivation; this service has TWO (`SwProduct` at `model/service/ProductService.cfc:L269`
+     * and `SwProductType` at `:L297`/`:L299`), and both go through `boundProbe()`, so a ceiling wired
+     * once covers both tables — one probe and one budget serve them for the same reason.
+     *
+     * Two titles are held, so the free candidate is `-3` and reaching it needs three probes against a
+     * ceiling of two. The refusal therefore arrives on the third probe, and what matters is what did NOT
+     * happen: exactly two round trips, no product persisted, and `urlTitle` never written onto the
+     * entity — the derivation feeds `:L269`'s assignment, so a refused derivation means the assignment
+     * never runs.
+     *
+     * The full boundary behaviour — at-ceiling admission, a ceiling of one, per-derivation counter
+     * lifetime (M7) and the mis-wiring refusal — is asserted once, on the other seam, in the
+     * `BrandService` suite. This case pins that THIS seam is wired to the same mechanism rather than
+     * re-asserting the mechanism.
+     */
+    const { product, harness } = buildSaveFixture({
+      harness: buildHarness({
+        settings: [PRODUCT_TITLE_STRING_SETTING, ...IMAGE_FILE_NAME_SETTINGS],
+        takenUrlTitles: [
+          { tableName: PRODUCT_TABLE, value: PRODUCT_TITLE_SLUG },
+          { tableName: PRODUCT_TABLE, value: `${PRODUCT_TITLE_SLUG}-2` },
+        ],
+        urlTitleProbeBudget: { maximumProbesPerDerivation: 2 },
+      }),
+    });
+    const createSkus = jest.spyOn(harness.skuService, 'createSkus').mockResolvedValue(true);
+
+    const rejection: unknown = await harness.service.saveProduct(product, validPayload()).then(
+      () => undefined,
+      (error: unknown) => error,
+    );
+
+    if (!(rejection instanceof RequestBudgetExhaustedError)) {
+      throw new Error('The over-budget URL-title derivation was expected to be refused.');
+    }
+    expect(rejection.context).toMatchObject({
+      tableName: PRODUCT_TABLE,
+      candidateUrlTitle: `${PRODUCT_TITLE_SLUG}-3`,
+      probes: 3,
+      maximumProbesPerDerivation: 2,
+    });
+    /* A rejected request, not a service fault: the caller chose the title and can choose another. */
+    expect(rejection.getPublicError().code).toBe('CATALOG_REQUEST_REJECTED');
+
+    expect(harness.urlTitleProbes).toEqual([
+      { tableName: PRODUCT_TABLE, value: PRODUCT_TITLE_SLUG },
+      { tableName: PRODUCT_TABLE, value: `${PRODUCT_TITLE_SLUG}-2` },
+    ]);
+    expect(product.urlTitle).toBeUndefined();
+    expect(harness.persistedProducts()).toEqual([]);
+    expect(createSkus).not.toHaveBeenCalled();
   });
 
   it('NET-NEW: an ENTITY urlTitle of empty string satisfies the isNull-only guard, so nothing is generated (:L268)', async () => {
@@ -3427,7 +3933,7 @@ describe('saveProduct — populate, title, validate, create, persist', () => {
   });
 
   it('NET-NEW: an EXISTING product skips SKU creation and the image chain, and persists once (:L279)', async () => {
-    const { product, harness } = buildSaveFixture({ productID: 'p-save-existing' });
+    const { product, harness } = buildSaveFixture({ productID: physicalID('p-save-existing') });
     const createSkus = jest.spyOn(harness.skuService, 'createSkus').mockResolvedValue(true);
     const chain = jest.spyOn(harness.service, 'processProductUpdateDefaultImageFileNames');
 
@@ -3459,11 +3965,11 @@ describe('saveProduct — populate, title, validate, create, persist', () => {
     expect(harness.persistedProducts()).toEqual([]);
   });
 
-  it('TRACEABLE(issue_1690) — meta/tests/unit/IssuesTest.cfc:L192-L201: a brand-new blank product accumulates save findings and is never persisted', async () => {
+  it('NET-NEW (legacy scenario: issue_1690, meta/tests/unit/IssuesTest.cfc:L192-L201) — a brand-new blank product accumulates save findings and is never persisted', async () => {
     // The legacy regression builds a bare `newEntity("Product")`, validates it in the `save` context and
     // saves it ONLY if it reports no errors. It contains NO assert statement at all, so it passes as long
-    // as nothing throws — the regression it guards is a blank product silently reaching persistence.
-    // Turning that into a real assertion is itself net-new; the SCENARIO is what carries across.
+    // as nothing throws — which is why this case is labelled NET-NEW even though it names a legacy
+    // locator: the SCENARIO carries across, the verdict below has no legacy counterpart to extend.
     const product = buildProduct({});
     const harness = buildHarness({ settings: [PRODUCT_TITLE_STRING_SETTING] });
     const createSkus = jest.spyOn(harness.skuService, 'createSkus').mockResolvedValue(true);
@@ -3478,12 +3984,11 @@ describe('saveProduct — populate, title, validate, create, persist', () => {
     expect(product.hasError('productCode')).toBe(true);
     expect(product.hasError('productType')).toBe(true);
     expect(product.hasError('price')).toBe(true);
-    // And the save never reached either persistence pass or SKU creation.
     expect(createSkus).not.toHaveBeenCalled();
     expect(harness.persistedProducts()).toEqual([]);
   });
 
-  it('TRACEABLE(Helper fixture) — meta/tests/unit/Helper.cfc:L52-L77: the legacy merchandise fixture saves unaltered', async () => {
+  it('NET-NEW (legacy fixture: meta/tests/unit/Helper.cfc:L52-L77) — the legacy merchandise fixture saves unaltered', async () => {
     // `getTestMerchandiseProduct()` hard-codes ONE struct — product name `Test Product`, price `100`,
     // product code `TESTPRODUCTXXX` and the seeded merchandise product-type UUID (IR-7,
     // `config/dbdata/SlatwallProductType.xml.cfm:L13`) — and every legacy catalog test that needed a
@@ -3502,7 +4007,6 @@ describe('saveProduct — populate, title, validate, create, persist', () => {
       .spyOn(harness.service, 'processProductUpdateDefaultImageFileNames')
       .mockResolvedValue(fixture.product);
 
-    // The fixture contract itself, field by field against the legacy struct.
     expect(fixture.data.productName).toBe(TEST_MERCHANDISE_PRODUCT_NAME);
     expect(fixture.data.productCode).toBe(TEST_MERCHANDISE_PRODUCT_CODE);
     expect(fixture.data.price).toBe(TEST_MERCHANDISE_PRODUCT_PRICE);
@@ -3533,8 +4037,8 @@ describe('saveProduct — populate, title, validate, create, persist', () => {
 });
 
 describe('saveProductType — payload-side titling and parent inheritance', () => {
-  const PRODUCT_TYPE_ID = 'pt-save';
-  const PARENT_PRODUCT_TYPE_ID = 'pt-save-parent';
+  const PRODUCT_TYPE_ID = physicalID('pt-save');
+  const PARENT_PRODUCT_TYPE_ID = physicalID('pt-save-parent');
 
   it('NET-NEW: generates the URL title into the PAYLOAD, preferring data.productTypeName, against SwProductType (:L297-:L303)', async () => {
     const productType = buildProductType({
@@ -3645,8 +4149,14 @@ describe('saveProductType — payload-side titling and parent inheritance', () =
       productTypeID: PARENT_PRODUCT_TYPE_ID,
       productTypeName: 'Prints',
     });
-    const firstInherited = buildProduct({ productID: 'p-inherit-1', productName: 'Poster' });
-    const secondInherited = buildProduct({ productID: 'p-inherit-2', productName: 'Canvas' });
+    const firstInherited = buildProduct({
+      productID: physicalID('p-inherit-1'),
+      productName: 'Poster',
+    });
+    const secondInherited = buildProduct({
+      productID: physicalID('p-inherit-2'),
+      productName: 'Canvas',
+    });
     // The parent's collection is seeded DIRECTLY, because the domain's `addProduct`/`setProducts` pair
     // maintains only the OWNING side of the relationship — the inverse collection is what Hibernate
     // filled from the database. Calling `parentProductType.setProducts([...])` here would leave the
@@ -3677,7 +4187,7 @@ describe('saveProductType — payload-side titling and parent inheritance', () =
     expect(parentProductType.getProducts()).toEqual([firstInherited, secondInherited]);
     expect(
       harness.productCalls.filter(isProductCall('saveProduct')).map((call) => call.productID),
-    ).toEqual(['p-inherit-1', 'p-inherit-2']);
+    ).toEqual([physicalID('p-inherit-1'), physicalID('p-inherit-2')]);
   });
 
   it('NET-NEW: inherits nothing when there is no parent, and nothing when the parent has no products', async () => {
@@ -3710,17 +4220,40 @@ describe('saveProductType — payload-side titling and parent inheritance', () =
     expect(child.getProducts()).toEqual([]);
   });
 
-  it('NET-NEW: absorbs a ValidationError from BaseService.save onto the entity and blocks inheritance', async () => {
+  it('NET-NEW: findings from BaseService.save ride on the returned entity and block inheritance', async () => {
+    /*
+     * ⭐ THE MEMBER NO LONGER CATCHES ANYTHING, AND THAT IS THE FIX RATHER THAN A REGRESSION.
+     * `model/service/ProductService.cfc:L310` returns on every path and its `:L306` gate reads
+     * `hasErrors()`, so findings have always had to arrive as DATA on the entity. An earlier revision
+     * reached that end by the wrong route: `BaseService.save` THREW the bag and this member wrapped the
+     * delegation in `try`/`catch` to convert the raise back into entity-carried findings — one layer
+     * inventing a divergence and the next undoing it. The base service now honours
+     * `model/service/HibachiService.cfc:L103` directly, so the conversion has nothing left to do and is
+     * gone; the `:L306` gate reads the same bag it always meant to read.
+     *
+     * The assertions below are UNCHANGED from that revision, which is the useful part: they always
+     * described the legacy contract correctly, and only the mechanism underneath them was wrong.
+     */
     const parentProductType = buildProductType({
       productTypeID: PARENT_PRODUCT_TYPE_ID,
       productTypeName: 'Prints',
     });
     parentProductType
       .getProducts()
-      .push(buildProduct({ productID: 'p-inherit-1', productName: 'Poster' }));
-    const refusal = new ValidationError();
-    refusal.addError('productTypeName', 'validate.save.ProductType.productTypeName.required');
-    const harness = buildHarness({ productTypeSaveFailure: refusal });
+      .push(buildProduct({ productID: physicalID('p-inherit-1'), productName: 'Poster' }));
+    /*
+     * ⭐ SEEDED AS FINDINGS, NOT AS A REJECTION, AND THE OPTION NAME IS THE WHOLE DISTINCTION. An earlier
+     * revision built a `ValidationError` here and passed it as `productTypeSaveFailure`, which makes the
+     * double REJECT. Under the landed contract a validation refusal never rejects — `BaseService.save`
+     * attaches the findings to the entity's own bag and returns the same instance — so seeding through
+     * `productTypeSaveFindings` is what actually exercises the path these assertions describe.
+     * `productTypeSaveFailure` is reserved for the non-validation case, in the very next test.
+     */
+    const harness = buildHarness({
+      productTypeSaveFindings: {
+        productTypeName: ['validate.save.ProductType.productTypeName.required'],
+      },
+    });
     const productType = buildProductType({
       productTypeID: PRODUCT_TYPE_ID,
       productTypeName: 'Framed Prints',
@@ -3729,14 +4262,14 @@ describe('saveProductType — payload-side titling and parent inheritance', () =
 
     const answer = await harness.service.saveProductType(productType, {});
 
-    // A validation refusal is DATA, not control flow: it lands on the entity's error bag and the member
+    // A validation refusal is DATA, not control flow: it rides on the entity's error bag and the member
     // returns normally, exactly as the legacy `super.save()` contract does.
     expect(answer.hasError('productTypeName')).toBe(true);
     expect(harness.savedProducts).toEqual([]);
     expect(answer.getProducts()).toEqual([]);
   });
 
-  it('NET-NEW: re-throws any non-validation failure from BaseService.save instead of absorbing it', async () => {
+  it('NET-NEW: a non-validation failure from BaseService.save propagates, because nothing is caught', async () => {
     const failure = new DomainError('the persister was unreachable');
     const harness = buildHarness({ productTypeSaveFailure: failure });
     const productType = buildProductType({
@@ -3744,8 +4277,12 @@ describe('saveProductType — payload-side titling and parent inheritance', () =
       productTypeName: 'Framed Prints',
     });
 
-    // Only a ValidationError is absorbed. An infrastructure failure must surface, or a caller would read
-    // an unsaved entity as saved.
+    /*
+     * An infrastructure failure must surface, or a caller would read an unsaved entity as saved. This
+     * now holds for the plainest possible reason — the delegation has no `try`/`catch` around it at all
+     * — where the earlier revision had to filter by error class to get the same answer. The identity
+     * assertion is deliberate: the very object is rethrown, unwrapped and unre-tagged.
+     */
     await expect(harness.service.saveProductType(productType, {})).rejects.toBe(failure);
   });
 
@@ -3813,8 +4350,8 @@ describe('saveProductType — payload-side titling and parent inheritance', () =
 // ==================================================================================================
 
 describe('deleteProduct — the default-SKU dance and the delete guards', () => {
-  const PRODUCT_ID = 'p-delete';
-  const OTHER_PRODUCT_ID = 'p-delete-other';
+  const PRODUCT_ID = physicalID('p-delete');
+  const OTHER_PRODUCT_ID = physicalID('p-delete-other');
 
   interface DeleteFixture {
     readonly product: Product;
@@ -3840,7 +4377,7 @@ describe('deleteProduct — the default-SKU dance and the delete guards', () => 
       productType,
     });
     const defaultSku = buildSku({
-      skuID: 'sku-delete-default',
+      skuID: physicalID('sku-delete-default'),
       skuCode: `${TEST_MERCHANDISE_PRODUCT_CODE}-1`,
       price: TEST_MERCHANDISE_PRODUCT_PRICE,
       product,
@@ -3998,9 +4535,20 @@ describe('deleteProduct — the default-SKU dance and the delete guards', () => 
 // therefore accepted and ignored, which is asserted here rather than left to be discovered.
 //
 // The three joins and five keyword properties are the CONFIGURATION the legacy member registers on the
-// SmartList before returning it, and they are what the Google feed controller depends on downstream.
-// `integrationServices/google/controllers/feed.cfc` is NOT imported here — its own `productService`
-// injection is one of the five dead injections (§0.6.3) and is documentary only.
+// SmartList before returning it, and asserting them IS this member's parity contract: it executes no
+// query and computes nothing, so that configuration is the whole of its observable behaviour.
+//
+// ⛔ THE GOOGLE FEED IS NOT A CONSUMER OF IT. An earlier revision of this comment claimed the joins and
+// keyword properties were "what the Google feed controller depends on downstream", and that is FALSE.
+// `integrationServices/google/controllers/feed.cfc:L63` builds a SKU SmartList through
+// `getSkuService().getSkuSmartList()` and then registers its OWN three joins at `:L64-L66`, including its
+// own `brand` LEFT join at `:L66`. It never calls `getProductSmartList`, and its
+// `property name="productService"` at `:L51` is referenced nowhere else in that file — a FIFTH dead
+// injection beyond the four §0.6.3 registers, as the harness's not-wired list above already records.
+// The legacy consumers of THIS member are `model/transient/HibachiScope.cfc:L142`,
+// `model/entity/ProductType.cfc:L263`, the admin controllers, the storefront listing template and the two
+// `meta/tests/unit/IssuesTest.cfc` regressions at `:L75` and `:L93` — all of them out of scope, which is
+// why no downstream consumer is imported or asserted here.
 //
 // No excluded calculated member is reached. `calculatedTitle` and `brand.brandName` appear as KEYWORD
 // PROPERTY IDENTIFIERS — strings in a query — and are never read off an entity.
@@ -4027,8 +4575,11 @@ describe('getProductSmartList — the paginated product query', () => {
     expect(query.entityName).toBe(PRODUCT_ENTITY);
 
     // Order matters: the legacy registers productType, then defaultSku, then brand, and only brand is a
-    // LEFT join — a product with no brand must still appear, which is why the feed can emit a
-    // conditional `g:brand`. Promoting brand to an inner join would silently drop unbranded products.
+    // LEFT join — a product with no brand must still appear. Promoting brand to an inner join would
+    // silently drop every unbranded product from the result, and the `brand.brandName` keyword property
+    // asserted below would then only ever match branded rows. The feed's own conditional `g:brand` is NOT
+    // what this join serves: that comes from the LEFT join the feed controller registers for itself on a
+    // SKU SmartList at `integrationServices/google/controllers/feed.cfc:L66`.
     expect(query.joins).toEqual([
       { parentEntityName: PRODUCT_ENTITY, relatedProperty: 'productType' },
       { parentEntityName: PRODUCT_ENTITY, relatedProperty: 'defaultSku' },
@@ -4165,23 +4716,24 @@ describe('IR-1 — the explicitly declared replacements for the synthesized memb
     // memoised factory here would let one request's draft leak into the next on a warm container (M7).
     expect(second).not.toBe(first);
     expect(first.getSkus()).toEqual([]);
-    // Construction alone touches nothing: no query, no persistence, no setting read.
     expect(harness.smartListQueries).toEqual([]);
     expect(harness.persistedProducts()).toEqual([]);
     expect(harness.settingReads).toEqual([]);
   });
 
   it('NET-NEW: getProduct(id) resolves one product by identifier, and answers null when nothing matches', async () => {
-    const wanted = buildProduct({ productID: 'p-wanted', productName: 'Poster' });
-    const other = buildProduct({ productID: 'p-other', productName: 'Canvas' });
+    const wanted = buildProduct({ productID: physicalID('p-wanted'), productName: 'Poster' });
+    const other = buildProduct({ productID: physicalID('p-other'), productName: 'Canvas' });
     const harness = buildHarness({ productRows: [wanted, other] });
 
-    const found = await harness.service.getProduct('p-wanted');
+    const found = await harness.service.getProduct(physicalID('p-wanted'));
 
     expect(found).toBe(wanted);
     expect(requireAt(harness.smartListQueries, 0)).toEqual({
       entityName: PRODUCT_ENTITY,
-      whereGroups: [{ filters: [{ propertyIdentifier: 'productID', value: 'p-wanted' }] }],
+      whereGroups: [
+        { filters: [{ propertyIdentifier: 'productID', value: physicalID('p-wanted') }] },
+      ],
     });
 
     // A miss is `null`, not an empty array and not a throw: the synthesized `get*` answered a null
@@ -4216,14 +4768,14 @@ describe('IR-1 — the explicitly declared replacements for the synthesized memb
 
   it('NET-NEW: both identifier lookups are records-only reads — no pagination, join or keyword configuration', async () => {
     const harness = buildHarness({
-      productRows: [buildProduct({ productID: 'p-wanted', productName: 'Poster' })],
+      productRows: [buildProduct({ productID: physicalID('p-wanted'), productName: 'Poster' })],
       productTypeRows: [
-        buildProductType({ productTypeID: 'pt-wanted', productTypeName: 'Prints' }),
+        buildProductType({ productTypeID: physicalID('pt-wanted'), productTypeName: 'Prints' }),
       ],
     });
 
-    await harness.service.getProduct('p-wanted');
-    await harness.service.getProductType('pt-wanted');
+    await harness.service.getProduct(physicalID('p-wanted'));
+    await harness.service.getProductType(physicalID('pt-wanted'));
 
     for (const query of harness.smartListQueries) {
       // A primary-key read needs none of the SmartList configuration `getProductSmartList` registers, and

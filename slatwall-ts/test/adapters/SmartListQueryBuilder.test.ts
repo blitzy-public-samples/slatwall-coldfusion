@@ -67,10 +67,15 @@ import {
   SmartListQueryBuilder,
   describePropertyScopedSmartList,
 } from '../../src/adapters/mysql/SmartListQueryBuilder';
+import { DomainError } from '../../src/errors/DomainError';
 import { createCatalogAggregateLoaders } from '../../src/adapters/mysql/catalogAggregates';
 import { PRODUCT_FEED_JOINS } from '../../src/integrations/google/ProductFeedQuery';
 import { mergeSmartListJoins } from '../../src/util/smartListInput';
-import { createSqlExecutorDouble, sqlRows } from '../support/inMemoryRepositories';
+import {
+  createFanningSqlExecutorDouble,
+  createSqlExecutorDouble,
+  sqlRows,
+} from '../support/inMemoryRepositories';
 
 import type { CompiledSmartListQuery } from '../../src/adapters/mysql/SmartListQueryBuilder';
 import type { CatalogAggregateLoader } from '../../src/adapters/mysql/catalogAggregates';
@@ -190,7 +195,7 @@ function feedJoins(): readonly SmartListJoin[] {
  * The query the Google feed compiles, transcribed from `integrationServices/google/controllers/feed.cfc`
  * — three activity and publication filters and the inclusive availability range.
  */
-function feedQuery(joins: readonly SmartListJoin[]): SmartListQuery {
+function feedQuery(joins: readonly SmartListJoin[]): SmartListQuery<'SlatwallSku'> {
   return {
     entityName: 'SlatwallSku',
     joins,
@@ -405,6 +410,191 @@ describe('NET-NEW SmartListQueryBuilder — the DISTINCT asymmetry it carries (I
         `SELECT COUNT(DISTINCT ${alias}.${primaryKey}) AS recordsCount`,
       );
     }
+  });
+});
+
+/* =================================================================================================
+ * THE SAME ASYMMETRY, OBSERVED IN RESULTS RATHER THAN IN STATEMENT TEXT
+ *
+ * ⚠️ WHY A SECOND BLOCK ON ONE BEHAVIOUR. Every case above reads `compiled.records.sql` and asserts the
+ * presence or absence of the word `DISTINCT`. That is a real assertion, but it is an assertion about a
+ * STRING, and a string assertion cannot show what the string DOES. The asymmetry only matters because it
+ * changes how many objects a caller receives from a fanning join, and no case above receives any object
+ * at all.
+ *
+ * The gap is not hypothetical. A projection that emitted `SELECT DISTINCTROW` — or one that emitted the
+ * keyword and then had its rows re-expanded downstream — would satisfy every text case above while
+ * returning duplicates. Conversely a projection that dropped the keyword entirely would fail the text
+ * cases loudly, which is good, but the text cases still would not say what a caller LOSES: they name a
+ * missing substring, not a duplicated brand.
+ *
+ * So these cases execute. Rows are answered from the emitted statement's OWN projection — the fanning
+ * executor picks the collapsed row set only when the statement it was handed actually says
+ * `SELECT DISTINCT` — which makes each count below a genuine consequence of the builder's choice rather
+ * than of a queue position.
+ *
+ * ⚠️ THIS BLOCK IS DELIBERATELY FALSIFIABLE IN BOTH DIRECTIONS, and that pairing is the point:
+ *   - remove DISTINCT from the record projection and the flag-ON cases fail;
+ *   - make the record projection UNCONDITIONALLY distinct — the instinctive "repair" of an asymmetry
+ *     that looks like a bug — and the flag-OFF case fails instead.
+ * AAP §0.7.3 standard 7 forbids that repair, so the second half is as load-bearing as the first. An
+ * asymmetry asserted in one direction only is an asymmetry half of which can be silently removed.
+ *
+ * THE FAN IS REAL, NOT CONTRIVED. `SlatwallBrand.products` is a declared one-to-many
+ * (`model/entity/Brand.cfc:L61`, `fkcolumn="brandID" inverse="true"`), so a brand filtered by a property
+ * of its products joins one brand row per matching product and fans exactly as the legacy does. Brand is
+ * also the one root entity that loads no aggregates and hydrates no associations, so every statement
+ * counted below is a root statement and none is hydration noise.
+ * ================================================================================================*/
+
+/** One brand carrying two matching products, another carrying one. Three rows, two owners. */
+const FANNED_BRAND_ROWS = Object.freeze([
+  Object.freeze({ brandID: ID.brandAlpha, brandName: 'Alpha' }),
+  Object.freeze({ brandID: ID.brandAlpha, brandName: 'Alpha' }),
+  Object.freeze({ brandID: ID.brandBeta, brandName: 'Beta' }),
+]);
+
+/**
+ * A brand root filtered through its products — the shape that fans.
+ *
+ * `selectDistinctFlag` is passed through untouched so one query definition serves both halves of the
+ * asymmetry and no other difference can account for a divergence between them.
+ */
+function fanningBrandQuery(
+  overrides: Partial<SmartListQuery<'SlatwallBrand'>> = {},
+): SmartListQuery<'SlatwallBrand'> {
+  return {
+    entityName: 'SlatwallBrand',
+    joins: [{ parentEntityName: 'SlatwallBrand', relatedProperty: 'products' }],
+    whereGroups: [{ filters: [{ propertyIdentifier: 'products.activeFlag', value: 1 }] }],
+    ...overrides,
+  };
+}
+
+/** A builder over the fanning executor, with no budget wired. */
+function fanningScenario(): {
+  readonly builder: SmartListQueryBuilder;
+  readonly fanning: ReturnType<typeof createFanningSqlExecutorDouble>;
+} {
+  const fanning = createFanningSqlExecutorDouble({
+    rootRows: FANNED_BRAND_ROWS,
+    rootIdentityColumn: 'brandID',
+  });
+
+  return {
+    builder: new SmartListQueryBuilder(fanning.executor, makeAggregateLoaders()),
+    fanning,
+  };
+}
+
+describe('NET-NEW SmartListQueryBuilder — the DISTINCT asymmetry, observed in results (INT-07)', () => {
+  it('[NET-NEW] with the flag OFF the records DIVERGE from the count — the carried defect, executed', async () => {
+    const { builder, fanning } = fanningScenario();
+
+    const result = await builder.execute(fanningBrandQuery());
+
+    /* THREE records for TWO brands. `org/Hibachi/HibachiSmartList.cfc:L59` seeds the flag with zero and
+     * `:L504` counts distinct unconditionally, so a caller that states nothing gets a record collection
+     * measured one way and a total measured another. This is the divergence `issue_1296` was filed
+     * against, reproduced here at the layer that causes it.
+     *
+     * ⛔ DO NOT "FIX" THIS CASE. AAP §0.7.3 standard 7 and AAP §0.8.2 guideline 4 both forbid repairing a
+     * carried legacy defect, and making the record projection unconditionally distinct is exactly that
+     * repair. This assertion exists so the repair cannot be made quietly. */
+    expect(result.records).toHaveLength(3);
+    expect(result.recordsCount).toBe(2);
+    expect(fanning.distinctRootCount()).toBe(2);
+  });
+
+  it('[NET-NEW] with the flag ON the records AGREE with the count', async () => {
+    const { builder, fanning } = fanningScenario();
+
+    const result = await builder.execute(fanningBrandQuery({ selectDistinctFlag: true }));
+
+    /* Same rows, same join, same fan — only the flag differs, and now the two measurements agree. The
+     * count could not have produced this change, because the previous case already established that the
+     * counting statement is byte-identical either way. */
+    expect(result.records).toHaveLength(2);
+    expect(result.recordsCount).toBe(2);
+    expect(result.records.map((brand) => brand.brandID)).toStrictEqual([
+      ID.brandAlpha,
+      ID.brandBeta,
+    ]);
+    expect(fanning.distinctRootCount()).toBe(2);
+  });
+
+  it('[NET-NEW] the divergence is entirely on the record side — one identical counting statement', async () => {
+    const withoutFlag = fanningScenario();
+    const withFlag = fanningScenario();
+
+    await withoutFlag.builder.execute(fanningBrandQuery());
+    await withFlag.builder.execute(fanningBrandQuery({ selectDistinctFlag: true }));
+
+    const countOf = (statements: readonly string[]): string | undefined =>
+      statements.find((sql) => sql.includes('COUNT(DISTINCT '));
+
+    /* The strongest available statement of "the asymmetry lives in one projection": the counting
+     * statement is identical text in both runs, so nothing about the count can explain three records
+     * becoming two. Only the record projection changed, and it changed because the flag changed. */
+    expect(countOf(withFlag.fanning.statements())).toBe(countOf(withoutFlag.fanning.statements()));
+    expect(countOf(withoutFlag.fanning.statements())).toContain(
+      'COUNT(DISTINCT aslatwallbrand.brandID)',
+    );
+  });
+
+  it('[NET-NEW] a duplicate consumes a PAGE SLOT when the flag is off, and does not when it is on', async () => {
+    const withoutFlag = fanningScenario();
+    const withFlag = fanningScenario();
+    /* Record TWO of a one-per-page window. In the fanned set that position is Alpha AGAIN; in the
+     * collapsed set it is Beta. The window arithmetic is identical in both runs, so the row that lands in
+     * it is decided purely by whether the duplicate was ever emitted. */
+    const pagination = { pageRecordsStart: 2, pageRecordsShow: 1 } as const;
+
+    const fanned = await withoutFlag.builder.execute(fanningBrandQuery({ pagination }));
+    const collapsed = await withFlag.builder.execute(
+      fanningBrandQuery({ pagination, selectDistinctFlag: true }),
+    );
+
+    /* This is the user-visible consequence, and it is why the asymmetry is worth a block of its own: a
+     * caller paging a fanning smart list with the flag unstated sees the same brand twice and never
+     * reaches Beta at all, while the total it is shown alongside says there are two. */
+    expect(fanned.pageRecords.map((brand) => brand.brandID)).toStrictEqual([ID.brandAlpha]);
+    expect(collapsed.pageRecords.map((brand) => brand.brandID)).toStrictEqual([ID.brandBeta]);
+
+    /* The page statement really was issued in both runs — the window could not be reused, because two
+     * records do not fit a one-record page — and it binds limit and offset LAST, after the filter value,
+     * as digit strings. */
+    for (const scenario of [withoutFlag, withFlag]) {
+      const pageCall = scenario.fanning.calls.find((call) =>
+        call.sql.includes(' LIMIT ? OFFSET ?'),
+      );
+
+      expect(pageCall?.params).toStrictEqual([1, '1', '1']);
+    }
+  });
+
+  it('[NET-NEW] executeRecords carries the same asymmetry, since it shares the record projection', async () => {
+    const withoutFlag = fanningScenario();
+    const withFlag = fanningScenario();
+
+    const fanned = await withoutFlag.builder.executeRecords(fanningBrandQuery());
+    const collapsed = await withFlag.builder.executeRecords(
+      fanningBrandQuery({ selectDistinctFlag: true }),
+    );
+
+    /* The records-only member emits the SAME unpaged statement `execute()` does, so it inherits the same
+     * asymmetry rather than having one of its own. That matters for the Google feed, which reads through
+     * this member: a feed built over a fanning join would emit one `<item>` per duplicated row. The feed
+     * itself states no flag — `integrationServices/google/controllers/feed.cfc` sets none — which is why
+     * the flag-OFF number here is the number that reaches production, and why it is asserted rather than
+     * only described. */
+    expect(fanned).toHaveLength(3);
+    expect(collapsed).toHaveLength(2);
+
+    /* With no budget wired, neither reading issues a counting statement, so the divergence above is
+     * observed with exactly one statement per run and cannot be an artefact of a count. */
+    expect(withoutFlag.fanning.calls).toHaveLength(1);
+    expect(withFlag.fanning.calls).toHaveLength(1);
   });
 });
 
@@ -785,14 +975,22 @@ describe('NET-NEW SmartListQueryBuilder — statement issue and the three-view r
     expect(calls[2]?.params).toEqual(['10', '1']);
   });
 
-  it('[NET-NEW] executeRecords issues exactly ONE statement — the unpaged one', async () => {
+  it('[NET-NEW] executeRecords issues exactly ONE statement when NO budget is wired', async () => {
     const { executor, calls } = createSqlExecutorDouble({ outcomes: [sqlRows(BRAND_ROWS)] });
     const builder = new SmartListQueryBuilder(executor, makeAggregateLoaders());
 
     const records = await builder.executeRecords({ entityName: 'SlatwallBrand' });
 
-    /* This is the member the Google feed reaches through `getSkuSmartListRecords`. It needs neither a
-     * total nor a page, so counting or bounding would be work the feed then discards. */
+    /* This is the member the Google feed reaches through `getSkuSmartList`. It needs neither a total
+     * nor a page, and with no budget wired there is nothing for a count to be compared against — so
+     * counting or bounding would be work the feed then discards. ONE statement is also exactly what
+     * `getRecords()` issues at `org/Hibachi/HibachiSmartList.cfc:L751-L755`, so this is the parity
+     * shape. The budgeted shape is asserted separately below; the two differ ONLY by the count.
+     *
+     * ⚠️ THE MEMBER NAMED HERE USED TO BE `getSkuSmartListRecords`, AND THAT NAME NO LONGER EXISTS.
+     * It was an additive records-only sibling; AAP §0.4.2.2 fixes `SkuService` at nine ported members
+     * plus `newSku`, so it was withdrawn from the service. The SHAPE this case asserts is unchanged —
+     * it is the builder's, not the service's — and `getSkuSmartList` is the surviving route to it. */
     expect(calls).toHaveLength(1);
     expect(calls[0]?.sql).not.toContain('COUNT(');
     expect(calls[0]?.sql).not.toContain('LIMIT');
@@ -876,6 +1074,167 @@ describe('NET-NEW SmartListQueryBuilder — statement issue and the three-view r
           }),
       ).toThrow(/materialisation budget must be a positive safe integer/);
     }
+  });
+});
+
+/* =================================================================================================
+ * THE BUDGET ON THE RECORDS-ONLY MEMBER — SEC-12's UNGUARDED HALF
+ *
+ * ⚠️ WHY THIS BLOCK EXISTS AS ITS OWN SECTION. The budget guarded `execute()` alone, and `execute()` is
+ * the SMALLER of the two materialisations: its unpaged statement is the same statement, but a caller
+ * reaching it has also asked for a page and a count and is therefore reading a bounded window as well.
+ * `executeRecords()` returns the WHOLE collection with no `LIMIT` of any kind, and it is the member the
+ * Google product feed — the one anonymously reachable surface in this slice — reads the entire catalogue
+ * through. So the bound protected the guarded half and left the exposed half open.
+ *
+ * Every case below would have PASSED before the fix, because a member that consults no budget cannot
+ * refuse and cannot count. That is the point: they are written so the unguarded behaviour fails them.
+ * ================================================================================================*/
+
+describe('NET-NEW SmartListQueryBuilder — the budget bounds executeRecords too (INT-07)', () => {
+  it('[NET-NEW] counts FIRST and refuses before the unpaged statement is issued', async () => {
+    const { executor, calls } = createSqlExecutorDouble({
+      outcomes: [sqlRows([{ recordsCount: 9 }])],
+    });
+    const builder = new SmartListQueryBuilder(executor, makeAggregateLoaders(), {
+      maximumRecordsPerQuery: 5,
+    });
+
+    const rejection: unknown = await builder.executeRecords({ entityName: 'SlatwallBrand' }).then(
+      () => undefined,
+      (failure: unknown) => failure,
+    );
+
+    /*
+     * ⛔ THE REFUSAL *REPORTS* RATHER THAN TRUNCATES, AND IT NAMES THE FIGURES. Truncation is expressly
+     * ruled out: feed ORDER and MEMBERSHIP are observable behaviour (AAP §0.4.1.10), so a quietly
+     * shortened feed would publish a catalog that does not exist while reporting success. Pinning the
+     * error TYPE and its context is what makes the bound diagnosable rather than merely enforced — an
+     * operator who sees the refusal learns which entity, how many records matched and what the budget
+     * was, without which the only remedy is guesswork.
+     */
+    expect(rejection).toBeInstanceOf(DomainError);
+    expect((rejection as DomainError).message).toMatch(
+      /matched more records than the configured materialisation budget admits/,
+    );
+    expect((rejection as DomainError).context).toMatchObject({
+      entityName: 'SlatwallBrand',
+      recordsCount: 9,
+      maximumRecordsPerQuery: 5,
+    });
+
+    /* EXACTLY ONE statement, and it is the count. Nine rows were never read, so nothing was hydrated and
+     * nothing was retained — which is the whole value of counting first rather than measuring a
+     * collection already in memory. The refusal text is the SAME text the paged path raises, because
+     * both readings reach it through one private member; two messages for one bound would let the two
+     * paths drift apart unnoticed, which is how the records-only path lost its bound in the first place. */
+    expect(calls).toHaveLength(1);
+    expect(calls[0]?.sql.startsWith('SELECT COUNT(DISTINCT aslatwallbrand.brandID)')).toBe(true);
+  });
+
+  it('[NET-NEW] bounds the FEED\u2019s own compiled query, not merely a stand-in for it', async () => {
+    /*
+     * ⭐ THE EXPOSED HALF IS THE ONE THAT MATTERS, so it is exercised with the feed's real query rather
+     * than a convenient one. `?slatAction=google:feed.product` is the single anonymously reachable
+     * surface in this slice and it reads the whole catalogue through the records-only member — asserting
+     * the bound on a brand query alone would leave the finding open on the path that motivated it. The
+     * same merged joins, activity and publication filters and inclusive availability range the controller
+     * declares are compiled here.
+     *
+     * ⛔ NO FIGURE IS INVENTED. `maximumRecordsPerQuery` is supplied by the case as an operator would
+     * supply it; the port declares no default and the legacy states no maximum anywhere (AAP §0.7.3 S9,
+     * IR-12), which is why the unwired path is asserted unchanged further below.
+     */
+    const { executor, calls } = createSqlExecutorDouble({
+      outcomes: [sqlRows([{ recordsCount: 5000 }])],
+    });
+    const builder = new SmartListQueryBuilder(executor, makeAggregateLoaders(), {
+      maximumRecordsPerQuery: 250,
+    });
+
+    const rejection: unknown = await builder.executeRecords(feedQuery(feedJoins())).then(
+      () => undefined,
+      (failure: unknown) => failure,
+    );
+
+    expect(rejection).toBeInstanceOf(DomainError);
+    expect((rejection as DomainError).context).toMatchObject({
+      entityName: 'SlatwallSku',
+      recordsCount: 5000,
+      maximumRecordsPerQuery: 250,
+    });
+
+    /* ONE statement — the count — and it carried the feed's own joins and filters, so the figure gated
+     * the population the feed would have materialised rather than some looser one. */
+    expect(calls).toHaveLength(1);
+    expect(calls[0]?.sql).toContain('COUNT(DISTINCT aslatwallsku.skuID)');
+  });
+
+  it('[NET-NEW] a budget within reach issues the count and then the unpaged statement, in that order', async () => {
+    const { executor, calls } = createSqlExecutorDouble({
+      outcomes: [sqlRows([{ recordsCount: 2 }]), sqlRows(BRAND_ROWS)],
+    });
+    const builder = new SmartListQueryBuilder(executor, makeAggregateLoaders(), {
+      maximumRecordsPerQuery: 2,
+    });
+
+    const records = await builder.executeRecords({ entityName: 'SlatwallBrand' });
+
+    /* TWO statements when a budget is wired, ONE when it is not, and the difference is precisely the
+     * count — so the parity claim above is exact rather than approximate. A count exactly AT the budget
+     * is admitted, because the comparison is strictly greater-than on both paths. */
+    expect(calls).toHaveLength(2);
+    expect(calls[0]?.sql).toContain('COUNT(DISTINCT');
+    expect(calls[1]?.sql.startsWith('SELECT aslatwallbrand.*')).toBe(true);
+    expect(calls[1]?.sql).not.toContain('LIMIT');
+    expect(records).toHaveLength(2);
+  });
+
+  it('[NET-NEW] a row set that widened after the count is refused before hydration', async () => {
+    /* The count and the row statement are separate reads. Inside a transaction-scoped executor they
+     * observe one snapshot and agree; in autocommit a concurrent insert between them can return more
+     * rows than the count promised. Two rows were promised and three arrived. */
+    const { executor, calls } = createSqlExecutorDouble({
+      outcomes: [
+        sqlRows([{ recordsCount: 2 }]),
+        sqlRows([
+          ...BRAND_ROWS,
+          { brandID: 'ee55ff6677889900aa11bb22cc33dd44', brandName: 'Gamma' },
+        ]),
+      ],
+    });
+    const builder = new SmartListQueryBuilder(executor, makeAggregateLoaders(), {
+      maximumRecordsPerQuery: 2,
+    });
+
+    await expect(builder.executeRecords({ entityName: 'SlatwallBrand' })).rejects.toThrow(
+      /returned more rows than the configured materialisation budget/,
+    );
+
+    /* Two statements ran and no third: the overshoot is refused rather than served, so it never becomes
+     * domain objects, never reaches an association load, and never reaches a rendered feed. Nothing
+     * locks, retries or waits — this port introduces no such semantics (AAP §0.7.3 S9). */
+    expect(calls).toHaveLength(2);
+  });
+
+  it('[NET-NEW] with no budget wired an arbitrarily wide row set is materialised, not refused', async () => {
+    const wideRows = Object.freeze(
+      Array.from({ length: 25 }, (_unused, index) => ({
+        brandID: `brand${String(index).padStart(27, '0')}`,
+        brandName: `Brand ${String(index)}`,
+      })),
+    );
+    const { executor, calls } = createSqlExecutorDouble({ outcomes: [sqlRows(wideRows)] });
+    const builder = new SmartListQueryBuilder(executor, makeAggregateLoaders());
+
+    const records = await builder.executeRecords({ entityName: 'SlatwallBrand' });
+
+    /* ⛔ THE UNBOUNDED DEFAULT IS DELIBERATE AND IS ASSERTED, NOT MERELY DOCUMENTED. The legacy names no
+     * maximum anywhere, and IR-12 with AAP §0.7.3 S9 forbid inventing one — so an operator who wires no
+     * figure gets exactly what `org/Hibachi/HibachiSmartList.cfc` gives. This case is what stops a later
+     * revision from quietly introducing a default: any default at all under twenty-five fails here. */
+    expect(records).toHaveLength(25);
+    expect(calls).toHaveLength(1);
   });
 });
 
@@ -1153,5 +1512,293 @@ describe('NET-NEW SmartListQueryBuilder — operator emission (INT-07)', () => {
     expect(compiled.records.sql).toContain('WHERE ((aslatwalloption.optionGroupID = ?))');
     expect(compiled.records.sql).not.toContain(' JOIN ');
     expect(compiled.records.params).toEqual([ID.optionGroup]);
+  });
+});
+
+/* =================================================================================================
+ * COUNT AND RECORDS UNDER A FANNING JOIN, AND THE MATERIALISATION BUDGET — REVIEW FINDING 15
+ * -------------------------------------------------------------------------------------------------
+ * RESTORED COVERAGE. Twelve cases were dropped when the suite was reorganised and the review found no
+ * replacement for them: four relationship-hydration/identity-map cases, four SEC-12 materialisation-
+ * budget cases and four F-20 projection/count/paging cases. The eight belonging to the BUILDER are
+ * restored here; the four hydration cases are restored in `test/adapters/catalogAggregates.test.ts`,
+ * which owns hydration for this subtree.
+ *
+ * WHY HERE AND NOT WHERE THEY WERE. The dropped cases lived in `test/services/OptionService.test.ts`,
+ * and their own header explained why: at the time "AAP §0.4.1.12 declares no `SmartListQueryBuilder`
+ * test file, and NF1 forbids creating a file the AAP does not declare". That constraint is gone — THIS
+ * file now exists under the same AAP §0.4.4 `slatwall-ts/test/**` authority — so the builder's own
+ * contract belongs in the builder's own suite. That is precisely what the review's resolution asks for.
+ *
+ * ⚠️ THREE OF THE EIGHT HAVE PARTIAL EQUIVALENTS ALREADY IN THIS FILE, AND ARE STILL RESTORED. Where
+ * that is so it is stated on the case, together with the assertion the existing one does not make, so
+ * neither reads as duplication:
+ *
+ *   • "the materialisation budget refuses after the count…" (above) asserts the refusal and the
+ *     one-statement cost. It cannot see the PARITY half — that an UNWIRED budget materialises whatever
+ *     it matches — and would still pass if the parameter had stayed mandatory. Restored below.
+ *   • "the constructor refuses a budget that is not a positive whole number" (above) checks
+ *     `[0, -1, 1.5, NaN]`. It omits `Infinity`, which is the one mis-wiring that would compare as
+ *     "never over budget" rather than throwing, and it has no positive control, so it would still pass
+ *     if the guard rejected EVERYTHING. Restored below with both.
+ *   • "an unstated flag leaves the record projection NON-distinct" (above) asserts the asymmetry over a
+ *     query with no join at all — where there is nothing for DISTINCT to collapse. Restored below over
+ *     a REAL fan-out, which is the only configuration in which the asymmetry has observable meaning.
+ *
+ * WHY A FAN-OUT AT ALL, AND WHY THIS ONE. `model/entity/OptionGroup.cfc:L70` declares
+ * `options` as a genuine one-to-many inside the in-scope slice with `orderby="sortOrder"`, so joining it
+ * multiplies group rows by their options using real in-scope metadata rather than an invented
+ * relationship. `SmartListInput` declares no join member and no distinct flag, so no service member can
+ * express this shape; the query is therefore built directly, exactly as the two relocated product
+ * queries in `src/services/OptionService.ts` do.
+ * ================================================================================================*/
+
+describe('NET-NEW SmartListQueryBuilder — count and records under a fanning join (finding 15)', () => {
+  /** One group row, returned three times, as a join to a three-option group really would. */
+  const FANNED_GROUP_ROW = Object.freeze({
+    optionGroupID: ID.optionGroup,
+    optionGroupName: 'Size',
+    optionGroupCode: 'size',
+    imageGroupFlag: 1,
+    sortOrder: 1,
+  });
+
+  /**
+   * A fanning query whose page is DELIBERATELY NARROWER than the row count.
+   *
+   * The builder skips the paged statement when the first page already covers every row it read, so with
+   * the legacy default of ten (`org/Hibachi/HibachiSmartList.cfc:L39`) three fanned rows would be
+   * covered and the paged statement these cases inspect would never be emitted. Asking for two of three
+   * puts the read back on the three-statement path. The elision itself is pinned by its own case at the
+   * foot of this block, so both behaviours are asserted and neither masks the other.
+   */
+  const FANNING_QUERY: SmartListQuery<'SlatwallOptionGroup'> = {
+    entityName: 'SlatwallOptionGroup',
+    joins: [{ parentEntityName: 'SlatwallOptionGroup', relatedProperty: 'options' }],
+    pagination: { pageRecordsShow: 2 },
+  };
+
+  /** The same fan-out with paging left alone, so the first page covers all three rows. */
+  const FANNING_QUERY_WHOLE_PAGE: SmartListQuery<'SlatwallOptionGroup'> = {
+    entityName: 'SlatwallOptionGroup',
+    joins: [{ parentEntityName: 'SlatwallOptionGroup', relatedProperty: 'options' }],
+  };
+
+  /**
+   * Routes by statement SHAPE rather than by queue position, so a case that asserts ORDER is asserting
+   * the builder's choice and not the fixture's. The counting statement answers the DISTINCT total — one
+   * group — while the record statements answer three rows, which is what the fan-out returns.
+   */
+  function makeFanningBuilder(options?: {
+    readonly materialisationBudget?: { readonly maximumRecordsPerQuery: number };
+    readonly recordsCount?: number;
+  }): BuilderScenario {
+    const countedTotal = options?.recordsCount ?? 1;
+    const { executor, calls } = createSqlExecutorDouble({
+      respond: (call) => {
+        if (call.sql.includes('smartListAssociationOwnerKey')) {
+          return sqlRows([]);
+        }
+        if (call.sql.includes('recordsCount')) {
+          return sqlRows([{ recordsCount: countedTotal }]);
+        }
+        return sqlRows([{ ...FANNED_GROUP_ROW }, { ...FANNED_GROUP_ROW }, { ...FANNED_GROUP_ROW }]);
+      },
+    });
+
+    return {
+      builder: new SmartListQueryBuilder(
+        executor,
+        makeAggregateLoaders(),
+        options?.materialisationBudget,
+      ),
+      calls,
+    };
+  }
+
+  /** The statement text of every call the executor received, in issue order. */
+  function issued(scenario: BuilderScenario): readonly string[] {
+    return scenario.calls.map((call) => call.sql);
+  }
+
+  it('[NET-NEW] SEC-12: with NO budget wired, a query materialises whatever it matches', async () => {
+    /*
+     * The parity default, and the reason the constructor parameter is OPTIONAL. `HibachiSmartList.cfc`
+     * states no maximum anywhere, so an unwired builder must behave exactly as it did before the budget
+     * existed — here a counted total far above any figure this suite configures, materialised without
+     * complaint.
+     *
+     * ⚠️ THIS IS THE HALF THE SIBLING REFUSAL CASE CANNOT SEE. Together the two say: absent means
+     * unbounded, present means fail-closed. The refusal case alone would still pass if the budget had
+     * stayed a REQUIRED parameter, which is the shape AAP §0.8.2 guideline 4 forbids — a required finite
+     * ceiling converts work the legacy performs into a bounded failure.
+     */
+    const scenario = makeFanningBuilder({ recordsCount: 1_000_000 });
+
+    const result = await scenario.builder.execute(FANNING_QUERY);
+
+    expect(result.recordsCount).toBe(1_000_000);
+    expect(result.records).toHaveLength(3);
+    expect(issued(scenario)).toHaveLength(4);
+  });
+
+  it('[NET-NEW] SEC-12: an over-budget query is refused after the count and before any row is read', async () => {
+    /*
+     * Restored with the fan-out fixture, where the gate's placement is load-bearing in a way a
+     * join-free query cannot show: the count returns ONE row whatever the catalog holds, so it is safe
+     * to issue first, and the refusal then lands with exactly one statement spent and the unbounded
+     * record statement never composed. A gate placed after the record read would leave two statements
+     * behind and would already have materialised the collection it exists to prevent.
+     */
+    const scenario = makeFanningBuilder({
+      recordsCount: 5,
+      materialisationBudget: { maximumRecordsPerQuery: 4 },
+    });
+
+    await expect(scenario.builder.execute(FANNING_QUERY)).rejects.toThrow(
+      /matched more records than the configured materialisation budget admits/,
+    );
+
+    expect(issued(scenario)).toHaveLength(1);
+    expect(issued(scenario)[0]).toContain('recordsCount');
+    /* ⛔ AND NOTHING WAS READ. Asserted on the statement text rather than only on the count, because a
+     * refusal that had already composed the record statement would still leave one call behind if the
+     * count had been skipped. */
+    for (const sql of issued(scenario)) {
+      expect(sql).not.toMatch(/^SELECT [A-Za-z0-9_]+\.\*/);
+    }
+  });
+
+  it('[NET-NEW] SEC-12: a query exactly AT the budget is admitted, so the bound is not off by one', async () => {
+    /* The comparison is strictly greater-than. Restored over the fan-out so the admitted query goes on
+     * to issue all four statements, which an equality-boundary case over a bare query cannot show. */
+    const scenario = makeFanningBuilder({
+      recordsCount: 4,
+      materialisationBudget: { maximumRecordsPerQuery: 4 },
+    });
+
+    const result = await scenario.builder.execute(FANNING_QUERY);
+
+    expect(result.recordsCount).toBe(4);
+    expect(issued(scenario)).toHaveLength(4);
+  });
+
+  it('[NET-NEW] SEC-12: a mis-wired budget is refused when the graph is built, not on first use', () => {
+    /*
+     * Fail fast at construction, for the reason the constructor records: a `NaN` comparison would
+     * silently admit EVERY query and leave the finding open, so a wiring error must not be allowed to
+     * surface later as a data error.
+     *
+     * ⭐ `Infinity` IS THE ONE THAT MATTERS MOST, and it is the one the sibling case omits. It is the
+     * only value in this list that would not throw on comparison and would not read as absurd at a
+     * composition root — `recordsCount > Infinity` is simply always false, so a builder wired this way
+     * would report itself budgeted while admitting everything. `Number.isSafeInteger` rejects it.
+     */
+    for (const maximumRecordsPerQuery of [0, -1, 1.5, Number.NaN, Number.POSITIVE_INFINITY]) {
+      expect(() =>
+        makeFanningBuilder({ materialisationBudget: { maximumRecordsPerQuery } }),
+      ).toThrow(/materialisation budget must be a positive safe integer/);
+    }
+
+    /* The positive control, without which this case would still pass if the guard rejected everything. */
+    expect(() =>
+      makeFanningBuilder({ materialisationBudget: { maximumRecordsPerQuery: 1 } }),
+    ).not.toThrow();
+  });
+
+  it('[NET-NEW] F-20: the record projection is NOT distinct while the count ALWAYS is', async () => {
+    /* `org/Hibachi/HibachiSmartList.cfc:L502` counts `count(distinct …)` unconditionally, while the
+     * record branch at `:L505-L521` consults a flag seeded false at `:L59`. Both rules are asserted on
+     * the emitted SQL, because the asymmetry is the legacy's and AAP §0.7.3 standard 7 forbids repairing
+     * it. */
+    const scenario = makeFanningBuilder();
+
+    await scenario.builder.execute(FANNING_QUERY);
+
+    const [countSql, recordsSql, pageRecordsSql] = issued(scenario);
+    expect(recordsSql).toMatch(/^SELECT [A-Za-z0-9_]+\.\*/);
+    expect(recordsSql).not.toContain('DISTINCT');
+    expect(countSql).toMatch(
+      /^SELECT COUNT\(DISTINCT [A-Za-z0-9_]+\.optionGroupID\) AS recordsCount/,
+    );
+    /* ⭐ THE FAN-OUT REALLY IS PRESENT — without the join there would be nothing to be distinct about,
+     * which is exactly why the join-free sibling case cannot stand in for this one. */
+    expect(recordsSql).toContain('JOIN SwOption ');
+    expect(pageRecordsSql).toContain('JOIN SwOption ');
+    /* The declared contract, so a future edit to either composer trips a test rather than silently
+     * aligning the two branches. */
+    expect(SMARTLIST_DISTINCT_ASYMMETRY).toStrictEqual({
+      recordProjectionHonoursFlag: true,
+      countProjectionIsAlwaysDistinct: true,
+    });
+  });
+
+  it('[NET-NEW] F-20: the fanned record count and the distinct total DISAGREE, and the counted total wins', async () => {
+    /* The numeric consequence `meta/tests/unit/IssuesTest.cfc:L73-L89` (`issue_1296`) is sensitive to:
+     * three rows for one group. The port reports the COUNTED total rather than inferring it from the
+     * array length — the ambiguity `org/Hibachi/HibachiSmartList.cfc:L783-L785` leaves open and
+     * `src/ports/SmartListQueryPort.ts` resolves. */
+    const scenario = makeFanningBuilder();
+
+    const result = await scenario.builder.execute(FANNING_QUERY);
+
+    expect(result.records).toHaveLength(3);
+    expect(result.recordsCount).toBe(1);
+    /* One instance per identifier per read: the three fanned rows are the SAME object, not three. Two
+     * instances would also mean the row was managed twice, which installs a fresh error bag and discards
+     * anything already accumulated. */
+    const [first, second, third] = result.records;
+    expect(first).toBe(second);
+    expect(first).toBe(third);
+  });
+
+  it('[NET-NEW] F-20: THREE base statements are issued, in order, on one executor', async () => {
+    /* The eager three-statement shape, pinned so the open performance question cannot be resolved by
+     * accident. The unpaged projection carries no bound, the paged one carries the legacy's own
+     * offset/maximum pair from `:L762`, and the count carries neither bound nor ordering. */
+    const scenario = makeFanningBuilder();
+
+    await scenario.builder.execute(FANNING_QUERY);
+
+    const [countSql, recordsSql, pageRecordsSql] = issued(scenario);
+    expect(recordsSql).not.toContain('LIMIT');
+    expect(pageRecordsSql).toContain('LIMIT ? OFFSET ?');
+    expect(countSql).not.toContain('LIMIT');
+    expect(countSql).not.toContain('ORDER BY');
+    /* Count FIRST — SEC-12's gate order — then the two row statements, then the association pass the
+     * hydrator adds. Four statements on ONE executor, which is what makes the order observable. */
+    expect(issued(scenario)).toHaveLength(4);
+    expect(countSql).toContain('recordsCount');
+    expect(issued(scenario)[3]).toContain('smartListAssociationOwnerKey');
+  });
+
+  it('[NET-NEW] F-20: when the page covers every record the paged statement is NOT issued', async () => {
+    /*
+     * The other half of the three-statement question, and the reason the fixture above asks for a narrow
+     * page. When the first page already covers every row the unpaged statement returned, the paged
+     * statement could only return those same rows in that same order, so it is not issued and the
+     * unpaged collection IS the page. `build` still composes it with its bound `LIMIT ? OFFSET ?`, which
+     * is what keeps the case above able to inspect it.
+     *
+     * Asserted so neither behaviour can regress silently: the shape assertions above would still pass if
+     * the elision were removed, and this one would still pass if the page were ALWAYS elided.
+     */
+    const scenario = makeFanningBuilder();
+
+    const result = await scenario.builder.execute(FANNING_QUERY_WHOLE_PAGE);
+
+    /* Count, the unpaged records, the association pass — and no paged statement anywhere. */
+    expect(issued(scenario)).toHaveLength(3);
+    expect(issued(scenario)[0]).toContain('recordsCount');
+    expect(issued(scenario)[1]).not.toContain('LIMIT');
+    expect(issued(scenario)[2]).toContain('smartListAssociationOwnerKey');
+    for (const sql of issued(scenario)) {
+      expect(sql).not.toContain('OFFSET');
+    }
+
+    /* The page IS the unpaged collection, BY IDENTITY — not a second array holding equal values. */
+    expect(result.pageRecords).toBe(result.records);
+    /* And the paging figures still come from the COUNTED total, never inferred from the fanned rows. */
+    expect(result.recordsCount).toBe(1);
   });
 });

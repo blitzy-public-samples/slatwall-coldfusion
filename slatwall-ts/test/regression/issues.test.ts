@@ -1,20 +1,53 @@
 /**
- * TRACEABLE — the catalog issue regressions ported from `meta/tests/unit/IssuesTest.cfc`.
+ * TRACEABLE — the catalog issue regressions ported from `meta/tests/unit/IssuesTest.cfc`, and the
+ * fixture teardown contract ported from `meta/tests/unit/Helper.cfc:L69-L75`.
  *
- * WHAT THIS FILE CONTRIBUTES, STATED AS A DOCUMENTARY COUNT AND NOTHING MORE
- * -------------------------------------------------------------------------
- * This file carries **five of the suite's nine traceable assertions** — the five AAP-named catalog
- * regressions — and it is one of only **five of the twenty files under `test/**` that are traceable
- * at all**. Alongside those five it adds **three further in-scope regressions discovered by reading
- * the legacy class directly** rather than by working from the plan's list: `issue_1348`,
- * `issue_1690` and `issue_1690_2`. Eight tests, five traceable-and-named, three
- * traceable-and-beyond-the-plan.
+ * WHAT THIS FILE CONTRIBUTES, COUNTED ONLY WITHIN THIS FILE
+ * --------------------------------------------------------
+ * Eight issue regressions live here, in two groups, plus the fixture helper's teardown half:
  *
- * ⚠️ THAT COUNT IS DOCUMENTARY BOOKKEEPING, NOT A COVERAGE MEASUREMENT. It says how many
- * assertions can be pointed back at a named legacy line. It says nothing about how much of the
- * ported slice is exercised, and it must not be re-read as an empirical coverage figure. The
- * honest ratio for the slice as a whole lives in the subtree README; the per-file labels exist so
- * that ratio stays visible per file instead of only in aggregate.
+ *   FIVE AAP-NAMED CATALOG REGRESSIONS, the ones AAP §0.6.5.1 enumerates by number — `issue_1097`,
+ *   `issue_1296`, `issue_1329`, `issue_1331` and `issue_1335`.
+ *
+ *   THREE FURTHER IN-SCOPE REGRESSIONS, discovered by reading `meta/tests/unit/IssuesTest.cfc`
+ *   directly rather than by working from the plan's list — `issue_1348`, `issue_1690` and
+ *   `issue_1690_2`.
+ *
+ *   AND TWO LEGACY METHODS DELIBERATELY DECLINED, named here so the eight does not read as the whole of
+ *   what the legacy class holds: `issue_1376` and `issue_1604` belong to the excluded Account and Order
+ *   families. The adjudication for each is recorded at its own locator below rather than left as a silent
+ *   gap, which is what lets a reader confirm the omission was decided rather than overlooked.
+ *
+ *   AND THE FIXTURE-TEARDOWN HALF of `meta/tests/unit/Helper.cfc`, whose cases are appended at the end
+ *   of this file. Of the three components AAP §0.6.5.3 names in the whole slice's extendable legacy
+ *   signal — two entity test files, five issue regressions, one fixture helper — this file carries two.
+ *
+ * ⛔ THE SPLIT IS STATED LOCALLY, AND THAT IS A CORRECTION. An earlier revision of this header claimed
+ * this file carried "five of the suite's nine traceable assertions" and was "one of only five of the
+ * twenty files under `test/**` that are traceable at all". Both figures were aggregate denominators
+ * that cannot be audited from this file, and each was wrong in its own way — worth naming separately so
+ * neither returns:
+ *
+ *   - The NINE was a CATEGORY ERROR before it was anything else. It counts ASSERTIONS in a different
+ *     component of the signal — the entity-test assertions carried from `ProductTest.cfc` (one own plus
+ *     four inherited) and `BrandTest.cfc` (one overridden plus three inherited). The issue regressions
+ *     are a SEPARATE component, so they were never five OF that nine.
+ *   - It also DOUBLE-COUNTED. `issue_1331` is traced from a different angle in
+ *     `test/domain/Product.test.ts`, against the same `meta/tests/unit/IssuesTest.cfc:L101-L108`
+ *     locator, so summing the two files' labels counts one legacy line twice.
+ *   - The TWENTY was a live file count, and it had already gone stale by the time it was written — the
+ *     tree under `test/**` has grown well past it since, and it moves again every time a file is added,
+ *     without this comment being touched. No replacement figure is quoted here on purpose: naming a new
+ *     one would recreate the same defect one revision later. A per-file comment cannot maintain a
+ *     whole-tree census, so it must not assert one — in either direction.
+ *
+ * ⚠️ AND EVEN THIS LOCAL COUNT IS DOCUMENTARY BOOKKEEPING, NOT A COVERAGE MEASUREMENT. It says how many
+ * cases here can be pointed back at a named legacy line. It says nothing about how much of the ported
+ * slice is exercised, and it must not be re-read as an empirical coverage figure — least of all as a
+ * comparison against a legacy run, which never happened (see below). Every case carries its own
+ * `meta/tests/unit/IssuesTest.cfc` locator, which is what makes the claim checkable one case at a time
+ * rather than in aggregate. The frozen aggregate for the slice lives in the plan's own
+ * test-traceability inventory, which is therefore the only quotable source for a ratio.
  *
  * AN INTENTIONAL INTEGRATION-TO-UNIT STRUCTURAL SHIFT
  * --------------------------------------------------
@@ -102,6 +135,10 @@ import {
   MERCHANDISE_PRODUCT_TYPE_ID,
 } from '../fixtures/productTypes';
 import {
+  tearDownTestMerchandiseProduct,
+  type TestMerchandiseProductTeardownOperations,
+} from '../fixtures/testProduct';
+import {
   buildOption,
   buildOptionGroup,
   buildProduct,
@@ -119,6 +156,7 @@ import {
   createProductTypeRootResolverDouble,
   createSettingResolverDouble,
   createSkusBySelectedOptionsLookup,
+  createFanningSqlExecutorDouble,
   createSmartListQueryDouble,
   createSubscriptionTermDouble,
   createTransactionExistenceChecker,
@@ -131,6 +169,8 @@ import {
   type SmartListResponder,
   type UrlTitleTableName,
 } from '../support/inMemoryRepositories';
+import { SmartListQueryBuilder } from '../../src/adapters/mysql/SmartListQueryBuilder';
+import { createCatalogAggregateLoaders } from '../../src/adapters/mysql/catalogAggregates';
 import { populate } from '../../src/domain/base/populate';
 import type { PropertyDescriptorSet, RelatedEntityLoader } from '../../src/domain/base/populate';
 import {
@@ -160,7 +200,7 @@ import {
   type ProductTypeWithErrorState,
 } from '../../src/services/ProductService';
 import { SkuService } from '../../src/services/SkuService';
-import type { SmartListQuery } from '../../src/ports/SmartListQueryPort';
+import type { SmartListQuery, SmartListQueryPort } from '../../src/ports/SmartListQueryPort';
 import type { UniquePropertyPort } from '../../src/ports/UniquePropertyPort';
 import type { SkuRepository } from '../../src/ports/repositories/SkuRepository';
 import { Validator } from '../../src/validation/Validator';
@@ -185,9 +225,14 @@ import {
 /* ==================================================================================================
  * LOCAL HELPERS
  *
- * Deliberately narrow and specific to the eight regressions below. This file does NOT build a
+ * Deliberately narrow and specific to the eight ISSUE regressions below. This file does NOT build a
  * reusable harness framework: the shared doubles already live in `test/support/inMemoryRepositories`,
  * and anything general enough to be reused belongs there rather than here.
+ *
+ * The fixture-teardown cases at the END of this file use none of it. `tearDownTestMerchandiseProduct`
+ * takes two callbacks and owns no persistence, so its cases construct a two-entry recorder of their own
+ * rather than standing up a product service they would never call — and that recorder stays local to
+ * those cases for the same reason this harness stays local to these.
  *
  * There is no mocking library anywhere in this subtree and none is added. `jest.fn` is likewise
  * avoided in favour of plain recording objects and counters, so what each double records is visible
@@ -473,6 +518,16 @@ interface HarnessOptions {
   /** A fixed queue of SmartList answers, shifted one per execution. */
   readonly smartListOutcomes?: readonly SmartListOutcome[];
   /**
+   * A SmartList port to hand the product service INSTEAD of the recording double.
+   *
+   * `issue_1296` supplies the REAL `SmartListQueryBuilder` here so that the page window it asserts is
+   * produced by the builder's own `LIMIT`/`OFFSET` arithmetic rather than by a responder in this file.
+   * When it is absent — every other regression — the double is used exactly as before, so this option
+   * adds a seam without altering any existing wiring. `harness.smartListQueries` records the DOUBLE's
+   * queries, so a case that overrides the port asserts against the executor it supplied instead.
+   */
+  readonly smartListQueryPort?: SmartListQueryPort;
+  /**
    * `'permissive'` mirrors the raw `entitySave`/`entityDelete` of `IssuesTest.cfc:L64`/`:L68`, which
    * ran no declarative rules. `'real'` is the default and runs `productValidationRuleSet`.
    */
@@ -608,7 +663,7 @@ function buildHarness(options: HarnessOptions = {}): Harness {
     validator: options.saveValidation === 'permissive' ? createPermissiveValidator() : validator,
     settings: settings.resolver,
     accountContext: accountContext.accountContext,
-    smartListQueryPort: smartList.smartList,
+    smartListQueryPort: options.smartListQueryPort ?? smartList.smartList,
     subscriptionTermPort: subscriptionTerms.subscriptionTerms,
     productTypeRootResolver: productTypeRoots.resolver,
     productPropertyDescriptors,
@@ -648,6 +703,100 @@ const PRODUCT_TITLE_STRING_SETTING: SettingSeed = {
   settingName: 'productTitleString',
   value: '${brand.brandName} ${productName}',
 };
+
+/* ==================================================================================================
+ * THE REAL SMART-LIST SEAM, FOR issue_1296
+ *
+ * ⚠️ WHY A REGRESSION FILE REACHES FOR AN ADAPTER. Every other regression here supplies smart-list
+ * answers through `createSmartListQueryDouble`, and that is right for them: they assert what the SERVICE
+ * asks for, and a double records the request faithfully. `issue_1296` is different in kind. It asserts a
+ * property of the ANSWER — that consecutive one-record pages do not hand back the same product — and a
+ * responder written in this file computes that answer itself. Whatever such a responder returns, it
+ * returns because this file told it to, so the regression could not distinguish a working page window
+ * from a broken one.
+ *
+ * So `issue_1296` supplies the REAL `SmartListQueryBuilder` over a recording executor. The page window it
+ * asserts is then produced by the builder's own `LIMIT`/`OFFSET` arithmetic against seeded ROWS, and the
+ * assertion becomes a statement about the port rather than about this file.
+ * ================================================================================================*/
+
+/**
+ * A seeded database row.
+ *
+ * Spelled structurally rather than imported as `MySqlRow` from `src/adapters/mysql/rowMappers`: the two
+ * are the same type (`Record<string, unknown>`), and keeping the spelling local means this regression
+ * file reaches into the adapter layer for exactly two things — the builder and its aggregate loaders —
+ * rather than for a type alias it can state itself.
+ */
+type SeededRow = Record<string, unknown>;
+
+/**
+ * The aggregate binder, which must never run.
+ *
+ * `realProductSmartList` seeds the SKU aggregate load with no rows, so no `Sku` is ever bound. Throwing
+ * is how that expectation is enforced rather than assumed: if a later revision seeds SKU rows, this
+ * raises at the exact call instead of quietly changing what the page window contains.
+ */
+function refuseDefaultSkuBinding(sku: Sku): never {
+  throw new Error(
+    `The default-SKU binder ran for sku "${sku.skuID}". The smart-list cases in this file seed no SKU ` +
+      'aggregate rows, so this is a wiring mistake rather than a regression.',
+  );
+}
+
+/** Two products, distinct, in the order the default `createdDateTime` ordering returns them. */
+const ISSUE_1296_PRODUCT_ONE_ID = 'issue1296one00000000000000000000';
+const ISSUE_1296_PRODUCT_TWO_ID = 'issue1296two00000000000000000000';
+
+const ISSUE_1296_ROWS: readonly SeededRow[] = Object.freeze([
+  Object.freeze({
+    productID: ISSUE_1296_PRODUCT_ONE_ID,
+    productName: 'First Product',
+    activeFlag: 1,
+    publishedFlag: 1,
+  }),
+  Object.freeze({
+    productID: ISSUE_1296_PRODUCT_TWO_ID,
+    productName: 'Second Product',
+    activeFlag: 1,
+    publishedFlag: 1,
+  }),
+]);
+
+/**
+ * A real builder over the given root rows, wired the way `src/config/container.ts` wires it.
+ *
+ * The SKU aggregate load is seeded with NO rows on purpose. `SlatwallProduct` is one of the roots
+ * `createCatalogAggregateLoaders` supplies a loader for, so a fourth statement is always issued; seeding
+ * it empty keeps every product free of aggregates, which is a legitimate catalogue state and keeps these
+ * cases on their actual subject. Answering it with root rows instead would let a product row reach a SKU
+ * mapper, which is a wiring accident rather than a regression.
+ */
+function realProductSmartList(rootRows: readonly SeededRow[]): {
+  readonly port: SmartListQueryPort;
+  readonly fanning: ReturnType<typeof createFanningSqlExecutorDouble>;
+} {
+  const fanning = createFanningSqlExecutorDouble({
+    rootRows,
+    rootIdentityColumn: 'productID',
+    associations: [{ matching: 'FROM SwSku WHERE productID IN', rows: [] }],
+  });
+
+  return {
+    port: new SmartListQueryBuilder(
+      fanning.executor,
+      createCatalogAggregateLoaders({ bindDefaultSkuDelegate: refuseDefaultSkuBinding }),
+    ),
+    fanning,
+  };
+}
+
+/** The one statement of a compiled query that carries the page window. */
+function pageStatement(fanning: {
+  readonly calls: readonly { readonly sql: string; readonly params: readonly unknown[] }[];
+}): { readonly sql: string; readonly params: readonly unknown[] } | undefined {
+  return fanning.calls.find((call) => call.sql.includes(' LIMIT ? OFFSET ?'));
+}
 
 describe('meta/tests/unit/IssuesTest.cfc — catalog issue regressions', () => {
   /*
@@ -864,93 +1013,183 @@ describe('meta/tests/unit/IssuesTest.cfc — catalog issue regressions', () => {
    *   :L83    productTwo = smartList.getPageRecords(true)[1];
    *   :L85    assert(productOne.getProductID() neq productTwo.getProductID());
    *
-   * TWO translation decisions, both deliberate:
+   * THREE translation decisions, all deliberate:
    *
    * 1. The legacy guard at :L77 made the assertion conditional, so on a database with fewer than two
    *    products the regression silently asserted NOTHING. The target does not carry that guard: the
-   *    recording double supplies the records, so the assertion always runs. Carrying a skip that only
-   *    existed because the fixture was unreliable would carry the unreliability, not the behaviour.
+   *    executor supplies the rows, so the assertion always runs. Carrying a skip that only existed
+   *    because the fixture was unreliable would carry the unreliability, not the behaviour.
    *
    * 2. `setCurrentPageDeclaration(2)` passes a NUMBER. The target's `SmartListPagination` declares
    *    `currentPageDeclaration?: string`, and `translateSmartListInput` normalises through `String(...)`,
    *    so the page is declared here in the strict string form the port actually carries.
+   *
+   * 3. THE ANSWER COMES FROM THE REAL BUILDER, NOT FROM A RESPONDER IN THIS FILE. An earlier revision
+   *    computed the page window with a `for` loop over an already-distinct two-product array and then
+   *    asserted that the two pages differed. They differed because the loop made them differ, so the
+   *    case held no matter what the builder did with a window — it never reached the builder at all.
+   *    `harness.smartListQueryPort` now carries a real `SmartListQueryBuilder`, so every number below is
+   *    the port's own arithmetic over seeded ROWS.
+   *
+   * ==============================================================================================
+   * ⚠️ A CORRECTION, BECAUSE THE PREVIOUS REVISION EXPLAINED THIS REGRESSION WRONGLY
+   * ==============================================================================================
+   * The earlier revision closed with: "Distinctness matters precisely BECAUSE the product smart list
+   * joins. The emitted query carries three related-property joins … and a left join is exactly what fans
+   * a single product row out into several." That reasoning is FALSE, and it is worth stating plainly
+   * rather than quietly deleting, because it is the reasoning a reader would otherwise reconstruct.
+   *
+   * `model/entity/Product.cfc:L67-L69` declares all three of the joined properties `many-to-one`:
+   *   `:L67`  brand        `fkcolumn="brandID"`
+   *   `:L68`  productType  `fkcolumn="productTypeID"`
+   *   `:L69`  defaultSku   `fkcolumn="defaultSkuID"`
+   * In every one of the three the PRODUCT row holds the foreign key, so each product matches AT MOST ONE
+   * row on the other side and the join cannot fan — left or otherwise. Join direction, not join
+   * NULL-tolerance, is what fans. The property that WOULD fan is `skus` at `model/entity/Product.cfc:L72`
+   * (`one-to-many fkcolumn="productID" inverse="true"`), and `model/service/ProductService.cfc:L347-L349`
+   * does NOT register it.
+   *
+   * So there is no fan-out here, and — the second half of the correction — there is no `DISTINCT` either:
+   * `getProductSmartList` sets no `selectDistinctFlag`, `org/Hibachi/HibachiSmartList.cfc:L59` seeds it
+   * zero, and `:L506-L520` makes the record projection flag-driven. The emitted projection is therefore
+   * a plain `SELECT aslatwallproduct.*`, faithfully. That is asserted below rather than assumed, and the
+   * following case asserts what the absent flag WOULD cost if the query ever did fan.
    */
   it('issue_1296', async () => {
-    const productOneID = 'issue-1296-one';
-    const productTwoID = 'issue-1296-two';
-    const catalogue: readonly Product[] = [
-      buildProduct({ productID: productOneID, productName: 'First Product' }),
-      buildProduct({ productID: productTwoID, productName: 'Second Product' }),
-    ];
-
-    // One record per page, and the page window is recomputed from the query on every execution. That
-    // is the point: nothing is pre-fetched and nothing is replayed, so if the service handed back a
-    // cached first page the second call would return the same record and the assertion would fail.
-    const respond: SmartListResponder = (query): SmartListOutcome => {
-      const show = query.pagination?.pageRecordsShow ?? catalogue.length;
-      const declaredPage = Number(query.pagination?.currentPageDeclaration ?? '1');
-      const start = (declaredPage - 1) * show;
-      const window: Product[] = [];
-      for (let index = start; index < start + show && index < catalogue.length; index += 1) {
-        const record = catalogue[index];
-        if (record !== undefined) {
-          window.push(record);
-        }
-      }
-      return {
-        kind: 'page',
-        metrics: {
-          recordsCount: catalogue.length,
-          pageRecordsStart: start + 1,
-          pageRecordsEnd: start + window.length,
-          currentPage: declaredPage,
-          totalPages: Math.ceil(catalogue.length / show),
-        },
-        records: catalogue,
-        pageRecords: window,
-      };
-    };
-
-    const harness = buildHarness({ smartListRespond: respond });
+    const pageOneRun = realProductSmartList(ISSUE_1296_ROWS);
+    const pageTwoRun = realProductSmartList(ISSUE_1296_ROWS);
 
     // :L75-:L79 — `currentURL` stays optional and string-typed, which is AAP discrepancy 1: the legacy
     // declares it with NO type at all (`currentURL=""`).
-    const pageOne = await harness.service.getProductSmartList({ 'P:Show': 1 }, '');
+    const pageOne = await buildHarness({
+      smartListQueryPort: pageOneRun.port,
+    }).service.getProductSmartList({ 'P:Show': 1 }, '');
+
     expect(pageOne.recordsCount).toBe(2);
     expect(pageOne.pageRecords).toHaveLength(1);
     const firstPageProduct = requireAt(pageOne.pageRecords, 0);
 
-    // :L82-:L83 — page two of the same one-record window.
-    const pageTwo = await harness.service.getProductSmartList(
-      { 'P:Show': 1, 'P:Current': '2' },
-      '',
-    );
+    // :L82-:L83 — page two of the same one-record window. A SEPARATE run, because :L83's
+    // `getPageRecords(true)` passes the refresh flag and therefore re-executes rather than reading the
+    // memoized `variables.pageRecords` of `org/Hibachi/HibachiSmartList.cfc:L760`. A second service call
+    // is the port's equivalent: nothing is retained between invocations (M7).
+    const pageTwo = await buildHarness({
+      smartListQueryPort: pageTwoRun.port,
+    }).service.getProductSmartList({ 'P:Show': 1, 'P:Current': '2' }, '');
+
     expect(pageTwo.currentPage).toBe(2);
     expect(pageTwo.pageRecords).toHaveLength(1);
     const secondPageProduct = requireAt(pageTwo.pageRecords, 0);
 
     // :L85 — the regression itself: consecutive single-record pages must not hand back the same row.
+    // Both identifiers now come out of the builder's own window arithmetic over the seeded rows.
     expect(firstPageProduct.productID).not.toBe(secondPageProduct.productID);
-    expect(firstPageProduct.productID).toBe(productOneID);
-    expect(secondPageProduct.productID).toBe(productTwoID);
+    expect(firstPageProduct.productID).toBe(ISSUE_1296_PRODUCT_ONE_ID);
+    expect(secondPageProduct.productID).toBe(ISSUE_1296_PRODUCT_TWO_ID);
 
-    // Distinctness matters precisely BECAUSE the product smart list joins. The emitted query carries
-    // three related-property joins — productType, defaultSku, and brand as a LEFT join — and a left
-    // join is exactly what fans a single product row out into several. Asserting the joins are present
-    // records why the page window has to be de-duplicated rather than merely paginated.
-    expect(harness.smartListQueries).toHaveLength(2);
-    const emitted = requireAt(harness.smartListQueries, 0);
-    expect(emitted.entityName).toBe('SlatwallProduct');
-    expect(emitted.joins).toStrictEqual([
-      { parentEntityName: 'SlatwallProduct', relatedProperty: 'productType' },
-      { parentEntityName: 'SlatwallProduct', relatedProperty: 'defaultSku' },
-      { parentEntityName: 'SlatwallProduct', relatedProperty: 'brand', joinType: 'left' },
-    ]);
-    expect(emitted.pagination).toStrictEqual({ pageRecordsShow: 1 });
-    expect(requireAt(harness.smartListQueries, 1).pagination).toStrictEqual({
-      pageRecordsShow: 1,
-      currentPageDeclaration: '2',
-    });
+    // WHY they differ, stated as an assertion rather than as a comment: the second page binds OFFSET 1
+    // against the same LIMIT 1, and both are bound POSITIONALLY and LAST, as the digit strings
+    // `translateSmartListInput` normalises them to. `:L794` computes `((page-1)*show)+1`, so page two of
+    // a one-record window starts at record 2 — offset 1, since the port binds `pageRecordsStart - 1`
+    // exactly as `org/Hibachi/HibachiSmartList.cfc:L762` passes `getPageRecordsStart()-1`.
+    expect(pageStatement(pageOneRun.fanning)?.params).toStrictEqual(['1', '0']);
+    expect(pageStatement(pageTwoRun.fanning)?.params).toStrictEqual(['1', '1']);
+
+    // Neither run replayed anything: each issued its own count, its own unpaged read, its own page read
+    // and its own aggregate load. A cached first page would show as a missing statement here, and it is
+    // the failure mode the legacy `getPageRecords(true)` refresh flag exists to avoid.
+    for (const run of [pageOneRun, pageTwoRun]) {
+      expect(run.fanning.calls).toHaveLength(4);
+      expect(run.fanning.calls[0]?.sql).toContain('COUNT(DISTINCT aslatwallproduct.productID)');
+      expect(pageStatement(run.fanning)).toBeDefined();
+    }
+
+    // The three joins reach the emitted statement, and NONE of them eliminates a row: a product with no
+    // brand, no product type or no default SKU still appears. `org/Hibachi/HibachiSmartList.cfc:L537-L540`
+    // rewrites an omitted join kind to `left`, so `:L347` and `:L348` — which name no kind — emit the same
+    // keyword `:L349` spells out.
+    const recordsSql = requireAt(pageOneRun.fanning.statements(), 1);
+    expect(recordsSql.match(/ LEFT JOIN /g)).toHaveLength(3);
+    expect(recordsSql).not.toContain('INNER JOIN');
+    expect(recordsSql).toContain(
+      'LEFT JOIN SwProductType aslatwallproducttype ON aslatwallproducttype.productTypeID = ' +
+        'aslatwallproduct.productTypeID',
+    );
+    expect(recordsSql).toContain(
+      'LEFT JOIN SwSku aslatwallsku ON aslatwallsku.skuID = aslatwallproduct.defaultSkuID',
+    );
+    expect(recordsSql).toContain(
+      'LEFT JOIN SwBrand aslatwallbrand ON aslatwallbrand.brandID = aslatwallproduct.brandID',
+    );
+
+    // ⚠️ THE CORRECTION, ASSERTED. Every ON clause equates the other side's key to a FOREIGN KEY COLUMN
+    // ON THE PRODUCT ROW, which is what `many-to-one` means and why at most one row can match. A fanning
+    // join would instead equate a child column to the product's own PRIMARY key — the
+    // `ON aslatwallsku.productID = aslatwallproduct.productID` shape that `skus` emits — and no such
+    // clause appears. This is the real reason the page window above is stable, and it is asserted so that
+    // registering a collection join here later cannot pass silently.
+    expect(recordsSql).not.toContain('= aslatwallproduct.productID');
+
+    // And the projection is NOT distinct, faithfully: the flag is unset, so `:L510` and `:L518` add
+    // nothing. Asserting the absence is what keeps the asymmetry a carried decision (S7) rather than
+    // something a later revision "tidies up".
+    expect(recordsSql.startsWith('SELECT aslatwallproduct.*')).toBe(true);
+    expect(recordsSql).not.toContain('SELECT DISTINCT');
+  });
+
+  /*
+   * NET-NEW — no legacy counterpart. AAP §0.8.3.7 requires that absence be flagged, not implied away.
+   *
+   * ⚠️ WHY THIS CASE SITS BESIDE issue_1296 RATHER THAN IN THE ADAPTER SUITE. The case above establishes
+   * that `getProductSmartList` cannot fan and carries no `DISTINCT`. Both halves are load-bearing, and
+   * together they raise the obvious question a reviewer should ask next: if the projection is not
+   * distinct, what protects the page window? The answer is join direction ALONE. That is a thin
+   * guarantee, and a thin guarantee deserves a case that shows what it is holding back.
+   *
+   * So this case feeds the SAME member rows that repeat — the row shape a collection join would produce —
+   * and asserts the consequence rather than describing it: issue 1296 comes straight back. One product
+   * occupies both consecutive one-record pages, and the total disagrees with the collection it is
+   * reported alongside.
+   *
+   * ⛔ THIS IS NOT A BUG REPORT AND NOT A REPAIR REQUEST. AAP §0.7.3 standard 7 and §0.8.2 guideline 4
+   * forbid repairing a carried legacy defect, and the legacy behaves identically for identical reasons.
+   * The case exists so that the protection is documented as a PROPERTY OF THE JOIN SET — meaning the
+   * moment someone registers `skus`, or any other one-to-many, the case above starts failing and this one
+   * explains why. The executed DISTINCT asymmetry itself is owned by
+   * `test/adapters/SmartListQueryBuilder.test.ts`; this case owns only its consequence for this member.
+   */
+  it('issue_1296 — the guarantee is join DIRECTION, and fanning rows would break it', async () => {
+    // The row set a collection join produces: product one matched twice, product two once.
+    const fannedRows: readonly SeededRow[] = [
+      requireAt(ISSUE_1296_ROWS, 0),
+      requireAt(ISSUE_1296_ROWS, 0),
+      requireAt(ISSUE_1296_ROWS, 1),
+    ];
+    const pageOneRun = realProductSmartList(fannedRows);
+    const pageTwoRun = realProductSmartList(fannedRows);
+
+    const pageOne = await buildHarness({
+      smartListQueryPort: pageOneRun.port,
+    }).service.getProductSmartList({ 'P:Show': 1 }, '');
+    const pageTwo = await buildHarness({
+      smartListQueryPort: pageTwoRun.port,
+    }).service.getProductSmartList({ 'P:Show': 1, 'P:Current': '2' }, '');
+
+    // THE REGRESSION, REPRODUCED. Both pages are product one, so the legacy assertion at :L85 would fail
+    // — which is precisely why the join set the member registers matters more than it looks.
+    expect(requireAt(pageOne.pageRecords, 0).productID).toBe(ISSUE_1296_PRODUCT_ONE_ID);
+    expect(requireAt(pageTwo.pageRecords, 0).productID).toBe(ISSUE_1296_PRODUCT_ONE_ID);
+
+    // The asymmetry, in numbers: THREE records materialised for a total of TWO, because `:L504` counts
+    // distinct unconditionally while the record projection consulted a flag nobody set.
+    expect(pageOne.records).toHaveLength(3);
+    expect(pageOne.recordsCount).toBe(2);
+    expect(pageOne.totalPages).toBe(2);
+
+    // Same window arithmetic as the passing case — offsets 0 and 1 — so nothing about pagination changed.
+    // The ONLY difference is which row the offset lands on, which is the entire point.
+    expect(pageStatement(pageOneRun.fanning)?.params).toStrictEqual(['1', '0']);
+    expect(pageStatement(pageTwoRun.fanning)?.params).toStrictEqual(['1', '1']);
   });
 
   /*
@@ -1399,6 +1638,24 @@ describe('meta/tests/unit/IssuesTest.cfc — catalog issue regressions', () => {
    * rather than blow up. In the target that is explicit — `ProductService.saveProduct` attaches the
    * errors to the entity and RETURNS it, so a validation failure is DATA on the returned entity, never
    * an exception. Nothing is thrown, nothing is rejected, and nothing is persisted.
+   *
+   * ⭐ THIS CASE IS THE SOLE CLAIMANT OF THE `issue_1690_2` LOCATOR, AND THAT EXCLUSIVITY IS DELIBERATE
+   * (review finding 18's sibling, review finding 17). `test/services/BrandService.test.ts` once cited
+   * `:L203-L206` for a case asserting that `saveBrand` RAISES a `ValidationError`. Both halves of that
+   * citation were wrong: `:L204` is `newEntity("Product")`, so the legacy test never touches a brand, and
+   * the two ported contracts are OPPOSITE — this one RESOLVES with findings on the entity, the brand one
+   * REJECTS. One locator presented as parity evidence for opposite contracts is worse than no citation at
+   * all, because a reader checking the trail would find the legacy test agreeing with whichever of the two
+   * they happened to read first. The brand case is now labelled NET-NEW and service-specific, and cites
+   * the legacy pair only as context.
+   *
+   * ⚠️ WHY THE CONTRACTS LEGITIMATELY DIFFER, RATHER THAN ONE OF THEM BEING WRONG.
+   * `model/service/ProductService.cfc:L310` returns on EVERY path and its `:L306` gate reads
+   * `hasErrors()`, so the ported `saveProduct` catches the accumulated bag and returns the entity — which
+   * is what makes the assertion below `resolves`. `model/service/BrandService.cfc:L76` has no such
+   * post-save arm; it delegates to `super.save()` and returns whatever that returns, so the port's
+   * `BaseService` raise reaches the caller untouched. The divergence is a legacy structural difference
+   * between the two services, faithfully carried, not an inconsistency in the port.
    */
   it('issue_1690_2', async () => {
     const harness = buildHarness({ settings: [PRODUCT_TITLE_STRING_SETTING] });
@@ -1445,5 +1702,174 @@ describe('meta/tests/unit/IssuesTest.cfc — catalog issue regressions', () => {
     await expect(harness.service.saveProduct(second, {})).resolves.toBe(second);
     expect(second.hasErrors()).toBe(true);
     expect(harness.persistedProducts).toStrictEqual([]);
+  });
+});
+
+/* =====================================================================================================
+ * THE FIXTURE TEARDOWN CONTRACT — `meta/tests/unit/Helper.cfc:L69-L75`
+ * =====================================================================================================
+ * `tearDownTestMerchandiseProduct` is the ported half of the legacy fixture's
+ * `destroyTestMerchandiseProduct()`, and until now NOTHING EXECUTED IT. That is a specific kind of gap
+ * rather than a generic one: the helper's entire reason for existing is the ORDER of its two steps, and
+ * an order is exactly the property that a never-invoked function cannot be trusted to hold. Reversing
+ * the two statements, or deleting either one, left every suite in this subtree green.
+ *
+ * WHY THE CASES LIVE HERE, IN AN EXISTING FILE. The helper is a `Helper.cfc` port and this file is the
+ * subtree's `Helper.cfc`/`IssuesTest.cfc` provenance suite — `issue_1097` regresses the very save-then-
+ * delete round trip the legacy fixture existed to set up and tear down. Giving the helper its own file
+ * would have added a suite to the tree for four cases and split one legacy class's coverage across two
+ * files, so the cases are appended here instead.
+ *
+ * WHAT IS AND IS NOT TRACEABLE. The ORDER, both step semantics and the `void` return are read from
+ * `Helper.cfc:L69-L75` and are labelled TRACEABLE. The failure-path and repeat-invocation cases have no
+ * legacy counterpart — CFML would have propagated a fault from `setDefaultSku` the same way, but the
+ * legacy suite never asserted it — so they are labelled NET-NEW rather than presented as parity.
+ * ================================================================================================== */
+
+/** Every teardown step that ran, in call order, plus a per-step call count. */
+interface TeardownRecorder {
+  readonly log: readonly string[];
+  readonly operations: TestMerchandiseProductTeardownOperations;
+  count(step: string): number;
+}
+
+/**
+ * A recorder whose two operations append their own names and can be made to throw.
+ *
+ * ⛔ THE OPERATIONS ARE SYNCHRONOUS, DELIBERATELY. `TestMerchandiseProductTeardownOperations` declares
+ * both members as returning `void` rather than `void | Promise<void>`, mirroring the legacy
+ * `public void function`, and the fixture's own documentation records that the guard against an
+ * accidentally-unawaited promise is `@typescript-eslint/no-misused-promises` rather than the compiler.
+ * Handing this helper `async` callbacks would therefore lint-fail rather than compile-fail, so it is not
+ * done — the doubles below sequence nothing and return nothing.
+ *
+ * @param failOn the step name that should throw instead of recording nothing further
+ */
+function teardownRecorder(failOn?: 'clearDefaultSkuReference' | 'deleteProduct'): TeardownRecorder {
+  const log: string[] = [];
+
+  const record = (step: 'clearDefaultSkuReference' | 'deleteProduct'): void => {
+    log.push(step);
+    if (failOn === step) {
+      throw new Error(`${step} failed`);
+    }
+  };
+
+  return {
+    log,
+    operations: {
+      clearDefaultSkuReference: (): void => {
+        record('clearDefaultSkuReference');
+      },
+      deleteProduct: (): void => {
+        record('deleteProduct');
+      },
+    },
+    count: (step: string): number => log.filter((entry) => entry === step).length,
+  };
+}
+
+describe('meta/tests/unit/Helper.cfc — the fixture teardown contract', () => {
+  it('TRACEABLE Helper.cfc:L70,L72 — clears the default-SKU reference BEFORE deleting the product', () => {
+    const recorder = teardownRecorder();
+
+    tearDownTestMerchandiseProduct(recorder.operations);
+
+    /*
+     * ⭐ THE ORDER IS THE BEHAVIOUR, AND `model/validation/Sku.json:L3` IS WHY. That rule set declares
+     * `"defaultFlag": [{"contexts":"delete","eq":false}]`, so a SKU that is still its product's default
+     * cannot be deleted. The legacy fixture therefore nulls the reference at `:L70` and only then calls
+     * `entityDelete` at `:L72`. Reversing the two trips the guard and the teardown fails — which is a
+     * failure a fixture produces in every test that uses it, not in one.
+     *
+     * The whole log is asserted rather than two `toHaveBeenCalled` checks, because those hold for either
+     * order. The counts are asserted separately so a helper that ran a step twice — an easy consequence
+     * of a retry or a loop — cannot hide behind a log that merely CONTAINS both names.
+     */
+    expect(recorder.log).toStrictEqual(['clearDefaultSkuReference', 'deleteProduct']);
+    expect(recorder.count('clearDefaultSkuReference')).toBe(1);
+    expect(recorder.count('deleteProduct')).toBe(1);
+  });
+
+  it('TRACEABLE Helper.cfc:L69 — returns nothing, synchronously, with both steps already run', () => {
+    const recorder = teardownRecorder();
+
+    const returned: void = tearDownTestMerchandiseProduct(recorder.operations);
+
+    /*
+     * ⚠️ THE LOG IS INSPECTED WITH NO `await` AND NO TICK IN BETWEEN, which is the only way to
+     * distinguish a synchronous orchestrator from one that defers to a microtask. `Helper.cfc:L69`
+     * declares `public void function`, so the legacy caller could rely on both steps having completed by
+     * the time the call returned; a port that returned a promise would silently break every caller that
+     * did not await it, while still passing an order assertion made after an `await`.
+     */
+    expect(recorder.log).toStrictEqual(['clearDefaultSkuReference', 'deleteProduct']);
+    expect(returned).toBeUndefined();
+  });
+
+  it('NET-NEW — a failing clear step short-circuits: the delete is never attempted', () => {
+    const recorder = teardownRecorder('clearDefaultSkuReference');
+
+    expect(() => {
+      tearDownTestMerchandiseProduct(recorder.operations);
+    }).toThrow('clearDefaultSkuReference failed');
+
+    /*
+     * ⭐ SHORT-CIRCUITING IS THE SAFE BEHAVIOUR HERE, AND IT IS WHY THE HELPER CATCHES NOTHING. If the
+     * default-SKU reference could not be cleared, the delete guard at `model/validation/Sku.json:L3` is
+     * still armed, so proceeding would attempt a delete that must fail — and swallowing the first fault
+     * to try the second would replace a precise diagnosis with a misleading one. CFML's own behaviour is
+     * the same: `Helper.cfc:L69-L75` has no `try`, so a fault at `:L70` never reaches `:L72`.
+     *
+     * ⛔ NO RECOVERY, NO RETRY, NO SUPPRESSION is asserted rather than assumed: the log holds exactly the
+     * one step that ran, and the original message reaches the caller unwrapped.
+     */
+    expect(recorder.log).toStrictEqual(['clearDefaultSkuReference']);
+    expect(recorder.count('deleteProduct')).toBe(0);
+  });
+
+  it('NET-NEW — a failing delete step propagates, and the clear that already ran is not undone', () => {
+    const recorder = teardownRecorder('deleteProduct');
+
+    expect(() => {
+      tearDownTestMerchandiseProduct(recorder.operations);
+    }).toThrow('deleteProduct failed');
+
+    /*
+     * The complement of the case above. The helper is not a transaction and does not pretend to be one:
+     * a failure at the second step leaves the first step's effect in place, exactly as the legacy fixture
+     * did. Compensating for it would invent rollback semantics the legacy never had, and the caller —
+     * which owns the persistence these callbacks close over — is the only layer that could do so
+     * correctly.
+     */
+    expect(recorder.log).toStrictEqual(['clearDefaultSkuReference', 'deleteProduct']);
+    expect(recorder.count('clearDefaultSkuReference')).toBe(1);
+  });
+
+  it('NET-NEW M7 — the helper holds no state: a repeat call runs both steps again, and two callers do not interfere', () => {
+    const shared = teardownRecorder();
+
+    tearDownTestMerchandiseProduct(shared.operations);
+    tearDownTestMerchandiseProduct(shared.operations);
+
+    /*
+     * ⚠️ NO ONCE-ONLY GUARD AND NO MEMOISATION, asserted rather than assumed. A helper that remembered it
+     * had already torn down would silently skip the second product in any suite that built two, and on a
+     * warm Lambda container module-scope state is the one thing that survives — which is why M7 requires
+     * every memo in this subtree to be request or factory scoped. The teardown holds none at all.
+     */
+    expect(shared.log).toStrictEqual([
+      'clearDefaultSkuReference',
+      'deleteProduct',
+      'clearDefaultSkuReference',
+      'deleteProduct',
+    ]);
+
+    /* And two independent callers observe only their own steps. */
+    const first = teardownRecorder();
+    const second = teardownRecorder();
+    tearDownTestMerchandiseProduct(first.operations);
+    expect(first.log).toStrictEqual(['clearDefaultSkuReference', 'deleteProduct']);
+    expect(second.log).toStrictEqual([]);
   });
 });

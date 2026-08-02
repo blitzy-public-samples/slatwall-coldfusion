@@ -138,7 +138,11 @@
  * @see `src/adapters/mysql/rowMappers.ts` for the hydration half of the same boundary.
  */
 
-import { DataIntegrityError, DomainError } from '../../errors/DomainError';
+import {
+  DataIntegrityError,
+  DomainError,
+  UniqueConstraintViolationError,
+} from '../../errors/DomainError';
 import { toRows } from './rowMappers';
 
 import type { MySqlRow } from './rowMappers';
@@ -971,6 +975,170 @@ function toCount(projected: unknown): number {
 }
 
 /* ================================================================================================
+ * ⭐ SEC-HARDENING (D18-CLASS) — DUPLICATE-KEY TRANSLATION, SHARED BY BOTH DRIVER PATHS
+ * ================================================================================================
+ * Review finding F6 (CWE-367) asks for two things on the uniqueness path: serialize the check against
+ * the write, and "handle duplicate-key errors". The first is done in `./UniquePropertyChecker` and the
+ * second is done here, because a duplicate key is not a uniqueness-path concept — ANY write in the
+ * subtree can hit one, and the report has to be the same wherever it happens.
+ *
+ * ⭐ THERE ARE EXACTLY TWO ROUTES TO THE DRIVER IN THIS SUBTREE, AND BOTH USE THIS ONE HELPER.
+ * `QueryRunner.runStatement` below is the pool-bound route; `createExecutor`'s local `runStatement` in
+ * `./UnitOfWork` is the transaction-scoped route. That is the complete list — the folder's central
+ * guarantee is that no other code speaks to the database — so translating in both places translates
+ * everywhere, and translating HERE rather than twice means the two can never disagree about what a
+ * collision looks like. `./UnitOfWork` already imports `assertTableName`, `assertColumnName` and
+ * `readAffectedRows` from this module, so the shared home costs it no new dependency.
+ *
+ * ⚠️ NOT A BEHAVIOUR CHANGE — SEE {@link UniqueConstraintViolationError} FOR THE FULL ADJUDICATION.
+ * The same writes succeed, the same writes fail, at the same moment. A failure that previously escaped
+ * as the driver's own object now escapes as a typed one that classifies itself as a request rejection
+ * instead of an undisclosed service fault. No retry is added, no backoff, no second attempt and no
+ * fallback write: a lost race is REPORTED, never papered over. Retrying would be exactly the invented
+ * behaviour AAP §0.8.2 Guideline 4 forbids, and it would also be wrong, since the caller's own
+ * validation verdict is stale by then.
+ * ============================================================================================== */
+
+/**
+ * MySQL's server error number for a rejected duplicate key: `ER_DUP_ENTRY`.
+ *
+ * Named as a constant rather than written inline because it is matched in one place and asserted in
+ * another, and a bare `1062` at two sites is two chances to mistype a number with no compiler to
+ * notice. The driver reports it on `errno`, and reports the same condition symbolically on `code` as
+ * `'ER_DUP_ENTRY'`; both are checked, because which fields a driver populates is the driver's choice
+ * and not a contract this port can pin.
+ *
+ * It is a MySQL fact, not an invented threshold: AAP §0.7.3 S9 forbids inventing numbers, and this one
+ * is the server's own. Compare the sibling note on `ER_WRONG_ARGUMENTS (errno 1210)` above, recorded
+ * for the same reason.
+ */
+export const MYSQL_DUPLICATE_ENTRY_ERRNO = 1062;
+
+/** The driver's symbolic spelling of {@link MYSQL_DUPLICATE_ENTRY_ERRNO}. */
+const MYSQL_DUPLICATE_ENTRY_CODE = 'ER_DUP_ENTRY';
+
+/**
+ * How many characters of a constraint name are retained in the internal account.
+ *
+ * A constraint name is an identifier the SCHEMA chose, not caller data, so it is safe to record —
+ * but it arrives inside a driver message, and a message is a channel an attacker may be able to
+ * influence in ways this port cannot audit. Capping it keeps a hostile or corrupted value from
+ * becoming an unbounded write into whatever log consumes the error (CWE-117), on the same reasoning
+ * `../../validation/Validator.ts` records for its own echo limit.
+ */
+const CONSTRAINT_NAME_ECHO_LIMIT = 96;
+
+/**
+ * Reports whether a caught value is MySQL's rejection of a duplicate key.
+ *
+ * Structural rather than `instanceof`, deliberately. The value arrives typed `unknown` under
+ * `useUnknownInCatchVariables`, the driver's error class is not part of any contract this port
+ * declares, and a test double must be able to produce the same condition without importing driver
+ * internals. Reading two well-known fields off an object is what both a real driver error and a
+ * faithful double satisfy.
+ *
+ * @param cause - the caught value, of unknown type.
+ * @returns true when the value identifies itself as a duplicate-key rejection.
+ */
+export function isDuplicateEntryFailure(cause: unknown): boolean {
+  if (typeof cause !== 'object' || cause === null) {
+    return false;
+  }
+
+  const candidate = cause as { readonly errno?: unknown; readonly code?: unknown };
+
+  return (
+    candidate.errno === MYSQL_DUPLICATE_ENTRY_ERRNO || candidate.code === MYSQL_DUPLICATE_ENTRY_CODE
+  );
+}
+
+/**
+ * Extracts the constraint name from a duplicate-key failure, discarding the colliding value.
+ *
+ * ⚠️ THE VALUE IS DELIBERATELY DROPPED, AND THAT IS THE WHOLE POINT OF THIS FUNCTION EXISTING.
+ * MySQL's message reads `Duplicate entry '<value>' for key '<table>.<index>'`. The first quoted group
+ * is CALLER DATA — routinely the very field being validated, and on this path routinely a product
+ * code, SKU code or URL title. Forwarding it into an error object risks it reaching a log, a trace or
+ * a serialized diagnostic. The second quoted group is a schema identifier, which discloses nothing
+ * about the caller and is the only part that helps a reader work out WHICH rule was violated.
+ *
+ * The full driver error is still attached as `cause` by the translator below, so nothing is destroyed;
+ * what changes is that the value is no longer promoted into a field this port composed itself.
+ *
+ * @param cause - the caught value, already known to be a duplicate-key rejection.
+ * @returns the constraint name, truncated to {@link CONSTRAINT_NAME_ECHO_LIMIT}, or undefined when
+ *   the message does not carry one in the documented shape.
+ */
+export function describeDuplicateEntryConstraint(cause: unknown): string | undefined {
+  if (typeof cause !== 'object' || cause === null) {
+    return undefined;
+  }
+
+  const { message } = cause as { readonly message?: unknown };
+
+  if (typeof message !== 'string') {
+    return undefined;
+  }
+
+  /*
+   * Anchored on the literal `for key '` that MySQL emits, and matching to the NEXT quote rather than
+   * greedily to the last one, so a colliding value that itself contains `for key '` cannot extend the
+   * captured span. Only printable ASCII other than a quote is admitted, which excludes the control
+   * characters a log-injection payload would need.
+   */
+  const matched = /for key '([\x20-\x26\x28-\x7e]*)'/.exec(message);
+  const constraintName = matched?.[1];
+
+  if (constraintName === undefined || constraintName.length === 0) {
+    return undefined;
+  }
+
+  return constraintName.length > CONSTRAINT_NAME_ECHO_LIMIT
+    ? `${constraintName.slice(0, CONSTRAINT_NAME_ECHO_LIMIT)}…`
+    : constraintName;
+}
+
+/**
+ * Re-raises a caught driver failure, typing it when — and only when — it is a duplicate key.
+ *
+ * ⭐ EVERY OTHER FAILURE PASSES THROUGH COMPLETELY UNTOUCHED, by `throw cause` on the original value.
+ * A connection reset, a deadlock, a lock-wait timeout, a syntax error and a permission refusal all
+ * reach the caller exactly as they did before this helper existed — same object, same message, same
+ * stack, same identity under `instanceof`. Narrowing the translation to one error number is what keeps
+ * this a reporting change rather than a rewrite of the port's failure surface, and it is why the
+ * helper re-throws rather than returning a value: its return type is `never`, so a caller cannot
+ * accidentally continue past a failure it did not handle.
+ *
+ * @param cause - the caught value, of unknown type.
+ * @param parameterCount - how many values the failing statement bound. Recorded instead of the
+ *   statement text and instead of the values, matching the sibling throw sites in this module, which
+ *   record a count for the same reason: it is diagnostic without being disclosive.
+ * @returns never — the function always throws.
+ * @throws {UniqueConstraintViolationError} when the failure is a duplicate-key rejection.
+ * @throws {unknown} the original caught value, unchanged, in every other case.
+ */
+export function rethrowTranslatingDuplicateEntry(cause: unknown, parameterCount: number): never {
+  if (!isDuplicateEntryFailure(cause)) {
+    throw cause;
+  }
+
+  const constraintName = describeDuplicateEntryConstraint(cause);
+
+  throw new UniqueConstraintViolationError(
+    'The database refused a write because a value it carries is already held by another row, so the ' +
+      'uniqueness check that preceded it was overtaken.',
+    {
+      cause,
+      context: {
+        parameterCount,
+        errno: MYSQL_DUPLICATE_ENTRY_ERRNO,
+        ...(constraintName !== undefined ? { constraintName } : {}),
+      },
+    },
+  );
+}
+
+/* ================================================================================================
  * BOUNDED READS — THE SHARED MECHANICS OF THE EXPLICITLY BOUNDED REPOSITORY MEMBERS
  * ================================================================================================
  * `src/ports/repositories/BoundedRead.ts` declares the caller-facing vocabulary and states the two
@@ -1276,10 +1444,13 @@ export interface StatementRunner {
  * no repository ever receives a value of this type, which is why no repository can settle a
  * transaction it did not open.
  *
- * `destroy` IS PART OF THE CONTRACT ON PURPOSE. A connection whose commit or roll-back itself
+ * `destroy` IS PART OF THE CONTRACT ON PURPOSE. A connection whose begin, commit or roll-back itself
  * failed has an unknown transaction state, and returning it to a warm pool would hand that state to
  * the next caller. The boundary needs a way to take such a connection out of service rather than
- * recycle it, and this is that way.
+ * recycle it, and this is that way. All three failing steps are named because all three reach it: the
+ * boundary withdraws the connection's standing BEFORE `beginTransaction` is attempted, so a begin that
+ * failed part-way through is disposed of exactly as a failed settlement is. `test/adapters/UnitOfWork.test.ts`
+ * asserts each of the three, against this contract's own double.
  */
 export interface TransactionalStatementRunner extends StatementRunner {
   /** Opens a transaction on this connection. */
@@ -1661,11 +1832,18 @@ export class QueryRunner implements ReadWriteSqlExecutor {
    * raised on this side of the boundary. It also means the value this class holds cannot be the
    * driver's pool, which is the F3 contract mismatch resolved rather than asserted away.
    *
+   * ⭐ SEC-HARDENING (D18-CLASS) — A DUPLICATE KEY IS TRANSLATED HERE, AND NOTHING ELSE IS.
+   * This is one of the two routes to the driver in the subtree, so it is one of the two places
+   * {@link rethrowTranslatingDuplicateEntry} is applied; `./UnitOfWork`'s `createExecutor` is the
+   * other. See that helper for the F6 adjudication in full. Every failure that is NOT MySQL error
+   * 1062 leaves this method as the identical object the driver raised.
+   *
    * @param sql - the statement text as composed by the caller.
    * @param params - the values to bind, in legacy positional order.
    * @returns the driver's answer, unnarrowed.
    * @throws {DomainError} when the statement text is blank, a parameter is not a bindable scalar, or
    *   the statement's placeholder count does not match the number of values supplied.
+   * @throws {UniqueConstraintViolationError} when the driver refuses the write as a duplicate key.
    */
   private async runStatement(sql: string, params: readonly unknown[]): Promise<unknown> {
     if (sql.trim().length === 0) {
@@ -1675,8 +1853,17 @@ export class QueryRunner implements ReadWriteSqlExecutor {
       );
     }
 
-    const [driverResult] = await this.pool.execute(sql, toBoundValues(params));
+    try {
+      const [driverResult] = await this.pool.execute(sql, toBoundValues(params));
 
-    return driverResult;
+      return driverResult;
+    } catch (cause: unknown) {
+      /*
+       * The catch wraps ONLY the driver call, not the blank-statement guard above and not the
+       * parameter narrowing inside `toBoundValues`, so a `DomainError` this class raised deliberately
+       * can never be mistaken for a driver failure and re-examined as one.
+       */
+      rethrowTranslatingDuplicateEntry(cause, params.length);
+    }
   }
 }

@@ -190,6 +190,7 @@ import type { DefaultSkuIdReader } from '../../domain/sku/Sku';
 import { DataIntegrityError } from '../../errors/DomainError';
 import type { SqlExecutor } from './QueryRunner';
 import { assertColumnName, assertTableName } from './QueryRunner';
+import { readHydratedParentProductTypeID } from './rowMappers';
 import { createSlatwallUUID } from '../../util/uuid';
 
 /* ==================================================================================================
@@ -1013,18 +1014,27 @@ export class MySqlProductPersistence {
       productType.productTypeName ?? null,
       productType.productTypeDescription ?? null,
       productType.systemCode ?? null,
-      /* Association identity, `model/entity/ProductType.cfc:L62` — the self-referencing parent.
+      /* Association identity, `model/entity/ProductType.cfc:L62` — the self-referencing parent, with
+       * the preserved foreign key as its fallback.
        *
-       * ⚠️ AND THIS KEY HAS A KNOWN ROUND-TRIP GAP, RECORDED RATHER THAN CLOSED. `./rowMappers.ts`
-       * leaves `parentProductType` entirely unhydrated under its rule 3, so a product type READ
-       * through that module carries no parent association at all and this expression stores `NULL` —
-       * detaching it from its parent. The gap is deliberate: an identifier-only parent would make
-       * `ProductType.getSimpleRepresentation` return `undefined` and empty the feed's
-       * `g:product_type` element, which rule 3a forbids outright. The full account, and the matching
-       * gap in `./MySqlProductTypeRepository.ts`'s `collectWritableValues`, are recorded at the rule
-       * 3a discussion in `./rowMappers.ts`. Nothing here compensates for it, because a compensating
-       * read in an adapter's write path would be a second mechanism for a decision already made. */
-      productType.parentProductType?.productTypeID ?? null,
+       * ⭐ THIS KEY HAD A ROUND-TRIP GAP AND IT IS NOW CLOSED. The expression used to end at
+       * `?? null`, so a product type READ through `./rowMappers.ts` — which leaves
+       * `parentProductType` unhydrated on purpose, because an identifier-only parent would make
+       * `ProductType.getSimpleRepresentation` return `undefined` and empty the feed's `g:product_type`
+       * element — was written back with `NULL` and DETACHED from its parent. Rule 3b in
+       * `./rowMappers.ts` preserves the row's key beside the entity, so the association still wins
+       * whenever one is resolved and `NULL` is stored only for a genuine root.
+       *
+       * ⚠️ THIS IS NOT "A SECOND MECHANISM FOR A DECISION ALREADY MADE", which is what an earlier
+       * comment here called any compensating read. The decision rule 3a made was about what the
+       * ASSOCIATION may contain, and it is unchanged — this slot is still never filled with a
+       * reference. Preserving the COLUMN for the write paths is a different question with a different
+       * answer, and both persisters read it through the one exported accessor rather than each
+       * inventing a lookup. `./MySqlProductTypeRepository.ts`'s `collectWritableValues` applies the
+       * identical fallback. */
+      productType.parentProductType?.productTypeID ??
+        readHydratedParentProductTypeID(productType) ??
+        null,
       productType.remoteID ?? null,
       productType.createdDateTime ?? null,
       /* Field `createdByAccount` -> column `createdByAccountID` — `:L84`. */

@@ -105,8 +105,31 @@ export type UniqueValueProbe = (tableName: string, value: string) => Promise<boo
  *
  * IF A BOUND IS EVER WANTED, IT BELONGS OUTSIDE THIS ALGORITHM. An invocation-level deadline, or a
  * database-side unique constraint the adapter reports, bounds the work without editing the ported
- * member or fabricating a suffix the legacy never produced. Neither is in scope here, and neither is
- * implied to be owed.
+ * member or fabricating a suffix the legacy never produced.
+ *
+ * ⭐ AND THAT IS EXACTLY WHERE ONE NOW LIVES — SEC-14, REVIEW FINDING F5 (CWE-400). The sentence above
+ * was written before the finding was raised and it is what the resolution followed, literally. Every
+ * word of this note still holds, because NOTHING IN THIS FILE CHANGED to accommodate it:
+ *
+ *   • `../util/urlTitleProbeBudget.ts` declares an OPTIONAL `UrlTitleProbeBudget` and wraps the
+ *     caller's probe in a per-derivation counter. It is a sibling leaf; this file does not import it,
+ *     does not know it exists, and still has NO IMPORTS AT ALL (AAP §0.7.3 S4).
+ *   • The refusal arrives through the channel this member's own contract already declares — "whatever
+ *     the probe rejects with propagates unchanged" — so `createUniqueURLTitle` keeps its three
+ *     parameters, its unbounded `while (!unique)`, its pre-incremented `-2` suffix and its
+ *     always-a-string return. There is still no attempt counter, no elapsed-time check, no pause
+ *     between probes and no fabricated fallback title anywhere below.
+ *   • The budget has NO DEFAULT. A composition root that states nothing wraps nothing, and the loop
+ *     probes for as long as `:L64` would — which is why authority 3 above (AAP §0.7.3 S9, invent
+ *     nothing) is satisfied rather than circumvented: the invented figure was never the bound, it was
+ *     REQUIRING one, and nothing requires one.
+ *   • Final arbitration is still the database's, as the sentence above says. Findings F6 and F8 put
+ *     that in place: a locking uniqueness read in `../adapters/mysql/UniquePropertyChecker.ts` when it
+ *     is transaction-scoped, and MySQL error 1062 translated to `UniqueConstraintViolationError` in
+ *     `../adapters/mysql/QueryRunner.ts`.
+ *
+ * So the honest summary of the round trip is: the bound that was withdrawn from INSIDE this algorithm
+ * has not come back, and will not. A different bound, in the place this note nominated, has.
  * ============================================================================================== */
 
 /**
@@ -184,7 +207,9 @@ export async function createUniqueURLTitle(
   let unique = await isValueAvailable(tableName, returnTitle);
 
   // `DataService.cfc:L64-L68`, reproduced with NO ceiling — see the unbounded-loop note above the
-  // probe type for why the bound that briefly lived here was removed rather than kept.
+  // probe type for why the bound that briefly lived HERE was removed rather than kept, and for where a
+  // bound legitimately lives instead: wrapped around the injected probe by the optional
+  // `./urlTitleProbeBudget` (review finding F5). This loop is unchanged by that and cannot see it.
   //
   // The body is the legacy's three statements in the legacy's order: pre-increment the counter
   // [`L65`], build the suffixed candidate [`L66`], probe it [`L67`]. Nothing else belongs in here.

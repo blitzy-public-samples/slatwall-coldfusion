@@ -51,6 +51,7 @@ import type { Product, ProductDefaultSkuDelegate } from '../../src/domain/produc
 import type { Sku } from '../../src/domain/sku/Sku';
 import type { SmartListRecord } from '../../src/ports/SmartListQueryPort';
 import { buildSku } from '../support/inMemoryRepositories';
+import { OptionService } from '../../src/services/OptionService';
 
 /* ================================================================================================
  * MIN-01 — THE ELEMENT TYPE IS DERIVED FROM THE ROOT ENTITY, PINNED HERE RATHER THAN ASSUMED
@@ -792,5 +793,239 @@ describe('F2 — the joined option fetch emits a statement a real server accepts
         expect(column).toMatch(/^[A-Za-z]+\.[A-Za-z]+$/);
       }
     }
+  });
+});
+
+/* =================================================================================================
+ * RELATIONSHIP HYDRATION REACHED THROUGH THE SYNTHESIZED SERVICE MEMBERS — REVIEW FINDING 15
+ * -------------------------------------------------------------------------------------------------
+ * RESTORED COVERAGE. Four hydration/identity-map cases were dropped when the suite was reorganised and
+ * the review found no replacement for them. They are restored here because this file owns hydration;
+ * the eight builder cases dropped alongside them are restored in
+ * `test/adapters/SmartListQueryBuilder.test.ts`.
+ *
+ * WHY THEY ARE NOT COVERED BY THE `DATA-02` BLOCK ABOVE. That block drives `builder.execute()` directly
+ * and asserts the INJECTED loader for the option root. These four enter through
+ * `OptionService.getOption`, `getOptionGroup` and `getOptionSmartList` — synthesized CRUD members
+ * (AAP §0.1.1.3 IR-1) with no declaration anywhere in the legacy source — and they exercise the
+ * builder's OWN built-in relationship pass, which is a different mechanism reached by a different code
+ * path. `createCatalogAggregateLoaders` declares `SlatwallOptionGroup: undefined` deliberately, so the
+ * option-group root's `options` collection is loaded by `hydrateOptionGroupOptions` and by nothing in
+ * this file's other blocks. Two of the four assert the INVERSE direction and the identity map, neither
+ * of which appears anywhere above.
+ *
+ * ⚠️ NO SMART-LIST DOUBLE IS USED, AND THAT IS THE POINT. A double can model correct relationships while
+ * the production adapter does not, and would then report success no matter what the adapter did. A REAL
+ * {@link SmartListQueryBuilder} is constructed over a one-method executor, so production statement
+ * composition, production row mappers and the production hydrator all run. The executor routes on the
+ * owner-key alias — a projection only an association statement carries — so the routing itself is what
+ * asserts that a SECOND statement was issued at all.
+ * ================================================================================================*/
+
+describe('OptionService relationship hydration through the real builder (finding 15)', () => {
+  const OPTION_GROUP_ROW = Object.freeze({
+    optionGroupID: ID.optionGroup,
+    optionGroupName: 'Size',
+    optionGroupCode: 'size',
+    imageGroupFlag: 1,
+    sortOrder: 1,
+  });
+
+  /** The option repository is genuinely unreached by these members, so it refuses rather than pretends. */
+  const UNREACHED_OPTION_REPOSITORY = {
+    findUnusedOptions: (): never => {
+      throw new Error('the option repository is not reached by a synthesized get member');
+    },
+    findUnusedOptionGroups: (): never => {
+      throw new Error('the option repository is not reached by a synthesized get member');
+    },
+  } as unknown as ConstructorParameters<typeof OptionService>[0];
+
+  /**
+   * Routes statements by SHAPE, because the two roots these cases exercise are hydrated by two DIFFERENT
+   * mechanisms and a fixture that conflated them would prove nothing about either.
+   *
+   * ⭐ THIS IS THE ONE PLACE THE RESTORED CASES HAD TO BE ADAPTED TO THE CURRENT API SURFACE, so it is
+   * worth naming precisely. When these cases were originally written, BOTH roots went through the
+   * builder's built-in relationship pass, and one route on the owner-key alias served both. Today:
+   *
+   *   • `SlatwallOption` is hydrated by the INJECTED loader `loadOptionAggregates`, which collects the
+   *     `optionGroupID` foreign key off the option rows and issues
+   *     `SELECT … FROM SwOptionGroup WHERE optionGroupID IN (…)` — no owner-key alias anywhere.
+   *   • `SlatwallOptionGroup` declares `undefined` in `createCatalogAggregateLoaders`, so its `options`
+   *     collection is loaded by the builder's own `hydrateOptionGroupOptions`, whose statement DOES
+   *     project `smartListAssociationOwnerKey`.
+   *
+   * Both are still a SECOND statement issued to resolve a relationship the row mapper left absent, which
+   * is what the restored cases assert; only the statement's shape differs. Routing on both shapes keeps
+   * every original assertion intact instead of weakening one to fit the other.
+   */
+  function makeService(spec: {
+    readonly entityRows: readonly MySqlRow[];
+    /** Answers the built-in pass — the OptionGroup root's `options` collection. */
+    readonly associationRows?: readonly MySqlRow[];
+    /** Answers the injected loader's foreign-key lookup — the Option root's `optionGroup`. */
+    readonly optionGroupRows?: readonly MySqlRow[];
+  }): { readonly service: OptionService; readonly statements: string[] } {
+    const statements: string[] = [];
+    const executor: SqlExecutor = {
+      execute: (sql: string): Promise<MySqlRow[]> => {
+        statements.push(sql);
+        if (sql.includes('smartListAssociationOwnerKey')) {
+          return Promise.resolve([...(spec.associationRows ?? [])]);
+        }
+        if (sql.includes('recordsCount')) {
+          return Promise.resolve([{ recordsCount: spec.entityRows.length }]);
+        }
+        /* The injected loader's lookup. The ` IN (` test is what separates it from the OptionGroup root's
+         * own BASE record statement, which also reads `FROM SwOptionGroup` but carries no WHERE clause —
+         * without that test, case three's base statement would be answered with group-association rows. */
+        if (/FROM SwOptionGroup\b/.test(sql) && sql.includes(' IN (')) {
+          return Promise.resolve([...(spec.optionGroupRows ?? [])]);
+        }
+        return Promise.resolve([...spec.entityRows]);
+      },
+    };
+    const builder = new SmartListQueryBuilder(
+      executor,
+      createCatalogAggregateLoaders(makeBinderSpy(42).dependencies),
+    );
+
+    return { service: new OptionService(UNREACHED_OPTION_REPOSITORY, builder), statements };
+  }
+
+  /** The second statement, whichever mechanism issued it. */
+  function issuedARelationshipStatement(statements: readonly string[]): boolean {
+    return statements.some(
+      (sql) =>
+        sql.includes('smartListAssociationOwnerKey') ||
+        (/FROM SwOptionGroup\b/.test(sql) && sql.includes(' IN (')),
+    );
+  }
+
+  it('getOption hydrates optionGroup, and a SECOND statement is issued to do it', async () => {
+    const { service, statements } = makeService({
+      entityRows: [
+        {
+          optionID: ID.option,
+          optionName: 'Small',
+          optionCode: 'sm',
+          sortOrder: 1,
+          optionGroupID: ID.optionGroup,
+        },
+      ],
+      optionGroupRows: [{ ...OPTION_GROUP_ROW }],
+    });
+
+    const option = await service.getOption(ID.option);
+
+    /* `model/entity/Option.cfc:L59` declares the relationship, and `rowMappers.ts` RULE 3 deliberately
+     * leaves it unresolved — so without the hydration pass this is `undefined` and every merchandise SKU
+     * creation carrying options raises at `requireOptionGroupID`. */
+    expect(option?.optionGroup).toBeDefined();
+    expect(option?.optionGroup?.optionGroupID).toBe(ID.optionGroup);
+    expect(option?.optionGroup?.optionGroupName).toBe('Size');
+    /* The chain `Sku.hasOneOptionPerOptionGroup` walks — `model/entity/Sku.cfc:L772-L784`. The port reads
+     * the FIELD rather than an accessor, because `Option` declares `setOptionGroup` and no getter: the
+     * CFML accessor is one the ORM synthesizes. */
+    expect(issuedARelationshipStatement(statements)).toBe(true);
+    /* And it really is a SECOND statement, not the base one doing double duty. */
+    expect(statements.length).toBeGreaterThan(1);
+  });
+
+  it('a NULL foreign key leaves optionGroup ABSENT rather than stubbed', async () => {
+    /* `SwOption.optionGroupID` carries no `notnull` in the mapping, so a row with no value is possible.
+     * RULE 3 forbids a stub precisely because `option.getOptionGroup().getImageGroupFlag()` would read a
+     * CLASS DEFAULT off one — the association must be absent, not an object answering `false`.
+     *
+     * ⭐ THE COLUMN IS OMITTED ENTIRELY HERE, which is a different input from the empty string the
+     * `DATA-02` block above exercises. An INNER join returns no row for either, so both must reach the
+     * same absent outcome by the same path — and asserting only one of the two would leave the other
+     * free to start stubbing. */
+    const { service, statements } = makeService({
+      entityRows: [{ optionID: ID.option, optionName: 'Small', optionCode: 'sm', sortOrder: 1 }],
+    });
+
+    const option = await service.getOption(ID.option);
+
+    expect(option).not.toBeNull();
+    /* No key was collected, so no lookup was even attempted — the absence costs nothing. */
+    expect(issuedARelationshipStatement(statements)).toBe(false);
+    expect(option?.optionGroup).toBeUndefined();
+  });
+
+  it("getOptionGroup hydrates options in the declared sortOrder, and sets each option's group back", async () => {
+    /* `model/entity/OptionGroup.cfc:L70` declares `orderby="sortOrder"`, so ORDER IS BEHAVIOUR here —
+     * unlike `Sku.options`, which declares no `orderby` at all. The statement asks the database for that
+     * order, so the rows arrive in it; this asserts the collection preserves what it was given. */
+    const { service } = makeService({
+      entityRows: [{ ...OPTION_GROUP_ROW }],
+      associationRows: [
+        {
+          smartListAssociationOwnerKey: ID.optionGroup,
+          optionID: 'ffffffff000000000000000000000011',
+          optionName: 'Small',
+          optionCode: 'sm',
+          sortOrder: 1,
+        },
+        {
+          smartListAssociationOwnerKey: ID.optionGroup,
+          optionID: 'ffffffff000000000000000000000012',
+          optionName: 'Medium',
+          optionCode: 'md',
+          sortOrder: 2,
+        },
+      ],
+    });
+
+    const group = await service.getOptionGroup(ID.optionGroup);
+
+    /* The D14 site indexes `options[1]` — `model/service/ProductService.cfc:L115-L119`. With an empty
+     * collection that carried-over defect is not even reproducible, which is why this assertion is on the
+     * ORDER and not merely on the length. */
+    expect(group?.options.map((option) => option.optionID)).toEqual([
+      'ffffffff000000000000000000000011',
+      'ffffffff000000000000000000000012',
+    ]);
+    /* Both directions consistent, as one Hibernate session would give — and BY REFERENCE, so what is
+     * asserted is the identity map rather than a value copy. */
+    expect(group?.options[0]?.optionGroup).toBe(group);
+    expect(group?.options[1]?.optionGroup).toBe(group);
+  });
+
+  it('two options of one group share ONE OptionGroup instance (the identity map)', async () => {
+    /* One instance per identifier per read is what a single Hibernate session gives, and it is what makes
+     * `===` between two references to the same row meaningful. Two separate instances would also mean the
+     * row had been managed twice, which installs a FRESH error bag and discards anything already
+     * accumulated on it. */
+    const { service } = makeService({
+      entityRows: [
+        {
+          optionID: ID.option,
+          optionName: 'Small',
+          optionCode: 'sm',
+          sortOrder: 1,
+          optionGroupID: ID.optionGroup,
+        },
+        {
+          optionID: 'ffffffff000000000000000000000002',
+          optionName: 'Medium',
+          optionCode: 'md',
+          sortOrder: 2,
+          optionGroupID: ID.optionGroup,
+        },
+      ],
+      /* ONE group row for TWO options, which is what makes the identity assertion meaningful: the loader
+       * de-duplicates the foreign keys into a single `IN (…)` lookup and must hand both options the same
+       * instance built from that one row. */
+      optionGroupRows: [{ ...OPTION_GROUP_ROW }],
+    });
+
+    const result = await service.getOptionSmartList();
+
+    expect(result.records).toHaveLength(2);
+    const [first, second] = result.records;
+    expect(first?.optionGroup).toBeDefined();
+    expect(first?.optionGroup).toBe(second?.optionGroup);
   });
 });

@@ -67,10 +67,23 @@
  *
  * SECOND: LOSING DISTINCTNESS. `meta/tests/unit/IssuesTest.cfc:L73-L89` (`issue_1296`) sets the
  * page size to one and asserts that the first record of page one differs from the first record of
- * page two. With related-property joins fanning rows out, distinctness is what keeps that true, and
- * it fails NUMERICALLY — in the count and every paging figure derived from it — with no exception
- * and no type error. See {@link SMARTLIST_DISTINCT_ASYMMETRY} for how the two distinctness rules
- * this file carries differ, and why that difference is the legacy's rather than this file's.
+ * page two. Where a query fans rows out, distinctness is what keeps that true, and it fails
+ * NUMERICALLY — in the count and every paging figure derived from it — with no exception and no
+ * type error. See {@link SMARTLIST_DISTINCT_ASYMMETRY} for how the two distinctness rules this file
+ * carries differ, and why that difference is the legacy's rather than this file's.
+ *
+ * ⚠️ WHICH QUERIES ACTUALLY FAN — A CORRECTION WORTH CARRYING, BECAUSE IT IS EASY TO GET BACKWARDS.
+ * An earlier revision of this paragraph said the fan came from `getProductSmartList`'s
+ * "related-property joins". It does not. `model/service/ProductService.cfc:L347-L349` joins
+ * `productType`, `defaultSku` and `brand`, and `model/entity/Product.cfc:L67-L69` declares all three
+ * `many-to-one` — the PRODUCT row holds each foreign key, so each product matches at most one row on
+ * the other side. Join DIRECTION fans, not NULL-tolerance: a LEFT join to a many-to-one target
+ * multiplies nothing. The joins that fan are the collection ones, `kind: 'childForeignKey'` in
+ * `ENTITY_JOIN_SPECIFICATIONS` below — and the two members in this slice that traverse them,
+ * `findProductOptionGroups` and `findProductOptionsByOptionGroup` in `../../services/OptionService`,
+ * are exactly the two that set the distinct flag, transcribed from `model/entity/Product.cfc:L255`
+ * and `:L342`. So the legacy's flag placement is coherent, and this file reproduces it rather than
+ * broadening it.
  *
  * WHAT THIS FILE HOLDS — NOTHING (M7)
  * -----------------------------------
@@ -364,9 +377,11 @@ const NULL_FILTER_TOKEN = 'null';
  *
  * So a query with a fan-out join and the flag left alone reports a distinct COUNT over
  * non-distinct RECORDS. That asymmetry is behaviour, not an accident this port may quietly fix
- * (AAP 0.7.3 standard 7), and it is exactly what `issue_1296` is numerically sensitive to. Both
- * rules are reproduced as declared: {@link composeSelectClause} honours the flag, and
- * {@link composeCountSelectClause} does not consult it.
+ * (AAP 0.7.3 standard 7), and it is the divergence `issue_1296` was raised against. Both rules are
+ * reproduced as declared: {@link composeSelectClause} honours the flag, and
+ * {@link composeCountSelectClause} does not consult it. `test/adapters/SmartListQueryBuilder.test.ts`
+ * executes both directions over genuinely repeated rows, so neither dropping the keyword nor
+ * unconditionally adding it can pass.
  *
  * The two consumers that actually fan out switch the flag on themselves —
  * `model/entity/Product.cfc:L254` and `:L341` both call the distinct setter with one — which is why
@@ -2213,9 +2228,18 @@ export function describePropertyScopedSmartList(
  * AAP §0.7.3 S9 forbids inventing numbers the source does not state and IR-12 forbids introducing
  * service levels; the legacy states no maximum anywhere, and AAP §0.6.6 confirms the only numeric
  * runtime constants in the codebase are request-scoped safeguards. A literal in this file would
- * therefore be fabrication. It is instead a REQUIRED constructor collaborator with NO DEFAULT,
- * exactly as `../../services/SkuService`'s `SkuCombinationBudget` is (SEC-11): the composition root
- * must state the number, and a wiring site that states none does not compile.
+ * therefore be fabrication. It is instead an INJECTED constructor collaborator with NO DEFAULT: the
+ * composition root states the number, or states none and gets the legacy's unbounded materialisation.
+ *
+ * ⚠️ OPTIONAL, NOT REQUIRED — AND AN EARLIER REVISION OF THIS VERY PARAGRAPH SAID OTHERWISE. It read
+ * "a REQUIRED constructor collaborator … exactly as `../../services/SkuService`'s
+ * `SkuCombinationBudget` is (SEC-11)", which contradicted the constructor two hundred lines below it on
+ * both counts: the parameter is optional, and the sibling budget it appealed to was withdrawn. Both
+ * changes have the same cause, recorded at {@link SmartListQueryBuilder} — a REQUIRED finite budget
+ * converts work the legacy performs into a bounded FAILURE, which AAP §0.6.7.7 permits for D18 alone
+ * and §0.8.2 guideline 4 forbids as enhancement beyond the migration's need. The constructor's note is
+ * the authoritative statement of the trade; this one is corrected to agree with it rather than left to
+ * be discovered as a contradiction.
  *
  * =============================================================================================
  * REFUSE, NEVER TRUNCATE — AND THE GATE RUNS BEFORE ANY ROW IS READ
@@ -2225,9 +2249,16 @@ export function describePropertyScopedSmartList(
  * requires every field mapping preserved, and `src/integrations/google/ProductFeedBuilder.ts`
  * reproduces the legacy `cfloop` without re-sorting or filtering), so a quietly shortened feed would
  * publish a catalog that does not exist while reporting success. The bound is therefore enforced by
- * REFUSING an over-budget query, and it is evaluated from the COUNTING statement BEFORE either row
- * statement runs — the same positioning argument SEC-11 uses, so an over-budget request materialises
- * nothing at all rather than half of something.
+ * REFUSING an over-budget query, and it is evaluated from the COUNTING statement BEFORE any row
+ * statement runs, so an over-budget request materialises nothing at all rather than half of something.
+ *
+ * ⚠️ ON BOTH EXECUTION MEMBERS, WHICH IS A CORRECTION. The gate first guarded
+ * {@link SmartListQueryBuilder.execute} only, leaving {@link SmartListQueryBuilder.executeRecords} —
+ * the member the feed reads through, and the one whose statement carries no `LIMIT` at all — entirely
+ * unbounded. The bound guarded the smaller materialisation and left the larger one open. Both members
+ * now count, gate and re-check through the same two private members, and the counting statement stays
+ * CONDITIONAL on a budget being wired so an unbudgeted records-only read still issues exactly one
+ * statement (see {@link SmartListQueryBuilder.gateRecordsOnlyRead}).
  *
  * ⛔ WHAT THIS DELIBERATELY DOES NOT DO, FLAGGED RATHER THAN SILENTLY RESOLVED
  * ---------------------------------------------------------------------------
@@ -2266,10 +2297,19 @@ export interface SmartListMaterialisationBudget {
    * so a mis-wired composition root fails when the graph is built and not on the first query a
    * caller happens to run — by which point the wiring error looks like a data error.
    *
-   * It bounds BOTH row statements with one figure. The unpaged collection is bounded because the
-   * query is refused when the count exceeds it, and the page statement is bounded as a consequence:
-   * `LIMIT` can never return more rows than exist, so a `P:Show=ALL` page of 1,000,000,000 collapses
-   * to at most this many rows without any change to paging semantics for an in-budget query.
+   * ⭐ ONE FIGURE BOUNDS EVERY MATERIALISING PATH — BOTH EXECUTION MEMBERS AND ALL THREE STATEMENTS.
+   * The unpaged collection is bounded because the query is refused when the count exceeds it; the page
+   * statement is bounded as a consequence, since `LIMIT` can never return more rows than exist, so a
+   * `P:Show=ALL` page of 1,000,000,000 collapses to at most this many rows without any change to paging
+   * semantics for an in-budget query; and {@link SmartListQueryBuilder.executeRecords} — the
+   * records-only member the anonymous public feed actually reads through — applies the same gate from
+   * the same counting statement.
+   *
+   * ⛔ THIS USED TO SAY "BOTH ROW STATEMENTS", WHICH WAS TRUE OF `execute` AND SILENT ABOUT THE OTHER
+   * MEMBER. Review finding F4 (CWE-400) established that the silence was a real bypass rather than a
+   * documentation gap: `executeRecords` issued the same unbounded statement and hydrated its result
+   * with no count, no gate and no re-check. The gate now covers it, and the wording is corrected so the
+   * scope of the figure matches the code.
    */
   readonly maximumRecordsPerQuery: number;
 }
@@ -2323,11 +2363,21 @@ export class SmartListQueryBuilder implements SmartListQueryPort {
    * before a single record row is read.
    *
    * ⚠️ WHY OPTIONAL RATHER THAN REQUIRED, WHICH IS A CHANGE FROM HOW THIS ARRIVED. It was first added
-   * as a REQUIRED second parameter, by analogy with a `SkuCombinationBudget` that no longer exists.
-   * That analogy is what settles it: three separate reviews reached the same verdict on these ceilings
-   * — that a required finite budget converts work the legacy performs into a bounded FAILURE, which
-   * AAP §0.6.7.7 permits for D18 alone and §0.8.2 guideline 4 forbids as enhancement beyond the
-   * migration's need — and both sibling budgets were withdrawn on exactly that reasoning. The
+   * as a REQUIRED second parameter, by analogy with a `SkuCombinationBudget` that had at that point been
+   * withdrawn. That analogy is what settles it: three separate reviews reached the same verdict on these
+   * ceilings — that a REQUIRED finite budget converts work the legacy performs into a bounded FAILURE,
+   * which AAP §0.6.7.7 permits for D18 alone and §0.8.2 guideline 4 forbids as enhancement beyond the
+   * migration's need — and both sibling budgets were withdrawn on exactly that reasoning.
+   *
+   * ⭐ AND BOTH HAVE SINCE BEEN REINSTATED IN THIS EXACT SHAPE, WHICH IS THE POINT RATHER THAN A
+   * REVERSAL. Review finding F3 restored `SkuCombinationBudget` as an optional constructor parameter with
+   * no default. Finding F5 restored a bound for the collision loop `../../util/urlTitle.ts` ports, in the
+   * same shape and with one further refinement: it is an optional, defaultless constructor parameter on
+   * `../../services/BrandService.ts` and `../../services/ProductService.ts`, and it is applied by
+   * WRAPPING the injected uniqueness probe (`../../util/urlTitleProbeBudget.ts`) so the ported algorithm
+   * itself is not edited at all. Both cite this parameter as their precedent. The verdict quoted above is untouched — it condemns the REQUIRED form, and none of
+   * the three is required. A reader arriving here should therefore not conclude that the siblings are
+   * absent: they are present, optional, and validated only when supplied. The
    * remaining question was whether the CWE-400 finding therefore goes unanswered, and it does not: the
    * mechanism stays, in the only shape that answers the finding WITHOUT changing behaviour by default.
    * An operator who wants the bound wires a figure and gets a fail-closed refusal; one who wants parity
@@ -2490,9 +2540,26 @@ export class SmartListQueryBuilder implements SmartListQueryPort {
    * Any performance pass must therefore MEASURE against a generated schema before choosing, which is
    * the same evidence gap F-21 records — the `Sw*` tables do not exist in this environment.
    *
-   * The count/records behaviour this note describes is asserted explicitly, under a real fanning
-   * join, in `test/services/OptionService.test.ts` ("F-20"), so the three-statement shape and the
-   * distinctness asymmetry cannot drift unnoticed while the review item is open.
+   * WHERE THIS NOTE IS ACTUALLY ASSERTED, NAMED PRECISELY BECAUSE AN EARLIER REVISION NAMED IT WRONG.
+   * That revision claimed the behaviour was covered "under a real fanning join, in
+   * `test/services/OptionService.test.ts`", which was not true of any case in that file at the time —
+   * the file's own header recorded that this builder sat outside its dependency whitelist. A coverage
+   * claim that cannot be checked is worse than none, so the claim now enumerates the cases:
+   *   • `test/adapters/SmartListQueryBuilder.test.ts` — the three-statement shape against a real
+   *     builder, the count-FIRST ordering, the two-statement reuse when
+   *     {@link pageWindowCoversEveryRecord} holds, and the budget refusals on BOTH execution members.
+   *   • `test/services/OptionService.test.ts` — the same real builder driven THROUGH a service, over a
+   *     fanning join whose duplicate rows are produced by the executor rather than pre-collapsed, so
+   *     removing `DISTINCT` from {@link composeSelectClause} changes the collection a caller receives
+   *     and the assertions fail.
+   *   • `test/regression/issues.test.ts` (`issue_1296`) — this builder driven through
+   *     `ProductService.getProductSmartList`, the reading the legacy issue was raised against, so the
+   *     page window it asserts is this builder's own offset arithmetic rather than a responder's. That
+   *     member states no distinct flag and joins only many-to-one properties, so its companion case
+   *     feeds it fanning rows to assert what the absent flag WOULD cost — which is how the protection
+   *     is pinned to the join set rather than left as a comment.
+   * So the three-statement shape and the distinctness asymmetry cannot drift unnoticed while the review
+   * item is open.
    * ⚠️ SEC-12 — THE COUNT RUNS FIRST, AND THE BUDGET IS EVALUATED BEFORE EITHER ROW STATEMENT. The
    * order used to be records, page, count, which meant the unbounded collection was materialised
    * before anything could observe how large it was; the bound would then have had nothing left to
@@ -2548,25 +2615,13 @@ export class SmartListQueryBuilder implements SmartListQueryPort {
     /*
      * SEC-12, STEP 2 — the gate, fail-closed, before a single record row is read. Skipped entirely when
      * no budget was wired, which is the parity default; see the constructor for why it is optional.
+     *
+     * ⭐ SHARED WITH THE RECORDS-ONLY MEMBER RATHER THAN INLINED HERE. {@link refuseOverBudgetCount}
+     * holds the one refusal both readings raise, so `execute` and {@link executeRecords} cannot drift
+     * into two messages, two contexts or two comparison operators for one bound — which is exactly how
+     * the records-only path came to have no bound at all.
      */
-    const materialisationBudget = this.materialisationBudget;
-    if (
-      materialisationBudget !== undefined &&
-      recordsCount > materialisationBudget.maximumRecordsPerQuery
-    ) {
-      throw new DomainError(
-        'A smart-list query matched more records than the configured materialisation budget admits, ' +
-          'so it was refused before any row was read rather than answered with a silently shortened ' +
-          'result.',
-        {
-          context: {
-            entityName: query.entityName,
-            recordsCount,
-            maximumRecordsPerQuery: materialisationBudget.maximumRecordsPerQuery,
-          },
-        },
-      );
-    }
+    this.refuseOverBudgetCount(recordsCount, query.entityName);
 
     // `:L751-L755` — the unpaged collection, from the unbounded statement.
     const recordRows = await this.executor.execute(compiled.records.sql, compiled.records.params);
@@ -2697,18 +2752,61 @@ export class SmartListQueryBuilder implements SmartListQueryPort {
    * merely equivalent but identical — the very same {@link CompiledSmartListQuery} this class would
    * have produced for the three-view read. The only difference is which of its statements is issued.
    *
+   * ==============================================================================================
+   * SEC-12 APPLIES HERE TOO, AND THAT IS A FIX — THIS PATH USED TO BE THE UNBOUNDED ONE
+   * ==============================================================================================
+   * ⚠️ THE MEMBER THE BUDGET WAS LEAST APPLIED TO WAS THE MEMBER THAT NEEDED IT MOST. {@link execute}
+   * counted first and refused an over-budget query, while this member issued the UNPAGED statement
+   * directly and hydrated every row it returned with no bound consulted at all. That inverted the
+   * intent: this is the member the Google product feed reads the whole catalogue through
+   * (`../../integrations/google/ProductFeedQuery.ts`), and its result is a collection with no `LIMIT`
+   * of any kind, so it is strictly the larger materialisation of the two. A bound that guarded the
+   * paged reading and left the unpaged one open guarded the wrong half.
+   *
+   * ⭐ THE GATE IS THE SAME GATE, IN THE SAME ORDER: count, refuse, read, re-check — see
+   * {@link gateRecordsOnlyRead} and {@link refuseOverBudgetCount}. Both refusals are raised from the
+   * same two private members `execute` uses, so the two readings cannot diverge in message, context or
+   * comparison.
+   *
+   * ⛔ PARITY WHEN NO BUDGET IS WIRED IS EXACT, AND IT IS WHY THE COUNT IS CONDITIONAL. With no budget
+   * this member issues exactly ONE statement, as it always did and as `getRecords()` at
+   * `org/Hibachi/HibachiSmartList.cfc:L751-L755` does — the counting statement is issued ONLY when a
+   * figure exists for it to be compared against. Counting unconditionally would have added a second
+   * statement to every unbudgeted read, which is a behaviour change AAP §0.8.2 guideline 4 forbids,
+   * and it would have reintroduced the order-dependent count this path is documented above as being
+   * free of. No default budget is introduced and no figure is named (IR-12 / AAP §0.7.3 S9).
+   *
    * @typeParam TEntityName - The root entity, inferred from `query.entityName`, exactly as under
    *   {@link execute} (see {@link materialiseRows} for how the element type follows from it rather than
    *   being asserted into place).
    * @param query - The complete, immutable description of the query to run.
    * @returns Every matching record, in the order the query's ordering terms produce, unpaged, in a
    *   freshly hydrated array the caller owns.
+   * @throws {DomainError} When a materialisation budget is wired and this query matches, or returns,
+   *   more records than it admits. The query is REFUSED, never shortened.
    */
   public async executeRecords<TEntityName extends SmartListRootEntityName>(
     query: SmartListQuery<TEntityName>,
   ): Promise<SmartListRecord<TEntityName>[]> {
     const { compiled, mapper } = this.prepare(query);
+
+    /*
+     * SEC-12, STEP 1 AND 2 — count and gate, before the unbounded statement is issued. Answers
+     * `undefined` and issues NOTHING when no budget is wired, which is the parity default.
+     */
+    const recordsCount = await this.gateRecordsOnlyRead(compiled, query.entityName);
+
     const recordRows = await this.executor.execute(compiled.records.sql, compiled.records.params);
+
+    /*
+     * SEC-12, STEP 3 — the residual re-check, for the same reason it exists on the paged path: the
+     * count and the row statement are separate reads, so in autocommit a concurrent insert between
+     * them can widen the row set after the gate has already passed it. Checked BEFORE hydration, where
+     * the per-row cost and the retained memory are. `recordsCount` is `undefined` exactly when no
+     * budget is wired, in which case this returns without comparing anything.
+     */
+    this.refuseOverBudgetRows(recordRows.length, query.entityName, recordsCount);
+
     const records = materialiseRows(
       recordRows,
       mapper,
@@ -3136,12 +3234,90 @@ export class SmartListQueryBuilder implements SmartListQueryPort {
   }
 
   /**
+   * Counts and gates a records-only reading, or does neither when no budget is wired — SEC-12.
+   *
+   * ⚠️ THE COUNTING STATEMENT IS CONDITIONAL, AND THAT CONDITION IS THE PARITY GUARANTEE. With no
+   * budget wired this issues NO statement and answers `undefined`, so {@link executeRecords} remains
+   * the ONE-statement member `getRecords()` is at `org/Hibachi/HibachiSmartList.cfc:L751-L755`.
+   * Counting unconditionally would double the statement count of every unbudgeted records-only read —
+   * a behaviour change beyond the migration's need (AAP §0.8.2 guideline 4) — and would reintroduce on
+   * this path the order-dependent count that {@link executeRecords} is documented as being free of.
+   *
+   * With a budget wired the count runs FIRST, exactly as in {@link execute}, because it returns one row
+   * whatever the catalog holds and is therefore the only statement safe to issue before any bound is
+   * known. Refusing after the unpaged collection had been read would leave the bound nothing to protect.
+   *
+   * @param compiled - the compiled query, for its counting statement and bound parameters.
+   * @param entityName - the queried entity, for the refusal's diagnostic context.
+   * @returns The total the counting statement reported, or `undefined` when no budget is wired and no
+   *   counting statement was issued.
+   * @throws {DomainError} When the count exceeds the wired budget. Raised by
+   *   {@link refuseOverBudgetCount}, so the message and context are identical to the paged path's.
+   */
+  private async gateRecordsOnlyRead(
+    compiled: CompiledSmartListQuery,
+    entityName: SmartListEntityName,
+  ): Promise<number | undefined> {
+    if (this.materialisationBudget === undefined) {
+      return undefined;
+    }
+
+    const countRows = await this.executor.execute(
+      compiled.recordsCount.sql,
+      compiled.recordsCount.params,
+    );
+    const recordsCount = readRecordsCount(countRows);
+    this.refuseOverBudgetCount(recordsCount, entityName);
+
+    return recordsCount;
+  }
+
+  /**
+   * Refuses a query whose COUNT exceeds the materialisation budget — SEC-12, the primary gate.
+   *
+   * Shared by {@link SmartListQueryBuilder.execute} and {@link SmartListQueryBuilder.gateRecordsOnlyRead}
+   * so both readings raise one refusal with one message and one context. It ran inline in the paged
+   * member first; extracting it is what let the records-only member acquire the SAME bound rather than a
+   * second, subtly different one.
+   *
+   * ⚠️ IT REFUSES BEFORE ANY ROW IS READ, which is the whole value of counting first: an over-budget
+   * query never materialises its collection at all, so there is no row set to trim and no partial
+   * result to mistake for a complete one. Skipped entirely when no budget was wired — the parity
+   * default; see the constructor for why the collaborator is optional.
+   *
+   * @param recordsCount - the total the counting statement reported.
+   * @param entityName - the queried entity, recorded for diagnosis only.
+   */
+  private refuseOverBudgetCount(recordsCount: number, entityName: SmartListEntityName): void {
+    const budget = this.materialisationBudget;
+    if (budget === undefined) {
+      return;
+    }
+
+    if (recordsCount > budget.maximumRecordsPerQuery) {
+      throw new DomainError(
+        'A smart-list query matched more records than the configured materialisation budget admits, ' +
+          'so it was refused before any row was read rather than answered with a silently shortened ' +
+          'result.',
+        {
+          context: {
+            entityName,
+            recordsCount,
+            maximumRecordsPerQuery: budget.maximumRecordsPerQuery,
+          },
+        },
+      );
+    }
+  }
+
+  /**
    * Refuses a row set that exceeds the materialisation budget — SEC-12, the defence-in-depth half.
    *
-   * The primary gate is the pre-count check in {@link SmartListQueryBuilder.execute}. This one exists
-   * only because the count and the row statements are separate reads, so in autocommit a concurrent
-   * insert can widen a row set after the gate has already passed it. It is checked BEFORE hydration,
-   * which is where the per-row cost and the retained memory actually are.
+   * The primary gate is {@link SmartListQueryBuilder.refuseOverBudgetCount}, reached from both
+   * execution members. This one exists only because the count and the row statements are separate
+   * reads, so in autocommit a concurrent insert can widen a row set after the gate has already passed
+   * it. It is checked BEFORE hydration, which is where the per-row cost and the retained memory
+   * actually are.
    *
    * ⚠️ IT REFUSES; IT DOES NOT TRIM. Returning the first `maximumRecordsPerQuery` rows would be the
    * silent truncation {@link SmartListMaterialisationBudget} rules out, and it would do so on exactly
@@ -3150,12 +3326,14 @@ export class SmartListQueryBuilder implements SmartListQueryPort {
    * @param rowsRead - how many rows the statement returned.
    * @param entityName - the queried entity, recorded for diagnosis only.
    * @param recordsCount - the total the counting statement reported, recorded so the divergence
-   *   between the two reads is visible rather than inferred.
+   *   between the two reads is visible rather than inferred. `undefined` on a records-only reading with
+   *   no budget wired, where no counting statement was issued — in which case this member returns
+   *   before the value is ever compared, so the absence is recorded rather than substituted for.
    */
   private refuseOverBudgetRows(
     rowsRead: number,
     entityName: SmartListEntityName,
-    recordsCount: number,
+    recordsCount: number | undefined,
   ): void {
     const budget = this.materialisationBudget;
     if (budget === undefined) {

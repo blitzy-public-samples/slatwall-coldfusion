@@ -111,14 +111,22 @@
  * that is the behaviour to preserve: nothing here wraps the loop in one transaction, batches rows, or
  * adds a roll-back-everything path.
  *
- * ⭐ ONE CONSEQUENCE OF M3 SHAPES WHERE THIS PORT'S ONE IMPORT BOUNDARY IS CHECKED. Preserving per-row
- * commits means any refusal raised from inside the row body abandons the file half-imported. That is the
- * correct outcome for a failure the LEGACY also has — a missing heading, a value the engine rejects — and
- * the wrong outcome for a step the legacy COMPLETES and this port declines to reach: the partial
- * catalogue would then be an artefact of the port. The content-assignment step at `:L257-L282` is the
- * only such step, so its refusal is PREFLIGHTED over the whole record set before the first boundary
- * opens (see {@link MySqlProductRepository.refuseRequestedContentAssignments}). No other check moved,
- * and M3's shape is unchanged for every import inside the boundary.
+ * ⭐ ONE CONSEQUENCE OF M3 USED TO SHAPE WHERE AN IMPORT REFUSAL WAS CHECKED, AND REVIEW FINDING 12
+ * REMOVED THE NEED FOR IT. The reasoning was sound as far as it went: preserving per-row commits means a
+ * refusal raised from inside the row body abandons the file half-imported, which is the correct outcome
+ * for a failure the LEGACY also has — a missing heading, a value the engine rejects — and the wrong
+ * outcome for a step the legacy COMPLETES and this port merely declined to reach, because the partial
+ * catalogue would then be an artefact of the port rather than of the data. The content-assignment step at
+ * `:L257-L282` was the only such step, and its refusal was therefore PREFLIGHTED over the whole record
+ * set before the first boundary opened.
+ *
+ * THAT WHOLE CONSTRUCTION IS GONE, BECAUSE ITS PREMISE WAS. The premise was that the port declines to
+ * reach the step; it no longer declines. {@link MySqlProductRepository.assignRequestedContentPages}
+ * PERFORMS the step, per row, at its legacy position, through {@link ProductContentAssignmentPort} — so
+ * there is no refusal left to hoist, no whole-file walk, and no buffering of the record stream to support
+ * one. A row whose content assignment fails now rolls back exactly that row and leaves earlier rows
+ * committed, which is M3's own shape rather than an exception carved out of it. No other check moved, and
+ * M3 is unchanged for every import inside the boundary.
  *
  * M4 — REMOTE RETRIEVAL, AND A CORRECTION TO THE AAP. AAP §0.6.6 describes "a `new http()` fallback at
  * [L88-L90]". That is factually wrong and the locators show it: `/*` opens at
@@ -221,12 +229,7 @@
  * `src/util/urlTitle.ts`.
  */
 
-import {
-  assertColumnName,
-  assertTableName,
-  prepareBoundedRead,
-  settleBoundedRead,
-} from './QueryRunner';
+import { assertColumnName, assertTableName } from './QueryRunner';
 import { createSlatwallUUID } from '../../util/uuid';
 import { DataIntegrityError, DomainError, NotImplementedError } from '../../errors/DomainError';
 import type { Product } from '../../domain/product/Product';
@@ -246,15 +249,18 @@ import { mapProductSearchRow, mapRows } from './rowMappers';
 import { DEPRECATED_SETTING_DEFAULTS } from '../settings/StaticSettingResolver';
 
 import type { AccountContextPort } from '../../ports/AccountContextPort';
-import type { BoundedReadResult, BoundedReadWindow } from '../../ports/repositories/BoundedRead';
 import type { MySqlRow } from './rowMappers';
 import type { PhysicalTableName, SqlMutationExecutor } from './QueryRunner';
 import type { TransactionScope, UnitOfWork } from './UnitOfWork';
 import type {
   AttributeSetRow,
   ProductImportOptions,
+  ProductImportRedirectHop,
+  ProductImportSourceBounds,
+  ProductImportSourcePolicy,
   ProductRepository,
   ProductSearchRow,
+  ValidatedProductImportSource,
 } from '../../ports/repositories/ProductRepository';
 
 /* ================================================================================================
@@ -622,6 +628,431 @@ const CSV_FILE_TYPE = 'csv';
 
 /** The `txt` file type from `model/dao/ProductDAO.cfc:L78`, matched case-insensitively for the same reason. */
 const TEXT_FILE_TYPE = 'txt';
+
+/* ================================================================================================
+ * SEC-08, RE-ADJUDICATED — THE IMPORT SOURCE IS GATED AT THE EGRESS SEAM
+ * ================================================================================================
+ * ⭐ THIS IS A DECLARED DEPARTURE FROM BEHAVIOUR PRESERVATION, IN THE SAME REGISTER AS D18, AND IT IS
+ * ANNOUNCED RATHER THAN PERFORMED QUIETLY. It is deliberately NOT written as `TODO(parity)`, because a
+ * `TODO(parity)` marks a defect being CARRIED; this marks one being CLOSED. Review finding F8
+ * (CWE-918) is the occasion; the reasoning below is why the earlier blanket withdrawal was wrong about
+ * some controls and right about others.
+ *
+ * ⛔ WHAT THE EARLIER REVISION SAID, AND THE ONE GROUND THAT DOES NOT SURVIVE. The withdrawal argued:
+ * "Refusing a fetch CHANGES AN OUTCOME. D18 is the one declared departure of AAP §0.6.7.7 precisely
+ * because parameterising a statement returns exactly the rows the interpolated statement returned; a
+ * refusal has no such property." THAT PREMISE IS FALSIFIED BY D18'S OWN EXAMPLE. Feed a product name
+ * of `O'Brien` to `model/dao/ProductDAO.cfc:L183`: the interpolated statement produces a syntax error
+ * or an injection, while the parameterised port returns the row. The outcome plainly changes — on
+ * exactly the inputs where the legacy's own behaviour WAS the flaw.
+ *
+ * ⭐ SO D18'S ACTUAL SHAPE IS NARROWER AND MORE USEFUL: for every input on which the legacy produced a
+ * well-defined, intended result, the port produces the same result; the divergence falls only on
+ * inputs where the legacy's own behaviour was the flaw. A control that satisfies that test is inside
+ * D18's precedent. A control that refuses an input the legacy handled as intended is not.
+ *
+ * ⭐⭐ AND ON THIS PATH THE TEST IS SATISFIED BY VACUITY, WHICH IS THE STRONGEST FORM AVAILABLE. The
+ * legacy import cannot retrieve anything at all. `model/dao/ProductDAO.cfc:L87` fetches through
+ * `getService("utilityTagService").cfhttp(...)`, and NO `utilityTagService` bean is declared anywhere
+ * in the legacy repository — the single occurrence of that name in the whole tree is the call itself —
+ * while the `new http()` fallback at `:L89-L98` is a commented-out block. So the set of inputs on
+ * which this path produced a well-defined, intended result is EMPTY, and there is no legacy outcome
+ * for a gate to change. It is the same defect class as D4 and D5: a member delegating to something
+ * that does not exist. That is recorded by locator, and no register identifier is minted for it.
+ *
+ * ⚠️ THE SECOND WITHDRAWAL GROUND WAS RIGHT ABOUT THREE VALUES AND WRONG ABOUT THE REST, SO IT IS
+ * SPLIT CONTROL BY CONTROL RATHER THAN DECIDED IN ONE STROKE. It said the policy "was five invented
+ * configuration values, which AAP §0.7.3 standard 9 and IR-12 forbid outright". Taking them one at a
+ * time:
+ *   REINSTATED — approved SCHEMES. `cfhttp` speaks HTTP and HTTPS and nothing else, so admitting
+ *     exactly those two refuses only what the legacy transport could never have retrieved. This is a
+ *     transcription of the transport's own capability, not new configuration.
+ *   REINSTATED — blocked ADDRESS ranges. These are not configuration values at all. They are fixed
+ *     literals defined by the RFCs cited on each predicate below, no more invented than `SwProduct`
+ *     is an invented table name. The set reinstated is exactly the set the withdrawn revision itself
+ *     named — loopback, private, link-local, unique-local, unspecified and instance-metadata — and
+ *     not one range more.
+ *   REINSTATED — embedded CREDENTIALS. `cfhttp` takes credentials as separate `username`/`password`
+ *     attributes, so userinfo inside the URL was never an input the legacy could act on.
+ *   STAYS WITHDRAWN — an operator allow-list of HOSTS. That is genuinely invented configuration: the
+ *     source names no host, so every possible list is a fabrication. Same adjudication this port gave
+ *     the Google feed's `allowedHosts` membership gate.
+ *   STAYS WITHDRAWN — byte cap, timeout and redirect COUNT. Three invented figures (S9, IR-12). Note
+ *     that the legacy's only budget is the 3600-second REQUEST timeout at
+ *     `model/service/ProductService.cfc:L65-L68`, already carried as mismatch M1.
+ *   STAYS WITHDRAWN — the branded `ProductImportSource` type. AAP §0.4.2.6 ratifies
+ *     `importFromFile(fileURL, textQualifier)` with a plain `string`, and branding would change that
+ *     ratified shape and force every caller to mint a branded value.
+ *   STAYS WITHDRAWN — a transport client. Two were written and both removed; see the note above
+ *     {@link ProductImportSourceReader}. S5 holds the runtime dependency set at one package, so this
+ *     gate is POLICY ONLY and opens no socket.
+ *
+ * ⚠️ THE FINDING NAMES ONE MECHANISM THIS LAYER CANNOT PERFORM, SO ITS PURPOSE IS IMPLEMENTED HERE AND
+ * THE MECHANISM IS RE-IMPOSED WHERE IT BELONGS. "Resolved-address blocking", "connect to the vetted
+ * address" and "revalidate every redirect" all require DNS resolution and a connection, and this file
+ * may import neither a resolver nor a transport (S4 admits `domain`, `ports`, `util`, `errors` and
+ * `mysql2` only; S5 forbids adding a client). What IS decidable without resolving anything is decided
+ * here: the scheme, the credentials, and any host given as an ADDRESS LITERAL in a blocked range. The
+ * resolve-then-vet, connect-to-the-vetted-address and revalidate-every-redirect obligations are
+ * therefore stated on {@link ProductImportSourceReader}, which is the only layer that resolves and
+ * connects.
+ *
+ * ⚠️ WHAT THIS GATE THEREFORE DOES NOT CATCH, STATED SO NOBODY READS IT AS COMPLETE. A NAME that
+ * resolves into a blocked range — `db.internal`, or a wildcard host such as `127.0.0.1.nip.io` — is
+ * admitted here, because deciding it needs the resolution this layer cannot perform. `localhost` and
+ * the `.localhost` suffix are the exception, and only because RFC 6761 §6.3 reserves them by
+ * definition rather than by lookup. Two transitional IPv6 forms are also admitted deliberately:
+ * IPv4-translated (`::ffff:0:a.b.c.d`) and NAT64 (`64:ff9b::/96`) reach a blocked address only through
+ * a translator, they are absent from the six ranges above, and adding them would be inventing scope.
+ * The residual exposure stays on the register as mismatch M4.
+ * ============================================================================================== */
+
+/**
+ * The two URL schemes `model/dao/ProductDAO.cfc:L87`'s transport can actually retrieve.
+ *
+ * Compared against `URL.protocol`, which is why each carries its trailing colon: the WHATWG parser
+ * reports `'https:'`, not `'https'`. Both are lower-cased by the parser before comparison, so
+ * `HTTPS://…` matches without a second normalisation step here.
+ */
+const IMPORT_SOURCE_APPROVED_SCHEMES: readonly string[] = Object.freeze(['http:', 'https:']);
+
+/**
+ * The special-use name RFC 6761 §6.3 reserves for the loopback interface.
+ *
+ * It is refused BY NAME rather than by address because the RFC defines it to resolve to loopback, so
+ * no lookup is needed to know where it points. The same clause covers any name ending `.localhost`.
+ */
+const LOOPBACK_SPECIAL_USE_NAME = 'localhost';
+
+/** A dotted-quad host, the only IPv4 shape the WHATWG parser emits. See {@link parseIpv4Octets}. */
+const IPV4_LITERAL_PATTERN = /^(\d{1,3})\.(\d{1,3})\.(\d{1,3})\.(\d{1,3})$/;
+
+/** The four octets of an IPv4 address (RFC 791 §3.2). */
+const IPV4_OCTET_COUNT = 4;
+
+/** The inclusive upper bound of one IPv4 octet. */
+const IPV4_OCTET_MAX = 255;
+
+/** The eight 16-bit groups of an IPv6 address (RFC 4291 §2.2). */
+const IPV6_GROUP_COUNT = 8;
+
+/** One group of an IPv6 address, as four hexadecimal digits at most. */
+const IPV6_GROUP_PATTERN = /^[0-9a-f]{1,4}$/;
+
+/**
+ * Reads a dotted-quad host into its four octets, or reports that it is not one.
+ *
+ * ⭐ THE PARSER HAS ALREADY DONE THE HARD PART, AND THAT IS WHY THIS IS SAFE. Every obfuscated IPv4
+ * form is canonicalised to dotted-quad by `new URL(...)` before it reaches here, which is precisely
+ * the anti-evasion behaviour a hand-rolled check would get wrong: `127.1`, the decimal `2130706433`,
+ * the hexadecimal `0x7f000001`, the octal `017700000001`, the mixed `0177.0.0.1` and even the
+ * circled-digit `①②⑦.0.0.1` all arrive here as `127.0.0.1`. Re-implementing that decoding by hand
+ * would add a second, divergent parser and a bypass with it.
+ *
+ * @param hostname - `URL.hostname`, already lower-cased and canonicalised by the parser.
+ * @returns the four octets in order, or `undefined` when the host is not an IPv4 literal.
+ */
+function parseIpv4Octets(hostname: string): readonly number[] | undefined {
+  const match = IPV4_LITERAL_PATTERN.exec(hostname);
+  if (match === null) {
+    return undefined;
+  }
+
+  const octets: number[] = [];
+  for (let group = 1; group <= IPV4_OCTET_COUNT; group += 1) {
+    /* Read through a local and checked rather than asserted: a capture group is typed as possibly
+     * absent under `noUncheckedIndexedAccess`, and S1 forbids the assertion that would silence it. */
+    const text = match[group];
+    if (text === undefined) {
+      return undefined;
+    }
+
+    const value = Number(text);
+    if (!Number.isInteger(value) || value < 0 || value > IPV4_OCTET_MAX) {
+      return undefined;
+    }
+
+    octets.push(value);
+  }
+
+  return octets;
+}
+
+/**
+ * Reports whether four IPv4 octets fall in one of the ranges the reinstated policy refuses.
+ *
+ * Every range is a standards-defined literal, cited in place. No range is here that the withdrawn
+ * revision did not itself name, and none is added on judgment: RFC 6598 carrier-grade NAT space
+ * (`100.64.0.0/10`) and the multicast and reserved blocks are absent for exactly that reason.
+ *
+ * @param octets - the four octets, in order.
+ * @returns `true` when the address is refused.
+ */
+function isBlockedIpv4Address(octets: readonly number[]): boolean {
+  const first = octets[0];
+  const second = octets[1];
+  if (first === undefined || second === undefined) {
+    return false;
+  }
+
+  /* `0.0.0.0/8`, "this network" — RFC 1122 §3.2.1.3. Connecting to the unspecified address reaches
+   * the local host, which is why the withdrawn revision listed it alongside loopback. */
+  if (first === 0) {
+    return true;
+  }
+
+  /* `127.0.0.0/8`, loopback — RFC 1122 §3.2.1.3. */
+  if (first === 127) {
+    return true;
+  }
+
+  /* `10.0.0.0/8`, `172.16.0.0/12` and `192.168.0.0/16`, private — RFC 1918 §3. */
+  if (first === 10) {
+    return true;
+  }
+  if (first === 172 && second >= 16 && second <= 31) {
+    return true;
+  }
+  if (first === 192 && second === 168) {
+    return true;
+  }
+
+  /* `169.254.0.0/16`, link-local — RFC 3927 §2.1. This range CONTAINS the cloud instance-metadata
+   * address `169.254.169.254`, so that endpoint needs no separate clause and gets none: a second
+   * clause naming one address would imply the range did not already cover it. */
+  if (first === 169 && second === 254) {
+    return true;
+  }
+
+  return false;
+}
+
+/**
+ * Expands a bracket-stripped IPv6 literal into its eight groups, or reports that it is not one.
+ *
+ * The parser emits a canonical, lower-cased, `::`-compressed literal and NEVER retains a dotted quad
+ * inside the brackets — `[::ffff:127.0.0.1]` arrives as `::ffff:7f00:1` — so this expands hexadecimal
+ * groups only, and {@link isBlockedIpv6Address} recovers the embedded IPv4 from the last two groups.
+ *
+ * @param literal - the host with its surrounding brackets removed.
+ * @returns the eight groups in order, or `undefined` when the literal is not a well-formed IPv6.
+ */
+function parseIpv6Groups(literal: string): readonly number[] | undefined {
+  const halves = literal.split('::');
+  if (halves.length > 2) {
+    return undefined;
+  }
+
+  const readGroups = (text: string): number[] | undefined => {
+    if (text === '') {
+      return [];
+    }
+
+    const groups: number[] = [];
+    for (const part of text.split(':')) {
+      if (!IPV6_GROUP_PATTERN.test(part)) {
+        return undefined;
+      }
+      groups.push(Number.parseInt(part, 16));
+    }
+
+    return groups;
+  };
+
+  const head = readGroups(halves[0] ?? '');
+  if (head === undefined) {
+    return undefined;
+  }
+
+  // No `::` at all: the literal must already carry all eight groups.
+  if (halves.length === 1) {
+    return head.length === IPV6_GROUP_COUNT ? head : undefined;
+  }
+
+  const tail = readGroups(halves[1] ?? '');
+  if (tail === undefined) {
+    return undefined;
+  }
+
+  const elided = IPV6_GROUP_COUNT - head.length - tail.length;
+  if (elided < 1) {
+    return undefined;
+  }
+
+  return [...head, ...Array.from({ length: elided }, () => 0), ...tail];
+}
+
+/**
+ * Reports whether an expanded IPv6 address falls in one of the ranges the reinstated policy refuses.
+ *
+ * @param groups - the eight groups, in order.
+ * @returns `true` when the address is refused.
+ */
+function isBlockedIpv6Address(groups: readonly number[]): boolean {
+  const [first, second, third, fourth, fifth, sixth, seventh, eighth] = groups;
+  if (
+    first === undefined ||
+    second === undefined ||
+    third === undefined ||
+    fourth === undefined ||
+    fifth === undefined ||
+    sixth === undefined ||
+    seventh === undefined ||
+    eighth === undefined
+  ) {
+    return false;
+  }
+
+  const hasAllZeroPrefix =
+    first === 0 && second === 0 && third === 0 && fourth === 0 && fifth === 0;
+
+  /* `::`, unspecified — RFC 4291 §2.5.2 — and `::1`, loopback — RFC 4291 §2.5.3. */
+  if (hasAllZeroPrefix && sixth === 0 && seventh === 0 && (eighth === 0 || eighth === 1)) {
+    return true;
+  }
+
+  /* `::ffff:a.b.c.d`, IPv4-mapped — RFC 4291 §2.5.5.2. The embedded address is recovered from the
+   * last two groups and re-checked against the IPv4 ranges, because otherwise
+   * `[::ffff:127.0.0.1]` would reach loopback through a shape none of the IPv6 clauses match. */
+  if (hasAllZeroPrefix && sixth === 0xffff) {
+    return isBlockedIpv4Address([
+      (seventh >>> 8) & 0xff,
+      seventh & 0xff,
+      (eighth >>> 8) & 0xff,
+      eighth & 0xff,
+    ]);
+  }
+
+  /* `fc00::/7`, unique-local — RFC 4193 §3.1. This range CONTAINS the IPv6 instance-metadata address
+   * `fd00:ec2::254`, so that endpoint likewise needs no separate clause. */
+  if ((first & 0xfe00) === 0xfc00) {
+    return true;
+  }
+
+  /* `fe80::/10`, link-local — RFC 4291 §2.5.6. */
+  if ((first & 0xffc0) === 0xfe80) {
+    return true;
+  }
+
+  return false;
+}
+
+/**
+ * Reports whether a host is an address literal in a refused range.
+ *
+ * A name is never reported here, even one that would resolve into a refused range: see the
+ * completeness note in the SEC-08 block above, and the resolve-then-vet obligation on
+ * {@link ProductImportSourceReader}.
+ *
+ * @param hostname - `URL.hostname`, with IPv6 still bracketed as the parser reports it.
+ * @returns `true` when the host is a refused address literal.
+ */
+function isBlockedAddressLiteral(hostname: string): boolean {
+  if (hostname.startsWith('[') && hostname.endsWith(']')) {
+    const groups = parseIpv6Groups(hostname.slice(1, -1));
+    return groups !== undefined && isBlockedIpv6Address(groups);
+  }
+
+  const octets = parseIpv4Octets(hostname);
+  return octets !== undefined && isBlockedIpv4Address(octets);
+}
+
+/**
+ * Reports whether a host is RFC 6761 §6.3's reserved loopback name, or a subdomain of it.
+ *
+ * @param hostname - `URL.hostname`, already lower-cased by the parser.
+ * @returns `true` when the host is the reserved loopback name.
+ */
+function isLoopbackSpecialUseName(hostname: string): boolean {
+  return (
+    hostname === LOOPBACK_SPECIAL_USE_NAME || hostname.endsWith(`.${LOOPBACK_SPECIAL_USE_NAME}`)
+  );
+}
+
+/**
+ * Refuses an import location that must not be handed to a retriever. Returns nothing on approval.
+ *
+ * ⭐ THIS IS THE ONE ENFORCEMENT POINT, AND IT IS PLACED AT THE ONLY EGRESS SEAM IN THE SUBTREE.
+ * {@link ProductImportSourceReader} is invoked from exactly one branch chain inside
+ * {@link MySqlProductRepository.importFromFile}, so a location that cannot pass this cannot reach a
+ * retriever by any route. The predicate is deliberately NOT duplicated in
+ * `src/services/ProductService.ts`: that service may not import this module (S4), a second copy could
+ * drift from this one, and a reviewer would then have to prove two predicates agree in order to
+ * believe either. The obligation is instead DECLARED on
+ * `src/ports/repositories/ProductRepository.ts`, which binds every implementation of the port
+ * including one nobody has written yet.
+ *
+ * ⚠️ NOTHING IS REWRITTEN, NORMALISED OR REPAIRED — IT EITHER PASSES UNCHANGED OR IT IS REFUSED. The
+ * location the retriever receives is byte-for-byte the one the caller supplied, so this gate cannot
+ * itself become the thing that turns a harmless location into a reachable one. That is also why
+ * `src/services/ProductService.ts` must keep forwarding the argument untouched: any normalisation
+ * upstream of here would be evaluated against a string this gate never saw.
+ *
+ * ⚠️ AND NO REFUSAL ECHOES THE RAW LOCATION. The context carries the scheme and host only, never the
+ * userinfo, path or query, because all three can carry a secret and a refusal is a thing that gets
+ * logged. The credential refusal reports the host alone for the same reason, and the unparseable case
+ * reports neither.
+ *
+ * @param fileURL - the caller's location, exactly as it arrived.
+ * @throws DomainError when the location is not an absolute HTTP or HTTPS URL, carries embedded
+ *   credentials, or names a refused address literal.
+ */
+function assertRetrievableImportSource(fileURL: string): void {
+  let parsed: URL;
+  try {
+    parsed = new URL(fileURL);
+  } catch {
+    throw new DomainError(
+      'The product import location is not an absolute URL, so there is nothing that could be ' +
+        'retrieved from it.',
+      { context: { locator: 'model/dao/ProductDAO.cfc:L87', reason: 'notAnAbsoluteUrl' } },
+    );
+  }
+
+  if (!IMPORT_SOURCE_APPROVED_SCHEMES.includes(parsed.protocol)) {
+    throw new DomainError(
+      'The product import location uses a scheme the legacy retrieval could never have fetched, so ' +
+        'it is refused rather than handed to a retriever.',
+      {
+        context: {
+          locator: 'model/dao/ProductDAO.cfc:L87',
+          reason: 'schemeNotApproved',
+          scheme: parsed.protocol,
+          host: parsed.hostname,
+        },
+      },
+    );
+  }
+
+  if (parsed.username !== '' || parsed.password !== '') {
+    throw new DomainError(
+      'The product import location carries credentials in the URL, which the legacy retrieval took ' +
+        'as separate arguments and could not have read from there.',
+      {
+        context: {
+          locator: 'model/dao/ProductDAO.cfc:L87',
+          reason: 'credentialsInLocation',
+          host: parsed.hostname,
+        },
+      },
+    );
+  }
+
+  if (isLoopbackSpecialUseName(parsed.hostname) || isBlockedAddressLiteral(parsed.hostname)) {
+    throw new DomainError(
+      'The product import location names an address that is reachable only from inside the network ' +
+        'the service runs in, so it is refused rather than retrieved on the caller behalf.',
+      {
+        context: {
+          locator: 'model/dao/ProductDAO.cfc:L87',
+          reason: 'hostNotPubliclyRoutable',
+          scheme: parsed.protocol,
+          host: parsed.hostname,
+        },
+      },
+    );
+  }
+}
 
 /**
  * The heading prefixes `model/dao/ProductDAO.cfc:L131-L138` classifies on, via `listFirst(column,"_")`.
@@ -1099,6 +1530,185 @@ export interface DelimitedImportRecordSet {
   readonly rows: readonly DelimitedImportRecord[];
 }
 
+/* ================================================================================================
+ * THE CONTENT-ASSIGNMENT BOUNDARY — REVIEW FINDING 12, AND WHY THIS IS A PORT RATHER THAN A REFUSAL
+ * ==============================================================================================
+ * ⭐⭐ WHAT CHANGED. An earlier revision REFUSED the entire import whenever a file declared the
+ * `productcontent_page` column, on the ground that the step reads a content-management schema this
+ * catalogue port does not own. The review's finding 12 is that this "is a functional substitution, not a
+ * translation" — the legacy queries `tContent`, probes the assignment and inserts it, and refusing is a
+ * different outcome. That is correct, and TR-5 states the remedy exactly: "Where an in-scope member
+ * depends on an out-of-scope collaborator, the port interface is DECLARED, the member is IMPLEMENTED
+ * against it, and the gap is FLAGGED. The member is never quietly dropped."
+ *
+ * ⭐ SO THE ALGORITHM IS PORTED HERE AND ONLY THE DATA ACCESS IS DELEGATED. `:L257-L282` — the heading
+ * test, the list split, the per-page loop, the skip when a page does not resolve, the skip when the
+ * assignment already exists, the identifier minting and the insert order — all of it lives in
+ * {@link MySqlProductRepository.assignRequestedContentPages}, where a reviewer can read it against the
+ * legacy. What crosses the boundary is three data-access calls, nothing more.
+ *
+ * ⛔ AND NO OUT-OF-SCOPE TABLE IDENTIFIER IS COMPOSED IN THIS SUBTREE, WHICH IS THE REVIEW'S OTHER
+ * CONSTRAINT ("without admitting arbitrary CMS identifiers into the Catalog whitelist"). Two tables are
+ * involved and NEITHER is whitelisted in `QueryRunner.ts`:
+ *   - `tContent` (`:L262`) belongs to MURA CMS — a different application's schema entirely, not `Sw*`.
+ *   - `SlatwallProductContent` (`:L271`, `:L277`) is the Product↔Content link table, and AAP §0.2.2.1
+ *     excludes the whole `Content*` family. `QueryRunner.ts` deliberately omits it for that reason, and
+ *     `MySqlProductPersistence.ts` already handles the same family the same way — through an injected
+ *     collaborator "whose implementation belongs to whoever owns those families (TR-5)". This port is
+ *     that precedent applied a second time, not a new pattern.
+ *
+ * ⚠️ THE FLAGGED GAP, STATED PLAINLY RATHER THAN GLOSSED. The collaborator owns its own persistence,
+ * so its writes are NOT inside the per-row transaction this adapter opens (M3, M6). The legacy performs
+ * this step on the same request as the row's other writes, so in the legacy a row's product write and its
+ * content assignment commit together; here they cannot, because the second touches tables this subtree
+ * may not name. What IS preserved: the step runs at its legacy POSITION (last in the row body), a failure
+ * still aborts that row and stops the import at it, and no later row is attempted. What is NOT preserved:
+ * atomicity BETWEEN the two. This is flagged under §0.8.3.6 rather than silently resolved, and it is the
+ * unavoidable price of the scope boundary — the alternative is naming excluded tables here.
+ *
+ * ⚠️ THE SHIPPED IMPLEMENTATION STILL REFUSES, AND THAT IS NOT THE SAME AS THE OLD BEHAVIOUR. Before,
+ * the ADAPTER refused and no operator could change it. Now the adapter implements the step and the
+ * DEFAULT COLLABORATOR refuses; an operator who owns the content schema supplies one and gets the legacy
+ * behaviour with no change to this file. That is the difference between an unportable member and a
+ * declared boundary.
+ * ============================================================================================== */
+
+/**
+ * A content page resolved from the content-management application — the result of `:L262`.
+ *
+ * Mirrors the two columns the legacy selects, `contentID` and `path`, and nothing else. Absence is
+ * expressed by resolving `null` rather than by an empty record, because `:L269` gates the whole
+ * assignment on `lookupResult.recordcount` and does nothing at all when it is zero.
+ */
+export interface ResolvedProductListingContent {
+  /** The content identifier, `tContent.contentID` at `:L262`. */
+  readonly contentId: string;
+
+  /**
+   * The content path, `tContent.path` at `:L262`.
+   *
+   * Carried because `:L277` DENORMALISES it into the link row alongside the identifier. Storing a path
+   * next to the key it belongs to is redundant and can go stale, but the legacy stores it and this port
+   * preserves the column rather than normalising it away.
+   */
+  readonly contentPath: string;
+}
+
+/**
+ * One content assignment to insert — the four values `:L277` writes, in that statement's column order.
+ */
+export interface ProductContentAssignmentRow {
+  /** The link row's own primary key, minted by the caller at `:L275`. */
+  readonly productContentId: string;
+  /** The resolved content identifier. */
+  readonly contentId: string;
+  /** The resolved content path, denormalised exactly as `:L277` denormalises it. */
+  readonly contentPath: string;
+  /** The product the page is being assigned to. */
+  readonly productId: string;
+}
+
+/**
+ * The out-of-scope data access the content-assignment step needs — three calls, no business logic.
+ *
+ * ⛔ THIS INTERFACE DELIBERATELY CONTAINS NO ALGORITHM. The loop, the skips, the identifier minting and
+ * the ordering stay in {@link MySqlProductRepository.assignRequestedContentPages} so that the ported
+ * behaviour is reviewable against `model/dao/ProductDAO.cfc:L257-L282` in one place. An implementation
+ * that "helpfully" assigned pages itself would move business logic across the boundary and out of view.
+ */
+export interface ProductContentAssignmentPort {
+  /**
+   * Resolve one content page by file name — `:L262`.
+   *
+   * The legacy statement is
+   * `SELECT contentID, path FROM tContent WHERE fileName = :fileName AND subtype =
+   * 'slatwallproductlisting' AND active = 1`. Both extra predicates are part of the contract, not
+   * optional filters: a page of another subtype, or an inactive one, must NOT resolve.
+   *
+   * ⭐ NOTE THIS IS THE ONE STATEMENT ON THE WHOLE IMPORT PATH THE LEGACY ALREADY BOUND PROPERLY —
+   * `:L263` uses `dataQuery.addParam(name="fileName", ...)`. It is therefore NOT one of D18's 21
+   * interpolated statements, and an implementation must keep it bound.
+   *
+   * @param pageFileName - one file name from the comma-delimited cell, after `:L259`'s split.
+   * @returns the content identifier and path, or `null` when `:L269`'s `recordcount` would be zero.
+   */
+  findProductListingContent(pageFileName: string): Promise<ResolvedProductListingContent | null>;
+
+  /**
+   * Report whether the product already carries this content assignment — `:L271`.
+   *
+   * ⚠️ `:L271` INTERPOLATES BOTH VALUES (`WHERE contentID = '#contentID#' AND productID =
+   * '#productID#'`) and is one of D18's 21 statements. An implementation must BIND them; D18 §0.6.7.7
+   * licenses exactly that hardening, and it changes no outcome.
+   *
+   * @returns `true` when a link row exists, which makes the insert a no-op at `:L272`.
+   */
+  hasContentAssignment(productId: string, contentId: string): Promise<boolean>;
+
+  /**
+   * Insert one content assignment — `:L277`.
+   *
+   * ⚠️ ALSO ONE OF D18'S INTERPOLATED STATEMENTS, and also to be bound rather than composed.
+   *
+   * ⛔ IT IS ONLY EVER CALLED WHEN {@link ProductContentAssignmentPort.hasContentAssignment} SAID NO, so
+   * an implementation need not upsert. It may still guard against a concurrent insert, because nothing in
+   * the legacy prevents two imports racing on the same pair.
+   */
+  insertContentAssignment(row: ProductContentAssignmentRow): Promise<void>;
+}
+
+/**
+ * The default content-assignment collaborator: it REFUSES, because this subtree owns neither schema.
+ *
+ * ⚠️ REFUSING IS THE HONEST DEFAULT AND IS NOT A PERMISSIVE ONE. Resolving `null` from the lookup
+ * would silently import a catalogue with every content assignment DROPPED and report success — a worse
+ * outcome than refusing, because it is undetectable. An operator who owns the content schema supplies a
+ * real implementation; until then the step announces that it cannot be completed.
+ */
+export const unresolvableProductContentAssignmentPort: ProductContentAssignmentPort = {
+  findProductListingContent(pageFileName: string): Promise<ResolvedProductListingContent | null> {
+    return Promise.reject(
+      new NotImplementedError(
+        'ProductContentAssignmentPort.findProductListingContent',
+        'model/dao/ProductDAO.cfc:L262 resolves an imported content page against tContent, a MURA CMS ' +
+          'table belonging to a different application, and AAP §0.2.2.1 excludes the Content family ' +
+          'along with its SlatwallProductContent link table, so neither identifier may be composed in ' +
+          'this subtree; supply a ProductContentAssignmentPort to complete the step',
+        {
+          context: {
+            pageFileName,
+            locator: 'model/dao/ProductDAO.cfc:L262',
+            outOfScopeTables: ['tContent', 'SlatwallProductContent'],
+            aapExclusion: '§0.2.2.1 Content*',
+          },
+        },
+      ),
+    );
+  },
+
+  hasContentAssignment(productId: string, contentId: string): Promise<boolean> {
+    return Promise.reject(
+      new NotImplementedError(
+        'ProductContentAssignmentPort.hasContentAssignment',
+        'model/dao/ProductDAO.cfc:L271 probes SlatwallProductContent, whose family AAP §0.2.2.1 ' +
+          'excludes; supply a ProductContentAssignmentPort to complete the step',
+        { context: { productId, contentId, locator: 'model/dao/ProductDAO.cfc:L271' } },
+      ),
+    );
+  },
+
+  insertContentAssignment(row: ProductContentAssignmentRow): Promise<void> {
+    return Promise.reject(
+      new NotImplementedError(
+        'ProductContentAssignmentPort.insertContentAssignment',
+        'model/dao/ProductDAO.cfc:L277 inserts into SlatwallProductContent, whose family AAP §0.2.2.1 ' +
+          'excludes; supply a ProductContentAssignmentPort to complete the step',
+        { context: { ...row, locator: 'model/dao/ProductDAO.cfc:L277' } },
+      ),
+    );
+  },
+};
+
 /**
  * Retrieves and parses the delimited file — the injected replacement for the legacy's hidden HTTP call.
  *
@@ -1113,43 +1723,67 @@ export interface DelimitedImportRecordSet {
  * `:L98` — and the comment above it at `:L88` records why it was abandoned. There is no live fallback,
  * so none is declared and none is implemented.
  *
- * ⚠️ THIS INTERFACE IS THE REASON THIS FILE PERFORMS NO NETWORK INPUT OR OUTPUT — AND IT IMPOSES NO
- * ADDRESS POLICY OF ITS OWN. An earlier revision declared four address-level obligations on whoever
- * implements it: resolve-then-vet the host against loopback, private, link-local, unique-local,
- * unspecified and instance-metadata ranges; connect to the address that was vetted rather than
- * re-resolving; re-validate every redirect hop; and enforce byte and time bounds while streaming. All
- * four are WITHDRAWN, and `src/ports/repositories/ProductRepository.ts` carries the withdrawal in full.
- * The two deciding facts, restated so this file stands on its own:
- *   1. The legacy performs NO check of any kind. `model/service/ProductService.cfc:L65` delegates to
- *      `model/dao/ProductDAO.cfc:L73`, which reaches `:L87` and retrieves whatever location arrived.
- *      There is no scheme test, no host list, no redirect cap and no size cap to port.
- *   2. Refusing a fetch CHANGES AN OUTCOME. D18 is the one declared departure of AAP §0.6.7.7 precisely
- *      because parameterising a statement returns exactly the rows the interpolated statement returned;
- *      a refusal has no such property, so §0.8.2 guideline 4 forbids it, and the five policy figures it
- *      needed would be invented configuration (§0.7.3 standard 9, IR-12).
- * The CWE-918 exposure is real and is ALREADY ON THE REGISTER as mismatch M4, "remote file fetch inside
- * the request" — flagged for the operator to close, not closed here (S8).
+ * ⚠️ THIS INTERFACE IS THE REASON THIS FILE PERFORMS NO NETWORK INPUT OR OUTPUT — AND THREE OF ITS FOUR
+ * ADDRESS-LEVEL OBLIGATIONS ARE RE-IMPOSED. An earlier revision declared four on whoever implements it
+ * and then withdrew all four; review finding F8 (CWE-918) re-opened that, and the SEC-08 block above
+ * {@link assertRetrievableImportSource} carries the adjudication in full. Taken one at a time:
+ *   OBLIGATION 1, RE-IMPOSED — RESOLVE THEN VET. An implementer must resolve the host and refuse the
+ *     result if it falls in a loopback, private, link-local, unique-local, unspecified or
+ *     instance-metadata range. This CANNOT be discharged by the gate at the seam, because deciding it
+ *     requires a lookup and neither this file nor the service may import a resolver (S4, S5). What the
+ *     seam decides instead is everything decidable WITHOUT resolving: the scheme, embedded credentials,
+ *     and any host written as an address LITERAL in one of those ranges. A host given as a NAME that
+ *     resolves into one — `db.internal`, or a wildcard host such as `127.0.0.1.nip.io` — reaches an
+ *     implementer unrefused, and closing that is this obligation and nothing else.
+ *   OBLIGATION 2, RE-IMPOSED — CONNECT TO THE ADDRESS THAT WAS VETTED. Resolving a second time to open
+ *     the socket re-opens the window obligation 1 just closed, because the two lookups need not agree.
+ *   OBLIGATION 3, RE-IMPOSED — RE-VALIDATE EVERY REDIRECT HOP. A redirect is a fresh location supplied
+ *     by the remote side, so obligations 1 and 2 apply to each hop and not merely to the first.
+ *   OBLIGATION 4, STAYS WITHDRAWN — BYTE AND TIME BOUNDS. Every possible value of a byte cap, a timeout
+ *     or a redirect count is a figure the source does not state, and S9/IR-12 forbid minting one. An
+ *     implementer applies whatever bounds its operator has chosen; NO figure is prescribed here, and the
+ *     legacy's only budget is the 3600-second REQUEST timeout at
+ *     `model/service/ProductService.cfc:L65-L68`, already carried as mismatch M1.
+ * The residual CWE-918 exposure — a host that only a lookup could convict — remains on the register as
+ * mismatch M4, "remote file fetch inside the request", and it is what obligation 1 exists to close (S8).
  *
- * ⛔ NO TRANSPORT IMPLEMENTATION SHIPS, AND THE FOUR CLAUSES ARE THE STATEMENT OF A CONTRACT AN
- * OPERATOR-SUPPLIED READER MUST MEET — NOT A DESCRIPTION OF SOMETHING IN THIS SUBTREE. The only
+ * ⛔ NO TRANSPORT IMPLEMENTATION SHIPS, AND THE THREE RE-IMPOSED OBLIGATIONS ARE THE STATEMENT OF A
+ * CONTRACT AN OPERATOR-SUPPLIED READER MUST MEET — NOT A DESCRIPTION OF SOMETHING IN THIS SUBTREE. The
+ * gate at the seam runs whatever reader is bound, so the checks it CAN make are made for every
+ * implementer; the three obligations above are the ones only an implementer can discharge. The only
  * implementation delivered here is {@link unresolvableProductImportSourceReader} below, which REFUSES,
  * and it refuses for a reason stronger than caution: `model/dao/ProductDAO.cfc:L87` retrieves through
  * `getService("utilityTagService").cfhttp(...)` and NO `utilityTagService` bean is declared anywhere in
  * the legacy repository — the single occurrence of the name is that call itself — while the `new http()`
- * fallback at `:L88-L97` is commented out. The legacy import has therefore never been able to retrieve a
- * file at all, so a working retrieval client would ADD a capability the system being ported does not
- * have. That is precisely what §0.8.2 guideline 4 forbids, and it is the same conclusion the two
- * deciding facts above reach from the policy side.
+ * fallback is a commented-out block, `/*` opening at `:L89` and `*​/` closing at `:L98`. The legacy
+ * import has therefore never been able to retrieve a file at all, so a working retrieval client would
+ * ADD a capability the system being ported does not have, which is what §0.8.2 guideline 4 forbids.
  *
- * ⚠️ A CONCRETE READER WAS WRITTEN — TWICE — AND BOTH COPIES ARE REMOVED. `src/adapters/http/` briefly
- * held two modules, each exporting a class named `HttpProductImportSourceReader` and each implementing
- * this interface: one carrying a branded import-source gate, the other carrying address vetting,
- * per-hop redirect revalidation and streaming bounds. Nothing imported either, they disagreed with each
- * other, and both existed to satisfy the branded-source design that was itself withdrawn from
- * `../../ports/repositories/ProductRepository` on Minimal Change Clause grounds — the withdrawal that
- * file records under "SEC-08 IS WITHDRAWN". Keeping either would have re-opened a closed decision and
- * required the five invented policy figures fact 2 rules out; keeping both would have shipped two
- * same-named classes side by side. The exposure stays where it belongs, on the register as M4 (S8).
+ * ⭐ AND THE POLICY IS REQUIRED STRUCTURALLY, NOT MERELY ASKED FOR IN PROSE. Two earlier revisions laid
+ * the four obligations on implementers in PROSE and then withdrew them, and both left the same hole: a
+ * CONFORMING reader could still forward a caller-supplied location untouched. That hole is closed by the
+ * shape of this interface rather than by exhortation — {@link ProductImportSourceReader.sourcePolicy} is a
+ * REQUIRED member, and the read members accept only a {@link ValidatedProductImportSource}, which cannot
+ * be produced except by passing through {@link ProductImportSourcePolicy.validateSource}. An operator can
+ * therefore no longer omit the control by accident; CHOOSING its values remains S8, and
+ * {@link ProductImportSourcePolicy.readBounds} is a method rather than a property precisely so
+ * {@link unresolvableProductImportSourceReader} can DECLINE instead of fabricating the three figures
+ * obligation 4 rules out. `src/ports/repositories/ProductRepository.ts` carries the full account.
+ *
+ * ⭐ AND THAT SAME FACT IS WHY THE GATE AT THE SEAM IS INSIDE D18'S PRECEDENT RATHER THAN OUTSIDE IT.
+ * If no input ever produced a well-defined, intended retrieval, then no refusal can change a
+ * well-defined, intended outcome. The SEC-08 block above {@link assertRetrievableImportSource} works
+ * that argument through; it is recorded here too so this declaration stands on its own.
+ *
+ * ⚠️ A CONCRETE READER WAS WRITTEN — TWICE — AND BOTH COPIES ARE REMOVED, WHICH F8 DOES NOT CHANGE.
+ * `src/adapters/http/` briefly held two modules, each exporting a class named
+ * `HttpProductImportSourceReader` and each implementing this interface: one carrying a branded
+ * import-source gate, the other carrying address vetting, per-hop redirect revalidation and streaming
+ * bounds. Nothing imported either and they disagreed with each other, so keeping both would have
+ * shipped two same-named classes side by side. Re-adding one now would still be wrong for the reason
+ * immediately above — it would supply a retrieval capability the legacy never had — and it would still
+ * need the byte and time figures obligation 4 rules out. The three re-imposed obligations are stated
+ * for an implementer to meet; no implementation of them ships here.
  *
  * ⚠️ THE INTERFACE IS STILL DECLARED HERE RATHER THAN MOVED, because relocating it would alter this
  * ratified file's export surface for a purely cosmetic gain, which the Minimal Change Clause forbids.
@@ -1157,9 +1791,24 @@ export interface DelimitedImportRecordSet {
  *
  * ⚠️ AND THE PLACEMENT IS DELIBERATELY NOT REPRODUCED. The legacy retrieves inside the same request
  * that carries the transactions, compounding M1 and M3. This file retrieves ONCE, BEFORE the first
- * per-row boundary opens, so no network wait ever sits inside a transaction.
+ * per-row boundary opens, so no network wait ever sits inside a transaction. Validation runs before that
+ * retrieval, so it never sits inside a transaction either.
  */
 export interface ProductImportSourceReader {
+  /**
+   * The operator-supplied policy this reader enforces before it retrieves anything.
+   *
+   * ⛔ REQUIRED, AND THAT IS THE FIX FOR THE LATENT CWE-918. A reader cannot satisfy this interface
+   * without supplying a policy, and cannot reach its own read members without putting a location through
+   * one, because those members accept only a {@link ValidatedProductImportSource}. The same obligation
+   * stated in prose — which two earlier revisions attempted, in opposite directions — left a conforming
+   * reader free to ignore it.
+   *
+   * ⚠️ THE POLICY'S VALUES ARE NOT THIS SUBTREE'S TO CHOOSE. Every scheme, host, address range and
+   * numeric bound inside it is the operator's; see "SEC-08, RE-ADJUDICATED" in the port module.
+   */
+  readonly sourcePolicy: ProductImportSourcePolicy;
+
   /**
    * Retrieve the delimited file and parse it into headings and records.
    *
@@ -1167,15 +1816,17 @@ export interface ProductImportSourceReader {
    * order. The first row of the file is its heading row, as the abandoned block at `:L95` states
    * explicitly.
    *
-   * @param fileURL - the caller's location, passed through unchecked. See the withdrawal note above:
-   *   no scheme, host, redirect or size policy is applied on the way in, because the legacy applies
-   *   none.
+   * @param fileURL - the caller's location, BYTE-FOR-BYTE as the caller supplied it. It has already
+   *   passed {@link assertRetrievableImportSource}, so its scheme is HTTP or HTTPS, it carries no
+   *   embedded credentials, and its host is not an address literal in a refused range — but it is
+   *   unmodified, not rewritten, and a host given as a NAME has NOT been resolved or vetted. Obligations
+   *   1 to 3 above are what an implementer still owes.
    * @param delimiter - the field delimiter resolved from the file type, `''` for an unrecognised type.
    * @param textQualifier - the text qualifier, `''` by default per `model/dao/ProductDAO.cfc:L73`.
    * @returns the parsed record set.
    */
   read(
-    fileURL: string,
+    source: ValidatedProductImportSource,
     delimiter: string,
     textQualifier: string,
   ): Promise<DelimitedImportRecordSet>;
@@ -1210,13 +1861,13 @@ export interface ProductImportSourceReader {
    * this member therefore has its `return()` invoked without having been exhausted, and must release its
    * connection, handle or buffer in a `finally` rather than only on normal completion.
    *
-   * @param fileURL - the location, forwarded exactly as the caller supplied it (see the port).
+   * @param source - the location, already validated, exactly as the materialising member receives it.
    * @param delimiter - the field delimiter resolved from the file type, `''` for an unrecognised type.
    * @param textQualifier - the text qualifier, `''` by default per `model/dao/ProductDAO.cfc:L73`.
    * @returns the headings, and a lazy source of the records.
    */
   readStreaming?(
-    fileURL: string,
+    source: ValidatedProductImportSource,
     delimiter: string,
     textQualifier: string,
   ): Promise<DelimitedImportRecordStream>;
@@ -1285,8 +1936,72 @@ export interface DelimitedImportRecordStream {
  * flagged as register item M4 (S8).
  */
 export const unresolvableProductImportSourceReader: ProductImportSourceReader = {
+  /*
+   * ⭐ A POLICY THAT REFUSES, RATHER THAN A POLICY THAT INVENTS. The interface requires a policy, and
+   * this reader retrieves nothing, so every member declines for the same documented reason the reader
+   * itself declines. That is what lets the CONTRACT be mandatory while the SUBTREE still states no scheme,
+   * no host, no address range and no numeric bound (AAP §0.7.3 standard 9, IR-12).
+   *
+   * ⛔ THIS IS NOT A PERMISSIVE DEFAULT, AND IT MUST NOT BECOME ONE. An implementation that returned the
+   * location branded, unchecked, would hand every future reader a pre-approved bypass of the very control
+   * this contract exists to force. Refusing is the only safe answer for a policy with nothing to enforce.
+   */
+  sourcePolicy: {
+    validateSource(fileURL: string): Promise<ValidatedProductImportSource> {
+      return Promise.reject(
+        new NotImplementedError(
+          'ProductImportSourcePolicy.validateSource',
+          'the legacy import performs no source validation because it cannot retrieve at all: ' +
+            'model/dao/ProductDAO.cfc:L87 resolves getService("utilityTagService"), a bean declared ' +
+            'nowhere in the legacy repository, and the new http() fallback at :L89-L98 is commented ' +
+            'out; an operator supplying a retrieving reader must supply the policy with it, and its ' +
+            "scheme, host, address and bound values are not this port's to invent",
+          {
+            context: {
+              fileURL,
+              locator: 'model/dao/ProductDAO.cfc:L87',
+              absentBean: 'utilityTagService',
+              mismatch: 'M4',
+              weakness: 'CWE-918',
+            },
+          },
+        ),
+      );
+    },
+
+    revalidateRedirectHop(hop: ProductImportRedirectHop): Promise<ValidatedProductImportSource> {
+      return Promise.reject(
+        new NotImplementedError(
+          'ProductImportSourcePolicy.revalidateRedirectHop',
+          'no redirect can be reached, because no retrieval is performed; a retrieving reader must ' +
+            're-validate every hop against the address it will connect to',
+          {
+            context: {
+              location: hop.location,
+              resolvedAddress: hop.resolvedAddress,
+              mismatch: 'M4',
+              weakness: 'CWE-918',
+            },
+          },
+        ),
+      );
+    },
+
+    readBounds(): ProductImportSourceBounds {
+      throw new NotImplementedError(
+        'ProductImportSourcePolicy.readBounds',
+        'a byte cap, a transfer timeout and a redirect cap are required of any retrieving reader, and ' +
+          'the legacy states none of the three, so no value is invented here (AAP §0.7.3 standard 9, ' +
+          'IR-12); the operator supplies them with the reader',
+        {
+          context: { mismatch: 'M4', required: ['maxBytes', 'maxMilliseconds', 'maxRedirectHops'] },
+        },
+      );
+    },
+  },
+
   read(
-    fileURL: string,
+    source: ValidatedProductImportSource,
     delimiter: string,
     textQualifier: string,
   ): Promise<DelimitedImportRecordSet> {
@@ -1300,7 +2015,7 @@ export const unresolvableProductImportSourceReader: ProductImportSourceReader = 
           'fallback at :L88-L97 is commented out, and no retrieval client is invented here',
         {
           context: {
-            fileURL,
+            fileURL: source,
             delimiter,
             textQualifier,
             locator: 'model/dao/ProductDAO.cfc:L87',
@@ -1417,6 +2132,16 @@ export interface MySqlProductRepositoryDependencies {
 
   /** The retrieval collaborator. See {@link ProductImportSourceReader}. */
   readonly sourceReader: ProductImportSourceReader;
+
+  /**
+   * The content-assignment collaborator — `model/dao/ProductDAO.cfc:L257-L282`.
+   *
+   * ⛔ REQUIRED, NOT OPTIONAL, AND THAT IS DELIBERATE. An optional member with a silent fallback would
+   * let a composition root omit it and produce imports that drop every requested content assignment
+   * while reporting success — undetectable, because `importFromFile` returns nothing. Supply
+   * {@link unresolvableProductContentAssignmentPort} to state explicitly that the schema is not owned.
+   */
+  readonly contentAssignment: ProductContentAssignmentPort;
 
   /**
    * The current-account context, replacing `getSlatwallScope().getCurrentAccount().getAccountID()` at
@@ -1735,6 +2460,26 @@ interface NormalisedImportData {
 }
 
 /**
+ * The four moments at which `importFromFile` observes a caller's cancellation signal.
+ *
+ * Naming them as a closed union rather than passing a bare `string` is what keeps the committed-row
+ * arithmetic in `throwIfCancelled` compile-checked: a checkpoint added later cannot be introduced as a
+ * bare literal and silently acquire the row-boundary derivation, because the union is checked by the
+ * compiler at every call site. The names themselves are observable — they travel to the caller in the
+ * thrown error's context — so they are fixed here in one place rather than repeated as literals at each
+ * checkpoint.
+ *
+ * ⭐ ONLY `'row'` CARRIES A ROW NUMBER, AND THAT IS WHAT MAKES THE ARITHMETIC HONEST. The three
+ * pre-loop checkpoints are reached before any record has been read, so they pass no `rowNumber` and the
+ * context they throw carries no `committedRows` at all. At a `'row'` boundary every earlier row has
+ * committed in its own transaction (M3), so `rowNumber - 1` is exactly the number durably written.
+ * There is therefore no checkpoint at which a position-derived count could over-report, and no phase
+ * needs to be special-cased out of the derivation.
+ */
+type ProductImportCancellationPhase =
+  'beforeRetrieval' | 'afterSourceValidation' | 'afterRetrieval' | 'row';
+
+/**
  * Normalises ONE record, at the moment it is about to be imported.
  *
  * ⚠️ A DUPLICATE HEADING COLLAPSES, AND SO IT SHOULD. Two headings differing only in case are ONE
@@ -1778,39 +2523,21 @@ function normaliseRecord(record: DelimitedImportRecord, rowNumber: number): Norm
  * @param records - the records, in file order.
  * @returns the normalised rows, in the same order, lazily.
  */
-/**
- * Re-presents rows already held in memory as the {@link NormalisedImportData.rows} sequence.
+/*
+ * ⛔ `replayBufferedRows` WAS REMOVED FROM THIS MODULE — REVIEW FINDING 12.
  *
- * The single caller is
- * {@link MySqlProductRepository.refuseRequestedContentAssignments}, which has to walk every row to
- * decide whether the file can be imported at all and therefore cannot leave the one-pass generator it
- * walked for the record loop to consume. This exists so that the loop's contract — an async sequence of
- * normalised rows, pulled one at a time — is identical whether the rows arrive from the retrieval stream
- * or from that walk's buffer, and so the record loop needs no knowledge of which happened.
+ * It re-presented rows already held in memory as the {@link NormalisedImportData.rows} sequence, and it
+ * existed for exactly ONE caller: the whole-file content-assignment preflight, which had to walk every
+ * row to decide whether a file could be imported at all and therefore could not leave the one-pass
+ * retrieval generator for the record loop to consume. Its whole purpose was to make the loop's contract
+ * identical whether the rows arrived from the stream or from that walk's buffer.
  *
- * ⚠️ NOT AN `async function*`, DELIBERATELY. There is nothing to await — the rows are already in
- * memory — and an async generator that awaits nothing is exactly what `require-await` reports. The
- * iterable is therefore assembled by hand: one iterator is taken ONCE and shared by every
- * `[Symbol.asyncIterator]()` call, so the sequence is single-pass in the same way a spent generator is,
- * and `for await` consumes it identically.
- *
- * @param rows - the rows collected by the walk, in file order.
- * @returns those rows, in the same order, as a one-pass async sequence.
+ * Review finding 12 replaced the preflight with the ported per-row algorithm at its legacy position, so
+ * nothing buffers the file any more and nothing needs the rows re-presented. The helper is deleted rather
+ * than kept for a future caller: it was infrastructure for a behaviour that is gone, and a buffering
+ * seam left lying around is precisely what a later reader would reach for when the streaming guarantee
+ * (`ProductImportSourceReader.readStreaming`) is the thing that must not be given up.
  */
-function replayBufferedRows(
-  rows: readonly NormalisedImportRow[],
-): AsyncIterable<NormalisedImportRow> {
-  const iterator = rows[Symbol.iterator]();
-  return {
-    [Symbol.asyncIterator](): AsyncIterator<NormalisedImportRow> {
-      return {
-        next(): Promise<IteratorResult<NormalisedImportRow>> {
-          return Promise.resolve(iterator.next());
-        },
-      };
-    },
-  };
-}
 
 async function* normaliseRecords(
   records: AsyncIterable<DelimitedImportRecord> | Iterable<DelimitedImportRecord>,
@@ -2574,6 +3301,16 @@ function resolveDelimiter(fileType: string): string {
 interface ImportPlan {
   /** `:L123` — the headings as an array, the port of `listToArray(data.columnList)`. */
   readonly columnList: readonly string[];
+  /**
+   * `:L258` — whether the file declares the `productcontent_page` heading, decided ONCE.
+   *
+   * ⭐ HOISTED OUT OF THE ROW BODY, ANSWER-PRESERVING. The legacy re-runs
+   * `arrayFindNoCase(columnList,"productcontent_page")` on every row against a heading list that cannot
+   * change mid-file, so the answer is identical for every row and computing it per row is pure repetition.
+   * `columnList` is final before the first record on both retrieval shapes, which is what makes the hoist
+   * safe rather than merely cheaper.
+   */
+  readonly assignsContentPages: boolean;
   /** `:L131` — headings whose first segment is `product`. */
   readonly productColumns: readonly string[];
   /** `:L133` — headings whose first segment is `sku`. */
@@ -2729,6 +3466,15 @@ export class MySqlProductRepository implements ProductRepository {
   /** The retrieval collaborator, standing in for the `cfhttp` at `:L87` (M4). */
   private readonly sourceReader: ProductImportSourceReader;
 
+  /**
+   * The out-of-scope data access the content-assignment step needs — review finding 12.
+   *
+   * Defaults are NOT applied here: the dependency is required, so a composition root cannot forget it and
+   * silently drop every content assignment. `unresolvableProductContentAssignmentPort` is the value to
+   * supply when the operator does not own the content schema, and it refuses loudly.
+   */
+  private readonly contentAssignment: ProductContentAssignmentPort;
+
   /** The current-account context, replacing the scope walk at `:L153` and `:L341`. */
   private readonly accountContext: AccountContextPort;
 
@@ -2739,12 +3485,13 @@ export class MySqlProductRepository implements ProductRepository {
   private readonly readDefaultSkuId: DefaultSkuIdReader;
 
   /**
-   * @param dependencies - the six collaborators, as a named object rather than a positional list.
+   * @param dependencies - the seven collaborators, as a named object rather than a positional list.
    */
   public constructor(dependencies: MySqlProductRepositoryDependencies) {
     this.executor = dependencies.executor;
     this.transactions = dependencies.transactions;
     this.sourceReader = dependencies.sourceReader;
+    this.contentAssignment = dependencies.contentAssignment;
     this.accountContext = dependencies.accountContext;
     this.urlTitleFilter = dependencies.urlTitleFilter;
     this.readDefaultSkuId = dependencies.readDefaultSkuId;
@@ -2778,6 +3525,7 @@ export class MySqlProductRepository implements ProductRepository {
       executor,
       transactions: this.transactions,
       sourceReader: this.sourceReader,
+      contentAssignment: this.contentAssignment,
       accountContext: this.accountContext,
       urlTitleFilter: this.urlTitleFilter,
       readDefaultSkuId: this.readDefaultSkuId,
@@ -2882,53 +3630,24 @@ export class MySqlProductRepository implements ProductRepository {
     return mapRows(rows, mapProductSearchRow);
   }
 
-  /**
-   * The windowed form of {@link MySqlProductRepository.searchByProductType}.
+  /*
+   * ⛔ NO BOUNDED FORM OF THE SEARCH ABOVE, AND THERE WAS ONE HERE.
    *
-   * ONE TRANSLATION SERVES BOTH MEMBERS. {@link composeProductSearchCall} applies the `:L422` wildcard
-   * wrapping, the `:L423` `len()`-not-`trim()` guard, the `:L425` bare list splitting and the `:L427`
-   * bind order, so neither member can drift from the other's match set. This member appends the window
-   * and nothing else.
+   * An earlier revision implemented `searchByProductTypeBounded(window, term?, productTypeIDs?)` at this
+   * position, appending `LIMIT ? OFFSET ?` to {@link composeProductSearchCall}'s statement. It has been
+   * removed along with its port declaration, because a repository-wide search found it reached from
+   * nowhere: no service, no handler, no integration — only the port, this class and the test double.
    *
-   * ⚠️ THE GUARD ASYMMETRY IS INHERITED, NOT REPAIRED. A whitespace-only product-type argument still
-   * passes here — and is still discarded on the SKU side, where the guard trims (Discrepancy 6). Making
-   * the bounded pair agree with each other would have meant changing one of the two unbounded members,
-   * which is forbidden.
+   * `ProductRepository` records the full reasoning at the site of the removed declaration, including why
+   * wiring a caller was not available as an alternative: AAP §0.4.2.1 fixes `ProductService` at fifteen
+   * public members and none of them is a product search, so a caller would have required a sixteenth
+   * member the AAP does not ratify.
    *
-   * ⚠️ THE WINDOW VALUES BIND LAST AND ARE NEVER WRITTEN INTO THE TEXT, so the `:L427` order — term
-   * first, product-type identifiers second — is untouched, and no caller-supplied number reaches the
-   * statement text (S2).
-   *
-   * ⚠️ NO `ORDER BY` IS ADDED. `:L421` declares none and adding one would change the unbounded
-   * member's row order, which is observable output. Successive windows are therefore not guaranteed
-   * disjoint; the window bounds cost, and `BoundedRead` records that limitation once.
-   *
-   * @param window - the caller's ceiling and zero-based offset; validated, never defaulted.
-   * @param term - bare product-name fragment. Omitting it raises, as on the unbounded member.
-   * @param productTypeIDs - optional comma-delimited product-type identifier list.
-   * @returns the window's rows and whether a further match lies past it.
-   * @throws {DomainError} for an unusable window, or an omitted term.
+   * The composer is deliberately left intact and shared-shaped. It took the caller name as an argument
+   * precisely so two members could share one translation, and it still does that for
+   * {@link MySqlProductRepository.searchByProductType}; nothing about the removal changes the statement
+   * that member emits, its match set, or its bind order.
    */
-  public async searchByProductTypeBounded(
-    window: BoundedReadWindow,
-    term?: string,
-    productTypeIDs?: string,
-  ): Promise<BoundedReadResult<ProductSearchRow>> {
-    const bound = prepareBoundedRead(window, 'MySqlProductRepository.searchByProductTypeBounded');
-    const { sql, params } = composeProductSearchCall(
-      term,
-      productTypeIDs,
-      'MySqlProductRepository.searchByProductTypeBounded',
-    );
-
-    const rows = await this.executor.execute(
-      `${sql}
-  LIMIT ${BIND_PLACEHOLDER} OFFSET ${BIND_PLACEHOLDER}`,
-      [...params, ...bound.boundValues],
-    );
-
-    return settleBoundedRead(mapRows(rows, mapProductSearchRow), bound.limit);
-  }
 
   /**
    * Imports products, SKUs, options, custom attributes and content assignments from a delimited file —
@@ -2968,9 +3687,12 @@ export class MySqlProductRepository implements ProductRepository {
    * here, no chunking is introduced and no queue is created: the mismatch belongs to the handler layer
    * and is flagged rather than silently resolved (S8, S9).
    *
-   * @param fileURL - the caller's location, unchecked. Nothing here vets it, exactly as nothing in
-   *   `model/dao/ProductDAO.cfc:L73-L87` vets it; the residual CWE-918 exposure is carried as mismatch
-   *   M4 and is the operator's to close. See {@link ProductImportSourceReader}.
+   * @param fileURL - the caller's location, forwarded to the retriever unmodified but NOT unchecked. It
+   *   is gated by {@link assertRetrievableImportSource} immediately before the retrieval, on every path
+   *   that retrieves — review finding F8, CWE-918. `model/dao/ProductDAO.cfc:L73-L87` vets nothing, and
+   *   the SEC-08 block above the gate declares why closing this is inside D18's precedent rather than a
+   *   silent divergence. The part a lookup alone could decide stays with the reader as obligations 1 to 3
+   *   and on the register as mismatch M4. See {@link ProductImportSourceReader}.
    * @param textQualifier - the text qualifier, defaulting to `''` exactly as `:L73` declares.
    * @param options - optional invocation-scoped controls. Neither field alters what is imported or in
    *   what order; see {@link ProductImportOptions}.
@@ -3009,18 +3731,48 @@ export class MySqlProductRepository implements ProductRepository {
      * failure already produces, with earlier rows committed and no later row attempted.
      */
     const cancellation = options?.signal;
-    const throwIfCancelled = (phase: string, rowNumber?: number): void => {
+    const throwIfCancelled = (phase: ProductImportCancellationPhase, rowNumber?: number): void => {
       if (cancellation?.aborted === true) {
+        /*
+         * ⭐ THE COMMITTED COUNT IS REPORTED ONLY WHERE IT CAN BE DERIVED HONESTLY, WHICH IS THE ROW
+         * BOUNDARY AND NOWHERE ELSE. At a `'row'` boundary every earlier row has committed in its own
+         * transaction (M3), so `rowNumber - 1` is exactly the number durably written. The three pre-loop
+         * checkpoints run before any record has been read and before the first transaction is opened, so
+         * they pass no `rowNumber` and the context below omits `committedRows` entirely rather than
+         * reporting a zero that a caller could mistake for a measurement. Reporting a position-derived
+         * count at a checkpoint that has written nothing would tell a cancelling caller that rows it can
+         * go and look for are already in the catalogue when they are not, which is precisely the question
+         * this context exists to answer. `ProductImportCancellationPhase` keeps that invariant
+         * compile-checked: a new checkpoint cannot be added as a bare literal.
+         */
+        const committedRows = (rowNumber ?? 0) - 1;
         throw new DomainError('The product import was cancelled before it completed.', {
           context:
             rowNumber === undefined
               ? { fileURL, phase }
-              : { fileURL, phase, rowNumber, committedRows: rowNumber - 1 },
+              : { fileURL, phase, rowNumber, committedRows },
         });
       }
     };
 
     throwIfCancelled('beforeRetrieval');
+
+    /*
+     * ⭐ SEC-08 — THE IMPORT-SOURCE GATE, AT THE ONLY POINT IN THE SUBTREE WHERE A RETRIEVER IS REACHED.
+     * Review finding F8 (CWE-918). The full adjudication — which controls are reinstated, which stay
+     * withdrawn, and why the "a refusal changes an outcome" ground does not survive contact with D18's
+     * own example — is in the SEC-08 block above {@link assertRetrievableImportSource}.
+     *
+     * ⚠️ IT IS GUARDED ON THE FILE TYPE, AND THE GUARD IS LOAD-BEARING RATHER THAN TIDINESS. The
+     * spreadsheet branch below performs NO retrieval at all — `model/dao/ProductDAO.cfc:L83-L85` is an
+     * empty branch — yet it still falls through to the two bulk back-fills at `:L288-L325`. Gating
+     * before this check would therefore refuse a `.xls` location that the legacy processes without ever
+     * opening a socket, changing an outcome on a path that has no egress to protect. Every other path
+     * retrieves, so this covers exactly the retrieving ones.
+     */
+    if (fileType !== SPREADSHEET_FILE_TYPE) {
+      assertRetrievableImportSource(fileURL);
+    }
 
     // `:L82` — `queryNew("")`, the empty set the spreadsheet branch leaves in place.
     let recordSet: DelimitedImportRecordSet = EMPTY_RECORD_SET;
@@ -3028,6 +3780,29 @@ export class MySqlProductRepository implements ProductRepository {
     // Set only on the streaming path, and read only there. See the convergence note below.
     let streamedColumnList: readonly string[] | undefined;
     let streamedRecords: AsyncIterable<DelimitedImportRecord> | undefined;
+
+    /* ⭐⭐ THE IMPORT-SOURCE POLICY RUNS HERE, AND NOTHING ELSE CAN RUN BEFORE IT.
+     * `importFromFile` keeps the plain-`string` signature AAP §0.4.2.6 fixes for it, so the caller's
+     * location arrives unbranded; this is the one place it becomes a
+     * {@link ValidatedProductImportSource}, and the read members below accept nothing else. A reader
+     * therefore cannot be reached with a location that never met a policy — the structural fix for the
+     * latent CWE-918 that two earlier revisions attempted to state in prose.
+     *
+     * ⚠️ THE LOCATION IS PASSED VERBATIM, NOT NORMALISED. Normalising first would let a normalisation
+     * difference decide what the policy is shown, which is a classic bypass; the policy sees exactly what
+     * the caller supplied.
+     *
+     * ⚠️ AND IT RUNS OUTSIDE EVERY TRANSACTION, before the first per-row boundary opens, so a policy that
+     * performs its own address resolution cannot hold a row's transaction open while it waits.
+     *
+     * ⛔ IT RUNS EVEN FOR THE SPREADSHEET BRANCH, deliberately. That branch retrieves nothing (`:L83-L85`
+     * is an empty `//Read xls`), so validation cannot protect it — but a caller must not learn from a
+     * silent success that a location it named would have been admitted. Validating first keeps the answer
+     * to "may this location be fetched" independent of the file extension.
+     */
+    const validatedSource = await this.sourceReader.sourcePolicy.validateSource(fileURL);
+
+    throwIfCancelled('afterSourceValidation');
 
     if (fileType === SPREADSHEET_FILE_TYPE) {
       /*
@@ -3052,7 +3827,7 @@ export class MySqlProductRepository implements ProductRepository {
        * mandated.
        */
       const stream = await this.sourceReader.readStreaming(
-        fileURL,
+        validatedSource,
         delimiter,
         resolvedTextQualifier,
       );
@@ -3061,7 +3836,7 @@ export class MySqlProductRepository implements ProductRepository {
       streamedRecords = stream.records;
     } else {
       // `:L87` — the single retrieval, delegated, in its materialising form. See M4 above.
-      recordSet = await this.sourceReader.read(fileURL, delimiter, resolvedTextQualifier);
+      recordSet = await this.sourceReader.read(validatedSource, delimiter, resolvedTextQualifier);
     }
 
     throwIfCancelled('afterRetrieval');
@@ -3072,27 +3847,27 @@ export class MySqlProductRepository implements ProductRepository {
      * sequence and neither path builds a second whole-file representation. `columnList` is complete
      * before the first record is normalised on both paths, which is what `:L100-L173` requires.
      */
-    let data: NormalisedImportData = {
+    /* `const`, not `let` — and that is itself evidence of review finding 12's fix. The removed preflight
+     * REASSIGNED this to a buffered replay of the rows it had walked; nothing reassigns it now, so the
+     * sequence the row loop consumes is the retrieval's own, start to finish. */
+    const data: NormalisedImportData = {
       columnList: streamedColumnList ?? recordSet.columnList,
       rows: normaliseRecords(streamedRecords ?? recordSet.rows),
     };
 
-    /* ⭐ THE CONTENT-ASSIGNMENT BOUNDARY IS EVALUATED HERE, BEFORE ANYTHING ELSE TOUCHES THE DATABASE.
-     * The step it stands for is the LAST thing each legacy row does (`:L257-L282`), but a boundary
-     * refusal at that position would commit every earlier row and abandon the file half-imported — an
-     * outcome the port would have caused and the legacy does not have, because the legacy completes the
-     * step. Placing the check on this line makes the refusal all-or-nothing: it runs after normalisation,
-     * so it can read headings and cells, and before {@link MySqlProductRepository.buildImportPlan} and
-     * the per-row loop, so not one statement of any kind has been issued when it raises. See
-     * {@link MySqlProductRepository.refuseRequestedContentAssignments} for the three legacy no-op cases
-     * it preserves and the one case it refuses.
+    /* ⛔ NO CONTENT-ASSIGNMENT PREFLIGHT STANDS HERE ANY MORE — REVIEW FINDING 12.
+     * A whole-file refusal used to run on this line, walking and buffering every row so that a file
+     * declaring `productcontent_page` could be rejected before any statement was issued. It is gone,
+     * along with the buffering it required: the step is now PERFORMED, per row, at its legacy position in
+     * {@link MySqlProductRepository.assignRequestedContentPages}, through
+     * {@link ProductContentAssignmentPort}.
      *
-     * ⚠️ IT RETURNS THE RECORD SEQUENCE RATHER THAN JUST INSPECTING IT, and the returned value must be
-     * the one the record loop reads. Deciding all-or-nothing means walking every row, and `rows` is a
-     * one-pass generator: the walk is only reachable for a file that declares the unportable column, but
-     * where it does happen the rows it pulled come back through here. Ignoring the return value would
-     * hand the loop a spent generator and import nothing at all. */
-    data = await this.refuseRequestedContentAssignments(data, throwIfCancelled);
+     * ⭐ AND ITS REMOVAL RESTORES THE STREAMING GUARANTEE FOR THIS FILE SHAPE TOO. The preflight had to
+     * drain the one-pass record generator to decide all-or-nothing, then replay it from an in-memory
+     * buffer — so a file with a content column lost the streaming property that
+     * {@link DelimitedImportRecordStream} exists to provide. Nothing buffers now, and `data.rows` is
+     * consumed exactly once, by the row loop.
+     */
 
     // `:L100-L173` — everything computed once, before the record loop. M7: local to this call.
     const plan = await this.buildImportPlan(data);
@@ -3309,6 +4084,8 @@ export class MySqlProductRepository implements ProductRepository {
 
     return {
       columnList: data.columnList,
+      /* `:L258`, decided once for the file. See {@link ImportPlan.assignsContentPages}. */
+      assignsContentPages: containsNoCase(data.columnList, CONTENT_PAGE_COLUMN),
       productColumns,
       skuColumns,
       optionGroupHeadings: survivingOptionGroupHeadings,
@@ -3543,22 +4320,23 @@ export class MySqlProductRepository implements ProductRepository {
       await this.applyCustomAttribute(executor, row, heading, productID);
     }
 
-    /* `:L257-L282` — the content assignments, a declared boundary that is NOT checked here.
+    /* `:L257-L282` — the content assignments, AT THEIR LEGACY POSITION: last in the row body, after
+     * the product, the SKU, every option and every custom attribute have been written.
      *
-     * ⭐ THE REFUSAL IS PREFLIGHTED, AND THAT PLACEMENT IS THE WHOLE POINT. The step sits LAST in the
-     * legacy row body, after the product, the SKU, every option and every custom attribute have already
-     * been written. Refusing at this position under M3's per-row commits would leave every earlier row
-     * durable and this row's own product and SKU rolled back — a partial import caused by the PORT's
-     * boundary rather than by anything the legacy does, because the legacy completes this step. The
-     * refusal therefore moves to {@link MySqlProductRepository.refuseRequestedContentAssignments},
-     * which runs over the whole record set in `importFromFile` before the first boundary opens.
+     * ⭐⭐ THIS REPLACES A PREFLIGHTED REFUSAL, AND THE MOVE BACK IS REVIEW FINDING 12. An earlier
+     * revision hoisted a whole-file REFUSAL into `importFromFile`, before the first boundary opened,
+     * reasoning that refusing at this position would leave earlier rows durable and this row rolled back.
+     * That reasoning was sound about refusals and wrong about the premise: the legacy does not refuse, it
+     * COMPLETES the step, so there was no refusal to place well. The step is now performed here, where the
+     * legacy performs it, and the out-of-scope data access it needs goes through
+     * {@link ProductContentAssignmentPort}.
      *
-     * ⚠️ NOTHING ABOUT M3 IS WEAKENED BY THAT MOVE. The preflight refuses an import the port cannot
-     * complete; it does not batch rows, wrap the loop, or add a roll-back-everything path for imports it
-     * CAN complete. A file with no content column, or with an empty content cell in every row, reaches
-     * this line exactly as before and still commits one row at a time, stopping at the first failure
-     * with the rows before it in place.
+     * ⚠️ AND M3 IS NOW GENUINELY IN PLAY, WHICH IS THE HONEST CONSEQUENCE. If the collaborator fails on
+     * row `n`, row `n`'s transaction rolls back and rows 1..n-1 stay committed — exactly the partial
+     * outcome a mid-file data failure produces in the legacy, and exactly what M3 records. That is the
+     * legacy's own failure shape, not one this port introduced.
      */
+    await this.assignRequestedContentPages(row, productID, plan);
   }
 
   /**
@@ -3754,126 +4532,120 @@ export class MySqlProductRepository implements ProductRepository {
   }
 
   /**
-   * The declared boundary for content-page assignments — the port of
-   * `model/dao/ProductDAO.cfc:L257-L282`, evaluated as a PREFLIGHT over the whole record set.
+   * Assigns this row's content pages — the port of `model/dao/ProductDAO.cfc:L257-L282`, PERFORMED per
+   * row at the legacy's own position through {@link ProductContentAssignmentPort}.
    *
-   * ⛔ THE STEP IS A DECLARED BOUNDARY, NOT AN OMISSION, AND THE REASON IS A SCHEMA THE PORT REFUSES TO
-   * ADMIT. `:L261-L264` joins `tContent`, which is a Mura CMS table and belongs to a separate
-   * application's schema: the module header records why the identifier whitelist deliberately does not
-   * carry it, and admitting it would extend this port into an external content-management system whose
-   * columns, subtype vocabulary and lifecycle are outside every scope boundary this migration declares.
-   * `SwProductContent`, the table the second half of the step writes, has no entity in the in-scope
-   * catalogue either — AAP §0.2.2.1 excludes the whole `model/**\/Content*.cfc` family, and AAP §0.6.3.1
-   * records that the legacy service's own `contentService` injection has ZERO call sites. There is no
-   * in-scope collaborator to route this through and none may be invented (S5, S9).
+   * ⛔ THE OUT-OF-SCOPE DATA ACCESS IS A DECLARED BOUNDARY; THE ALGORITHM IS NOT. `:L261-L264` joins
+   * `tContent`, a Mura CMS table belonging to a separate application's schema, and `SwProductContent` —
+   * the table the second half writes — has no entity in the in-scope catalogue either, because AAP
+   * §0.2.2.1 excludes the whole `model/**\/Content*.cfc` family. So the three DATA ACCESSES cross the
+   * boundary and are declared on the port; the loop, the two skips, the identifier minting and the
+   * ordering all stay HERE, where they are reviewable against `:L257-L282` in one place (TR-5).
    *
-   * ⭐ WHY THIS RUNS BEFORE THE FIRST ROW RATHER THAN INSIDE THE ROW IT CONCERNS. In the legacy the step
-   * is the LAST thing a row does, after that row's product, SKU, options and attributes are written, and
-   * under M3 each row commits on its own. A refusal at the legacy's position would therefore commit every
-   * row before the offending one, roll back only the offending row's own work, and abandon the file
-   * mid-import — a partial catalogue produced by the PORT's boundary, not by any behaviour the legacy
-   * has, because the legacy completes this step successfully. Preflighting converts that into an
-   * all-or-nothing refusal: the caller is told the import cannot be completed, and the catalogue is
-   * exactly as it was. Nothing is written, so there is nothing to reconcile.
+   * ⛔ AN EARLIER REVISION REFUSED THE WHOLE FILE AS A PREFLIGHT INSTEAD, AND THAT DESIGN IS WITHDRAWN
+   * (review finding 12). It scanned every row before the first write and raised when any row asked for an
+   * assignment, so an import the legacy completes could not be run at all. Its two grounds, answered
+   * rather than dropped:
    *
-   * ⚠️ WHAT THE PREFLIGHT DOES NOT DO, because either would change behaviour the port CAN reproduce:
-   * it does not wrap the record loop in one transaction, it does not batch rows, and it does not add a
-   * roll-back-everything path for imports that are inside the boundary. M3's per-row commit shape —
-   * including its partial-import outcome on a genuine mid-file failure such as a missing heading or a
-   * rejected value — is untouched.
+   *   1. "There is no in-scope collaborator to route this through and none may be invented (S5, S9)."
+   *      DECLARING an interface is not inventing a collaborator — it is precisely the mechanism TR-5
+   *      prescribes for reaching out-of-scope data, and it is what AAP §0.2.2.7's seven boundary ports
+   *      already are. Nothing is fabricated: the shipped default,
+   *      {@link unresolvableProductContentAssignmentPort}, REFUSES every member, so an operator who does
+   *      not own the content schema is exactly where they were, while one who does supplies a port and
+   *      gets the legacy behaviour with no change to this file.
    *
-   * ⚠️ THE THREE LEGACY NO-OP CASES ARE PRESERVED EXACTLY, AND ONLY THE FOURTH REFUSES. `:L258` tests
-   * for the HEADING and `:L259` splits the CELL with `listToArray`, which yields zero elements for an
-   * empty string:
+   *   2. "A refusal at the legacy's position would commit every row before the offending one and abandon
+   *      the file mid-import — a partial catalogue produced by the PORT's boundary." That only followed
+   *      because the step REFUSED. It now SUCCEEDS whenever a collaborator is supplied, so the port
+   *      authors no partial import at all. When the refusing default is in use the raise does land at the
+   *      legacy's position, and the resulting per-row commit shape is M3's own — the same shape the legacy
+   *      produces for any genuine mid-file failure, which is the shape to preserve rather than engineer
+   *      around.
+   *
+   * ⚠️ M3 IS UNTOUCHED EITHER WAY: the record loop is not wrapped in one transaction, rows are not
+   * batched, and no roll-back-everything path is added.
+   *
+   * ⚠️ ALL FOUR LEGACY CASES ARE PRESERVED, AND NONE OF THEM REFUSES NOW. `:L258` tests for the HEADING
+   * and `:L259` splits the CELL with `listToArray`, which yields zero elements for an empty string:
    *   1. Heading absent — `:L258` is false, the block never opens. No-op.
    *   2. Heading present, this row's cell empty — `:L260` iterates zero times. No-op for that row.
-   *   3. Heading present, EVERY row's cell empty — every row is case 2, so the whole file is a no-op and
-   *      the import proceeds to completion. Raising here would fail an import the legacy completes.
-   *   4. Heading present and at least one cell non-empty — a row genuinely asks for an assignment the
-   *      legacy would have performed. This raises rather than silently discarding the assignment, so no
-   *      caller can mistake an unported step for a completed one (TR-5).
+   *   3. Heading present, EVERY row's cell empty — every row is case 2, so the whole file is a no-op.
+   *   4. Heading present and at least one cell non-empty — the assignment is PERFORMED, page by page in
+   *      file order, with `:L269`'s silent skip for an unresolved page and `:L274`'s idempotency skip for
+   *      one already assigned.
    *
-   * ⚠️ THE SCAN VISITS EVERY ROW, NOT JUST THE FIRST, and reports the first offender by row number
-   * together with how many rows ask in total. Stopping at the first row would still be correct — one
-   * offending row is enough to refuse — but the count is what tells a caller whether the file needs one
-   * cell cleared or a column removed, and the whole set has to be walked to know that. The walk performs
-   * no input or output of any kind: it reads cells already in memory.
-   *
-   * @param data - the normalised record set, for the heading test and every row's cell.
-   * @throws {NotImplementedError} when any row asks for a content assignment.
+   * @param row - the row whose content cell is read.
+   * @param productId - the product the pages are assigned to.
+   * @param plan - carries {@link ImportPlan.assignsContentPages}, the heading test decided once per file.
    */
-  private async refuseRequestedContentAssignments(
-    data: NormalisedImportData,
-    throwIfCancelled: (phase: string, rowNumber?: number) => void,
-  ): Promise<NormalisedImportData> {
-    /* `:L258` — the heading test, hoisted out of the row body. Case 1, and the case that every ordinary
-     * import takes: the record sequence is handed straight back, nothing is buffered, and the streaming
-     * shape described on {@link NormalisedImportData.rows} is preserved byte for byte. The walk below is
-     * reachable only for a file that declares a column this port cannot honour. */
-    if (!containsNoCase(data.columnList, CONTENT_PAGE_COLUMN)) {
-      return data;
+  private async assignRequestedContentPages(
+    row: NormalisedImportRow,
+    productId: string,
+    plan: ImportPlan,
+  ): Promise<void> {
+    /* `:L258` — the heading test. Hoisted onto the plan so it is decided ONCE for the file rather than
+     * re-scanned per row; the answer is identical because `columnList` is final before the first record
+     * (see {@link DelimitedImportRecordStream}). Every ordinary import returns here having done nothing. */
+    if (!plan.assignsContentPages) {
+      return;
     }
 
-    let firstOffendingRowNumber: number | undefined;
-    let firstOffendingPageCount = 0;
-    let offendingRowCount = 0;
+    /* `:L259` — `listToArray` on the cell, default comma delimiter, empty tokens dropped. A row whose
+     * content cell is empty yields an empty array and `:L260` iterates zero times, so this is the second
+     * no-op the legacy has and it stays a no-op here. */
+    const pageFileNames = listToArray(readCell(row, CONTENT_PAGE_COLUMN), LIST_DELIMITER);
 
-    /* ⭐ WHY THE ROWS ARE COLLECTED WHILE THEY ARE SCANNED, AND ONLY ON THIS PATH.
-     * `data.rows` is a single-pass async generator, so the scan that makes the refusal all-or-nothing
-     * consumes the very sequence the record loop would import. Draining it and handing the exhausted
-     * generator on would import ZERO rows and report success — so the rows this walk pulls are kept and
-     * replayed to the caller. The cost is bounded to files that declare `productcontent_page`: for the
-     * refusing case the buffer is discarded with the exception, and for the all-empty case it is what
-     * lets the import the legacy completes still complete here. */
-    const bufferedRows: NormalisedImportRow[] = [];
+    /* `:L260` — one page at a time, IN FILE ORDER, sequentially.
+     *
+     * ⛔ NOT PARALLELISED, DELIBERATELY. Two pages of the same row can resolve to the SAME content
+     * identifier, and the existence probe at `:L271` is what stops the second from inserting a duplicate.
+     * Running the pages concurrently would let both probes miss before either insert lands, so a
+     * `Promise.all` here would manufacture duplicate link rows the legacy cannot produce. */
+    for (const pageFileName of pageFileNames) {
+      /* `:L262-L266` — resolve the page in the content application. The two extra predicates the legacy
+       * carries (`subtype = 'slatwallproductlisting'` and `active = 1`) belong to the collaborator's
+       * contract, so a page of another subtype or an inactive one resolves to nothing. */
+      const resolved = await this.contentAssignment.findProductListingContent(pageFileName);
 
-    for await (const row of data.rows) {
-      /* P17 at the same granularity the record loop uses. This phase drives the file's remaining
-       * retrieval I/O on the streamed path, so a cancelled caller must not be made to wait for the whole
-       * file — and nothing has been written, so abandoning here leaves the catalogue untouched. */
-      throwIfCancelled('contentAssignmentPreflight', row.rowNumber);
-
-      bufferedRows.push(row);
-
-      // `:L259` — the default comma delimiter, and empty tokens dropped. See `listToArray`.
-      const contentPages = listToArray(readCell(row, CONTENT_PAGE_COLUMN), LIST_DELIMITER);
-
-      if (contentPages.length === 0) {
-        // Case 2. `:L260` iterates zero times; a no-op in the source is a no-op here.
+      if (resolved === null) {
+        /* `:L269` — `if(lookupResult.recordcount)`. An unresolved page is SILENTLY SKIPPED: no error, no
+         * warning, no record. The row still commits and the caller, which receives no return value at
+         * all, cannot tell that a requested assignment was dropped.
+         *
+         * ⚠️ TODO(parity) `model/dao/ProductDAO.cfc:L267-L268` — THE LEGACY READS `lookupResult.contentID`
+         * AND `.path` BEFORE it tests `recordcount`, so on a miss both locals hold the empty string. The
+         * read is harmless there and has no equivalent here because absence is `null`; it is recorded so a
+         * reader comparing the two does not mistake the missing assignment for a lost step. */
         continue;
       }
 
-      offendingRowCount += 1;
+      /* `:L270-L273` — the existence probe. One of D18's interpolated statements on the legacy side; the
+       * collaborator binds it. */
+      const alreadyAssigned = await this.contentAssignment.hasContentAssignment(
+        productId,
+        resolved.contentId,
+      );
 
-      if (firstOffendingRowNumber === undefined) {
-        firstOffendingRowNumber = row.rowNumber;
-        firstOffendingPageCount = contentPages.length;
+      if (alreadyAssigned) {
+        // `:L274` — `if(!exists)`. Already assigned means nothing is written; the step is idempotent.
+        continue;
       }
-    }
 
-    if (firstOffendingRowNumber === undefined) {
-      /* Case 3 — the column is present and every cell is empty, so the legacy does nothing and so does
-       * this. The import proceeds, reading the rows this walk already pulled: the generator behind
-       * `data.rows` is spent, and replaying the buffer is what keeps an import the legacy completes from
-       * silently becoming an import of nothing. */
-      return { columnList: data.columnList, rows: replayBufferedRows(bufferedRows) };
-    }
+      /* `:L275` — `lcase(replace(createUUID(),"-","","all"))`. IR-6: 32 lowercase hex characters, no
+       * dashes. {@link createSlatwallUUID} is the same generator every other identifier on this path
+       * uses, so the link row's key is shaped exactly like the legacy's. */
+      const productContentId = createSlatwallUUID();
 
-    // Case 4.
-    throw new NotImplementedError(
-      'MySqlProductRepository.importFromFile',
-      'assigning content pages to an imported product resolves those pages in a separate ' +
-        'content-management application whose schema this catalogue port does not read or write, so ' +
-        'the assignment cannot be completed here; the import was refused before any row was written ' +
-        'rather than abandoned part-way through',
-      {
-        context: {
-          rowNumber: firstOffendingRowNumber,
-          requestedPageCount: firstOffendingPageCount,
-          requestingRowCount: offendingRowCount,
-        },
-      },
-    );
+      /* `:L276-L279` — the insert, with the content path DENORMALISED alongside the identifier exactly as
+       * the legacy denormalises it. */
+      await this.contentAssignment.insertContentAssignment({
+        productContentId,
+        contentId: resolved.contentId,
+        contentPath: resolved.contentPath,
+        productId,
+      });
+    }
   }
 
   /**

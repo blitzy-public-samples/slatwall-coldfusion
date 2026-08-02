@@ -13,11 +13,13 @@
  * =================================================================================================
  * AAP §0.6.5.2 verified that the legacy suite contains NO test for any validation document, NO
  * `SkuDAOTest`, and no service test for any of the four in-scope services. AAP §0.6.5.3 states the
- * asymmetry without softening it: the extendable legacy signal for this whole slice is two entity
- * test files, five issue regressions and one fixture helper. None of those three sources exercises a
- * validation rule. Every `describe` and every case title below therefore carries the label `NET-NEW`
- * in its own text — per case rather than only on the parent — so the ratio AAP §0.8.3.7 asks for is
- * visible line by line and no parity with a legacy assertion is implied anywhere.
+ * asymmetry without softening it: the extendable legacy signal for this whole slice is a small set of
+ * entity tests, issue regressions and one fixture helper — and **not one of those sources exercises a
+ * validation rule**, which is the only part of that inventory this file has any claim on. The size of the
+ * issue-regression set is `test/regression/issues.test.ts`'s business, not this header's, so no count of
+ * it is repeated here. Every `describe` and every case title below carries the label `NET-NEW` in its own
+ * text — per case rather than only on the parent — so the ratio AAP §0.8.3.7 asks for is visible line by
+ * line and no parity with a legacy assertion is implied anywhere.
  *
  * =================================================================================================
  * TRACEABILITY IS DOCUMENTARY, NOT EMPIRICAL — AND NO RUNTIME COMPARISON WAS PERFORMED
@@ -90,7 +92,12 @@ import { BRAND_PROPERTY_DESCRIPTORS } from '../../src/domain/product/Brand';
 import { SKU_UNSAVED_ID_VALUE } from '../../src/domain/sku/Sku';
 import { ValidationError } from '../../src/errors/ValidationError';
 import { BaseService } from '../../src/services/BaseService';
-import { Validator, buildValidationMessage } from '../../src/validation/Validator';
+import {
+  VALIDATION_CONTEXTS,
+  Validator,
+  buildValidationMessage,
+  isValidationContext,
+} from '../../src/validation/Validator';
 import {
   brandValidationRules,
   createBrandValidationRules,
@@ -149,6 +156,7 @@ import {
   createAbsentAccountContextDouble,
   createBaseServicePersistenceDouble,
   createInMemorySkuRepository,
+  createManagedBrand,
   createPopulationAuthorizationDouble,
   createPricingDouble,
   createProductTypeRootResolverDouble,
@@ -160,7 +168,8 @@ import {
   sqlRows,
 } from '../support/inMemoryRepositories';
 
-import type { Brand, BrandPropertyName } from '../../src/domain/product/Brand';
+import type { BrandPropertyName } from '../../src/domain/product/Brand';
+import type { ManagedBrand } from '../../src/services/BrandService';
 import type { UniquePropertyEntity } from '../../src/ports/UniquePropertyPort';
 import type { UniquePropertyValueSeed } from '../support/inMemoryRepositories';
 import type { Product } from '../../src/domain/product/Product';
@@ -602,7 +611,6 @@ describe('NET-NEW — A. the declarative rule corpus: seven documents and thirte
       inList: 2,
       // `ProductType.json:L7` — the system-code delete guard, the only one in the corpus.
       maxLength: 1,
-      // Seven documents, seven containers.
       properties: 7,
     });
   });
@@ -637,13 +645,9 @@ describe('NET-NEW — A. the declarative rule corpus: seven documents and thirte
 
 describe('NET-NEW — A2. the seven application-side `unique` constraints and the IR-5 reconciliation', () => {
   it('NET-NEW — all SEVEN validation-document `unique` locators are declared, and Product_UpdateSkus contributes zero', () => {
-    // G6 — WHY SEVEN, AND WHY THE COUNT IS WORTH ASSERTING ON ITS OWN.
-    //
-    // The sibling planning prompt for `src/ports/UniquePropertyPort.ts` UNDERCOUNTED this corpus as
-    // six and omitted Product `urlTitle`. That sibling file is NOT edited from here — the source tree
-    // and every sibling under `slatwall-ts/` are out of bounds for this task — so the correction is
-    // recorded as an executable assertion instead: seven sites, enumerated with the locator each was
-    // read from.
+    // G6 — WHY SEVEN, AND WHY THE COUNT IS WORTH ASSERTING ON ITS OWN. The corpus is easy to undercount
+    // as six by overlooking Product `urlTitle`, so all seven sites are enumerated below with the locator
+    // each was read from, and the count is asserted rather than described.
     //
     // IR-5 RECONCILED. AAP IR-5 says "five of the eight unique columns declared in the whole system
     // belong to this slice". That sentence counts ORM COLUMN METADATA — the `unique="true"` attribute
@@ -812,9 +816,19 @@ describe('NET-NEW — A3. the one shared code-format regular expression', () => 
     // `isValid("regex", value, pattern)`, whose anchors bind to the whole subject. The port compiles
     // the same pattern with `new RegExp(pattern)` and NO flags, so in JavaScript `$` matches only at
     // the very end of the input — NOT before a trailing newline and NOT at every line end. Adding
-    // `m` would let a multi-line payload smuggle an invalid second line past a `$` anchor; adding `u`
-    // or `v` would change the character-class semantics of the literal `-`, `.`, `|`, `:`, `~` and `^`
-    // members. Neither is added, and the cases below are what would break if either were.
+    // `m` would let a multi-line payload smuggle an invalid second line past a `$` anchor, and the two
+    // newline cases below are what would break if it were added.
+    //
+    // The Unicode flags are a different matter and are worth stating precisely rather than lumping in
+    // with `m`: `u` leaves this pattern's observable result UNCHANGED on every input, because the class
+    // contains no surrogate pair, no `\p{…}` escape and no case-folding dependency — so adding it would
+    // be inert rather than wrong. `v` is not inert, and it does not merely change which characters the
+    // class lists — it makes the class ILLEGAL: the bare `-` sitting immediately after the `0-9` range is
+    // rejected, so `new RegExp(pattern, 'v')` THROWS `SyntaxError: Invalid character class`, and escaping
+    // only the `-` then throws `Invalid character in character class` because `v` reserves `|` inside a
+    // class too. Compiling under `v` would require `^[a-zA-Z0-9\-_.\|:~^]+$` — a rewritten pattern.
+    // Neither flag is added: `u` because it buys nothing, `v` because the pattern is carried verbatim from
+    // `model/validation/Product.json:L10` and re-escaping it to satisfy a flag would edit the ported value.
     expect(typeof CODE_FORMAT_REGEX).toBe('string');
     expect(new RegExp(CODE_FORMAT_REGEX).flags).toBe('');
     expect(new RegExp(CODE_FORMAT_REGEX).source).toBe('^[a-zA-Z0-9-_.|:~^]+$');
@@ -826,7 +840,6 @@ describe('NET-NEW — A3. the one shared code-format regular expression', () => 
     // Every literal member of the class, plus the alphanumerics.
     expect(await passes(regex, 'AB-1_.|:~^')).toBe(true);
     expect(await passes(regex, TEST_MERCHANDISE_PRODUCT_CODE)).toBe(true);
-    // A space is not in the class.
     expect(await passes(regex, 'has space')).toBe(false);
     // The two cases that pin the absence of the `m` flag.
     expect(await passes(regex, 'ok\nBAD!')).toBe(false);
@@ -1860,9 +1873,6 @@ describe('NET-NEW — B9. Product context gates: selection only, no process roun
     ['addOption — the second element of the list', 'addOption', true],
     ['ADDOPTIONGROUP — matched case-insensitively', 'ADDOPTIONGROUP', true],
     ['AddOption — matched case-insensitively', 'AddOption', true],
-    // NOT a substring test: a context that merely occurs inside an element does not select the rule.
-    ['addOptionGrou — a prefix of an element is not an element', 'addOptionGrou', false],
-    ['ption — an infix of an element is not an element', 'ption', false],
     // A context outside the list selects nothing at all.
     ['save — not in the list', 'save', false],
   ])(
@@ -1872,8 +1882,18 @@ describe('NET-NEW — B9. Product context gates: selection only, no process roun
       // CASE-INSENSITIVELY, because `org/Hibachi/HibachiValidationService.cfc:L71` selects with
       // `listFindNoCase(rule.contexts, arguments.context)`. `listFindNoCase` is an element search, not
       // a substring search, so a prefix or infix of an element never matches — and casing never
-      // matters. Both halves are pinned here because a naive `contexts.includes(context)` port would
-      // pass the two positive rows and silently fail the two negative ones.
+      // matters.
+      //
+      // THE CASE-INSENSITIVE ROWS ARE LOAD-BEARING TWICE OVER. They pin `listFindNoCase` here, and
+      // they also pin that the engine's runtime context guard is itself case-insensitive: a
+      // case-SENSITIVE guard would refuse `ADDOPTIONGROUP` outright and this case would raise instead
+      // of selecting, which is precisely the behavioural change AAP §0.8.2 g2 forbids.
+      //
+      // THE ELEMENT-NOT-SUBSTRING HALF MOVED to the two cases below, which prove it with contexts that
+      // are real members of the union — `addOption` is a proper prefix of `addOptionGroup`, so the
+      // property is fully expressible without a context the engine refuses. Two rows that used
+      // fabricated near-misses (`addOptionGrou`, `ption`) were replaced by that pair plus an explicit
+      // refusal assertion, so nothing the original rows proved has been given up.
       const harness = createValidatorHarness();
       const subject: ProductValidationSubject = {
         ...uniqueEntityAccessors('SlatwallProduct', 'productID', 'ctx-product', {}),
@@ -1898,23 +1918,96 @@ describe('NET-NEW — B9. Product context gates: selection only, no process roun
       }
     },
   );
+
+  it.each<readonly [string, ValidationContext]>([
+    // `addOption` is a proper PREFIX of `addOptionGroup`, and the rule on
+    // `unusedProductOptionGroups` declares the single-element list `addOptionGroup`. A naive
+    // `contexts.includes(context)` port selects it; `listFindNoCase` does not.
+    ['addOption is a prefix of addOptionGroup, not an element of `addOptionGroup`', 'addOption'],
+    // And the converse direction, so neither ordering of the substring relation slips through.
+    ['addOptionGroup is not an element of `addOption`', 'addOptionGroup'],
+  ])(
+    'NET-NEW — element search, not substring search, proven with real union members — %s',
+    async (_label, context) => {
+      // `org/Hibachi/HibachiValidationService.cfc:L71` uses `listFindNoCase`, an ELEMENT search. The
+      // two single-context rules in `model/validation/Product.json` make the property observable with
+      // no fabricated context at all: `unusedProductOptionGroups` is gated on `addOptionGroup` alone
+      // and `unusedProductOptions` on `addOption` alone, and each context must reach exactly one of
+      // them even though one string is a prefix of the other.
+      const harness = createValidatorHarness();
+      const subject: ProductValidationSubject = {
+        ...uniqueEntityAccessors('SlatwallProduct', 'productID', 'substring-product', {}),
+        getClassName: () => 'Product',
+        // Both collection properties are present and both are EMPTY, so whichever rule is selected
+        // records a failure and the selection is observable per property.
+        hasProperty: (identifier: string) =>
+          identifier === 'unusedProductOptionGroups' || identifier === 'unusedProductOptions',
+        unusedProductOptionGroups: [],
+        unusedProductOptions: [],
+      };
+
+      const errors = await harness.validateDryRun(subject, productValidationRuleSet, context);
+
+      const selected = context === 'addOptionGroup';
+      expect(errors.hasError('unusedProductOptionGroups')).toBe(selected);
+      expect(errors.hasError('unusedProductOptions')).toBe(!selected);
+    },
+  );
+
+  it.each([
+    ['addOptionGrou — a prefix of an element', 'addOptionGrou'],
+    ['ption — an infix of an element', 'ption'],
+    ['addOptionGroups — a superstring of an element', 'addOptionGroups'],
+  ])(
+    'NET-NEW — %s names no context at all and is REFUSED rather than selecting nothing',
+    async (_label, nearMiss) => {
+      // ⭐ SEC-HARDENING (D18-CLASS). These three strings previously reached the engine and were
+      // asserted to select nothing. They now cannot reach it: the runtime membership guard is a
+      // WHOLE-VALUE test, so a near-miss of a member is not a member. That is a strictly stronger
+      // statement than "selects nothing", because "selects nothing" is also what a disabling context
+      // looked like from the outside.
+      const harness = createValidatorHarness();
+      const subject: ProductValidationSubject = {
+        ...uniqueEntityAccessors('SlatwallProduct', 'productID', 'near-miss-product', {}),
+        getClassName: () => 'Product',
+        hasProperty: (identifier: string) => identifier === 'baseProductType',
+        baseProductType: SUBSCRIPTION_PRODUCT_TYPE.systemCode,
+      };
+
+      await expect(
+        harness.validateDryRun(subject, productValidationRuleSet, nearMiss as never),
+      ).rejects.toThrow(TypeError);
+    },
+  );
 });
 
 /* ================================================================================================
  * SECTION C — CONTEXT SELECTION, FLATTENING, CONDITIONS, ACCUMULATION AND CACHE SCOPE
  * ============================================================================================== */
 
-/** Every member of the closed `ValidationContext` union, so "every context" can be asserted. */
-const EVERY_CONTEXT: readonly ValidationContext[] = [
-  '',
-  'save',
-  'delete',
-  'edit',
-  'process',
-  'addOptionGroup',
-  'addOption',
-  'addSubscriptionTerm',
-  'updateSkus',
+/**
+ * Every member of the closed `ValidationContext` union, so "every context" can be asserted.
+ *
+ * Taken from the engine's own exported inventory rather than restated here. The engine now enforces
+ * membership at runtime, so a locally duplicated list could drift from the enforced one and the drift
+ * would show up as a mysterious refusal in an unrelated case rather than as a failure here. Section
+ * C1 asserts the inventory's own contents separately, which is what keeps this indirection honest.
+ */
+const EVERY_CONTEXT: readonly ValidationContext[] = VALIDATION_CONTEXTS;
+
+/**
+ * The five values that cast to CFML boolean false, and therefore the five that
+ * `org/Hibachi/HibachiValidationService.cfc:L162` would treat as "switch validation off".
+ *
+ * None is a member of `ValidationContext`, so reaching the engine with one requires a deliberate
+ * widening — which is exactly what the refusal cases below perform.
+ */
+const DISABLING_CONTEXT_TOKENS: readonly (readonly [string, unknown])[] = [
+  ['the boolean false', false],
+  ['the string "false"', 'false'],
+  ['the string "FALSE"', 'FALSE'],
+  ['the string "no"', 'no'],
+  ['the number 0', 0],
 ];
 
 describe('NET-NEW — C1. context selection semantics', () => {
@@ -1961,25 +2054,84 @@ describe('NET-NEW — C1. context selection semantics', () => {
     },
   );
 
-  it.each([
-    ['the boolean false', false],
-    ['the string "false"', 'false'],
-    ['the string "FALSE"', 'FALSE'],
-    ['the string "no"', 'no'],
-    ['the number 0', 0],
-  ])(
-    'NET-NEW — %s as the context skips validation ENTIRELY and returns an independent empty bag',
+  it('NET-NEW — the runtime context inventory is exactly the nine members of the union', () => {
+    // The engine exports the inventory it enforces, and a compile-time assertion inside
+    // `Validator.ts` already proves the inventory covers the union. What that assertion cannot prove
+    // is the CONTENTS, so they are pinned here: nine members, in the union's own declaration order,
+    // with the empty string first because it is the engine's default at
+    // `org/Hibachi/HibachiValidationService.cfc:L153`.
+    expect(VALIDATION_CONTEXTS).toStrictEqual([
+      '',
+      'save',
+      'delete',
+      'edit',
+      'process',
+      'addOptionGroup',
+      'addOption',
+      'addSubscriptionTerm',
+      'updateSkus',
+    ]);
+
+    // The narrowing predicate agrees with the inventory in both directions, including the subtlety
+    // that `''` IS a member.
+    for (const context of VALIDATION_CONTEXTS) {
+      expect(isValidationContext(context)).toBe(true);
+    }
+    expect(isValidationContext('')).toBe(true);
+
+    // CASE-INSENSITIVE, because `org/Hibachi/HibachiValidationService.cfc:L71` compares with
+    // `listFindNoCase` and `:L162` casts with `isBoolean`, so a case variant is a context the legacy
+    // honours. Refusing one would be a behavioural change, not a hardening.
+    for (const accepted of [
+      'Save',
+      'SAVE',
+      'DELETE',
+      'ADDOPTIONGROUP',
+      'AddOption',
+      'UpdateSkus',
+    ]) {
+      expect(isValidationContext(accepted)).toBe(true);
+    }
+
+    // WHOLE-VALUE, and no trimming and no aliasing: each of these is a normalisation the engine
+    // deliberately does not perform on the context argument, so each names no context.
+    for (const rejected of [' save', 'save ', 'save\t', 'saves', 'sav', 'placeOrder', 'unknown']) {
+      expect(isValidationContext(rejected)).toBe(false);
+    }
+    for (const rejected of [undefined, null, 0, 1, false, true, {}, [], ['save']]) {
+      expect(isValidationContext(rejected)).toBe(false);
+    }
+
+    // And the five disabling tokens are refused in EVERY casing, which is the security property the
+    // guard exists for. None of the nine members equals `false` or `no` in any casing, and none is
+    // numeric, so widening the guard to ignore case cost nothing here.
+    for (const [, token] of DISABLING_CONTEXT_TOKENS) {
+      expect(isValidationContext(token)).toBe(false);
+    }
+    for (const token of ['False', 'FALSE', 'No', 'NO', 'nO', '0', '0.0', '-0', 'off']) {
+      expect(isValidationContext(token)).toBe(false);
+    }
+  });
+
+  it.each(DISABLING_CONTEXT_TOKENS.map(([label, token]) => [label, token]))(
+    'NET-NEW — %s as the context is REFUSED, and validation is neither skipped nor substituted',
     async (_label, disablingContext) => {
-      // `org/Hibachi/HibachiValidationService.cfc:L162` wraps the whole pass in
+      // `org/Hibachi/HibachiValidationService.cfc:L162` wraps the whole legacy pass in
       // `if(!isBoolean(arguments.context) || arguments.context)`, so a context that CASTS to boolean
-      // false disables validation altogether — before any rule is selected and before any constraint
-      // collaborator is consulted. CFML's boolean casting accepts "false", "no" and 0 as well as the
-      // boolean, so all five rows must behave alike.
+      // false would disable validation altogether — no rule selected, no collaborator consulted, an
+      // empty bag returned and a caller reading `hasErrors()` as false. CFML's boolean casting accepts
+      // "false", "no" and 0 as well as the boolean, so all five rows are the same bypass.
       //
-      // The cast is required because the realized `ValidationContext` is a closed union of the nine
-      // real contexts and deliberately does NOT admit a disabling token: nothing in the port's own
-      // code can pass one. Reaching the legacy branch therefore needs a deliberate widening, which is
-      // exactly what this row is testing.
+      // ⭐ SEC-HARDENING (D18-CLASS). This case previously ASSERTED that bypass, and asserting it is
+      // what made the suite require insecure behaviour. It now asserts the refusal that
+      // `Validator.validate` performs before anything else. The widening cast below is retained
+      // deliberately: it is the exact shape of the three real crossings the guard exists for — a
+      // parsed request body, an `as ValidationContext` assertion, and a JavaScript consumer of the
+      // emitted bundle — so the test reaches the engine the same way an attacker would.
+      //
+      // The legacy `:L162` branch itself is NOT removed from the engine (AAP 0.6.7, preserve and
+      // annotate); section C2 below proves it still governs the one member that could be mistaken for
+      // a disabling token, the empty string.
       const uniqueProperty = createUniquePropertyDouble([
         {
           entityName: 'SlatwallProduct',
@@ -1998,15 +2150,107 @@ describe('NET-NEW — C1. context selection semantics', () => {
         productCode: 'taken',
       };
 
-      const errors = await validator.validate(
-        subject,
-        productValidationRuleSet,
-        disablingContext as unknown as ValidationContext,
+      // A caller-supplied bag, so the refusal can be shown to leave it exactly as it was found.
+      const suppliedBag = new ValidationError();
+
+      await expect(
+        validator.validate(subject, productValidationRuleSet, disablingContext as never, {
+          errors: suppliedBag,
+        }),
+      ).rejects.toThrow(TypeError);
+
+      // REFUSED, not run under a substituted context: nothing was accumulated into the caller's bag.
+      expect(suppliedBag.hasErrors()).toBe(false);
+      expect(Object.keys(suppliedBag.getErrors())).toStrictEqual([]);
+      // And refused BEFORE any collaborator was consulted, so the refusal costs no database work.
+      expect(uniqueProperty.calls).toStrictEqual([]);
+    },
+  );
+
+  it('NET-NEW — the refusal names the rejected context without echoing a payload verbatim', async () => {
+    // The rejected context is the one string in the engine that may be attacker-controlled, so the
+    // raise sanitises it rather than interpolating it raw — CWE-117, the same defence
+    // `src/adapters/mysql/UnitOfWork.ts` applies to an abandoned failure. Control characters become a
+    // single question mark each and the echo is capped, so the message can diagnose a caller mistake
+    // without carrying a log-forging payload.
+    const uniqueProperty = createUniquePropertyDouble([]);
+    const validator = new Validator(uniqueProperty.uniqueProperty);
+    const subject: ProductValidationSubject = {
+      ...uniqueEntityAccessors('SlatwallProduct', 'productID', 'mine', { productCode: 'ok' }),
+      getClassName: () => 'Product',
+      hasProperty: () => true,
+      productCode: 'ok',
+    };
+
+    const forged = `save\n\r\u001b[31mFATAL injected line${'x'.repeat(200)}`;
+    const raised: unknown = await validator
+      .validate(subject, productValidationRuleSet, forged as never)
+      .then(
+        () => undefined,
+        (error: unknown) => error,
       );
 
-      expect(errors.hasErrors()).toBe(false);
-      expect(Object.keys(errors.getErrors())).toStrictEqual([]);
-      // NO constraint collaborator was consulted: the uniqueness port was never called at all.
+    expect(raised).toBeInstanceOf(TypeError);
+    const message = (raised as TypeError).message;
+    expect(message).toContain('is not one of the nine contexts this engine recognises');
+    // Neither the newline, the carriage return nor the escape byte survives into the message.
+    expect(message).not.toContain('\n');
+    expect(message).not.toContain('\r');
+    expect(message).not.toContain('\u001b');
+    // Each is replaced rather than dropped, so the shape of the input is still visible, and the echo
+    // is capped at 40 characters with an ellipsis marking the truncation.
+    expect(message).toContain("'save???[31mFATAL injected linexxxxxxxxxx…'");
+
+    // A non-string context reports its TYPE and nothing of its value.
+    const objectRaise: unknown = await validator
+      .validate(subject, productValidationRuleSet, { toString: () => 'save' } as never)
+      .then(
+        () => undefined,
+        (error: unknown) => error,
+      );
+    expect((objectRaise as TypeError).message).toContain("'<object>'");
+  });
+
+  it.each(DISABLING_CONTEXT_TOKENS.map(([label, token]) => [label, token]))(
+    'NET-NEW — %s is refused by validateProcess too, before either pass runs',
+    async (_label, disablingContext) => {
+      // `validateProcess` forwards one context into two `validate` passes
+      // (`org/Hibachi/HibachiService.cfc:L96` and `:L108`), so the refusal must fire on the first
+      // delegation and leave BOTH supplied bags untouched. Without this row the two-object flow would
+      // be an unguarded second entry point for the same bypass.
+      const uniqueProperty = createUniquePropertyDouble([]);
+      const validator = new Validator(uniqueProperty.uniqueProperty);
+      const entity: ProductValidationSubject = {
+        ...uniqueEntityAccessors('SlatwallProduct', 'productID', 'mine', { productCode: '' }),
+        getClassName: () => 'Product',
+        hasProperty: () => true,
+        productCode: '',
+      };
+      const processObject: ProductUpdateSkusValidationSubject = {
+        getClassName: () => 'Product_UpdateSkus',
+        hasProperty: () => true,
+        updatePriceFlag: 1,
+        price: 'garbage',
+      };
+      const entityErrors = new ValidationError();
+      const processObjectErrors = new ValidationError();
+
+      await expect(
+        validator.validateProcess({
+          entity,
+          entityRuleSet: productValidationRuleSet,
+          processContext: disablingContext as never,
+          entityErrors,
+          processObject: {
+            subject: processObject,
+            ruleSet: productUpdateSkusValidationRuleSet,
+            errors: processObjectErrors,
+          },
+        }),
+      ).rejects.toThrow(TypeError);
+
+      expect(entityErrors.hasErrors()).toBe(false);
+      expect(processObjectErrors.hasErrors()).toBe(false);
       expect(uniqueProperty.calls).toStrictEqual([]);
     },
   );
@@ -4163,7 +4407,23 @@ describe('NET-NEW — F5. `hasOneOptionPerOptionGroup` — the pure in-memory du
   // method has nothing to do with other SKUs and performs no lookup at all — it checks that this one
   // SKU carries at most one option per option group. The hint is carried across verbatim, wrong text
   // and wrong grammar included, and it is recorded as an unnumbered annotation rather than assigned a
-  // D-number, because AAP §0.6.7 fixes the register at D1-D21 and inventing a D22 would corrupt it.
+  // D-number.
+  //
+  // THE REASON IS LOCAL, AND IS DELIBERATELY NOT A CLAIM ABOUT THE REGISTER'S BOUND: nothing in this
+  // file mints a defect or mismatch identifier, so this hint receives no additional number here. The
+  // register is stated canonically, and only once, in the header of
+  // `src/ports/repositories/SkuRepository.ts` (AAP §0.6.7's frozen source range D1-D21, plus the source
+  // extension D22 and the three contract corrections D23, D24 and D25, with no D26 or beyond; and AAP
+  // §0.6.6's M1-M8 plus M9, with no M10 or beyond).
+  //
+  // ⛔ AN EARLIER REVISION OF THIS COMMENT READ "AAP §0.6.7 fixes the register at D1-D21 and inventing a
+  // D22 would corrupt it", and it was wrong in both halves. D22 EXISTS — it is the naming-convention
+  // defect minted in that same header, where `model/dao/SkuDAO.cfc` mixes logical entity names with
+  // physical table names — so the number this comment warned against inventing had already been
+  // assigned. And the FROZEN range AAP §0.6.7 fixes is not the LIVE bound: the live one moves whenever
+  // an entry is minted, which is why citing the frozen range as a ceiling is a category error rather
+  // than merely out of date. That header records earlier instances of exactly this drift, which is why
+  // no file but that one may state the live bound and why this comment now makes only a local claim.
 
   /** A SKU whose options are described as `[optionID, optionGroupID]` pairs. */
   function skuWithGroups(pairs: readonly (readonly [string, string])[]): Sku {
@@ -4609,6 +4869,198 @@ describe('NET-NEW — G2. `UniquePropertyChecker` — the ported existence query
     await checker.isUniqueProperty('urlTitle', entity);
     expect(outer.calls).toHaveLength(1);
     expect(inner.calls).toHaveLength(1);
+  });
+
+  /* ==============================================================================================
+   * ⭐ SEC-HARDENING (D18-CLASS) — F6. THE LOCKING READ, AND THE PARITY IT DOES NOT DISTURB
+   * ==============================================================================================
+   * Review finding F6 (CWE-367) observed that both probes are the READ half of a check-then-write, so
+   * two concurrent saves can both be told a value is free. Its own guidance names the alternatives:
+   * "database unique indexes/constraints OR EQUIVALENT LOCKING". The constraint half is FORBIDDEN —
+   * AAP §0.2.2.5 places schema migration outside this refactoring — so the locking read is what is
+   * available, and it is licensed on the D18 footing (AAP §0.6.7.7) because `FOR UPDATE` returns the
+   * same rows and therefore the same verdict; it orders concurrent transactions and nothing else.
+   *
+   * ⚠️ WHAT THESE TESTS CAN AND CANNOT PROVE, STATED SO NEITHER IS OVERCLAIMED. They prove the clause
+   * is emitted, that it is emitted ONLY for a boundary-scoped instance, that it is positioned where
+   * MySQL requires, and that the verdict is byte-identical either way. Whether the engine then BLOCKS a
+   * second transaction is a property of MySQL, not of this code, and was verified directly against
+   * MySQL 8.4 during this work rather than simulated here: a second session's locking read over the
+   * same table blocked until the first session committed and then observed its row. Simulating that
+   * blocking in a double would only test the simulation.
+   * ============================================================================================ */
+
+  /** Both probe forms, so each assertion below runs against the same instance twice over. */
+  async function probeBothForms(checker: UniquePropertyChecker): Promise<void> {
+    await checker.isUniqueProperty(
+      'urlTitle',
+      uniqueEntityAccessors('SlatwallBrand', 'brandID', 'brand-1', { urlTitle: 'acme' }),
+    );
+    await checker.isUrlTitleAvailable('SwBrand', 'acme');
+  }
+
+  it('NET-NEW — the POOL-BOUND instance emits the ported statement with NO locking clause', async () => {
+    /*
+     * The parity guard, and the reason the hardening is opt-in. A `FOR UPDATE` outside a transaction is
+     * acquired and released at statement end, so on the pool-bound path it would buy no protection while
+     * still altering the text of a ported read. This instance must stay byte-identical to
+     * `org/Hibachi/HibachiDAO.cfc:L140` and `model/dao/DataDAO.cfc:L122-L124`.
+     */
+    const sql = createSqlExecutorDouble();
+
+    await probeBothForms(new UniquePropertyChecker(sql.executor));
+
+    expect(sql.calls.map((call) => call.sql)).toStrictEqual([
+      'SELECT 1 FROM SwBrand e WHERE e.urlTitle = ? AND e.brandID != ? LIMIT 1',
+      'SELECT 1 FROM SwBrand WHERE urlTitle = ? LIMIT 1',
+    ]);
+  });
+
+  it('NET-NEW — the BOUNDARY-SCOPED instance appends `FOR UPDATE` to BOTH probes', async () => {
+    // `withExecutor` exists for no purpose other than adopting a boundary's executor, which is exactly
+    // the condition under which serializing a check against a write is meaningful — so it is the member
+    // that carries the clause. Both probes are read-then-write halves, so both take it.
+    const sql = createSqlExecutorDouble();
+
+    await probeBothForms(
+      new UniquePropertyChecker(createSqlExecutorDouble().executor).withExecutor(sql.executor),
+    );
+
+    expect(sql.calls.map((call) => call.sql)).toStrictEqual([
+      'SELECT 1 FROM SwBrand e WHERE e.urlTitle = ? AND e.brandID != ? LIMIT 1 FOR UPDATE',
+      'SELECT 1 FROM SwBrand WHERE urlTitle = ? LIMIT 1 FOR UPDATE',
+    ]);
+  });
+
+  it('NET-NEW — the clause sits AFTER the row limit, which is the only order MySQL accepts', async () => {
+    // Position is behaviour here: `FOR UPDATE LIMIT 1` is a syntax error, so a clause appended during
+    // composition rather than at the end would produce a statement that never runs.
+    const sql = createSqlExecutorDouble();
+
+    await probeBothForms(new UniquePropertyChecker(sql.executor, { lockingReads: true }));
+
+    for (const call of sql.calls) {
+      expect(call.sql.endsWith(' LIMIT 1 FOR UPDATE')).toBe(true);
+      expect(call.sql.indexOf('LIMIT 1')).toBeLessThan(call.sql.indexOf('FOR UPDATE'));
+    }
+  });
+
+  it('NET-NEW — locking changes NO verdict, for either answer, which is what licenses it', async () => {
+    /*
+     * The D18 property itself, asserted rather than argued. The same seeded result set must produce the
+     * same boolean from a locking instance and a non-locking one — for the collision case AND the free
+     * case, because a test that only exercised one would pass under a polarity inversion.
+     */
+    const collision = [{ 1: 1 }];
+
+    for (const lockingReads of [false, true]) {
+      const taken = createSqlExecutorDouble({ outcomes: [sqlRows(collision), sqlRows(collision)] });
+      const free = createSqlExecutorDouble();
+      const options = { lockingReads } as const;
+      const entity = uniqueEntityAccessors('SlatwallOption', 'optionID', 'option-1', {
+        optionCode: 'RED',
+      });
+
+      await expect(
+        new UniquePropertyChecker(taken.executor, options).isUniqueProperty('optionCode', entity),
+      ).resolves.toBe(false);
+      await expect(
+        new UniquePropertyChecker(taken.executor, options).isUrlTitleAvailable('SwBrand', 'acme'),
+      ).resolves.toBe(false);
+
+      await expect(
+        new UniquePropertyChecker(free.executor, options).isUniqueProperty('optionCode', entity),
+      ).resolves.toBe(true);
+      await expect(
+        new UniquePropertyChecker(free.executor, options).isUrlTitleAvailable('SwBrand', 'acme'),
+      ).resolves.toBe(true);
+    }
+  });
+
+  it('NET-NEW — locking changes no bound value, no placeholder count and no identifier gate', async () => {
+    // The rest of the statement's contract has to survive the hardening: two placeholders and the legacy
+    // bind order for the self-excluding probe, one for the availability probe, and neither value ever
+    // interpolated (S2, TR-4).
+    const sql = createSqlExecutorDouble();
+
+    await probeBothForms(new UniquePropertyChecker(sql.executor, { lockingReads: true }));
+
+    const [selfExcluding, availability] = [first(sql.calls), sql.calls[1]];
+    expect(selfExcluding.params).toStrictEqual(['acme', 'brand-1']);
+    expect(selfExcluding.sql.split('?')).toHaveLength(3);
+    expect(availability?.params).toStrictEqual(['acme']);
+    expect(availability?.sql.split('?')).toHaveLength(2);
+    expect(selfExcluding.sql).not.toContain('acme');
+  });
+
+  it('NET-NEW — a locking instance still refuses an unapproved identifier WITHOUT executing SQL', async () => {
+    // The whitelist runs before composition, so the locking clause is never appended onto a hostile
+    // table or column name. Order matters: a hardening that moved the gate after composition would
+    // still pass a text assertion while sending the statement.
+    const sql = createSqlExecutorDouble();
+    const checker = new UniquePropertyChecker(sql.executor, { lockingReads: true });
+
+    await expect(
+      checker.isUniqueProperty(
+        'urlTitle',
+        uniqueEntityAccessors('SlatwallBrand', 'brandID', 'brand-1', { urlTitle: 'x' }),
+      ),
+    ).resolves.toBe(true);
+    await expect(checker.isUrlTitleAvailable('SwSku', 'acme')).rejects.toThrow();
+
+    // Exactly one statement ran — the legal one. The refused table never reached the executor.
+    expect(sql.calls).toHaveLength(1);
+  });
+
+  it('NET-NEW — re-binding is what carries the lock, so the ORIGINAL instance stays unlocked', async () => {
+    /*
+     * M7 and the hardening together. `withExecutor` returns a NEW instance rather than mutating, so a
+     * warm container holding one pool-bound checker cannot have its statement text changed by another
+     * invocation's boundary — and the pool-bound instance keeps emitting the parity statement.
+     */
+    const pool = createSqlExecutorDouble();
+    const boundary = createSqlExecutorDouble();
+    const poolBound = new UniquePropertyChecker(pool.executor);
+    const reBound = poolBound.withExecutor(boundary.executor);
+
+    expect(reBound).not.toBe(poolBound);
+
+    await reBound.isUrlTitleAvailable('SwProduct', 'shirts');
+    await poolBound.isUrlTitleAvailable('SwProduct', 'shirts');
+
+    expect(first(boundary.calls).sql).toBe(
+      'SELECT 1 FROM SwProduct WHERE urlTitle = ? LIMIT 1 FOR UPDATE',
+    );
+    expect(first(pool.calls).sql).toBe('SELECT 1 FROM SwProduct WHERE urlTitle = ? LIMIT 1');
+  });
+
+  it('NET-NEW — the UNSERIALIZED interleaving F6 describes is reproduced on the pool-bound path', async () => {
+    /*
+     * The defect, demonstrated rather than described, so the fix has something concrete to be the fix OF.
+     * Two would-be savers probe the same code against a store that neither has written yet. Both are
+     * told it is free, and for `optionCode` — `model/validation/Option.json:L3`, which per DIVERGENCE 1
+     * has NO `unique="true"` column behind it — nothing downstream refuses the second write.
+     *
+     * ⚠️ THIS TEST ASSERTS THE DEFECT, NOT A BUG. It is the legacy behaviour and it is preserved on the
+     * unbound path deliberately. What the hardening adds is the clause that lets the DATABASE arbitrate
+     * the same interleaving when both savers are inside boundaries — see the block above.
+     */
+    const store = createSqlExecutorDouble();
+    const probe = new UniquePropertyChecker(store.executor);
+    const entity = uniqueEntityAccessors('SlatwallOption', 'optionID', '', { optionCode: 'RED' });
+
+    const [firstSaver, secondSaver] = await Promise.all([
+      probe.isUniqueProperty('optionCode', entity),
+      probe.isUniqueProperty('optionCode', entity),
+    ]);
+
+    expect(firstSaver).toBe(true);
+    expect(secondSaver).toBe(true);
+    // Both probes ran, and neither statement asked the database to serialize them.
+    expect(store.calls).toHaveLength(2);
+    for (const call of store.calls) {
+      expect(call.sql).not.toContain('FOR UPDATE');
+    }
   });
 });
 
@@ -5239,8 +5691,12 @@ describe('NET-NEW — H2. the error bag contract', () => {
   });
 
   it('NET-NEW — the bag is a real `Error`, so a raising caller can propagate it unchanged', () => {
-    // The port's one structural addition: the bag IS the exception `BaseService.save` raises
-    // (section H3), so the same object serves as both the accumulated findings and the thrown value.
+    // The port's one structural addition, and it is a CAPABILITY rather than a control-flow decision:
+    // `BaseService.save` does NOT raise the bag — it attaches the findings to the entity and returns it
+    // (section H3, `model/service/HibachiService.cfc:L103`). But a caller that must convert entity-carried
+    // findings back into a raise or a serialisable payload can carry the same object across the boundary
+    // unchanged, which is exactly what `src/handlers/brandHandler.ts` does when a save comes back with
+    // findings. One shape serves as the accumulator, the transport and, at a caller's choosing, the throw.
     const errors = new ValidationError();
     errors.addError('brandName', 'validate.save.Brand.brandName.required');
 
@@ -5328,17 +5784,29 @@ describe('NET-NEW — H2. the error bag contract', () => {
 });
 
 describe('NET-NEW — H3. validate, gate, then persist', () => {
-  /** A `BaseService` over `Brand`, wired entirely from constructor arguments. */
+  /**
+   * A `BaseService` over a MANAGED brand, wired entirely from constructor arguments.
+   *
+   * ⚠️ THE SUBJECT IS `ManagedBrand` AND NOT A BARE `Brand`, WHICH IS A CONTRACT FACT RATHER THAN A TEST
+   * CONVENIENCE. `BaseServiceEntity` intersects `EntityErrorSurface`, because
+   * `model/service/HibachiService.cfc:L103` returns the entity on every path and the caller then asks it
+   * `hasErrors()` — a save with a single exit cannot report a failure unless the entity can carry one.
+   * `../../src/domain/product/Brand` is forbidden to declare those six members, so the surface is composed
+   * onto the instance, exactly as `../../src/adapters/mysql/rowMappers` and
+   * `../../src/ports/repositories/BrandRepository`'s factory do in production. `createManagedBrand` is the
+   * whitelisted composition available to this file and it MUTATES AND RETURNS THE SAME OBJECT, so every
+   * identity assertion below still compares the reference the caller supplied.
+   */
   function brandServiceFixture(uniqueSeeds: readonly UniquePropertyValueSeed[] = []): {
-    readonly service: BaseService<Brand, BrandPropertyName>;
-    readonly persistence: ReturnType<typeof createBaseServicePersistenceDouble<Brand>>;
+    readonly service: BaseService<ManagedBrand, BrandPropertyName>;
+    readonly persistence: ReturnType<typeof createBaseServicePersistenceDouble<ManagedBrand>>;
     readonly unique: ReturnType<typeof createUniquePropertyDouble>;
   } {
     const unique = createUniquePropertyDouble(uniqueSeeds);
-    const persistence = createBaseServicePersistenceDouble<Brand>();
-    const service = new BaseService<Brand, BrandPropertyName>({
+    const persistence = createBaseServicePersistenceDouble<ManagedBrand>();
+    const service = new BaseService<ManagedBrand, BrandPropertyName>({
       validator: new Validator(unique.uniqueProperty),
-      ruleSet: createBrandValidationRules<Brand>(resolveBrandUniqueTarget),
+      ruleSet: createBrandValidationRules<ManagedBrand>(resolveBrandUniqueTarget),
       propertyDescriptors: BRAND_PROPERTY_DESCRIPTORS,
       populationAuthorization: createPopulationAuthorizationDouble({ publicPopulateFlag: true })
         .populationAuthorization,
@@ -5348,25 +5816,25 @@ describe('NET-NEW — H3. validate, gate, then persist', () => {
   }
 
   /** A brand that satisfies every `Brand.json` save rule. */
-  function validBrand(): Brand {
-    return buildBrand({
+  function validBrand(): ManagedBrand {
+    return createManagedBrand({
       brandID: 'h3-brand',
       brandName: 'Acme',
       brandWebsite: 'https://acme.example.com',
       urlTitle: 'acme',
-    });
+    }).brand;
   }
 
   it('NET-NEW — the Validator ALONE never persists anything', async () => {
     // The separation of concerns, asserted directly: validation is a pure read that produces findings,
     // and the decision to write belongs to the caller. An explicit persistence recorder proves it —
     // validating a subject that WOULD be perfectly savable still causes zero writes.
-    const persistence = createBaseServicePersistenceDouble<Brand>();
+    const persistence = createBaseServicePersistenceDouble<ManagedBrand>();
     const harness = createValidatorHarness();
 
     const clean = await harness.validateDryRun(
       validBrand(),
-      createBrandValidationRules<Brand>(resolveBrandUniqueTarget),
+      createBrandValidationRules<ManagedBrand>(resolveBrandUniqueTarget),
       'save',
     );
 
@@ -5381,19 +5849,26 @@ describe('NET-NEW — H3. validate, gate, then persist', () => {
     // test was read from source and is cited as precedent — it was NOT executed here, because MXUnit is
     // not vendered in this checkout and no CFML runtime exists (see the file header).
     const { service, persistence } = brandServiceFixture();
-    const invalid = buildBrand({ brandID: 'h3-invalid' });
+    const invalid = createManagedBrand({ brandID: 'h3-invalid' }).brand;
 
-    // ADAPTED TO THE REALIZED CONTRACT. The prompt anticipated a member that returns the entity with
-    // findings attached; the realized `BaseService.save` RAISES the accumulated bag instead, and its own
-    // documentation explains why — the raise is what lets `ProductService.saveProductType` convert the
-    // failure back into entity-carried findings at its own boundary. The test adapts to the real API
-    // rather than the sibling being changed to match an assumption.
-    const raised: unknown = await service.save(invalid).catch((error: unknown) => error);
+    // ⭐ THE MEMBER RESOLVES, IT DOES NOT REJECT, AND IT HANDS BACK THE SAME ENTITY.
+    // `model/service/HibachiService.cfc:L103` is the single exit of the local override and it returns
+    // `arguments.entity` whether validation passed or failed, because
+    // `org/Hibachi/HibachiTransient.cfc:L408-L459` wrote the findings into the entity's own bag and never
+    // cleared them. So the findings are read OFF THE RETURNED BRAND, which is the same question
+    // `issue_1690`'s `if(!product.hasErrors())` asks.
+    //
+    // ⚠️ AN EARLIER REVISION OF THIS CASE ASSERTED A REJECTION AND CALLED IT "ADAPTED TO THE REALIZED
+    // CONTRACT". The realized contract was the thing that was wrong: `BaseService.save` raised, which
+    // inverted the polarity of the only failure signal the legacy offered and changed the published
+    // contract of `BrandService.saveBrand`. Certifying the divergence in a test is what let it survive, so
+    // this case now pins the legacy shape instead.
+    const saved = await service.save(invalid);
 
-    expect(raised).toBeInstanceOf(ValidationError);
-    const bag = raised as ValidationError;
-    expect(bag.getError('brandName')).toStrictEqual(['validate.save.Brand.brandName.required']);
-    expect(bag.getError('urlTitle')).toStrictEqual(['validate.save.Brand.urlTitle.required']);
+    expect(saved).toBe(invalid);
+    expect(saved.hasErrors()).toBe(true);
+    expect(saved.getError('brandName')).toStrictEqual(['validate.save.Brand.brandName.required']);
+    expect(saved.getError('urlTitle')).toStrictEqual(['validate.save.Brand.urlTitle.required']);
 
     // NOTHING was persisted. This is the gate.
     expect(persistence.persisted).toStrictEqual([]);
@@ -5422,12 +5897,10 @@ describe('NET-NEW — H3. validate, gate, then persist', () => {
       },
     ]);
 
-    const raised: unknown = await service.save(validBrand()).catch((error: unknown) => error);
+    const saved = await service.save(validBrand());
 
-    expect(raised).toBeInstanceOf(ValidationError);
-    expect((raised as ValidationError).getError('urlTitle')).toStrictEqual([
-      'validate.save.Brand.urlTitle.unique',
-    ]);
+    expect(saved.hasErrors()).toBe(true);
+    expect(saved.getError('urlTitle')).toStrictEqual(['validate.save.Brand.urlTitle.unique']);
     expect(persistence.persisted).toStrictEqual([]);
   });
 
@@ -5436,19 +5909,20 @@ describe('NET-NEW — H3. validate, gate, then persist', () => {
     // call. The forwarding is what lets a process-driven caller validate under its own context — and it
     // is observable in the emitted key, which carries the context verbatim.
     const defaulted = brandServiceFixture();
-    const defaultRaise: unknown = await defaulted.service
-      .save(buildBrand({ brandID: 'h3-default' }))
-      .catch((error: unknown) => error);
-    expect((defaultRaise as ValidationError).getError('brandName')).toStrictEqual([
+    const defaultedBrand = await defaulted.service.save(
+      createManagedBrand({ brandID: 'h3-default' }).brand,
+    );
+    expect(defaultedBrand.getError('brandName')).toStrictEqual([
       'validate.save.Brand.brandName.required',
     ]);
 
     // Under an override the `save`-context rules are NOT selected, so a brand that would fail on save
     // passes — and is persisted, because the bag is genuinely clean under that context.
     const overridden = brandServiceFixture();
-    const bare = buildBrand({ brandID: 'h3-override' });
-    const saved = await overridden.service.save(bare, {}, 'edit');
-    expect(saved).toBe(bare);
+    const bare = createManagedBrand({ brandID: 'h3-override' }).brand;
+    const savedBare = await overridden.service.save(bare, {}, 'edit');
+    expect(savedBare).toBe(bare);
+    expect(savedBare.hasErrors()).toBe(false);
     expect(overridden.persistence.persisted).toStrictEqual([bare]);
   });
 
@@ -5458,14 +5932,22 @@ describe('NET-NEW — H3. validate, gate, then persist', () => {
     // and leaves the row alone, which is a second deliberate divergence from `save` and is asserted
     // rather than assumed.
     const clean = brandServiceFixture();
-    const deletable = buildBrand({ brandID: 'h3-deletable', brandName: 'Gone', urlTitle: 'gone' });
+    const deletable = createManagedBrand({
+      brandID: 'h3-deletable',
+      brandName: 'Gone',
+      urlTitle: 'gone',
+    }).brand;
 
     await expect(clean.service.delete(deletable)).resolves.toBe(true);
     expect(clean.persistence.removed).toStrictEqual([deletable]);
 
     // A brand holding a product trips the `Brand.json:L6` delete guard.
     const guarded = brandServiceFixture();
-    const held = buildBrand({ brandID: 'h3-held', brandName: 'Held', urlTitle: 'held' });
+    const held = createManagedBrand({
+      brandID: 'h3-held',
+      brandName: 'Held',
+      urlTitle: 'held',
+    }).brand;
     held.getProducts().push(buildProduct({ productID: 'h3-held-product' }));
 
     await expect(guarded.service.delete(held)).resolves.toBe(false);
@@ -5477,7 +5959,7 @@ describe('NET-NEW — H3. validate, gate, then persist', () => {
     // presence rules to `save`. If `delete` reused the save context, no incomplete row could ever be
     // removed — a real operational trap that the hard-coded context avoids.
     const { service, persistence } = brandServiceFixture();
-    const incomplete = buildBrand({ brandID: 'h3-incomplete' });
+    const incomplete = createManagedBrand({ brandID: 'h3-incomplete' }).brand;
 
     await expect(service.delete(incomplete)).resolves.toBe(true);
     expect(persistence.removed).toStrictEqual([incomplete]);

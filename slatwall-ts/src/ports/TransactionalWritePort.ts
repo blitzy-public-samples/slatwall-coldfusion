@@ -50,9 +50,18 @@
  * Runs one unit of work inside one transaction, against a graph built for that transaction.
  *
  * ⚠️ IMPLEMENTATIONS OWN THE WHOLE LIFECYCLE AND MUST NOT LEAK IT. Acquire, begin, commit or roll back,
- * and release on every path — including when the work throws. `src/adapters/mysql/UnitOfWork.ts` holds
- * that sequence, and this contract deliberately exposes none of it: a caller cannot commit early, cannot
- * roll back explicitly and cannot reach the connection.
+ * and DISPOSE OF the connection on every path — including when the work throws.
+ * `src/adapters/mysql/UnitOfWork.ts` holds that sequence, and this contract deliberately exposes none of
+ * it: a caller cannot commit early, cannot roll back explicitly and cannot reach the connection.
+ *
+ * ⛔ DISPOSAL IS NOT ALWAYS A RELEASE, and an implementation that made it one would be wrong rather than
+ * merely simple. A connection whose begin, commit or roll-back ITSELF failed carries a transaction state
+ * nobody can describe, so returning it to a warm pool hands the next invocation whatever was left open —
+ * precisely the cross-invocation bleed M7 exists to prevent, and silent, because the next caller sees no
+ * error. Such a connection must be taken out of service instead. Both branches are asserted against the
+ * MySQL implementation in `test/adapters/UnitOfWork.test.ts`, and the structural double in
+ * `test/support/inMemoryRepositories.ts` reproduces the same rule so a consumer suite cannot disagree
+ * with the class about it.
  *
  * @typeParam TGraph - The transaction-scoped capabilities the work needs. Declared by the caller, so a
  *   write path depends on nothing wider than it uses.
@@ -68,6 +77,12 @@ export interface TransactionalWriteRunner<TGraph> {
    *   because a caller that received the work's value would otherwise be unable to tell a committed
    *   result from a discarded one. `createSkus` makes that concrete: it returns `true` even for a batch
    *   whose SKUs all failed validation, so its return value cannot distinguish the two outcomes.
+   * @throws When a SETTLEMENT itself fails — the begin, the commit, or the roll-back that either of the
+   *   two cases above asked for. A commit failure reaches the caller as the driver reported it, because
+   *   that failure is the whole story; a roll-back failure is compound, so it is reported as the more
+   *   serious fact — that nothing can be said about what the database retained — carrying the roll-back's
+   *   own failure as `cause`. On every one of these paths the connection is taken out of service rather
+   *   than returned to the pool, per the disposal rule above.
    */
   runWrite<TResult>(
     work: (graph: TGraph) => Promise<TResult>,

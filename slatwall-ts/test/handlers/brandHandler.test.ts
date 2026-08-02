@@ -350,6 +350,39 @@ describe('brandHandler — SEC-04, the response is a projection and not the enti
     });
   });
 
+  it('NET-NEW — SEC-HARDENING (D18-CLASS): brandWebsite reaches the body VERBATIM, and the body is the only consumer boundary for it', async () => {
+    /* ⚠️ This is the one place in the deliverable that hands `brandWebsite` to a consumer, so the
+     * residual exposure the validation layer flags is pinned here as well as at the predicate.
+     *
+     * WHAT THE VALIDATION LAYER GUARANTEES about anything that got stored: it parses as a URL in one of
+     * CFML's six `isValid(…, "url")` protocols, it carries no ASCII control character, and its authority
+     * carries no userinfo credentials. `test/domain/Brand.test.ts` pins all three against the real rule.
+     *
+     * WHAT IT DOES NOT GUARANTEE: the scheme. All four non-web legacy protocols still save, because
+     * refusing them would decline a save the legacy performed and meant (AAP §0.8.2 g2). So a consumer
+     * putting this value in an `href`, a redirect or a fetch URL must apply its own scheme policy — and
+     * this case pins that the handler does NOT apply one, and does not silently rewrite the value either.
+     * A projection that quietly filtered or re-encoded here would make the response disagree with the
+     * stored record, which is the pass-through rule `src/handlers/httpResponse.ts` sets for this layer. */
+    const brand = fullyPopulatedBrand();
+    brand.brandWebsite = 'mailto:hello@acme.example';
+
+    const result = await handlerReturning(brand).getBrand(identifierEvent('x'));
+    const body = JSON.parse(result.body) as Record<string, unknown>;
+
+    expect(result.statusCode).toBe(200);
+    expect(body['brandWebsite']).toBe('mailto:hello@acme.example');
+
+    // And an absent website is OMITTED rather than emitted as a null, so a consumer distinguishes
+    // "no website" from "an empty website" without inspecting the value.
+    const withoutWebsite = fullyPopulatedBrand();
+    delete withoutWebsite.brandWebsite;
+    const bare = await handlerReturning(withoutWebsite).getBrand(identifierEvent('x'));
+    expect(Object.keys(JSON.parse(bare.body) as Record<string, unknown>)).not.toContain(
+      'brandWebsite',
+    );
+  });
+
   it('NET-NEW — model/entity/Brand.cfc:L75-L80 — remoteID and the audit members never reach the body', async () => {
     const result = await handlerReturning(fullyPopulatedBrand()).getBrand(identifierEvent('x'));
     const body: unknown = JSON.parse(result.body);

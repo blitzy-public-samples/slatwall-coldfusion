@@ -394,10 +394,17 @@ export interface SkuResizedImagePathRequest {
  *
  * ⚠️ THE BRAND IS A NOMINAL LABEL, NOT A RESTRICTION, AND AN EARLIER REVISION USED IT AS ONE. That
  * revision also imported an `ImageFileNameCandidate` type so the existence probe could no longer be
- * handed a composed path — making [model/entity/Sku.cfc:L222]'s own call shape uncompilable. It is
- * withdrawn along with the port-side gate it served, because refusing a stored value changes an outcome
- * the legacy produces; `src/ports/ImagePathPort.ts` carries the withdrawal and the flagged residual
- * exposure. This entity now forwards the composed path to the probe, exactly as [:L222] does.
+ * handed a composed path — making [model/entity/Sku.cfc:L222]'s own call shape uncompilable. That much
+ * stays withdrawn: [:L222] probes whatever the composed path resolves to and answers a boolean about THAT
+ * file, so refusing to probe would replace a defined legacy outcome with a different one. This entity
+ * forwards the composed path to the probe, exactly as [:L222] does. `src/ports/ImagePathPort.ts`
+ * DECISION I-1 control (3) carries the adjudication and the flagged residual exposure.
+ *
+ * ⭐ THE WRITE HALF OF THAT SAME CONTROL IS NOT WITHDRAWN ANY MORE, AND ITS ABSENCE FROM THIS FILE IS WHY
+ * THIS FILE NEEDED NO CHANGE FOR IT. Review finding F6 reinstates a name gate over the stored `imageFile`
+ * at the one member that writes, `processImageUpload` in `src/services/SkuService.ts` — which the paragraph
+ * three above already establishes is unreachable from this entity. The three READ members declared below
+ * are ungated, deliberately, and stay byte-compatible with [:L147], [:L195] and [:L222].
  *
  * ⛔ NO RUNTIME VALUE IS IMPORTED AND NONE IS NEEDED. This entity never mints a brand: it FORWARDS the
  * {@link ImageWebPath} it received from {@link SkuImagePathResolver.getImagePath}. The tag function
@@ -1028,6 +1035,23 @@ export class Sku implements AuditableEntity, ManagedEntity {
    *
    * Optional, because [:L58] declares NO default and {@link Sku.generateImageFileName} exists
    * precisely to compute one. Read by {@link Sku.getImageExtension} and by the image-path members.
+   *
+   * ⭐ SEC-HARDENING (D18-CLASS) — WHERE THIS VALUE IS CHECKED, AND WHERE IT IS STILL NOT (finding F2).
+   * This column is a populatable simple property — it appears in {@link SkuPropertyName}, in
+   * `SKU_ENTITY_METADATA.properties`, in `SKU_DECLARED_PROPERTIES` and in `SKU_SIMPLE_PROPERTY_DESCRIPTORS`
+   * — and `model/validation/Sku.json` gives it NO rule at all, not even the length its `length="50"`
+   * declaration would suggest (`src/validation/rules/sku.rules.ts` records that omission at its own
+   * locator). So an arbitrary caller-supplied string, `../../../../tmp/payload.jpg` included, can still
+   * reach this field through a populate-and-save path, and NOTHING here refuses it. That is [:L58]'s
+   * behaviour and AAP §0.8.2 guideline 4 keeps it.
+   *
+   * What IS now checked is the one place the deliverable turns this value into a WRITE DESTINATION:
+   * `SkuService.processImageUpload` gates the stored name through `isWritableSkuImageFileName` before
+   * any member of `ImagePathPort` is reached, refusing the write with `false`. The distinction is deliberate
+   * and is the whole of the F2 adjudication — a value that merely NAMES a subject to compose or probe is
+   * left alone; a value that would CHOOSE a destination on disk is refused. Neither
+   * {@link Sku.getImagePath} nor {@link Sku.getImageExistsFlag} nor {@link Sku.getImageExtension} inspects
+   * it, and none of them should start.
    */
   declare imageFile?: string;
 
@@ -1255,8 +1279,17 @@ export class Sku implements AuditableEntity, ManagedEntity {
    * skipping an option with no group would let a SKU pass a uniqueness check the legacy system fails
    * it on.
    *
-   * THE ONE DECLARED EXCEPTION is {@link Sku.getDefaultFlag}, which returns `false` instead of
-   * raising. It is flagged at that member with its reasoning.
+   * THE POLICY IS NOW WITHOUT EXCEPTION FOR THE MEMBERS THIS PORT DECLARES ON THE ENTITY ITSELF.
+   * {@link Sku.getDefaultFlag} used to be a declared exception, returning `false` rather than raising;
+   * that exception is WITHDRAWN and the reasoning is recorded at the member. It mattered more than an
+   * ordinary divergence because `model/validation/Sku.json:L3` uses `defaultFlag` as a DELETE GUARD, so
+   * answering `false` permitted deletes the legacy system aborted.
+   *
+   * ONE MEMBER STILL DIVERGES, AND IT IS NOT GOVERNED BY THIS POLICY: {@link Sku.getSalePriceDetails}.
+   * It is one of the four EXCLUDED calculated members (AAP §0.2.2.6) retained only because TR-5 forbids
+   * dropping a member from the interface, and its absence semantics belong to the operator's
+   * `PricingPort` implementation rather than to this entity. Its divergence is flagged at the member on
+   * its own footing.
    * ------------------------------------------------------------------------------------------- */
 
   /**
@@ -2054,10 +2087,9 @@ export class Sku implements AuditableEntity, ManagedEntity {
    * form, while a `Set<string>` also compares case-sensitively — so the two agree on every input
    * and there is nothing to reconcile. The pair exists deliberately in the language and this
    * codebase discriminates between them: across `org/Hibachi/**` the split is 84 `listFindNoCase`
-   * to 7 `listFind`, and `src/domain/base/populate.ts` records the same fact at length, having
-   * corrected an earlier revision of that module which asserted the opposite. Nothing here
-   * normalises case, and nothing should — lower-casing either side would invent a transformation
-   * the legacy identifiers never need (S9).
+   * to 7 `listFind`, and `src/domain/base/populate.ts` records the same evidence at length under
+   * its F23 marker. Nothing here normalises case, and nothing should — lower-casing either side
+   * would invent a transformation the legacy identifiers never need (S9).
    *
    * THE CASE SENSITIVITY IS NEVERTHELESS LOAD-BEARING, AND IS DELIBERATELY NOT HARMONISED WITH THE
    * ENGINE THAT INVOKES THIS RULE. [org/Hibachi/HibachiValidationService.cfc:L71] selects contexts
@@ -2116,24 +2148,42 @@ export class Sku implements AuditableEntity, ManagedEntity {
    * exposes the same member asynchronously for exactly this reason, and this member mirrors it —
    * which in turn makes {@link Sku.getSkuDefinition} asynchronous, since it branches on this value.
    *
-   * `undefined` is admitted rather than substituted, because the product may be absent — the SKU is
-   * assembled before the association in three of the four creation paths — and because the resolved
-   * product type may itself carry no system code, which is the very condition the fallback exists to
-   * handle. The legacy would raise on the first of those; this returns `undefined` instead, so that a
-   * caller branching on the value gets a value to branch on rather than an exception, and
-   * {@link Sku.getSkuDefinition}'s three-way comparison then behaves exactly as the legacy's does when
-   * the code matches none of the three: it leaves the definition empty.
+   * ⭐ AN UNASSOCIATED SKU RAISES, BECAUSE [`:L357`] IS A BARE `return getProduct().getBaseProductType();`
+   * WITH NO GUARD. This member is governed by the unguarded-dereference policy stated above like every
+   * other member declared on this entity, and it resolves its product through the same
+   * {@link Sku.#requireProduct} helper.
+   *
+   * ⛔ AN EARLIER REVISION RETURNED `undefined` FOR AN ABSENT PRODUCT, AND IT IS WITHDRAWN. Its two
+   * grounds are answered:
+   *   (a) "THE PRODUCT MAY LEGITIMATELY BE ABSENT, SINCE THREE OF THE FOUR CREATION PATHS AT
+   *       [model/service/SkuService.cfc:L58-L211] ASSEMBLE THE SKU BEFORE ASSOCIATING IT." True, and it
+   *       is precisely why {@link Sku.#requireProduct} exists and why two other members already call it.
+   *       That a state is REACHABLE says nothing about what the legacy DOES in it, and what the legacy
+   *       does at `:L357` is fail.
+   *   (b) "A CALLER BRANCHING ON THE VALUE SHOULD GET A VALUE RATHER THAN AN EXCEPTION." That is an
+   *       argument for changing the contract, not for describing the changed contract as the legacy's.
+   *       Its concrete claim — that the empty definition {@link Sku.getSkuDefinition} then produces
+   *       "behaves exactly as the legacy's does when the code matches none of the three" — conflates two
+   *       different legacy outcomes: an unrecognised CODE does yield an empty definition, whereas an
+   *       absent PRODUCT yields no definition at all because the call never returns.
+   *
+   * ⚠️ `undefined` REMAINS IN THE RETURN TYPE FOR A DIFFERENT AND GENUINE REASON: the resolved product
+   * type's root may carry no system code, and `model/entity/ProductType.cfc:L112` returns CFML null
+   * there. That is the one absence the whole chain still answers with a value — see
+   * `ProductType.getBaseProductType`, which raises for an unresolvable root and returns `undefined` only
+   * for a codeless one.
    *
    * @param rootProductTypeResolver resolves a product type by identifier, for the fallback arm
-   * @returns the base product type code, unnarrowed, or `undefined` when none can be resolved
+   * @returns the base product type code, unnarrowed, or `undefined` when the resolved root carries no
+   *   system code
+   * @throws {DomainError} when this SKU has no product, reproducing the legacy null dereference at
+   *   [`model/entity/Sku.cfc:L357`]; and, propagated, when the product has no product type or its root
+   *   lookup finds nothing
    */
   async getBaseProductType(
     rootProductTypeResolver: SkuProductTypeRootResolver,
   ): Promise<SkuBaseProductTypeCode | undefined> {
-    const product = this.product;
-    if (product === undefined) {
-      return undefined;
-    }
+    const product = this.#requireProduct('model/entity/Sku.cfc:L357');
     return product.getBaseProductType(rootProductTypeResolver);
   }
 
@@ -2208,7 +2258,20 @@ export class Sku implements AuditableEntity, ManagedEntity {
       return this.#skuDefinition;
     }
 
-    /* [:L576] — the result starts empty, and for a content-access SKU it stays that way. */
+    /*
+     * [:L576] — the result starts empty, and for a content-access SKU it stays that way.
+     *
+     * ⭐ THE MEMO IS SEEDED HERE, ON THE INSTANCE, BEFORE ANY WORK THAT CAN RAISE — AND THE ORDER IS
+     * BEHAVIOUR, NOT STYLE. The legacy writes `variables.skuDefinition = ""` at `:L576` and only then
+     * evaluates `getBaseProductType()` at `:L577`, so when that evaluation fails the memo has ALREADY
+     * been written: the first call raises and every later call takes the `:L575` cache branch and
+     * returns `""` silently. Building only into a local and assigning once at the end would have made
+     * every call raise instead — a divergence created by the raise this port now correctly performs at
+     * {@link Sku.getBaseProductType} and at `:L581`, and therefore one this method has to absorb rather
+     * than introduce. The local below still carries the value being built, so the success path is
+     * unchanged.
+     */
+    this.#skuDefinition = '';
     let skuDefinition = '';
     const baseProductType = await this.getBaseProductType(rootProductTypeResolver);
 
@@ -2391,7 +2454,21 @@ export class Sku implements AuditableEntity, ManagedEntity {
    * ASYNCHRONOUS because the port is. An absent `imageFile` is passed as the empty string, a scalar
    * read per the policy note on {@link Sku.getImageExtension} — which also keeps
    * {@link Sku.getImageExistsFlag} answerable, since a path with no file name does not exist and
-   * `false` is the answer every caller is written to handle. The CFML runtime is not reproducible in
+   * `false` is the answer every caller is written to handle.
+   *
+   * ⚠️ THE COMPOSITION IS DELIBERATELY UNVALIDATED, AND THE WRITE PATH IS NOT (finding F2).
+   * `#getHibachiScope().getBaseImageURL()#/product/default/#getImageFile()#` is string interpolation with
+   * no grammar anywhere, so a stored `../../../../tmp/payload.jpg` composes into a traversing URL exactly
+   * as [:L146] composes one. This member keeps that, because refusing here would change the outcome of a
+   * DISPLAY read that the legacy answered — which AAP §0.8.2 guideline 4 forbids and the D18 precedent
+   * (§0.6.7.7) does not license, D18 being a licence only for divergences that change no outcome for any
+   * value the legacy was designed to accept.
+   *
+   * The gate lives at the one member that turns the same field into a destination rather than a subject:
+   * `SkuService.processImageUpload`, via `isWritableSkuImageFileName`. Consequently the value this member
+   * receives may still be hostile, and `ImagePathPort.saveImageFile` is under a STATED obligation not to
+   * derive any destination from the {@link ImageWebPath} this member returns — see that member's three
+   * mandatory adapter obligations. Read paths compose; only the write path chooses. The CFML runtime is not reproducible in
    * this environment (AAP §0.8.4.1), and engines differ on whether interpolating a null return value
    * raises or yields the empty string; the permissive reading is chosen and disclosed here rather
    * than a failure being invented.
@@ -2662,10 +2739,19 @@ export class Sku implements AuditableEntity, ManagedEntity {
    * did NOT: it passed the stored NAME to a port member narrowed to refuse a composed path, so that a
    * stored `../../../../tmp/payload.jpg` resolved `false` where the legacy reported on the traversed
    * file. `imageFile` is a persistent column ([:L58]) with NO rule in `model/validation/Sku.json`, so the
-   * traversal reach is genuine — but it is the legacy's behaviour, and refusing it here changes an
-   * outcome, which AAP §0.8.2 guideline 4 forbids and the D18 precedent (§0.6.7.7) does not license.
-   * `src/ports/ImagePathPort.ts` carries the withdrawal in full and FLAGS the residual CWE-22 exposure at
-   * this locator for the operator to close in whichever adapter implements the port (S8).
+   * traversal reach is genuine — but it is the legacy's behaviour, and refusing it here changes an outcome,
+   * which AAP §0.8.2 guideline 4 forbids. `src/ports/ImagePathPort.ts` DECISION I-1 control (3) carries the
+   * adjudication and FLAGS the residual CWE-22 exposure at this locator for the operator to close in
+   * whichever adapter implements the port (S8).
+   *
+   * ⚠️ AND THE REASON MATTERS, BECAUSE AN EARLIER FORM OF THIS NOTE GAVE A FALSE ONE. It added "and the
+   * D18 precedent (§0.6.7.7) does not license" a refusal, on the reading that D18 changes no outcome. D18
+   * changes outcomes — parameterised SQL returns a row for `O'Brien` where interpolated SQL raised. What
+   * D18 actually licenses is a divergence that falls ONLY where the legacy's own behaviour was the flaw,
+   * and that test is genuinely not met HERE: [:L222] answers a boolean about whatever the composed path
+   * resolves to, which is a well-defined, intended result even for a traversed file, on an operation that
+   * writes nothing and discloses one bit. The conclusion stands; the ground behind it does not, and review
+   * finding F6 uses the corrected test to reinstate the gate on the WRITE — which this member is not.
    *
    * ⚠️ THE ANSWERS ARE STILL ONLY `true` ([:L223]) AND `false` ([:L225]) — the legacy member yields no
    * third state and raises nothing, and neither does this one. An absent `imageFile` reads as the empty
@@ -2716,18 +2802,30 @@ export class Sku implements AuditableEntity, ManagedEntity {
    * Whether this SKU is its product's default — [model/entity/Sku.cfc:L442-L447], whose body is
    * `if(getProduct().getDefaultSku().getSkuID() == getSkuID()) { return true; } return false;`.
    *
-   * THE DECLARED EXCEPTION TO THE UNGUARDED-DEREFERENCE POLICY, and the only one in this file.
-   * [:L443] performs TWO unguarded dereferences in a single chain — `getProduct()` and then
-   * `getDefaultSku()` — and CFML raises on either. THIS MEMBER RETURNS `false` INSTEAD, deliberately,
-   * for a reason specific to it: it is a DELETE-CONTEXT VALIDATION GUARD, and a guard that raises
-   * rather than answering cannot be evaluated. `src/validation/Validator.ts` reads a property value
-   * through a synchronous reader and compares it; a reader that threw would abort the whole delete
-   * validation rather than producing the verdict the rule asks for.
+   * GOVERNED BY THE UNGUARDED-DEREFERENCE POLICY LIKE EVERY OTHER MEMBER IN THIS FILE. [:L443]
+   * performs TWO unguarded dereferences in a single chain — `getProduct()` and then `getDefaultSku()` —
+   * and CFML raises on either, so this member raises on either.
    *
-   * The substantive answer is also correct, not merely convenient: a SKU whose product is unset, or
-   * whose product has no default SKU, is not that product's default. `false` is the truth of the
-   * matter. The DIVERGENCE — legacy raises, this returns — is what is flagged, and it is flagged
-   * because Guideline 6 requires every judgment call be recorded, not because the value is in doubt.
+   * ⛔ IT WAS THE FILE'S ONE DECLARED EXCEPTION, RETURNING `false`, AND THAT IS WITHDRAWN. AAP §0.6.7
+   * permits exactly one licensed divergence from legacy behaviour (D18, the importer's SQL
+   * parameterisation) and this was not it. Both of the old arguments are answered:
+   *
+   *   (a) "A GUARD THAT RAISES CANNOT BE EVALUATED." True, and that is precisely the legacy outcome. In
+   *       CFML the validation service dereferences this member while evaluating the delete rule, so an
+   *       unassociated SKU aborted the whole delete validation — it did not produce a permissive
+   *       verdict. `src/validation/Validator.ts` reads `defaultFlag` off a subject the CALLER resolves
+   *       ahead of validation, so the raise surfaces at that caller and the delete aborts there. Same
+   *       destination, one layer earlier.
+   *
+   *   (b) "`false` IS THE TRUTH OF THE MATTER." It is a defensible answer to a question the legacy never
+   *       answers, and answering it changed a DESTRUCTIVE outcome: `model/validation/Sku.json:L3` gates
+   *       deletion on `defaultFlag eq false`, so `false` PASSED the guard and permitted a delete the
+   *       legacy system refused. That is a hardening encoded as parity, in the one direction where being
+   *       wrong destroys data. Note the rule set's own analysis agrees on the safe direction — an
+   *       ABSENT `defaultFlag` fails the `eq` constraint and refuses the delete; see
+   *       `src/validation/rules/sku.rules.ts`.
+   *
+   * IDENTIFIER COMPARISON SURVIVES THE CHANGE, and so does synchrony; only the two absence paths move.
    *
    * IDENTIFIER COMPARISON, NOT IDENTITY. [:L443] compares `getSkuID()` values, so a re-hydrated
    * instance representing the same row still reports `true`. Preserved: switching to reference
@@ -2739,15 +2837,26 @@ export class Sku implements AuditableEntity, ManagedEntity {
    *
    * @param readDefaultSkuId reads the identifier of the product's default SKU
    * @returns `true` when this SKU is its product's default
+   * @throws {DomainError} when this SKU has no product, or its product has no default SKU —
+   *   reproducing the two unguarded dereferences at [model/entity/Sku.cfc:L443]
    */
   getDefaultFlag(readDefaultSkuId: DefaultSkuIdReader): boolean {
-    const product = this.product;
-    if (product === undefined) {
-      return false;
-    }
+    const product = this.#requireProduct('model/entity/Sku.cfc:L443');
     const defaultSku = product.defaultSku;
     if (defaultSku === undefined) {
-      return false;
+      throw new DomainError(
+        `Sku ${this.skuID === SKU_UNSAVED_ID_VALUE ? '(unsaved)' : this.skuID} belongs to product ` +
+          `${product.productID === '' ? '(unsaved)' : product.productID}, which has no default SKU, ` +
+          'so model/entity/Sku.cfc:L443 cannot resolve. The legacy code dereferences the default ' +
+          'SKU without a guard at that line and raises here too.',
+        {
+          context: {
+            skuID: this.skuID,
+            productID: product.productID,
+            locator: 'model/entity/Sku.cfc:L443',
+          },
+        },
+      );
     }
     return readDefaultSkuId(defaultSku) === this.skuID;
   }
@@ -3000,11 +3109,19 @@ export class Sku implements AuditableEntity, ManagedEntity {
    * than by SKU: that is the legacy shape and the real port's shape both.
    *
    * AN UNASSOCIATED SKU YIELDS EMPTY DETAIL rather than raising, unlike the members governed by the
-   * unguarded-dereference policy. The reasoning is the same as for {@link Sku.getDefaultFlag}: every
-   * consumer of this value branches on the ABSENCE of each member — the three readers below all have
-   * an explicit fallback — so empty detail is a well-defined answer that flows correctly through all
-   * of them, and it means an unassociated SKU reports its ordinary price rather than failing a feed
-   * render. The divergence is flagged here.
+   * unguarded-dereference policy — [:L541] dereferences `getProduct()` without a guard, so the legacy
+   * raised. THE DIVERGENCE IS FLAGGED HERE AND IT STANDS ON ITS OWN FOOTING, which is NOT the argument
+   * {@link Sku.getDefaultFlag} used to make: that member's exception has been withdrawn, and this one
+   * does not inherit it. What justifies it here is that `salePriceDetails` is one of the four EXCLUDED
+   * calculated members (AAP §0.2.2.6) retained solely because TR-5 forbids dropping a member from the
+   * interface. The real implementation is the operator's `PricingPort`, and the absence semantics of a
+   * boundary retention belong to that implementation rather than being decided by this entity; every
+   * consumer in the subtree already branches on the ABSENCE of each detail member — the three readers
+   * below all carry an explicit fallback — so empty detail flows correctly through all of them.
+   *
+   * ⚠️ S8 — IF AN OPERATOR BINDS A REAL `PricingPort`, THE FAITHFUL CHOICE FOR THAT ADAPTER IS TO RAISE
+   * for an unassociated SKU, matching [:L541]. That decision is recorded as belonging to the adapter, not
+   * silently made here.
    *
    * @param pricing resolves sale-price detail for every SKU of a product
    * @returns this SKU's detail, possibly empty
@@ -3387,12 +3504,18 @@ export class Sku implements AuditableEntity, ManagedEntity {
    * @deprecated USE getDefaultFlag() — the legacy hint at [model/entity/Sku.cfc:L907], verbatim.
    *   Registered as part of defect D16.
    *
-   * The negation is preserved exactly, including its consequence: because
-   * {@link Sku.getDefaultFlag} answers `false` for a SKU with no product, this member answers `true`
-   * for one — an unassociated SKU is indeed not any product's default.
+   * The negation is preserved exactly, including its consequence: [:L909] negates the RESULT of
+   * `getDefaultFlag()`, so when that member raises there is no result to negate and this member raises
+   * too. An unassociated SKU therefore gets no answer here either, which is what [:L443] does.
+   *
+   * ⛔ AN EARLIER REVISION OF THIS PARAGRAPH SAID THIS MEMBER "ANSWERS `true`" FOR AN UNASSOCIATED SKU,
+   * because {@link Sku.getDefaultFlag} answered `false` for one. That premise is withdrawn along with
+   * the exception it rested on; the negation is faithful either way, since it negates whatever the
+   * delegate produces and propagates whatever it raises.
    *
    * @param readDefaultSkuId forwarded to {@link Sku.getDefaultFlag}
    * @returns `true` when this SKU is not its product's default
+   * @throws {DomainError} propagated from {@link Sku.getDefaultFlag}
    */
   isNotDefaultSku(readDefaultSkuId: DefaultSkuIdReader): boolean {
     return !this.getDefaultFlag(readDefaultSkuId);
