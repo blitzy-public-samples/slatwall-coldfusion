@@ -352,17 +352,21 @@ import type { StatementPool } from '../adapters/mysql/QueryRunner';
  * DECISION H — how the driver reaches the deployed artifact, and why the import below is an
  * ordinary static one.
  *
- * build/esbuild.mjs bundles the driver into each handler artifact by default: its external list at
- * build/esbuild.mjs:L38 covers the AWS SDK only, because AAP 0.5.2.1 records that the SDK already
- * ships inside the runtime and bundling it "would inflate the artifact for no gain".
- * build/esbuild.mjs:L17-L23 documents the driver's own treatment and the opt-out, an
- * ESBUILD_EXTERNAL setting read at build/esbuild.mjs:L41 that leaves the driver external instead —
- * the form used for the AAP 0.1.2.3 environment probe, and the form to use when the driver is
- * supplied by a layer alongside the bundle.
+ * THE DRIVER IS EXTERNAL TO THE BUNDLE, NOT INLINED INTO IT. build/esbuild.mjs marks `mysql2` as
+ * external, so each emitted handler artifact carries this port's own code and reaches the driver
+ * with an ordinary `require` resolved from node_modules beside the bundle — verifiable in the
+ * output as `require("mysql2/promise")`, the same subpath specifier the import below uses. That is
+ * the single arrangement, deliberately: it keeps the artifact thin and it is the form the build was
+ * proved in.
  *
- * Both arrangements are served by the same plain static import below, which is the point of
+ * The AWS SDK is absent from that external list for a stronger reason than being external — it is
+ * not in the dependency graph at all. AAP 0.5.2.1 records that it is "intentionally absent because
+ * it is present in the Lambda runtime environment already; adding it would inflate the bundle for
+ * no gain", so there is nothing for the bundler to inline and nothing to exclude.
+ *
+ * Either arrangement is served by the same plain static import below, which is the point of
  * recording this: the import is deliberately NOT conditional, NOT deferred and NOT resolved
- * dynamically, because the bundler must be able to see it statically under either setting. For the
+ * dynamically, because the bundler must be able to see it statically to rewrite it. For the
  * same reason every intra-subtree import in this subtree is a relative, extensionless path with no
  * alias (AAP 0.4.3.5) — an alias that type-checks can still fail to resolve at cold start.
  * ============================================================================================ */
