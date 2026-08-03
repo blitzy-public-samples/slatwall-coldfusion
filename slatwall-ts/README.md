@@ -191,11 +191,40 @@ Properties worth knowing, each verified rather than assumed:
   `@types/aws-lambda` is a development-only type dependency that is erased at compile time.
 - **Consecutive builds are byte-identical**, and the build reads no environment variable, opens no
   connection and needs no credential.
+- **Configuration is validated at two different moments, on purpose.** `router.js` resolves the service
+  graph when the module loads, so requiring it with a missing or malformed variable throws immediately and
+  names the variable — a misconfigured deployment of the primary entry fails its cold start rather than
+  answering requests it cannot serve. The five per-surface artifacts resolve the graph on their **first
+  invocation** instead, so each one can be required with an empty environment; a misconfiguration there
+  surfaces as `500 {"message":"The service is not correctly configured"}` per invocation, classified rather
+  than opaque — the offending variable is not published on that path at all, since the response carries one
+  message and the server-side diagnostic carries the failure class, code and correlation ID. Both behaviours are
+  fail-safe, both are deliberate, and the deferral is what keeps those five modules loadable by their own
+  unit suites and by anyone inspecting an artifact — a property `test/handlers/entrySurface.test.ts`
+  asserts, and whose failure mode §5 of that file pins. The reasoning is recorded at length in
+  `src/handlers/router.ts`.
+- **The per-surface entries reach the composition root through a deferred CommonJS `require`, not a dynamic
+  `import()`**, so the same code answers identically whether it is run from `dist/`, from a plain `tsc`
+  emit, under `ts-node`, or under `ts-jest`. An earlier revision used `await import('../config/container.js')`
+  and did not: TypeScript's NodeNext emit preserves a native `import()` in CommonJS output, and Node's ESM
+  resolver then demands an on-disk `.js` that only an emit produces — so running the TypeScript sources
+  answered `500` for every action while the artifact answered correctly. The measurement is recorded at
+  each entry point and in `jest.config.ts` §6.
 - **Size, stated plainly.** Each artifact is ≈1.6 MB and `dist/` totals ≈9.6 MB, because an artifact that
   can be deployed on its own must contain the graph it wires; a single function loads one artifact, not the
   directory. Code splitting is deliberately off — it could hoist or duplicate `src/config/database.ts`, and
-  duplicating that module duplicates the connection pool (AAP §0.3.2). No size budget is asserted here or
-  anywhere else in the subtree (IR-12).
+  duplicating that module duplicates the connection pool (AAP §0.3.2). `minify` and `legalComments` are
+  available levers, deliberately unexercised so each artifact keeps the reasoning its source records. No
+  size budget is asserted here or anywhere else in the subtree (IR-12).
+- **Class identity is per artifact, which matters only to tooling.** Because each artifact embeds its own
+  copy of the graph, the error taxonomy in `src/errors/` is a different set of classes in each one, and
+  `errorResponse` classifies by `instanceof`. Measured with two artifacts in one process and one genuine
+  `DataIntegrityError` raised inside `googleFeedHandler.js`: its own artifact answers
+  `500 "The request could not be completed from the stored data"`, while `optionHandler.js` answers
+  `500 "An unexpected error occurred"` for the same object. Both are safe and neither leaks detail, and no
+  production path crosses artifacts — a function loads exactly one. The rule it implies is for test and
+  tooling wiring only: never load two `dist/` artifacts into one process and then assert on error
+  classification across them. `build/esbuild.mjs` records the measurement in full.
 
 "Deployable" is satisfied by this step: AAP §0.8.3.10 — _"'Deployable' is satisfied by a successful
 build/package step producing Lambda-compatible artifacts — live deployment execution is not required for
@@ -239,6 +268,14 @@ await handler({
 
 The feed answers RSS 2.0 with the `xmlns:g="http://base.google.com/ns/1.0"` namespace and
 `Content-Type: application/xml`; every other route answers JSON.
+
+⚠️ **On the day this ships, that RSS answer is the EMPTY-SELECTION answer, and the distinction is worth
+reading before treating a `501` as a regression.** With no qualifying SKU the feed renders an empty channel
+as `200 application/xml`. With even one qualifying SKU it reaches `ImagePathPort` — the legacy view emits
+`g:image_link` unconditionally — and answers `501 {"message":"This operation is not implemented"}`, because
+that port is a declared out-of-scope boundary rather than an unfinished one. Both outcomes are correct and
+both are measured; §7 follows the port through in full. "The feed works" therefore means "the feed works once
+`ImagePathPort` is supplied".
 
 ### 5.1 Response conventions
 

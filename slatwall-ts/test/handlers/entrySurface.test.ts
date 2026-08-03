@@ -116,6 +116,138 @@ function eventFor(action: string | undefined): APIGatewayProxyEvent {
   } as unknown as APIGatewayProxyEvent;
 }
 
+/** The five per-surface entry modules, addressed by path so each case can load a FRESH instance. */
+const ENTRY_MODULES = Object.freeze([
+  Object.freeze({
+    name: 'productHandler',
+    path: '../../src/handlers/productHandler',
+    ownAction: 'product.doesNotExist',
+    gatedAction: 'product.getProduct',
+    foreignAction: 'brand.getBrand',
+  }),
+  Object.freeze({
+    name: 'skuHandler',
+    path: '../../src/handlers/skuHandler',
+    ownAction: 'sku.doesNotExist',
+    gatedAction: 'sku.getSkuBySkuCode',
+    foreignAction: 'product.getProduct',
+  }),
+  Object.freeze({
+    name: 'brandHandler',
+    path: '../../src/handlers/brandHandler',
+    ownAction: 'brand.doesNotExist',
+    gatedAction: 'brand.getBrand',
+    foreignAction: 'sku.getSkuSmartList',
+  }),
+  Object.freeze({
+    name: 'optionHandler',
+    path: '../../src/handlers/optionHandler',
+    ownAction: 'option.doesNotExist',
+    gatedAction: 'option.getUnusedProductOptionGroups',
+    foreignAction: 'google:feed.product',
+  }),
+  Object.freeze({
+    /* No `gatedAction`: the feed's single address is ungated, and it is the one that reads the catalog. */
+    name: 'googleFeedHandler',
+    path: '../../src/handlers/googleFeedHandler',
+    ownAction: 'google:feed.doesNotExist',
+    gatedAction: undefined,
+    foreignAction: 'product.getProduct',
+  }),
+] as const);
+
+/**
+ * The environment `src/config/env.ts` requires, with a port nothing listens on.
+ *
+ * Every value is a throwaway literal; `DB_TLS_MODE: 'disabled'` is accepted only because the host is
+ * loopback, which is the loader's own rule rather than a concession made here.
+ */
+const ENTRY_INVOCATION_ENVIRONMENT: Readonly<Record<string, string>> = Object.freeze({
+  DB_HOST: '127.0.0.1',
+  DB_PORT: '1',
+  DB_NAME: 'entrySurfaceSuite',
+  DB_USER: 'entrySurfaceSuite',
+  DB_PASSWORD: 'entrySurfaceSuite',
+  DB_TLS_MODE: 'disabled',
+  GOOGLE_FEED_HOST: 'catalog.example.test',
+});
+
+/** Every variable `src/config/env.ts` reads, so a case can strip the environment to prove a negative. */
+const LOADER_VARIABLE_NAMES: readonly string[] = Object.freeze([
+  ...Object.keys(ENTRY_INVOCATION_ENVIRONMENT),
+  'SETTING_APPLICATION_ROOT_MAPPING_PATH',
+  'SETTING_SKU_ELIGIBLE_CURRENCIES',
+  'SETTING_SKU_ELIGIBLE_FULFILLMENT_METHODS',
+]);
+
+/**
+ * Runs `work` with every loader variable UNSET, restoring the environment afterwards even on failure.
+ *
+ * ⚠️ THE STRIPPING IS THE ASSERTION, NOT A CONVENIENCE. A case that merely READ `process.env` would be
+ * asserting a property of the shell that started Jest — and the documented way to invoke this service is
+ * to export those very variables first, so such a case fails for a developer who followed the README and
+ * then ran the suite in the same shell. Removing them makes the property self-contained: with no
+ * environment present, anything that reads one has to fail, so a silent pass is a real proof.
+ */
+function withNoEnvironment<TResult>(work: () => TResult): TResult {
+  const saved = new Map<string, string | undefined>();
+
+  for (const name of LOADER_VARIABLE_NAMES) {
+    saved.set(name, process.env[name]);
+    delete process.env[name];
+  }
+
+  try {
+    return work();
+  } finally {
+    for (const [name, value] of saved) {
+      if (value !== undefined) {
+        process.env[name] = value;
+      }
+    }
+  }
+}
+
+/** The Lambda contract each entry module publishes, narrowed for the require below. */
+interface LambdaEntryModule {
+  readonly handler: (event: APIGatewayProxyEvent) => Promise<APIGatewayProxyResult>;
+}
+
+/**
+ * Loads a FRESH instance of an entry module.
+ *
+ * `jest.config.ts` sets `resetModules`, so the registry is empty at the start of every case and this
+ * require returns a module whose one-time initialisation has not run — which is the cold-start view each
+ * case below needs. `jest.requireActual` is used rather than a top-level import for that reason, and
+ * rather than `await import(...)` because a native dynamic import is precisely what this section exists
+ * to keep out of the entry points.
+ */
+function loadEntryModule(modulePath: string): LambdaEntryModule {
+  return jest.requireActual<LambdaEntryModule>(modulePath);
+}
+
+/**
+ * Captures the allowlisted diagnostic `src/handlers/httpResponse.ts` writes on its failure branches.
+ *
+ * Two purposes: a configuration case can assert the detail was REDIRECTED rather than discarded, and the
+ * run log stays free of stderr noise that reads like a failure. Restored by the caller in a `finally`.
+ */
+function captureErrorStream(): { readonly lines: readonly string[]; restore(): void } {
+  const lines: string[] = [];
+  const original = console.error;
+
+  console.error = (...data: unknown[]): void => {
+    lines.push(data.filter((entry): entry is string => typeof entry === 'string').join(' '));
+  };
+
+  return {
+    lines,
+    restore: (): void => {
+      console.error = original;
+    },
+  };
+}
+
 /**
  * Builds a façade double whose every member records its own name and answers a recognisable result.
  *
@@ -431,12 +563,223 @@ describe('NET-NEW entry surface — every per-service module exports an invocabl
   });
 
   it('[NET-NEW] importing these modules constructs no container and reads no environment', () => {
-    /* This suite has no `DB_*` variable set and no database available, and it imported all five modules at
-     * the top of the file. Reaching this assertion at all is the proof: a static import of
-     * `../config/container` would have run the eager environment validation and the module-scope pool
-     * construction during collection, and every case in this file would have failed on the same error.
-     * The five entry points reach the composition root through a DYNAMIC import for exactly that reason. */
-    expect(process.env['DB_HOST']).toBeUndefined();
+    /* ⭐ THE NEGATIVE IS PROVED BY REMOVING THE ENVIRONMENT, NOT BY LOOKING AT IT. `src/config/env.ts`
+     * validates eagerly and throws when a required variable is absent, and `src/config/database.ts`
+     * builds the pool at module scope, so a module that reached the composition root while loading COULD
+     * NOT load at all here — every loader variable is unset for the duration of this case. Each of the
+     * five is required FRESH under that condition, so the pass is evidence rather than coincidence.
+     *
+     * ⚠️ AN EARLIER REVISION ASSERTED `process.env['DB_HOST']` WAS UNDEFINED, AND THAT WAS A PROPERTY OF
+     * THE SHELL RATHER THAN OF THE CODE. README §5 tells a reader to export exactly those variables
+     * before invoking a handler, so anyone who did and then ran the suite in the same shell saw this case
+     * fail while nothing was wrong — observed directly. Stripping the environment inside the case removes
+     * the dependency and strengthens the assertion at the same time.
+     *
+     * The five entry points reach the composition root through a DEFERRED REQUIRE for exactly this
+     * reason — deferred, and therefore not evaluated by an import. §5 invokes them, which is where that
+     * require actually runs. */
+    withNoEnvironment(() => {
+      for (const entry of ENTRY_MODULES) {
+        expect(() => loadEntryModule(entry.path)).not.toThrow();
+      }
+    });
+
     expect(typeof productLambdaHandler).toBe('function');
+  });
+});
+
+/* =====================================================================================================
+ * §5 — The entry points INVOKED, not merely exported.
+ *
+ * ⭐ WHY THIS SECTION EXISTS. §4 asserts that each of the five modules exports a one-argument function
+ * and that importing it costs nothing. Neither property says anything about what happens when the
+ * function is CALLED, and the call is where the interesting work is: the first invocation resolves the
+ * composition root, builds the surface's dispatcher, and only then dispatches. A QA pass found that this
+ * initialisation-and-dispatch path was covered by nothing but the packaged artifact — and, worse, that no
+ * suite COULD cover it, because each entry reached the container through `await import(...)`, a native
+ * dynamic import that Jest cannot execute without --experimental-vm-modules. Those entries now use a
+ * deferred CommonJS require, so the path is reachable from here, and these cases are what keep it
+ * reachable: a regression in five of the six emitted entry points is now a failing test rather than a
+ * surprise in a deployed artifact.
+ *
+ * ⚠️ NO DATABASE IS REACHED, AND THAT IS ENFORCED RATHER THAN HOPED FOR. Resolving the container
+ * constructs the real graph, so the environment must satisfy `src/config/env.ts` — but `DB_PORT` is set
+ * to `1`, where nothing listens, so any query would fail immediately instead of finding data. It never
+ * gets that far: the four catalog surfaces are gated by the fail-closed authorisation resolver, which
+ * refuses before a service member is called, and an unrecognised action answers before dispatch at all.
+ * Both were measured to open zero sockets. `jest.config.ts` §7 records the rule this honours — no suite
+ * may require a live database — and `mysql2` creates its pool without connecting, so module load stays
+ * silent too.
+ *
+ * ⛔ THE FEED'S OWN ADDRESS IS DELIBERATELY NOT INVOKED HERE. `google:feed.product` is the one ungated
+ * route in the slice, and the member behind it reads the catalog, so invoking it WOULD reach the
+ * database. Its entry's initialisation path is still covered: the container is resolved before dispatch,
+ * so a 404 case on that surface exercises exactly the same lazy require the routed case would.
+ *
+ * TEST PROVENANCE: **NET-NEW**, like every case in this file. AAP §0.6.5.2 records that the legacy suite
+ * contains no controller or routing test of any kind.
+ * ================================================================================================== */
+
+describe('NET-NEW entry surface — the five per-service entry points answer when INVOKED', () => {
+  const savedEnvironment = new Map<string, string | undefined>();
+
+  beforeEach(() => {
+    for (const [name, value] of Object.entries(ENTRY_INVOCATION_ENVIRONMENT)) {
+      savedEnvironment.set(name, process.env[name]);
+      process.env[name] = value;
+    }
+  });
+
+  afterEach(() => {
+    /* Restored key by key, and an absent key is DELETED rather than blanked: the loader distinguishes the
+     * two, and §4 asserts that this file leaves no `DB_HOST` behind. */
+    for (const [name, value] of savedEnvironment) {
+      if (value === undefined) {
+        delete process.env[name];
+      } else {
+        process.env[name] = value;
+      }
+    }
+    savedEnvironment.clear();
+  });
+
+  it.each(ENTRY_MODULES.map((entry) => [entry.name, entry] as const))(
+    '[NET-NEW] %s answers a neutral 404 for an action it does not serve, resolving its graph first',
+    async (_name, entry) => {
+      const capture = captureErrorStream();
+
+      try {
+        const response = await loadEntryModule(entry.path).handler(eventFor(entry.ownAction));
+
+        /* 404 — not 500. Reaching it proves the deferred require resolved, the container was built and
+         * the dispatcher was created, because all three happen before dispatch. Under the previous
+         * native dynamic import this same call answered 500 for every action. */
+        expect(response.statusCode).toBe(HTTP_STATUS.NOT_FOUND);
+        expect(response.body).toBe(JSON.stringify({ message: 'Not found' }));
+        /* Neutral: a refusal must not let a caller enumerate what the surface does serve. */
+        expect(response.body).not.toContain(entry.ownAction);
+        /* A not-found is not a failure, so nothing is written to the error stream. */
+        expect(capture.lines).toEqual([]);
+      } finally {
+        capture.restore();
+      }
+    },
+  );
+
+  it.each(ENTRY_MODULES.map((entry) => [entry.name, entry.foreignAction, entry.path] as const))(
+    '[NET-NEW] %s serves only its own surface and answers 404 for %s',
+    async (_name, foreignAction, modulePath) => {
+      const capture = captureErrorStream();
+
+      try {
+        const response = await loadEntryModule(modulePath).handler(eventFor(foreignAction));
+
+        /* Per-entry partitioning: each artifact is an independent Lambda entry, so a neighbour's action
+         * is simply not addressable on it. Only `src/handlers/router.ts` serves the whole union. */
+        expect(response.statusCode).toBe(HTTP_STATUS.NOT_FOUND);
+        expect(capture.lines).toEqual([]);
+      } finally {
+        capture.restore();
+      }
+    },
+  );
+
+  it.each(
+    ENTRY_MODULES.filter(
+      (entry): entry is (typeof ENTRY_MODULES)[number] & { gatedAction: string } =>
+        entry.gatedAction !== undefined,
+    ).map((entry) => [entry.name, entry.gatedAction, entry.path] as const),
+  )(
+    '[NET-NEW] %s dispatches %s into the production graph and is refused fail-closed',
+    async (_name, gatedAction, modulePath) => {
+      const capture = captureErrorStream();
+
+      try {
+        const response = await loadEntryModule(modulePath).handler(eventFor(gatedAction));
+
+        /* A real dispatch hit, and the strongest assertion available without a database: the address
+         * resolved to a mounted member and the graph's own fail-closed resolver answered. 401 rather
+         * than 403 — no principal was established at all — and it precedes parameter validation, which
+         * is why an event carrying nothing but the action is enough. */
+        expect(response.statusCode).toBe(HTTP_STATUS.UNAUTHORIZED);
+        expect(response.body).toBe(JSON.stringify({ message: 'Authentication is required' }));
+        expect(capture.lines).toEqual([]);
+      } finally {
+        capture.restore();
+      }
+    },
+  );
+
+  it('[NET-NEW] builds its dispatcher once and reuses it across invocations', async () => {
+    const capture = captureErrorStream();
+
+    try {
+      const entry = loadEntryModule('../../src/handlers/brandHandler');
+
+      const first = await entry.handler(eventFor('brand.getBrand'));
+      const second = await entry.handler(eventFor('brand.doesNotExist'));
+      const third = await entry.handler(eventFor('brand.getBrand'));
+
+      /* The second and third invocations take the memoised path — the initialisation branch is skipped —
+       * and must answer exactly as the first did. A warm container carries the wiring forward and nothing
+       * else, which is the boundary mismatch M7 is about. */
+      expect(first.statusCode).toBe(HTTP_STATUS.UNAUTHORIZED);
+      expect(second.statusCode).toBe(HTTP_STATUS.NOT_FOUND);
+      expect(third.statusCode).toBe(HTTP_STATUS.UNAUTHORIZED);
+      expect(third.body).toBe(first.body);
+      expect(capture.lines).toEqual([]);
+    } finally {
+      capture.restore();
+    }
+  });
+});
+
+describe('NET-NEW entry surface — a per-service entry with NO environment answers, rather than throwing', () => {
+  const savedEnvironment = new Map<string, string | undefined>();
+
+  beforeEach(() => {
+    for (const name of LOADER_VARIABLE_NAMES) {
+      savedEnvironment.set(name, process.env[name]);
+      delete process.env[name];
+    }
+  });
+
+  afterEach(() => {
+    for (const [name, value] of savedEnvironment) {
+      if (value !== undefined) {
+        process.env[name] = value;
+      }
+    }
+    savedEnvironment.clear();
+  });
+
+  it('[NET-NEW] classifies the missing configuration instead of failing opaquely', async () => {
+    const capture = captureErrorStream();
+
+    try {
+      const response = await loadEntryModule('../../src/handlers/optionHandler').handler(
+        eventFor('option.getUnusedProductOptionGroups'),
+      );
+
+      /* ⭐ THE DELIBERATE ASYMMETRY, PINNED BY A TEST RATHER THAN ONLY BY PROSE. `src/handlers/router.ts`
+       * resolves the graph at module load, so a misconfigured deployment of THAT entry fails its cold
+       * start outright and loudly. These five defer it, so they stay loadable — the property §4 asserts —
+       * and a misconfiguration surfaces here instead: classified as a configuration failure, per
+       * invocation, and the offending variable published nowhere — the diagnostic carries the failure
+       * class, the classification code and a correlation ID, and nothing else. Both halves are
+       * safe, both are documented in `src/handlers/router.ts` and in README §4, and this case is what
+       * stops either half drifting. */
+      expect(response.statusCode).toBe(HTTP_STATUS.INTERNAL_SERVER_ERROR);
+      expect(response.body).toBe(
+        JSON.stringify({ message: 'The service is not correctly configured' }),
+      );
+
+      /* Redirected, not discarded — and the variable name never reaches the caller. */
+      expect(capture.lines).toHaveLength(1);
+      expect(capture.lines[0] ?? '').toContain('ConfigurationError');
+      expect(response.body).not.toContain('DB_HOST');
+    } finally {
+      capture.restore();
+    }
   });
 });

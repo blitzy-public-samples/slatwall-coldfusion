@@ -269,6 +269,32 @@
  * here: deferring the container to first use would trade a loud INIT failure for a quiet per-request one
  * and would contradict the container's own "once per module load" contract. `slatwall-ts/.env.example`
  * documents every variable involved.
+ *
+ * ⭐ AND THE FIVE PER-SURFACE ENTRIES DELIBERATELY DO THE OPPOSITE, WHICH IS A RECORDED DECISION RATHER
+ * THAN AN INCONSISTENCY. A QA pass measured the asymmetry and asked for it to be settled either way; it
+ * is settled here, in favour of keeping both behaviours, because the two entry kinds are answerable to
+ * different requirements:
+ *
+ *   THIS FILE is the primary deployment — one function serving the whole address space — so it is the one
+ *   that must not come up half-working. It resolves the graph at module load and a misconfiguration
+ *   fails the cold start, naming the offending variable in the initialisation error. Nothing about that
+ *   is relaxed by what follows.
+ *
+ *   `./productHandler`, `./skuHandler`, `./brandHandler`, `./optionHandler` and `./googleFeedHandler`
+ *   defer the graph to their first invocation, so importing one of them constructs no container and reads
+ *   no environment. That property is not an accident of implementation: it is asserted by
+ *   `test/handlers/entrySurface.test.ts`, it is what lets those modules be loaded by their own unit
+ *   suites and by any reader inspecting an artifact, and it is why the emitted per-surface bundles can be
+ *   required with an empty environment at all. The cost is that a misconfigured deployment of one of
+ *   those five answers `500 "The service is not correctly configured"` per invocation instead of failing
+ *   at initialisation — CLASSIFIED, never opaque. The offending variable is not published on that path
+ *   at all: the response carries one message, and the server-side diagnostic carries the failure class,
+ *   the classification code and a correlation ID. That is a safe failure, not a silent one, and
+ *   `test/handlers/entrySurface.test.ts` §5 pins it so neither half can drift.
+ *
+ * The consequence a reader should carry away: a misconfigured deployment is loud on this entry and
+ * classified-per-request on the other five, both are fail-safe, and neither behaviour is accidental.
+ * README §4 states the same thing for a reader who never opens this file.
  * ============================================================================================== */
 
 import { getCatalogContainer, type CatalogContainer } from '../config/container';
@@ -603,6 +629,13 @@ export function createRouter(
  * `config/configORM.cfm:L4-L7`. A misconfigured deployment therefore fails during initialisation, loudly,
  * instead of answering requests it cannot serve. That is preserved rather than softened: deferring the
  * graph to first use would trade one loud failure for an indefinite series of quiet ones.
+ *
+ * ⚠️ READ THAT LAST SENTENCE AS A STATEMENT ABOUT *THIS* ENTRY, NOT AS A RULE THE SIBLINGS BREAK. The five
+ * per-surface entries do defer, deliberately, and the module header records the full decision: their
+ * failure is neither indefinite nor quiet but a classified per-invocation configuration failure, and
+ * their deferral is what keeps them loadable with no environment — a property their suites assert. This
+ * file is the primary entry and fails loudest; that division is the settled answer to the asymmetry a QA
+ * pass raised, not an oversight in either direction.
  */
 const routeCatalogRequest = createRouter(getCatalogContainer());
 

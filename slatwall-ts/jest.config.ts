@@ -341,6 +341,34 @@ const config = {
 //
 // Relative specifiers also keep the hexagonal boundary legible, because a cross-layer
 // import stays visible as a path in the diff rather than being rewritten by a resolver.
+//
+// ⚠️ ONE CANDIDATE MAPPER WAS PROPOSED, MEASURED AND REJECTED, AND THE MEASUREMENT IS
+// WORTH KEEPING. A QA pass found that the five per-surface Lambda entries under
+// src/handlers/ could not be invoked from their TypeScript sources at all: each reached
+// the composition root through `await import('../config/container.js')`, and the
+// suggested remedy was the canonical NodeNext recipe
+// `moduleNameMapper: { '^(\\.{1,2}/.*)\\.js$': '$1' }` so ts-jest would resolve the `.js`
+// specifier to the `.ts` source.
+//
+// It cannot work, and the reason is not a matter of taste. ts-jest compiles against the
+// tsconfig named in section 4d and does NOT force `module` to CommonJS, so NodeNext's
+// emit rule applies: a native `import()` is PRESERVED in CommonJS output. A native
+// `import()` is executed by the host, not by Jest — the specifier never reaches
+// jest-resolve, so no mapper entry is ever consulted — and inside Jest's VM the call
+// fails outright with "A dynamic import callback was invoked without
+// --experimental-vm-modules". Measured directly by invoking a per-surface entry from a
+// scratch suite before and after adding the mapper: the mapper changed nothing.
+//
+// The fix therefore belonged in the source, not here. Those five entries now defer the
+// composition root through a CommonJS `require` with an extensionless specifier, which
+// Jest's own resolver handles, which ts-node and a plain `tsc` emit resolve identically,
+// and which esbuild bundles exactly as before. `test/handlers/entrySurface.test.ts` §5
+// invokes all five as a result. No relative `.js`-suffixed specifier remains anywhere in
+// src/ or test/, so the mapper would now match nothing even if it were declared — while
+// still being able to mis-resolve a dependency's own internal `./x.js` require, since
+// moduleNameMapper applies to every module request in the process and not only to
+// first-party ones. Absent is the correct state, and it stays absent by evidence rather
+// than by preference.
 // -------------------------------------------------------------------------------------
 
 // -------------------------------------------------------------------------------------

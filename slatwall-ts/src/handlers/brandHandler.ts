@@ -22,10 +22,12 @@
  * function of what it was handed — which is what makes it assertable with hand-written doubles, without a
  * database, a network call or an AWS runtime (AAP 0.7.3 S6).
  *
- * That entry section is the one place ../config/container is reached, through a DYNAMIC import evaluated
- * on first invocation, because the bundle built from this file has to carry a `handler` the runtime can
- * address. Module LOAD still touches no configuration and opens no pool; the reasoning is recorded at the
- * section itself. src/handlers/router.ts reaches the same composition root for the aggregate surface and
+ * That entry section is the one place ../config/container is reached, through a DEFERRED CommonJS
+ * require evaluated on first invocation, because the bundle built from this file has to carry a
+ * `handler` the runtime can address. A native dynamic `import()` was measured to be unusable here and
+ * the section itself records why. Module LOAD still touches no configuration and opens no pool; the
+ * reasoning is recorded at the section itself. src/handlers/router.ts reaches the same composition root
+ * for the aggregate surface and
  * passes both dependencies in.
  *
  * THREE ROUTED OPERATIONS FROM A FOUR-MEMBER SERVICE, AND THE COUNTS ARE THE POINT
@@ -1177,15 +1179,25 @@ export function createBrandHandler(
  * has to carry an entry symbol the runtime can address; without it the bundle would be a library that
  * only `./router.ts` could reach.
  *
- * ⭐ WHY THE COMPOSITION ROOT IS REACHED THROUGH A DYNAMIC IMPORT, WHICH IS THE ONE SUBTLE THING HERE.
+ * ⭐ WHY THE COMPOSITION ROOT IS REACHED THROUGH A DEFERRED REQUIRE, WHICH IS THE ONE SUBTLE THING HERE.
  * `../config/container` reaches `../config/database`, whose `mysql2` pool is created at module scope,
  * and `../config/env`, which validates the environment as a module-load side effect. A STATIC import
  * would therefore run both at the moment this module is loaded — and this module is loaded by
  * `test/handlers/brandHandler.test.ts`, which has no environment and needs no database, and by any
- * reader who simply requires the artifact to inspect it. Deferring the import to the first invocation
+ * reader who simply requires the artifact to inspect it. Deferring the load to the first invocation
  * keeps module load free of side effects while the pool still lives at module scope of the module that
  * owns it, created once and reused across warm invocations exactly as AAP §0.3.2 requires. Nothing is
  * memoized here except the dispatcher itself.
+ *
+ * ⚠️ THE DEFERRAL IS EXPRESSED AS A CommonJS `require`, AND AN EARLIER REVISION GOT THIS WRONG. It read
+ * `await import('../config/container.js')`, on the reasoning that a dynamic import inside a CommonJS
+ * module is a real ECMAScript import, that `moduleResolution: NodeNext` requires the extension there,
+ * and that `tsc` and esbuild both resolve it to this subtree's TypeScript source. The last clause held
+ * for type-checking and for the packaged artifact, and failed at runtime for the sources: NodeNext
+ * PRESERVES the native `import()` in CommonJS output, so the ESM resolver demanded an on-disk
+ * `src/config/container.js` that only an emit produces — so running the source answered `500` for every
+ * action while the artifact answered correctly. The measurement and the rejected alternatives are
+ * recorded at the require itself.
  *
  * ⛔ THE ROUTE NAMES ARE DECLARED HERE, ONCE. `./router.ts` composes {@link createBrandRoutes} into the
  * aggregate surface rather than restating these three keys, so there is exactly one place a brand
@@ -1245,6 +1257,14 @@ export function createBrandRoutes(handlers: BrandHandler): ActionRouteTable<Bran
 }
 
 /**
+ * The shape `../config/container` publishes, used to type the deferred require inside {@link handler}.
+ *
+ * `typeof import(...)` is a TYPE position only. It is erased at emit, so it adds no load-time edge from
+ * this file to the composition root — which is the entire point of resolving the graph lazily.
+ */
+type CatalogContainerModule = typeof import('../config/container');
+
+/**
  * The dispatcher, built once per container and reused for every later invocation.
  *
  * The only mutable module-scope binding in this file. It holds the wiring and nothing else — no
@@ -1261,7 +1281,11 @@ let dispatchBrandAction: ActionRoute | undefined;
  * invocation instead of failing with an opaque initialisation error. `./router.ts` deliberately differs
  * — it resolves the graph at module load, so a misconfiguration there fails the cold start outright —
  * and the two behaviours are complementary: the router is the primary entry and fails loudest, while
- * each per-surface entry stays loadable and answerable.
+ * each per-surface entry stays loadable and answerable. Concretely, a missing or malformed variable
+ * answers `500 "The service is not correctly configured"` here on every invocation, classified rather
+ * than opaque, and the offending variable is published nowhere — the server-side diagnostic carries the
+ * failure class, the classification code and a correlation ID, and nothing else. The full decision, and
+ * why the asymmetry is deliberate on both sides, is recorded in `./router.ts` and in README §4.
  *
  * @param event the proxy event, carrying the action in its query string
  * @returns the response for the addressed action, or a not-found for one this surface does not serve
@@ -1269,7 +1293,38 @@ let dispatchBrandAction: ActionRoute | undefined;
 export const handler = async (event: APIGatewayProxyEvent): Promise<APIGatewayProxyResult> => {
   try {
     if (dispatchBrandAction === undefined) {
-      const { getCatalogContainer } = await import('../config/container.js');
+      /*
+       * ⭐ A DEFERRED CommonJS `require`, DELIBERATELY NOT A DYNAMIC `import()`. The difference was
+       * MEASURED, not assumed, and it decided this line.
+       *
+       * This expression read `await import('../config/container.js')` until a QA pass invoked the five
+       * per-surface entries from their TypeScript sources. TypeScript's NodeNext emit PRESERVES a native
+       * `import()` inside a CommonJS output file — deliberately, so a CJS module can load ESM — which
+       * hands the specifier to Node's ESM resolver. That resolver takes a relative specifier literally
+       * and requires an on-disk `.js`: the packaged bundle has one and a plain `tsc` emit has one, but
+       * the `.ts` source tree has not. Running the source therefore failed with ERR_MODULE_NOT_FOUND,
+       * the catch below classified it as an unclassified fault, and EVERY action on this entry —
+       * including the ones that need no container at all — answered `500` where the artifact answered
+       * `404`. Under ts-jest it failed one step earlier still, with "A dynamic import callback was
+       * invoked without --experimental-vm-modules", because a native `import()` is executed by the host
+       * and never reaches Jest's module registry. That is why no `moduleNameMapper` entry could have
+       * repaired it and why none is declared: jest.config.ts §6 records the same measurement, and a
+       * resolver alias understood by one tool and not the others is the exact failure mode AAP §0.4.3.5
+       * rules out.
+       *
+       * A `require` is resolved by the CommonJS algorithm instead, from an EXTENSIONLESS specifier
+       * matching every other relative import in this subtree, so esbuild, `tsc` emit, ts-node and
+       * ts-jest all reach the same module and the source and the artifact answer identically.
+       *
+       * ⚠️ THE DEFERRAL ITSELF IS UNCHANGED, AND IT IS LOAD-BEARING. The call sits inside this one-time
+       * initialisation branch, so importing this module still constructs no container and reads no
+       * environment — the property `test/handlers/entrySurface.test.ts` asserts, and the reason
+       * `./router.ts`, which resolves the graph at module load, fails a misconfigured deployment at cold
+       * start while this entry stays loadable and answers the classified configuration failure per
+       * invocation.
+       */
+      // eslint-disable-next-line @typescript-eslint/no-require-imports -- deliberate; see above
+      const { getCatalogContainer } = require('../config/container') as CatalogContainerModule;
       const container = getCatalogContainer();
 
       dispatchBrandAction = createActionDispatcher<BrandRouteKey>({
