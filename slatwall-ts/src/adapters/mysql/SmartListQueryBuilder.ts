@@ -380,7 +380,7 @@ const NULL_FILTER_TOKEN = 'null';
  * non-distinct RECORDS. That asymmetry is behaviour, not an accident this port may quietly fix
  * (AAP 0.7.3 standard 7), and it is the divergence `issue_1296` was raised against. Both rules are
  * reproduced as declared: {@link composeSelectClause} honours the flag, and
- * {@link composeCountSelectClause} does not consult it. `test/adapters/SmartListQueryBuilder.test.ts`
+ * {@link composeCountSelectClause} does not consult it. `test/adapters/MySqlOptionRepository.test.ts`'s folded `SmartListQueryBuilder` block
  * executes both directions over genuinely repeated rows, so neither dropping the keyword nor
  * unconditionally adding it can pass.
  *
@@ -750,7 +750,7 @@ export interface CompiledSmartListQuery {
   /**
    * The PHYSICAL table the base entity resolved to.
    *
-   * Present so the the logical-versus-physical naming divergence [model/dao/SkuDAO.cfc:L132] translation is directly assertable: a caller supplies `SlatwallProduct` and
+   * Present so the logical-versus-physical name translation recorded in the file header is directly assertable: a caller supplies `SlatwallProduct` and
    * this reports `SwProduct`.
    */
   readonly baseTable: PhysicalTableName;
@@ -2616,7 +2616,7 @@ export class SmartListQueryBuilder implements SmartListQueryPort {
    * `test/services/OptionService.test.ts`", which was not true of any case in that file at the time —
    * the file's own header recorded that this builder sat outside its dependency whitelist. A coverage
    * claim that cannot be checked is worse than none, so the claim now enumerates the cases:
-   *   • `test/adapters/SmartListQueryBuilder.test.ts` — the three-statement shape against a real
+   *   • `test/adapters/MySqlOptionRepository.test.ts`'s folded `SmartListQueryBuilder` block — the three-statement shape against a real
    *     builder, the count-FIRST ordering, the two-statement reuse when
    *     {@link pageWindowCoversEveryRecord} holds, and the budget refusals on BOTH execution members.
    *   • `test/services/OptionService.test.ts` — the same real builder driven THROUGH a service, over a

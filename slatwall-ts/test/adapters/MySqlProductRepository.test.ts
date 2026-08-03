@@ -3184,7 +3184,7 @@ describe('NET-NEW — the query discipline every statement in this adapter is he
 
     /* A statement addresses tables and columns and nothing else. The connection is the pool's business,
      * and the datasource name — `Slatwall`, per the legacy application configuration — is deliberately
-     * absent from statement text, which is also what makes the the logical-versus-physical naming divergence [model/dao/SkuDAO.cfc:L132] assertion above unambiguous. */
+     * absent from statement text, which is also what makes the naming-divergence assertion above unambiguous. */
     for (const forbidden of [
       'slatwall.',
       'information_schema',

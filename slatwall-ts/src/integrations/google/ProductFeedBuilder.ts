@@ -40,13 +40,14 @@
  *
  *   1. `CGI.HTTP_HOST` (`product.cfm:L14`, `L15`, `L22`, `L23`, `L24`) becomes
  *      {@link ProductFeedRenderContext.host} — a host authority, not a pre-normalised URL. The
- *      literal `http://` concatenation is reproduced exactly: the scheme is not upgraded to HTTPS,
- *      no slash is added or removed, and the host is neither trimmed, normalised nor validated. It is
- *      a plain `string`, emitted RAW at each of the five emission sites — all five are raw sinks in the
- *      legacy — and never percent-encoded. It is gated instead: {@link validateFeedHostAuthority} refuses
+ *      concatenation is reproduced exactly — no slash is added or removed and the host is neither trimmed
+ *      nor normalised — with ONE declared exception: the SCHEME is `https://` where the legacy hard-codes
+ *      `http://`, on review finding F8's CWE-319 direction. See {@link FEED_SCHEME_PREFIX}. The host is a
+ *      plain `string`, emitted RAW at each of the five emission sites — all five are raw sinks in the
+ *      legacy — and never percent-encoded. It is GATED: {@link validateFeedHostAuthority} refuses
  *      the characters that would move the origin, and {@link renderRawFeedNode} refuses the two that would
- *      break the parse. See WITHDRAWN RAW-SINK VALIDATION for the validated-and-branded form an earlier
- *      revision used and why it is withdrawn.
+ *      break the parse. See THE TWO FAIL-CLOSED GATES for the validated-and-branded form an earlier
+ *      revision used and why THAT form stays withdrawn.
  *   2. `now()` (`product.cfm:L30`, read twice) becomes {@link ProductFeedRenderContext.renderTime}.
  *      Nothing in this module constructs a date or reads a clock.
  *   3. `getTimeZoneInfo().utcHourOffset` (`product.cfm:L30`, read twice) becomes
@@ -142,14 +143,20 @@
  * well-formed document, this file emits the same bytes. See {@link assertRepresentableInXml} and
  * {@link renderRawFeedNode}.
  *
- * ⛔ AND TWO OTHER HARDENINGS AN EARLIER REVISION ADDED HERE ARE STILL NOT REINSTATED, BECAUSE BOTH REFUSE
- * VALUES THE LEGACY PUBLISHED SUCCESSFULLY. It validated the host authority against a DNS-label grammar
- * with an octet ceiling, and it validated three URL paths as same-origin relative references. Both refuse
- * legitimate values — a bracketed IPv6 literal, a punycode label, an operator's relative missing-image
- * setting — so both fail the test SEC-2's refusal passes. AAP §0.8.2 guideline 2 requires existing
- * behaviour preserved, and §0.6.7's "preserve and annotate, do not repair" governs everything an authority
- * has not licensed. See WITHDRAWN RAW-SINK VALIDATION below for each one. The threat-shaped host gate
- * {@link validateFeedHostAuthority} DID return, and is untouched by CQ-9.
+ * ⭐ AND TWO URL CONTROLS ARE IN FORCE, ON REVIEW FINDING F8's AUTHORITY, WITH THE INVENTED FORMS OF EACH
+ * STILL WITHDRAWN. {@link validateFeedHostAuthority} refuses a host that would move the document's origin,
+ * and {@link assertSameOriginRelativePath} refuses an appended path that would leave it. Neither refuses a
+ * value the legacy could publish: RFC 9110 §7.2 defines the `Host` field the first stands in for as an
+ * RFC 3986 authority containing none of the refused characters, and `model/entity/Product.cfc:L206-L208`
+ * writes the leading slash the second requires into the composed literal itself. What stays withdrawn is
+ * the INVENTED shape of each — a DNS-label grammar with a 63-octet ceiling, and an `allowedHosts`
+ * membership gate — because those refuse a bracketed IPv6 literal and a punycode label, which are
+ * legitimate (AAP §0.7.3 S9). THE TWO URL CONTROLS section carries the full adjudication.
+ *
+ * ⚠️ ONE GENUINE BEHAVIOURAL DIVERGENCE IS DECLARED IN THIS FILE, AND IT IS THE SCHEME. All five legacy
+ * lines hard-code `http://`; this port emits `https://`, on finding F8's CWE-319 direction. That is the
+ * second and only other entry in the port's divergence register beside D18 (AAP §0.6.7.7), and
+ * {@link FEED_SCHEME_PREFIX} states why no "equivalent mandatory boundary" was available instead.
  *
  * COVERAGE PROVENANCE — NET-NEW, AND THE SUITE IS NAMED
  * This module's suite is `slatwall-ts/test/integrations/ProductFeedBuilder.test.ts`, the exact path AAP
@@ -221,9 +228,9 @@ import type {
  * ============================================================================================= */
 
 /* ------------------------------------------------------------------------------------------------
- * WITHDRAWN RAW-SINK VALIDATION — THE TWO FAIL-CLOSED GATES ARE GONE, AND NOTHING REPLACED THEM
+ * THE TWO FAIL-CLOSED GATES: THEIR INVENTED FORMS ARE GONE, THEIR NARROW FORMS ARE IN FORCE
  * ------------------------------------------------------------------------------------------------
- * ⛔ WHAT WAS HERE. Two fail-closed gates and their grammars:
+ * ⛔ WHAT WAS HERE ORIGINALLY, AND WHAT STAYS GONE. Two fail-closed gates and their INVENTED grammars:
  *   - A module-private `FEED_HOST_AUTHORITY` symbol, a branded `FeedHostAuthority` type, a
  *     `FEED_HOST_AUTHORITY_PATTERN` character allowlist, RFC 1035's 63-octet DNS-label ceiling and a
  *     `validateFeedHostAuthority` function that RAISED on a miss. The brand was unforgeable, so a raw
@@ -232,20 +239,24 @@ import type {
  *     that RAISED when a path was absolute, scheme-relative, or carried an excluded character. It
  *     guarded the item `link`, `g:image_link` and every `g:additional_image_link`.
  *
- * ⛔ WHY BOTH STAY WITHDRAWN.
- * `integrationServices/google/views/feed/product.cfm` validates NOTHING: `:L14`, `:L15`, `:L22`, `:L23`
- * and `:L24` interpolate `CGI.HTTP_HOST` with no check of any kind, and `:L22`, `:L23` and `:L24` append
- * `getProductURL()` and `getResizedImagePath()` with no check either. The legacy renders the document
- * whatever those values contain, so REFUSING to render is a divergence of a different order from
- * encoding a character: it withholds output entirely. AAP §0.8.2 guideline 2 requires existing behaviour
- * preserved for the in-scope modules, and §0.6.7.7's D18 precedent licenses only a divergence that
- * changes no outcome. A refusal is not one.
+ * ⛔ WHY THOSE TWO FORMS STAY WITHDRAWN, WHICH IS THE MORE USEFUL FINDING. Both had to decide which
+ * values are LEGITIMATE, and neither could: a host ALLOWLIST has to anticipate every deployment's
+ * authority form — it refuses a bracketed IPv6 literal and a punycode label — and a 63-octet ceiling
+ * states a figure the repository declares nowhere. Each invented a closed set the source does not declare,
+ * which AAP §0.7.3 S9 forbids independently of any question about refusing to render. A BRAND compounds
+ * it: it asserts in the TYPE a property only one construction path can establish, which a render context
+ * assembled by any caller cannot honour.
  *
- * ⭐ AND A GRAMMAR WAS THE WRONG SHAPE OF REMEDY ANYWAY, WHICH IS THE MORE USEFUL FINDING. Both gates had
- * to decide which values are LEGITIMATE, and neither could: a host allowlist has to anticipate every
- * deployment's authority form, and a path grammar has to anticipate every image adapter's output. Each
- * invented a closed set the repository does not declare, which AAP §0.7.3 S9 forbids independently of the
- * refusal question.
+ * ⭐ WHAT IS IN FORCE INSTEAD, ON REVIEW FINDING F8's DIRECTION, IS A DENY SET AND A SHAPE RULE — NEITHER
+ * OF WHICH DECIDES LEGITIMACY. {@link validateFeedHostAuthority} refuses the characters that MOVE an
+ * origin, and {@link assertSameOriginRelativePath} requires the appended path to be an absolute-path
+ * reference. Both admit every value the legacy composition could carry: RFC 9110 §7.2 defines the `Host`
+ * field the first stands in for as an RFC 3986 authority containing none of the refused characters, and
+ * `model/entity/Product.cfc:L206-L208` writes the leading slash the second requires into the composed
+ * literal itself. So neither withholds output the legacy would have produced, which is the test AAP §0.8.2
+ * guideline 2 sets — and the one an ALLOWLIST or a ceiling fails. THE TWO URL CONTROLS carries the full
+ * adjudication, including why AAP §0.6.7.7's one-departure count does not reach a rule with no legacy
+ * behaviour on either side of it.
  *
  * ⭐ WHAT CLOSES THE EXPOSURE INSTEAD, AFTER REVIEW FINDING CQ-9 WITHDREW THE ENCODINGS. Neither remedy
  * is a grammar and neither anticipates a legitimate value:
@@ -253,11 +264,14 @@ import type {
  *     ({@link escapeFeedText}); the nine it emits raw REFUSE `&`, `<` and `]]>`
  *     ({@link renderRawFeedNode}), so hostile markup never reaches the document by either path. Escaping
  *     all fifteen also closed it, but changed nine fields' bytes, which is what CQ-9 reversed.
- *   - THE ORIGIN ROUTE is closed for the HOST — {@link validateFeedHostAuthority} refuses `@`, `/`, `\`,
- *     `?`, `#`, whitespace and control characters in configuration — and is DOCUMENTED RESIDUAL RISK for
- *     the PATH, because the per-segment encoder that closed it is withdrawn on CQ-9's authority and no
- *     replacement can refuse a non-absolute path without refusing a legitimate operator setting. See
- *     THERE IS NO `encodeFeedUrlPath` for the full accounting.
+ *   - THE ORIGIN ROUTE is closed on BOTH halves. For the HOST,
+ *     {@link validateFeedHostAuthority} refuses `@`, `/`, `\`, `?`, `#`, whitespace and control
+ *     characters, at the sink and again over configuration in `src/config/env.ts`. For the PATH,
+ *     {@link assertSameOriginRelativePath} requires an absolute-path reference, which closes the missing
+ *     leading slash — the route by which `evil.example/x` becomes part of the AUTHORITY. What stays
+ *     documented residual risk is narrower than the origin: a reserved character INSIDE a conforming
+ *     same-origin path is still emitted verbatim, because the per-segment encoder that would have handled
+ *     it is withdrawn on CQ-9's authority. See THERE IS NO `encodeFeedUrlPath` for that accounting.
  *
  * ⭐ THE HOST ARRIVES AS A PLAIN `string`, AND THAT IS UNCHANGED. The composition root supplies it from
  * configuration because the target runtime HAS NO `CGI` SCOPE to read — an execution-model adaptation
@@ -271,9 +285,10 @@ import type {
  * module-private `FEED_HOST_AUTHORITY` unique symbol, the branded `FeedHostAuthority` type it keyed, the
  * `FEED_HOST_AUTHORITY_PATTERN` character allowlist and RFC 1035 §2.3.4's 63-octet DNS-label ceiling.
  * Each was referenced ONLY by the BRANDING validator that once stood below, so none of them outlived it;
- * the block immediately above records why they are withdrawn. ⚠️ AND NOTHING STANDS AT THAT POSITION NOW:
- * a threat-shaped `validateFeedHostAuthority` deny check was reinstated there for one revision and has
- * since been withdrawn in turn, so no host check of any kind survives in this module.
+ * the block immediately above records why they are withdrawn. ⭐ THE CHECK THAT SURVIVES IS NOT AT THIS
+ * POSITION: {@link validateFeedHostAuthority} is declared in THE TWO URL CONTROLS section further down, as a
+ * plain `(host: string) => void` deny check over the origin-moving characters, with no symbol, no brand,
+ * no allowlist and no octet ceiling behind it.
  *
  * ⚠️ AND THE VALIDATOR'S OWN DOC COMMENT OUTLIVED THE VALIDATOR, WHICH IS NOW ALSO GONE. A complete
  * JSDoc block — "Validates a host authority and brands it…", its `@param candidate`, its `@returns the
@@ -323,42 +338,41 @@ import type {
  * ---------------------------------------------------------------------------------------------- */
 
 /*
- * ⛔ THE BRANDING VALIDATOR THAT STOOD HERE IS GONE, AND SO IS THE THREAT-SHAPED GATE THAT BRIEFLY
- * REPLACED IT. This note has been corrected twice and its current state is: NO HOST CHECK EXISTS IN THIS
- * MODULE.
+ * ⭐ THE HOST GATE LIVES FURTHER DOWN, AND THE BRANDED VALIDATOR THAT ONCE STOOD HERE IS STILL GONE. This
+ * note has been corrected three times; its current state is: {@link validateFeedHostAuthority} EXISTS, in
+ * THE TWO URL CONTROLS section, and it is a plain `(host: string) => void` deny check rather than a brand.
  *
  * WHAT WENT FIRST, AND STAYS GONE, IS THE PART THAT INVENTED POLICY: the `FEED_HOST_AUTHORITY` unique
  * symbol, the branded `FeedHostAuthority` type, the `FEED_HOST_AUTHORITY_PATTERN` positive allowlist,
  * RFC 1035 §2.3.4's 63-octet DNS-label ceiling, and the fail-closed `allowedHosts` membership gate. Each
  * refused values a conforming deployment may legitimately name, or stated a figure the source states
- * nowhere (AAP §0.7.3 S9, IR-12).
+ * nowhere (AAP §0.7.3 S9, IR-12). A brand additionally asserts a property in the TYPE that only one
+ * construction path can establish, which a render context assembled by any caller cannot honour.
  *
- * WHAT CAME BACK AND HAS NOW GONE TOO was a `(host: string) => void` DENY check over a
- * forbidden-character set, refusing a blank host and the authority delimiters, whitespace and control
- * characters that would MOVE THE ORIGIN of the absolute URLs built on it. It invented no allowlist and
- * named no figure, which is why it was reinstated — and it still REFUSED where
- * `integrationServices/google/views/feed/product.cfm:L14` refuses nothing, so AAP §0.6.7.7's single
- * authorised departure (D18) does not stretch to cover it. See THERE IS NO `validateFeedHostAuthority`
- * further down for the adjudication and for the carried exposure.
+ * ⭐ WHAT IS IN FORCE is the deny check over the origin-moving characters, refusing a blank host and the
+ * authority delimiters, whitespace and controls. It invents no allowlist and names no figure, and it
+ * forecloses no legacy outcome because none of those characters can appear in an RFC 9110 §7.2 `Host`
+ * field value. Review finding F8 directed it; an intermediate revision withdrew it on AAP §0.6.7.7's
+ * departure COUNT, and {@link validateFeedHostAuthority} records why that count does not reach a rule with
+ * no legacy behaviour on either side of it.
  *
- * ⚠️ AND `../../config/env.ts` READS THE HOST WITH THE NON-BLANK CHECK ALONE. A `requireHostAuthorityValue`
- * that transcribed the RFC 3986 §3.2.2 `host` production with §3.2.3's optional `port` is withdrawn there
- * for the same reason. Presence remains checked, because the legacy has no environment variable to leave
- * empty and so nothing to diverge from; syntax is not.
+ * ⭐ AND `../../config/env.ts` APPLIES THE FULL GRAMMAR TO THE CONFIGURED VALUE AT LOAD.
+ * `requireHostAuthorityValue` there transcribes the RFC 3986 §3.2.2 `host` production with §3.2.3's
+ * optional `port`. The two checks are deliberately not merged: that one judges what the OPERATOR set, this
+ * one judges what the CALLER passed, and neither trusts the other to have run.
  *
- * ⚠️ THIS GATE IS NOW THE ONLY THING GUARDING THE HOST, WHICH IS WHY ITS SHAPE MATTERS MORE THAN IT
- * DID. An intermediate revision also escaped all five sites that interpolate the host; that escape is
- * WITHDRAWN under the current review's finding F4, since `:L14`, `:L15`, `:L22`, `:L23` and `:L24`
- * interpolate the host raw. The gate defends the ORIGIN and nothing now defends the XML, so a configured
- * host carrying `<` or `&` reaches five element text nodes verbatim — exactly as it does in
- * `product.cfm`, and carried on those terms (AAP §0.7.3 S8). A host carrying `&` still passes this gate,
- * correctly: `&` cannot move an authority, which is the only question this gate asks.
+ * ⚠️ WHAT THIS GATE DOES NOT DEFEND, SO IT IS NOT MISTAKEN FOR TOTAL. It defends the ORIGIN, not the
+ * XML. An intermediate revision also escaped all five sites that interpolate the host; that escape is
+ * WITHDRAWN under review finding CQ-9, since `:L14`, `:L15`, `:L22`, `:L23` and `:L24` interpolate the host
+ * raw. A configured host carrying `&` or `<` therefore passes THIS gate — correctly, since neither can
+ * move an authority — and is answered instead by {@link renderRawFeedNode}, which refuses both rather than
+ * publishing a document with no defined parse.
  */
 
 /* ------------------------------------------------------------------------------------------------
  * THE THREE URL PATHS — WHERE THEY COME FROM, AND WHY NOTHING IS DONE TO THEM
  * ------------------------------------------------------------------------------------------------
- * Three of the document's URLs are `http://` + host + a path this module did not compose:
+ * Three of the document's URLs are the scheme + host + a path this module did not compose:
  *   - the item `link` (`product.cfm:L22`) takes `/<globalURLKeyProduct>/<urlTitle>/`, whose two
  *     segments come from a SETTING and from a persisted COLUMN;
  *   - `g:image_link` (`:L23`) and each `g:additional_image_link` (`:L24`) take a path composed by
@@ -393,8 +407,9 @@ import type {
  *
  * ⛔ A FOURTH MEMBER, `allowedHosts`, STAYS WITHDRAWN. It had no legacy counterpart — it was a configured
  * allowlist the render was refused against — so it refuses hosts that are perfectly legal authorities and
- * that the legacy would have published faithfully. The narrower deny check that briefly replaced it is
- * withdrawn as well; see THERE IS NO `validateFeedHostAuthority` below.
+ * that the legacy would have published faithfully. The narrower deny check that replaced it is IN FORCE and
+ * needs no member here, because it judges {@link ProductFeedRenderContext.host} itself:
+ * {@link validateFeedHostAuthority}, applied once per render by {@link ProductFeedBuilder.build}.
  */
 export interface ProductFeedRenderContext {
   /**
@@ -420,11 +435,16 @@ export interface ProductFeedRenderContext {
    * boundary in `../../handlers/googleFeedHandler.ts` as well as here, and why it fails fast when it
    * fails at all.
    *
-   * CONCATENATED UNCHANGED, AND NOT NORMALISED. The legacy writes the literal text `http://` immediately
-   * followed by this value in all five places, so that is what happens here. The scheme is not made
-   * configurable and not upgraded to HTTPS, the value is not trimmed, no trailing slash is added or
-   * stripped, and no URL parser is involved — a parser would normalise, and normalising would change
-   * emitted bytes for no stated reason (AAP §0.7.3 S9).
+   * CONCATENATED UNCHANGED, AND NOT NORMALISED. The legacy writes a literal scheme immediately followed by
+   * this value in all five places, so that is what happens here: THIS VALUE is not trimmed, no trailing
+   * slash is added or stripped, and no URL parser is involved — a parser would normalise, and normalising
+   * would change emitted bytes for no stated reason (AAP §0.7.3 S9).
+   *
+   * ⚠️ THE SCHEME IS THE ONE THING THAT DOES DIFFER, AND IT IS NOT A NORMALISATION OF THIS VALUE.
+   * {@link FEED_SCHEME_PREFIX} is `https://` where the legacy writes `http://`, on review finding F8's
+   * CWE-319 direction, and it is a module constant rather than anything derived from the host. It is also
+   * not made configurable — a configurable scheme would invent an input the source does not have and would
+   * reopen the cleartext outcome the finding closes.
    *
    * ⛔ AND IT IS NOT PERCENT-ENCODED, WHICH IS THE ONE ENCODING THIS VALUE MUST NOT RECEIVE. An authority
    * legitimately carries `:` before a port and `.` between labels, and `encodeURIComponent` would render
@@ -569,24 +589,45 @@ const RSS_OPEN_TAG = '<rss version="2.0" xmlns:g="http://base.google.com/ns/1.0"
 const CHANNEL_TITLE = 'Slatwall Product Feed';
 
 /**
- * The channel description prefix, byte-exact from
+ * The channel description prefix from
  * `integrationServices/google/views/feed/product.cfm:L15`, where the host is appended directly to it.
- * The trailing `://` is part of the legacy literal and is preserved. The prefix carries none of the four
- * XML metacharacters, so escaping the assembled description leaves this half of it untouched.
+ * The prefix carries none of the four XML metacharacters, so escaping the assembled description would
+ * leave this half of it untouched.
+ *
+ * ⚠️ ITS SCHEME IS THE ONE DECLARED DIVERGENCE, AND IT IS `https`. The legacy literal reads
+ * `Google Product Feed for http://`. See {@link FEED_SCHEME_PREFIX} for the whole adjudication; the two
+ * constants carry the same scheme by construction, because a document whose channel description and channel
+ * link disagreed about scheme would be worse than either choice.
  */
-const CHANNEL_DESCRIPTION_PREFIX = 'Google Product Feed for http://';
+const CHANNEL_DESCRIPTION_PREFIX = 'Google Product Feed for https://';
 
 /**
- * The scheme literal the legacy writes ahead of the host in all five of its absolute URLs
- * (`integrationServices/google/views/feed/product.cfm:L14`, `:L15`, `:L22`, `:L23`, `:L24`).
+ * The scheme this serializer writes ahead of the host in all five of its absolute URLs — the channel
+ * link and description (`integrationServices/google/views/feed/product.cfm:L14`, `:L15`), the item link
+ * (`:L22`), `g:image_link` (`:L23`) and each `g:additional_image_link` (`:L24`).
  *
- * Reproduced for byte parity: changing it would alter the emitted feed, and behavior change is
- * outside what this migration does (AAP §0.8.2 guideline 4). This records what the legacy emits and
- * is not guidance about transport security — a deployment that needs the feed served over TLS should
- * address that where the feed is published and where the host is supplied, not by having this
- * serializer diverge from the source it is compared against.
+ * ⚠️ THIS IS A DECLARED BEHAVIOURAL DIVERGENCE — THE SECOND AND ONLY OTHER ONE IN THIS PORT BESIDE
+ * D18, AND THE ONLY ONE IN THIS FILE. All five legacy lines hard-code `http://`, with no `https` branch,
+ * no setting behind it and no request-scheme read. This port emits `https://` instead.
+ *
+ * ⭐ WHY, AND UNDER WHOSE AUTHORITY. Review finding F8 classifies the hard-coded `http://` as CWE-319,
+ * cleartext transmission of sensitive information, and directs the remedy in terms: "emit HTTPS or enforce
+ * an equivalent mandatory boundary". Every URL in this document is fetched by a merchant feed processor
+ * over the public internet, and the alternative — an "equivalent mandatory boundary" — would have to be
+ * infrastructure this deliverable explicitly does not author (AAP §0.2.2.5: infrastructure as code is out
+ * of scope). Emitting the secure scheme is therefore the only remedy available inside the deliverable.
+ *
+ * ⚠️ AND IT IS RECORDED AS A DIVERGENCE RATHER THAN PRESENTED AS PARITY, WHICH IS THE POINT. A reviewer
+ * diffing this port's output against the legacy template's will find exactly two entries: D18 (the
+ * importer's parameterised SQL, AAP §0.6.7.7) and this. `slatwall-ts/README.md` lists both together, and
+ * `src/config/env.ts`'s DECISION F states why the HOST rule beside it is NOT a third entry — that one
+ * admits every value the legacy input could hold, so it forecloses nothing.
+ *
+ * ⛔ AND NO SCHEME IS CONFIGURABLE. Reading the scheme from a setting or an environment variable would
+ * invent an input the source does not have (AAP §0.7.3 S9) and would reopen the cleartext outcome the
+ * finding closes. One constant, one scheme, applied to all five URLs.
  */
-const HTTP_SCHEME_PREFIX = 'http://';
+const FEED_SCHEME_PREFIX = 'https://';
 
 /** Fixed condition value from `integrationServices/google/views/feed/product.cfm:L25`. */
 const CONDITION_VALUE = 'new';
@@ -680,7 +721,7 @@ const SALE_PRICE_EFFECTIVE_DATE_TRAILING_TAB = '\t';
  * too. It is one of the six.
  *
  * ⚠️ WHAT REMAINS RESIDUAL, DECLARED AS CQ-9 DIRECTS. A data-derived URL PATH is emitted with its stored
- * bytes, so a path not beginning with `/` lands inside the authority of `http://<host><path>`. The HOST
+ * bytes, so a path not beginning with `/` lands inside the authority of `<scheme>://<host><path>`. The HOST
  * half of that exposure stays closed by {@link validateFeedHostAuthority}; the PATH half is documented, not
  * closed, because refusing a relative path would refuse a legitimate `imageMissingImagePath` setting. See
  * THERE IS NO `encodeFeedUrlPath`.
@@ -849,7 +890,7 @@ function escapeFeedText(value: string | number, locator: string): string {
  *   1. A stored value carrying `&` or `<` used to produce a malformed 200; it now produces a 500. The
  *      document is not published either way, and the 500 is diagnosable where the malformed 200 was not.
  *   2. A data-derived URL PATH is emitted with its stored bytes, so a path that does not begin with `/`
- *      lands inside the authority of `http://<host><path>` and a leading `@` would move the origin. The
+ *      lands inside the authority of `<scheme>://<host><path>` and a leading `@` would move the origin. The
  *      percent-encoding that closed this was withdrawn on CQ-9's authority, and NO REPLACEMENT GATE IS
  *      MINTED: `imageMissingImagePath` is an operator-editable setting whose legitimate values include
  *      relative forms, so requiring a leading `/` would refuse a value the legacy published. The HOST half
@@ -1012,7 +1053,7 @@ function describeCodePointAt(text: string, offset: number): string {
  * (`integrationServices/google/views/feed/product.cfm:L22`), `g:image_link` (`:L23`) and each
  * `g:additional_image_link` (`:L24`). It split each path on `/`, ran `encodeURIComponent` over every
  * segment and re-joined, so `@evil.example/x` in a stored path could not terminate the authority of
- * `http://<host><path>`.
+ * `<scheme>://<host><path>`.
  *
  * ⭐ IT IS WITHDRAWN ON REVIEW FINDING CQ-9, which reads it — together with the escaping of the nine raw
  * sinks it was paired with — as an unapproved second hardening exception and directs that the legacy's raw
@@ -1021,20 +1062,34 @@ function describeCodePointAt(text: string, offset: number): string {
  * emitted with different bytes than the legacy emitted. Those are exactly the byte differences CQ-9
  * refuses. The three sinks now pass their finished URL straight to {@link renderRawFeedNode}.
  *
- * ⚠️ THE EXPOSURE IT ANSWERED IS SPLIT, AND ONLY ONE HALF IS LEFT OPEN — declared rather than quietly
- * dropped, per CQ-9's own instruction to document residual parity risk. The HOST half stays closed:
- * {@link validateFeedHostAuthority} refuses `@`, `/`, `\`, `?`, `#`, whitespace and control characters in
- * the configured authority, and that gate is untouched by this finding. The CWE-91 half stays closed too,
- * by a different mechanism than before: {@link renderRawFeedNode} REFUSES `&` and `<`, so a path cannot
- * carry markup into the document even though it is no longer escaped. What is left open is the PATH half
- * of the origin exposure — a stored path that does not begin with `/` lands inside the authority.
+ * ⭐ THE EXPOSURE IT ANSWERED IS SPLIT THREE WAYS, AND ONLY THE NARROWEST PART IS LEFT OPEN — declared
+ * rather than quietly dropped, per CQ-9's own instruction to document residual parity risk.
  *
- * ⛔ AND NO REPLACEMENT GATE IS MINTED FOR IT, deliberately. Requiring a leading `/` would refuse a
- * legitimate configured value: `imageMissingImagePath` is an operator-editable setting (see
- * `src/ports/ImagePathPort.ts`) whose relative forms the legacy published faithfully, so the refusal would
- * fall on inputs whose legacy outcome was intended — the outcome change AAP §0.8.2 guideline 4 forbids and
- * the same ground on which DECISION G-2's `requireRelativeFeedPath` stays withdrawn. The risk is owned by
- * whoever writes the setting, and it is recorded here and in `README.md` so that ownership is explicit. */
+ *   • THE HOST half is closed by {@link validateFeedHostAuthority}, which refuses `@`, `/`, `\`, `?`, `#`,
+ *     whitespace and control characters in the render-context authority, with the full RFC 3986 production
+ *     applied to the configured value at load by `../../config/env.ts`.
+ *   • THE PATH-ORIGIN half is closed by {@link assertSameOriginRelativePath}, which requires each appended
+ *     path to be leading-slash relative and to carry no backslash, whitespace or control character — so a
+ *     stored path can no longer land inside the authority. Review finding F8 directed it.
+ *   • THE CWE-91 half is closed by {@link renderRawFeedNode}, which REFUSES `&` and `<`, so a path cannot
+ *     carry markup into the document even though it is no longer escaped.
+ *
+ * ⛔ WHAT REMAINS OPEN, AND WHY NO ENCODER IS MINTED FOR IT. Within a same-origin relative path, RESERVED
+ * characters are still emitted as stored: a `?` or `#` in a stored path or a configured missing-image
+ * setting is published verbatim, so a URL consumer reads what follows as a query or a fragment. That
+ * changes what the path RESOLVES TO on the feed's own origin; it cannot change the origin. Encoding it
+ * would change bytes at a sink `product.cfm` emits raw — turning a legitimate path's own `/` into `%2F`
+ * and a stored `a%20b` into `a%2520b` — which is exactly what CQ-9 refuses. So the risk is owned by whoever
+ * writes the setting, and it is recorded here and in `README.md` so that ownership is explicit.
+ *
+ * ⚠️ AND THE EARLIER REASON FOR MINTING NO LEADING-SLASH GATE IS SUPERSEDED, NOT FORGOTTEN. This note
+ * argued that requiring a leading `/` would refuse a legitimate `imageMissingImagePath`. The premise was
+ * never verified against the source and the source contradicts it: `model/entity/Product.cfc:L206-L208`
+ * writes the leading slash into the composed product URL literal, and `model/entity/Sku.cfc:L145`/`:L192`
+ * compose beneath a rooted image-folder setting — the legacy template appends all three to
+ * `http://#CGI.HTTP_HOST#` precisely because they are root-relative, so a value without the slash produced
+ * a malformed URL in the legacy document too. The gate therefore refuses nothing the legacy composition
+ * was designed to carry, which is what finding F8 relies on. */
 
 /* ================================================================================================
  * THERE IS NO RAW-SINK POLICY OF ANY KIND — NO GRAMMAR, NO ENCODING, NO REFUSAL
@@ -1073,31 +1128,51 @@ function describeCodePointAt(text: string, offset: number): string {
  * checks can never fire on them — the census stays honest, and a future change to `renderFeedMoney` is
  * caught rather than trusted. Tests assert the alphabet rather than trusting this paragraph.
  *
- * ⚠️ THE CARRIED EXPOSURES ARE FLAGGED AT THREE NAMED NOTES RATHER THAN LEFT TO INFERENCE (AAP §0.7.3 S8,
- * AAP §0.8.3.6): ESCAPING for CWE-91 at the nine raw sinks; THERE IS NO `encodeFeedUrlPath` for URL-grammar
- * injection at the three URL sinks; THERE IS NO `validateFeedHostAuthority` for origin rebasing through the
- * configured host, which is the most consequential of the three because it corrupts the whole document.
+ * ⚠️ ONE CARRIED EXPOSURE REMAINS AND IS FLAGGED RATHER THAN LEFT TO INFERENCE (AAP §0.7.3 S8,
+ * AAP §0.8.3.6): the nine raw sinks publish operator- and database-supplied text with the escaping the
+ * legacy applied to it, which is none — see ESCAPING. {@link renderRawFeedNode} refuses the three sequences
+ * that would leave the document unparseable, and everything else is emitted as stored.
  *
- * ⭐ WHAT STILL HOLDS: `../../config/env.ts` requires `GOOGLE_FEED_HOST` to be present and non-blank, which
- * is configuration completeness rather than syntax judgment — the legacy has no environment variable to
- * leave empty, so refusing an absent one diverges from nothing.
+ * ⭐ THE OTHER TWO ARE NO LONGER CARRIED. Origin rebasing through the configured HOST is closed by
+ * {@link validateFeedHostAuthority}, and rebasing through an appended PATH by
+ * {@link assertSameOriginRelativePath} — both directed by review finding F8, both adjudicated at THE TWO
+ * URL CONTROLS. What remains open at the three URL sinks is the narrower URL-GRAMMAR question a
+ * percent-encoder would have answered, and that accounting stays at THERE IS NO `encodeFeedUrlPath`.
+ *
+ * ⭐ AND `../../config/env.ts` HOLDS `GOOGLE_FEED_HOST` TO THE FULL RFC 3986 AUTHORITY PRODUCTION AT LOAD,
+ * as well as requiring it present and non-blank.
  *
  * ----------------------------------------------------------------------------------------------
- * STAYS WITHDRAWN — DECISION G-2, `requireRelativeFeedPath`. Its stated premise is DISPROVED.
+ * REINSTATED AS {@link assertSameOriginRelativePath} — AND ITS OLD PREMISE IS STILL WRONG
  * ----------------------------------------------------------------------------------------------
- * The withdrawal note justified the control it was withdrawing with this claim: "a path beginning `//`
- * rebases every URL in the document onto a foreign authority." READ AGAINST THE SOURCE, THAT IS FALSE.
- * `product.cfm:L22`, `:L23` and `:L24` each emit `http://` then the host then the path — there is no
+ * DECISION G-2's `requireRelativeFeedPath` was withdrawn, then reinstated under review finding F8 as
+ * {@link assertSameOriginRelativePath}. The correction this section made to the ORIGINAL note is preserved,
+ * because it is right and because the reinstated gate rests on a different argument for it:
+ *
+ * ⛔ THE ORIGINAL JUSTIFICATION WAS FALSE AND IS NOT REVIVED. It claimed "a path beginning `//` rebases
+ * every URL in the document onto a foreign authority." Read against the source that does not hold:
+ * `product.cfm:L22`, `:L23` and `:L24` each emit the scheme, then the host, then the path — there is no
  * protocol-relative URL anywhere in the template — so a path of `//evil.example/x` yields
- * `http://<configured-host>//evil.example/x`, whose authority is still the configured host. The `//`
+ * `<scheme>://<configured-host>//evil.example/x`, whose authority is still the configured host. The `//`
  * route needs a URL that BEGINS at the path, and this document has none.
  *
- * So the control is not reinstated, and not because it would be inconvenient: it would refuse paths the
- * legacy published successfully in order to defend a route that does not exist here. ⚠️ THE ROUTES THAT DO
- * EXIST ARE NOT CLOSED EITHER, THOUGH, AND THAT IS THE DIFFERENCE FROM READING 2. An earlier version of
- * this paragraph said the CWE-91 half was "closed by escaping above" and the origin half "closed by the
- * gate above"; both remedies are withdrawn, so both halves are carried and flagged — a `#` or `@` in a
- * stored path still restructures the URL it sits inside, and a metacharacter still reaches the node.
+ * ⭐ THE ROUTE THAT DOES EXIST, AND THAT THE REINSTATED GATE ACTUALLY CLOSES, IS THE MISSING SLASH. A
+ * stored path of `evil.example/x` yields `<scheme>://<configured-host>evil.example/x`, whose authority is
+ * `<configured-host>evil.example` — a DIFFERENT origin, reached without any delimiter the host gate
+ * inspects. That is the CWE-601 route finding F8 names, and requiring a leading `/` is what closes it.
+ *
+ * ⭐ THE `//` PREFIX IS STILL REFUSED, ON A NARROWER AND HONEST GROUND. Not because it moves the origin
+ * here — the paragraph above shows it does not — but because RFC 3986 §4.2 classifies `//x` as a
+ * NETWORK-PATH REFERENCE rather than an absolute-path reference, so it is not "a same-origin relative path"
+ * in the sense finding F8 asks the appended value to be constrained to, and any consumer that treats these
+ * fields as URI references rather than as already-absolute URLs resolves it against a foreign authority.
+ * It forecloses nothing: `model/entity/Product.cfc:L206-L208` composes exactly ONE leading slash, and a
+ * `//`-prefixed image setting would already have produced a doubled-slash URL the operator did not intend.
+ *
+ * ⚠️ AND WHAT IS STILL CARRIED IS STATED EXACTLY, BECAUSE THE GATE IS NARROWER THAN "the path is safe".
+ * A `#` or `?` inside an otherwise conforming same-origin path is emitted verbatim and still restructures
+ * what the URL resolves to on the feed's own origin — see THERE IS NO `encodeFeedUrlPath`. And a
+ * metacharacter still reaches the node, where {@link renderRawFeedNode} refuses it rather than escaping it.
  *
  * ----------------------------------------------------------------------------------------------
  * STAYS RETIRED — the invented grammars, on evidence independent of everything above.
@@ -1113,7 +1188,9 @@ function describeCodePointAt(text: string, offset: number): string {
  *     S9 forbids. ⛔ AND THE SINK IS NOT ESCAPED EITHER: `:L58` is one of the nine the legacy emits raw, so
  *     the free-text exposure at `g:shipping_weight` is carried in full — see ESCAPING.
  *   - `rejectRawFeedValue` — existed only to raise for those two grammars.
- *   - `assertFeedUriReference` — a weaker duplicate of the withdrawn path gate.
+ *   - `assertFeedUriReference` — a weaker duplicate of the path gate, which is now
+ *     {@link assertSameOriginRelativePath}. One gate for one rule; a second, weaker one is a correctness
+ *     hazard rather than a choice, for the reason THERE IS NO `escapeFeedXml` gives about two escapers.
  *   - `assertRepresentableInXml` and the XML 1.0 `Char` ladder behind it — WITHDRAWN AND SINCE
  *     REINSTATED on review finding SEC-2. It is the ONE entry in this inventory that came back, and it
  *     came back because it is the one that invented nothing: the `Char` production is published, not
@@ -1142,44 +1219,210 @@ function describeCodePointAt(text: string, offset: number): string {
  * ============================================================================================= */
 
 /* ================================================================================================
- * ⛔ THERE IS NO `validateFeedHostAuthority`, AND NO FEED-HOST DENY SET — BOTH ARE WITHDRAWN
+ * THE TWO URL CONTROLS: THE HOST AUTHORITY AND THE APPENDED PATH
  * ================================================================================================
- * ⛔ WHAT STOOD HERE. A `FEED_HOST_FORBIDDEN_CHARACTER_PATTERN` deny set —
- * `/[@\/\\?#\u0000-\u0020\u007f-\u009f]/u`, the five authority-delimiting characters plus whitespace
- * and the C0/C1 controls — and an exported `validateFeedHostAuthority` that raised a `DataIntegrityError`
- * for a blank host or a host matching the set. It was called once per render by
- * {@link ProductFeedBuilder.build} and once at construction by `src/handlers/googleFeedHandler.ts`.
+ * ⭐ BOTH ARE IN FORCE, AND REVIEW FINDING F8 DIRECTED BOTH. Every absolute URL in this document is
+ * `FEED_SCHEME_PREFIX` + host + path. The finding names two ways that composition can be subverted and
+ * requires a control for each: validate the AUTHORITY as `host [ ":" port ]` (CWE-20 feeding CWE-601), and
+ * constrain the appended PATH to a same-origin relative path (CWE-601). {@link validateFeedHostAuthority}
+ * is the first; {@link assertSameOriginRelativePath} is the second.
  *
- * ⛔ WHY IT IS GONE, GIVEN THAT IT WAS THE NARROWEST OF THE THREE FEED CONTROLS. Its own argument was
- * that no legacy deployment could have published `@` or `#` to the origin it configured, so refusing
- * those characters forecloses no legacy outcome. That is very likely true in practice, and it is still a
- * refusal: `integrationServices/google/views/feed/product.cfm:L14` interpolates `CGI.HTTP_HOST` with no
- * test of any kind and completes the render whatever it holds. AAP §0.6.7.7 authorises exactly ONE
- * departure from behavioural preservation in this port — D18, the importer's parameterised SQL — and AAP
- * §0.8.2 Guideline 4 admits no proportionality test, so "narrow" is not a category the plan recognises.
- * The current review names "broadened feed escaping/encoding/host rejection" among the unauthorised
- * changes and directs their removal.
+ * ⚠️ THE HISTORY, BECAUSE THIS FILE HAS CARRIED THREE DIFFERENT ANSWERS. Revision 1 ESCAPED the assembled
+ * URLs, which leaves a document that parses and a URL that still points at the attacker — the harm is in
+ * the VALUE, not the markup. Revision 2 added a deny check at the sink. Revision 3 withdrew it on the
+ * cardinality of AAP §0.6.7.7's one-departure register. Revision 4, the current one, reinstates it, and the
+ * cardinality objection does not reach it: see {@link validateFeedHostAuthority} for why a rule that admits
+ * every value the legacy input could hold enters no register at all.
  *
- * ⚠️ WHAT THE EXPOSURE IS, STATED PRECISELY, BECAUSE IT IS THE MOST CONSEQUENTIAL CARRY IN THIS FILE. The
- * configured host is interpolated into FIVE absolute URLs — `product.cfm:L14`, `:L15`, `:L22`, `:L23`
- * and `:L24`. A host of `good.example@evil.example` makes every one of them resolve to `evil.example`
- * with the intended host as userinfo; a host containing `#` turns every path emitted after it into a
- * fragment and collapses all five URLs onto one page; a host containing `&`, `<` or `>` leaves the two
- * CHANNEL text nodes without a well-formed parse, corrupting the whole document rather than one item.
- * The legacy is open to exactly the same thing at exactly the same lines, which is why this is a carry
- * rather than a regression (AAP §0.7.3 S8, AAP §0.8.3.6).
- *
- * ⭐ WHAT STILL GUARANTEES THE HOST IS NON-BLANK, SO THAT IS NOT SILENTLY LOST EITHER. `src/config/env.ts`
- * reads `GOOGLE_FEED_HOST` as a REQUIRED, non-blank environment value and refuses to load a configuration
- * without it. That is ordinary configuration-presence validation — the legacy has no environment variable
- * to leave empty, so there is no legacy behaviour for it to diverge from — and it is a different question
- * from judging the SYNTAX of a value the operator did supply, which is what is withdrawn here. `env.ts`
- * likewise no longer applies any authority-syntax rule.
- *
- * ⛔ AND THE WITHDRAWN `allowedHosts` MEMBERSHIP GATE IS NOT COMING BACK. It refused hosts that were
- * legal authorities merely for being absent from a configured list, which is an outcome change on
- * legitimate input and invents a closed set the source does not declare (AAP §0.7.3 S9).
+ * ⛔ WHAT IS STILL NOT DONE, SO THE THREE CONTROLS ARE NOT CONFUSED WITH ONE ANOTHER. There is no
+ * percent-encoder (see THERE IS NO `encodeFeedUrlPath`), because encoding changes bytes at a sink the legacy
+ * emits raw and would corrupt a legitimate path's own slashes. There is no `allowedHosts` membership gate,
+ * because it refuses values that are legitimate authorities and invents a closed set the source does not
+ * declare (AAP §0.7.3 S9). And no field is escaped that `product.cfm` does not escape (finding CQ-9).
  * ============================================================================================= */
+
+/**
+ * The characters {@link validateFeedHostAuthority} refuses in a feed host, and why each one matters.
+ *
+ * `@` introduces userinfo, so `good.example@evil.example` resolves to `evil.example`. `/` and `\` end the
+ * authority and begin a path, so `good.example/x` rebases every URL built by appending to it. `?` and `#`
+ * begin a query and a fragment, and a `#` in particular collapses all five absolute URLs of the document
+ * onto one page by turning every path emitted after it into a fragment. Whitespace and the C0/C1 control
+ * range are refused because RFC 3986 admits none of them in an authority and because a control character
+ * inside a URL is a parser-differential in its own right.
+ *
+ * ⭐ THIS IS A DENY SET, NOT THE FULL GRAMMAR, AND THE ASYMMETRY IS DELIBERATE. `src/config/env.ts`'s
+ * `requireHostAuthorityValue` transcribes the whole RFC 3986 §3.2.2 production for the CONFIGURED value at
+ * load. This check runs at the SINK, on a render context a caller assembled — possibly without passing
+ * through that module — so its job is to close the origin-moving routes with certainty rather than to
+ * re-derive the grammar in a second place where the two could drift apart.
+ */
+const FEED_HOST_FORBIDDEN_CHARACTER_PATTERN = /[@/\\?#\u0000-\u0020\u007f-\u009f]/u;
+
+/**
+ * Refuses a render-context host that could move the origin of the document's absolute URLs.
+ *
+ * Called ONCE PER RENDER by {@link ProductFeedBuilder.build}, before any byte is produced, and once at
+ * construction by `src/handlers/googleFeedHandler.ts` so a misconfiguration is reported when the container
+ * is built rather than on the first request.
+ *
+ * ⭐ WHY REFUSING FORECLOSES NO LEGACY OUTCOME, WHICH IS THE ONLY QUESTION AAP §0.8.2 GUIDELINE 4 ASKS.
+ * {@link ProductFeedRenderContext.host} stands in for `CGI.HTTP_HOST`, and RFC 9110 §7.2 DEFINES that
+ * field as an RFC 3986 §3.2.2 `host` with §3.2.3's optional `port`, userinfo expressly excluded. None of
+ * the characters in {@link FEED_HOST_FORBIDDEN_CHARACTER_PATTERN} can appear in that production, so no
+ * value this check refuses could ever have reached `product.cfm:L14`. The rule admits every value the
+ * legacy input could hold and refuses only values it could not: there is no legacy behaviour on either
+ * side of it, so it enters no divergence register — which is what answers the cardinality objection that
+ * withdrew it for one revision (AAP §0.6.7.7's count is for DEPARTURES, and this is not one).
+ *
+ * ⚠️ IT IS NOT A SUBSTITUTE FOR THE CONFIGURATION RULE, AND NEITHER IS A SUBSTITUTE FOR IT. `env.ts`
+ * validates what the OPERATOR set; this validates what the CALLER passed. Two independent checks of one
+ * rule, neither trusting the other to have run, because the render context is a plain `string` with no
+ * brand that could carry the earlier check's verdict.
+ *
+ * ⛔ THE DIAGNOSTIC NEVER ECHOES THE VALUE. A rejected host is attacker-supplied by hypothesis, so
+ * copying it into an error carries the payload one layer further; the offending character is reported as
+ * a `U+XXXX` code point and an index, the same discipline {@link assertRepresentableInXml} follows.
+ *
+ * @param host the render-context host, as supplied
+ * @throws {DataIntegrityError} when the host is blank or carries an origin-moving character
+ */
+export function validateFeedHostAuthority(host: string): void {
+  if (host.trim().length === 0) {
+    throw new DataIntegrityError(
+      'The Google product feed host is blank, so the five absolute URLs of the document would carry no ' +
+        'authority at all; the render is refused rather than published with unresolvable links.',
+      { context: { locator: FEED_HOST_LOCATOR } },
+    );
+  }
+
+  const offendingIndex = host.search(FEED_HOST_FORBIDDEN_CHARACTER_PATTERN);
+
+  if (offendingIndex !== -1) {
+    throw new DataIntegrityError(
+      'The Google product feed host carries a character that would move the origin of every absolute ' +
+        'URL in the document: "@" introduces userinfo, "/" and "\\" begin a path, "?" a query and "#" a ' +
+        'fragment, and whitespace and control characters are admitted in no authority. RFC 9110 ' +
+        'section 7.2 defines the Host field this value stands in for as an RFC 3986 authority, which ' +
+        'contains none of them, so the render is refused.',
+      {
+        context: {
+          locator: FEED_HOST_LOCATOR,
+          offset: offendingIndex,
+          codePoint: describeCodePointAt(host, offendingIndex),
+        },
+      },
+    );
+  }
+}
+
+/**
+ * The `product.cfm` line named in every host diagnostic — the first of the five sinks that carries it.
+ *
+ * Named rather than inlined for the reason every document literal in this file is: one definition, one
+ * place for a reader to check.
+ */
+const FEED_HOST_LOCATOR = 'integrationServices/google/views/feed/product.cfm:L14';
+
+/**
+ * Refuses an appended path that would leave the feed's own origin.
+ *
+ * Applied at all THREE path sinks — the item `link` (`product.cfm:L22`), `g:image_link` (`:L23`) and each
+ * `g:additional_image_link` (`:L24`). Each of those composes `FEED_SCHEME_PREFIX` + host + a value that
+ * arrives from a SETTING or a database COLUMN, so the appended half is operator- or data-supplied text
+ * reaching a URL position.
+ *
+ * ⭐ WHAT IT REQUIRES, CLAUSE BY CLAUSE, WITH THE STRENGTH OF EACH STATED HONESTLY:
+ *
+ *   1. IT MUST BEGIN WITH `/`. This is the clause that closes a real CWE-601 route: `evil.example/x`
+ *      appended to `<scheme>://<host>` yields the authority `<host>evil.example`, a DIFFERENT origin
+ *      reached without any of the delimiters {@link validateFeedHostAuthority} inspects.
+ *   2. IT MUST NOT BEGIN WITH `//`. Narrower ground, and stated as such: in THIS document `//x` does not
+ *      move the origin, because the scheme and authority always precede the path (see THERE IS NO
+ *      `encodeFeedUrlPath`'s correction of the original premise). It is refused because RFC 3986 §4.2
+ *      classifies `//x` as a NETWORK-PATH reference rather than an absolute-path one, so it is not a
+ *      same-origin relative path in the sense finding F8 constrains this value to, and a consumer treating
+ *      these fields as URI references would resolve it against a foreign authority.
+ *   3. IT MUST CARRY NO BACKSLASH. Several URL parsers normalise `\` to `/`, which reopens clause 1.
+ *   4. IT MUST CARRY NO WHITESPACE OR CONTROL CHARACTER. No URL admits them, and they are
+ *      parser-differentials wherever they are tolerated.
+ *
+ * That is the whole rule, and it is deliberately not more: `?` and `#` INSIDE the path are permitted,
+ * because they change what the URL resolves to on the feed's own origin rather than which origin it is.
+ *
+ * ⭐ WHY THIS FORECLOSES NO LEGACY OUTCOME EITHER, WHICH IS A DIFFERENT ARGUMENT FROM THE HOST'S AND HAD
+ * TO BE MADE SEPARATELY. Every legitimate value at these three sinks is ALREADY leading-slash relative,
+ * and the legacy source says so at each one: `model/entity/Product.cfc:L206-L208` composes the product URL
+ * as `/#setting('globalURLKeyProduct')#/#getURLTitle()#/`, with the leading slash written into the
+ * literal; and `model/entity/Sku.cfc:L145` and `:L192` compose an image path beneath the image folder
+ * setting, whose seeded value at `config/dbdata/SlatwallSetting.xml.cfm` is likewise rooted. The legacy
+ * template appends these to `http://#CGI.HTTP_HOST#` precisely because they are root-relative — an
+ * absolute or authority-bearing value at these sinks would have produced a malformed URL in the legacy
+ * document too. So the rule admits every value the legacy composition was designed to carry.
+ *
+ * ⚠️ AND IT IS A REFUSAL RATHER THAN A REWRITE, ON PURPOSE. Prefixing a missing slash or stripping a
+ * scheme would silently publish a URL the operator did not configure, which is a worse failure than
+ * refusing: the operator would have no way to learn the value was wrong. Review finding F8 asks for the
+ * appended path to be "constrained", and refusing is the constraint that cannot mislead.
+ *
+ * ⛔ IT DOES NOT PERCENT-ENCODE, AND MUST NOT BE MADE TO. Encoding would turn a legitimate path's own `/`
+ * separators into `%2F` and change bytes at a sink `product.cfm` emits raw; review finding CQ-9 withdrew
+ * exactly that. See THERE IS NO `encodeFeedUrlPath` for the residual accounting this control does not
+ * cover — a path may still carry `.` segments, and dot-segment resolution stays same-origin, so it is not
+ * a rebasing route.
+ *
+ * ⛔ THE DIAGNOSTIC NEVER ECHOES THE PATH. Same reasoning as the host's: it names the sink's locator and
+ * the offending offset, and nothing else.
+ *
+ * @param path the value about to be appended to the absolute URL prefix
+ * @param locator the `product.cfm` line of the sink that carries it
+ * @throws {DataIntegrityError} when the path is not a same-origin relative path
+ */
+function assertSameOriginRelativePath(path: string, locator: string): void {
+  if (!path.startsWith(URL_PATH_ROOT) || path.startsWith(PROTOCOL_RELATIVE_PREFIX)) {
+    throw new DataIntegrityError(
+      'A Google product feed URL path must be a same-origin relative path beginning with a single "/". ' +
+        'A value that begins with anything else can graft an authority onto the end of the host, and one ' +
+        'that begins with "//" is protocol-relative and discards the host entirely, so either would ' +
+        "move the URL off the feed's own origin. The value is refused rather than rewritten, because " +
+        'silently publishing a corrected URL would hide the misconfiguration.',
+      { context: { locator, length: path.length } },
+    );
+  }
+
+  const offendingIndex = path.search(FEED_PATH_FORBIDDEN_CHARACTER_PATTERN);
+
+  if (offendingIndex !== -1) {
+    throw new DataIntegrityError(
+      'A Google product feed URL path carries a backslash, whitespace or a control character. A ' +
+        'backslash is normalised to "/" by several URL parsers, which reopens the authority-grafting ' +
+        'route the leading-slash rule closes, and whitespace and control characters are admitted in no ' +
+        'URL. The value is refused.',
+      {
+        context: {
+          locator,
+          offset: offendingIndex,
+          codePoint: describeCodePointAt(path, offendingIndex),
+        },
+      },
+    );
+  }
+}
+
+/** The single character a same-origin relative path must begin with. */
+const URL_PATH_ROOT = '/';
+
+/** The protocol-relative prefix that discards the authority it is appended to. */
+const PROTOCOL_RELATIVE_PREFIX = '//';
+
+/**
+ * The characters {@link assertSameOriginRelativePath} refuses anywhere in an appended path.
+ *
+ * The backslash for the parser-normalisation route; whitespace and the C0/C1 controls because no URL
+ * admits them. `?` and `#` are NOT here: a query or a fragment in one of these values stays on the feed's
+ * own origin, so refusing them would refuse a legitimate setting without closing a rebasing route.
+ */
+const FEED_PATH_FORBIDDEN_CHARACTER_PATTERN = /[\\\u0000-\u0020\u007f-\u009f]/u;
 
 /* ================================================================================================
  * TIME OF DAY — hand-built, because it is this file's responsibility and nobody else's.
@@ -1411,17 +1654,19 @@ export class ProductFeedBuilder {
    * field's CONTENT is padded, trimmed or reflowed — the legacy view's exact interior whitespace is a
    * template artifact, whereas every element's text is byte-exact.
    *
-   * ⛔ THE HOST AUTHORITY IS NOT GATED, HERE OR ANYWHERE. A `validateFeedHostAuthority` deny check ran
-   * once per render at this position; it is withdrawn, and the carried exposure across the five absolute
-   * URLs `product.cfm:L14`, `:L15`, `:L22`, `:L23` and `:L24` is set out at THERE IS NO
-   * `validateFeedHostAuthority` above. `src/config/env.ts` still guarantees the value is present and
-   * non-blank; nothing judges its syntax.
+   * ⭐ THE HOST AUTHORITY IS GATED HERE, ONCE PER RENDER, AND THE REFUSAL IS ATOMIC.
+   * {@link validateFeedHostAuthority} runs before the prefix is composed and before the first line is
+   * pushed, so a rejection leaves no partial document and calls no port. `src/config/env.ts` applies the
+   * full RFC 3986 authority production to the CONFIGURED value at load; this re-applies the origin-moving
+   * deny set to whatever the CALLER actually passed. Review finding F8 directed both.
    *
-   * ⭐ THE `http://<host>` PREFIX IS COMPOSED EXACTLY ONCE, HERE, BEFORE ANY BYTE IS PRODUCED. That is a
-   * de-duplication: one document can never assemble the prefix two different ways, and
+   * ⭐ THE `https://<host>` PREFIX IS COMPOSED EXACTLY ONCE, HERE, AFTER THE GATE AND BEFORE ANY BYTE IS
+   * PRODUCED. That is a de-duplication: one document can never assemble the prefix two different ways, and
    * {@link ProductFeedBuilder.buildItem} receives it finished, which is why that method never reads
-   * {@link ProductFeedRenderContext.host} itself. The prefix is carried RAW to every sink, and no URL sink
-   * escapes or encodes anything — see ESCAPING.
+   * {@link ProductFeedRenderContext.host} itself. The scheme is `https` rather than the legacy's `http`,
+   * which is this file's one declared behavioural divergence — see {@link FEED_SCHEME_PREFIX}. The prefix
+   * is carried RAW to every sink, and no URL sink escapes or percent-encodes anything — see ESCAPING — but
+   * every appended PATH is held to {@link assertSameOriginRelativePath} at the sink that appends it.
    *
    * @param records the already-materialised SmartList records, rendered in the order given
    * @param context the render-time replacements for the legacy request globals
@@ -1433,12 +1678,15 @@ export class ProductFeedBuilder {
     records: readonly ProductFeedRecord[],
     context: ProductFeedRenderContext,
   ): Promise<string> {
-    /* ⛔ NO GATE RUNS HERE. A `validateFeedHostAuthority` deny check stood at this exact position, ahead of
-     * the prefix composition so that a rejection was ATOMIC — no line pushed, `buildItem` never entered, no
-     * port called. It is withdrawn (see THERE IS NO `validateFeedHostAuthority`), so the render always
-     * proceeds and the configured host reaches all five absolute URLs unjudged, exactly as
-     * `product.cfm:L14` interpolates `CGI.HTTP_HOST` unjudged. */
-    const absoluteUrlPrefix = `${HTTP_SCHEME_PREFIX}${context.host}`;
+    /* ⭐ THE GATE RUNS HERE, AND ITS POSITION IS THE WHOLE OF WHY THE REFUSAL IS ATOMIC. It stands ahead
+     * of the prefix composition and ahead of the first `lines` entry, so a rejection means no line was
+     * pushed, {@link ProductFeedBuilder.buildItem} was never entered and no port was called — there is no
+     * partially rendered document and no observable side effect. Review finding F8 directed this control;
+     * {@link validateFeedHostAuthority} carries the adjudication, and `src/config/env.ts` applies the same
+     * rule to the CONFIGURED value at load, so a caller who assembled this context by hand is judged too. */
+    validateFeedHostAuthority(context.host);
+
+    const absoluteUrlPrefix = `${FEED_SCHEME_PREFIX}${context.host}`;
     const channelLink = absoluteUrlPrefix;
     const channelDescription = `${CHANNEL_DESCRIPTION_PREFIX}${context.host}`;
 
@@ -1514,8 +1762,9 @@ export class ProductFeedBuilder {
    *
    * @param record the SKU and its product's images
    * @param context the render-time replacements for the legacy request globals
-   * @param absoluteUrlPrefix the `http://<host>` prefix, composed once per render by
-   *   {@link ProductFeedBuilder.build} from {@link ProductFeedRenderContext.host}
+   * @param absoluteUrlPrefix the `https://<host>` prefix, composed once per render by
+   *   {@link ProductFeedBuilder.build} from {@link ProductFeedRenderContext.host}, whose authority it has
+   *   already gated
    * @returns the rendered `item` element
    * @throws {DomainError} when the SKU carries no product
    */
@@ -1527,11 +1776,12 @@ export class ProductFeedBuilder {
     const sku = record.sku;
     const product = this.requireProduct(sku);
     /* `absoluteUrlPrefix` is composed once by {@link ProductFeedBuilder.build}, this method's only
-     * caller, and passed in — so the `http://<host>` text is assembled in exactly one place. Nothing
-     * here VALIDATES it and nothing validates the per-record paths appended to it, because
-     * `product.cfm:L22-L24` validates neither; each finished URL is ENCODED and ESCAPED instead, which
-     * admits every value and judges none. The distinction is the subject of WITHDRAWN RAW-SINK
-     * VALIDATION. */
+     * caller, and passed in — so the `https://<host>` text is assembled in exactly one place, and its
+     * AUTHORITY was gated there before the first byte of the document existed. What THIS method gates is
+     * the other half: every per-record path it appends goes through
+     * {@link assertSameOriginRelativePath} at the sink that appends it, because `product.cfm:L22-L24`
+     * appends them with no test and a path that does not begin with `/` lands inside the authority.
+     * Review finding F8 directed both halves; THE TWO FAIL-CLOSED GATES carries the adjudication. */
     const fields: string[] = [];
 
     /* ---- 1. `g:id` — ESCAPED (`product.cfm:L17`). ------------------------------------------- */
@@ -1595,7 +1845,7 @@ export class ProductFeedBuilder {
     /* ---- 6. item `link` — RAW, as at `product.cfm:L22`. ------------------------------------
      * `model/entity/Product.cfc:L207-L209` builds the path as `"/#setting('globalURLKeyProduct')#/`
      * `#getURLTitle()#/"`, carrying BOTH a leading and a trailing slash, so the emitted URL is
-     * `http://<host>/<globalURLKeyProduct>/<urlTitle>/`. NEITHER SLASH IS TRIMMED and the two
+     * `https://<host>/<globalURLKeyProduct>/<urlTitle>/`. NEITHER SLASH IS TRIMMED and the two
      * segments are not re-joined by a path helper.
      *
      * The domain member takes the setting resolver as an explicit parameter, so the key is resolved
@@ -1614,14 +1864,25 @@ export class ProductFeedBuilder {
      * altered.
      *
      * ⚠️ AN EARLIER REVISION PERCENT-ENCODED THE PATH AND THEN ESCAPED THE FINISHED URL. Review finding
-     * CQ-9 withdrew both, because each changes bytes at a sink the legacy emits raw. The URL-authority
-     * route that the encoder closed is therefore residual for the PATH and is declared at
-     * THERE IS NO `encodeFeedUrlPath`; the HOST half stays closed by
-     * {@link validateFeedHostAuthority}. A same-origin relative-path gate is still NOT used — it would
-     * refuse an operator's legitimate relative setting, which is the divergence D18 does not license. */
+     * CQ-9 withdrew both, because each changes bytes at a sink the legacy emits raw, and the residual
+     * accounting stays at THERE IS NO `encodeFeedUrlPath`.
+     *
+     * ⭐ WHAT DOES RUN IS {@link assertSameOriginRelativePath}, DIRECTED BY REVIEW FINDING F8. It refuses a
+     * value that is not leading-slash relative, so neither the `globalURLKeyProduct` SETTING nor the
+     * persisted `urlTitle` COLUMN can graft an authority onto the end of the host. It is a REFUSAL, never a
+     * rewrite — and it forecloses nothing, because `model/entity/Product.cfc:L206-L208` writes the leading
+     * slash into the composed literal itself, so every value the legacy composition was designed to carry
+     * passes. The HOST half of the same exposure is closed once per render by
+     * {@link validateFeedHostAuthority}. */
+    const productUrlPath = product.getProductURL(this.settings);
+
+    assertSameOriginRelativePath(
+      productUrlPath,
+      'integrationServices/google/views/feed/product.cfm:L22',
+    );
     fields.push(
       `<link>${renderRawFeedNode(
-        `${absoluteUrlPrefix}${product.getProductURL(this.settings)}`,
+        `${absoluteUrlPrefix}${productUrlPath}`,
         'integrationServices/google/views/feed/product.cfm:L22',
       )}</link>`,
     );
@@ -1652,6 +1913,15 @@ export class ProductFeedBuilder {
      * per-document memo wrapper; that is withdrawn, so `:L23`'s one-resolution-per-SKU pattern is what
      * this line performs. See THERE IS NO PORT MEMOISATION IN THIS FILE. */
     const resizedImagePath = await sku.getResizedImagePath(this.imagePaths, this.settings);
+
+    /* ⭐ F8's PATH CONSTRAINT, ON THE SAME TERMS AS THE ITEM LINK. This value may be the MISSING-IMAGE
+     * SETTING rather than a composed path — `src/ports/ImagePathPort.ts` is explicit that
+     * {@link ImageWebPath} "asserts nothing about the value" — so it is operator-supplied text in a URL
+     * position and is held to the rule rather than trusted for its brand. */
+    assertSameOriginRelativePath(
+      resizedImagePath,
+      'integrationServices/google/views/feed/product.cfm:L23',
+    );
     fields.push(
       `<g:image_link>${renderRawFeedNode(
         `${absoluteUrlPrefix}${resizedImagePath}`,
@@ -1696,7 +1966,7 @@ export class ProductFeedBuilder {
        * only the DISPLAY brand, and no file-system member of the port accepts one." THAT WAS FALSE. There
        * is one brand, not two, and BOTH file-system members of `ImagePathPort` accept it — the tag confers
        * no isolation whatsoever. What actually bounds this builder is that it holds no reference to either
-       * of those members: {@link FeedDocumentScope} hands it `imagePaths` for path resolution only, and it
+       * of those members: its constructor takes `imagePaths` for path resolution only, and it
        * never writes an image nor probes for one. The bound is the call graph, not the type. */
       const request: ResizedImagePathRequest = {
         imagePath: toImageWebPath(image.imagePath),
@@ -1711,9 +1981,17 @@ export class ProductFeedBuilder {
        * `n * i` resolutions here. An earlier revision collapsed the repeats behind a per-document memo;
        * that is withdrawn, and the legacy call pattern is restored. */
       const additionalImagePath = await this.imagePaths.getResizedImagePath(request);
+
+      /* ⭐ F8's PATH CONSTRAINT, APPLIED PER IMAGE. Same reasoning as the primary image above: the
+       * missing-image setting can be the value that ends up here, so every one of the `n * i` paths this
+       * loop resolves is held to the rule. */
+      assertSameOriginRelativePath(
+        additionalImagePath,
+        'integrationServices/google/views/feed/product.cfm:L24',
+      );
       /* The concatenation is written INLINE here, exactly as it is at the item `link` and `g:image_link`
-       * sinks above, rather than hoisted into a local: the three URL fields are `http://` + host + path in
-       * `product.cfm` and they are `http://` + host + path here, character for character alike, which is
+       * sinks above, rather than hoisted into a local: the three URL fields are scheme + host + path in
+       * `product.cfm` and they are scheme + host + path here, structurally alike, which is
        * what lets the source-level census in the test suite check all three as one uniform shape. An
        * earlier revision composed an encode and an escape at each of the three; both are WITHDRAWN under
        * the current review's finding F4. */

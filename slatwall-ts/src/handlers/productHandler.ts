@@ -38,14 +38,14 @@
  * -----------------------------------------------------------------------------------------------
  * Every signature this handler calls was read from ../services/ProductService rather than from a table,
  * and {@link ProductHandlerService} is checked against the real class by the compiler so the seam and the
- * service cannot drift. That is a drift guard, NOT a precedence rule: AAP §0.4.2.1's target column is
- * frozen and the service is aligned TO it (§0.1.2.1, D1 precedence 1). An earlier version of this
- * paragraph claimed "where the plan and the file disagree, the file wins", on the strength of three of
- * that file's return types having been corrected against the plan's prose; that claim is WITHDRAWN, and
- * the formatted-option-groups shape it chiefly rested on now matches the plan's array. The name-collapse divergence [model/service/ProductService.cfc:L70-L80] is
- * still live and still recorded on the service member, but it names a LEGACY-versus-PORT divergence — the
- * CFML body builds a name-keyed struct — rather than a port-versus-plan one. Nothing here "corrects" the
- * service (AAP §0.8.2 Guideline 4), and nothing here reinterprets the plan.
+ * service cannot drift. Where AAP §0.4.2.1's target column and the LEGACY BODY disagree about a member's
+ * shape, the body states the contract and TR-1 is the rule that resolves it — "the target signature is
+ * tightened to the observed contract" — which is how review finding F3 settled
+ * `getFormattedOptionGroups`: the CFML body at [model/service/ProductService.cfc:L71-L79] builds and
+ * returns a struct KEYED BY OPTION-GROUP NAME, so the port answers a keyed record and this boundary
+ * publishes one. The name-collapse behaviour that struct produces is still live and still recorded on the
+ * service member. Nothing here "corrects" the service (AAP §0.8.2 Guideline 4) — the service was corrected
+ * first, and this file follows it.
  *
  * EIGHTEEN ROUTED MEMBERS, AND THE COUNT IS DERIVED RATHER THAN CHOSEN
  * -------------------------------------------------------------------
@@ -145,24 +145,36 @@
  *     optional string. The arity and order are kept (`data` first, `currentURL` second, both optional),
  *     and the route's own note records why the second argument is not supplied.
  *
- * (f) **TR-5 — THE BOUNDARY-STUBBED MEMBERS ARE FLAGGED, NEVER DROPPED.** Six members depend on
- *     collaborators outside the slice. Every one remains PRESENT and ROUTABLE, and each route names the
- *     out-of-scope collaborator responsible: the importer's out-of-band model (`loadDataFromFile`), the
- *     product-review entity and account context (`processProductAddProductReview`),
- *     `SubscriptionTermPort` (`processProductAddSubscriptionTerm`), image handling
- *     (`processProductDeleteDefaultImage`, `processProductUpdateDefaultImageFileNames`) and the temp
- *     directory and tag service (`processProductUploadDefaultImage`). TR-5, verbatim: "The member is
- *     never quietly dropped from the interface."
+ * (f) **TR-5 — THE BOUNDARY-LIMITED MEMBERS ARE FLAGGED, NEVER DROPPED, AND THE INVENTORY IS MEASURED.**
+ *     AAP §0.4.2.1 annotates six of this service's members "Boundary-stubbed". Every one remains PRESENT
+ *     and ROUTABLE, and each route names the out-of-scope collaborator responsible. TR-5, verbatim: "The
+ *     member is never quietly dropped from the interface." What each one DOES at run time was measured
+ *     under review finding F4, and the three classes are:
  *
- *     ⭐ THREE OF THE SIX ARE REFUSED AT THIS BOUNDARY WITH A CLASSIFIED `501`, AND THE SPLIT IS
- *     PRINCIPLED RATHER THAN CONVENIENT. `processProductAddProductReview`,
+ *       ALWAYS REFUSES (four) — `loadDataFromFile` (the importer's out-of-band model),
+ *       `processProductAddProductReview` (the product-review entity and account context),
+ *       `processProductAddSubscriptionTerm` (`SubscriptionTermPort`) and `processProductUploadDefaultImage`
+ *       (the temp directory and tag service).
+ *
+ *       REFUSES CONDITIONALLY (one) — `processProductDeleteDefaultImage`. [:L199] tests for the `imageFile`
+ *       key and does NOTHING when it is absent, returning the product at [:L205], so absence is the
+ *       legacy's own no-op and answers 200. Only a NAMED image file reaches the file-system collaborator at
+ *       [:L200-L201], which `ImagePathPort` does not declare, and only that path refuses.
+ *
+ *       FULLY PORTED (one) — `processProductUpdateDefaultImageFileNames`. [:L209-L211] is a two-line loop
+ *       over `sku.setImageFile( sku.generateImageFileName() )`, and the ported generator reads only
+ *       `SettingResolverPort`, which is IN SCOPE with a shipped resolver. Nothing excluded is on the path,
+ *       so there is nothing to stub — and refusing would break `saveProduct`, which invokes it at [:L282].
+ *
+ *     ⭐ THREE OF THE FOUR ALWAYS-REFUSING MEMBERS ARE REFUSED AT THIS BOUNDARY WITH A CLASSIFIED `501`,
+ *     AND THE SPLIT IS PRINCIPLED RATHER THAN CONVENIENT. `processProductAddProductReview`,
  *     `processProductAddSubscriptionTerm` and `processProductUploadDefaultImage` take a legacy PROCESS
  *     OBJECT whose members ../services/ProductService narrows by testing for CALLABLE accessors, and a
  *     parsed JSON body cannot carry a function — so no payload this layer could accept would let them
  *     complete, and every request used to answer a deterministic `500` with the reason withheld. See
- *     {@link refuseUnsatisfiableProcessObject}. The other three take serializable arguments — a location,
- *     a `struct data`, a product — so their availability remains the SERVICE's answer to give and this
- *     layer hardcodes nothing about them.
+ *     {@link refuseUnsatisfiableProcessObject}. `loadDataFromFile` and the two remaining members take
+ *     serializable arguments — a location, a `struct data`, a product — so their availability remains the
+ *     SERVICE's answer to give and this layer hardcodes nothing about them.
  *
  * (g) **D6 — CARRIED, NOT REPAIRED.** [model/service/ProductService.cfc:L180-L181] guards on
  *     `arguments.processObject.getListPrice()` and then assigns from `arguments.data.listPrice`, but
@@ -266,7 +278,7 @@ import type { SmartListInput, SmartListResult } from '../ports/SmartListQueryPor
 import type { TransactionalWriteRunner } from '../config/container';
 import type { SelectOption } from '../services/OptionService';
 import type {
-  FormattedOptionGroup,
+  FormattedOptionGroups,
   ProductService,
   ProductTypeWithErrorState,
 } from '../services/ProductService';
@@ -555,15 +567,16 @@ export interface ProductHandlerService {
    * `model/service/ProductService.cfc:L70` — `public any function getFormattedOptionGroups(required any
    * product)`.
    *
-   * ⚠️ AN ARRAY OF NAME-AND-OPTIONS ENTRIES, WHICH IS WHAT AAP §0.4.2.1 TABULATES. The legacy body builds
-   * a CFML STRUCT — [:L71] initialises `{}` and [:L76] keys it by the option group's NAME — and that
-   * divergence is the name-collapse divergence [model/service/ProductService.cfc:L70-L80], annotated on the service member. An earlier revision of this seam typed the
-   * result `Promise<Record<string, SelectOption[]>>` to mirror the struct; the service withdrew that
-   * reading, and this seam follows the service because {@link ProductHandlerService} is compiler-checked
-   * against the real class. The promise is real — the domain's option-group and option reads are
-   * asynchronous where the legacy's lazy ORM relationships only looked synchronous.
+   * ⚠️ A RECORD KEYED BY OPTION-GROUP NAME, WHICH IS WHAT THE LEGACY BODY ANSWERS. [:L71] initialises a
+   * CFML STRUCT with `{}` and [:L76] keys it by the option group's NAME, so TR-1 tightens the loose `any`
+   * return to that keyed shape. A revision typed both this seam and the service `FormattedOptionGroup[]`,
+   * on the reading that AAP §0.4.2.1's tabulated array outranks TR-1; review finding F3 withdrew it, and
+   * the service member holds the full adjudication. This seam simply follows the service, because
+   * {@link ProductHandlerService} is compiler-checked against the real class. The promise is real — the
+   * domain's option-group and option reads are asynchronous where the legacy's lazy ORM relationships only
+   * looked synchronous.
    */
-  readonly getFormattedOptionGroups: (product: Product) => Promise<readonly FormattedOptionGroup[]>;
+  readonly getFormattedOptionGroups: (product: Product) => Promise<FormattedOptionGroups>;
 
   /**
    * `model/service/ProductService.cfc:L104` —
@@ -621,7 +634,9 @@ export interface ProductHandlerService {
 
   /**
    * `model/service/ProductService.cfc:L198` — was `processProduct_deleteDefaultImage(required any
-   * product, required struct data)`. BOUNDARY-STUBBED: image handling is outside the slice.
+   * product, required struct data)`. CONDITIONALLY boundary-limited: the file-system delete at
+   * [:L200-L201] is outside the slice, but [:L199]'s absent-key path is a legitimate no-op that answers the
+   * product — judgment (f).
    *
    * ⚠️ THE SECOND ARGUMENT IS A `struct data`, NOT A PROCESS OBJECT — the only one of the eight declared
    * that way, and the difference is preserved rather than smoothed over.
@@ -633,9 +648,10 @@ export interface ProductHandlerService {
 
   /**
    * `model/service/ProductService.cfc:L208` — was `processProduct_updateDefaultImageFileNames( required
-   * any product )`. BOUNDARY-STUBBED: image handling. ⚠️ ONE ARGUMENT ONLY — it is the single process
-   * member that takes no payload at all, and no second argument is added to make it uniform with its
-   * siblings.
+   * any product )`. FULLY PORTED despite AAP §0.4.2.1's "Boundary-stubbed" annotation: [:L209-L211] reaches
+   * only `SettingResolverPort`, which is in scope — judgment (f). ⚠️ ONE ARGUMENT ONLY — it is the single
+   * process member that takes no payload at all, and no second argument is added to make it uniform with
+   * its siblings.
    */
   readonly processProductUpdateDefaultImageFileNames: (product: Product) => Promise<Product>;
 
@@ -994,34 +1010,32 @@ export interface ProductSelectOptionResponse {
 }
 
 /**
- * One formatted option group in a response — the option-group NAME and its projected options.
+ * The formatted option groups a product exposes, KEYED BY OPTION-GROUP NAME.
  *
- * The two member names are the service's, not this file's: {@link FormattedOptionGroup} declares
- * `optionGroupName` and `options`, and renaming either here would make the wire disagree with the member
- * it projects. `optionGroupID` is absent for the same reason it is absent on the service type — the legacy
- * struct entry cannot carry it (AAP §0.7.3 S9).
- */
-export interface FormattedOptionGroupResponse {
-  readonly optionGroupName: string;
-  readonly options: readonly ProductSelectOptionResponse[];
-}
-
-/**
- * The formatted option groups a product exposes, one entry per distinct option-group NAME.
+ * ⚠️ A KEYED OBJECT, BECAUSE THE LEGACY MEMBER ANSWERS A KEYED STRUCT.
+ * [model/service/ProductService.cfc:L71] initialises `{}` and [:L76] assigns
+ * `AvailableOptions[ …getOptionGroupName() ] = …`, so the name is a KEY. A revision projected an ARRAY of
+ * `{optionGroupName, options}` entries here, following a service member that had itself been typed that
+ * way; review finding F3 withdrew both, and {@link ProductHandlerService.getFormattedOptionGroups} records
+ * the adjudication.
  *
- * ⚠️ AN ARRAY, AND THE LABEL IS THE NAME (the name-collapse divergence [model/service/ProductService.cfc:L70-L80] — the legacy body builds a name-keyed struct, and the
- * port answers the array AAP §0.4.2.1 tabulates). Three behaviours travel through this contract untouched:
- * the label is the group name and never the group ID; same-named groups COLLAPSE TO ONE ENTRY, because
- * [model/service/ProductService.cfc:L76] is a plain struct assignment and the LAST one wins; and NOTHING IS
- * SORTED, because the legacy sorts neither the groups nor the options within a group. A response that
+ * Three behaviours travel through this contract untouched: the key is the group name and never the group
+ * ID (`optionGroupID` is absent for the same reason it is absent on the service type — the legacy struct
+ * entry cannot carry it, AAP §0.7.3 S9); same-named groups COLLAPSE TO ONE ENTRY, because
+ * [model/service/ProductService.cfc:L76] is a plain struct assignment and the LAST one wins; and NOTHING
+ * IS SORTED, because the legacy sorts neither the groups nor the options within a group. A response that
  * de-duplicated differently, suffixed a repeated name or ordered the entries would change what the caller
  * sees.
  *
- * ⭐ AND AN ARRAY IS THE SHAPE THAT CAN CARRY THE ORDER ACROSS THE WIRE. A JSON object's member order is
- * not part of the value a client is entitled to rely on, so serializing these as an object would silently
- * drop the first-seen order recorded on {@link FormattedOptionGroup}.
+ * ⚠️ MEMBER ORDER IS NOT PART OF THE VALUE A CLIENT MAY RELY ON, and that is stated rather than worked
+ * around. `JSON.stringify` emits an object's own string keys in insertion order — first-seen group order
+ * here — with the single JavaScript exception that array-index-like keys sort numerically first. The legacy
+ * CFML struct specifies NO order at all, so there is no order to lose; a client that needs a stable
+ * sequence sorts the keys itself, exactly as it would have had to against the legacy.
  */
-export type FormattedOptionGroupsResponse = readonly FormattedOptionGroupResponse[];
+export type FormattedOptionGroupsResponse = Readonly<
+  Record<string, readonly ProductSelectOptionResponse[]>
+>;
 
 /**
  * A page of products, with the smart list's own seven members.
@@ -1883,28 +1897,32 @@ function toProductSkuResponses(skus: readonly Sku[]): readonly ProductSkuRespons
 }
 
 /**
- * Projects the formatted option groups, preserving entry order and collapse semantics.
+ * Projects the formatted option groups, preserving key order and collapse semantics.
  *
- * ⚠️ THE ARRAY IS REBUILT ENTRY BY ENTRY RATHER THAN COPIED WHOLESALE, AND THAT IS WHAT PRESERVES THE
- * BEHAVIOUR. `map` keeps position, which is the first-seen order
- * [model/service/ProductService.cfc:L75-L77] built the groups in, and the array arrives with same-named
- * groups ALREADY collapsed — because [:L76] is a plain struct assignment and the last one wins. Nothing
+ * ⚠️ THE RECORD IS REBUILT ENTRY BY ENTRY RATHER THAN COPIED WHOLESALE, AND THAT IS WHAT PRESERVES THE
+ * BEHAVIOUR. `Object.entries` reads the service's own key order — the first-seen order
+ * [model/service/ProductService.cfc:L75-L77] built the groups in — and the record arrives with same-named
+ * groups ALREADY collapsed, because [:L76] is a plain struct assignment and the last one wins. Nothing
  * here de-duplicates, suffixes, sorts or reorders; the two option members are copied exactly as the sibling
- * service projected them, and the label is copied verbatim.
+ * service projected them, and each key is copied verbatim.
  *
- * @param groups the entries the service produced, in first-seen option-group order
- * @returns the same entries, in the same order, with each option projected member by member
+ * ⛔ AND IT REBUILDS RATHER THAN FORWARDING THE SERVICE'S OWN OBJECT, for the reason every sibling
+ * projector in this file exists: the boundary states its wire contract member by member instead of
+ * re-exporting a domain shape, so a later field added to `SelectOption` cannot leak onto the wire
+ * unreviewed. `Object.fromEntries` assigns OWN properties, so no key can reach a prototype.
+ *
+ * @param groups the record the service produced, keyed by option-group name in first-seen order
+ * @returns the same entries under the same keys, with each option projected member by member
  */
 function toFormattedOptionGroupsResponse(
-  groups: readonly FormattedOptionGroup[],
+  groups: FormattedOptionGroups,
 ): FormattedOptionGroupsResponse {
-  return groups.map((group) => ({
-    optionGroupName: group.optionGroupName,
-    options: group.options.map((option: SelectOption) => ({
-      name: option.name,
-      value: option.value,
-    })),
-  }));
+  return Object.fromEntries(
+    Object.entries(groups).map(([optionGroupName, options]) => [
+      optionGroupName,
+      options.map((option: SelectOption) => ({ name: option.name, value: option.value })),
+    ]),
+  );
 }
 
 /* ================================================================================================
@@ -2238,12 +2256,13 @@ export function createProductHandler(
    * transactional: nothing is written, and enclosing a pure read in a transaction would invent a boundary
    * the legacy did not have.
    *
-   * ⚠️ THE RESULT IS AN ARRAY OF NAME-AND-OPTIONS ENTRIES, WHICH IS WHAT AAP §0.4.2.1 TABULATES (defect
-   * the name-collapse divergence [model/service/ProductService.cfc:L70-L80] — the legacy body builds a name-keyed struct instead). Three behaviours travel through untouched,
-   * and {@link toFormattedOptionGroupsResponse} is where they are enforced: the label is the group NAME and
-   * never the group ID; same-named groups COLLAPSE TO ONE ENTRY, because
-   * [model/service/ProductService.cfc:L76] is a plain struct assignment; and NOTHING IS SORTED, because
-   * the legacy sorts neither the groups nor the options within a group.
+   * ⚠️ THE RESULT IS A RECORD KEYED BY OPTION-GROUP NAME, BECAUSE THAT IS WHAT THE LEGACY ANSWERS.
+   * [model/service/ProductService.cfc:L71] initialises a CFML struct and [:L76] keys it by
+   * `getOptionGroupName()`, so TR-1 tightens the loose `any` return to that shape (review finding F3
+   * withdrew a revision that published an array here). Three behaviours travel through untouched, and
+   * {@link toFormattedOptionGroupsResponse} is where they are enforced: the KEY is the group NAME and never
+   * the group ID; same-named groups COLLAPSE TO ONE ENTRY, because [:L76] is a plain struct assignment; and
+   * NOTHING IS SORTED, because the legacy sorts neither the groups nor the options within a group.
    *
    * ⛔ THE GATE RUNS BEFORE THE IDENTIFIER IS READ, WHICH IS THE ANTI-ENUMERATION PROPERTY. Because the
    * refusal is decided without consulting the identifier or the repository, an unauthorised caller
@@ -2252,8 +2271,8 @@ export function createProductHandler(
    * NET-NEW coverage (AAP §0.6.5.2).
    *
    * @param event the proxy event, or any object carrying its path-parameters and headers members
-   * @returns the option-group entries in first-seen order, or the response describing why they could not
-   *   be returned
+   * @returns the option-group entries keyed by name, in first-seen order, or the response describing why
+   *   they could not be returned
    */
   const getFormattedOptionGroups = async (
     event: ProductIdentifierEvent,
@@ -2656,10 +2675,18 @@ export function createProductHandler(
    * that way, and the difference is preserved rather than smoothed over: the parsed payload is forwarded as
    * the struct it is, with no process object assembled around it and no property names invented for it.
    *
-   * ⛔ BOUNDARY-STUBBED (TR-5, judgment (f)). THE OUT-OF-SCOPE COLLABORATOR IS IMAGE HANDLING — the image
-   * file, its directory and its deletion all live behind `ImagePathPort` and the file system the legacy
-   * reached through the framework. ../services/ProductService performs the correctly scoped presence test
-   * [:L199] and treats absence as a no-op exactly as written, raising only when an image file IS named.
+   * ⛔ CONDITIONALLY BOUNDARY-LIMITED (TR-5, judgment (f)), AND THE CONDITION IS THE LEGACY'S OWN. AAP
+   * §0.4.2.1 annotates this member "Boundary-stubbed — image handling", and the out-of-scope collaborator
+   * is the FILE SYSTEM: [:L200-L201] call `fileExists`/`fileDelete`, for which `ImagePathPort` declares no
+   * member. But [:L199] tests `structKeyExists(arguments.data, "imageFile")` FIRST and does nothing at all
+   * when the key is absent, returning the product at [:L205] — so absence is a legitimate no-op, not a
+   * boundary. ../services/ProductService reproduces both halves: the no-op answers the product, and only a
+   * NAMED image file reaches the refusal.
+   *
+   * ⚠️ SO THIS ROUTE ANSWERS 200 FOR A PAYLOAD THAT NAMES NO IMAGE FILE, AND ./router's boundary inventory
+   * says so explicitly. A revision of that inventory claimed all seven annotated members always refuse;
+   * review finding F4 measured it and corrected the inventory rather than the code, because refusing the
+   * no-op would refuse input the legacy accepts (AAP §0.8.2 Guideline 4).
    *
    * NET-NEW coverage (AAP §0.6.5.2).
    *
@@ -2708,8 +2735,17 @@ export function createProductHandler(
    * slice without one — which means a request carrying a body is neither rejected nor consulted, exactly as
    * the legacy member ignored anything but its product.
    *
-   * ⛔ BOUNDARY-STUBBED (TR-5, judgment (f)). THE OUT-OF-SCOPE COLLABORATOR IS IMAGE HANDLING: [:L209-L211]
-   * recomputes each SKU's image file name from members that reach `ImagePathPort`.
+   * ⭐ FULLY PORTED, DESPITE AAP §0.4.2.1 ANNOTATING IT "Boundary-stubbed — image handling". [:L209-L211]
+   * is a two-line loop — `sku.setImageFile( sku.generateImageFileName() )` — and the ported
+   * `Sku.generateImageFileName` reads only `SettingResolverPort`, an IN-SCOPE port with a shipped resolver.
+   * `ImagePathPort` is NOT on this path: nothing here composes, probes or writes an image. There is
+   * therefore nothing to stub, and ./router's boundary inventory classifies it accordingly.
+   *
+   * ⚠️ AND REFUSING WOULD HAVE BEEN A REGRESSION RATHER THAN A BOUNDARY, WHICH IS WHY REVIEW FINDING F4 WAS
+   * SETTLED BY CORRECTING THE INVENTORY. `saveProduct` invokes this member at
+   * [model/service/ProductService.cfc:L282], and `processProduct_addOptionGroup` [:L123] and
+   * `processProduct_addSubscriptionTerm` [:L193] both END by delegating to it, so a refusal here would take
+   * every new-product save down with it.
    *
    * NET-NEW coverage (AAP §0.6.5.2).
    *
@@ -3410,7 +3446,7 @@ export function createProductHandler(
  * ⭐ THE COMPOSITION ROOT IS REACHED THROUGH A DEFERRED REQUIRE, and that is the one subtle thing here.
  * `../config/container` reaches `../config/database`, whose `mysql2` pool is created at module scope,
  * and `../config/env`, which validates the environment as a module-load side effect. A STATIC import
- * would run both when this module is loaded — including by `test/handlers/productHandler.test.ts`, which
+ * would run both when this module is loaded — including by `test/services/ProductService.test.ts`'s folded `productHandler` block, which
  * has neither an environment nor a database. Deferring it to the first invocation keeps module load free
  * of side effects while the pool still lives at module scope of the module that owns it, created once
  * and reused across warm invocations exactly as AAP §0.3.2 requires.
@@ -3627,7 +3663,7 @@ export const handler = async (event: APIGatewayProxyEvent): Promise<APIGatewayPr
        *
        * ⚠️ THE DEFERRAL ITSELF IS UNCHANGED, AND IT IS LOAD-BEARING. The call sits inside this one-time
        * initialisation branch, so importing this module still constructs no container and reads no
-       * environment — the property `test/handlers/entrySurface.test.ts` asserts, and the reason
+       * environment — the property `test/regression/issues.test.ts`'s folded `entrySurface` block asserts, and the reason
        * `./router.ts`, which resolves the graph at module load, fails a misconfigured deployment at cold
        * start while this entry stays loadable and answers the classified configuration failure per
        * invocation.

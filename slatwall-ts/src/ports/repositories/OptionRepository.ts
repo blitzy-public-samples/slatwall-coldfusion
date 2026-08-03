@@ -37,21 +37,17 @@
  * names only correct physical tables (`SwOption`, `SwOptionGroup`, `SwSkuOption`, `SwSku`), so it is
  * untouched by the logical-versus-physical naming divergence [model/dao/SkuDAO.cfc:L132]. The annotations below therefore mark PRESERVED BEHAVIOUR, not defects.
  *
- * A DELIBERATE NOTE ON WHAT IS *NOT* WRONG WITH THIS SOURCE. ⚠️ F27: this sentence used to open "The
- * carried-defect register for this slice runs from D1 to the logical-versus-physical naming divergence [model/dao/SkuDAO.cfc:L132] and is closed (AAP 0.6.7 ...)". Both
- * halves were wrong, and the replacement states no range at all: the bounds and every port-minted
- * entry live in one place, `src/ports/repositories/SkuRepository.ts`, which is the only file that
- * may state them. What the note actually needed to say is that NO ENTRY LANDS HERE (AAP 0.7.3 S7 — "preserve and
- * annotate, do not repair"), and that is worth recording, because silence would invite someone to
- * "harden" a component that needs no hardening. It binds every value
- * through `<cfqueryparam>` — at `L68`, `L78` and `L107`, which is all three of them — so it is
- * untouched by D18, the 21-statement interpolation surface that belongs to
- * `model/dao/ProductDAO.cfc` alone. And it names only correct physical tables — `SwOption`,
- * `SwOptionGroup`, `SwSkuOption` and `SwSku`, verified as the only table tokens in the component — so
- * it is untouched by the logical-versus-physical naming divergence [model/dao/SkuDAO.cfc:L132], the physical/logical name divergence.
+ * ⚠️ THE PARAGRAPH ABOVE WAS STATED TWICE, AND THE SECOND COPY IS REMOVED. Review finding F11 reported
+ * the duplication; an earlier revision appended a corrected restatement rather than substituting it, so the
+ * same three facts — every value bound, only physical tables named, no register entry landing here — were
+ * asserted in two consecutive paragraphs with different wording. The first opened "The carried-defect
+ * register for this slice runs from D1 to <a port-minted endpoint beyond D21> and is closed", and BOTH
+ * halves of that were wrong: the range was not the AAP's, and no range belongs here at all. The bounds and
+ * every port-minted observation live in exactly one place, `src/ports/repositories/SkuRepository.ts`.
  *
- * ⚠️ F27 — THE the logical-versus-physical naming divergence [model/dao/SkuDAO.cfc:L132] ATTRIBUTION HERE WAS WRONG AND IS CORRECTED. It said the divergence "affects
- * `ProductDAO` and `ProductTypeDAO` only", which omitted the legacy component the logical-versus-physical naming divergence [model/dao/SkuDAO.cfc:L132] ORIGINATES in and
+ * ⚠️ F27 — AND THE ATTRIBUTION OF THE NAMING DIVERGENCE WAS WRONG TOO, AND IS CORRECTED. It said the
+ * divergence "affects `ProductDAO` and `ProductTypeDAO` only", which omitted the legacy component the
+ * divergence ORIGINATES in and
  * where it takes its sharpest, intra-file form: `model/dao/SkuDAO.cfc` places logical entity names
  * in the native statement at `:L132` and `:L135` while using physical names in the native statement
  * at `:L179-L186`. `model/dao/ProductDAO.cfc` and `model/dao/ProductTypeDAO.cfc:L54-L62` are

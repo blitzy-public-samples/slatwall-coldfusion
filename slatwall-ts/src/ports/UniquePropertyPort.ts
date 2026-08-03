@@ -467,7 +467,7 @@ export interface UniquePropertyPort {
  * nobody can describe, so returning it to a warm pool hands the next invocation whatever was left open —
  * precisely the cross-invocation bleed M7 exists to prevent, and silent, because the next caller sees no
  * error. Such a connection must be taken out of service instead. Both branches are asserted against the
- * MySQL implementation in `test/adapters/UnitOfWork.test.ts`, and the structural double in
+ * MySQL implementation in `test/adapters/MySqlSkuRepository.test.ts`'s folded `UnitOfWork` block, and the structural double in
  * `test/support/inMemoryRepositories.ts` reproduces the same rule so a consumer suite cannot disagree
  * with the class about it.
  *

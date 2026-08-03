@@ -545,22 +545,24 @@ export type TransactionExistenceChecker = SkuTransactionExistenceChecker &
 /**
  * Adapt {@link SkuRepository.transactionExists} to the caller-ordered checker the two entities take.
  *
- * ⭐ `model/service/SkuService.cfc:L285-L287` — THIS IS THE ARGUMENT CROSSING, AND IT EXISTS BECAUSE THE TWO LAYERS ARE ORDERED
- * DIFFERENTLY ON PURPOSE. The entity-level contract is CALLER-ordered, `(skuID?, productID?)`, because
- * that is the order the legacy call sites read in — `model/entity/Sku.cfc:L594` names `skuID=` and
+ * ⭐ THIS IS THE ARGUMENT CROSSING, AND IT EXISTS BECAUSE THE TWO LAYERS ARE ORDERED DIFFERENTLY ON
+ * PURPOSE. The entity-level contract is CALLER-ordered, `(skuID?, productID?)`, because that is the order
+ * the legacy call sites read in — `model/entity/Sku.cfc:L594` names `skuID=` and
  * `model/entity/Product.cfc:L626` names `productID=`. The repository member is DAO-ordered,
- * `(productID?, skuID?)`, because `model/dao/SkuDAO.cfc:L54-L55` declares `productID` first. AAP 0.4.2.6
- * pins the second order and AAP 0.4.2.2 Discrepancy 4 pins the zero-argument service signature that
- * sits between them, so neither order may be "tidied" to remove this function.
+ * `(productID?, skuID?)`, because `model/dao/SkuDAO.cfc:L54-L55` declares `productID` first. AAP §0.4.2.6
+ * pins the second order, so neither may be "tidied" to remove this function. `SkuService`
+ * sits between them and is CALLER-ordered too, crossing the same two slots on one line of its own body —
+ * so the port contains exactly two crossings, each beside a comment naming it.
  *
- * ⛔ WITHOUT IT THE ONLY BINDING AVAILABLE WAS THE WRONG ONE. `SkuService.getTransactionExistsFlag`
- * declares zero arguments, and TypeScript accepts a lower-arity function wherever a higher-arity one is
- * expected — so binding the service to either checker compiled and then discarded the identifier the
- * entity had just supplied, leaving the DAO's else-branch to answer a wider question than the caller
- * asked. Both flags gate DELETES (`model/validation/Sku.json` and `model/validation/Product.json:L12`),
- * so the substitution is destructive in both directions and reports nothing. The `argumentOrder` member
- * both contracts now require is what turns that mis-binding into a compile error; this function is what
- * makes the correct binding available in production rather than only in test support.
+ * ⛔ AND A DOMAIN ENTITY CANNOT REACH EITHER OF THOSE LAYERS DIRECTLY, which is why this function exists
+ * at all: `Sku` and `Product` may not import a service or an adapter. A revision narrowed
+ * `SkuService.getTransactionExistsFlag` to zero arguments, and because TypeScript accepts a lower-arity
+ * function wherever a higher-arity one is expected, binding the service to either checker compiled and
+ * then discarded the identifier the entity had just supplied. Both flags gate DELETES
+ * (`model/validation/Sku.json` and `model/validation/Product.json:L12`), so the substitution was
+ * destructive in both directions and reported nothing. The `argumentOrder` member both contracts require
+ * is what turns any such mis-binding into a compile error; this function is what makes the correct
+ * binding available in production rather than only in test support.
  *
  * ⚠️ IT LIVES BESIDE `transactionExists` FOR A REASON THAT TYPES CANNOT COVER. Both identifiers are
  * 32-character strings (IR-6), so a crossing written backwards type-checks perfectly and silently
@@ -1024,7 +1026,8 @@ export class MySqlSkuRepository implements SkuRepository {
    * `noUncheckedIndexedAccess` types the read as possibly absent and the honest response to that is a
    * narrowing check, not a non-null assertion. The behaviour on the normal path is identical.
    *
-   * Discrepancy 4, resolved one layer up as the undeclared-argument forwarding [model/service/SkuService.cfc:L285-L287] and recorded here because this member
+   * AAP §0.4.2.2's Discrepancy 4 is resolved one layer up — at the undeclared-argument forwarding of
+   * `model/service/SkuService.cfc:L285-L287` — and is recorded here because this member
    * is the thing that raises. `model/service/SkuService.cfc:L285` declares the SERVICE member with NO
    * arguments at all, while its real callers pass one by name — `model/entity/Sku.cfc:L594` passes the
    * SKU identifier and `model/entity/Product.cfc:L626` passes the product identifier — and CFML's

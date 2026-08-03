@@ -34,18 +34,18 @@ for. Each is stated **once**, in the section named — deliberately not duplicat
 register are two things that can disagree, and this subtree treats a second copy of a fact as a defect
 rather than as redundancy.
 
-| What a reviewer needs to check                                                                                                                                                                | Where it is                         |
-| --------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- | ----------------------------------- |
-| **T1–T5** — the five option-to-SKU semantics that must survive translation, each named as a silent-drift trap, with the translated SQL shape and the bound-parameter order                    | §10.2                               |
-| **The validation read-back loop** — the highest-risk item in the slice: a declarative rule that executes a query against rows the same operation is writing, and how `UnitOfWork` resolves it | §10.3, with **M6** and **D19**      |
-| **The combination engine** — the odometer enumeration whose order determines both the generated SKU set and what uniqueness validation observes                                               | §10.4                               |
-| **The three seeded discriminator UUIDs** — fixed data, not test data (**IR-7**), reused verbatim in the fixtures                                                                              | §10.5                               |
-| **The 28 preserved public members** — interface parity, method by method, with every tightened signature recorded                                                                             | §10.1                               |
-| **D1–D21** — the full defect register, carried as flagged `TODO(parity)` annotations rather than repaired, plus the single declared departure                                                 | §12.4, and **D18** in its own block |
-| **M1–M8** — the execution-model mismatches, flagged rather than silently resolved, each with its source-declared value and locator                                                            | §12.5                               |
-| **Test provenance** — TRACEABLE versus NET-NEW, in both directions, with the honest ratio leading                                                                                             | §12.1                               |
-| **What caps the evidence** — the absent local development setup and the legacy suite that cannot be executed here                                                                             | §12.2                               |
-| **Scope** — the thirty in-scope legacy files, the exclusions, and the calculated-property boundary                                                                                            | §9                                  |
+| What a reviewer needs to check                                                                                                                                                                       | Where it is                    |
+| ---------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- | ------------------------------ |
+| **T1–T5** — the five option-to-SKU semantics that must survive translation, each named as a silent-drift trap, with the translated SQL shape and the bound-parameter order                           | §10.2                          |
+| **The validation read-back loop** — the highest-risk item in the slice: a declarative rule that executes a query against rows the same operation is writing, and how `UnitOfWork` resolves it        | §10.3, with **M6** and **D19** |
+| **The combination engine** — the odometer enumeration whose order determines both the generated SKU set and what uniqueness validation observes                                                      | §10.4                          |
+| **The three seeded discriminator UUIDs** — fixed data, not test data (**IR-7**), reused verbatim in the fixtures                                                                                     | §10.5                          |
+| **The 28 preserved public members** — interface parity, method by method, with every tightened signature recorded                                                                                    | §10.1                          |
+| **D1–D21** — the full defect register, carried as flagged `TODO(parity)` annotations rather than repaired, plus the **two** declared departures and the four further observations carried by locator | §12.4                          |
+| **M1–M8** — the execution-model mismatches, flagged rather than silently resolved, each with its source-declared value and locator                                                                   | §12.5                          |
+| **Test provenance** — TRACEABLE versus NET-NEW, in both directions, with the honest ratio leading                                                                                                    | §12.1                          |
+| **What caps the evidence** — the absent local development setup and the legacy suite that cannot be executed here                                                                                    | §12.2                          |
+| **Scope** — the thirty in-scope legacy files, the exclusions, and the calculated-property boundary                                                                                                   | §9                             |
 
 ---
 
@@ -97,68 +97,75 @@ and the judgment calls in §10.
 Every version below was read back from the installed toolchain and the committed manifest rather than
 recalled, and every command in §3 was executed against it in this checkout.
 
-| Item                  | Value                                        | Where it is pinned                                                                     |
-| --------------------- | -------------------------------------------- | -------------------------------------------------------------------------------------- |
-| Node.js               | **20.20.2** — an exact pin                   | `.nvmrc`                                                                               |
-| `engines.node`        | **`>=20.19.0`** — a floor, not a pin         | `package.json` — derivation in §2.1                                                    |
-| npm                   | **10.8.2**                                   | the version shipped with that Node line                                                |
-| TypeScript            | **5.9.3**                                    | `devDependencies`, `strict` mode                                                       |
-| Target Lambda runtime | `nodejs20.x`                                 | named in prose only — no infrastructure file is written                                |
-| MySQL                 | any server holding the existing `Sw*` schema | needed **only to run** the service                                                     |
-| Item                  | Value                                        | Where it is pinned                                                                     |
-| --------------------- | -------------------------------------------- | -------------------------------------------------------------------------------------- |
-| Node.js               | **20.20.2**                                  | `.nvmrc`                                                                               |
-| `engines.node`        | **`>=20.20.2`**                              | `package.json` — derivation in §2.1                                                    |
-| npm                   | **10.8.2**                                   | the version shipped with that Node line                                                |
-| TypeScript            | **5.9.3**                                    | `devDependencies`, `strict` mode                                                       |
-| Target Lambda runtime | `nodejs20.x`                                 | named in prose only — no infrastructure or runtime declaration is authored (see below) |
-| MySQL                 | any server holding the existing `Sw*` schema | needed **only to run** the service                                                     |
+| Item                  | Value                                        | Where it is pinned                                                                    |
+| --------------------- | -------------------------------------------- | ------------------------------------------------------------------------------------- |
+| Node.js               | **20.20.2** — an exact pin                   | `.nvmrc`                                                                              |
+| `engines.node`        | **`>=20.20.2`** — a floor, not a pin         | `package.json` and `package-lock.json` — derivation in §2.1                           |
+| npm                   | **10.8.2**                                   | the version shipped with that Node line                                               |
+| TypeScript            | **5.9.3**                                    | `devDependencies`, `strict` mode                                                      |
+| Target Lambda runtime | `nodejs20.x`                                 | named in prose only — no infrastructure or runtime declaration is authored (see §2.1) |
+| MySQL                 | any server holding the existing `Sw*` schema | needed **only to run** the service                                                    |
+
+⚠️ **THIS TABLE WAS PRINTED TWICE, WITH TWO DIFFERENT `engines.node` VALUES.** Review finding **F7**
+reported the duplication: a revision appended a corrected table rather than substituting it, so the section
+opened with `>=20.19.0` and then immediately restated the same six rows with `>=20.20.2`. There is now one
+table, and §2.1 gives its derivation.
 
 The running toolchain in this checkout is Node **v20.20.2** with npm **10.8.2**, which matches `.nvmrc`
-exactly, so the pin and the machine agree. A newer Node may also satisfy `engines` and install
-successfully — **do not "correct" the pins on that basis.** `.nvmrc` stays `20.20.2`, `engines.node` stays
-`>=20.19.0`, `@types/node` stays `20.19.43` and `typescript` stays `5.9.3`; these are express instructions,
-not artifacts of one machine, and §2.2 explains why the Node pin in particular is deliberate.
+exactly, so the pin and the machine agree. A newer Node may also install successfully — **do not "correct"
+the pins on that basis.** `.nvmrc` stays `20.20.2`, `engines.node` stays `>=20.20.2`, `@types/node` stays
+`20.19.43` and `typescript` stays `5.9.3`; these are express instructions, not artifacts of one machine, and
+§2.2 explains why the Node pin in particular is deliberate.
 
 Two things are **not** prerequisites, stated so nobody goes looking for them: a database is needed only to
 _run_ the service — the build and the whole test suite need none — and **an AWS account is not required for
 anything in this document**.
 
-### 2.1 `engines.node` is a floor; `.nvmrc` is a pin. They are different numbers on purpose
+### 2.1 The floor, the pin, and the runtime string that is only prose
 
-📐 **On the runtime row, the precise claim is about DECLARATIONS rather than about the string.** The
-identifier `nodejs20.x` appears in this subtree as prose — in the table above, twice in §2.2, in §4.3's
+**`engines.node` is `>=20.20.2`, and it is a FLOOR. `.nvmrc` is `20.20.2`, and it is a PIN.** They presently
+name the same version, which makes them easier rather than harder to confuse, so both are stated:
+
+| Artifact       | Value       | What it means                                                       |
+| -------------- | ----------- | ------------------------------------------------------------------- |
+| `.nvmrc`       | `20.20.2`   | the **exact** version this toolchain was verified against           |
+| `engines.node` | `>=20.20.2` | the **lowest** version this project accepts — no upper bound at all |
+
+**Why a patch version rather than a bare `>=20`.** A bare `">=20"` would satisfy an instruction that says
+"Node 20.x" while still admitting an install of Node 20.0 through 20.18. AAP §0.5.3.1 derives the graph's own
+lower bound by intersecting every declared `engines.node` range: `eslint@10.8.0`'s `^20.19.0` is strictly the
+highest lower bound on the 20.x line — above `ts-jest`'s `>=20.0.0`, above `esbuild`'s `>=18`, above
+`typescript`'s `>=14.17` — so anything below that hits an `EBADENGINE` warning or an outright lint failure.
+
+**Why the verified patch version rather than the graph's own derived bound, which this section once argued
+for.** The derived value is a lower bound on what the dependency GRAPH tolerates; it is not a ceiling on what
+the PROJECT may require. Every version `>=20.20.2` admits also satisfies `^20.19.0`, so declaring the verified
+version states a real constraint rather than inventing one — and it is the version `.nvmrc` already pins, the
+version the whole toolchain was validated on, and the floor this project's setup contract names. Review
+finding **F6** required it. The figure now appears in exactly four places, all agreeing: `package.json`,
+`package-lock.json`'s root `packages[""]` entry, `jest.config.ts`'s derivation note, and the table above —
+and `test/regression/issues.test.ts` asserts all four, so they cannot drift apart again.
+
+⚠️ **The history is kept because the number has moved twice.** A revision raised the floor to the pin; an
+**earlier review round** objected that the plan's derived bound is the plan's own figure, and it was returned
+to `>=20.19.0`; **F6** requires the pin again, on the reasoning above — the derived bound is a floor on what
+the graph tolerates, not a ceiling on what the project may require. A future proposal to lower it should
+answer that reasoning rather than re-derive the graph bound, which nobody disputes.
+
+⚠️ **A note on finding labels, because they collide across rounds.** An unqualified **`F<n>`** anywhere in
+this document is a finding of the **current** review round, whose report enumerates F1–F11. Earlier rounds
+numbered their own findings from `F1` as well, so a reference to one of those is written **"an earlier review
+round"** followed by the subject rather than a numeral — the same reason §12.4 carries observations by source
+locator instead of by a minted identifier. Labels of the form `SEC-<n>`, `CQ-<n>`, `API-<n>` and `ARCH-<n>` do
+not collide and are used as they were issued.
+
+📐 **On the runtime row, the precise claim is about DECLARATIONS rather than about the string.**
+The identifier `nodejs20.x` appears in this subtree as prose — in the table above, twice in §2.2, in §4.3's
 rejected-pin table and in `.env.example`'s lifecycle gate — because AAP §0.5.5 names it and this file
 documents it. What does not exist anywhere is a machine-read declaration that **selects** it: no
-CloudFormation, SAM, CDK, Terraform or Serverless artifact, and no `Runtime:` key. Infrastructure as code
-is out of scope (AAP §0.2.2.5), so the pin is carried by `--target=node20` in `build/esbuild.mjs` — a
-bundler flag about which syntax may be left un-transpiled — and by the version statements listed in §2.2.
-
-### 2.1 Why `engines.node` names a patch version rather than `>=20`
-
-The floor is **derived, not chosen**. Intersecting every declared `engines.node` range in the resolved
-dependency graph, `eslint@10.8.0`'s `^20.19.0` is strictly the **highest lower bound on the 20.x line** —
-above `ts-jest`'s `>=20.0.0`, above `esbuild`'s `>=18`, above `typescript`'s `>=14.17`. So the graph itself
-forbids anything below **20.19.0**, and that is exactly what the manifest declares.
-
-A bare `">=20"` would satisfy an instruction that says "Node 20.x" while still admitting an install of Node
-20.0 through 20.18, where an `EBADENGINE` warning or an outright lint failure is waiting. Naming the real
-floor removes that failure mode. It is the number AAP §0.5.3.1 derives and requires verbatim.
-
-**The floor is deliberately NOT raised to `20.20.2` to make the two figures match**, and the distinction is
-worth reading once rather than rediscovering:
-
-| Artifact       | Value       | What it means                                             |
-| -------------- | ----------- | --------------------------------------------------------- |
-| `.nvmrc`       | `20.20.2`   | the **exact** version this toolchain was verified against |
-| `engines.node` | `>=20.19.0` | the **lowest** version the dependency graph tolerates     |
-
-`20.20.2` satisfies `>=20.19.0`, so the two never conflict. Raising the floor to the pin would invent a
-constraint that no dependency in the graph states — precisely the fabrication IR-12 forbids — and would
-also make the manifest disagree with `jest.config.ts`, which quotes the floor in its own derivation. A
-revision of this subtree did raise it, and a subsequent review recorded that as finding **F1**; it is back
-at the derived value in `package.json`, in `package-lock.json`'s root and in this file, which are the three
-places the number appears.
+CloudFormation, SAM, CDK, Terraform or Serverless artifact, and no `Runtime:` key. Infrastructure as code is
+out of scope (AAP §0.2.2.5), so the pin is carried by `--target=node20` in `build/esbuild.mjs` — a bundler
+flag about which syntax may be left un-transpiled — and by the version statements listed in §2.2.
 
 ### 2.2 Runtime lifecycle — a disclosure, not a performance claim
 
@@ -205,22 +212,26 @@ anywhere in this subtree, because the legacy source states none and inventing on
 Run every command from **this directory** (`slatwall-ts/`). Each result below is this repository's measured
 output in this checkout, not an expectation.
 
-`package.json` declares **exactly four scripts** — `build`, `test`, `lint` and `typecheck`, the four AAP
-§0.4.1.2 names and no others. The table below therefore has five rows: those four, plus `npm ci`, which is
-npm's own install command and **not** a script in this manifest.
+`package.json` declares **exactly six scripts** — `typecheck`, `build`, `test`, `test:coverage`, `lint` and
+`format:check`. The table below therefore has seven rows: those six, plus `npm ci`, which is npm's own
+install command and **not** a script in this manifest.
 
-| Command             | What it runs                                                | Measured result                                |
-| ------------------- | ----------------------------------------------------------- | ---------------------------------------------- |
-| `npm ci`            | install from the lockfile (npm builtin, not a script)       | 399 packages, 0 `EBADENGINE`, 0 audit findings |
-| `npm run typecheck` | `tsc --noEmit`, full strict                                 | **0 errors**                                   |
-| `npm run lint`      | `eslint .`                                                  | **0 problems**                                 |
-| `npm test`          | `jest --ci --config package.json --preset ./jest.config.ts` | **17 suites, 2304 tests, 0 failures**          |
-| `npm run build`     | `node build/esbuild.mjs`                                    | 6 CommonJS artifacts, exit 0 (§6)              |
+| Command                 | What it runs                                                | Measured result                                |
+| ----------------------- | ----------------------------------------------------------- | ---------------------------------------------- |
+| `npm ci`                | install from the lockfile (npm builtin, not a script)       | 399 packages, 0 `EBADENGINE`, 0 audit findings |
+| `npm run typecheck`     | `tsc --noEmit`, full strict                                 | **0 errors**                                   |
+| `npm run lint`          | `eslint .`                                                  | **0 problems**                                 |
+| `npm run format:check`  | `prettier --check .`                                        | **all matched files conform**                  |
+| `npm test`              | `jest --ci --config package.json --preset ./jest.config.ts` | **17 suites, 2342 tests, 0 failures**          |
+| `npm run test:coverage` | the same, plus `--coverage`                                 | **17 suites, 2342 tests, 0 failures**          |
+| `npm run build`         | `node build/esbuild.mjs`                                    | 6 CommonJS artifacts, exit 0 (§6)              |
 
-Formatting is checked with `npx prettier --check .`, which reports that all matched files conform. It has
-**no script of its own**: four scripts are the whole prescribed surface, and Prettier needs no wrapper —
-`.prettierrc.json` is the baseline and `.gitignore` doubles as its ignore list (see `.gitignore`'s own
-closing note for the measurement behind that).
+⚠️ **THIS SECTION SAID "EXACTLY FOUR SCRIPTS" AND LISTED FIVE ROWS, AND TWO OF THE SIX DID NOT EXIST.** A
+revision deleted `format:check` and `test:coverage` as "outside the frozen four" of AAP §0.4.1.2 and rewrote
+this section to match, leaving the project's own verified command contract naming two commands that would
+fail at a reader's shell prompt. Review finding **F6** restored both, and **F7** covers this account of them.
+AAP §0.4.1.2 declares which scripts the manifest must CARRY; it does not close the set.
+
 `npm ci` rather than `npm install`: the lockfile is committed so resolution is reproducible, and `ci` is the
 command that honours it exactly.
 
@@ -230,11 +241,17 @@ configuration is relaxed to reach those results: `tsconfig.json` keeps `strict`,
 `exactOptionalPropertyTypes` and `noUncheckedIndexedAccess`, and `ts-jest` runs that same `tsconfig.json`
 with no `diagnostics: false`.
 
-`jest.config.ts` sets `collectCoverage: true`, so `npm test` reports coverage as well — which is why no
-fifth `test:coverage` script is needed to produce the signal. It declares **no `coverageThreshold`** and no
-quality gate of any kind — measured coverage is published, no target is asserted, and none is invented
-(§12.1 records why: the legacy structural gate is inert and the legacy suite carries no line or branch
-instrumentation at all).
+`jest.config.ts` sets `collectCoverage: true`, so plain `npm test` reports coverage as well. The
+`test:coverage` script passes `--coverage` explicitly, so the intent is addressable by name AND always-on;
+the two are deliberately redundant rather than alternatives. The configuration declares **no
+`coverageThreshold`** and no quality gate of any kind — measured coverage is published, no target is
+asserted, and none is invented (§12.1 records why: the legacy structural gate is inert and the legacy suite
+carries no line or branch instrumentation at all).
+
+Formatting has its own script, `npm run format:check`, which wraps `prettier --check .`.
+`.prettierrc.json` is the baseline and `.gitignore` doubles as its ignore list — Prettier 3 honours
+`.gitignore`, so there is no separate `.prettierignore` to keep in sync (see `.gitignore`'s own closing note
+for the measurement behind that).
 
 Two notes that save a wasted debugging session:
 
@@ -313,7 +330,7 @@ leaves the lockfile byte-identical, so resolution is reproducible.
 
 ⚠️ **`ts-node` is deliberately NOT among them, and `npm test` is shaped around its absence.** An earlier
 revision declared it as an eleventh package solely so Jest could read `jest.config.ts`, and recorded the
-excess in a `"//dependencyInventory"` member of the manifest. Review finding **F2** rejected that —
+excess in a `"//dependencyInventory"` member of the manifest. An **earlier review round** rejected that —
 documenting a deviation is not fixing one — so the loading problem is now solved inside the prescribed ten,
 with the two flags §3 describes. The manifest carries no pseudo-comment member of any kind as a result.
 
@@ -333,15 +350,20 @@ inspecting the manifest deserves to know the pin was reasoned rather than stale.
 
 ### 4.4 No deviations from the plan's dependency inventory — and the two that were withdrawn
 
-The manifest now matches AAP §0.5.2 exactly: **one runtime dependency, ten development dependencies, the
-`>=20.19.0` floor, four scripts, and no other key**. There is no `overrides` block, no `resolutions`, no
-`workspaces`, no `packageManager` field and no `"//"` pseudo-comment member. Two earlier deviations were
+The manifest matches AAP §0.5.2's dependency inventory exactly: **one runtime dependency and ten
+development dependencies, all at exact pins**, plus the `>=20.20.2` floor and the six scripts §3 tabulates.
+There is no `overrides` block, no `resolutions`, no `workspaces`, no `packageManager` field and no `"//"`
+pseudo-comment member.
+
+⚠️ **THIS SENTENCE SAID "the `>=20.19.0` floor, four scripts".** Both figures moved under review finding
+**F6** — see §2.1 for the floor and §3 for the scripts — and neither is a dependency deviation: AAP §0.5.2
+fixes the PACKAGE set, which is unchanged. Two earlier deviations were
 recorded in the manifest itself; both have been withdrawn, and because a withdrawal is only auditable if the
 reasoning survives it, both are recorded here.
 
 - **The eleventh dev dependency, `ts-node` 10.9.2 — withdrawn by fixing the cause.** It existed only so
   Jest could load `jest.config.ts`, and the manifest carried a `"//dependencyInventory"` member arguing that
-  the excess was the lesser of two evils. Review finding **F2** rejected that framing and required the
+  the excess was the lesser of two evils. An **earlier review round** rejected that framing and required the
   loading problem to be solved within the prescribed toolchain. It is: `npm test` passes
   `--config package.json --preset ./jest.config.ts`, which keeps the plan-mandated filename, adds no
   package, and resolves a configuration measured byte-identical to the loader route's (§3, and
@@ -409,10 +431,10 @@ they share — never deleted, never thinned, with each folded suite body wrapped
 helpers became block-scoped and not one assertion altered; §5.5 lists the module folds with their hosts and
 §12.1 the suite folds. Two were different cases and are recorded as such: `util/urlTitleProbeBudget.ts`
 declared a probe ceiling the legacy has no equivalent of, so it was **removed** rather than relocated, along
-with the rest of the unauthorised hardening §13.4 describes; and `test/config/surfaceReachability.test.ts`
-was **withdrawn** rather than folded, because its premise was a module graph the frozen inventory precludes —
-`test/regression/issues.test.ts` carries the record, and the half of it that still holds is asserted by the
-folded entry-surface cases. Every intra-subtree import is a **relative path**: there is no
+with the rest of the unauthorised hardening §13.4 describes; and a surface-reachability suite was
+**withdrawn** rather than folded, because its premise was a module graph the frozen inventory precludes —
+`test/regression/issues.test.ts` carries the withdrawal record in full, names the suite, and asserts the half
+of it that still holds through the folded entry-surface cases. Every intra-subtree import is a **relative path**: there is no
 `paths` mapping, no `baseUrl`, no `moduleNameMapper` and no runtime resolver shim, so `tsc` and `esbuild`
 resolve identically and no runtime shim is needed. `module` and `moduleResolution` are both `NodeNext`;
 esbuild emits CommonJS.
@@ -486,38 +508,41 @@ stays on the interface, and the gap is **flagged rather than filled** (**TR-5**)
 answers **501** rather than fabricating a value — substituting a plausible answer for a flag that gates a
 delete is exactly the silent divergence this design refuses.
 
-| Port                       | Why it exists                                                                                                                                                                                                                                                                                                                                |
-| -------------------------- | -------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
-| `SettingResolverPort`      | resolves the eighteen configuration keys the slice reads through `HibachiEntity.setting()` (`model/entity/HibachiEntity.cfc:L129`), including the interpolated `productImage<size>Width` / `productImage<size>Height` form. Declared **synchronous**, so no caller depends on background completion (**M8**)                                 |
-| `ImagePathPort`            | image path, resized path and existence flag (`model/entity/Sku.cfc:L145, L192, L221`) — the hidden `imageService` dependency of §5.2                                                                                                                                                                                                         |
-| `SubscriptionTermPort`     | subscription-term resolution for the `subscription` branch of `createSkus`                                                                                                                                                                                                                                                                   |
-| `AccessContentPort`        | content resolution for the `contentAccess` branch of `createSkus`                                                                                                                                                                                                                                                                            |
-| `PricingPort`              | the price reads retained members need — notably the feed's conditional sale-price fields                                                                                                                                                                                                                                                     |
-| `AccountContextPort`       | current-account context, replacing the request-scoped Hibachi scope lookup                                                                                                                                                                                                                                                                   |
-| `SmartListQueryPort`       | the filter, join, range, ordering and pagination surface the SmartList members and the feed controller depend on                                                                                                                                                                                                                             |
-| `UniquePropertyPort`       | application-side uniqueness checking, reproducing `org/Hibachi/HibachiDAO.cfc:L130-L146` (**IR-5**) — required _in addition_ to the database's own unique columns, because the legacy enforces it with an HQL existence query during validation                                                                                              |
-| `TransactionalWriteRunner` | the Unit-of-Work boundary as a **declaration**, so a handler can reach a transaction without importing from `adapters/**`. The pattern is named at AAP §0.3.3. ⚠️ **It is a contract, not a ninth port, and it does not have a file of its own.** It is declared in `src/config/container.ts` beside the write graphs that use it — see §9.5 |
+| Port                       | Why it exists                                                                                                                                                                                                                                                                                                                                                             |
+| -------------------------- | ------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
+| `SettingResolverPort`      | resolves the eighteen configuration keys the slice reads through `HibachiEntity.setting()` (`model/entity/HibachiEntity.cfc:L129`), including the interpolated `productImage<size>Width` / `productImage<size>Height` form. Declared **synchronous**, so no caller depends on background completion (**M8**)                                                              |
+| `ImagePathPort`            | image path, resized path and existence flag (`model/entity/Sku.cfc:L145, L192, L221`) — the hidden `imageService` dependency of §5.2                                                                                                                                                                                                                                      |
+| `SubscriptionTermPort`     | subscription-term resolution for the `subscription` branch of `createSkus`                                                                                                                                                                                                                                                                                                |
+| `AccessContentPort`        | content resolution for the `contentAccess` branch of `createSkus`                                                                                                                                                                                                                                                                                                         |
+| `PricingPort`              | the price reads retained members need — notably the feed's conditional sale-price fields                                                                                                                                                                                                                                                                                  |
+| `AccountContextPort`       | current-account context, replacing the request-scoped Hibachi scope lookup                                                                                                                                                                                                                                                                                                |
+| `SmartListQueryPort`       | the filter, join, range, ordering and pagination surface the SmartList members and the feed controller depend on                                                                                                                                                                                                                                                          |
+| `UniquePropertyPort`       | application-side uniqueness checking, reproducing `org/Hibachi/HibachiDAO.cfc:L130-L146` (**IR-5**) — required _in addition_ to the database's own unique columns, because the legacy enforces it with an HQL existence query during validation                                                                                                                           |
+| `TransactionalWriteRunner` | the Unit-of-Work boundary as a **declaration**, so a handler can reach a transaction without importing from `adapters/**`. The pattern is named at AAP §0.3.3. ⚠️ **It is a contract, not a ninth port, and it has no file of its own** — it is declared inside `src/ports/UniquePropertyPort.ts` and re-exported from `src/config/container.ts`; see the paragraph below |
 
 The eight rows above `TransactionalWriteRunner` are the eight boundary ports AAP §0.2.2.7 enumerates, each
 in its own file under `src/ports/`. The ninth row is a **transaction contract**, and the distinction matters:
 a _port_ stands for an out-of-scope collaborator this subtree may not implement, whereas the write runner
-stands for a boundary this subtree owns outright. It was briefly given a file of its own
-(`src/ports/TransactionalWritePort.ts`), which put a production file outside the frozen target inventory and
-made every built handler depend transitively on unplanned code; **review finding F5** withdrew that file and
-the contract now lives in the composition root that declares the write graphs it is parameterised over.
-§9.5 records the full inventory consequence.
+stands for a boundary this subtree owns outright.
 
-| Port                       | Why it exists                                                                                                                                                                                                                                                                                                                                                                                                                                                                                              |
-| -------------------------- | ---------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
-| `SettingResolverPort`      | resolves the eighteen configuration keys the slice reads through `HibachiEntity.setting()` (`model/entity/HibachiEntity.cfc:L129`), including the interpolated `productImage<size>Width` / `productImage<size>Height` form. Declared **synchronous**, so no caller depends on background completion (**M8**)                                                                                                                                                                                               |
-| `ImagePathPort`            | image path, resized path and existence flag (`model/entity/Sku.cfc:L145, L192, L221`) — the hidden `imageService` dependency of §5.2                                                                                                                                                                                                                                                                                                                                                                       |
-| `SubscriptionTermPort`     | subscription-term resolution for the `subscription` branch of `createSkus`                                                                                                                                                                                                                                                                                                                                                                                                                                 |
-| `AccessContentPort`        | content resolution for the `contentAccess` branch of `createSkus`                                                                                                                                                                                                                                                                                                                                                                                                                                          |
-| `PricingPort`              | the price reads retained members need — notably the feed's conditional sale-price fields                                                                                                                                                                                                                                                                                                                                                                                                                   |
-| `AccountContextPort`       | current-account context, replacing the request-scoped Hibachi scope lookup                                                                                                                                                                                                                                                                                                                                                                                                                                 |
-| `SmartListQueryPort`       | the filter, join, range, ordering and pagination surface the SmartList members and the feed controller depend on                                                                                                                                                                                                                                                                                                                                                                                           |
-| `UniquePropertyPort`       | application-side uniqueness checking, reproducing `org/Hibachi/HibachiDAO.cfc:L130-L146` (**IR-5**) — required _in addition_ to the database's own unique columns, because the legacy enforces it with an HQL existence query during validation                                                                                                                                                                                                                                                            |
-| `TransactionalWriteRunner` | the Unit-of-Work boundary as a **declaration**, so a handler can reach a transaction without importing from `adapters/**`. The pattern is named at AAP §0.3.3. It is declared inside `UniquePropertyPort.ts` rather than in a file of its own: AAP §0.4.1 freezes the inventory at 102 files, and a QA pass found this declaration living outside it, so it was folded into the approved port whose own subject — the uniqueness probe that runs inside a save — is what a transaction most often encloses |
+**Where it is declared, stated once, because three artefacts used to answer this differently.** It was briefly
+given a file of its own, `src/ports/TransactionalWritePort.ts`, which put a production file outside AAP
+§0.4.1's frozen inventory and made every built handler depend transitively on unplanned code; an **earlier
+review round** withdrew that file and it was folded into `src/ports/UniquePropertyPort.ts`, whose own subject
+— the uniqueness probe that runs **inside** a save — is what a transaction most often encloses (§5.5). That
+port now holds the single declaration and the whole of its lifecycle and disposal contract.
+`src/config/container.ts` **re-exports** it under the same name so the write graphs it parameterises can be
+read beside it, and so no consumer import had to move.
+
+⚠️ **Three things were wrong here and all three are fixed, because they compounded.** This table was printed
+**twice, verbatim**, and the two copies **contradicted each other on this one row** — one said the runner is
+declared in `src/config/container.ts`, the other in `src/ports/UniquePropertyPort.ts`. Both had a claim to make:
+`container.ts` really did carry a **second, structurally identical `export interface
+TransactionalWriteRunner<TGraph>`**, with its own full copy of the documentation, and because TypeScript is
+structurally typed the duplication compiled silently — the handlers imported one copy and
+`src/adapters/mysql/UnitOfWork.ts` the other, and the two doc blocks then drifted. Review findings **F7** and
+**F11** reported the documentation half; the duplicate declaration is removed, the duplicate table is removed,
+and §9.5 records the inventory consequence.
 
 **This is what makes the subtree independent.** Every dependency reaching outside the catalog slice
 terminates at a declared port rather than at an unconverted module, so `slatwall-ts/` builds, tests and
@@ -546,27 +571,36 @@ two through `createCatalogContainer({ imagePaths, pricing })` and the same reque
   repository, so their `beginInvocation` has nothing to discard, and each says so at its declaration rather
   than leaving the empty body to be read as an omission.
 
-### 5.5 The six production folds, and where each one went
+### 5.5 The fifteen production folds, and where each one went
 
-A QA pass measured this subtree against AAP §0.4.1's frozen 102-file inventory and found seven production
-modules outside it. Six were **folded** — moved whole into the approved file whose subject they share, with
-their entire doc record carried across verbatim under a fold banner — and the seventh was removed (§5.1).
+A QA pass measured this subtree against AAP §0.4.1's frozen 102-file inventory and found **sixteen** production
+modules outside it. **Fifteen were folded** — moved whole into the approved file whose subject they share, with
+their entire doc record carried across verbatim under a fold banner — and the sixteenth,
+`util/urlTitleProbeBudget.ts`, was **removed** because the ceiling it applied is itself withdrawn (§13.4).
 Nothing was thinned, and no declaration was merged away.
 
-| Folded module                                     | Host                                       | Why that host                                                                                                                                                                                              |
-| ------------------------------------------------- | ------------------------------------------ | ---------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
-| `ports/repositories/BoundedRead.ts`               | `ports/SmartListQueryPort.ts`              | the bounded-read window exists to bound a smart-list read, and every consumer of one already imported the other                                                                                            |
-| `ports/TransactionalWritePort.ts`                 | `ports/UniquePropertyPort.ts`              | the host's own subject — the uniqueness probe that runs **inside** a save — is what a transaction most often encloses (§5.3)                                                                               |
-| `util/smartListInput.ts`                          | `ports/SmartListQueryPort.ts`              | three services call `translateSmartListInput`, and a service may not import an adapter (standard 4), so the translation belongs on the port; it already imported the port, so the fold **removed** an edge |
-| `adapters/mysql/catalogAggregates.ts`             | `adapters/mysql/QueryRunner.ts`            | the existing runtime edge is `QueryRunner → rowMappers`, so hosting the aggregate loaders in `rowMappers.ts` instead would have created a genuine adapter-layer cycle                                      |
-| `adapters/mysql/MySqlProductPersistence.ts`       | `adapters/mysql/MySqlProductRepository.ts` | the read and the write half of the same table                                                                                                                                                              |
-| `adapters/mysql/MySqlTransactionalWriteRunner.ts` | `adapters/mysql/UnitOfWork.ts`             | the runner is the boundary `UnitOfWork` opens                                                                                                                                                              |
+⚠️ **An earlier revision of this section listed only six of the fifteen** — it tabulated the ports and
+adapters folds and omitted the eight configuration modules and the SKU smart-list composer, which made §5.1's
+count of sixteen and this section's count of seven contradict each other. The full list follows, and it agrees
+with §5.1.
+
+| Folded module(s)                                                                                                                                                        | Host                                       | Why that host                                                                                                                                                                                                             |
+| ----------------------------------------------------------------------------------------------------------------------------------------------------------------------- | ------------------------------------------ | ------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
+| `config/catalogBoundaries.ts`, `config/catalogStatements.ts`, `config/catalogReads.ts`, `config/surfaces/{brand,option,feed,sku,product}Surface.ts` — **eight modules** | `config/container.ts`                      | all eight were split _out_ of the composition root, and every one of them exists only to wire collaborators the root already wires. The five `compose*Surface` and `get*SurfaceGraph` functions came across verbatim (§6) |
+| `ports/repositories/BoundedRead.ts`                                                                                                                                     | `ports/SmartListQueryPort.ts`              | the bounded-read window exists to bound a paginated dynamic query, which is the host's whole subject                                                                                                                      |
+| `ports/TransactionalWritePort.ts`                                                                                                                                       | `ports/UniquePropertyPort.ts`              | the host's own subject — the uniqueness probe that runs **inside** a save — is what a transaction most often encloses (§5.3)                                                                                              |
+| `util/smartListInput.ts`                                                                                                                                                | `ports/SmartListQueryPort.ts`              | three services call `translateSmartListInput` on their way into the port the host declares, so the host was already on every one of those paths and the fold adds no import edge                                          |
+| `services/skuSmartListQuery.ts`                                                                                                                                         | `ports/SmartListQueryPort.ts`              | it composed one dynamic query against the port the host declares                                                                                                                                                          |
+| `adapters/mysql/catalogAggregates.ts`                                                                                                                                   | `adapters/mysql/QueryRunner.ts`            | the existing runtime edge is `QueryRunner → rowMappers`, so hosting the aggregate loaders in `rowMappers.ts` instead would have created a genuine adapter-layer cycle                                                     |
+| `adapters/mysql/MySqlProductPersistence.ts`                                                                                                                             | `adapters/mysql/MySqlProductRepository.ts` | the read and the write half of the same table                                                                                                                                                                             |
+| `adapters/mysql/MySqlTransactionalWriteRunner.ts`                                                                                                                       | `adapters/mysql/UnitOfWork.ts`             | the runner is the boundary `UnitOfWork` opens                                                                                                                                                                             |
 
 **One fold needed a decision rather than a move, and it is worth reading before editing either half.** The
 product read and write halves each declared eight identically-named table and column constants, and the two
 sets **do not mean the same thing**: the read half spells tables in the ORM **class** vocabulary
 (`assertTableName('SlatwallProduct')`) and the write half in the **physical** vocabulary
-(`assertTableName('SwProduct')`). That divergence is defect **D22** (§12.4), which the port preserves. So the
+(`assertTableName('SwProduct')`). That is the same intra-file vocabulary divergence §12.4 carries by its
+locators — `model/dao/SkuDAO.cfc:L132` and `:L135` against `:L179-L211` — and the port preserves it. So the
 constants were **not** merged — the folded copies are prefixed `PERSISTED_`, and both readings survive.
 
 A value-import cycle scan over all of `src/**` reports **zero cycles** after the folds.
@@ -595,86 +629,72 @@ dist/node_modules/                       the runtime dependency closure — 11 p
 build-meta/sourcemaps/handlers/*.map    the six source maps, deliberately OUTSIDE the package
 ```
 
-`dist/` is therefore a **complete, self-resolving package** rather than six loose files: it measures 12 MB,
-of which 9.2 MB is the six artifacts and 2.2 MB is the staged driver closure.
+`dist/` is therefore a **complete, self-resolving package** rather than six loose files. Measured in this
+checkout with `du -sb` immediately after `npm run build`: **11,214,245 bytes** in total, of which
+**9,733,739** is the six artifacts and **1,480,323** the staged driver closure of eleven packages — `du -sh`
+rounds those to 12M, 9.3M and 2.2M respectively, the last because `du` charges whole filesystem blocks for
+the closure's many small files. §6's size bullet lists the six artifacts individually.
 
 Properties worth knowing, each measured rather than assumed:
 
-- **Every artifact exports an invocable `handler`.** `router.js` is the natural single-function deployment;
-  each per-service artifact serves only its own addresses and answers `404` for any other, so a deployment
-  may instead give each surface its own function. Nothing else lands in `dist/` — no chunk, no map, no build
-  report.
-- **The five gated artifacts also export the authorisation registration seam** — the registrar and its
-  clear — because a bundle is the only file a deployment holds and the seam has to be callable on it. §7.2
-  records the measured export list from before the fix, when it was reachable in the source and in no bundle.
-  Verified by requiring each emitted file afterwards: `router.js` publishes four names, the registrar and its
-  clear alongside `createRouter` and `handler`, and each per-surface bundle publishes them alongside its own
-  factories. `googleFeedHandler.js` publishes neither, since its one address is anonymous.
-- **Every artifact exports an invocable `handler`** — all six, measured by requiring each one. `router.js` is
-  the aggregate surface and the natural single-function deployment; each per-service artifact serves only its
-  own addresses and answers `404` for any other, so a deployment may instead give each surface its own
-  function. Nothing else lands in `dist/` — no chunk, no map, no build report — and that is now **asserted**
-  rather than merely intended (next bullet but one).
-  may instead give each surface its own function. Nothing lands in `dist/` beyond the six artifacts, the
-  manifest and the dependency closure — no chunk, no map, no build report.
+- **Every artifact exports an invocable `handler`** — all six, measured by requiring each emitted file.
+  `router.js` is the aggregate surface and the natural single-function deployment; each per-service artifact
+  serves only its own addresses and answers `404` for any other, so a deployment may instead give each surface
+  its own function. Nothing else lands in `dist/` beyond the six artifacts, the production manifest and the
+  dependency closure — no chunk, no map, no build report — and that is **asserted** by the pipeline rather than
+  merely intended.
+- **The five gated artifacts also export the authorisation registration seam** — the registrar and its clear
+  — because a bundle is the only file a deployment holds and the seam has to be callable on it. Verified by
+  requiring each emitted file: `router.js` publishes four names, the registrar and its clear alongside
+  `createRouter` and `handler`, and each per-surface bundle publishes them alongside its own factories.
+  `googleFeedHandler.js` publishes neither, since its one address is anonymous. §7.2 records the measured
+  export list from before the fix, when the seam was reachable in the source and in no bundle.
 - **The six entry points are a frozen literal list**, not a directory scan. A declared entry that is missing
   fails the build with a non-zero exit naming the path, and a non-test module appearing in `src/handlers/`
   that is neither a declared entry nor the acknowledged `httpResponse.ts` helper fails it too — so the
   artifact set cannot drift in either direction without a reviewer seeing it.
-- **The build stages, checks, then replaces each output tree whole.** Nothing is ever written into `dist/`
-  directly. `esbuild` emits into `build-meta/staging/dist`; the emitted set is then checked there in both
-  directions — every promised bundle and map present, and **nothing else present**; the maps are moved to
-  `build-meta/staging/sourcemaps`; and only then are `dist/` and `build-meta/sourcemaps/` each replaced by a
-  single rename, with the outgoing tree retired first so the destination is unoccupied at the moment of the
-  swap. Staging is removed on the way out.
+- **The pipeline is eight named steps, in one order, printed as it runs**: `purge`, `assert-entry-surface`,
+  `emit`, `relocate-sourcemaps`, `write-manifest`, `stage-dependencies`, `assert-require-closure`, `promote`.
+  No step is conditional, skippable, retried or selected by a flag, a switch or an environment variable — a
+  build performs all eight or fails. The names are the literal `name` fields of the step list in
+  `build/esbuild.mjs`, so this sentence can be checked against the source it describes.
+- **A failed build leaves `dist/` absent, and the guarantee is structural rather than procedural.** Every
+  artifact is assembled in `build-meta/package-staging/`, and `dist/` is created by exactly **one** operation
+  — a single `rename` of that staging directory, performed only after all eight steps have succeeded. A
+  failure at any step, before or after the emit, therefore leaves `dist/` **absent** rather than stale or
+  partial, and it does so because no code path can populate `dist/` any other way. The `purge` step
+  additionally removes the previous `dist/`, the previous staging tree and each owned source map on the way
+  in, and it attempts every path even when one of them fails so that a single unremovable path cannot strand
+  the rest; but the invariant does not depend on that step running. Absence is the intended signal — a
+  packaging step that finds no `dist/` stops, where one that finds a stale `dist/` would ship the wrong code.
 
-  Two properties follow, and both were measured in this checkout rather than assumed:
+  ⚠️ **THIS PROPERTY WAS DESCRIBED FOUR TIMES IN THIS SECTION, WITH FOUR INCOMPATIBLE MECHANISMS, AND
+  REVIEW FINDING F7 IS WHY THERE IS NOW ONE.** The superseded accounts variously claimed staging under
+  `build-meta/staging/dist` with two separate renames, a cleanup handler that removes `dist/` on the failure
+  path, removals "enumerated from the entry list — never a recursive delete", and recursive removals
+  "confined to exactly three paths". They cannot all be true of one script. What the script does is the
+  paragraph above: `purge` uses recursive removal on the previous `dist/` and the previous staging tree and
+  non-recursive removal on each enumerated owned map, and `promote` renames staging onto `dist/` once.
+
+  The QA finding that produced the current arrangement is kept, because it explains the design: purging owned
+  outputs _before_ the bundler protected only the pre-emit half, so a build whose emit succeeded and whose
+  **post-emit** step then failed exited non-zero while six apparently deployable bundles sat in `dist/`.
+  Measured under the current arrangement — with a green build in place, a build forced to fail immediately
+  after the emit leaves no `dist/` at all.
+
+  The recursive removals the design needs are confined to two generated, git-ignored trees — `dist` and
+  `build-meta/package-staging` — each computed from the script's own location, each a fixed literal segment
+  with no glob and no value read from input. The script's own tracked `build/` directory is deliberately not
+  among them, which is why the generated directory is named `build-meta/`.
+
+  Two consequences were measured in this checkout rather than assumed:
 
   - **A stale or legacy artifact cannot survive a build.** Because the unit of replacement is the tree, an
     artifact left by an earlier revision of the build script disappears without the script having to know
     its name. Seeded `dist/metafile.json`, `dist/handlers/oldEntryHandler.js` and a matching stale map, then
     ran `npm run build`: all three were gone and `dist/` held exactly the six bundles.
   - **Consecutive builds are byte-identical.** Two runs, `sha256sum` over all twelve output files: no
-    difference.
-
-- **A failed build leaves nothing behind — on every failure path, including after a successful emit.** The
-  handler removes `dist/`, `build-meta/sourcemaps/` and the staging tree, then says so, then exits non-zero.
-  Three failures were forced and all three ended with **zero** files under either output directory:
-  a missing declared entry point (fails before emitting), an unexpected extra file in the emitted set
-  (fails after emitting, before publishing), and an injected throw between the emit and the publish. That
-  third case is the one an earlier revision got wrong: it purged an enumerated list of its own outputs
-  _first_ and then emitted straight into `dist/`, so a post-emit failure reported red while leaving six
-  fresh bundles published. Absence is the intended signal — a packaging step that finds no `dist/` stops,
-  where one that finds a stale `dist/` would ship the wrong code.
-
-  The recursive removals this design needs are confined to exactly three paths — `dist`,
-  `build-meta/sourcemaps`, `build-meta/staging` — each computed from the script's own location, each a fixed
-  literal segment with no glob and no value read from input, and each already git-ignored generated output.
-  The script's own tracked `build/` directory is deliberately not among them, which is why the generated
-  directory is named `build-meta/`.
-
-- **A failed build leaves no bundle in `dist/`, whether it failed before, during or after the emit.** Two
-  mechanisms are needed for that and the step has both, because either alone leaves a hole. It removes its
-  own previous outputs **before** it asserts or emits anything, so a red build cannot leave a green
-  build's artifacts behind; and the emit window is **bracketed**, so a failure raised after esbuild has
-  written — the source-map relocation is the live example — removes what that run wrote before the failure
-  propagates. The original failure is the one reported, never the cleanup's. Each removal is enumerated
-  from the entry list — never a recursive delete, never a glob — and every enumerated path is attempted
-  even when one of them cannot be removed, so a single unremovable path can no longer abort the purge and
-  strand the rest. If the cleanup genuinely cannot complete, the build says so and names the directory
-  rather than passing over it. All three paths are exercised by fault injection rather than asserted.
-- **A failed build leaves `dist/` absent, and the guarantee is structural.** Every artifact is assembled in
-  `build-meta/package-staging/` and `dist/` is created by exactly **one** operation — a single `rename` of
-  that directory, performed only after all eight pipeline steps have succeeded. A failure at any step,
-  before or after the emit, therefore leaves `dist/` absent rather than stale or partial, and it does so
-  because no code path can populate `dist/` any other way. A cleanup handler additionally removes the
-  staging tree, so nothing is left behind anywhere, but the invariant does not depend on it running.
-
-  A QA pass found the earlier arrangement wanting, and the finding is recorded rather than smoothed over:
-  purging owned outputs _before_ the bundler protected only the pre-emit half, so a build whose emit
-  succeeded and whose **post-emit** step then failed exited non-zero while six apparently deployable
-  bundles sat in `dist/`. Measured under the current arrangement: with a green build in place, a build
-  forced to fail immediately after the emit leaves no `dist/` at all.
+    difference. The build reads no environment variable, opens no connection and needs no credential.
 
 - **The package resolves its own external, and the build proves it before promoting.** `mysql2` stays
   external — the artifacts `require("mysql2/promise")` rather than inlining the driver — so the build now
@@ -706,12 +726,6 @@ OUTSIDE the package`. Each staged package's own declared dependencies are checke
   `node_modules` code is inlined into a bundle; it is staged beside the bundles instead. The AWS SDK is
   absent from the dependency graph entirely because the runtime already provides it, so it appears neither
   in a bundle nor in the package.
-- **The pipeline is eight named steps, in one order, printed as it runs**: `purge`,
-  `assert-entry-surface`, `emit`, `relocate-sourcemaps`, `write-manifest`, `stage-dependencies`,
-  `assert-require-closure`, `promote`. No step is conditional, skippable, retried or selected by a flag,
-  a switch or an environment variable — a build performs all eight or fails.
-- **Consecutive builds are byte-identical**, and the build reads no environment variable, opens no
-  connection and needs no credential.
 - **Configuration is validated at two different moments, on purpose.** `router.js` resolves the service
   graph when the module loads, so requiring it with a missing or malformed variable throws immediately and
   names the variable — a misconfigured deployment of the primary entry fails its cold start rather than
@@ -721,59 +735,70 @@ OUTSIDE the package`. Each staged package's own declared dependencies are checke
   opaque, with the offending variable kept out of the response entirely. Both behaviours are fail-safe, and
   the deferral is what keeps those five modules loadable by their own unit suites and by anyone inspecting
   an artifact.
-- **The per-surface entries reach their own composition module through a deferred CommonJS `require`, not a
-  dynamic `import()`**, so the same code answers identically whether it runs from `dist/`, from a plain `tsc`
-  emit, under `ts-node` or under `ts-jest`. An earlier revision used `await import('../config/container.js')`
-  and did not: TypeScript's `NodeNext` emit preserves a native `import()` in CommonJS output, and Node's ESM
 - **The per-surface entries reach the composition root through a deferred CommonJS `require`, not a dynamic
-  `import()`**, so the same code answers identically whether it runs from `dist/`, from a plain `tsc` emit,
-  or under `ts-jest`. An earlier revision used `await import('../config/container.js')` and
-  did not: TypeScript's `NodeNext` emit preserves a native `import()` in CommonJS output, and Node's ESM
-  resolver then demands an on-disk `.js` that only an emit produces — so running the TypeScript sources
-  answered `500` for every action while the artifact answered correctly.
-- **Each per-surface entry composes only what its own routes can reach.** The five entries require
-  `src/config/surfaces/{brand,option,sku,product,feed}Surface.ts`; only `router.js`, which serves all
-  thirty-four addresses, requires `src/config/container.ts`. Every surface module wires its collaborators by
-  calling the same `compose*Surface` function the aggregate root calls, so a narrow artifact and the router
-  cannot disagree about how a service is assembled, and the three tiers they share —
-  `catalogBoundaries.ts`, `catalogStatements.ts`, `catalogReads.ts` — are split along which imports reach
-  the entity graph, which is what lets the brand surface skip it entirely.
-  `test/config/surfaceReachability.test.ts` asserts the transitive value-import closure of all six entries;
-  a single re-added `import { getCatalogContainer }` fails it.
-- **Size, stated plainly and as measurement only.** Measured in this checkout with `ls -l`, the six
-  artifacts are `brandHandler.js` 353,260, `googleFeedHandler.js` 880,170, `optionHandler.js` 891,602,
-  `skuHandler.js` 1,125,008, `productHandler.js` 1,482,906 and `router.js` 1,636,205 bytes, totalling
-  6,369,151 bytes (`du -sh dist` reports 6.1 MiB; the source maps live outside `dist/`, under
-  `build-meta/`). An artifact that can be deployed on its own must contain the graph it wires, and a single
-  function loads one artifact rather than the directory — which is why the aggregate router is the largest and the
-  brand entry, whose three routes reach one repository and one service, is the smallest. Before the
-  per-surface split every artifact reached the whole graph and they ranged only from 1,581,626 to 1,636,935
-  bytes, totalling 9,600,264; `build/esbuild.mjs` records the twelve before-and-after figures side by side.
+  `import()`**, so the same code answers identically whether it runs from `dist/`, from a plain `tsc` emit, or
+  under `ts-jest`. An earlier revision used `await import('../config/container.js')` and did not: TypeScript's
+  `NodeNext` emit preserves a native `import()` in CommonJS output, and Node's ESM resolver then demands an
+  on-disk `.js` that only an emit produces — so running the TypeScript sources answered `500` for every action
+  while the artifact answered correctly. (This bullet was printed twice, the first copy breaking off
+  mid-sentence; review finding **F7** covers it.)
+- **Each per-surface entry composes only what its own routes can reach, and it does so LAZILY.** All six
+  entries reach `src/config/container.ts` — that is measured, not assumed — but they reach it two different
+  ways, and the difference is the whole design. `router.ts`, which serves all thirty-four addresses, takes a
+  **static value import** of `getCatalogContainer`, so its artifact validates configuration at module load.
+  The five per-surface entries take only `import type` at the top and resolve their own narrow graph through a
+  **deferred `require('../config/container')`** inside the first invocation — calling `getBrandSurfaceGraph`,
+  `getOptionSurfaceGraph`, `getSkuSurfaceGraph`, `getProductSurfaceGraph` or `getFeedSurfaceGraph`, each of
+  which memoizes one narrow graph built by the same `compose*Surface` function the aggregate root calls. So a
+  narrow artifact and the router cannot disagree about how a service is assembled.
+  `test/regression/issues.test.ts` asserts the run-time consequence directly: importing an entry constructs no
+  container and reads no environment, and the graph is resolved only on first invocation.
+
+  ⚠️ **An earlier revision claimed the five entries required `src/config/surfaces/{brand,option,sku,product,
+feed}Surface.ts` and that only `router.js` reached the container.** Those five modules, and the three
+  `src/config/{catalogBoundaries,catalogStatements,catalogReads}.ts` tiers, sat outside AAP §0.3.1's inventory
+  and were folded into the composition root; there is no `src/config/surfaces/` directory, and `src/config/`
+  holds exactly `container.ts`, `database.ts` and `env.ts`. The suite that measured the withdrawn separation
+  was withdrawn with it — `test/regression/issues.test.ts` carries that record too, including what the
+  withdrawal gives up: the bundler can no longer DROP unreached modules from a narrow artifact.
+
+- **Size, stated plainly and as measurement only.** Measured in this checkout with `ls -l` immediately after
+  `npm run build`, the six artifacts are `googleFeedHandler.js` 1,604,007, `brandHandler.js` 1,609,156,
+  `optionHandler.js` 1,609,754, `skuHandler.js` 1,621,771, `productHandler.js` 1,633,242 and `router.js`
+  1,655,809 bytes — a range of 1,604,007 to 1,655,809, totalling **9,733,739 bytes**. The whole published
+  package is **11,214,245 bytes** (`du -sb dist`; `du -sh dist` reports 12M), which is those six plus the
+  staged `mysql2` closure under `dist/node_modules` (2.2M) and the generated `dist/package.json`. Source maps
+  live **outside** `dist/`, under `build-meta/sourcemaps/`.
+
+  ⚠️ **THIS BULLET WAS PRINTED THREE TIMES WITH THREE DIFFERENT SETS OF FIGURES, TWO OF THEM TRUNCATED
+  MID-SENTENCE, AND ONE OF THEM DESCRIBED A LAYOUT THIS SUBTREE NO LONGER HAS.** Review finding **F7** covers
+  the duplication; the substantive correction is this. An earlier revision reported a **spread** — 353,260 for
+  the brand entry up to 1,636,205 for the router — which was true of the per-surface split described in §5.5:
+  five narrow entries reached only their own tier, so the bundler could drop the rest and the brand entry,
+  whose three routes reach one repository and one service, really was a fifth the size of the aggregate router.
+  **That split was folded back into the composition root**, because its eight modules sat outside AAP §0.4.1's
+  frozen inventory. Every entry now reaches `src/config/container.ts`, whose `CatalogContainer` declares
+  **35 members** — every collaborator the slice has, plus the two configuration sections and the anonymous
+  materialisation guard — so there is nothing left for the bundler to drop and the six sizes are within 3% of
+  one another. The
+  figures above are the measurement of the layout that exists; the spread is the measurement of one that does
+  not, and keeping both without saying which was which is what made this section unusable.
+
   Code splitting is deliberately off — it could hoist or duplicate `src/config/database.ts`, and duplicating
-  that module duplicates the connection pool. `minify` and `legalComments` are available levers,
-  deliberately unexercised so each artifact keeps the reasoning its source records. **No size budget is
-  asserted here or anywhere else in the subtree** (IR-12): these are measurements, and nothing compares an
-  artifact against a number.
+  that module duplicates the connection pool. `minify` and `legalComments` are available levers, deliberately
+  unexercised so each artifact keeps the reasoning its source records. **No size budget is asserted here or
+  anywhere else in the subtree** (IR-12): these are measurements, and nothing compares an artifact against a
+  number.
 
   📐 **`import(` does still appear five times in `src/**`, and every one is a TYPE QUERY rather than a
   dynamic import** — the distinction is worth naming because a text search finds them and the two look
   alike. Each of the five per-surface handlers writes `typeof import('../config/container')` to name the
   module's type without importing its value; the specifier is a fixed literal, the expression is erased at
-  compile time, and none of the five survives into any emitted artifact. There is **no runtime dynamic
-  import anywhere in the subtree** — `grep` for `await import(` in `src/**` returns nothing outside
-  commentary describing the revision above.
+  compile time, and none of the five survives into any emitted artifact. The **value** side of that same
+  module is reached at run time through a deferred `require`, which is what §6's first bullet describes. There
+  is **no runtime dynamic `import()` anywhere in the subtree** — `grep` for `await import(` in `src/**`
+  returns nothing outside commentary.
 
-- **Size, stated plainly and as measurement only.** Each artifact measures between 1,581,626 and 1,636,935
-  bytes, and the six together total 9,600,264 bytes (`du -sh dist` reports 9.2 MiB) — measured in this
-  checkout with `ls -l`. They are that size
-- **Size, stated plainly and as measurement only.** Each artifact measures between 1,562,751 and 1,618,060
-  bytes, the six together total 9,487,374 bytes, and the whole package including the staged driver closure
-  is 12 MiB by `du -sh dist` — measured in this checkout with `ls -l`. They are that size
-  because an artifact that can be deployed on its own must contain the graph it wires; a single function
-  loads one artifact, not the directory. Code splitting is deliberately off — it could hoist or duplicate
-  `src/config/database.ts`, and duplicating that module duplicates the connection pool. `minify` and
-  `legalComments` are available levers, deliberately unexercised so each artifact keeps the reasoning its
-  source records. **No size budget is asserted here or anywhere else in the subtree** (IR-12).
 - **Class identity is per artifact, which matters only to tooling.** Because each artifact embeds its own
   copy of the graph, the error taxonomy in `src/errors/` is a different set of classes in each one, and
   `errorResponse` classifies by `instanceof`. Measured with two artifacts in one process and one genuine
@@ -820,10 +845,11 @@ to the key itself, built once per dispatcher and consulted before the membership
 set is unchanged at exactly those 34 addresses**, the declared keys still spell the member names in their
 canonical casing, and two keys differing only in case would fail at construction rather than one of them
 silently winning. Nothing is guessed, retried or prefix-matched. An earlier revision dropped this
-tolerance deliberately; a review recorded that as finding **F4**, and `test/handlers/httpResponse.test.ts`
-now pins all of it — canonical, lower, upper and mixed spellings, the unchanged reachable set, and the
-prototype-member cases.
-Two things have to be right for that snippet to run, and both were wrong in an earlier revision of this
+tolerance deliberately; an **earlier review round** recorded that as a parity regression, and
+`test/regression/issues.test.ts` now pins all of it — canonical, lower, upper and mixed spellings, the
+unchanged reachable set, and the prototype-member cases.
+
+**Two things have to be right for that snippet to run**, and both were wrong in an earlier revision of this
 section, so they are spelled out.
 
 **First, the environment.** `dist/handlers/router.js` resolves the service graph when the module loads, so
@@ -833,9 +859,25 @@ optional and is shown here only because a loopback host is the one case that may
 mode):
 
 ```sh
-export DB_HOST=127.0.0.1 DB_PORT=3306 DB_NAME=slatwall DB_USER=slatwall DB_PASSWORD=slatwall_pw
+export DB_HOST=127.0.0.1 DB_PORT=3306 DB_NAME=<YOUR_DB_NAME>
+export DB_USER=<YOUR_DB_USER> DB_PASSWORD=<YOUR_DB_PASSWORD>
 export DB_TLS_MODE=disabled GOOGLE_FEED_HOST=catalog.example.test
 ```
+
+⛔ **THE THREE ANGLE-BRACKETED NAMES ARE PLACEHOLDERS AND MUST BE REPLACED. NOTHING IN THIS REPOSITORY
+SUPPLIES A VALUE FOR THEM.** An earlier revision of this block printed a working `DB_USER` / `DB_PASSWORD`
+pair copied from a local development container, which review finding **F10** classified as a committed
+credential — a plausible-looking secret published in documentation, which is where a copied value survives
+longest. The pair is removed rather than obfuscated, because a reader who copies a real-looking value is
+likelier to keep it than a reader who copies `<YOUR_DB_PASSWORD>` and is forced to think.
+
+**Where a local value comes from instead.** The database credentials are whatever the operator's own MySQL
+instance was created with; this deliverable provisions no database, seeds no user and ships no default. The
+same rule holds in `.env.example`, whose `DB_PASSWORD=` line is deliberately left with an EMPTY right-hand
+side — and note that a blank value is refused at load, so the template cannot be used unedited (§8). No
+secret, credential or token is required to `build`, `test`, `lint`, `typecheck`, `format:check` or
+`test:coverage`: every one of those six commands runs with an empty environment, which is why the
+verification in §3 needs none.
 
 **Second, the `await`.** The artifact is CommonJS — `package.json` declares `"type": "commonjs"` and the
 bundle is emitted as CJS — and **CommonJS has no top-level `await`**, so a `.js` file that mixes `require`
@@ -892,7 +934,7 @@ list would have published "this product has no additional images" for every prod
 including products that have several, which is an absent collaborator rendered as data. A deployment that
 owns the image subsystem supplies `ImagePathPort` through `createCatalogContainer` and
 `readProductImages` through that override, and the field is emitted;
-`test/handlers/googleFeedHandler.test.ts` asserts both directions, including that an empty selection never
+`test/integrations/ProductFeedBuilder.test.ts` asserts both directions, including that an empty selection never
 consults the reader at all.
 
 ### 7.1 Response conventions
@@ -963,7 +1005,7 @@ invocations, and the registry holds the resolver **function**, never its answer.
 > `create…HandlerFromContainer` passed the deny-all resolver as a **literal**, and neither the aggregate
 > router nor any per-surface entry point accepted one — so all 33 catalog actions answered `401` from the
 > shipped exports with no way to change it. A code review classified that as a **CRITICAL** callable-boundary
-> defect; the two seams above are the remedy, and both are exercised by `test/handlers/**`.
+> defect; the two seams above are the remedy, and both are exercised by `test/regression/issues.test.ts`.
 
 > **The second seam then had to be corrected too, and it was found by inspecting the artifact rather than the
 > source.** `registerRequestAuthorizationResolver` is declared in `src/handlers/httpResponse.ts`, which is
@@ -975,7 +1017,7 @@ invocations, and the registry holds the resolver **function**, never its answer.
 > `router.ts` and the four per-surface handlers — now **re-export** it together with
 > `clearRequestAuthorizationResolver` and the two resolver types, so every gated bundle publishes it;
 > `src/handlers/googleFeedHandler.ts` deliberately does not, because it gates nothing.
-> `test/handlers/entrySurface.test.ts` §7 pins all of it: that each gated entry re-exports the **same**
+> `test/regression/issues.test.ts` pins all of it: that each gated entry re-exports the **same**
 > declaration rather than a copy, that the feed publishes none, and that a resolver registered through an
 > entry's own export changes what that entry answers on a dispatcher already built.
 
@@ -1021,12 +1063,12 @@ frozen. `.env.example` is the authoritative list: it carries every variable name
 and documents each one.
 
 **That template is meant to be copied and sourced as it stands.** The **six required** names appear as bare
-`NAME=` assignments, because a value you must supply is more useful visible than commented; the **seven
+`NAME=` assignments, because a value you must supply is more useful visible than commented; the **ten
 optional** ones are **commented out**, because `env.ts` refuses a blank optional value — a name typed and left
 empty would look like working configuration while behaving as though nothing had been supplied, so absence,
 not emptiness, is how you select a documented fallback. An earlier revision left the four optional connection
-values as active blank assignments, which made `cp .env.example .env` produce a file that failed to load; a
-review recorded that as finding **F5**.
+values as active blank assignments, which made `cp .env.example .env` produce a file that failed to load; an
+**earlier review round** recorded that as a setup defect.
 
 _When_ that validation happens differs by artifact, deliberately — §6 records which and why.
 
@@ -1046,13 +1088,22 @@ _When_ that validation happens differs by artifact, deliberately — §6 records
 | `SETTING_SKU_ELIGIBLE_FULFILLMENT_METHODS` | no              | as above — the legacy computes it from the excluded `Fulfillment*` family                                                                                                                                                                                                                               |
 
 | `CATALOG_SMART_LIST_MAX_RECORDS_PER_QUERY` | no → unbounded | the largest number of records **one** smart-list query may materialise. Applied by **both** execution members of the query builder by counting before hydrating and **refusing** an over-budget selection rather than truncating it. **The anonymous feed route declines to serve without it** — see §8.1 |
-| `CATALOG_SKU_MAX_COMBINATIONS_PER_REQUEST` | no → unbounded | the largest number of SKU combinations one merchandise `createSkus` request may enumerate. A value of `1` is meaningful: the legacy starts its counter at 1, so a ceiling of 1 admits the option-less default SKU and refuses everything larger |
-| `CATALOG_URL_TITLE_MAX_PROBES_PER_DERIVATION` | no → unbounded | the maximum uniqueness probes one URL-title derivation may issue. It bounds the injected **probe**, not the algorithm — the `-2`-first suffix sequence is unchanged for any derivation that stays in budget |
+| `CATALOG_SKU_MAX_COMBINATIONS_PER_REQUEST` | no → unbounded | ⚠️ **read and validated, but NOT applied — see §8.1.** It would bound the SKU combinations one merchandise `createSkus` request may enumerate; the ceiling itself was withdrawn as an undeclared departure, so a stated value is accepted at load and reaches no collaborator |
+| `CATALOG_URL_TITLE_MAX_PROBES_PER_DERIVATION` | no → unbounded | ⚠️ **read and validated, but NOT applied — see §8.1.** It would bound the uniqueness probes one URL-title derivation may issue; withdrawn on the same ground, so a stated value is accepted at load and reaches no collaborator |
 
-Sixteen names, read in exactly one file, documented in exactly one template, and the two lists agree in both
-directions. A failure names the offending variable, carries it in `context`, and leaks **no supplied value**
-into its message, context or stack. The ten required variables have no default of any kind: a connection
-target, a schema and an identity cannot be guessed.
+**Sixteen names — six required and ten optional — read in exactly one file, documented in exactly one
+template, and the two lists agree in both directions.** Verify the split rather than taking it on trust:
+`grep -o 'process\.env\.[A-Z_]*' src/config/env.ts | sort -u | wc -l` reports exactly **16** distinct names,
+each read exactly once (a bare `grep -c 'process.env'` reports 18 because two of the hits are prose in
+comments); the six bare `NAME=` lines in `.env.example` are the required set, and the ten commented lines are
+the optional set. A failure names the offending variable, carries it in `context`, and leaks **no supplied
+value** into its message, context or stack. The **six** required variables have no default of any kind: a
+connection target, a schema and an identity cannot be guessed.
+
+⚠️ **An earlier revision of this paragraph said "the ten required variables", which is the optional count in
+the required slot.** Review finding **F7** covers it; the same triplicated sentence was corrected in
+`src/config/env.ts` under finding **F11**, where three copies of it disagreed about whether six or ten were
+required.
 
 ### 8.1 The three resource bounds — stateable, never invented
 
@@ -1061,7 +1112,20 @@ materialisation budget, a SKU combination budget and a URL-title probe budget �
 constructor arguments that **the composition root never supplied**, in the pool-bound graph or in the
 transaction-scoped rebuild. An operator who had measured a figure had nowhere to state it, and the anonymous
 public feed could be made to materialise an unbounded selection. The three names above are the route that was
-missing; all three are wired into **both** graphs.
+missing.
+
+⚠️ **Only ONE of the three is wired today, and an earlier revision of this sentence claimed all three were.**
+`env.ts` reads and validates all three — that much is unchanged, and `.env.example` documents all three — but
+`src/config/container.ts` wires only `smartListMaximumRecordsPerQuery`, into **both** the pool-bound graph and
+the transaction-scoped rebuild. The **SKU combination ceiling** and the **URL-title probe ceiling** were each
+withdrawn by two independent review rounds: a capacity limit is a control
+`model/service/SkuService.cfc:L85-L89` cannot express, and a refused derivation is an outcome
+`model/service/DataService.cfc:L64`'s `while(!unique)` never produces — so wiring either would have been an
+undeclared behavioural departure (§13.4). The materialisation bound is **not** in that class: it guards the one
+anonymous unauthenticated route, it is stated by an operator with no default invented (IR-12), and no review
+withdrew it. The two residual exposures are flagged where they live — `src/services/SkuService.ts` for the
+unbounded odometer and `src/util/urlTitle.ts` for the unbounded probe loop — rather than closed, and
+`src/config/container.ts` carries the same record at the point the wiring would have happened.
 
 **No figure is authored anywhere** — not in `env.ts`, not in the container, not in any collaborator. Absent
 means unbounded, which is the legacy's own behaviour; a stated value is one the deployment measured. That is
@@ -1328,9 +1392,8 @@ behaviour" required.
 Where a legacy signature was loose, the target tightens it to the observed contract and the tightening is
 recorded rather than made silently. Seven such discrepancies are catalogued in AAP §0.4.2; the ones a reader
 is most likely to mis-transcribe are that `getProductSkus`'s `sorted` argument is **required** rather than
-optional, that `searchSkusByProductType` takes **two optional** arguments, that the service-level
-`getTransactionExistsFlag()` takes **no arguments at all** while the DAO member beneath it accepts two, and
-that `getProductSmartList`'s `currentURL` is declared in the legacy with **no type**.
+optional, that `searchSkusByProductType` takes **two optional** arguments, and that `getProductSmartList`'s
+`currentURL` is declared in the legacy with **no type**.
 
 > **Arity parity has been broken once and restored.** A code review found two members carrying an
 > **unapproved third parameter** — `ProductService.loadDataFromFile` had gained an `options` argument and
@@ -1340,17 +1403,29 @@ that `getProductSmartList`'s `currentURL` is declared in the legacy with **no ty
 > travel through `SmartListInput.additionalJoins`, a channel the smart-list input already merged and the feed
 > query was already using. Nothing was dropped — only relocated off the public surface.
 
-**Where the port's answer differs from the plan's tabulated cell, and why.** Two members' return types are
-not what AAP §0.4.2 tabulates, and neither is a quiet substitution:
+**Where the port's signature differs from the plan's tabulated cell, and why.** Three members' signatures are
+not what AAP §0.4.2 tabulates. None is a quiet substitution, and all three resolve the same way — **TR-1**
+tightens a loose legacy signature to the contract the legacy BODY states, and the body is unambiguous in every
+case:
 
-| Member                                    | Plan's cell              | Port                     | Why                                                                                                                                                                     |
-| ----------------------------------------- | ------------------------ | ------------------------ | ----------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
-| `SkuService.processImageUpload`           | `Promise<Sku>`           | `Promise<boolean>`       | the legacy body has exactly two returns, `true` and `false`, and never returns the entity. **TR-1** tightens to the _observed_ contract. Carried defect **D24** — §12.4 |
-| `ProductService.getFormattedOptionGroups` | `FormattedOptionGroup[]` | `FormattedOptionGroup[]` | the cell is honoured; the legacy's **name-collapse** behaviour is preserved by accumulating through a `Map` first. Carried defect **D25** — §12.4                       |
+| Member                                    | Plan's cell              | Port                                                | Why                                                                                                                                                                                                                                                                                                |
+| ----------------------------------------- | ------------------------ | --------------------------------------------------- | -------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
+| `SkuService.getTransactionExistsFlag`     | `()`                     | `(skuID?, productID?)`                              | the legacy declares no parameters at `model/service/SkuService.cfc:L285` and then forwards `argumentCollection=arguments` into a DAO member that accepts two, which is how `model/entity/Sku.cfc:L594` and `model/entity/Product.cfc:L626` scope the probe to one row. Corrected by finding **F1** |
+| `SkuService.processImageUpload`           | `Promise<Sku>`           | `Promise<boolean>`                                  | the legacy body has exactly two returns, `true` and `false`, and never returns the entity. Corrected by finding **F2**                                                                                                                                                                             |
+| `ProductService.getFormattedOptionGroups` | `FormattedOptionGroup[]` | `Readonly<Record<string, readonly SelectOption[]>>` | `model/service/ProductService.cfc:L71-L79` builds a struct keyed by option-group **name**; an array of `{ optionGroupName, options }` records is a different shape with different collapse behaviour. The name-collapse is preserved by accumulating through a `Map`. Corrected by finding **F3**  |
 
-The first of those was documented the _other_ way in four places until a code review caught it; the record of
-that correction is in §12.4, and the point of keeping it is that "verified by declaration scan" is a claim
-about the _members_, not a guarantee that every cell in a frozen table matches every body it describes.
+**⚠️ Each of those three was documented the _other_ way in several files until a code review measured it.** The
+record of all three corrections is in §12.4, and the point of keeping it is that "verified by declaration
+scan" is a claim about the _members_, not a guarantee that every cell in a frozen table matches every body it
+describes. Where a description and the code disagree, **the code is the fact**.
+
+**One consequence of the first row is worth stating on its own, because it is a transposition hazard.** The
+service member is **SKU-first** — `(skuID?, productID?)`, the order the two entity call sites read most
+naturally — while `SkuRepository.transactionExists` keeps the legacy DAO's **PRODUCT-first** declaration order
+from `model/dao/SkuDAO.cfc:L53-L98`. Exactly **two** lines cross the two orders: the forwarding call in
+`src/services/SkuService.ts`, and the checker factory in `src/adapters/mysql/MySqlSkuRepository.ts`. Both
+identifiers are 32-character strings, so a transposition **type-checks silently**; the two crossings are
+annotated on both sides for that reason.
 
 One legacy member is deliberately **not** ported: the private `buildSkuCombinations`
 (`model/service/ProductService.cfc:L82-L97`) is only self-recursive and therefore unreachable dead code. The
@@ -1491,7 +1566,9 @@ The builder emits RSS 2.0 with the `xmlns:g="http://base.google.com/ns/1.0"` nam
 "Slatwall Product Feed", and preserves every field mapping: `g:id` from the SKU code; `title` from the
 product's calculated title; `description` from the product description **with a fallback to the product
 type's description**; an intentionally empty `g:google_product_category`; `g:product_type`; `link`;
-`g:image_link` from the SKU's resized image path; a repeated `g:additional_image_link` per product image;
+`g:image_link` from the SKU's resized image path; a repeated `g:additional_image_link` per product image
+— the five absolute URLs among these are composed over **`https://`** where the legacy composed `http://`,
+which is the second of §12.4's two declared departures —;
 `g:condition` fixed to "new"; `g:availability` fixed to "in stock"; `g:price`; a **conditional**
 `g:sale_price` plus `g:sale_price_effective_date` emitted only when the SKU price exceeds the sale price; a
 **conditional** `g:brand`; `g:item_group_id` from the product code; and `g:shipping_weight` assembled from
@@ -1517,11 +1594,18 @@ without a helper fails a test rather than shipping.
 > A raw sink now **refuses** `&`, `<` and `]]>`; combined with a check for code points outside the XML 1.0
 > `Char` production at **every** sink (finding **SEC-2**), a value that would have made the published
 > document unparseable produces a `DataIntegrityError` — **500** — rather than a malformed `200`. For every
-> input the legacy rendered into a well-formed document, the emitted bytes are identical. The residual risk
-> that raw path bytes carry — a stored `?`, `#` or leading `@`, and traversal — is declared, not closed:
-> `validateFeedHostAuthority` keeps the configured **host** half shut, and no gate is minted for the **path**
-> half because `imageMissingImagePath` is an operator-editable setting whose relative forms the legacy
-> published. `src/integrations/google/README.md` §13a holds the full accounting.
+> input the legacy rendered into a well-formed document, the emitted bytes are identical.
+>
+> ⚠️ **THE URL HALF IS NOW CLOSED TOO, AND AN EARLIER VERSION OF THIS BLOCK SAID IT WAS NOT.** It read
+> "no gate is minted for the **path** half because `imageMissingImagePath` is an operator-editable setting
+> whose relative forms the legacy published" — and that premise is wrong: `model/entity/Product.cfc:L206-L208`
+> writes the leading slash into the composed literal, so the legacy could not publish a path without one.
+> Finding **F8** required both halves gated, and both are: `validateFeedHostAuthority` holds the configured
+> authority to RFC 3986 §3.2.2 `host` with §3.2.3's optional port, and `assertSameOriginRelativePath` holds
+> every appended path to a leading `/`, never `//`, with no scheme and no authority — at **all three** URL
+> sinks. Neither forecloses a legacy outcome, so neither is a declared departure; the **scheme** change to
+> `https://` is, and §12.4 declares it. `src/integrations/google/README.md` §13a holds the full accounting,
+> including which residual risks remain open.
 
 **The additional-image reader is a required boundary, not a silent default.** Finding **CQ-4** found the
 shipped reader answering an empty list unconditionally, which made an image-less catalog and an unwired
@@ -1532,6 +1616,50 @@ It is a **stub**. There is **no live call to Google's API**, no credential, no e
 client anywhere in the integration — consistent with the single runtime dependency of §4.1.
 `src/integrations/google/README.md` carries the full account, including the Google Merchant specification URL
 cited in the legacy view header.
+
+### 10.8 The boundary-limited members — the measured inventory, not the plan's annotation
+
+AAP §0.4.2.1 annotates **seven** members as boundary-stubbed, and **TR-5** requires that every one of them
+keeps its route: "the member is never quietly dropped from the interface." All seven do. What follows is what
+each one **actually does at run time**, measured rather than restated — because an earlier revision asserted
+that all seven "answer with the documented not-implemented failure", and **review finding F4** found that
+false of two of them. The invariant is corrected here rather than the code being bent to fit it; the same
+inventory is carried in `src/handlers/router.ts` judgment (h), and neither of the two exceptions is a defect.
+
+**Five always refuse.** Each reaches a collaborator in an excluded family on **every** path, so no request
+shape can succeed, and each answers the documented not-implemented failure its own layer produces — naming the
+port and the legacy collaborator behind it server-side only:
+
+| Route                                       | The excluded collaborator on every path                                                                                 |
+| ------------------------------------------- | ----------------------------------------------------------------------------------------------------------------------- |
+| `product.loadDataFromFile`                  | the importer at `model/dao/ProductDAO.cfc:L73`, plus M1's one-hour budget at `model/service/ProductService.cfc:L65-L68` |
+| `product.processProductAddProductReview`    | `ProductReview` (AAP §0.2.2.4) and the account context — both excluded                                                  |
+| `product.processProductAddSubscriptionTerm` | `SubscriptionTermPort`; the `Subscription*` family is excluded by AAP §0.2.2.1                                          |
+| `product.processProductUploadDefaultImage`  | the framework temp directory and tag service, excluded by AAP §0.8.3.2                                                  |
+| `sku.processImageUpload`                    | `ImagePathPort.saveImageFile`, whose shipped wiring refuses                                                             |
+
+**One refuses conditionally, and the condition is the legacy's own.**
+`product.processProductDeleteDefaultImage` — `model/service/ProductService.cfc:L199` tests
+`structKeyExists(arguments.data, "imageFile")` and does **nothing** when the key is absent, returning the
+product at `:L205`. The port reproduces that no-op exactly, so a request naming no image file answers the
+product. Only the path that **would** delete a file reaches the excluded collaborator — `fileExists`/
+`fileDelete` at `:L200-L201`, for which `ImagePathPort` declares no member — and that path refuses. Making the
+whole route refuse would have refused input the legacy accepts.
+
+**One is fully ported, despite the plan's annotation.**
+`product.processProductUpdateDefaultImageFileNames` — `model/service/ProductService.cfc:L208-L214` is a
+two-line loop, `sku.setImageFile( sku.generateImageFileName() )`, and `generateImageFileName` reads only
+`SettingResolverPort`, an **in-scope** port with a shipped resolver. No excluded collaborator is on the path,
+so there is nothing to stub. Refusing here would also have been a functional regression rather than a
+boundary: `saveProduct` invokes this member at `:L282`, and `processProductAddOptionGroup` at `:L123` and
+`processProductAddSubscriptionTerm` at `:L193` both **end** by delegating to it, so a refusal would take every
+new-product save down with it.
+
+⚠️ **One handler-level precheck was removed for the same reason.** `sku.getSkuBySkuCode` rejected a request
+carrying no `skuCode` with a `400`, but `model/service/SkuService.cfc:L289` declares the argument **optional**
+and the DAO tolerates its absence — so the precheck refused input the legacy accepts. The route now forwards
+`undefined` and answers whatever the repository answers (**F5**). `sku.processImageUpload` keeps its own `400`,
+and the asymmetry is deliberate: its `imageUploadResult` argument is `required` in the legacy declaration.
 
 ---
 
@@ -1572,7 +1700,7 @@ unreachable code would add behaviour the legacy system does not have.
 slice amounts to **two entity test files, eight issue regressions and one fixture helper. Everything else is
 net-new.** Every suite in `test/` labels itself, so the ratio is visible per file rather than only in
 aggregate: of the **17** suites, **4 carry TRACEABLE cases and 13 are wholly NET-NEW** — and inside those
-four the imbalance is sharper still, **13 traceable cases against 2,291 net-new ones**. The four are
+four the imbalance is sharper still, **13 traceable cases against 2,329 net-new ones**. The four are
 `test/domain/Product.test.ts` (6), `test/domain/Brand.test.ts` (4), `test/regression/issues.test.ts` (2) and
 `test/services/BrandService.test.ts` (1).
 
@@ -1583,10 +1711,13 @@ output rather than requiring a reader to find the file's header.
 Two clarifications, because both numbers were previously stated wrong here and a reader is entitled to know
 which way they moved. AAP §0.6.5.1 identified **five** catalog-relevant issue regressions; the suite carries
 **eight**, so the port is a **superset** of the plan and the table below names all eight rather than the
-plan's five. And the suite count is **17**, not the 36 an earlier revision of this section reported: the
-nineteen suites that made up the difference ran outside AAP §0.4.1.12's declared plan and are now folded into
-the approved suite whose subject each shares (§5.1). Folding moved coverage; it removed none, which is why
-the case count went **up** rather than down.
+plan's five. And the suite count is **17**, measured with `npx jest --listTests`, not the 36 an earlier
+revision of this section reported. **Twenty-two suites once ran outside AAP §0.4.1.12's declared plan:
+twenty-one are folded into the approved suite whose subject each shares, and one — the surface-reachability
+suite — was withdrawn** because the module separation it measured no longer exists to measure. Every one of
+the twenty-one folds is verifiable on disk: each folded body sits under a `FOLDED IN FROM` banner naming its
+origin, and `grep -rc 'FOLDED IN FROM' test/` counts exactly twenty-one. Folding moved coverage; it removed
+none, which is why the case count went **up** rather than down.
 
 **TRACEABLE — extends existing legacy coverage:**
 
@@ -1599,27 +1730,21 @@ the case count went **up** rather than down.
 | `test/fixtures/productTypes.ts`  | `config/dbdata/SlatwallProductType.xml.cfm:L13-L15` | the three literal discriminator UUIDs of §10.5 (**IR-7**)                                                                                                                                                                                                                                                                      |
 
 📐 **The regression suite carries EIGHT of the ten `issue_*` methods in `IssuesTest.cfc`, and the arithmetic
-is written out because an earlier revision of this section said seven and listed only seven.** The legacy
-file declares exactly ten: `issue_1097`, `issue_1296`, `issue_1329`, `issue_1331`, `issue_1335`,
-`issue_1348`, `issue_1376`, `issue_1604`, `issue_1690` and `issue_1690_2`. Eight are ported and two are not
-— `issue_1376` and `issue_1604` — because neither touches this slice.
+is written out because an earlier revision of this section said seven and listed only seven.**
+`meta/tests/unit/IssuesTest.cfc` declares exactly ten: `issue_1097`, `issue_1296`, `issue_1329`, `issue_1331`,
+`issue_1335`, `issue_1348`, `issue_1376`, `issue_1604`, `issue_1690` and `issue_1690_2`.
 
-Of the eight, **five are the ones AAP §0.6.5.1 identified as catalog-relevant** (1097, 1296, 1329, 1331, 1335) and **three are additional in-scope legacy regressions carried because they touch this slice too**
-(1348, 1690 and its sibling 1690_2, which are two separate legacy methods rather than one). Counting
-distinct legacy issue NUMBERS the figure is seven; counting legacy METHODS ported, which is what the suite
-mirrors one-for-one, it is eight. The suite is therefore a superset of the plan's five, stated as one
-rather than presented as the plan's own list, and the eight case titles retain their legacy method names so
-the mapping is checkable by reading the runner's output.
-| `test/regression/issues.test.ts` | `meta/tests/unit/IssuesTest.cfc` | **eight** catalog issue regressions, **retaining their issue numbers as test names** — `issue_1097` (`:L51`), `issue_1296` (`:L73`), `issue_1329` (`:L91`), `issue_1331` (`:L101`), `issue_1335` (`:L110`), `issue_1348` (`:L126`), `issue_1690` (`:L192`) and `issue_1690_2` (`:L203`) |
-| `test/fixtures/testProduct.ts` | `meta/tests/unit/Helper.cfc:L51-L77` | the fixture contract carried exactly, from `getTestMerchandiseProduct()` at `:L51` and `destroyTestMerchandiseProduct()` at `:L69` — product name `Test Product` (`:L54`), price `100` (`:L55`, a number: the legacy line is unquoted), product code `TESTPRODUCTXXX` (`:L56`), and the merchandise product-type UUID (`:L58`) |
-| `test/fixtures/productTypes.ts` | `config/dbdata/SlatwallProductType.xml.cfm:L13-L15` | the three literal discriminator UUIDs of §10.5 (**IR-7**) |
+**The two that are absent are named rather than left to inference:** `issue_1376` (`:L140`), which drives
+`accountService`, and `issue_1604` (`:L183`), which drives the cart — both in families AAP §0.2.2.1 excludes,
+so neither has an in-scope subject to assert against.
 
-**Eight of the ten, and the two that are absent are named rather than left to inference.**
-`meta/tests/unit/IssuesTest.cfc` declares ten `issue_*` methods. The suite carries eight; the two it does not
-are `issue_1376` (`:L140`), which drives `accountService`, and `issue_1604` (`:L183`), which drives the cart —
-both in families AAP §0.2.2.1 excludes, so neither has an in-scope subject to assert against. Of the eight
-carried, AAP §0.6.5.1 identified five as catalog-relevant and the remaining three — `issue_1348`,
-`issue_1690` and `issue_1690_2` — are carried because they touch this slice too.
+**Of the eight carried, five are the ones AAP §0.6.5.1 identified as catalog-relevant** (1097, 1296, 1329,
+1331, 1335) and three are additional (`issue_1348`, `issue_1690` and its sibling `issue_1690_2`, which are two
+separate legacy methods rather than one). Counting distinct legacy issue **numbers** the figure is seven;
+counting legacy **methods** ported, which is what the suite mirrors one-for-one, it is eight. The suite is
+therefore a **superset** of the plan's five, stated as one rather than presented as the plan's own list, and
+the eight case titles retain their legacy method names so the mapping is checkable by reading the runner's
+output.
 
 One further case in that suite is **NET-NEW and labelled as such**: an `issue_1296` companion asserting that
 the guarantee the original regression rests on is join **direction**, since fanning rows would break it while
@@ -1642,23 +1767,31 @@ meaningfully fail. Legacy suite scale: only **12 of 113** entity components have
 totals 32 components and 98 methods; and there is **no line or branch instrumentation and no mocking library
 anywhere** — which is also why this subtree declares no coverage threshold (§3).
 
-**Three suites cover concerns the legacy could not have covered, and they are net-new for a structural reason
-rather than an incidental one.** `test/config/env.test.ts` covers configuration loading, and the legacy has no
-configuration loader to cover — the datasource name is a literal at `config/configApplication.cfm:L2` and the
-ORM dialect is probed at run time in `config/configORM.cfm`. `test/config/surfaceReachability.test.ts` covers
-the module graph each Lambda entry retains, and the legacy has no module graph in that sense at all: DI/1
-resolved collaborators by name at run time from a directory scan (`org/Hibachi/DI1/ioc.cfc:L546`), which is
-precisely the mechanism **R1** replaces; it exists because a review pass found every artifact carrying the
-whole catalog (§6), and reachability is a property no behavioural test observes.
-`test/config/writeBoundaryRebuild.test.ts` covers which connection each rebuilt collaborator holds inside a
-write boundary — **M5** and **M6** — which the legacy had no equivalent of either, its commit being implicit
-at request end and gated on `getORMHasErrors()`. That one points the pool at a port nothing listens on and
-hands the rebuild a recording executor, so a single collaborator left pool-bound fails with a connection
-refusal instead of passing quietly; it is the only assertion in the subtree that can see that mistake, since
-`tsc` cannot and a happy-path database test would not.
-**Where the nineteen folded suites went.** Folding relocated coverage into the approved seventeen; it removed
-none, and each folded body sits inside one `describe` under a banner naming its origin, so a reviewer can read
-any of them as the file it used to be. Every host was chosen because it already owns the subject.
+**Three groups of cases cover concerns the legacy could not have covered, and they are net-new for a
+structural reason rather than an incidental one. All three now live in `test/regression/issues.test.ts`,
+because all three arrived there by the folds above.**
+
+1. **Configuration loading.** The legacy has no configuration loader to cover — the datasource name is a
+   literal at `config/configApplication.cfm:L2` and the ORM dialect is probed at run time in
+   `config/configORM.cfm`.
+2. **What each Lambda entry does at import time.** The legacy has no module graph in that sense at all: DI/1
+   resolved collaborators by name at run time from a directory scan (`org/Hibachi/DI1/ioc.cfc:L546`), which is
+   precisely the mechanism **R1** replaces. These cases assert that importing an entry constructs no container
+   and reads no environment, and that the graph resolves only on first invocation (§6). ⚠️ The **31 cases that
+   asserted the module graph itself** were withdrawn rather than folded, because the per-surface separation
+   they measured no longer exists — adapting them would have meant asserting the opposite of what they were
+   written to assert. The withdrawal record sits at the foot of that same suite and names what it gives up.
+3. **Which connection each rebuilt collaborator holds inside a write boundary** — **M5** and **M6** — which
+   the legacy had no equivalent of either, its commit being implicit at request end and gated on
+   `getORMHasErrors()`. Those cases point the pool at a port nothing listens on and hand the rebuild a
+   recording executor, so a single collaborator left pool-bound fails with a connection refusal instead of
+   passing quietly. It is the only assertion in the subtree that can see that mistake, since `tsc` cannot and
+   a happy-path database test would not.
+
+**Where the twenty-one folded suites went.** Folding relocated coverage into the approved seventeen; it
+removed none, and each folded body sits inside one `describe` under a banner naming its origin, so a reviewer
+can read any of them as the file it used to be. Every host was chosen because it already owns the subject. The
+row counts below sum to **twenty-one**, which is what `grep -rc 'FOLDED IN FROM' test/` reports.
 
 | Folded suite(s)                                                                                                                                                     | Host                                          |
 | ------------------------------------------------------------------------------------------------------------------------------------------------------------------- | --------------------------------------------- |
@@ -1672,7 +1805,7 @@ any of them as the file it used to be. Every host was chosen because it already 
 | `adapters/SmartListQueryBuilder`                                                                                                                                    | `adapters/MySqlOptionRepository.test.ts`      |
 | `adapters/catalogAggregates`                                                                                                                                        | `adapters/MySqlProductTypeRepository.test.ts` |
 | `domain/process/processObjects`                                                                                                                                     | `domain/Product.test.ts`                      |
-| `handlers/httpResponse`, `handlers/entrySurface`, `config/env`                                                                                                      | `regression/issues.test.ts`                   |
+| `handlers/httpResponse`, `handlers/entrySurface`, `config/env`, `config/container`, `config/writeBoundaryRebuild`                                                   | `regression/issues.test.ts`                   |
 
 **Three groups of cases were ADDED rather than relocated, because the same QA pass found the approved corpus
 did not constrain them at all.** They are net-new and labelled so:
@@ -1748,9 +1881,7 @@ CFSelenium being absent is why the legacy suite cannot be executed, and Hibernat
 why the ORM behaviours the port must preserve (flush timing, session visibility, second-level caching) are
 documented from the application's own code rather than from a dependency version.
 
-### 12.4 Defect register D1–D25 — preserve and annotate, do not repair
-
-### 12.4 Defect register — the frozen D1–D21, and the live D1–D25
+### 12.4 Defect register — AAP §0.6.7's frozen D1–D21, carried by number, plus four observations carried by locator
 
 **The governing rule: legacy defects are carried across as flagged `TODO(parity)` annotations rather than
 silently fixed.** Fixing any of them would violate behaviour preservation and make the port's output
@@ -1758,45 +1889,42 @@ incomparable to the legacy system (**IR-9**), and Refactor Discipline Guideline 
 `no-warning-comments` is switched off permanently in the lint configuration so that a lint gate cannot make
 that requirement unbuildable.
 
-Scanning the in-scope files found **exactly three literal TODO comments**. The register is **21 entries** as
-the AAP froze it, because the analysis surfaced eighteen further defects a competent engineer would
-instinctively fix — and naming each one converts an invisible temptation into a documented decision.
+Scanning the in-scope files found **exactly three literal TODO comments**. The tables below are AAP §0.6.7's
+**frozen D1–D21** — 21 entries, because the analysis surfaced eighteen further defects a competent engineer
+would instinctively fix, and naming each one converts an invisible temptation into a documented decision.
 
-**The LIVE register runs D1–D25, and the four entries beyond the plan were minted during the port.** A code
-review found this section stopping at D21 while four further numbers were in use across the source, so the
-gap is closed here. The AAP's §0.6.7 is frozen at D1–D21 and is never amended; D22–D25 are port-minted, and
-`src/ports/repositories/SkuRepository.ts` is the **single** file permitted to state the live bound — every
-other file's claim is local ("no new identifier is minted here") with a pointer to that block. That rule
-exists because a range restated in several places has already drifted twice.
-Scanning the in-scope files found **exactly three literal TODO comments**. The table below is AAP §0.6.7's
-**frozen D1–D21**: 21 entries, because the analysis surfaced eighteen further defects a competent engineer
-would instinctively fix — and naming each one converts an invisible temptation into a documented decision.
+**⛔ THE REGISTER STOPS AT D21, AND THIS PORT MINTS NO IDENTIFIER OF ITS OWN.** AAP §0.6.7 is frozen at
+**D1–D21** and AAP §0.6.6 at **M1–M8**; a frozen document's range cannot drift, so both may be cited freely.
+Neither range is amended here, and no file in the subtree amends them.
 
-**⚠️ THE LIVE NUMBERING RUNS FURTHER, AND CONFLATING THE TWO RANGES IS THE MISTAKE THIS PARAGRAPH EXISTS TO
-PREVENT.** The AAP is frozen, so its range cannot move; the port's own register can, and does. Four further
-identifiers — **D22, D23, D24 and D25** — were minted **during the port**, so the live numbering is
-**D1–D25** with no gap.
+**An earlier revision of this section, and of `src/ports/repositories/SkuRepository.ts`, minted four further
+defect numbers (`D22`–`D25`) and one further mismatch number (`M9`) and declared a "live numbering" running
+past those bounds.** That was governance the plan does not grant: AAP §0.1.2.1 records the plan as "the
+FROZEN, agreed-upon source of truth — align code to it; never edit, weaken, or reinterpret it". Every one of
+those five numerals is **withdrawn from the subtree**, and the reason is practical as well as procedural — a
+number invented in the port cannot be traced to the plan, cannot be checked against it, and drifts the moment
+it is restated in a second file. That bound had already drifted twice, once to `D1-D22` and once to `D1-D24`,
+with files contradicting one another.
 
-**None of the four is a newly discovered legacy defect, and that distinction matters** — a reader auditing
-Guideline 4 compliance should be able to tell an addition to the register from a repair to the code.
-**D23, D24 and D25** are _port-boundary records_: each marks a place where the AAP's frozen target signature
-answers something the legacy body did not, so the divergence is the plan's and the annotation is the port's.
-**D22** is different again: it records an internal naming inconsistency inside a legacy file rather than a
-fault in that file's behaviour, and the port preserves it (§5.5). In no case was legacy behaviour changed to
-accommodate the entry.
+**⭐ The OBSERVATIONS are not withdrawn — only the numbers.** Each is a real reading of real source, and each
+is now carried where it belongs, identified **by its `path:Lnnn` locator** — which is the form AAP §0.8.2
+Guideline 6 actually asks for, and the form a reviewer can verify without consulting a register at all.
+`src/ports/repositories/SkuRepository.ts` is the natural index for the four below; it states the two frozen
+bounds once and mints nothing.
 
-| ID      | What it records                                                                                                                                                                                                                                                                                    |
-| ------- | -------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
-| **D22** | `model/dao/SkuDAO.cfc` mixes logical entity names and physical table names inside native statements, **intra-file** — a naming inconsistency the port preserves by keeping both vocabularies rather than unifying them                                                                             |
-| **D23** | `getTransactionExistsFlag` forwards an argument its own signature never declares (`model/service/SkuService.cfc:L285-L287`)                                                                                                                                                                        |
-| **D24** | the legacy `processImageUpload` returns the image-write **boolean** rather than the entity its own framework convention asks for (`model/service/SkuService.cfc:L210-L218`); the port answers the entity because AAP §0.4.2.2 tabulates `Promise<Sku>` and the plan is frozen                      |
-| **D25** | the legacy `getFormattedOptionGroups` answers a plain CFML struct keyed by option-group **name**, so two groups sharing a name collapse (`model/service/ProductService.cfc:L70-L80`); the port answers the array AAP §0.4.2.1 tabulates and preserves the collapse by accumulating through a `Map` |
+| Observation                                                                                                                                                                                                                                                                                                  | Legacy locator                                           | Where it is annotated, and what the port does                                                                                                                                                                                                                                                         |
+| ------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------ | -------------------------------------------------------- | ----------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
+| `SkuDAO` mixes **logical entity names and physical table names** inside native statements, intra-file. The logical names arise because the framework prefixes an entity name with the application key at `org/Hibachi/HibachiDAO.cfc:L102-L106`, a mapping-layer convenience native statements never receive | `model/dao/SkuDAO.cfc:L132`, `:L135` versus `:L179-L211` | `src/ports/repositories/SkuRepository.ts`, and each affected member. **Both vocabularies are kept rather than unified** (§5.5): never "fix" a mapping-layer entity name to a physical one, and never assume a logical name works in a native statement                                                |
+| `getTransactionExistsFlag` **forwards arguments its own signature never declares**, which is how the two entity call sites scope the probe                                                                                                                                                                   | `model/service/SkuService.cfc:L285-L287`                 | `src/services/SkuService.ts`, `src/domain/sku/Sku.ts`, `SkuRepository.transactionExists`. **TR-1 tightens the loose signature to the observed `(skuID?, productID?)`**; the repository keeps the legacy declaration order `(productID, skuID)`, so exactly two lines cross the two orders — see §10.1 |
+| `processImageUpload` **returns the image-write boolean**, not the entity its own framework convention asks for (`org/Hibachi/HibachiService.cfc:L117`)                                                                                                                                                       | `model/service/SkuService.cfc:L210-L218`                 | `src/services/SkuService.ts`. The body has exactly two returns, `true` and `false`. **The port forwards that boolean**, so the observation records the legacy's departure from its own framework — not the port's from the legacy                                                                     |
+| `getFormattedOptionGroups` **answers a plain CFML struct keyed by option-group name**, so two groups sharing a name collapse and the earlier one is lost                                                                                                                                                     | `model/service/ProductService.cfc:L70-L80`               | `src/services/ProductService.ts`. **The port answers the same keyed shape** — `Readonly<Record<string, readonly SelectOption[]>>` — and preserves the collapse by accumulating through a `Map` before freezing                                                                                        |
 
-**One file owns the live bound, and this is not it.** `src/ports/repositories/SkuRepository.ts` is the single
-authority for the ranges that move, and it states the reason in its own words: a global bound repeated in
-several places drifted twice already, once to `D1-D22` and once to `D1-D24`, with files contradicting each
-other. So the numbers above are reproduced **as that file records them**, and a reader checking whether a
-`D26` exists should read it rather than this section.
+**⚠️ The last three of those four are places where AAP §0.4.2's target column and the legacy body disagree, and
+all three are now resolved the same way: the legacy BODY states the contract, and TR-1 is the rule that
+tightens a loose legacy signature to it.** Review findings **F1**, **F2** and **F3** required exactly that,
+after revisions had resolved each of them the other way and left several files describing behaviour the code
+did not have. §10.1 tabulates the three signatures; where a description and the code disagree, the code is the
+fact.
 
 **The three literal source TODOs:**
 
@@ -1850,47 +1978,48 @@ and each is recorded as a **deliberate translation decision** so the behavioural
 | **D11** | `integrationServices/google/Integration.cfc:L49`           | the component attributes carry `displayname="USA epay"` while `getDisplayName()` returns `"Google"` — a copy-paste artifact from the payment adapter it was cloned from. **Recorded, not corrected**, since the effective display name comes from the method |
 | **D12** | `integrationServices/google/model/dao/FeedDAO.cfc:L52-L74` | broken, unreferenced SQL — a trailing comma after `SwProduct.calculatedTitle,`, an `INNER JOIN SwProduct` with no `ON` clause, and an unscoped result variable. Zero callers repo-wide; documented as dead and **not ported** (§11)                          |
 
-#### D22–D25 — the four entries minted during the port
+#### The three signature corrections, recorded where the code is the fact
 
-These are **not** in the AAP. Each was found while porting, each is annotated at the member that carries it,
-and each is enumerated once — in `src/ports/repositories/SkuRepository.ts`, the file that owns the live bound.
+The three port-boundary observations of the table above — the transaction probe's arity, the image upload's
+boolean, and the formatted option groups' keyed shape — each had a revision that resolved it the **other** way,
+against the legacy body and in favour of AAP §0.4.2's tabulated cell. All three are corrected, and the
+corrections are recorded rather than deleted, because "verified by declaration scan" is a claim about the
+_members_, not a guarantee that every cell in a frozen table matches every body it describes.
 
-| ID      | Home                                      | Defect                                                                                                                                                                                                                                                                                                                                                    |
-| ------- | ----------------------------------------- | --------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
-| **D22** | `src/ports/repositories/SkuRepository.ts` | `model/dao/SkuDAO.cfc` mixes logical entity names and physical table names **inside the same native statement**, intra-file                                                                                                                                                                                                                               |
-| **D23** | `src/ports/repositories/SkuRepository.ts` | `getTransactionExistsFlag` forwards an argument its own signature never declares — `model/service/SkuService.cfc:L285-L287`. The service-side consequence is recorded in `SkuService.ts` and the entity-side reading in `Sku.ts`; both **cite** the number rather than minting it                                                                         |
-| **D24** | `src/services/SkuService.ts`              | the legacy `processImageUpload` body returns the image-write **boolean**, not the entity its own framework convention asks for (`org/Hibachi/HibachiService.cfc:L117`), at `model/service/SkuService.cfc:L210-L218`. **The port preserves the boolean**, so the number records the legacy's departure from its framework — not the port's from the legacy |
-| **D25** | `src/services/ProductService.ts`          | the legacy `getFormattedOptionGroups` answers a CFML struct keyed by option-group **name**, so two groups sharing a name collapse and the earlier one is lost (`model/service/ProductService.cfc:L70-L80`). The port answers the array AAP §0.4.2.1 tabulates and preserves the collapse by accumulating through a `Map` first                            |
+| Corrected by | The claim that was wrong                                                                                                                                                                                    | What the code does now                                                                                                                                                                                                                       |
+| ------------ | ----------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- | -------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
+| **F1**       | `SkuService.getTransactionExistsFlag()` took **no arguments**, so both entity call sites lost their scoping identifier and the handler route answered a permanent `501`                                     | `getTransactionExistsFlag(skuID?, productID?)` forwards into the repository's own `(productID, skuID)` order, and the route answers the repository's boolean. `src/domain/sku/Sku.ts`, `SkuRepository.ts` and the in-memory double all agree |
+| **F2**       | `SkuService.processImageUpload` answered `Promise<Sku>`, discarding the write verdict the legacy returns                                                                                                    | it answers `Promise<boolean>`, forwarding `ImagePathPort.saveImageFile`'s verdict, and `sku.processImageUpload` publishes that boolean                                                                                                       |
+| **F3**       | `ProductService.getFormattedOptionGroups` answered `FormattedOptionGroup[]` — an array of `{ optionGroupName, options }` records — which is not the shape `model/service/ProductService.cfc:L71-L79` builds | it answers `FormattedOptionGroups` = `Readonly<Record<string, readonly SelectOption[]>>`, keyed by option-group name, with the legacy's last-write-wins collapse intact. `productHandler`'s response projection is keyed the same way        |
 
-> **D24 previously read the other way in three places, and a code review caught it.** This register, the
-> member's own headline block and three sites in `src/handlers/skuHandler.ts` all said the port "answers with
-> the entity" — while the code returned `Promise<boolean>` and the service's own adjudication at the `return`
-> statement argued, correctly, for the boolean. AAP §0.4.2.2's target cell does read `Promise<Sku>`, which is
-> where the claim came from; the cell is marked "Boundary-stubbed", the framework guard it implies fires on
-> `null` only, and the dispatcher that would impose it composes `processSku_imageUpload` — a name that appears
-> nowhere in the repository. All four artefacts now describe the boolean, and the wrong claims are recorded
-> in place rather than deleted.
+#### Five review-directed changes that are not defect entries and not departures
 
-#### Three review-directed divergences, which are not defect entries
+These are **not** carried legacy defects and carry no register identifier. Each is a place where a code review
+instructed a change, and each cites that review as its authority. Crucially, **none of the five changes an
+outcome the legacy produced** — each either classifies a refusal the legacy already failed, or refuses input
+the legacy's own upstream could not have supplied. That is what separates them from the two declared
+departures below.
 
-These are **not** carried legacy defects and mint no `D` number. Each is a place where a code review
-instructed a departure, and each cites that review as its authority — the same footing §0.6.7.7 opens for D18
-below.
+| Change                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                               | Authority                        |
+| ---------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- | -------------------------------- |
+| **The Google feed refuses rather than publishes malformed XML.** A value carrying a code point outside the XML 1.0 `Char` production — or, at a **raw** sink, `&`, `<` or `]]>` — is refused with a `DataIntegrityError` (**500**) instead of producing an unparseable 200. Every input the legacy rendered into a _well-formed_ document is byte-identical; only inputs whose legacy render had no defined XML parse diverge                                                                                                                                                                                                                        | finding **SEC-2**                |
+| **Three impossible product process routes answer `501`.** `addProductReview`, `addSubscriptionTerm` and `uploadDefaultImage` require _callable_ process objects that a parsed JSON body can never satisfy, so they return a classified `NotImplementedError` instead of a generic `500`. The members stay routable (**TR-5**) — §10.8 tabulates the measured boundary inventory these three sit inside                                                                                                                                                                                                                                               | finding **CQ-6**                 |
+| **The feed's additional-image reader has no silent default.** An unwired image boundary answers `501` rather than emitting a document with every `g:additional_image_link` silently missing                                                                                                                                                                                                                                                                                                                                                                                                                                                          | finding **CQ-4**                 |
+| **`GOOGLE_FEED_HOST` is held to a host-authority grammar.** RFC 3986 §3.2.2 `host` with §3.2.3's optional port: userinfo, path, query and fragment delimiters (`@`, `/`, `\`, `?`, `#`), whitespace, control characters, empty labels and out-of-range ports are refused with a fail-fast `ConfigurationError` that never echoes the rejected value. **This forecloses no legacy outcome** — the value stands in for `CGI.HTTP_HOST`, and RFC 9110 §7.2 already _defines_ the HTTP `Host` field as exactly that grammar with userinfo excluded, so every value the legacy input could hold is admitted and only values it could not hold are refused | finding **F8** (CWE-20, CWE-601) |
+| **Every appended feed path is constrained to a same-origin relative path** at all three URL sinks — the item `link`, `g:image_link` and each `g:additional_image_link`: a leading `/`, never `//`, no scheme and no authority. **This forecloses no legacy outcome either** — `model/entity/Product.cfc:L206-L208` writes the leading slash into the composed literal, so the legacy could not emit a path without one                                                                                                                                                                                                                               | finding **F8** (CWE-601)         |
 
-| Divergence                                                                                                                                                                                                                                                                                                                                                                                                                    | Authority         |
-| ----------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- | ----------------- |
-| **The Google feed refuses rather than publishes malformed XML.** A value carrying a code point outside the XML 1.0 `Char` production — or, at a **raw** sink, `&`, `<` or `]]>` — is refused with a `DataIntegrityError` (**500**) instead of producing an unparseable 200. Every input the legacy rendered into a _well-formed_ document is byte-identical; only inputs whose legacy render had no defined XML parse diverge | finding **SEC-2** |
-| **Three impossible product process routes answer `501`.** `addProductReview`, `addSubscriptionTerm` and `uploadDefaultImage` require _callable_ process objects that a parsed JSON body can never satisfy, so they return a classified `NotImplementedError` instead of a generic `500`. The members stay routable (**TR-5**)                                                                                                 | finding **CQ-6**  |
-| **The feed's additional-image reader has no silent default.** An unwired image boundary answers `501` rather than emitting a document with every `g:additional_image_link` silently missing                                                                                                                                                                                                                                   | finding **CQ-4**  |
-
-Conversely, the **escaping census is _not_ a divergence**: §12.4's earlier revisions recorded escaping all
+Conversely, the **escaping census is _not_ a change of any kind**: an earlier revision recorded escaping all
 fifteen dynamic feed sinks as a second declared hardening exception, and finding **CQ-9** reversed that. The
 port now reproduces the legacy's six-escaped / nine-raw split exactly. See §10.7.
 
-#### The one declared departure from behavioural preservation — D18
+#### The two declared departures from behavioural preservation
 
-Stated prominently, because a reviewer comparing generated SQL against legacy SQL must know the divergence is
-intended.
+Stated prominently and exhaustively, because the whole value of this register is that a reviewer comparing
+generated output against legacy output has a **closed** list of places where a difference is intended. There
+are exactly two. Everything else in §12.4 either carries a legacy behaviour unchanged or classifies a failure
+the legacy already produced.
+
+**1. Parameterized SQL in the importer — D18, licensed by AAP §0.6.7.7.**
 
 `model/dao/ProductDAO.cfc` builds **21** statements via `setSql()` with direct interpolation of
 **file-supplied** values — including `L165` `WHERE optionGroupName = '#optionGroupKey#'`, and further
@@ -1898,29 +2027,40 @@ instances at `L180`, `L184`, `L213`, `L219` and `L244`. That is an unparameteriz
 fed directly from an uploaded file.**
 
 The port uses `pool.execute()` with `?` placeholders throughout, which **structurally eliminates the entire
-class of flaw**. This is the **single** place where the port intentionally does **not** preserve legacy
-behaviour exactly, and it is declared here as **deliberate, documented hardening — never a silent fix.**
+class of flaw**. AAP §0.6.7.7 declares this departure by name, so it needs no other authority.
 
-### 12.5 Execution-model mismatches M1–M9 — flagged, not silently resolved
+**2. The feed's five absolute URLs are `https://`, where `product.cfm` emits `http://` — directed by finding
+F8 (CWE-319).**
 
-Each is presented as a **decision surfaced**, with its source-declared value and locator, and with **no
-invented figure of any kind**.
+`integrationServices/google/views/feed/product.cfm` composes `http://#CGI.HTTP_HOST#` at `L14`, `L15`, `L22`,
+`L23` and `L24`. The port composes `https://` at the same five sinks — the channel `link`, the channel
+`description` prefix, each item `link`, `g:image_link`, and each `g:additional_image_link`. A merchant feed is
+fetched by a third party over the public internet and its URLs are followed by shoppers, so cleartext is the
+wrong default; F8 required it changed. **The change is a behavioural difference and is therefore declared here
+rather than filed among the review-directed changes above**, which is where F8's host-authority and
+relative-path rules sit, because those two foreclose no legacy outcome and this one does.
 
-### 12.5 Execution-model mismatches — the frozen M1–M8, and the live M1–M9
+⚠️ **What is deliberately NOT re-schemed.** `xmlns:g="http://base.google.com/ns/1.0"` stays `http://`
+because an XML namespace name is an **identifier compared byte-for-byte**, not a fetch target — changing it
+would silently invalidate every `g:` element for every consumer. The Google Merchant specification URL quoted
+in `src/integrations/google/README.md` is likewise reproduced as the legacy view header wrote it.
+
+**Both departures are deliberate, documented hardening — never a silent fix**, and both are asserted by the
+suite so that a later revision cannot quietly reverse either one.
+
+### 12.5 Execution-model mismatches — AAP §0.6.6's frozen M1–M8, flagged rather than silently resolved
 
 Eight are frozen in AAP §0.6.6 and tabulated below. Each is presented as a **decision surfaced**, with its
 source-declared value and locator, and with **no invented figure of any kind**.
 
-**The live range is M1–M9.** As with the defect register, one further identifier was minted during the port:
-**M9**, recorded at `src/services/SkuService.ts`, because CFML specifies **no iteration order** for a plain
-struct while the port's `Map` preserves insertion order — so the combination engine's enumeration order is
-guaranteed here in a way the legacy never guaranteed it. Like D22–D25 it is a port-boundary record, **not a
-newly discovered legacy mismatch**, and `src/ports/repositories/SkuRepository.ts` remains the single authority
-for the bound.
-
-**The AAP's §0.6.6 is frozen at M1–M8; the LIVE register runs M1–M9.** A code review found this section
-stopping at M8 while M9 was already in use, so the ninth row is added below. As with the defect register,
-`src/ports/repositories/SkuRepository.ts` is the single file permitted to state the live bound.
+**⛔ THE RANGE STOPS AT M8, FOR THE REASON §12.4 GIVES.** An earlier revision minted a ninth identifier for a
+real observation — CFML specifies **no iteration order** for a plain struct, while the port's `Map` preserves
+insertion order, so the combination engine's enumeration order is guaranteed here in a way the legacy never
+guaranteed it. The **numeral** is withdrawn; the **observation is not**. It is annotated where it belongs, at
+`src/services/SkuService.ts`, identified by its locator `model/service/SkuService.cfc:L58-L211` — and it
+matters because that enumeration order determines both the generated SKU set and, through the read-back loop
+of §10.3, the order in which uniqueness validation observes its siblings. A defined order is **stricter** than
+the legacy's, so it is recorded rather than relied upon.
 
 | ID     | Mismatch                                                                                                                                                                                  | Why it does not map to one Lambda invocation                                                                                                                                                                                                                                                                                                                                                                                                                                  |
 | ------ | ----------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- | ----------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
@@ -1932,7 +2072,6 @@ stopping at M8 while M9 was already in use, so the ninth row is added below. As 
 | **M6** | the **validation read-back loop** of §10.3                                                                                                                                                | the highest chance of silently changing results anywhere in the slice                                                                                                                                                                                                                                                                                                                                                                                                         |
 | **M7** | second-level caching — `cacheuse="transactional"` on **111 of 113** entities — plus lazy per-instance caches and the memoized option-group sort order at `model/dao/SkuDAO.cfc:L204-L226` | nothing survives between invocations except module-scope state, so **memoisation is scoped to the request object rather than the module**, to avoid cross-tenant bleed on a warm container                                                                                                                                                                                                                                                                                    |
 | **M8** | an out-of-band `cfthread` in the excluded setting service                                                                                                                                 | out of scope, but it constrains the contract: `SettingResolverPort` is declared **synchronous**, so no caller in the slice depends on background completion                                                                                                                                                                                                                                                                                                                   |
-| **M9** | **struct iteration order** — CFML specifies none for a plain struct, while the port's `Map` preserves insertion order. Minted during the port, home `src/services/SkuService.ts`          | the combination engine's enumeration order determines both the generated SKU set and — through the read-back loop of §10.3 — the order in which uniqueness validation observes its siblings, so a defined order is **stricter** than the legacy's and is recorded rather than relied upon                                                                                                                                                                                     |
 
 **None of these is presented as a performance figure or a service-level target; this deliverable states only
 what the source declares.** The only timing **budgets** named anywhere in this subtree are M1's 3600 seconds
@@ -1956,8 +2095,8 @@ limit. Leaving M2 open does **not** leave the row count unbounded, and the two m
 
 Noted once, and deliberately **absent** from the inventory above: the legacy **60-second and 45-second
 session locks in `OrderService` and `PaymentService`** were to be noted but not implemented. Those services
-are out of scope, no session-locking mechanism appears in the target design, and they are therefore counted
-in neither the frozen M1–M8 nor the live M9.
+are out of scope, no session-locking mechanism appears in the target design, and they are therefore **not**
+among the frozen M1–M8 above and are annotated nowhere else in this subtree.
 
 ---
 
@@ -2038,10 +2177,10 @@ semantics of §10.2 are reproduced exactly while the mechanisms around them are 
 **The one place this line was crossed, and how far it had to be walked back.** A revision of this subtree added
 security hardening the legacy has no equivalent of, and a QA pass found it. The decisive argument against it
 was **cardinality, not merits**: AAP §0.6.7.7 licenses exactly **one** behavioural departure — D18's SQL
-parameterization — and the register exists precisely so that a reviewer comparing generated SQL against legacy
-SQL has exactly one entry to check. A second departure, however defensible on its own, destroys that property;
-Guideline 4 admits no proportionality test, and AAP §0.7.1 records the plan as frozen. Six categories were
-therefore withdrawn:
+parameterization — and the register exists precisely so that a reviewer comparing generated output against
+legacy output has a closed list of entries to check. An **undeclared** second departure, however defensible on
+its own, destroys that property; Guideline 4 admits no proportionality test, and AAP §0.7.1 records the plan as
+frozen. Six categories were therefore withdrawn:
 
 | Withdrawn                                                                                                             | What now happens instead                                                                                                                                               |
 | --------------------------------------------------------------------------------------------------------------------- | ---------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
@@ -2051,16 +2190,24 @@ therefore withdrawn:
 | an optional **URL-title probe** ceiling, and the whole of `util/urlTitleProbeBudget.ts`                               | the derivation probes exactly as `model/service/DataService.cfc:L64` does, unbounded                                                                                   |
 | an **import-source (SSRF) policy** — some 420 lines of IPv4/IPv6/loopback apparatus — and `ImportSourceRejectedError` | the importer fetches the location it is given, and the exposure is carried as mismatch **M4**                                                                          |
 | **transaction-locking reads** in the uniqueness probes and the sort-order read                                        | both read without `FOR UPDATE`, and the TOCTOU window is carried unrepaired                                                                                            |
-| broadened **feed escaping**, URL **percent-encoding**, and **host-syntax** rejection                                  | the serializer escapes exactly the six fields `product.cfm` escapes and emits every other dynamic value raw; `GOOGLE_FEED_HOST` is read for presence only              |
+| broadened **feed escaping** and URL **percent-encoding**                                                              | the serializer escapes exactly the six fields `product.cfm` escapes and emits every other dynamic value raw, and appends no percent-encoding of its own                |
 
 **Every one of those exposures is now flagged where it lives rather than closed.** That is the uncomfortable
 half of Guideline 4 and it is stated plainly: CWE-367 at both uniqueness probes and the sort-order read — and
 note that `optionCode` and `optionGroupCode` have **no** `unique="true"` column behind them, so for those two
-the application-side check is the only check; CWE-918 at the importer; CWE-91 at nine feed sinks, plus
-URL-grammar injection at the three URL sinks and origin rebasing through the configured host. **Closing any of
-them requires separately authorised scope. It cannot be smuggled into a frozen extraction plan through
+the application-side check is the only check; CWE-918 at the importer; and CWE-91 at nine feed sinks. **Closing
+any of them requires separately authorised scope. It cannot be smuggled into a frozen extraction plan through
 tests** — which is exactly how it happened the first time, and why the withdrawal removed the expectations as
 well as the behaviour.
+
+⚠️ **Three of the withdrawn feed exposures were later re-closed — on instruction, not on merit, which is the
+only footing that works.** A **host-syntax rule** for `GOOGLE_FEED_HOST` and a **relative-path rule** at the
+three URL sinks were withdrawn with the rest of that revision, and finding **F8** required both back
+(CWE-20, CWE-601). They return on a footing the withdrawn versions never had: neither forecloses any outcome
+the legacy could produce, so neither is a behavioural departure — §12.4 sets out both arguments, and §12.4's
+two-entry departure list is where F8's **scheme** change (CWE-319) is declared instead, because that one _is_ a
+difference. The lesson the withdrawal taught still holds: **the authority has to be external and it has to be
+cited.** What changed is that here it exists.
 
 **One related wiring defect was fixed rather than withdrawn, because it was a defect and not hardening.** The
 feed's shipped factory wired a constant-empty product-image reader, so a product with three images rendered as
@@ -2099,11 +2246,13 @@ than aspirational:
 6. **One test per converted method, explicitly labelled** — every suite marked TRACEABLE or NET-NEW, with the
    honest ratio published rather than smoothed over (§12.1).
 7. **Preserve and annotate, do not repair** — the 21 legacy defects of the frozen register carried as flagged
-   `TODO(parity)` annotations, with the single declared exception D18 and its reasoning (§12.4). The four
-   port-boundary records D22–D25 are additions to the register, never repairs to the code (§12.4), and the six
-   categories of unauthorised hardening that once breached this standard were withdrawn (§13.4).
+   `TODO(parity)` annotations, with the two declared departures and their reasoning (§12.4). The four further
+   port-boundary observations are carried **by source locator rather than by a minted number**, and are
+   additions to the record, never repairs to the code (§12.4); the six categories of unauthorised hardening
+   that once breached this standard were withdrawn (§13.4).
 8. **Flag mismatches rather than assume them away** — the eight frozen execution-model mismatches, plus the
-   port-minted M9, surfaced as decisions rather than resolved by guesswork (§12.5).
+   struct-iteration-order observation carried by locator, surfaced as decisions rather than resolved by
+   guesswork (§12.5).
 9. **Invent nothing** — no SLA, latency target, throughput figure, availability number, capacity estimate or
    coverage threshold appears anywhere; where a fact could not be established from source it is recorded as
    **not documented** rather than given a plausible value (§12.3).

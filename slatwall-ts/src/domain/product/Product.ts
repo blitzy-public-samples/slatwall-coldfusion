@@ -596,23 +596,26 @@ export interface ProductUnusedOptionFinder {
  * here but would fork the declaration into two, and this entity passes `undefined` first and its own
  * identifier second, visibly, at its one call site.
  *
- * ⛔ AN EARLIER REVISION JUSTIFIED THIS SHAPE BY SAYING IT LET `SkuService.getTransactionExistsFlag` BE
- * BOUND DIRECTLY, "removing that failure mode entirely". IT DOES THE OPPOSITE. The service member
- * declares ZERO arguments — AAP 0.4.2.2 Discrepancy 4 freezes it that way — and TypeScript accepts a
- * lower-arity function wherever a higher-arity one is expected, so binding the service here compiled
- * and then DISCARDED this entity's identifier, leaving the DAO's else-branch to answer a wider
- * question. The consequence is precisely the one the member below documents: this flag gates a delete
- * at `model/validation/Product.json:L12`, so a widened `true` blocks deletion of products it should
- * not, with nothing reporting the substitution.
+ * ⛔ THE CONTRACT IS NOT `SkuService`, EVEN THOUGH THE TWO NOW HAVE THE SAME SHAPE. A domain module may
+ * not import a service at all (hexagonal separation, AAP §0.7.3), which is the structural reason; the
+ * historical reason is worth keeping because it explains the brand. A revision narrowed
+ * `SkuService.getTransactionExistsFlag` to ZERO arguments on a literal reading of AAP §0.4.2.2's
+ * Discrepancy 4, and TypeScript accepts a lower-arity function wherever a higher-arity one is expected —
+ * so binding the service here compiled and then DISCARDED this entity's identifier, leaving the DAO's
+ * else-branch to answer a wider question. This flag gates a delete at `model/validation/Product.json:L12`,
+ * so a widened `true` blocks deletion of products it should not, with nothing reporting the substitution.
+ * Review finding F1 restored the service to `(skuID?, productID?)` under TR-1, so that particular
+ * mis-binding would no longer lose the identifier — but a lower-arity function is still structurally
+ * assignable here, so the guard is still needed.
  *
  * ⭐ WHICH IS WHY THE CONTRACT CARRIES {@link ProductTransactionExistenceChecker.argumentOrder} — a
- * required member the zero-argument service does not declare, so the mis-binding is now a type error
- * rather than a silent widening. The single correct implementation is `createTransactionExistenceChecker`
- * in `src/adapters/mysql/MySqlSkuRepository.ts`, which crosses this caller order onto the repository
- * order `transactionExists(productID?, skuID?)` that AAP 0.4.2.6 pins. The brand cannot catch a crossing
- * written BACKWARDS — both identifiers are 32-character strings (IR-6), so a swapped adapter
- * type-checks — which is why the crossing exists in exactly one place beside the implementation it
- * inverts and is held by behavioural order assertions rather than by types.
+ * required member no service declares, so binding anything but the intended adapter is a type error
+ * rather than a silent substitution. The single correct implementation is
+ * `createTransactionExistenceChecker` in `src/adapters/mysql/MySqlSkuRepository.ts`, which crosses this
+ * caller order onto the repository order `transactionExists(productID?, skuID?)` that AAP §0.4.2.6 pins.
+ * The brand cannot catch a crossing written BACKWARDS — both identifiers are 32-character strings
+ * (IR-6), so a swapped adapter type-checks — which is why the crossing exists in exactly one place beside
+ * the implementation it inverts and is held by behavioural order assertions rather than by types.
  */
 export interface ProductTransactionExistenceChecker {
   /**
@@ -1109,7 +1112,7 @@ export class Product implements AuditableEntity, ManagedEntity {
    *
    * The descriptor below therefore records the singular name the legacy would have needed
    * (`productReview`) while this comment records the attribute as actually spelled. No new defect
-   * identifier is introduced; AAP §0.6.7 catalogues D1-D21 and the live bound is stated only at
+   * identifier is introduced; AAP §0.6.7 catalogues D1-D21, that bound is frozen, and it is restated only at
    * `src/ports/repositories/SkuRepository.ts`.
    */
   productReviews: ProductOwnedAssociation[] = [];
@@ -2773,7 +2776,7 @@ export class Product implements AuditableEntity, ManagedEntity {
    *     variables.transactionExistsFlag = the dynamic sku-service lookup, then
    *         .getTransactionExistsFlag( productID=this.getProductID() )
    *
-   * ⚠️⚠️ the undeclared-argument forwarding [model/service/SkuService.cfc:L285-L287] — `productID` IS FORWARDED, WHICH MAKES THE LEGACY FLAG PRODUCT-SCOPED. [:L626] passes a
+   * ⚠️⚠️ `productID` IS FORWARDED, WHICH MAKES THE LEGACY FLAG PRODUCT-SCOPED. [:L626] passes a
    * NAMED `productID` argument, and the service member it calls declares no formal parameters —
    * [model/service/SkuService.cfc:L285] is `public boolean function getTransactionExistsFlag()`. It
    * would be easy to infer from that signature that the argument is dropped and the flag is
@@ -2823,10 +2826,11 @@ export class Product implements AuditableEntity, ManagedEntity {
    *   the crossing is checked at compile time where it is written — the guard an earlier revision named
    *   here as `SkuServiceIsProductTransactionExistenceChecker`, which never existed in the subtree.
    *   ⛔ Do NOT supply `SkuService`: {@link ProductTransactionExistenceChecker.argumentOrder} is what
-   *   makes that a type error rather than a silent widening of the question. Its
-   *   `getTransactionExistsFlag` does declare both identifiers and forwards them correctly, so the
-   *   mis-binding would no longer discard one — but the service is the route-level surface and this
-   *   entity is served by the adapter above, so the brand keeps the two roles from being confused.
+   *   makes that a type error. Since review finding F1 that service's `getTransactionExistsFlag` does
+   *   declare both identifiers in this same order and would forward them correctly, so the mis-binding
+   *   would no longer discard one — but a domain module may not import a service, the service is the
+   *   route-level surface, and this entity is served by the adapter above, so the brand keeps the two
+   *   roles from being confused.
    * @returns Whether a transaction references THIS product.
    */
   async getTransactionExistsFlag(
@@ -2836,7 +2840,9 @@ export class Product implements AuditableEntity, ManagedEntity {
     if (memoizedFlag !== undefined) {
       return memoizedFlag;
     }
-    // PARITY (model/service/SkuService.cfc:L285-L287): productID occupies the SECOND parameter. The first MUST stay `undefined` — a supplied
+    // productID occupies the SECOND parameter — model/service/SkuService.cfc:L285-L287 forwards whatever
+    // the caller names, and [model/entity/Product.cfc:L626] names only this one. The first MUST stay
+    // `undefined` — a supplied
     // skuID wins at SkuDAO.cfc:L58-L64 and would suppress the product-scoped branch at :L61.
     const resolvedFlag = await transactionChecker.getTransactionExistsFlag(
       undefined,

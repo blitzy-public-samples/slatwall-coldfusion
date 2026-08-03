@@ -614,8 +614,10 @@ export const optionGroupRequiredConstraint = Object.freeze({
  * blocking guards, and `model/entity/Product.cfc:L73` `skus` `cascade="all-delete-orphan" inverse="true"`.
  * This is a plain note: no new execution-model number is opened for it — AAP §0.6.6 allocates M1
  * through M8 — and no defect register entry is invented here. ⚠️ F27: the tail of this sentence read
- * "the register being closed at D1 through the logical-versus-physical naming divergence [model/dao/SkuDAO.cfc:L132]", which was untrue on both counts; the live bound is
- * stated only at `src/ports/repositories/SkuRepository.ts`.
+ * "the register being closed at D1 through <a port-minted endpoint beyond D21>", which was untrue on both
+ * counts. ⚠️ AND F11 REPORTED THE REPAIR ITSELF: the withdrawn endpoint had been substituted with its own
+ * prose description, so the sentence ended in a description standing where a numeral belonged. No bound is
+ * restated here; `src/ports/repositories/SkuRepository.ts` states both frozen ranges.
  *
  * Emits `validate.delete.Option.skus.maxCollection`.
  */
@@ -824,9 +826,13 @@ export const optionValidationRuleSet = Object.freeze({
  *
  * NO PARITY ANNOTATION APPEARS IN THIS FILE, and that is a finding rather than an omission: no
  * entry in the defect register crosses `model/validation/Option.json`'s boundary, and no D-number is
- * invented here. ⚠️ F27: this previously asserted "The register is CLOSED at D1 through the logical-versus-physical naming divergence [model/dao/SkuDAO.cfc:L132]", and
- * D1–the logical-versus-physical naming divergence [model/dao/SkuDAO.cfc:L132] was never the AAP's range: §0.6.7 is frozen at D1–D21, and the port-minted entries beyond it
- * are enumerated only at `src/ports/repositories/SkuRepository.ts`. The plan's one declared
+ * invented here. ⚠️ F27: this previously asserted "The register is CLOSED at D1 through <a port-minted
+ * endpoint beyond D21>", and that was never the AAP's range: §0.6.7 is frozen at **D1–D21**, every
+ * port-minted number is withdrawn, and the observations that carried them are now identified by source
+ * locator alone — enumerated at `src/ports/repositories/SkuRepository.ts`, which is the only file that may
+ * state either bound. ⚠️ REVIEW FINDING F11 REPORTED WHAT THAT WITHDRAWAL LEFT BEHIND HERE: the numeral had
+ * been substituted with its own prose description in a RANGE position, twice, so the text read
+ * "D1–the logical-versus-physical naming divergence [model/dao/SkuDAO.cfc:L132]". The plan's one declared
  * exception to preserve-and-annotate is D18, which belongs to `src/adapters/mysql`, and this file
  * claims none.
  * ============================================================================================== */

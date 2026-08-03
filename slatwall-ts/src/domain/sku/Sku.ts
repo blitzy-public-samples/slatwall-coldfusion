@@ -171,24 +171,27 @@ import type { SubscriptionBenefitReference } from '../../ports/SubscriptionTermP
  *   {@link SkuSalePricingLookup}          <- PricingPort.getSalePriceDetailsForProductSkus
  *   {@link SubscriptionTermRef}           <- SubscriptionTermPort's term reference, widened by one
  *                                            optional member. See the note on that interface.
- *   {@link SkuTransactionExistenceChecker} <- the service contract as corrected by PARITY (model/service/SkuService.cfc:L285-L287): AAP §0.4.2.2
+ *   {@link SkuTransactionExistenceChecker} <- the service contract as TR-1 tightens it. AAP §0.4.2.2
  *                                            Discrepancy 4 read literally produced a zero-argument
- *                                            member that discarded this identifier, so the service
- *                                            declares `(skuID?, productID?)` and satisfies this
- *                                            interface directly
+ *                                            member that discarded this identifier; review finding F1
+ *                                            restored `(skuID?, productID?)` on `SkuService`, which
+ *                                            satisfies this interface directly
  *   {@link SkuProductTypeRootResolver}    <- the root-product-type resolver
  *                                            `src/domain/product/ProductType.ts` declares
  *
- * ⚠️ THE ONE EXCEPTION, AND EARLIER TEXT HERE RECORDED IT WRONGLY. This list once mapped
- * {@link SkuTransactionExistenceChecker} onto "the zero-argument service contract, AAP §0.4.2.2
- * Discrepancy 4". That correspondence is not a narrowing — it is an incompatibility dressed as one.
- * `SkuService.getTransactionExistsFlag` declares NO arguments, so it cannot carry the identifier this
- * entity supplies; it merely happens to be assignable, because a lower-arity function satisfies a
- * higher-arity method. The real backing member is
+ * ⚠️ THE ONE SHAPE THAT NEEDS AN ADAPTER, AND EARLIER TEXT HERE RECORDED IT WRONGLY TWICE. This list once
+ * mapped {@link SkuTransactionExistenceChecker} onto "the zero-argument service contract, AAP §0.4.2.2
+ * Discrepancy 4". That was an incompatibility dressed as a narrowing: a zero-parameter member cannot carry
+ * the identifier this entity supplies, and it merely happened to be assignable because a lower-arity
+ * function satisfies a higher-arity method. Review finding F1 restored the service member to
+ * `(skuID?, productID?)`, so it now matches this contract's shape AND its order.
+ *
+ * ⛔ WHICH DOES NOT MAKE THE ADAPTER OPTIONAL. The BACKING member is
  * `SkuRepository.transactionExists(productID?, skuID?)` (AAP §0.4.2.6), whose argument order is the
- * REVERSE of this contract's, so this is the single shape that genuinely requires an adapter:
- * `createTransactionExistenceChecker` in `src/adapters/mysql/MySqlSkuRepository.ts`. See that contract's
- * own block for the compile-time guard that now forbids the mis-binding.
+ * REVERSE of this contract's, so a crossing is still required and still happens in exactly one place:
+ * `createTransactionExistenceChecker` in `src/adapters/mysql/MySqlSkuRepository.ts`. A domain module may
+ * not import a service in any case, which is why this entity takes a checker rather than either of them.
+ * See that contract's own block for the compile-time guard over the mis-binding.
  *
  * Nothing in this block performs work. Each is a shape the composition root fills.
  * ============================================================================================== */
@@ -558,20 +561,23 @@ export interface SkuSalePricingLookup {
  * `src/domain/product/Product.ts` declares for the same guard on [model/validation/Product.json], so
  * ONE instance serves both entities.
  *
- * ⛔ `SkuService.getTransactionExistsFlag` MUST NEVER BE BOUND HERE, AND EARLIER PROSE IN THIS BLOCK
- * SAID THE OPPOSITE. That member declares ZERO arguments — AAP 0.4.2.2 Discrepancy 4 freezes it that
- * way, and `src/services/SkuService.ts` implements it that way. TypeScript accepts a function of lower
- * arity wherever a higher-arity one is expected, so binding the service here would COMPILE and then
- * DISCARD both identifiers, leaving the DAO's else-branch to answer a wider question than the caller
- * asked. That is the destructive direction described above: a wrongly-scoped `true` blocks a
- * legitimate delete, a wrongly-scoped `false` permits a destructive one, and nothing reports either.
+ * ⛔ `SkuService.getTransactionExistsFlag` MUST NEVER BE BOUND HERE, EVEN THOUGH THE TWO NOW SHARE A
+ * SHAPE. The structural reason comes first: a domain module may not import a service at all. The
+ * historical reason is why the brand below exists. A revision narrowed that member to ZERO arguments on a
+ * literal reading of AAP §0.4.2.2's Discrepancy 4, and TypeScript accepts a function of lower arity
+ * wherever a higher-arity one is expected — so binding the service here COMPILED and then DISCARDED both
+ * identifiers, leaving the DAO's else-branch to answer a wider question than the caller asked. That is the
+ * destructive direction described above: a wrongly-scoped `true` blocks a legitimate delete, a
+ * wrongly-scoped `false` permits a destructive one, and nothing reports either. Review finding F1 restored
+ * `(skuID?, productID?)` on the service under TR-1, so that particular substitution would no longer lose
+ * an identifier — but a lower-arity function is still structurally assignable here, so the guard is still
+ * required.
  *
- * ⭐ WHICH IS WHY THE CONTRACT CARRIES {@link SkuTransactionExistenceChecker.argumentOrder}. It is the
- * compile-time guard an earlier revision only claimed to have: a required member the zero-argument
- * service does not declare, so the mis-binding stops being a silent runtime widening and becomes a
- * type error at the wiring site. The single correct implementation is
+ * ⭐ WHICH IS WHY THE CONTRACT CARRIES {@link SkuTransactionExistenceChecker.argumentOrder}. It is a
+ * required member no service declares, so binding anything but the intended adapter stops being a silent
+ * runtime substitution and becomes a type error at the wiring site. The single correct implementation is
  * `createTransactionExistenceChecker` in `src/adapters/mysql/MySqlSkuRepository.ts`, which crosses
- * this caller order onto the repository order `transactionExists(productID?, skuID?)` that AAP 0.4.2.6
+ * this caller order onto the repository order `transactionExists(productID?, skuID?)` that AAP §0.4.2.6
  * pins.
  *
  * ⚠️ THE GUARD CANNOT CATCH A CROSSING WRITTEN BACKWARDS, and that limit is stated rather than
@@ -2894,7 +2900,9 @@ export class Sku implements AuditableEntity, ManagedEntity {
    */
   async getTransactionExistsFlag(checker: SkuTransactionExistenceChecker): Promise<boolean> {
     if (this.#transactionExistsFlag === undefined) {
-      // PARITY (model/service/SkuService.cfc:L285-L287): skuID occupies the FIRST parameter — the SKU-scoped branch at SkuDAO.cfc:L58-L59.
+      // skuID occupies the FIRST parameter — model/service/SkuService.cfc:L285-L287 forwards whatever the
+      // caller names, and [model/entity/Sku.cfc:L594] names this one, reaching the SKU-scoped branch at
+      // SkuDAO.cfc:L58-L59.
       this.#transactionExistsFlag = await checker.getTransactionExistsFlag(this.skuID);
     }
     return this.#transactionExistsFlag;

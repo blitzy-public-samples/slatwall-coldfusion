@@ -6,13 +6,15 @@
   "license": "GPL-3.0-or-later",
   "type": "commonjs",
   "engines": {
-    "node": ">=20.19.0"
+    "node": ">=20.20.2"
   },
   "scripts": {
     "typecheck": "tsc --noEmit",
     "build": "node build/esbuild.mjs",
     "test": "jest --ci --config package.json --preset ./jest.config.ts",
-    "lint": "eslint ."
+    "test:coverage": "jest --ci --config package.json --preset ./jest.config.ts --coverage",
+    "lint": "eslint .",
+    "format:check": "prettier --check ."
   },
   "dependencies": {
     "mysql2": "3.23.2"

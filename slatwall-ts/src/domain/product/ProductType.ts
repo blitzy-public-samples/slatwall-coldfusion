@@ -1235,7 +1235,7 @@ export class ProductType implements AuditableEntity {
    *
    * ADDITIONAL D21 PROVENANCE FOUND WHILE PORTING, recorded against the existing defect ID because
    * this finding is provenance for D21 rather than a distinct behaviour, and AAP §0.6.7 catalogues
-   * D1–D21 (the live bound is stated only at `src/ports/repositories/SkuRepository.ts`): this member has ZERO callers
+   * D1–D21 (a frozen bound, restated only at `src/ports/repositories/SkuRepository.ts`): this member has ZERO callers
    * anywhere in the repository, and the `AttributeSetAssignment` entity it claims to return EXISTS
    * NOWHERE in release 3.1.39 — the string occurs only at `:L92` and `:L94` of this one file. So
    * the legacy member could never have executed successfully even once. That strengthens the case

@@ -975,7 +975,7 @@ export class Brand implements AuditableEntity, ManagedEntity {
  * invent schema the legacy system does not have, and it would put a phantom into
  * `src/adapters/mysql/rowMappers.ts`'s column mapping. The finding is recorded and left exactly as
  * it is — preserve and annotate, do not repair (S7). It is likewise NOT assigned a defect
- * identifier: AAP §0.6.7 catalogues D1-D21, and the live bound is stated only at `src/ports/repositories/SkuRepository.ts`.
+ * identifier: AAP §0.6.7 catalogues D1-D21, that bound is frozen, and it is restated only at `src/ports/repositories/SkuRepository.ts`.
  *
  * UNIQUENESS IS NOT AN ENTITY CONCERN. The `urlTitle` unique rule is enforced by the application-side
  * existence query of IR-5 — `isUniqueProperty()` [org/Hibachi/HibachiDAO.cfc:L130-L146], ported to

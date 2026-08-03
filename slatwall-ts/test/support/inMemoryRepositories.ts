@@ -1462,7 +1462,8 @@ export function createInMemorySkuRepository(
 
   const repository: SkuRepository = {
     /*
-     * X12 / the undeclared-argument forwarding [model/service/SkuService.cfc:L285-L287] — `model/dao/SkuDAO.cfc:L53-L98`.
+     * X12 — `model/dao/SkuDAO.cfc:L53-L98`, reached through the undeclared-argument forwarding at
+     * `model/service/SkuService.cfc:L285-L287`.
      *
      * The two branches are MUTUALLY EXCLUSIVE and `skuID` wins: the DAO tests
      * `structKeyExists(arguments,"skuID") && !isNull(arguments.skuID)` first and only falls through to
@@ -1470,18 +1471,19 @@ export function createInMemorySkuRepository(
      * chosen, so the answer is always SCOPED — never a global "does any transaction exist".
      *
      * G6. `model/service/SkuService.cfc:L285-L287` declares `getTransactionExistsFlag()` with ZERO
-     * formal parameters and forwards `argumentCollection=arguments`. That signature is a lie: CFML puts
-     * UNDECLARED named arguments into the `arguments` scope, so when
+     * formal parameters and forwards `argumentCollection=arguments`. That signature understates the
+     * contract: CFML puts UNDECLARED named arguments into the `arguments` scope, so when
      * `model/entity/Product.cfc:L626` calls `getTransactionExistsFlag(productID=…)` the identifier
-     * reaches `model/dao/SkuDAO.cfc:L53-L55` and scopes the query. Reading the service declaration
-     * literally — as an argument-less call — would turn the product delete guard into a global one and
-     * make every product undeletable the moment one transaction existed anywhere. This double therefore
-     * accepts and honours BOTH optional identifiers.
+     * reaches `model/dao/SkuDAO.cfc:L53-L55` and scopes the query. Reading the declaration literally — as
+     * an argument-less call — discards the only input the member ever receives, which is why review
+     * finding F1 restored `(skuID?, productID?)` on the service under TR-1. This double accepts and
+     * honours BOTH optional identifiers.
      *
-     * The layer-order reversal is also deliberate and must never be "tidied": the SERVICE surface is
-     * SKU-first (`getTransactionExistsFlag(skuID?, productID?)`, see
+     * The layer-order reversal is also deliberate and must never be "tidied": the SERVICE surface and
+     * both entity checker contracts are SKU-FIRST (`getTransactionExistsFlag(skuID?, productID?)`, see
      * `SkuTransactionExistenceChecker` in `src/domain/sku/Sku.ts`), while this REPOSITORY surface is
-     * product-first. Swapping either would silently exchange the two identifiers.
+     * PRODUCT-FIRST, matching the DAO's own declaration order. Swapping either would silently exchange
+     * the two identifiers — both are 32-character strings, so it would type-check.
      */
     transactionExists: (productID?: string, skuID?: string): Promise<boolean> => {
       calls.push(Object.freeze({ member: 'transactionExists', productID, skuID }));
@@ -1883,10 +1885,10 @@ export function createTransactionExistenceChecker(
  *
  * TODO(parity) `model/service/ProductService.cfc:L70-L80`: the neighbouring formatted-groups member builds a
  * plain CFML structure keyed by option-group NAME, so two groups sharing a name overwrite each other and
- * the earlier one is lost. The port answers `FormattedOptionGroup[]` per AAP §0.4.2.1 and preserves that
- * collapse by accumulating through a `Map`; the element type is declared in `src/services/ProductService`
- * and is NOT redeclared here, because the projection rows this file returns feed that member rather than
- * being it.
+ * the earlier one is lost. The port answers a record keyed the same way — TR-1's tightening of that loose
+ * `any` return, restored by review finding F3 — and preserves the collapse by accumulating through a `Map`
+ * before materialising. `FormattedOptionGroups` is declared in `src/services/ProductService` and is NOT
+ * redeclared here, because the projection rows this file returns feed that member rather than being it.
  * ---------------------------------------------------------------------------------------------------
  */
 
@@ -3305,12 +3307,12 @@ export function createSettingResolverDouble(
  * `jpg,jpeg,png,gif` list the upload seam carries — this double records the list it is handed so a test
  * can assert the order survived, and supplies none of its own.
  *
- * TODO(parity) the image-verdict divergence [model/service/SkuService.cfc:L213-L217] — `model/service/SkuService.cfc:L210-L218`: `processImageUpload` is named and shaped
- * like the other `process*` members, every one of which returns its entity, but this one returns whatever
- * the dynamically resolved image service returned — a BOOLEAN. `saveImageFile` here answers `boolean`
- * because that is the PORT's contract and the legacy's own verdict; the SERVICE member answers with the
- * SKU, per AAP §0.4.2.2, and consumes this boolean internally. Recording the verdict here is what lets a
- * case still assert WHICH way the write went even though the service no longer publishes it.
+ * TODO(parity) `model/service/SkuService.cfc:L210-L218`: `processImageUpload` is named and shaped like the
+ * other `process*` members, every one of which returns its entity, but this one returns whatever the
+ * dynamically resolved image service returned — a BOOLEAN. That is a departure of the LEGACY from its own
+ * framework convention [org/Hibachi/HibachiService.cfc:L117], carried rather than repaired. `saveImageFile`
+ * here answers `boolean` because that is the PORT's contract, and the SERVICE member forwards it unchanged
+ * (TR-1, review finding F2), so a case can assert WHICH way the write went from either layer.
  */
 
 /** One recorded call on the image path port. */

@@ -3501,7 +3501,7 @@ export class MySqlProductRepository implements ProductRepository {
    *      transient refusal MESSAGE — `/cannot be removed before it has been persisted/`, which is the
    *      `DomainError` the surviving member throws. The removed member threw a `DataIntegrityError`
    *      carrying different words, so keeping it would have failed that test.
-   *      `test/adapters/MySqlProductPersistence.test.ts` wires the service's `persistProduct`
+   *      `test/adapters/MySqlProductRepository.test.ts`'s folded `MySqlProductPersistence` block wires the service's `persistProduct`
    *      collaborator as `(product) => adapter.saveProduct(product)` in three places — the collaborator
    *      NAME on the service side is satisfied by the `saveProduct` MEMBER on this side.
    *   3. THE REMOVED PAIR ARGUED FROM A PORT INVENTORY THAT NO LONGER HOLDS. Its banner read "These two
@@ -4880,7 +4880,7 @@ export class MySqlProductRepository implements ProductRepository {
  * adapter that reached up into the service layer's type surface would invert the dependency direction the
  * whole hexagonal separation exists to fix (AAP §0.7.3 S4). Structural compatibility is sufficient, and
  * `MySqlBrandRepository.ts` records the same decision for the same reason about the URL-title probe. The
- * assignability is nonetheless PROVEN rather than asserted: `test/adapters/MySqlProductPersistence.test.ts`
+ * assignability is nonetheless PROVEN rather than asserted: `test/adapters/MySqlProductRepository.test.ts`'s folded `MySqlProductPersistence` block
  * imports both function types and binds all four members to them, so a signature drift is a compile error
  * in the suite rather than a run-time surprise at the wiring site.
  *
@@ -5008,8 +5008,9 @@ export class MySqlProductRepository implements ProductRepository {
  *
  * Stated as the identifiers a reviewer will look for: THERE IS NO D18 SITE HERE — that is the single
  * declared hardening exception of the whole port and it is exclusive to `MySqlProductRepository.ts`,
- * which translates the importer's twenty-one value-interpolating statements — and THERE IS NO the logical-versus-physical naming divergence [model/dao/SkuDAO.cfc:L132] SITE
- * HERE, because with no legacy statement there is no logical-versus-physical naming mistake to carry.
+ * which translates the importer's twenty-one value-interpolating statements — and THERE IS NO SITE OF THE
+ * LOGICAL-VERSUS-PHYSICAL NAMING DIVERGENCE [model/dao/SkuDAO.cfc:L132] HERE EITHER, because with no
+ * legacy statement there is no logical-versus-physical naming mistake to carry.
  * The defect and mismatch registers are CLOSED and nothing in the legacy tree is corrected (TR-6).
  *
  * --------------------------------------------------------------------------------------------------

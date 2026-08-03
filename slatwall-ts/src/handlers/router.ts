@@ -111,13 +111,14 @@
  * SO THE TOLERANCE IS BACK, AND THE TABLE IS STILL CLOSED. `./httpResponse.ts`'s
  * `createCanonicalActionLookup` builds one frozen, null-prototype map from THIS FILE'S OWN DECLARED KEYS —
  * each key's lower-cased form to the key itself — once, at dispatcher construction. An incoming action is
- * lower-cased, looked up there, and only the canonical key it yields is ever used to index
- * {@link CATALOG_ROUTES}. Three consequences, because they are what the earlier argument was worried about:
+ * lower-cased, looked up there, and only the canonical key it yields is ever used to index the
+ * frozen table {@link createRouteTable} returns. Three consequences, because they are what the earlier argument was worried about:
  *
  *   * NO FUZZINESS IS RE-ADMITTED. The reachable set is unchanged — exactly the declared 34 addresses. The
  *     lookup's members ARE the table's keys, so nothing that was unreachable becomes reachable, and no
  *     prefix, no partial match and no heuristic is involved. TR-3 asked for resolution by explicit
- *     compile-checked declaration and that is still what happens: `CATALOG_ROUTES` is the declaration.
+ *     compile-checked declaration and that is still what happens: {@link RouteKey} and the literal inside
+ *     {@link createRouteTable} are the declaration.
  *   * THE ROUTE KEYS STILL SPELL THE PRESERVED MEMBER NAMES EXACTLY. `product.saveProduct` remains
  *     `product.saveProduct` in the declaration, so §0.4.2's interface-parity claim is still readable
  *     straight off the table. Lower-casing happens to the incoming string, never to the keys.
@@ -257,20 +258,53 @@
  * a declared address in any casing still lands here.
  *
  * ------------------------------------------------------------------------------------------------
- * (h) ALL SEVEN BOUNDARY-STUBBED MEMBERS REMAIN ROUTABLE BY DESIGN (TR-5, G6)
+ * (h) THE BOUNDARY-LIMITED MEMBERS REMAIN ROUTABLE BY DESIGN (TR-5, G6) — AND THE INVENTORY IS MEASURED
  * ------------------------------------------------------------------------------------------------
- * TR-5: "the member is never quietly dropped from the interface." Seven routed members cannot succeed,
- * because each reaches a collaborator in an excluded family, and every one of them still has a route:
+ * TR-5: "the member is never quietly dropped from the interface." AAP §0.4.2.1 annotates seven members
+ * as boundary-stubbed, every one of them keeps a route, and the classification below states what each
+ * one ACTUALLY does at run time rather than repeating the annotation.
  *
- *     product.loadDataFromFile                        product.processProductUpdateDefaultImageFileNames
- *     product.processProductAddProductReview          product.processProductUploadDefaultImage
- *     product.processProductAddSubscriptionTerm       sku.processImageUpload
- *     product.processProductDeleteDefaultImage
+ * ⚠️ AN EARLIER VERSION OF THIS BLOCK ASSERTED THAT ALL SEVEN "answer with the documented
+ * not-implemented failure". Review finding F4 measured that claim and found it false of two of them, so
+ * the invariant is corrected here rather than the code being bent to fit it. The two exceptions are NOT
+ * defects — in each case the legacy body reaches nothing excluded on the path in question, so refusing
+ * would have refused input the legacy accepts, and for one of them it would also have broken
+ * `saveProduct`.
  *
- * Each answers with the documented not-implemented failure its own handler produces, naming the port and
- * the legacy collaborator behind it. Omitting their routes would silently shrink the interface this port
- * exists to demonstrate, and would make §0.4.2's 28-member surface unverifiable from the outside — which
- * is the opposite of what §0.8.3.1's "checkable method-by-method" asks for.
+ * FIVE THAT ALWAYS REFUSE. Each reaches a collaborator in an excluded family on EVERY path, so no request
+ * shape can succeed, and each answers the documented not-implemented failure its own layer produces —
+ * naming the port and the legacy collaborator behind it, server-side:
+ *
+ *     product.loadDataFromFile                 the importer at [model/dao/ProductDAO.cfc:L73], plus M1's
+ *                                             one-hour budget [model/service/ProductService.cfc:L65-L68]
+ *     product.processProductAddProductReview   `ProductReview` and the account context — both excluded
+ *     product.processProductAddSubscriptionTerm `SubscriptionTermPort` — `Subscription*` is excluded
+ *     product.processProductUploadDefaultImage  the framework temp directory and tag service
+ *     sku.processImageUpload                    `ImagePathPort.saveImageFile`, whose shipped wiring refuses
+ *
+ * ONE THAT REFUSES CONDITIONALLY, AND THE CONDITION IS THE LEGACY'S OWN:
+ *
+ *     product.processProductDeleteDefaultImage  [model/service/ProductService.cfc:L199] tests
+ *         `structKeyExists(arguments.data, "imageFile")` and does NOTHING when the key is absent, returning
+ *         the product at [:L205]. The port reproduces that no-op exactly, so a request naming no image file
+ *         answers the product. Only the path that WOULD delete a file reaches the excluded collaborator —
+ *         `fileExists`/`fileDelete` at [:L200-L201], for which `ImagePathPort` declares no member — and
+ *         that path refuses. Making the whole route refuse would refuse input the legacy accepts.
+ *
+ * ONE THAT IS FULLY PORTED, DESPITE THE PLAN'S ANNOTATION:
+ *
+ *     product.processProductUpdateDefaultImageFileNames  [model/service/ProductService.cfc:L208-L214] is a
+ *         two-line loop — `sku.setImageFile( sku.generateImageFileName() )` — and `generateImageFileName`
+ *         reads only `SettingResolverPort`, which is an IN-SCOPE port with a shipped resolver. No excluded
+ *         collaborator is on the path, so there is nothing to stub. Refusing here would also have been a
+ *         functional regression rather than a boundary: `saveProduct` invokes this member at
+ *         [model/service/ProductService.cfc:L282], and `processProductAddOptionGroup` [:L123] and
+ *         `processProductAddSubscriptionTerm` [:L193] both END by delegating to it, so a refusal would take
+ *         every new-product save down with it.
+ *
+ * Omitting any of these routes would silently shrink the interface this port exists to demonstrate, and
+ * would make §0.4.2's 28-member surface unverifiable from the outside — which is the opposite of what
+ * §0.8.3.1's "checkable method-by-method" asks for.
  *
  * ------------------------------------------------------------------------------------------------
  * WHAT THIS FILE DELIBERATELY DOES NOT DO
@@ -336,14 +370,14 @@
  *   `get*SurfaceGraph` accessor on the composition root, composing what its own routes can reach, after a
  *   review pass (PERF-01) measured all six artifacts constructing the whole catalog. That changes WHAT they
  *   construct, not when they require it: both properties below are unaffected, and both are still asserted. That property is not an accident of implementation: it is asserted by
- *   `test/handlers/entrySurface.test.ts`, it is what lets those modules be loaded by their own unit
+ *   `test/regression/issues.test.ts`'s folded `entrySurface` block, it is what lets those modules be loaded by their own unit
  *   suites and by any reader inspecting an artifact, and it is why the emitted per-surface bundles can be
  *   required with an empty environment at all. The cost is that a misconfigured deployment of one of
  *   those five answers `500 "The service is not correctly configured"` per invocation instead of failing
  *   at initialisation — CLASSIFIED, never opaque. The offending variable is not published on that path
  *   at all: the response carries one message, and the server-side diagnostic carries the failure class,
  *   the classification code and a correlation ID. That is a safe failure, not a silent one, and
- *   `test/handlers/entrySurface.test.ts` §5 pins it so neither half can drift.
+ *   `test/regression/issues.test.ts`'s folded `entrySurface` block §5 pins it so neither half can drift.
  *
  * The consequence a reader should carry away: a misconfigured deployment is loud on this entry and
  * classified-per-request on the other five, both are fail-safe, and neither behaviour is accidental.

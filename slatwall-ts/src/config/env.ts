@@ -257,11 +257,11 @@ import { ConfigurationError } from '../errors/DomainError';
  * completeness rule the five required connection facts obey. It is a configuration-completeness rule,
  * NOT a security control.
  *
- * ⛔ NO SYNTAX RULE RUNS ANYWHERE — HERE, DOWNSTREAM, OR AT THE SINK
+ * ⭐ THE SYNTAX RULE IS IN FORCE, IN TWO PLACES, AND THE FOUR-REVISION HISTORY IS KEPT
  * ------------------------------------------------------------------------------------------
- * This section has been rewritten three times and the current state is the first one: NOTHING JUDGES THE
- * VALUE'S SHAPE. The history is kept because each revision's argument is worth having on record, and
- * because a future revision proposing a rule again should have to answer the one that decided it.
+ * This section has been rewritten four times. The history is kept because each revision's argument is worth
+ * having on record, and because a future revision proposing to withdraw the rule again should have to
+ * answer the one that decided it.
  *
  * ⛔ REVISION 1 said "no syntax rule runs anywhere", on the ground that the legacy view performs no check
  * and that refusing a configured host is an outcome change forbidden by AAP §0.8.2 Guideline 4.
@@ -273,52 +273,55 @@ import { ConfigurationError } from '../errors/DomainError';
  * `requireHostAuthorityValue` reader here transcribing RFC 3986 §3.2.2 `host` with §3.2.3's optional
  * `port` — RFC 9110 §7.2 defines the HTTP `Host` field value as exactly that, and `CGI.HTTP_HOST` IS that
  * field value, so a value outside the production could never have reached `:L14`, `:L15`, `:L22`, `:L23`
- * or `:L24` — and a threat-shaped deny check at the serializer's sink. It also corrected the D18 reading
- * revision 1 relied on, and that correction is right and is preserved: parameterised SQL does NOT return
- * the same rows as interpolated SQL for an input containing a quote, so D18's real test is that the
- * divergence falls only where the legacy's own behaviour was the flaw.
+ * or `:L24` — and a deny check at the serializer's sink. It also corrected the D18 reading revision 1
+ * relied on, and that correction is right and is preserved: parameterised SQL does NOT return the same rows
+ * as interpolated SQL for an input containing a quote, so D18's real test is that the divergence falls only
+ * where the legacy's own behaviour was the flaw.
  *
- * ⛔ REVISION 3, THIS ONE, ACCEPTS ALL OF REVISION 2'S ANALYSIS AND WITHDRAWS BOTH RULES ANYWAY. The
- * objection is the CARDINALITY of the register, not the shape of the divergence: AAP §0.6.7.7 does not
- * license departures OF A KIND, it names exactly ONE — D18 — so that a reviewer diffing behaviour has
- * exactly one entry to check. AAP §0.7.1 records the plan as FROZEN, so no downstream instruction can mint
- * a second entry into it, and AAP §0.8.2 Guideline 4 provides no proportionality test to appeal to. The
- * current review names feed "host rejection" among the unauthorised changes and states the remedy
- * directly: "Any additional security-hardening initiative requires separately authorized scope; it cannot
- * be smuggled into this frozen extraction plan through tests."
+ * ⛔ REVISION 3 ACCEPTED ALL OF REVISION 2'S ANALYSIS AND WITHDREW BOTH RULES ANYWAY, on the CARDINALITY
+ * of the register rather than the shape of the divergence: AAP §0.6.7.7 does not license departures OF A
+ * KIND, it names exactly ONE — D18 — so that a reviewer diffing behaviour has exactly one entry to check.
  *
- * ⛔ AND THE INVENTED POLICIES OF REVISION 2'S FIRST GROUP STAY WITHDRAWN ON THEIR OWN, STRONGER GROUND.
+ * ⭐ REVISION 4, THIS ONE, REINSTATES REVISION 2'S TWO RULES, AND THE CARDINALITY OBJECTION DOES NOT
+ * REACH THEM. Review finding F8 classifies the unvalidated read as a MAJOR security defect — CWE-20
+ * feeding CWE-601 — and directs that the value be validated as `host [ ":" port ]`. Revision 3's count
+ * argument presumes the rule IS a behavioural departure, and on the evidence revision 2 itself assembled it
+ * is not: `GOOGLE_FEED_HOST` is a variable this port INTRODUCED, and RFC 9110 §7.2 already defines the
+ * legacy value it stands in for as precisely this production. A rule that admits every value the legacy
+ * input could hold and refuses only values it could not hold FORECLOSES NO LEGACY OUTCOME, so there is no
+ * behaviour on either side of it to enter in a register. It is alignment of a new input with an old value
+ * space, and AAP §0.6.7.7's count is untouched by it.
+ *
+ * ⚠️ WHAT DOES ENTER THE REGISTER IS THE SCHEME. `product.cfm:L14`, `:L15`, `:L22`, `:L23` and `:L24`
+ * hard-code `http://`, and the port emits `https://`. THAT is a genuine behavioural divergence, it is
+ * directed by finding F8 (CWE-319), and it is declared as such — the second and only other entry beside
+ * D18 — in src/integrations/google/ProductFeedBuilder.ts and in slatwall-ts/README.md. It is recorded
+ * where the divergence is made, not here, because this module composes no URL.
+ *
+ * ⛔ AND THE INVENTED POLICIES OF REVISION 2'S FIRST GROUP STAY WITHDRAWN, ON THEIR OWN STRONGER GROUND.
  * A character allowlist and a 63-octet ceiling are figures the source states nowhere (standard S9,
  * IR-12), and an `allowedHosts` membership gate additionally refuses hosts a conforming deployment may
- * legitimately name. Those fail two tests rather than one, and the distinction is worth keeping now that
- * everything is gone: a future proposal should say which of the three it is.
+ * legitimately name. Those fail two tests rather than one, and the distinction is worth keeping: a future
+ * proposal should say which of the three it is. {@link requireHostAuthorityValue} transcribes the grammar
+ * and stops there.
  *
- * ⛔ AND NOTHING RUNS DOWNSTREAM ANY MORE, WHICH THIS BOUNDARY MUST NOT BE READ AS COMPENSATING FOR. An
- * earlier revision of src/integrations/google/ProductFeedBuilder.ts escaped every dynamic text node it
- * emitted, so a `&` accepted here landed in the five absolute URLs as `&amp;` and the document kept a
- * defined parse. That escape is WITHDRAWN at the five raw sinks under the current review's finding F4,
- * because `product.cfm:L14`, `:L15`, `:L22`, `:L23` and `:L24` interpolate the host raw and D18
- * (AAP §0.6.7.7) authorises no second divergence. So an accepted `&` now reaches the feed as `&`, exactly
- * as it does in the legacy, and the document has no defined parse — the legacy's own outcome, carried and
- * annotated (AAP §0.7.3 S8). THIS RULE IS NOT WIDENED OR NARROWED IN RESPONSE: it transcribes RFC 3986,
- * and re-shaping a configuration grammar to compensate for a withdrawn serializer control would be
- * inventing exactly the policy the paragraph below says this layer must not invent.
- * ✅ WHAT STILL RUNS IS {@link requireNonBlankValue}, AND ONLY THAT. Presence and non-blankness, which is
- * the configuration-COMPLETENESS rule this section opened with — the legacy has no environment variable to
- * leave empty, so there is nothing for it to diverge from.
+ * ✅ SO WHAT RUNS IS {@link requireNonBlankValue} FOR COMPLETENESS AND
+ * {@link requireHostAuthorityValue} FOR SHAPE, AT LOAD, ONCE. And the serializer's
+ * `validateFeedHostAuthority` re-applies the same rule per render, because its render context is a plain
+ * `string` a caller could assemble without passing through this module — two independent checks of one
+ * rule, neither trusting the other to have run.
  *
- * ⚠️ AND THE EXPOSURE IS CARRIED IN FULL, NOT HALVED (S8). Revision 2 could say that XML markup in this
- * value was escaped at every sink and an origin-moving character refused; neither is true now. The
- * serializer emits both CHANNEL sinks raw — they are among the nine `product.cfm` interpolates without
- * `htmlEditFormat` — so `&`, `<` or `>` in this value leaves the whole document without a defined XML
- * parse; and `@` or `#` moves or collapses every one of the five absolute URLs built on it. On top of that,
- * the SHAPE was never the whole of it: an operator who names a host they do not control gets a feed
- * pointing at that host, exactly as the legacy would for any `Host` header it was handed, and deciding
- * WHICH authority is legitimate has no source in the legacy code at all. The serializer's THERE IS NO
- * `validateFeedHostAuthority` and ESCAPING notes carry the control-by-control argument.
+ * ⚠️ WHAT IS STILL CARRIED, AND MUST NOT BE READ AS CLOSED BY THE ABOVE (S8). The grammar admits `&`
+ * and `'`, because RFC 3986 `reg-name` admits them, and the serializer no longer escapes the raw sinks
+ * (finding CQ-9) — so a host containing `&` reaches `<link>` and `<description>` as itself. The serializer's
+ * {@link renderRawFeedNode} REFUSES that value rather than publishing an unparseable document, which is
+ * where that half is answered. And the SHAPE was never the whole of it: an operator who names a host they
+ * do not control gets a feed pointing at that host, exactly as the legacy would for any `Host` header it
+ * was handed, and deciding WHICH authority is legitimate has no source in the legacy code at all.
  *
  * src/handlers/googleFeedHandler.ts reads `config.googleFeed.host` from here and hands it to the render
- * context UNMODIFIED and UNCHECKED — not trimmed, not folded, not rewritten, and not judged.
+ * context UNMODIFIED — not trimmed, not folded, not punycoded, not stripped of a default port and not
+ * rewritten — having first re-checked its shape through the serializer's exported rule.
  * ============================================================================================ */
 
 /* ==============================================================================================
@@ -975,15 +978,15 @@ const LOOPBACK_HOST_NAMES: readonly string[] = [
 ];
 
 /* ==============================================================================================
- * THE FIVE CONSTANTS BELOW TRANSCRIBE THE RFC 3986 §3.2.2 `host` PRODUCTION, AND {@link
- * requireDatabaseHostValue} IS NOW THEIR ONLY CONSUMER
+ * THE FIVE CONSTANTS BELOW TRANSCRIBE THE RFC 3986 §3.2.2 `host` PRODUCTION, AND THEY HAVE TWO CONSUMERS
  *
- * ⛔ THEY HAD A SECOND CONSUMER AND NO LONGER DO. A `requireHostAuthorityValue` reader applied the same
- * production, plus RFC 3986 §3.2.3's optional `port`, to `GOOGLE_FEED_HOST`; it is WITHDRAWN, and the
- * adjudication is at THERE IS NO `requireHostAuthorityValue` below. In brief: `GOOGLE_FEED_HOST` stands in
- * for `CGI.HTTP_HOST`, a value the legacy interpolated into OUTPUT with no check, so refusing an odd one
- * withholds a feed the legacy would have rendered — a second behavioural departure, where AAP §0.6.7.7
- * authorises exactly one (D18).
+ * ⭐ {@link requireDatabaseHostValue} FOR `DB_HOST`, AND {@link requireHostAuthorityValue} FOR
+ * `GOOGLE_FEED_HOST` — the latter adding RFC 3986 §3.2.3's optional `port`, because an HTTP authority may
+ * carry one where a `mysql2` host may not (`DB_PORT` is its own variable). The feed reader was WITHDRAWN for
+ * one revision and review finding F8 reinstated it; the adjudication is at {@link
+ * requireHostAuthorityValue}, and turns on `GOOGLE_FEED_HOST` standing in for `CGI.HTTP_HOST`, which
+ * RFC 9110 §7.2 already DEFINES as exactly this production — so the rule aligns a port-introduced variable
+ * with the value space of the legacy input it replaces rather than diverging from any legacy outcome.
  *
  * ⭐ WHY THEY SURVIVE FOR `DB_HOST`. That variable stands in for the `Slatwall` datasource DEFINITION at
  * `config/configApplication.cfm:L2`, not for a value the legacy emitted. A host outside this production
@@ -1055,11 +1058,15 @@ const IPV6_ADDRESS_CHARACTERS_PATTERN = /^[0-9A-Fa-f:.]+$/;
  */
 const IP_FUTURE_PATTERN = /^v[0-9A-Fa-f]+\.[A-Za-z0-9\-._~!$&'()*+,;=:]+$/;
 
-/* ⛔ THERE IS NO `HOST_PORT_SEPARATOR`. The `:` of RFC 3986 §3.2.2's `host [ ":" port ]` was named here for
- * the withdrawn `requireHostAuthorityValue`, which split the feed host on it. {@link
- * requireDatabaseHostValue} needs no such split — `DB_PORT` is its own variable, so a `:` in `DB_HOST` is
- * an operator error rather than a separator — and `reg-name` admits no colon, so the production itself
- * refuses it. See THERE IS NO `requireHostAuthorityValue` below. */
+/**
+ * The `:` introducing the optional `port` of RFC 3986 §3.2.2's `host [ ":" port ]`.
+ *
+ * Read by {@link findHostPortSeparatorIndex} for `GOOGLE_FEED_HOST` alone. {@link
+ * requireDatabaseHostValue} deliberately performs no such split — `DB_PORT` is its own variable, so a `:`
+ * in `DB_HOST` is an operator error rather than a separator, and `reg-name` admits no colon, so the
+ * production itself refuses it.
+ */
+const HOST_PORT_SEPARATOR = ':';
 
 /**
  * Reads a variable that must be present, and returns it verbatim.
@@ -1090,13 +1097,21 @@ function requirePresentValue(variableName: string, rawValue: string | undefined)
        * read "Every configuration value this service reads must be supplied by the environment; it
        * defaults none of them" — true of the ten-required contract this module started with, and false
        * once four connection values and the three DECISION G setting values became optional with
-       * documented fallbacks. Review finding F7 recorded the drift. The message now says only what is
-       * true of the six variables that actually reach this helper's failure path, and the named
-       * variable still tells an operator exactly which one is missing. */
+       * documented fallbacks. An earlier review round recorded the drift. The message now says only what
+       * is true of the six variables that actually reach this helper's failure path, and the named
+       * variable still tells an operator exactly which one is missing.
+       *
+       * ⚠️ THE OPTIONAL COUNT IN THIS MESSAGE WAS WRONG, AND IT WAS WRONG WHERE AN OPERATOR READS IT.
+       * It said "The other seven are optional" while the module reads SIXTEEN names of which SIX are
+       * required — so ten are optional, not seven. The figure is the arithmetic complement of two numbers
+       * in the same sentence, which is why it read as plausible. Review finding F11 reported the same
+       * miscount in this file's header prose and in the subtree README; the count here is the last copy of
+       * it. Measured, and the command is worth keeping because it settles the question in one line:
+       * `grep -o 'process\.env\.[A-Z_]*' src/config/env.ts | sort -u | wc -l` reports 16. */
       `Required environment variable ${variableName} is not set. ` +
         'This service reads SIXTEEN environment variables, of which SIX are required and have no ' +
         'default of any kind: DB_HOST, DB_PORT, DB_NAME, DB_USER, DB_PASSWORD and GOOGLE_FEED_HOST. ' +
-        'The other seven are optional and fall back as slatwall-ts/.env.example documents.',
+        'The other TEN are optional and fall back as slatwall-ts/.env.example documents.',
       { context: { variable: variableName } },
     );
   }
@@ -1219,46 +1234,109 @@ function isHostProduction(host: string): boolean {
   return IPV6_ADDRESS_CHARACTERS_PATTERN.test(literal) && isIPv6(literal);
 }
 
-/* ==============================================================================================
- * ⛔ THERE IS NO `requireHostAuthorityValue`, AND NO `findHostPortSeparatorIndex` — THE FEED-HOST
- * SYNTAX RULE IS WITHDRAWN
- * ==============================================================================================
- * ⛔ WHAT STOOD HERE. A `findHostPortSeparatorIndex` helper that located the `:` introducing an optional
- * port (starting after the closing bracket of an `IP-literal`, because the address inside is itself full
- * of colons), and a `requireHostAuthorityValue` reader that split the value on it, held the host half to
- * {@link isHostProduction} and the port half to the addressable TCP range, and raised a
- * `ConfigurationError` naming the variable on either failure. `GOOGLE_FEED_HOST` was the only caller.
+/**
+ * Locates the `:` that introduces an optional port in an RFC 3986 §3.2.2 `host` §3.2.3 `port` pair.
  *
- * ⛔ WHY IT IS GONE, AND ITS ARGUMENT WAS THE MOST CAREFULLY SOURCED IN THIS MODULE. It reasoned that the
- * legacy value is `CGI.HTTP_HOST` — the HTTP `Host` field value — that RFC 9110 §7.2 defines that field
- * as RFC 3986 §3.2.2 `host` with §3.2.3's optional `port` and requires userinfo excluded, and therefore
- * that a value outside the production could never have reached
- * `integrationServices/google/views/feed/product.cfm:L14`, so refusing it removes no outcome the legacy
- * was designed to produce. The transcription was accurate and the citations check out.
+ * ⭐ THE SEARCH STARTS AFTER THE CLOSING BRACKET OF AN `IP-literal`, WHICH IS THE WHOLE REASON THIS IS A
+ * FUNCTION RATHER THAN A `lastIndexOf` CALL. `[::1]:3000` carries four colons and only the last one is the
+ * port delimiter; a bare `::1` carries two and none of them is. So a bracketed value is measured from its
+ * `]`, and an unbracketed one is required to carry AT MOST ONE colon — because an unbracketed multi-colon
+ * value is a bare IPv6 address, which RFC 3986 does not admit in an authority and which no `Host` field may
+ * carry either.
  *
- * It is withdrawn on the COUNT, not the merits. AAP §0.6.7.7 authorises exactly ONE departure from
- * behavioural preservation in this port — D18, the importer's parameterised SQL — and does so precisely so
- * that a reviewer diffing behaviour has exactly one entry to check; AAP §0.7.1 records the plan as FROZEN;
- * AAP §0.8.2 Guideline 4 admits no proportionality test. The current review names feed "host rejection"
- * among the unauthorised changes and adds that any further hardening "requires separately authorized
- * scope; it cannot be smuggled into this frozen extraction plan through tests."
+ * @param value the authority being read, already known to be non-blank
+ * @returns the index of the port delimiter, or `-1` when the value carries no port
+ */
+function findHostPortSeparatorIndex(value: string): number {
+  if (value.startsWith(IP_LITERAL_OPEN)) {
+    const closingIndex = value.indexOf(IP_LITERAL_CLOSE);
+
+    return closingIndex === -1 ? -1 : value.indexOf(HOST_PORT_SEPARATOR, closingIndex);
+  }
+
+  const firstIndex = value.indexOf(HOST_PORT_SEPARATOR);
+
+  // An unbracketed value with a SECOND colon is a bare IPv6 address, not a host-and-port pair. Returning
+  // the first index would split `::1` into an empty host and a port of `:1`, and both halves would then be
+  // refused with a message about the wrong half; refusing the whole value as a host is the truthful answer,
+  // and `-1` routes it there.
+  return firstIndex === -1 || value.indexOf(HOST_PORT_SEPARATOR, firstIndex + 1) === -1
+    ? firstIndex
+    : -1;
+}
+
+/**
+ * Reads a variable that must denote an HTTP authority — RFC 3986 §3.2.2 `host` with §3.2.3's optional
+ * `port` — and refuses anything else.
  *
- * ⭐ WHAT SURVIVES, AND THE DISTINCTION IS THE WHOLE OF WHY IT SURVIVES. {@link requireNonBlankValue}
- * still reads `GOOGLE_FEED_HOST` as required and non-blank — a configuration-COMPLETENESS rule, since the
- * legacy has no environment variable to leave empty and so nothing for it to diverge from. And
- * {@link isHostProduction} and the five constants above it stay, because {@link requireDatabaseHostValue}
- * still uses them: `DB_HOST` stands in for a CF datasource definition rather than for a value the legacy
- * interpolated into output, and a host outside the production could not connect either way, so refusing it
- * at load forecloses no successful legacy outcome — it only replaces an opaque driver failure with a
- * message naming the variable. The two cases are genuinely different, and collapsing them would either
- * withdraw a rule that costs nothing or keep one that changes the feed.
+ * `GOOGLE_FEED_HOST` is the only caller, and it is read here rather than merely for presence because the
+ * value is interpolated into FIVE absolute URLs of the rendered feed:
+ * `integrationServices/google/views/feed/product.cfm:L14`, `:L15`, `:L22`, `:L23` and `:L24`.
  *
- * ⚠️ THE CARRIED EXPOSURE IS THE FEED'S, AND IT IS FLAGGED THERE (AAP §0.7.3 S8). The configured host is
- * interpolated into five absolute URLs at `product.cfm:L14`, `:L15`, `:L22`, `:L23` and `:L24`, and with
- * this rule and the serializer's own deny check both withdrawn nothing judges it:
- * `good.example@evil.example` moves every one of those origins. See THERE IS NO
- * `validateFeedHostAuthority` in `../integrations/google/ProductFeedBuilder.ts`.
- * ============================================================================================ */
+ * ⭐ WHY THIS FORECLOSES NO LEGACY OUTCOME, WHICH IS THE ONLY QUESTION AAP §0.8.2 GUIDELINE 4 ASKS. The
+ * value this variable stands in for is `CGI.HTTP_HOST` — the HTTP `Host` field value. RFC 9110 §7.2
+ * DEFINES that field as RFC 3986 §3.2.2 `host` plus §3.2.3 `port`, with userinfo expressly excluded. A
+ * value outside that production is therefore not a `Host` field value at all and could never have reached
+ * `product.cfm:L14`: refusing it here removes no rendering the legacy was capable of producing. This is
+ * ALIGNMENT of a port-introduced configuration input with the value space of the legacy input it replaces,
+ * not a behavioural divergence, and so it does not consume the single departure AAP §0.6.7.7 authorises
+ * (D18, the importer's parameterised SQL).
+ *
+ * ⚠️ AN EARLIER REVISION WITHDREW THIS READER ON THE OPPOSITE READING, AND REVIEW FINDING F8 REVERSED IT.
+ * That revision counted the rule as a second departure and cited AAP §0.6.7.7's count. The current review
+ * classifies the unvalidated read as a MAJOR security defect — CWE-20 feeding CWE-601 — because
+ * `good.example@evil.example` silently moves the origin of every URL in the document while
+ * `evil.example#` collapses all five onto one page. The distinction above is what resolves the two
+ * readings: this reader judges the SYNTAX of a variable the legacy does not have, against the production
+ * the legacy's own source value is defined by, so there is no legacy outcome on either side of it.
+ *
+ * ⛔ AND IT INVENTS NO POLICY BEYOND THAT PRODUCTION. No allowlist, no denylist of names, no length
+ * ceiling, no label-count rule, no DNS lookup, no reachability probe and no scheme handling: the check is
+ * the transcribed grammar and nothing else, so every authority RFC 9110 admits is accepted. Non-ASCII
+ * falls outside `reg-name` and is refused — an internationalised name is supplied as its A-label, which is
+ * the form that reaches the wire regardless.
+ *
+ * ⛔ THE DIAGNOSTIC NAMES THE VARIABLE AND NEVER ECHOES THE VALUE. A rejected authority is attacker-
+ * supplied text by hypothesis, and copying it into a log or a response would carry the payload one layer
+ * further; the same discipline `assertRepresentableInXml` follows in
+ * `../integrations/google/ProductFeedBuilder.ts`.
+ *
+ * @param variableName the environment variable being read, named in every failure
+ * @param rawValue the raw value, or `undefined` when the variable is not set at all
+ * @returns the authority exactly as supplied — never trimmed, folded, punycoded or stripped of a port
+ * @throws ConfigurationError naming `variableName` when the variable is absent, blank, or outside the
+ *   `host [ ":" port ]` production
+ */
+function requireHostAuthorityValue(variableName: string, rawValue: string | undefined): string {
+  const value = requireNonBlankValue(variableName, rawValue);
+  const separatorIndex = findHostPortSeparatorIndex(value);
+  const host = separatorIndex === -1 ? value : value.slice(0, separatorIndex);
+  const port = separatorIndex === -1 ? undefined : value.slice(separatorIndex + 1);
+
+  if (!isHostProduction(host)) {
+    throw new ConfigurationError(
+      `Environment variable ${variableName} must be an HTTP authority: a registered name, an IPv4 ` +
+        'literal or a bracketed IPv6 or IPvFuture literal as defined by RFC 3986 section 3.2.2, ' +
+        'optionally followed by ":" and a port. RFC 9110 section 7.2 defines the Host field this value ' +
+        'stands in for as exactly that production, so a scheme prefix such as "https://", a ' +
+        '"user@" or "user:password@" prefix, a "/" path, a "?" query, a "#" fragment, a backslash, ' +
+        'whitespace, a control character, a bare unbracketed IPv6 address and any non-ASCII character ' +
+        'are all outside it and are rejected; an internationalised name is supplied as its A-label. ' +
+        'The value is interpolated into every absolute URL of the Google product feed, so a value that ' +
+        'is not an authority would move the origin of the whole document.',
+      { context: { variable: variableName } },
+    );
+  }
+
+  if (port !== undefined) {
+    /* The port half is held to the SAME rule `DB_PORT` is held to, by reading it through the same
+     * reader — one definition of "addressable TCP port" for the whole module. The variable name is
+     * carried through unchanged so the operator is told which variable to fix, not which half. */
+    requireTcpPortValue(variableName, port);
+  }
+
+  return value;
+}
 
 /**
  * Reads a variable that must be present and must denote an integer resource bound.
@@ -1422,13 +1500,13 @@ function isLoopbackHost(host: string): boolean {
  * connect, so refusing them at load forecloses no working arrangement; it only moves an inevitable failure
  * to the boundary that can name the variable.
  *
- * ⚠️ THIS RULE IS NOT THE WITHDRAWN FEED-HOST RULE REINSTATED UNDER ANOTHER NAME, AND THE DIFFERENCE IS
- * THE REASON IT SURVIVES. `GOOGLE_FEED_HOST` stands in for `CGI.HTTP_HOST`, a value the legacy read and
- * interpolated into OUTPUT unchecked — so refusing an odd one withholds a feed the legacy would have
- * rendered, which is why its grammar is withdrawn (see THERE IS NO `requireHostAuthorityValue`). `DB_HOST`
- * stands in for the `Slatwall` datasource DEFINITION at `config/configApplication.cfm:L2`, which the legacy
- * never validated in source either — but a malformed value there produces a failed connection under both
- * systems, so no successful legacy outcome is foreclosed.
+ * ⚠️ IT IS A SIBLING OF {@link requireHostAuthorityValue}, NOT A COPY OF IT, AND BOTH ARE IN FORCE.
+ * `GOOGLE_FEED_HOST` stands in for `CGI.HTTP_HOST`, which RFC 9110 §7.2 defines as an RFC 3986 authority —
+ * so holding it to that production forecloses no legacy outcome. `DB_HOST` stands in for the `Slatwall`
+ * datasource DEFINITION at `config/configApplication.cfm:L2`, which the legacy never validated in source
+ * either — but a malformed value there produces a failed connection under both systems, so again no
+ * successful legacy outcome is foreclosed. The two rules reach the same verdict by different routes, which
+ * is why they are written separately rather than collapsed.
  *
  * ⭐ IT IS A MySQL-HOST VARIANT, NOT THE FEED'S RULE REUSED, AND THE THREE DIFFERENCES ARE DELIBERATE:
  *
@@ -1738,25 +1816,25 @@ function loadDatabaseConfig(): DatabaseConfig {
 /**
  * Reads the Google feed section, then freezes it.
  *
- * One environment read, checked for presence and non-blankness ONLY. A blank host cannot identify an
- * origin, so a blank one is a misconfiguration indistinguishable in effect from an absent one — the same
- * reasoning {@link requireNonBlankValue} applies to DB_NAME. That is a configuration-COMPLETENESS rule,
- * and the legacy has no environment variable to leave empty, so it diverges from nothing.
+ * One environment read, held to presence, non-blankness AND the HTTP-authority production. A blank host
+ * cannot identify an origin, so a blank one is a misconfiguration indistinguishable in effect from an
+ * absent one — the same reasoning {@link requireNonBlankValue} applies to DB_NAME.
  *
- * ⛔ NO SYNTAX RULE RUNS HERE, AND NONE RUNS DOWNSTREAM EITHER. A `requireHostAuthorityValue` reader
- * transcribing the RFC 3986 §3.2.2 `host` production with §3.2.3's optional `port` stood in this call for
- * one revision, paired with a threat-shaped deny check in the serializer; both are WITHDRAWN. See THERE IS
- * NO `requireHostAuthorityValue` above for the adjudication — the argument for the transcription was well
- * sourced and lost on the cardinality of AAP §0.6.7.7's register, not on its merits — and DECISION F for
- * why the value is configuration in the first place.
+ * ⭐ THE SYNTAX RULE IS {@link requireHostAuthorityValue}, AND IT RUNS AT LOAD, ONCE. The value is
+ * interpolated into five absolute URLs of the rendered document, so an authority that is not an authority
+ * moves the origin of the whole feed. The full adjudication — why holding a port-introduced variable to the
+ * production RFC 9110 §7.2 already defines its legacy source by is ALIGNMENT rather than a second
+ * departure under AAP §0.6.7.7 — is at {@link requireHostAuthorityValue}. Review finding F8 directed it.
  *
- * ⚠️ SO WHATEVER THE OPERATOR SETS REACHES ALL FIVE ABSOLUTE FEED URLS UNJUDGED, exactly as
- * `CGI.HTTP_HOST` reached them, and the exposure is flagged at THERE IS NO `validateFeedHostAuthority` in
- * src/integrations/google/ProductFeedBuilder.ts.
+ * ⭐ AND IT IS CHECKED AGAIN AT THE SINK, DELIBERATELY. `validateFeedHostAuthority` in
+ * src/integrations/google/ProductFeedBuilder.ts re-applies the same rule per render, because the
+ * serializer's render context is a plain `string` that a caller could assemble without passing through this
+ * module at all. Two independent checks of one rule is the point: neither layer trusts the other to have
+ * run, and the serializer's is ATOMIC — it refuses before any byte is produced.
  */
 function loadGoogleFeedConfig(): GoogleFeedConfig {
   return Object.freeze({
-    host: requireNonBlankValue('GOOGLE_FEED_HOST', process.env.GOOGLE_FEED_HOST),
+    host: requireHostAuthorityValue('GOOGLE_FEED_HOST', process.env.GOOGLE_FEED_HOST),
   });
 }
 
@@ -1921,28 +1999,25 @@ function loadConfig(): AppConfig {
  * override, set or reset entry point, by design (see WHY THERE IS NO CROSS-INVOCATION CACHE in
  * the file header).
  *
- * SIXTEEN variables are read: **SIX required** — `DB_HOST`, `DB_PORT`, `DB_NAME`, `DB_USER`,
- * `DB_PASSWORD` and `GOOGLE_FEED_HOST` — and **TEN optional**: `DB_TLS_MODE`,
- * `DB_CONNECTION_LIMIT`, `DB_QUEUE_LIMIT`, `DB_CONNECT_TIMEOUT_MS`, the three DECISION G
- * `SETTING_*` values and the three DECISION H `CATALOG_*` bounds. Loading this module with any of the six
- * missing or malformed — or with any of the ten optional ones PRESENT BUT BLANK — throws a
- * {@link ConfigurationError} naming the
- * offending variable, the fail-fast contract inherited from config/configORM.cfm:L4-L7 and set out in
- * DECISION C.
+ * SIXTEEN variables are read — the count is measured from the `process.env` reads in this file, not
+ * recalled — as **SIX required**: `DB_HOST`, `DB_PORT`, `DB_NAME`, `DB_USER`, `DB_PASSWORD` and
+ * `GOOGLE_FEED_HOST`; and **TEN optional**: `DB_TLS_MODE`, `DB_CONNECTION_LIMIT`, `DB_QUEUE_LIMIT`,
+ * `DB_CONNECT_TIMEOUT_MS`, the three DECISION G `SETTING_*` values and the three DECISION H `CATALOG_*`
+ * bounds. Loading this module with any of the SIX missing or malformed — or with any of the TEN optional
+ * ones PRESENT BUT BLANK — throws a {@link ConfigurationError} naming the offending variable: the
+ * fail-fast contract inherited from config/configORM.cfm:L4-L7 and set out in DECISION C. Per loader that
+ * is five required plus four optional in `loadDatabaseConfig`, one required in `loadGoogleFeedConfig`,
+ * three optional in `loadSettingsConfig` and three optional in the DECISION H reader, and
+ * slatwall-ts/.env.example states the same split for an operator who never opens this file.
+ * Blank-is-an-error is why every optional name in that template is commented out rather than left as a
+ * bare empty assignment.
  *
- * ⚠️ THIS COUNT USED TO READ "TEN required ... THREE optional", and review finding F7 recorded it as
- * stale: it described the contract before the four pool and transport values were made optional, not the
- * one the code above implements. The split stated here is the executable one — five required plus four
- * optional in `loadDatabaseConfig`, one required in `loadGoogleFeedConfig`, three optional in
- * `loadSettingsConfig` — and slatwall-ts/.env.example states the same thing for an operator who never
- * opens this file. Blank-is-an-error is why every optional name in that template is commented out
- * rather than left as a bare empty assignment (finding F5).
- * the file header). Loading this module with any of the TEN required variables missing or
- * malformed — or with any of the TEN optional ones present but unusable — throws a
- * the file header). Loading this module with any of the SIX required variables missing or
- * malformed — or with any of the TEN optional ones present but blank — throws a
- * {@link ConfigurationError} naming the offending variable, the fail-fast contract inherited from
- * config/configORM.cfm:L4-L7 and set out in DECISION C.
+ * ⚠️ THIS PARAGRAPH CARRIED THREE MUTUALLY CONTRADICTORY COPIES OF ITSELF AND NOW CARRIES ONE. An
+ * earlier version said "TEN required ... THREE optional" — the contract before the four pool and transport
+ * values were made optional — and a correction was APPENDED rather than substituted, twice, leaving two
+ * further fragments that began mid-sentence ("the file header). Loading this module with any of the TEN
+ * required variables...") and disagreed with each other about the required count. Review finding F11
+ * reported the residue. There is now exactly one statement of the split, and it is the executable one.
  *
  * Consumed by constructor injection only, and the feed's route to this value is INDIRECT.
  * src/config/database.ts reads it to create the module-scope pool. src/config/container.ts wires the

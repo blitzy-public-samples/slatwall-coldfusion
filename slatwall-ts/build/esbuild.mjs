@@ -224,11 +224,20 @@ const NODE_TARGET = 'node20';
  * entry point; each of the five per-service handlers is specified as *reachable as a bundle
  * entry-point dependency*; and this folder's own requirements list all six by name. Those readings
  * are not equivalent, so rather than adopt one and drop the others, all six are declared here — a
- * union that satisfies every reading at once. router.ts genuinely IS an entry point, and it is the
- * only module in the subtree exporting a `handler` symbol; the other five are simultaneously entry
- * points in their own right and reachable dependencies of the router, since it imports them to
- * dispatch. No third arrangement was invented for the purpose: there is no synthetic barrel module
- * and no per-route entry.
+ * union that satisfies every reading at once. router.ts genuinely IS an entry point; the other five
+ * are simultaneously entry points in their own right and reachable dependencies of the router, since
+ * it imports them to dispatch. No third arrangement was invented for the purpose: there is no
+ * synthetic barrel module and no per-route entry.
+ *
+ * ⚠️ AND ALL SIX EXPORT A `handler` SYMBOL — A PREVIOUS VERSION OF THIS PARAGRAPH SAID router.ts WAS
+ * "the only module in the subtree exporting a `handler` symbol", WHICH IS FALSE AND MEASURABLY SO. A grep
+ * for `export const handler` across src/handlers/** returns SIX matches, one per file in this array, and
+ * the claim would in any case contradict the sentence beside it: a module the runtime can dispatch is a
+ * module that exports a handler, so declaring five further entry points and denying they export one cannot
+ * both be true. Review finding F11 reported it. What actually distinguishes router.ts is not the export
+ * but WHEN it resolves the graph: it validates configuration at MODULE LOAD, where the five per-surface
+ * artifacts defer to first invocation — see the note on httpResponse.ts below for the file that genuinely
+ * exports no handler.
  *
  * ⛔ THE SEVENTH FILE IN THAT DIRECTORY, httpResponse.ts, IS EXCLUDED ON PURPOSE. It is the shared
  * response-shaping helper every handler funnels its output through, it exports no `handler` symbol,

@@ -138,56 +138,43 @@
  * =================================================================================================
  * AAP §0.6.7 IS AUTHORITATIVE AND FROZEN AT **D1–D21** — twenty-one entries: three literal source
  * TODOs (D8, D20, D21) plus eighteen defects surfaced during analysis. AAP §0.6.6 IS AUTHORITATIVE AND
- * FROZEN AT **M1–M8**. No file in this port may amend either range, and none does.
+ * FROZEN AT **M1–M8**. No file in this port may amend or extend either range, and none does.
  *
- * ⛔ AND NO FILE IN THIS PORT MAY EXTEND EITHER RANGE EITHER. An earlier revision of this block minted
- * four further defect numbers and one further mismatch number — for the intra-file naming divergence
- * annotated immediately above, for the undeclared-argument forwarding at
- * {@link SkuRepository.transactionExists}, for the `processImageUpload` return type, for
- * `getFormattedOptionGroups`' name-keyed struct, and for CFML's unspecified struct iteration order —
- * and declared a "live numbering" running past the frozen bounds. That was governance the AAP does not
+ * ⛔ AN EARLIER REVISION OF THIS BLOCK MINTED FOUR FURTHER DEFECT NUMBERS AND ONE FURTHER MISMATCH
+ * NUMBER and declared a "live numbering" running past those bounds. That was governance the AAP does not
  * grant: §0.1.2.1 says the plan is "the FROZEN, agreed-upon source of truth — align code to it; never
- * edit, weaken, or reinterpret it", and inventing register entries reinterprets it. Every one of those
- * five numbers has been WITHDRAWN from the subtree.
+ * edit, weaken, or reinterpret it". Every one of those five numbers is WITHDRAWN from the subtree, and no
+ * file restates a live bound other than the two frozen ones above.
  *
  * ⭐ THE OBSERVATIONS THEMSELVES ARE NOT WITHDRAWN — ONLY THE NUMBERS. Each is a real reading of real
- * source and each is still annotated where it belongs, identified BY ITS SOURCE LOCATOR, which is the
- * form AAP §0.8.2 guideline 6 actually asks for and the form a reviewer can verify without consulting
- * a register at all:
+ * source, and each is annotated where it belongs, identified BY ITS SOURCE LOCATOR — the form AAP §0.8.2
+ * guideline 6 actually asks for, and the form a reviewer can verify without consulting a register at all.
+ * The four this file is the natural index for:
  *
- *     D22  this file, the paragraph immediately above — `model/dao/SkuDAO.cfc` mixes logical entity
- *          names and physical table names inside native statements, intra-file.
- *     D23  this file, {@link SkuRepository.transactionExists} — `getTransactionExistsFlag` forwards
- *          an argument its signature never declares (`model/service/SkuService.cfc:L285-L287`). The
- *          service-side consequence is recorded at `src/services/SkuService.ts` and the entity-side
- *          reading at `src/domain/sku/Sku.ts`; both CITE this number rather than minting it.
- *     D24  `src/services/SkuService.ts` — the legacy `processImageUpload` body returns the image-write
- *          BOOLEAN rather than the entity its own framework convention asks for
- *          [org/Hibachi/HibachiService.cfc:L117], at `model/service/SkuService.cfc:L210-L218`. The port
- *          PRESERVES that boolean, so the number records the legacy's departure from its own framework
- *          and not a departure of this port from the legacy; the adjudication against AAP §0.4.2.2's
- *          tabulated `Promise<Sku>` cell is at that member.
- *          ⛔ THIS ENTRY SAID "The port answers with the entity … the verdict is consequently no longer
- *          observable at the service boundary", WHICH WAS FALSE OF THE CODE IT DESCRIBED. `SkuService`
- *          declares `Promise<boolean>` and forwards the store's own verdict, and its own note at the
- *          `return` statement adjudicated the disagreement in favour of the boolean while this register
- *          asserted the opposite. Review finding CQ-3 required the artefacts reconciled to the ACTUAL
- *          behaviour; the code was already right and three descriptions of it were not — this one, the
- *          member's own headline block, and three sites in `src/handlers/skuHandler.ts`.
- *     D25  `src/services/ProductService.ts` — the legacy `getFormattedOptionGroups` answers a plain
- *          CFML STRUCT keyed by option-group NAME, so two groups sharing a name collapse to one entry
- *          and the earlier one is lost (`model/service/ProductService.cfc:L70-L80`). The port answers
- *          `FormattedOptionGroup[]`, because AAP §0.4.2.1 tabulates that array and the plan is frozen;
- *          the name-collapse behaviour is preserved by accumulating through a `Map` before the array is
- *          materialised, and the divergence is annotated at that member.
+ *   - `model/dao/SkuDAO.cfc` MIXES LOGICAL ENTITY NAMES AND PHYSICAL TABLE NAMES inside native
+ *     statements, intra-file — the paragraph immediately above, and each affected member.
+ *   - `getTransactionExistsFlag` FORWARDS ARGUMENTS ITS SIGNATURE NEVER DECLARES
+ *     (`model/service/SkuService.cfc:L285-L287`), which is how the two entity call sites scope the probe.
+ *     Recorded at {@link SkuRepository.transactionExists}, at `src/services/SkuService.ts` — whose
+ *     signature TR-1 tightens to the observed `(skuID?, productID?)` — and at `src/domain/sku/Sku.ts`.
+ *   - `processImageUpload` RETURNS THE IMAGE-WRITE BOOLEAN, not the entity its own framework convention
+ *     asks for [org/Hibachi/HibachiService.cfc:L117], at `model/service/SkuService.cfc:L210-L218`. The
+ *     port forwards that boolean; recorded at `src/services/SkuService.ts`.
+ *   - `getFormattedOptionGroups` ANSWERS A PLAIN CFML STRUCT KEYED BY OPTION-GROUP NAME, so two groups
+ *     sharing a name collapse and the earlier one is lost (`model/service/ProductService.cfc:L70-L80`).
+ *     The port answers the same keyed shape and preserves the collapse; recorded at
+ *     `src/services/ProductService.ts`.
+ *
+ * ⚠️ THE LAST THREE OF THOSE FOUR ARE PLACES WHERE AAP §0.4.2's TARGET COLUMN AND THE LEGACY BODY
+ * DISAGREE, AND ALL THREE ARE NOW RESOLVED THE SAME WAY: the legacy BODY states the contract, and TR-1
+ * is the rule that tightens a loose legacy signature to it. Review findings F1, F2 and F3 required exactly
+ * that, after revisions had resolved each of them the other way and left several files describing
+ * behaviour the code did not have. Where a description and the code disagree, the code is the fact.
  *
  * THE RULE THAT FOLLOWS, and the one a future writer must apply. Cite AAP §0.6.7's D1–D21 or AAP
  * §0.6.6's M1–M8 freely, because a frozen document's range cannot drift. NEVER mint a D- or M- number:
  * describe the observation and give its `path:Lnnn`. A number invented in the port cannot be traced to
- * the plan, cannot be checked against it, and — as the two contradictory "the register is closed at
- * D1-D22" / "there is no D25" variants proved — drifts the moment it is restated in a second file.
- * (Those two strings are QUOTATIONS of withdrawn prose, retained so the failure is legible; neither is
- * a live citation, and no such identifier exists anywhere in this subtree.)
+ * the plan and cannot be checked against it, and it drifts the moment it is restated in a second file.
  *
  * WHAT IS DELIBERATELY NOT HERE. Each omission is identified by its behaviour and its locator, never
  * by its legacy identifier string, so that a documented ABSENCE cannot be mistaken for a declaration

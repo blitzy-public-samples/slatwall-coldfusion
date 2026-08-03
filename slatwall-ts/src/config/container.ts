@@ -243,7 +243,7 @@ import type { SettingResolverPort } from '../ports/SettingResolverPort';
 import type { SmartListQueryPort } from '../ports/SmartListQueryPort';
 import { buildIdentifierQuery } from '../ports/SmartListQueryPort';
 import type { SubscriptionTermPort } from '../ports/SubscriptionTermPort';
-import type { UniquePropertyPort } from '../ports/UniquePropertyPort';
+import type { TransactionalWriteRunner, UniquePropertyPort } from '../ports/UniquePropertyPort';
 import type { BrandRepository } from '../ports/repositories/BrandRepository';
 import type { OptionRepository } from '../ports/repositories/OptionRepository';
 import type { ProductRepository } from '../ports/repositories/ProductRepository';
@@ -1294,7 +1294,17 @@ export function createBrandSurfaceGraph(): BrandSurfaceGraph {
   });
 }
 
-/** The one memo cell in this module, and the only mutable module-scope binding it declares. */
+/**
+ * The memo cell for the brand surface — ONE OF SIX in this module, not the only one.
+ *
+ * ⚠️ EACH OF THE SIX CELLS NAMED ITSELF "the one memo cell in this module, and the only mutable
+ * module-scope binding it declares", WHICH WAS FALSE OF ALL SIX. Review finding F11 reported the
+ * duplication; the accurate statement is per-cell. This module declares SIX mutable module-scope
+ * bindings, one per routable surface plus {@link memoizedGraph} for the whole container, and
+ * each caches exactly one graph so that a warm invocation of the handler it serves rebuilds nothing.
+ *
+ * The binding is `const` and holds one mutable field, so it can never be re-pointed — only filled.
+ */
 const memoizedBrandSurface: { graph: BrandSurfaceGraph | undefined } = { graph: undefined };
 
 /**
@@ -1409,7 +1419,17 @@ export function createOptionSurfaceGraph(): OptionSurfaceGraph {
   });
 }
 
-/** The one memo cell in this module, and the only mutable module-scope binding it declares. */
+/**
+ * The memo cell for the option surface — ONE OF SIX in this module, not the only one.
+ *
+ * ⚠️ EACH OF THE SIX CELLS NAMED ITSELF "the one memo cell in this module, and the only mutable
+ * module-scope binding it declares", WHICH WAS FALSE OF ALL SIX. Review finding F11 reported the
+ * duplication; the accurate statement is per-cell. This module declares SIX mutable module-scope
+ * bindings, one per routable surface plus {@link memoizedGraph} for the whole container, and
+ * each caches exactly one graph so that a warm invocation of the handler it serves rebuilds nothing.
+ *
+ * The binding is `const` and holds one mutable field, so it can never be re-pointed — only filled.
+ */
 const memoizedOptionSurface: { graph: OptionSurfaceGraph | undefined } = { graph: undefined };
 
 /**
@@ -1574,7 +1594,17 @@ export function createFeedSurfaceGraph(): FeedSurfaceGraph {
   });
 }
 
-/** The one memo cell in this module, and the only mutable module-scope binding it declares. */
+/**
+ * The memo cell for the Google product feed surface — ONE OF SIX in this module, not the only one.
+ *
+ * ⚠️ EACH OF THE SIX CELLS NAMED ITSELF "the one memo cell in this module, and the only mutable
+ * module-scope binding it declares", WHICH WAS FALSE OF ALL SIX. Review finding F11 reported the
+ * duplication; the accurate statement is per-cell. This module declares SIX mutable module-scope
+ * bindings, one per routable surface plus {@link memoizedGraph} for the whole container, and
+ * each caches exactly one graph so that a warm invocation of the handler it serves rebuilds nothing.
+ *
+ * The binding is `const` and holds one mutable field, so it can never be re-pointed — only filled.
+ */
 const memoizedFeedSurface: { graph: FeedSurfaceGraph | undefined } = { graph: undefined };
 
 /**
@@ -1754,9 +1784,12 @@ export interface SkuBoundaryParts {
  *
  * ⭐ AND IT IS EXPORTED FOR A SECOND REASON BEYOND `./productSurface.ts`: SO IT CAN BE ASSERTED. M6 is
  * invisible to `tsc` — a collaborator left pointing at the pool compiles, and a happy-path test against a
- * real database passes because the writes do land somewhere. `../../test/config/writeBoundaryRebuild.test.ts`
- * hands this function a RECORDING executor over a pool nothing listens on, so a single pool-bound
- * collaborator fails the case with a connection refusal instead of passing quietly.
+ * real database passes because the writes do land somewhere.
+ * `../../test/regression/issues.test.ts`'s `buildSkuBoundaryParts rebuilds every SKU collaborator against
+ * the scope executor` block hands this function a RECORDING executor over a pool nothing listens on, so a
+ * single pool-bound collaborator fails the case with a connection refusal instead of passing quietly.
+ * (An earlier revision cited `test/config/writeBoundaryRebuild.test.ts`, which does not exist — there is no
+ * `test/config/` folder at all; review finding F11 reported the dangling reference.)
  *
  * @param dependencies the surface's resolved dependencies, whose executor-free members are reused
  * @param scope the open transaction, whose executor every rebuilt collaborator is bound to
@@ -1942,7 +1975,17 @@ export function createSkuSurfaceGraph(): SkuSurfaceGraph {
   });
 }
 
-/** The one memo cell in this module, and the only mutable module-scope binding it declares. */
+/**
+ * The memo cell for the SKU surface — ONE OF SIX in this module, not the only one.
+ *
+ * ⚠️ EACH OF THE SIX CELLS NAMED ITSELF "the one memo cell in this module, and the only mutable
+ * module-scope binding it declares", WHICH WAS FALSE OF ALL SIX. Review finding F11 reported the
+ * duplication; the accurate statement is per-cell. This module declares SIX mutable module-scope
+ * bindings, one per routable surface plus {@link memoizedGraph} for the whole container, and
+ * each caches exactly one graph so that a warm invocation of the handler it serves rebuilds nothing.
+ *
+ * The binding is `const` and holds one mutable field, so it can never be re-pointed — only filled.
+ */
 const memoizedSkuSurface: { graph: SkuSurfaceGraph | undefined } = { graph: undefined };
 
 /**
@@ -2293,10 +2336,11 @@ function assembleProductService(collaborators: {
  * ⭐ IT IS EXPORTED SO IT CAN BE ASSERTED, WHICH IS THE ONLY REASON. Nothing outside this module calls it —
  * `composeProductSurface` passes it to the write runner as a graph factory. M6 is invisible to `tsc`: a
  * collaborator left pointing at the pool compiles, and a happy-path test against a real database passes
- * because the writes do land somewhere. `../../test/config/writeBoundaryRebuild.test.ts` therefore hands
- * this function a RECORDING executor over a pool nothing listens on, so a single pool-bound collaborator
- * fails the case with a connection refusal instead of passing quietly. The SKU half is exported for the
- * same purpose plus a real consumer.
+ * because the writes do land somewhere. `../../test/regression/issues.test.ts` therefore hands this
+ * function a RECORDING executor over a pool nothing listens on, so a single pool-bound collaborator fails
+ * the case with a connection refusal instead of passing quietly. The SKU half is exported for the same
+ * purpose plus a real consumer. (An earlier revision cited `test/config/writeBoundaryRebuild.test.ts`,
+ * which does not exist; review finding F11 reported the dangling reference.)
  *
  * @param dependencies the surface's resolved dependencies
  * @param scope the open transaction, whose executor every rebuilt collaborator is bound to
@@ -2459,7 +2503,17 @@ export function createProductSurfaceGraph(): ProductSurfaceGraph {
   });
 }
 
-/** The one memo cell in this module, and the only mutable module-scope binding it declares. */
+/**
+ * The memo cell for the product surface — ONE OF SIX in this module, not the only one.
+ *
+ * ⚠️ EACH OF THE SIX CELLS NAMED ITSELF "the one memo cell in this module, and the only mutable
+ * module-scope binding it declares", WHICH WAS FALSE OF ALL SIX. Review finding F11 reported the
+ * duplication; the accurate statement is per-cell. This module declares SIX mutable module-scope
+ * bindings, one per routable surface plus {@link memoizedGraph} for the whole container, and
+ * each caches exactly one graph so that a warm invocation of the handler it serves rebuilds nothing.
+ *
+ * The binding is `const` and holds one mutable field, so it can never be re-pointed — only filled.
+ */
 const memoizedProductSurface: { graph: ProductSurfaceGraph | undefined } = { graph: undefined };
 
 /**
@@ -2545,64 +2599,53 @@ export function getProductSurfaceGraph(): ProductSurfaceGraph {
  * unconditionally even when the batch failed.
  * ============================================================================================== */
 
-/**
- * Runs one unit of work inside one transaction, against a graph built for that transaction.
+/* ================================================================================================
+ * ⛔ THE TRANSACTION CONTRACT IS RE-EXPORTED HERE, NOT RE-DECLARED — AND IT USED TO BE BOTH
+ * ------------------------------------------------------------------------------------------------
+ * `TransactionalWriteRunner<TGraph>` is DECLARED ONCE, in `../ports/UniquePropertyPort.ts`, which is
+ * where AAP §0.4.1's frozen inventory left it when the standalone `src/ports/TransactionalWritePort.ts`
+ * was folded away — see that file's own `FOLDED IN FROM` banner, and §5.5 of the subtree README. The
+ * whole of its contract, including the lifecycle and disposal rules an implementation must honour, is
+ * documented at the declaration.
  *
- * ⚠️ IMPLEMENTATIONS OWN THE WHOLE LIFECYCLE AND MUST NOT LEAK IT. Acquire, begin, commit or roll back,
- * and DISPOSE OF the connection on every path — including when the work throws.
- * `src/adapters/mysql/UnitOfWork.ts` holds that sequence, and this contract deliberately exposes none of
- * it: a caller cannot commit early, cannot roll back explicitly and cannot reach the connection.
+ * ⚠️ AN EARLIER REVISION CARRIED A SECOND, STRUCTURALLY IDENTICAL `export interface
+ * TransactionalWriteRunner<TGraph>` IN THIS FILE, with its own full copy of that documentation.
+ * TypeScript is structurally typed, so the duplication compiled silently and nothing failed — which is
+ * exactly why it survived: `../handlers/{sku,brand,product}Handler.ts` imported the copy from HERE while
+ * `../adapters/mysql/UnitOfWork.ts` imported the one from the port, and the two doc blocks then drifted
+ * apart, each claiming to be the declaration site. The subtree README printed both claims, in two
+ * verbatim-duplicated tables that contradicted each other on this single row; review findings F7 and F11
+ * reported the consequences. The declaration is now singular and this file re-exports it, so every
+ * consumer names the same type and there is one place to read its rules.
  *
- * ⛔ DISPOSAL IS NOT ALWAYS A RELEASE, and an implementation that made it one would be wrong rather than
- * merely simple. A connection whose begin, commit or roll-back ITSELF failed carries a transaction state
- * nobody can describe, so returning it to a warm pool hands the next invocation whatever was left open —
- * precisely the cross-invocation bleed M7 exists to prevent, and silent, because the next caller sees no
- * error. Such a connection must be taken out of service instead. Both branches are asserted against the
- * MySQL implementation in `test/adapters/UnitOfWork.test.ts`, and the structural double in
- * `test/support/inMemoryRepositories.ts` reproduces the same rule so a consumer suite cannot disagree
- * with the class about it.
- *
- * @typeParam TGraph - The transaction-scoped capabilities the work needs. Declared by the caller, so a
- *   write path depends on nothing wider than it uses.
- */
-export interface TransactionalWriteRunner<TGraph> {
-  /**
-   * @param work - The writes, run inside an open transaction against a graph bound to it.
-   * @param hasErrors - The commit gate, evaluated ONCE after `work` settles successfully. `true` rolls
-   *   the transaction back and reports the roll-back to the caller as a failure; `false` commits. It must
-   *   be free of side effects, and it must read the state `work` accumulated rather than re-deriving it.
-   * @returns Whatever `work` produced — for a unit that was COMMITTED.
-   * @throws When `work` throws, after rolling back; and when `hasErrors` reports accumulated findings,
-   *   because a caller that received the work's value would otherwise be unable to tell a committed
-   *   result from a discarded one. `createSkus` makes that concrete: it returns `true` even for a batch
-   *   whose SKUs all failed validation, so its return value cannot distinguish the two outcomes.
-   * @throws When a SETTLEMENT itself fails — the begin, the commit, or the roll-back that either of the
-   *   two cases above asked for. A commit failure reaches the caller as the driver reported it, because
-   *   that failure is the whole story; a roll-back failure is compound, so it is reported as the more
-   *   serious fact — that nothing can be said about what the database retained — carrying the roll-back's
-   *   own failure as `cause`. On every one of these paths the connection is taken out of service rather
-   *   than returned to the pool, per the disposal rule above.
-   */
-  runWrite<TResult>(
-    work: (graph: TGraph) => Promise<TResult>,
-    hasErrors: () => boolean,
-  ): Promise<TResult>;
-}
+ * The re-export deliberately keeps the name and the module path unchanged, so no consumer import moves.
+ * ============================================================================================== */
 
-/**` is not among ITS permitted
- * dependencies. The two shapes therefore meet structurally, in the routing layer, which is the only
- * place allowed to name both sides. Widening this declaration would break that meeting at compile time
- * rather than at run time, which is the property the arrangement buys.
+export type { TransactionalWriteRunner } from '../ports/UniquePropertyPort';
+
+/* ================================================================================================
+ * ⛔ NO RE-EXPORT OF THE SKU WRITE GRAPH STANDS HERE, AND THE BLOCK THAT DID IS GONE
+ * ------------------------------------------------------------------------------------------------
+ * `CatalogSkuWriteGraph` is DECLARED IN THIS FILE, in the folded sku-surface section below, so a
+ * re-export here would be a duplicate export of a local name. An earlier revision removed the
+ * re-export but left its doc block behind with the opening sentence truncated — the comment began
+ * mid-clause, at `/**` is not among ITS permitted`, and documented a declaration that no longer
+ * existed. Review finding F11 reported that class of residue; the block is replaced by this note.
  *
- * ⚠️ BOTH MEMBERS ARE BOUND TO THE BOUNDARY'S EXECUTOR, NOT TO THE POOL. AAP §0.6.2 is explicit that
- * `Sku.hasUniqueOptions` is a validation rule that EXECUTES A QUERY against the sibling SKUs the same
- * operation is writing, and AAP §0.6.6 M6 names that read-back as the likeliest place for this port to
- * diverge silently. A pool-bound resolver handed into an open transaction would read a sibling set that
- * excludes the uncommitted rows, so the batch would validate against the wrong world — and nothing would
- * report a problem.
- */
-/* `CatalogSkuWriteGraph` is DECLARED IN THIS FILE, in the folded sku-surface section
- * below, so the re-export that stood here would now be a duplicate export of a local name. */
+ * ⭐ THE TWO SUBSTANTIVE RULES IT CARRIED ARE NOT LOST — both belong to the graph's real declaration
+ * and are documented there, and both are restated in one line here so a reader arriving at this point
+ * in the file is not left to guess:
+ *
+ *   - The handler-side shape and the write graph MEET STRUCTURALLY, in the routing layer, which is the
+ *     only place permitted to name both sides. Widening either declaration breaks that meeting at
+ *     compile time rather than at run time, which is the property the arrangement buys.
+ *   - EVERY MEMBER OF THE WRITE GRAPH IS BOUND TO THE BOUNDARY'S EXECUTOR, NEVER TO THE POOL. AAP
+ *     §0.6.2 is explicit that `Sku.hasUniqueOptions` is a validation rule that EXECUTES A QUERY against
+ *     the sibling SKUs the same operation is writing, and AAP §0.6.6 M6 names that read-back as the
+ *     likeliest place for this port to diverge silently. A pool-bound resolver handed into an open
+ *     transaction would read a sibling set that excludes the uncommitted rows, so the batch would
+ *     validate against the wrong world — and nothing would report a problem.
+ * ============================================================================================== */
 
 /**
  * Every collaborator the Catalog slice needs, wired once.
@@ -2957,15 +3000,25 @@ export interface CatalogContainerOverrides {
  * `../adapters/mysql/SmartListQueryBuilder`; the fourth, `TransactionalWritePort`, is satisfied by the
  * two runners of TIER 7 rather than by a single adapter.
  *
- * 📐 THE PORT INVENTORY IS FIFTEEN FILES, NOT THIRTEEN, AND THE COUNT IS SPELLED OUT BECAUSE AN EARLIER
- * REVISION OF THIS NOTE SAID THIRTEEN. `../ports/` holds the nine boundary ports above;
- * `../ports/repositories/` holds five repository ports plus one shared read type. Two of those six are
- * additions the AAP's own inventory does not enumerate, and neither is a new boundary:
- * `../ports/repositories/BrandRepository.ts`, because `BrandService` has no legacy DAO at all and
- * relied entirely on the CRUD surface `onMissingMethod` synthesized (IR-1), so its repository has to be
- * declared explicitly; and `../ports/repositories/BoundedRead.ts`, which is a shared read type the
- * repository ports consume rather than a collaborator interface. `TransactionalWritePort` is likewise
- * the ninth boundary port beyond the eight AAP §0.2.2.7 names. 9 + 5 + 1 = 15.
+ * 📐 THE PORT INVENTORY IS THIRTEEN FILES, AND THE COUNT IS AUDITABLE BY LISTING THE TWO FOLDERS.
+ * `../ports/` holds EIGHT — the eight boundary ports AAP §0.2.2.7 enumerates — and
+ * `../ports/repositories/` holds FIVE: one per catalog DAO, plus `BrandRepository.ts`, because
+ * `BrandService` has no legacy DAO at all and relied entirely on the CRUD surface `onMissingMethod`
+ * synthesized (IR-1), so its repository has to be declared explicitly. 8 + 5 = 13.
+ *
+ * ⚠️ THIS NOTE SAID FIFTEEN AND NAMED TWO FILES THAT DO NOT EXIST, WHICH REVIEW FINDING F11 REPORTED. It
+ * counted a ninth boundary port file, `TransactionalWritePort.ts`, and a shared read type,
+ * `repositories/BoundedRead.ts`. Both DECLARATIONS exist and are load-bearing; neither is a FILE, because
+ * AAP §0.3.1 freezes the subtree's inventory and neither name is in it. The transactional-write contract is
+ * folded into `../ports/UniquePropertyPort.ts` — whose own subject, the application-side uniqueness probe,
+ * runs INSIDE a save, so the transaction that save runs in is its natural host — and the bounded-read
+ * window and result types are declared in `../ports/SmartListQueryPort.ts` beside the query abstraction
+ * that produces them. Counting declarations rather than files is what produced the fifteen; the paragraph
+ * above counts files, which is what a reader can check.
+ *
+ * ⚠️ THE SENTENCE ABOVE THIS ONE STILL SAYS "NINE BOUNDARY PORTS", AND THAT IS DELIBERATE: it counts
+ * CONTRACTS, and there are nine — the eight AAP §0.2.2.7 names plus the folded transactional-write
+ * contract. Contracts and files are different counts here, and both are stated rather than conflated.
  *
  * ⚠️ NOTHING WAS WEAKENED IN THE MOVE, AND NOTHING WAS DUPLICATED. Every stub still raises rather than
  * answering a plausible value (S9), every stub still genuinely implements its port with no `as unknown as`
@@ -3078,7 +3131,7 @@ export type ProductFeedImageReader = (sku: ProductFeedRecord['sku']) => readonly
  * TODO(boundary): the rightful owner is the image subsystem behind `../ports/ImagePathPort`, which
  * AAP §0.2.2.1 excludes along with the image service itself. No defect number is minted for it — AAP
  * §0.6.7 is frozen and none of its entries covers this, and `../ports/repositories/SkuRepository.ts`
- * states the live bound.
+ * states the two frozen register bounds and mints no identifier of its own.
  */
 export const productFeedImagesFromDomain: ProductFeedImageReader = (sku) => {
   const product = sku.product;
@@ -3205,8 +3258,10 @@ export function createCatalogContainer(
    * THE THREE FINITE RESOURCE BOUNDS — REVIEW FINDING SEC-1 (CWE-400)
    *
    * ⭐ WHAT CHANGED AND WHY. Three bounds already existed in the code as OPTIONAL constructor arguments —
-   * {@link SmartListMaterialisationBudget}, {@link SkuCombinationBudget} and {@link UrlTitleProbeBudget} —
-   * and this file supplied NONE of them, here or in the transaction-scoped rebuild in TIER 7. SEC-1 found
+   * {@link SmartListMaterialisationBudget}, plus a SKU-combination budget and a URL-title probe budget —
+   * and this file supplied NONE of them, here or in the transaction-scoped rebuild in TIER 7. (Those latter
+   * two types are named in prose rather than linked because both were subsequently WITHDRAWN together with
+   * the ceilings they carried, so neither declaration exists to link to; see the block below.) SEC-1 found
    * that this made every bound unreachable: an operator who had measured a figure had no way to state it,
    * and the anonymous public feed could be made to materialise an unbounded selection. The three locals
    * below are the route from configuration into both graphs.
@@ -3421,7 +3476,12 @@ export function createCatalogContainer(
  * ============================================================================================== */
 
 /**
- * The one memo cell in this file, and the only mutable module-scope binding it declares.
+ * The memo cell for the WHOLE catalog graph — the sixth of six in this file, and the widest.
+ *
+ * ⚠️ THIS LINE READ "the one memo cell in this file, and the only mutable module-scope binding it
+ * declares", AND SO DID THE FIVE NARROW CELLS ABOVE IT. Review finding F11 reported the duplication.
+ * The five per-surface cells memoize the narrow graph each handler needs; this one memoizes the full
+ * container, which is what a caller reaching {@link createCatalogContainer} asks for.
  *
  * ⭐ IT HOLDS THE GRAPH AND NOTHING ELSE. AAP §0.4.1.3 requires the wiring to be memoized across warm
  * invocations, mirroring the DI/1 singleton registration at `org/Hibachi/Hibachi.cfc:L298-L330`, and

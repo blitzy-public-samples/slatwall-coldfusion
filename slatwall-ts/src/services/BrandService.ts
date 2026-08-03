@@ -147,7 +147,7 @@
  * END banner, in a file whose other five sections are correctly paired. It is a copy-paste artefact
  * of the component template, it delimits nothing (the section is empty), and it has no behaviour.
  * It is recorded here and NOT reproduced. No register identifier is minted for it: AAP 0.6.7
- * catalogues D1-D21, none of those numbers belongs to this file, and the live bound is stated only at
+ * catalogues D1-D21, none of those numbers belongs to this file, and that frozen bound is restated only at
  * `src/ports/repositories/SkuRepository.ts`.
  *
  * =============================================================================================

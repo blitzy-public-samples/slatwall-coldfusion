@@ -58,10 +58,13 @@
  * background thread and no cross-invocation cache to reconcile with a single Lambda invocation.
  * None of AAP §0.6.6's eight mismatches applies to this module, so no new identifier is minted, and
  * this file mints no defect identifier either — so findings recorded below that carry no register
- * number carry none deliberately. ⚠️ F27: this previously claimed the mismatch register "is closed at
- * M1-M8" and the defect register "likewise closed at D1-the logical-versus-physical naming divergence [model/dao/SkuDAO.cfc:L132]", and neither figure was even the AAP's
- * range. No live bound is restated here; `src/ports/repositories/SkuRepository.ts` is the one place
- * that states it.
+ * number carry none deliberately. ⚠️ F27: this previously claimed the defect register was "likewise
+ * closed at D1 through <a port-minted endpoint beyond D21>", which was not the AAP's range. ⚠️ AND REVIEW
+ * FINDING F11 REPORTED WHAT THE CORRECTION LEFT BEHIND: the withdrawn endpoint had been substituted with
+ * its own prose description, mid-range, so the sentence read "closed at D1-the logical-versus-physical
+ * naming divergence [model/dao/SkuDAO.cfc:L132]" — a description standing where a numeral belonged. No live
+ * bound is restated here at all; `src/ports/repositories/SkuRepository.ts` is the one place that states
+ * both frozen ranges.
  *
  * WHAT IS DELIBERATELY NOT HERE:
  *   - Any paginated or dynamic-query member. The legacy component inherits that surface from

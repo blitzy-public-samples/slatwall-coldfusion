@@ -23,7 +23,7 @@
  * THE FIFTEEN DECLARED MEMBERS, IN SOURCE ORDER (AAP §0.4.2.1)
  * ==================================================================================================
  *   `:L65`   loadDataFromFile                        M1 — the one-hour budget has no single-invocation form
- *   `:L70`   getFormattedOptionGroups                the name-collapse divergence [model/service/ProductService.cfc:L70-L80] — the legacy STRUCT collapses same-named groups
+ *   `:L70`   getFormattedOptionGroups                a name-keyed STRUCT [:L70-L80] that collapses same-named groups
  *   `:L104`  getProductSkusBySelectedOptions         the prompt's worked example; T1–T5 in §0.6.1.3
  *   `:L113`  processProductAddOptionGroup            D14 — only the FIRST option reaches existing SKUs
  *   `:L128`  processProductAddOption                 case-insensitive option matching and de-duplication
@@ -567,37 +567,45 @@ export type ProductTypeWithErrorState = ManagedEntity<ProductType>;
 export type ProductProcessValidator = Pick<Validator, 'validate' | 'validateProcess'>;
 
 /**
- * One option group and its selectable options, as `getFormattedOptionGroups` answers them.
+ * A product's selectable options, grouped by option-group NAME — what `getFormattedOptionGroups` answers.
  *
- * ⭐ THE SHAPE AAP §0.4.2.1 NAMES. Its target column for `model/service/ProductService.cfc:L70` is
- * `getFormattedOptionGroups(product: Product): FormattedOptionGroup[]`, and this is that element type.
- * The plan is frozen and is aligned to, never reinterpreted (AAP §0.1.2.1, D1 precedence 1).
+ * ⭐ A KEYED RECORD, BECAUSE THE LEGACY ANSWERS A KEYED STRUCT. `model/service/ProductService.cfc:L71`
+ * initialises `var AvailableOptions = {}` — a CFML STRUCT — `:L76` assigns into it with
+ * `AvailableOptions[ productObjectGroups[i].getOptionGroupName() ] = getOptionService().getOptionsForSelect(…)`,
+ * and `:L79` returns that struct. So the group NAME is a KEY, not a field, and the value is a projected
+ * option list.
  *
- * ⭐ TWO MEMBERS AND NO MORE, BECAUSE THE LEGACY CARRIES EXACTLY TWO PIECES OF INFORMATION. `:L76` is
- * `AvailableOptions[ productObjectGroups[i].getOptionGroupName() ] = getOptionService().getOptionsForSelect(…)`
- * — a NAME and a projected option list. `optionGroupID`, `sortOrder`, `optionGroupType` and every other
- * column of `model/entity/OptionGroup.cfc` are deliberately absent: the legacy entry cannot carry them,
- * so adding one would publish information this member never produced (S9).
+ * ⚠️ AAP §0.4.2.1's TARGET COLUMN TABULATES `FormattedOptionGroup[]`, AND A REVISION IMPLEMENTED THAT
+ * ARRAY. Review finding F3 withdrew it. The legacy member's declared return type is `any` — loose — so
+ * TR-1 governs: "the target signature is tightened to the OBSERVED contract." The observed contract is a
+ * name-keyed struct, and answering with an array changed the wire shape of a public member for no
+ * behavioural reason. The array's own justification was that `optionGroupName` on each entry carried the
+ * same information; that is true of the CONTENT and false of the SHAPE, and Goal B is about the shape at
+ * the interface boundary.
  *
- * ⚠️ TODO(parity) A NAME-COLLAPSE-CLASS DIVERGENCE — THE NAME IS THE IDENTITY, WHICH IS WHY IT IS NOT ACCOMPANIED BY AN
- * IDENTIFIER. Because the legacy KEYS by name, two groups sharing a name collapse to one entry and the
- * LAST one wins. An entry carrying `optionGroupID` would have to choose which group's identifier to
- * report for a collapsed entry, and there is no legacy answer to that question.
+ * ⭐ TWO PIECES OF INFORMATION AND NO MORE, WHICH IS WHY THE VALUE IS A BARE OPTION LIST. `:L76` carries a
+ * NAME and a projected option list. `optionGroupID`, `sortOrder`, `optionGroupType` and every other column
+ * of `model/entity/OptionGroup.cfc` are deliberately absent: the legacy entry cannot carry them, so adding
+ * one would publish information this member never produced (S9).
  *
- * ⚠️ THE ARRAY ORDER IS A TRANSLATION DECISION, RECORDED BY LOCATOR RATHER THAN NUMBERED. A CFML struct has no
- * specified iteration order, so the legacy's own key order is unspecified; the port emits FIRST-SEEN
- * order, which is the order `Product.getOptionGroups()` yields the groups in. That is the same reading
- * `../services/SkuService` records for the combination engine's struct traversal at
- * [model/service/SkuService.cfc:L82] and [:L106], and it is
- * stable across runs and platforms. Nothing is sorted: sorting would impose an order the legacy never had.
+ * ⚠️ TODO(parity) A NAME-COLLAPSE DIVERGENCE — THE NAME IS THE IDENTITY. Because the legacy KEYS by name,
+ * two groups sharing a name collapse to one entry and the LAST one wins. That is preserved exactly, and it
+ * is a second reason no identifier is published: a collapsed entry would have to choose which group's
+ * identifier to report, and there is no legacy answer to that question.
  *
- * Both members are `readonly`, and the option list is `readonly` too: an entry is a projection computed
- * for display, never an object written back.
+ * ⚠️ KEY ORDER IS A TRANSLATION DECISION, RECORDED BY LOCATOR RATHER THAN NUMBERED. A CFML struct has no
+ * specified iteration order, so the legacy's own key order is unspecified. A JavaScript object preserves
+ * INSERTION order for string keys — except that keys which look like array indices sort numerically ahead
+ * of the rest — so a catalogue whose option groups are named `"1"`, `"2"`, … would enumerate numerically
+ * here. Neither order is the legacy's, because the legacy has none; the port emits FIRST-SEEN order for
+ * every ordinary name and does not sort. Sorting would impose an order the legacy never had. This is the
+ * same reading `../services/SkuService` records for the combination engine's struct traversal at
+ * [model/service/SkuService.cfc:L82] and [:L106].
+ *
+ * The record and each option list are `readonly`: this is a projection computed for display, never an
+ * object written back.
  */
-export interface FormattedOptionGroup {
-  readonly optionGroupName: string;
-  readonly options: readonly SelectOption[];
-}
+export type FormattedOptionGroups = Readonly<Record<string, readonly SelectOption[]>>;
 
 /* ================================================================================================
  * SECTION 4 — STRUCTURAL CONTRACTS FOR THE THREE OUT-OF-SCOPE PROCESS OBJECTS
@@ -1901,32 +1909,29 @@ export class ProductService {
    * Groups a product's selectable options by option-group name.
    *
    * ==============================================================================================
-   * TODO(parity) `model/service/ProductService.cfc:L70-L80`: THE LEGACY ANSWERS A NAME-KEYED STRUCT; THE
-   * PORT ANSWERS THE ARRAY AAP §0.4.2.1 TABULATES, AND THAT DIVERGENCE IS THE ANNOTATION
+   * TODO(parity) `model/service/ProductService.cfc:L70-L80`: THE LEGACY ANSWERS A NAME-KEYED STRUCT, AND
+   * SO DOES THE PORT
    * ==============================================================================================
    * `:L71` initialises `var AvailableOptions = {}` — a CFML STRUCT — and `:L76` assigns into it with
    * `AvailableOptions[ productObjectGroups[i].getOptionGroupName() ] = …`, keyed by the option group's
-   * NAME. `:L79` returns that struct.
+   * NAME. `:L79` returns that struct. The declared return type is `any`, so TR-1 governs — "the target
+   * signature is tightened to the OBSERVED contract" — and the observed contract is
+   * {@link FormattedOptionGroups}, a record keyed by name.
    *
-   * ⭐⭐ THE TARGET SIGNATURE IS NOT DERIVED FROM THAT STRUCT — IT IS READ OFF THE PLAN. AAP §0.4.2.1
-   * tabulates this member as `getFormattedOptionGroups(product: Product): FormattedOptionGroup[]`, and
-   * D1 precedence 1 makes the plan the authority that code is aligned TO. An earlier revision typed the
-   * result `Promise<Record<string, SelectOption[]>>` on the ground that the legacy struct's keys are the
-   * honest shape; that reading is WITHDRAWN. It was a reinterpretation of a frozen row, which §0.1.2.1
-   * forbids — "align code to it; never edit, weaken, or reinterpret it" — and each of the three grounds
-   * it rested on is answered here rather than left standing:
-   *   (a) "AN ARRAY LOSES THE KEYS THE CONSUMER INDEXES BY." It does not. The key is a group NAME, and
-   *       `FormattedOptionGroup.optionGroupName` carries that same name in the entry itself. Every
-   *       consumer that read `formatted[name]` reads `entry.optionGroupName` instead; the one shipped
-   *       consumer, `toFormattedOptionGroupsResponse` in `src/handlers/productHandler.ts`, was already
-   *       destructuring `Object.entries` back into name/options pairs — which is precisely this array.
-   *   (b) "AN ARRAY TURNS SAME-NAMED GROUPS INTO TWO ENTRIES." Only a naive `map` would. The body below
-   *       accumulates through a `Map` keyed by name, so a repeated name still OVERWRITES and still
-   *       yields ONE entry; see behaviour 2.
-   *   (c) "`Record` IS THE HONEST TRANSLATION OF A STRUCT." A CFML struct is not an ordered map, so
-   *       `Record` is not a neutral translation either — it silently adopts JavaScript's own key-order
-   *       rules. The array makes the order an explicit, documented decision instead; see the struct-iteration-order note on
-   *       `FormattedOptionGroup`.
+   * ⚠️ A REVISION ANSWERED `FormattedOptionGroup[]` INSTEAD, on the ground that AAP §0.4.2.1's tabulated
+   * target column names that array and D1 precedence 1 makes the plan the authority code is aligned TO.
+   * Review finding F3 withdrew it, and the three arguments that revision recorded for the array are
+   * answered here rather than left standing:
+   *   (a) "AN ARRAY LOSES NOTHING, BECAUSE `optionGroupName` TRAVELS ON THE ENTRY." True of the CONTENT and
+   *       false of the SHAPE. AAP §0.8.3.1 asks for interface parity that is "checkable method-by-method",
+   *       and a member that answered a keyed struct now answering a positional array is exactly the kind of
+   *       change that check exists to catch. Goal B is preservation "at the interface boundary".
+   *   (b) "AN ARRAY MAKES THE ORDER EXPLICIT WHERE `Record` ADOPTS JAVASCRIPT'S KEY-ORDER RULES." A real
+   *       point, and it is answered by DOCUMENTING the rule rather than by changing the shape — see the
+   *       key-order note on {@link FormattedOptionGroups}. Trading a documented ordering caveat for a
+   *       changed public shape is the wrong exchange.
+   *   (c) "THE ONE SHIPPED CONSUMER WAS ALREADY DESTRUCTURING `Object.entries` BACK INTO PAIRS." It was —
+   *       which is evidence that the record is the natural shape here, not that the array was.
    *
    * It is a promise because `Product.getOptionGroups(finder)` and
    * `Product.getOptionsByOptionGroup(finder, id)` are both asynchronous in the ported domain — the legacy
@@ -1937,23 +1942,22 @@ export class ProductService {
    * consequence recorded across §0.6.6.
    *
    * FOUR BEHAVIOURS PRESERVED EXACTLY, each one a place a well-meant improvement would change results:
-   *   1. THE LABEL IS THE GROUP NAME, never the group ID. `:L76` keys by `getOptionGroupName()`, so the
-   *      name is what identifies an entry. Adding an ID would publish something the legacy entry cannot
-   *      carry (S9), and see the name-collapse note on `FormattedOptionGroup` for why a collapsed entry has
-   *      no single ID to report.
+   *   1. THE KEY IS THE GROUP NAME, never the group ID. `:L76` keys by `getOptionGroupName()`. Publishing
+   *      an identifier alongside it would publish something the legacy entry cannot carry (S9), and see
+   *      the name-collapse note on {@link FormattedOptionGroups} for why a collapsed entry has no single
+   *      ID to report.
    *   2. SAME-NAMED GROUPS OVERWRITE. `:L76` is a plain struct assignment, so the LAST group with a
    *      given name wins and the earlier entry is lost. No multimap, no array-of-arrays, no suffixing
-   *      and no de-duplication is introduced — and, because a repeated name overwrites in place, the
-   *      array never grows a second entry for it.
+   *      and no de-duplication is introduced.
    *   3. NO SORTING. Entries appear in the order `Product.getOptionGroups()` yields, and the legacy
    *      neither sorts the groups nor sorts within a group.
    *   4. THE OPTIONS PROJECTION IS THE SIBLING'S. `OptionService.getOptionsForSelect` owns the
    *      `{name, value}` shape; this member does not re-derive it, and `SelectOption` is imported
    *      type-only from that sibling rather than being re-declared (S5).
    *
-   * TODO(parity) D10-CLASS, UNNUMBERED — TWO UNSCOPED VARIABLES. `:L73` assigns `productObjectGroups` and `:L75`
-   * assigns the loop counter `i`, both WITHOUT `var`, so in CFML both leak into the component's shared
-   * `variables` scope. On a singleton service under concurrent requests that is a genuine race: two
+   * TODO(parity) D10-CLASS, UNNUMBERED — TWO UNSCOPED VARIABLES. `:L73` assigns `productObjectGroups` and
+   * `:L75` assigns the loop counter `i`, both WITHOUT `var`, so in CFML both leak into the component's
+   * shared `variables` scope. On a singleton service under concurrent requests that is a genuine race: two
    * simultaneous callers share one counter. TypeScript's block scoping removes the hazard by
    * construction — the `for…of` binding below cannot escape the loop — and that is recorded as a
    * deliberate translation decision rather than assigned a new defect number, exactly as AAP §0.6.7.5
@@ -1961,27 +1965,22 @@ export class ProductService {
    *
    * THE GROUP NAME IS DEREFERENCED WITHOUT A GUARD, as `:L76` does. A group with no name cannot be a
    * struct key in CFML either, so the legacy raises on the same input; raising here with the locator
-   * keeps that failure legible rather than silently producing a `"undefined"` key.
+   * keeps that failure legible rather than silently producing an `"undefined"` key.
    *
    * TEST PROVENANCE: NET-NEW.
    *
    * @param product - The product whose option groups are read.
-   * @returns One `FormattedOptionGroup` per distinct option-group name, in first-seen group order.
+   * @returns One entry per distinct option-group NAME, keyed by that name, in first-seen group order.
    * @throws {DomainError} when an option group carries no name, matching the legacy's unguarded read.
    */
-  public async getFormattedOptionGroups(
-    product: Product,
-  ): Promise<readonly FormattedOptionGroup[]> {
-    /* ⭐ A `Map`, NOT AN ARRAY THAT IS PUSHED TO, AND THE CHOICE IS BEHAVIOURAL. `:L76`'s struct
-     * assignment makes the group NAME the identity of an entry, so a repeated name must overwrite
-     * rather than append (behaviour 2). A `Map` reproduces that exactly: `set` on an existing key
-     * replaces the value AND KEEPS THE ORIGINAL INSERTION POSITION, so the surviving entry is the LAST
-     * group's options sitting at the FIRST occurrence's place. That is the closest observable analogue
-     * of a CFML struct, whose key order is unspecified but whose overwrite semantics are not.
-     *
-     * ⛔ DO NOT REPLACE THIS WITH `array.push` PLUS A `find`. It would either grow a second entry for a
-     * repeated name — the failure ground (b) of the doc block above correctly warns about — or turn an
-     * O(1) overwrite into an O(n) scan for no gain. */
+  public async getFormattedOptionGroups(product: Product): Promise<FormattedOptionGroups> {
+    /* ⭐ A `Map`, NOT AN OBJECT WRITTEN TO IN THE LOOP, AND THE CHOICE IS BEHAVIOURAL. `:L76`'s struct
+     * assignment makes the group NAME the identity of an entry, so a repeated name must overwrite rather
+     * than append (behaviour 2). A `Map` reproduces that exactly: `set` on an existing key replaces the
+     * value AND KEEPS THE ORIGINAL INSERTION POSITION, so the surviving entry is the LAST group's options
+     * sitting at the FIRST occurrence's place. Accumulating into a `Map` first also keeps every key a
+     * plain data key — a group named `constructor` or `__proto__` cannot reach an object prototype on the
+     * way in, and the materialisation below uses `Object.fromEntries`, which assigns own properties. */
     const availableOptions = new Map<string, readonly SelectOption[]>();
 
     const productObjectGroups: OptionGroup[] = await product.getOptionGroups(
@@ -2035,11 +2034,11 @@ export class ProductService {
       availableOptions.set(optionGroupName, this.optionService.getOptionsForSelect(options));
     }
 
-    /* Materialised once, at the end, in `Map` insertion order — which is first-seen group order; CFML specifies none. */
-    return Array.from(availableOptions, ([optionGroupName, options]) => ({
-      optionGroupName,
-      options,
-    }));
+    /* Materialised once, at the end, in `Map` insertion order — first-seen group order. CFML specifies
+     * none, and the one JavaScript exception to insertion order is recorded on
+     * {@link FormattedOptionGroups}. `Object.fromEntries` assigns OWN properties, so no key can reach a
+     * prototype. */
+    return Object.fromEntries(availableOptions);
   }
 
   /* ==============================================================================================
@@ -2908,13 +2907,21 @@ export class ProductService {
    * `model/entity/Sku.cfc:L131-L139`, including the two product-scoped settings it reads and the
    * `imageGroupFlag` test that decides which option codes contribute.
    *
-   * WHY IT NONETHELESS TOUCHES A BOUNDARY, AND WHY THAT IS SATISFIED HERE. AAP §0.4.1.8 classifies this
-   * member as boundary-stubbed because the generator reaches image behaviour. In the ported domain that
-   * reach is narrowed to exactly two setting reads — `productImageOptionCodeDelimiter` and
+   * WHY IT NONETHELESS TOUCHES A BOUNDARY, AND WHY THAT IS SATISFIED HERE. AAP §0.4.1.8 and §0.4.2.1
+   * classify this member as boundary-stubbed because the generator reaches image behaviour. In the ported
+   * domain that reach is narrowed to exactly two setting reads — `productImageOptionCodeDelimiter` and
    * `productImageDefaultExtension` — which `../ports/SettingResolverPort` already declares. No excluded
    * service is crossed, no path is composed and no file is touched, so the loop runs for real and the
    * TR-5 gap does not arise. The proof that the injected resolver satisfies the SKU-side contract is
    * {@link SettingResolverSatisfiesSkuContract}.
+   *
+   * ⛔ AND IT MUST NOT BE "MADE CONSISTENT" WITH THAT ANNOTATION BY REFUSING. Review finding F4 recorded
+   * that `src/handlers/router.ts` claimed all seven annotated members always refuse, which was false of
+   * this one and of `processProductDeleteDefaultImage`; the INVENTORY was corrected, not the code, because
+   * refusing here would be a functional regression rather than a boundary. `:L282` — `saveProduct` — plus
+   * `:L123` and `:L193` all reach this member, so a refusal would take every new-product save down with
+   * it. `router.ts` judgment (h) and `../handlers/productHandler.ts` judgment (f) carry the measured
+   * three-way classification.
    *
    * ⚠️ THE UNCACHED GENERATOR IS CALLED ON PURPOSE. `Sku` also exposes a memoizing accessor; `:L210`
    * calls the GENERATOR, so a stale per-instance cache cannot mask a change made earlier in the same

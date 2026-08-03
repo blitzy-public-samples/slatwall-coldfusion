@@ -1937,9 +1937,16 @@ export interface SmartListQueryPort {
  * ⚠️⚠️ NOTHING HERE TRUNCATES SILENTLY, AND THAT IS THE WHOLE DESIGN
  * ------------------------------------------------------------------------------------------------
  * A bound that quietly drops rows is worse than no bound at all: the caller receives a short answer
- * it cannot distinguish from a complete one. {@link BoundedReadResult} therefore reports
- * {@link BoundedReadResult.hasMore} alongside the rows, and the adapters produce it by asking the
- * database for ONE MORE ROW than the caller wanted and reporting whether it arrived. So:
+ * it cannot distinguish from a complete one. A `BoundedReadResult` therefore reported its own `hasMore`
+ * alongside the rows, and the adapters produced it by asking the database for ONE MORE ROW than the caller
+ * wanted and reporting whether it arrived. So:
+ *
+ * ⚠️ `BoundedReadResult` IS NAMED IN PROSE RATHER THAN LINKED THROUGHOUT THIS BLOCK, BECAUSE THE
+ * DECLARATION NO LONGER EXISTS. It was withdrawn with the four windowed repository members that produced
+ * it — the full record is in the block below {@link BoundedReadWindow}. The reasoning is kept because the
+ * no-silent-truncation rule still governs {@link BoundedReadWindow}'s surviving consumers, and a `{@link}`
+ * to a removed symbol is the dangling-reference defect review finding F11 reported elsewhere in this
+ * subtree.
  *
  *   - `hasMore === false` — the window reached the end of the match set. The rows ARE the remainder.
  *   - `hasMore === true`  — at least one further row exists past the window. The caller decides
@@ -1992,8 +1999,9 @@ export interface BoundedReadWindow {
   /**
    * The maximum number of rows to return. Must be a positive integer.
    *
-   * The returned array holds at most this many rows. The adapter reads one more than this internally
-   * to decide {@link BoundedReadResult.hasMore}, and never returns that extra row.
+   * The returned array holds at most this many rows. The adapter that consumed this window read one more
+   * than this internally to decide the withdrawn `BoundedReadResult`'s `hasMore`, and never returned that
+   * extra row.
    */
   readonly limit: number;
 

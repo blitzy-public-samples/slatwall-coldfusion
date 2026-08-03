@@ -399,7 +399,7 @@ const SELF_REFERENCE_ALIAS = 'spt';
  * Composes the product-type tree statement once, from identifiers the schema whitelist has approved.
  *
  * This is the translation of `model/dao/ProductTypeDAO.cfc:L54-L62` — the legacy text with its
- * logical entity names replaced by the physical ones per the the logical-versus-physical naming divergence [model/dao/SkuDAO.cfc:L132] annotation in the file header, and
+ * logical entity names replaced by the physical ones per the naming-divergence annotation in the file header, and
  * with nothing else changed. What the legacy statement does, this statement does:
  *
  *   - THE WILDCARD IS PRESERVED AS A WILDCARD, and the decision not to enumerate columns is
@@ -466,7 +466,7 @@ const SELF_REFERENCE_ALIAS = 'spt';
 function composeProductTypeTreeStatement(): string {
   /*
    * The physical form is passed rather than the legacy logical form. The whitelist would normalise
-   * either — see the the logical-versus-physical naming divergence [model/dao/SkuDAO.cfc:L132] annotation in the file header for why the emitted form is written here.
+   * either — see the naming-divergence annotation in the file header for why the emitted form is written here.
    */
   const productTypeTable = assertTableName('SwProductType');
   const productTable = assertTableName('SwProduct');
@@ -486,7 +486,7 @@ function composeProductTypeTreeStatement(): string {
   /*
    * `model/dao/ProductTypeDAO.cfc:L55-L57` — the assigned-product count, as a CORRELATED SCALAR
    * SUBQUERY. The counted column, the scanned table and the correlation predicate are all the legacy's,
-   * with only the two table names translated to their physical form per the the logical-versus-physical naming divergence [model/dao/SkuDAO.cfc:L132] annotation. The
+   * with only the two table names translated to their physical form per the naming-divergence annotation. The
    * predicate reaches OUT to the outer query's product-type identifier, which is what makes it
    * correlated and what makes it evaluate once per outer row.
    */

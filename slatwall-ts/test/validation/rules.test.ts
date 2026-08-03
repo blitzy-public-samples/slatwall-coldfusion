@@ -4337,20 +4337,26 @@ describe('NET-NEW — F5. `hasOneOptionPerOptionGroup` — the pure in-memory du
   // and wrong grammar included, and it is recorded as an unnumbered annotation rather than assigned a
   // D-number.
   //
-  // THE REASON IS LOCAL, AND IS DELIBERATELY NOT A CLAIM ABOUT THE REGISTER'S BOUND: nothing in this
-  // file mints a defect or mismatch identifier, so this hint receives no additional number here. The
-  // register is stated canonically, and only once, in the header of
-  // `src/ports/repositories/SkuRepository.ts` (AAP §0.6.7's frozen source range D1-D21, plus the source
-  // extension the logical-versus-physical naming divergence [model/dao/SkuDAO.cfc:L132] and the three contract BOTH FROZEN AT THE AAP's OWN BOUNDS — AAP 0.6.7's D1-D21 and AAP 0.6.6's M1-M8. Nothing in this port mints an identifier beyond either range; a further source observation is recorded by its `path:Lnnn` locator instead).
+  // THE REASON IS LOCAL, AND IS DELIBERATELY NOT A CLAIM ABOUT ANY REGISTER'S BOUND: nothing in this
+  // file mints a defect or mismatch identifier, so this hint receives no number here. Both ranges are
+  // stated canonically, and only once, in the header of `src/ports/repositories/SkuRepository.ts` —
+  // AAP §0.6.7's **D1-D21** and AAP §0.6.6's **M1-M8**, both FROZEN. Nothing in this port mints an
+  // identifier beyond either range; a further source observation is recorded by its `path:Lnnn`
+  // locator instead.
   //
-  // ⛔ AN EARLIER REVISION OF THIS COMMENT READ "AAP §0.6.7 fixes the register at D1-D21 and inventing a
-  // the logical-versus-physical naming divergence [model/dao/SkuDAO.cfc:L132] would corrupt it", and it was wrong in both halves. the logical-versus-physical naming divergence [model/dao/SkuDAO.cfc:L132] EXISTS — it is the naming-convention
-  // defect minted in that same header, where `model/dao/SkuDAO.cfc` mixes logical entity names with
-  // physical table names — so the number this comment warned against inventing had already been
-  // assigned. And the FROZEN range AAP §0.6.7 fixes is not the LIVE bound: the live one moves whenever
-  // an entry is minted, which is why citing the frozen range as a ceiling is a category error rather
-  // than merely out of date. That header records earlier instances of exactly this drift, which is why
-  // no file but that one may state the live bound and why this comment now makes only a local claim.
+  // ⛔ THIS COMMENT HAS BEEN WRONG TWICE, AND BOTH ERRORS ARE WORTH NAMING. It first read "AAP §0.6.7
+  // fixes the register at D1-D21 and inventing a <port-minted number> would corrupt it" — wrong, because
+  // that number HAD been minted at the time, in the header named above. A later revision withdrew every
+  // port-minted number in favour of source locators, which is the right form (AAP §0.8.2 guideline 6) —
+  // but it substituted each numeral with a PROSE DESCRIPTION mechanically, including inside this
+  // sentence's range and list positions, leaving a paragraph that ran two half-sentences together and
+  // read "plus the source extension the logical-versus-physical naming divergence [...] and the three
+  // contract BOTH FROZEN AT THE AAP's OWN BOUNDS". Review finding F11 reported that residue. The claim
+  // above is now the only one this comment makes, and it is local and true.
+  //
+  // ⚠️ THE SUBSTANTIVE POINT SURVIVES BOTH ERRORS: the FROZEN range AAP §0.6.7 fixes is not a ceiling
+  // on what may be OBSERVED, only on what may be NUMBERED — which is why observations beyond it are
+  // carried by locator, and why no file but that header may state a bound at all.
 
   /** A SKU whose options are described as `[optionID, optionGroupID]` pairs. */
   function skuWithGroups(pairs: readonly (readonly [string, string])[]): Sku {

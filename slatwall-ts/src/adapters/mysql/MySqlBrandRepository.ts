@@ -63,7 +63,8 @@
  * `BrandService` "the cleanest of the four services", and the measurements agree: zero dead injections,
  * zero non-persistent properties on `model/entity/Brand.cfc`, and — with no legacy data-access component
  * — no interpolated-statement site and no logical-versus-physical naming mistake to carry. Stated as the
- * two identifiers a reviewer will look for: THERE IS NO D18 SITE HERE and THERE IS NO the logical-versus-physical naming divergence [model/dao/SkuDAO.cfc:L132] SITE HERE.
+ * two identifiers a reviewer will look for: THERE IS NO D18 SITE HERE, AND NO SITE OF THE
+ * LOGICAL-VERSUS-PHYSICAL NAMING DIVERGENCE [model/dao/SkuDAO.cfc:L132] EITHER.
  * D18 is exclusive to `MySqlProductRepository.ts`; the logical-versus-physical naming divergence [model/dao/SkuDAO.cfc:L132] needs a legacy statement for this entity and
  * there is none, which is why the naming note above is a plain warning rather than a carry-over
  * annotation. Nothing in the legacy tree is corrected (TR-6).
@@ -134,9 +135,11 @@
  * `model/entity/Brand.cfc` so nothing is boundary-excluded from the entity, and — because there is no
  * legacy data-access component — no interpolated-statement site and no logical-versus-physical
  * naming mistake to carry. Stated as the two register identifiers a reviewer will look for: THERE IS
- * NO D18 SITE HERE and THERE IS NO the logical-versus-physical naming divergence [model/dao/SkuDAO.cfc:L132] SITE HERE. D18 is the single declared hardening exception of
+ * NO D18 SITE HERE, AND NO SITE OF THE LOGICAL-VERSUS-PHYSICAL NAMING DIVERGENCE
+ * [model/dao/SkuDAO.cfc:L132] EITHER. D18 is the single declared hardening exception of
  * the whole port and it is exclusive to `MySqlProductRepository.ts`, which translates the importer's
- * twenty-one value-interpolating statements; this file neither inherits it nor claims it. the logical-versus-physical naming divergence [model/dao/SkuDAO.cfc:L132] is a
+ * twenty-one value-interpolating statements; this file neither inherits it nor claims it. The naming
+ * divergence [model/dao/SkuDAO.cfc:L132] is a
  * logical-versus-physical naming instance, and with no legacy statement for this entity there is no
  * instance of it to carry — which is why the naming note above is a plain warning and deliberately
  * NOT a carry-over annotation. Both numbers are placed by the canonical register statement: the

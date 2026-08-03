@@ -318,7 +318,7 @@ export type PhysicalTableName = (typeof PHYSICAL_TABLE_NAMES)[number];
  * The application key the framework prefixes onto an entity name to form its logical form.
  *
  * `org/Hibachi/HibachiDAO.cfc` compares against `getApplicationKey()` at `:L8`, `:L30`, `:L40`, `:L81`
- * and `:L104` and prepends it when absent; the six `entityname` values in the the logical-versus-physical naming divergence [model/dao/SkuDAO.cfc:L132] table above are the
+ * and `:L104` and prepends it when absent; the six `entityname` values in the naming-divergence table above are the
  * observed result, so the key is this literal. Held lower-cased because it is only ever compared
  * against a lower-cased candidate — this value is never emitted into a statement.
  */
@@ -640,7 +640,7 @@ const TABLE_COLUMN_LOOKUP: Readonly<Record<PhysicalTableName, ReadonlyMap<string
  *   - a logical name, normalised — `'SlatwallProduct'` to `'SwProduct'`, which is what makes the
  *     literals at `model/dao/ProductDAO.cfc:L193` and `:L207` usable;
  *   - a bare name, normalised — `'product'` to `'SwProduct'`, mirroring the framework's own
- *     acceptance of an unprefixed name at the five sites listed in the the logical-versus-physical naming divergence [model/dao/SkuDAO.cfc:L132] block above.
+ *     acceptance of an unprefixed name at the five sites listed in the naming-divergence block above.
  *
  * REFUSES everything else, including a table that exists in the wider `Sw*` schema but outside this
  * slice, and including the external content-management table at `model/dao/ProductDAO.cfc:L261-L264`.
@@ -1368,7 +1368,7 @@ export interface StatementRunner {
  * the next caller. The boundary needs a way to take such a connection out of service rather than
  * recycle it, and this is that way. All three failing steps are named because all three reach it: the
  * boundary withdraws the connection's standing BEFORE `beginTransaction` is attempted, so a begin that
- * failed part-way through is disposed of exactly as a failed settlement is. `test/adapters/UnitOfWork.test.ts`
+ * failed part-way through is disposed of exactly as a failed settlement is. `test/adapters/MySqlSkuRepository.test.ts`'s folded `UnitOfWork` block
  * asserts each of the three, against this contract's own double.
  */
 export interface TransactionalStatementRunner extends StatementRunner {

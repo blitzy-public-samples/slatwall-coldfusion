@@ -457,7 +457,7 @@ const PRODUCT_FEED_INPUT: SmartListInput = Object.freeze({
  *
  * ⭐ (3) IT KEEPS THE CLASS CONSTRUCTIBLE FROM A ONE-MEMBER DOUBLE, which is what "test at least one
  * non-empty item end to end" requires and what lets a suite distinguish the records-only reading from
- * the three-view one — the property `test/integrations/ProductFeedQuery.test.ts` now asserts directly.
+ * the three-view one — the property `test/integrations/ProductFeedBuilder.test.ts`'s folded `ProductFeedQuery` block now asserts directly.
  */
 export type ProductFeedSkuSource = Pick<SmartListQueryPort, 'executeRecords'>;
 
@@ -698,7 +698,7 @@ export class ProductFeedQuery {
      * `if(!structKeyExists(variables.entities,newEntityName))` and `:L549` builds the FROM clause by walking
      * that registry, one join per registered entity — and
      * `src/adapters/mysql/SmartListQueryBuilder.ts` reproduces that guard, so the emitted statement holds
-     * one join either way. `test/integrations/ProductFeedQuery.test.ts` pins both halves: six joins in
+     * one join either way. `test/integrations/ProductFeedBuilder.test.ts`'s folded `ProductFeedQuery` block pins both halves: six joins in
      * order, and the duplicate present twice in the description.
      *
      * The one companion argument that remains, `currentURL`, is left unsupplied, which matches

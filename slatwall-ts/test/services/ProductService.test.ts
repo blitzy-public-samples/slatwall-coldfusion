@@ -149,7 +149,7 @@ import { BaseService, type MaintenanceEntityRef } from '../../src/services/BaseS
 import { OptionService, type SelectOption } from '../../src/services/OptionService';
 import {
   ProductService,
-  type FormattedOptionGroup,
+  type FormattedOptionGroups,
   type ProductBaseService,
   type ProductProcessValidator,
   type ProductServiceCollaborators,
@@ -319,32 +319,33 @@ function requireAt<TItem>(items: readonly TItem[], index: number): TItem {
 /**
  * The option-group NAMES an answer carries, in the order it carries them.
  *
- * `getFormattedOptionGroups` answers `FormattedOptionGroup[]` (AAP §0.4.2.1), so the labels are read off
- * the entries rather than off a record's keys. Order is asserted through this helper because it is a
- * documented behaviour — first-seen group order — and not an accident of the shape.
+ * `getFormattedOptionGroups` answers a record KEYED by name — TR-1's tightening of
+ * `model/service/ProductService.cfc:L71`'s struct, restored by review finding F3 — so the labels are the
+ * record's own keys. Order is asserted through this helper because it is a documented behaviour —
+ * first-seen group order — and not an accident of the shape.
  */
-function groupNames(groups: readonly FormattedOptionGroup[]): readonly string[] {
-  return groups.map((group) => group.optionGroupName);
+function groupNames(groups: FormattedOptionGroups): readonly string[] {
+  return Object.keys(groups);
 }
 
 /**
- * Finds one formatted option group by NAME, failing loudly when no entry carries it.
+ * Reads one formatted option group by NAME, failing loudly when no entry carries it.
  *
- * The name is the identity `model/service/ProductService.cfc:L76` keys by, so it is the only sound way to
- * address an entry; the failure message lists the labels that ARE present so a mismatch reads as a
+ * The name is the identity `model/service/ProductService.cfc:L76` keys by, so it is the only way to
+ * address an entry; the failure message lists the keys that ARE present so a mismatch reads as a
  * mismatch rather than as an `undefined` dereference.
  */
 function requireGroup(
-  groups: readonly FormattedOptionGroup[],
+  groups: FormattedOptionGroups,
   optionGroupName: string,
-): FormattedOptionGroup {
-  const group = groups.find((candidate) => candidate.optionGroupName === optionGroupName);
-  if (group === undefined) {
+): readonly SelectOption[] {
+  const options = groups[optionGroupName];
+  if (options === undefined) {
     throw new Error(
       `Expected a "${optionGroupName}" option group but the answer holds [${groupNames(groups).join(', ')}].`,
     );
   }
-  return group;
+  return options;
 }
 
 /**
@@ -1274,29 +1275,31 @@ describe('getFormattedOptionGroups — the option-group projection', () => {
 
     const formatted = await harness.service.getFormattedOptionGroups(product);
 
-    // AAP §0.4.2.1 tabulates `getFormattedOptionGroups(product: Product): FormattedOptionGroup[]`, and
-    // the plan is frozen (D1 precedence 1). An earlier revision of this case asserted
-    // `Array.isArray(formatted) === false` on the ground that `:L71` initialises a CFML STRUCT; that is
-    // WITHDRAWN — the legacy struct is the name-collapse divergence [model/service/ProductService.cfc:L70-L80], annotated on the member, not a licence to retype it.
-    expect(Array.isArray(formatted)).toBe(true);
+    // ⭐ A KEYED RECORD, NOT AN ARRAY. `model/service/ProductService.cfc:L71` initialises a CFML STRUCT and
+    // `:L76` keys it by `getOptionGroupName()`, so TR-1 tightens the loose `any` return to that shape. A
+    // revision answered `FormattedOptionGroup[]` on the reading that AAP §0.4.2.1's tabulated array
+    // outranks TR-1, and this case asserted `Array.isArray(formatted) === true`; review finding F3
+    // withdrew both. Asserted here so the array cannot come back unnoticed.
+    expect(Array.isArray(formatted)).toBe(false);
 
-    // The LABEL is carried on the entry, so nothing was lost by moving off a keyed record. Order is
-    // first-seen group order: `Size` was yielded first and appears first.
+    // The KEY is the group name. Order is first-seen group order: `Size` was yielded first.
     expect(groupNames(formatted)).toEqual(['Size', 'Color']);
-    expect(requireGroup(formatted, 'Size').options).toEqual([
+    expect(requireGroup(formatted, 'Size')).toEqual([
       { name: 'Small', value: physicalID('o-small') },
       { name: 'Medium', value: physicalID('o-medium') },
     ]);
-    expect(requireGroup(formatted, 'Color').options).toEqual([
-      { name: 'Red', value: physicalID('o-red') },
-    ]);
+    expect(requireGroup(formatted, 'Color')).toEqual([{ name: 'Red', value: physicalID('o-red') }]);
 
-    // ⛔ AND NO IDENTIFIER IS PUBLISHED ALONGSIDE THE NAME (S9). `:L76` keys by name alone, so an entry
-    // carrying `optionGroupID` would report something the legacy entry cannot hold.
-    expect(Object.keys(requireGroup(formatted, 'Size')).sort()).toEqual([
-      'optionGroupName',
-      'options',
-    ]);
+    // ⛔ AND NO IDENTIFIER IS PUBLISHED ALONGSIDE THE NAME (S9). `:L76` maps a name straight to the option
+    // list, so each value is that bare list — an entry carrying `optionGroupID`, or wrapping the list in an
+    // object, would report a shape the legacy struct cannot hold.
+    expect(formatted).toStrictEqual({
+      Size: [
+        { name: 'Small', value: physicalID('o-small') },
+        { name: 'Medium', value: physicalID('o-medium') },
+      ],
+      Color: [{ name: 'Red', value: physicalID('o-red') }],
+    });
   });
 
   it('NET-NEW: X14 — the values are OptionService bare-option-name projections, never the DAO composite label', async () => {
@@ -1321,12 +1324,12 @@ describe('getFormattedOptionGroups — the option-group projection', () => {
     // — the BARE option name. `model/dao/OptionDAO.cfc:L51-L91` builds the composite
     // "<group> - <option>" label instead, and that is a DIFFERENT projection used by a DIFFERENT member.
     // Mixing them up is the easiest way to break this member, so the distinction is asserted.
-    const sizeOptions: readonly SelectOption[] = requireGroup(formatted, 'Size').options;
+    const sizeOptions: readonly SelectOption[] = requireGroup(formatted, 'Size');
     expect(requireAt(sizeOptions, 0).name).toBe('Small');
     expect(requireAt(sizeOptions, 0).name).not.toContain(' - ');
   });
 
-  it('NET-NEW: answers an empty array when the product carries no option groups', async () => {
+  it('NET-NEW: answers an empty RECORD when the product carries no option groups', async () => {
     const harness = buildHarness();
 
     const formatted = await harness.service.getFormattedOptionGroups(
@@ -1334,9 +1337,12 @@ describe('getFormattedOptionGroups — the option-group projection', () => {
     );
 
     // `:L75` iterates `arrayLen(productObjectGroups)` times, which is zero, so nothing is accumulated and
-    // the answer is empty. It is EMPTY rather than absent: the member always answers a collection.
-    expect(formatted).toEqual([]);
-    expect(formatted).toHaveLength(0);
+    // `:L79` returns the empty struct `:L71` created. It is EMPTY rather than absent, and it is an OBJECT
+    // rather than an array — `{}` is what the legacy answers, and a client destructuring by name must not
+    // have to special-case the no-groups product.
+    expect(formatted).toStrictEqual({});
+    expect(Array.isArray(formatted)).toBe(false);
+    expect(groupNames(formatted)).toEqual([]);
   });
 
   it('NET-NEW: two groups sharing a name collide and the LAST write wins (:L77), preserved as observed', async () => {
@@ -1367,12 +1373,11 @@ describe('getFormattedOptionGroups — the option-group projection', () => {
     // concatenate the two option lists, because either change would make the member answer something the
     // legacy never answered.
     //
-    // ⭐ THE ARRAY DOES NOT DILUTE THIS. Accumulating through a `Map` keyed by name is what keeps a
-    // repeated name to a single entry — a naive `push` would have produced two, which is exactly the
-    // failure the withdrawn record-shaped reading warned about.
-    expect(formatted).toHaveLength(1);
+    // ⭐ ONE ENTRY, AND THE LAST GROUP'S OPTIONS. Accumulating through a `Map` keyed by name before
+    // materialising is what reproduces `:L76`'s plain struct assignment: the surviving value is the LAST
+    // group's, sitting at the FIRST occurrence's position.
     expect(groupNames(formatted)).toEqual(['Size']);
-    expect(requireGroup(formatted, 'Size').options).toEqual([
+    expect(requireGroup(formatted, 'Size')).toEqual([
       { name: 'Huge', value: physicalID('o-huge') },
     ]);
   });
@@ -1430,7 +1435,7 @@ describe('getFormattedOptionGroups — the option-group projection', () => {
     );
 
     expect(groupNames(secondFormatted)).toEqual(['Beta']);
-    expect(requireGroup(secondFormatted, 'Beta').options).toEqual([
+    expect(requireGroup(secondFormatted, 'Beta')).toEqual([
       { name: 'B', value: physicalID('o-b') },
     ]);
   });
@@ -4902,13 +4907,11 @@ describe("test/handlers/productHandler.test.ts — the product surface's final w
 
           return Promise.resolve();
         },
-        getFormattedOptionGroups: (product: Product): Promise<readonly FormattedOptionGroup[]> => {
+        getFormattedOptionGroups: (product: Product): Promise<FormattedOptionGroups> => {
           record('getFormattedOptionGroups', [product]);
-          /* The service answers `FormattedOptionGroup[]` (AAP §0.4.2.1) — the group NAME travels on the
-           * entry, not as a record key — so the stub answers that shape too. */
-          return Promise.resolve([
-            { optionGroupName: 'Size', options: [{ name: 'Large', value: 'large' }] },
-          ]);
+          /* The service answers a record KEYED by option-group name — TR-1's tightening of
+           * `model/service/ProductService.cfc:L71`'s struct — so the double answers that shape too. */
+          return Promise.resolve({ Size: [{ name: 'Large', value: 'large' }] });
         },
         getProductSkusBySelectedOptions: (
           selectedOptions: string,
@@ -5901,29 +5904,33 @@ describe("test/handlers/productHandler.test.ts — the product surface's final w
       expect(probe.calls.map((call) => call.member)).toStrictEqual(['newProduct']);
     });
 
-    it('NET-NEW — getFormattedOptionGroups answers the grouped select projection as an ARRAY', async () => {
+    it('NET-NEW — getFormattedOptionGroups answers the grouped select projection KEYED BY NAME', async () => {
       const probe = admitAll();
 
       const result = await probe.handler.getFormattedOptionGroups(identifierEvent(PRODUCT_ID));
 
       expect(result.statusCode).toBe(200);
-      /* An ARRAY on the wire, one entry per option-group NAME, because that is the shape the service
-       * answers (AAP §0.4.2.1) and a JSON object's member order is not a value a client may rely on. Both
-       * option members are copied verbatim and nothing else is published — no `optionGroupID` (S9). */
-      expect(JSON.parse(result.body)).toStrictEqual([
-        { optionGroupName: 'Size', options: [{ name: 'Large', value: 'large' }] },
-      ]);
+      /* ⭐ A KEYED OBJECT on the wire, one member per option-group NAME, because that is the shape the
+       * service answers — TR-1's tightening of the CFML struct at
+       * `model/service/ProductService.cfc:L71-L79`. A revision published an ARRAY of
+       * `{optionGroupName, options}` entries and this case asserted it; review finding F3 withdrew both.
+       * Both option members are copied verbatim and nothing else is published — no `optionGroupID` (S9). */
+      expect(JSON.parse(result.body)).toStrictEqual({
+        Size: [{ name: 'Large', value: 'large' }],
+      });
+      expect(Array.isArray(JSON.parse(result.body))).toBe(false);
     });
   });
 
   /* ==============================================================================================
-   * API-01 — THE BOUNDARY-STUBBED MEMBERS: FLAGGED, NEVER DROPPED (TR-5)
+   * API-01 — THE PLAN-ANNOTATED BOUNDARY MEMBERS: FLAGGED, NEVER DROPPED (TR-5) — AND MEASURED
    * ============================================================================================== */
 
-  describe('productHandler — API-01/TR-5, the boundary-stubbed members stay routable', () => {
-    it('NET-NEW — TR-5 — all five stubbed process members are PRESENT on the surface', () => {
-      /* "The member is never quietly dropped from the interface." Their unimplemented state is answered
-       * at runtime by the SERVICE, so the handler must route them rather than omit them. */
+  describe('productHandler — API-01/TR-5, the boundary-limited members stay routable', () => {
+    it('NET-NEW — TR-5 — all five plan-annotated process members are PRESENT on the surface', () => {
+      /* "The member is never quietly dropped from the interface." Whatever each one DOES at run time is a
+       * separate question, settled by the three cases below; presence on the surface is unconditional,
+       * because §0.4.2's 28-member count is only checkable from the outside if every member is reachable. */
       const probe = admitAll();
 
       for (const member of [
@@ -5940,16 +5947,53 @@ describe("test/handlers/productHandler.test.ts — the product surface's final w
       }
     });
 
-    it('NET-NEW — the two members whose collaborators an ADAPTER could supply still reach the graph', async () => {
-      /* `processProductDeleteDefaultImage` and `processProductUpdateDefaultImageFileNames` take a `struct
-       * data` and a product respectively — both SERIALIZABLE — so their unavailability is the SERVICE's answer
-       * to give, and this boundary hardcodes nothing about them. That is the distinction the three refusals
-       * below turn on: those three require callable accessors, these two do not. */
+    it('NET-NEW — the CONDITIONAL member answers the product on the legacy no-op path', async () => {
+      /*
+       * ⭐ THE MEASURED INVENTORY, HALF ONE. Of the five members AAP §0.4.2.1 annotates as boundary-stubbed,
+       * `processProductDeleteDefaultImage` refuses only CONDITIONALLY, and the condition is the legacy's own:
+       * [model/service/ProductService.cfc:L199] tests `structKeyExists(arguments.data, "imageFile")` and does
+       * NOTHING when the key is absent, returning the product at [:L205]. A request naming no image file
+       * therefore answers the product — reaching the graph twice, once to resolve it and once to run the
+       * member. Only the path that WOULD delete a file touches the excluded `fileExists`/`fileDelete` pair at
+       * [:L200-L201], and only that path refuses.
+       *
+       * ⛔ A REVISION OF `../src/handlers/router.ts` DECLARED THAT ALL SEVEN ANNOTATED MEMBERS "answer with
+       * the documented not-implemented failure". Review finding F4 measured the claim false of this member and
+       * of the one below, and the inventory was corrected rather than the code bent to match it — refusing
+       * here would refuse input the legacy accepts. This case fails if that claim is ever reinstated.
+       */
       const probe = admitAll();
 
       const result = await probe.handler.processProductDeleteDefaultImage(payloadEvent('{}'));
 
       expect(result.statusCode).toBe(200);
+      expect(probe.calls.map((call) => call.through)).toStrictEqual(['graph', 'graph']);
+    });
+
+    it('NET-NEW — the FULLY PORTED member answers the product, and refusing would break saveProduct', async () => {
+      /*
+       * ⭐ THE MEASURED INVENTORY, HALF TWO. `processProductUpdateDefaultImageFileNames` is not stubbed at all.
+       * [model/service/ProductService.cfc:L208-L214] is a two-line loop — `sku.setImageFile(
+       * sku.generateImageFileName() )` — and `generateImageFileName` reads only `SettingResolverPort`, an
+       * IN-SCOPE port with a shipped resolver. Nothing excluded is on the path, so there is nothing to stub.
+       *
+       * ⛔ AND REFUSING HERE WOULD BE A FUNCTIONAL REGRESSION, NOT A BOUNDARY. `saveProduct` invokes this
+       * member at [model/service/ProductService.cfc:L282], and both `processProduct_addOptionGroup` [:L123]
+       * and `processProduct_addSubscriptionTerm` [:L193] END by delegating to it, so a refusal would take
+       * every new-product save down with it. That is why F4 was resolved by correcting the declared inventory
+       * rather than by "making both members consistent" with an annotation that measurement disproved.
+       */
+      const probe = admitAll();
+
+      const result = await probe.handler.processProductUpdateDefaultImageFileNames(
+        identifierEvent(PRODUCT_ID),
+      );
+
+      expect(result.statusCode).toBe(200);
+      expect(probe.calls.map((call) => call.member)).toStrictEqual([
+        'getProduct',
+        'processProductUpdateDefaultImageFileNames',
+      ]);
       expect(probe.calls.map((call) => call.through)).toStrictEqual(['graph', 'graph']);
     });
 

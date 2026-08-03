@@ -80,8 +80,8 @@
  *   - Any timeout, retry, batch-size, page-size or maximum-results number. AAP 0.7.3, S9 and
  *     IR-12 forbid inventing figures the source does not state.
  *   - Any new defect or mismatch identifier. ⚠️ F27: this bullet previously said "Both registers are
- *     closed — defects at D1-the logical-versus-physical naming divergence [model/dao/SkuDAO.cfc:L132] and execution-model mismatches at M1-M8", and both numbers were
- *     wrong. The claim this module can honestly make is the LOCAL one — THIS FILE mints no identifier
+ *     closed — defects at D1 through <a port-minted endpoint beyond D21> and execution-model mismatches at
+ *     M1-M8", and the defect endpoint was not the AAP's. The claim this module can honestly make is the LOCAL one — THIS FILE mints no identifier
  *     — so findings recorded below that carry no register number carry none deliberately. No range is
  *     restated here: the bounds and every port-minted entry are enumerated once, in
  *     `src/ports/repositories/SkuRepository.ts`.

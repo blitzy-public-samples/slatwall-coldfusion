@@ -1262,7 +1262,7 @@ export function createBrandHandler(
  * `../config/container` reaches `../config/database`, whose `mysql2` pool is created at module scope,
  * and `../config/env`, which validates the environment as a module-load side effect. A STATIC import
  * would therefore run both at the moment this module is loaded — and this module is loaded by
- * `test/handlers/brandHandler.test.ts`, which has no environment and needs no database, and by any
+ * `test/services/BrandService.test.ts`'s folded `brandHandler` block, which has no environment and needs no database, and by any
  * reader who simply requires the artifact to inspect it. Deferring the load to the first invocation
  * keeps module load free of side effects while the pool still lives at module scope of the module that
  * owns it, created once and reused across warm invocations exactly as AAP §0.3.2 requires. Nothing is
@@ -1422,7 +1422,7 @@ export const handler = async (event: APIGatewayProxyEvent): Promise<APIGatewayPr
        *
        * ⚠️ THE DEFERRAL ITSELF IS UNCHANGED, AND IT IS LOAD-BEARING. The call sits inside this one-time
        * initialisation branch, so importing this module still constructs no container and reads no
-       * environment — the property `test/handlers/entrySurface.test.ts` asserts, and the reason
+       * environment — the property `test/regression/issues.test.ts`'s folded `entrySurface` block asserts, and the reason
        * `./router.ts`, which resolves the graph at module load, fails a misconfigured deployment at cold
        * start while this entry stays loadable and answers the classified configuration failure per
        * invocation.

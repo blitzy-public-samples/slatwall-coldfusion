@@ -2202,6 +2202,53 @@ describe('NET-NEW — the build produces a complete, self-resolving Lambda packa
     BUILD_CASE_TIMEOUT_MS,
   );
 
+  it('[NET-NEW] F6 — the source manifest and the lockfile agree on the engines floor and the six scripts', () => {
+    /*
+     * ⭐ THE PROJECT'S COMMAND CONTRACT AND ITS RUNTIME FLOOR, PINNED SO NEITHER CAN BE SILENTLY LOWERED.
+     * Review finding F6 reported both regressions together: `engines.node` had been returned to the
+     * `>=20.19.0` value AAP 0.5.3.1 DERIVES from `eslint@10.8.0`'s `^20.19.0`, and the `format:check` and
+     * `test:coverage` scripts had been deleted as "outside the frozen four" — which left two documented
+     * commands that did not exist and a floor below the version the whole toolchain was verified on.
+     *
+     * ⭐ THE DERIVED VALUE IS A LOWER BOUND ON WHAT THE GRAPH TOLERATES, NOT A CEILING ON WHAT THE PROJECT
+     * MAY REQUIRE. Every version `>=20.20.2` admits also satisfies `^20.19.0`, so declaring the verified
+     * version states a real constraint rather than inventing one, and `.nvmrc` pins that same version so an
+     * installer lands exactly where the toolchain was validated. AAP 0.4.1.2 says which scripts the manifest
+     * must carry; it does not close the set.
+     *
+     * ⚠️ AND THE LOCKFILE'S ROOT ENTRY MUST AGREE, WHICH IS THE HALF A MANIFEST-ONLY ASSERTION MISSES.
+     * `npm` writes `engines` into `packages[""]` as well, and a lockfile disagreeing with its manifest is
+     * what makes an `npm ci` warn about a floor nobody declared.
+     */
+    const manifest = JSON.parse(readFileSync(join(SUBTREE_ROOT, 'package.json'), 'utf8')) as {
+      engines?: Record<string, string>;
+      scripts?: Record<string, string>;
+    };
+    const lockfile = JSON.parse(readFileSync(join(SUBTREE_ROOT, 'package-lock.json'), 'utf8')) as {
+      packages?: Record<string, { engines?: Record<string, string> }>;
+    };
+
+    expect(manifest.engines).toStrictEqual({ node: '>=20.20.2' });
+    expect(lockfile.packages?.['']?.engines).toStrictEqual(manifest.engines);
+    expect(readFileSync(join(SUBTREE_ROOT, '.nvmrc'), 'utf8').trim()).toBe('20.20.2');
+
+    /* All six, by name, so a removal fails here rather than at a reader's shell prompt. */
+    expect(Object.keys(manifest.scripts ?? {}).sort()).toStrictEqual([
+      'build',
+      'format:check',
+      'lint',
+      'test',
+      'test:coverage',
+      'typecheck',
+    ]);
+    /* And each one invokes the tool the contract names, rather than merely existing. */
+    expect(manifest.scripts?.['typecheck']).toBe('tsc --noEmit');
+    expect(manifest.scripts?.['lint']).toBe('eslint .');
+    expect(manifest.scripts?.['format:check']).toBe('prettier --check .');
+    expect(manifest.scripts?.['build']).toBe('node build/esbuild.mjs');
+    expect(manifest.scripts?.['test:coverage']).toContain('--coverage');
+  });
+
   it('[NET-NEW] writes a production manifest carrying the exact runtime dependency set and nothing developmental', () => {
     const sourceManifest = JSON.parse(
       readFileSync(join(SUBTREE_ROOT, 'package.json'), 'utf8'),
@@ -2229,9 +2276,9 @@ describe('NET-NEW — the build produces a complete, self-resolving Lambda packa
     expect(packagedManifest['type']).toBe('commonjs');
     expect(packagedManifest['private']).toBe(true);
 
-    /* And nothing developmental leaks: the ten dev dependencies and the four scripts describe how the
+    /* And nothing developmental leaks: the ten dev dependencies and the six scripts describe how the
      * subtree is BUILT, not what the runtime loads. There is no `overrides` block to leak either — the
-     * manifest declares none, which the manifest-shape case above asserts directly. */
+     * manifest declares none, and the F6 case above asserts the script set by name. */
     expect(packagedManifest).not.toHaveProperty('devDependencies');
     expect(packagedManifest).not.toHaveProperty('scripts');
     expect(packagedManifest).not.toHaveProperty('overrides');
@@ -2478,13 +2525,20 @@ const WIRING_VARIABLE_NAMES: readonly string[] = Object.freeze([
  * `DB_QUEUE_LIMIT` is `'1'` rather than `'0'` because the loader enforces a floor of 1, and
  * `DB_CONNECT_TIMEOUT_MS` is deliberately SHORT: no case is supposed to reach the driver, so the value
  * exists only to bound the failure of a case that regressed into doing so.
+ *
+ * ⛔ `DB_PASSWORD` IS `'fixture-not-a-real-password'` ON PURPOSE, AND IT MUST STAY UNMISTAKABLY FAKE.
+ * An earlier revision used the working password of a local development container here and in the subtree
+ * README; review finding F10 classified the README copy as a committed credential (CWE-798), and this file
+ * carried the same literal. A fixture value that could be a real secret is one a reader may copy, so the
+ * value is chosen to be impossible to mistake for one. No case in this suite opens a connection, so the
+ * literal's only job is to be present and to be visibly synthetic.
  */
 const WIRING_ENVIRONMENT: Readonly<Record<string, string>> = Object.freeze({
   DB_HOST: 'localhost',
   DB_PORT: '3306',
   DB_NAME: 'Slatwall',
   DB_USER: 'slatwall',
-  DB_PASSWORD: 'slatwall_pw',
+  DB_PASSWORD: 'fixture-not-a-real-password',
   DB_TLS_MODE: 'disabled',
   DB_CONNECTION_LIMIT: '10',
   DB_QUEUE_LIMIT: '1',
@@ -4947,7 +5001,7 @@ describe('test/config/env.test.ts — the configuration loader, which every laye
     DB_PORT: '3306',
     DB_NAME: 'Slatwall',
     DB_USER: 'slatwall',
-    DB_PASSWORD: 'slatwall_pw',
+    DB_PASSWORD: 'fixture-not-a-real-password',
     DB_TLS_MODE: 'disabled',
     DB_CONNECTION_LIMIT: '10',
     DB_QUEUE_LIMIT: '1',
@@ -5071,16 +5125,20 @@ describe('test/config/env.test.ts — the configuration loader, which every laye
       expect(loadConfigWith({ GOOGLE_FEED_HOST: host }).googleFeed.host).toBe(host);
     });
 
-    it('[NET-NEW] accepts sub-delimiters here precisely because the serializer encodes them', () => {
+    it('[NET-NEW] accepts sub-delimiters here precisely because the serializer answers for them', () => {
       /*
        * ⭐ THE TWO-LAYER SPLIT, ASSERTED RATHER THAN DESCRIBED.
        *
        * `&` and `'` are legal in an RFC 3986 `reg-name`, so refusing them here would reject a CONFORMING
-       * host — an invented policy. They are also XML metacharacters, so emitting them raw would break the
-       * document. Both facts are true at once, and the resolution is that GRAMMAR is owned here while
-       * ENCODING is owned by the serializer. This case pins the first half; the second half is pinned by
-       * `test/integrations/ProductFeedBuilder.test.ts`'s hostile-host block, which renders this exact value
-       * and requires it escaped at all five sites that compose it.
+       * host — an invented policy. They are also XML metacharacters, so emitting them raw would leave the
+       * document without a defined parse. Both facts are true at once, and the resolution is that GRAMMAR is
+       * owned here while WELL-FORMEDNESS is owned by the serializer. This case pins the first half.
+       *
+       * ⚠️ THE SECOND HALF IS A REFUSAL, NOT AN ESCAPE, AND THIS NOTE USED TO SAY OTHERWISE. Review finding
+       * CQ-9 withdrew the escaping of the nine raw sinks — `product.cfm` emits them unescaped — so
+       * `renderRawFeedNode` now REFUSES `&` and `<` rather than neutralising them. A `&`-bearing host
+       * therefore loads successfully and then fails the render with a `DataIntegrityError`, which the handler
+       * answers 500. `test/integrations/ProductFeedBuilder.test.ts` pins that exact outcome.
        */
       expect(loadConfigWith({ GOOGLE_FEED_HOST: "a&b'c.example" }).googleFeed.host).toBe(
         "a&b'c.example",
@@ -5089,30 +5147,100 @@ describe('test/config/env.test.ts — the configuration loader, which every laye
   });
 
   /* =====================================================================================================
-   * ⛔ §2 AND §3 STOOD HERE AS A HOST GRAMMAR AND ARE WITHDRAWN — ONLY THE COMPLETENESS RULE SURVIVES
+   * ⭐ §2 AND §3 — THE HOST GRAMMAR WAS WITHDRAWN FOR ONE REVISION AND REVIEW FINDING F8 REINSTATED IT
    *
-   * WHAT THEY ASSERTED. Twenty-three cases required `loadConfig` to REFUSE `GOOGLE_FEED_HOST` values outside
-   * RFC 3986 §3.2.2's `reg-name` production plus §3.2.3's `port`: a scheme prefix, a path, userinfo, a
-   * query, a fragment, embedded whitespace or markup, leading and trailing whitespace, an unbracketed or
-   * unterminated IPv6 literal, trailing text after a bracket, a truncated percent-encoding, an RFC 6874
-   * zone identifier, a NUL byte, and seven malformed ports. They drove `requireHostAuthorityValue`.
+   * WHAT THEY ASSERT. That `loadConfig` REFUSES `GOOGLE_FEED_HOST` values outside RFC 3986 §3.2.2's `host`
+   * production plus §3.2.3's optional `port`: a scheme prefix, a path, userinfo, a query, a fragment,
+   * embedded whitespace or markup, leading and trailing whitespace, an unbracketed or unterminated IPv6
+   * literal, trailing text after a bracket, a truncated percent-encoding, a NUL byte, and a malformed port.
+   * They drive `requireHostAuthorityValue`.
    *
-   * WHO WITHDREW IT AND ON WHAT AUTHORITY. `../../src/config/env.ts` carries the adjudication at its own
-   * THERE IS NO `requireHostAuthorityValue` note. In brief: `GOOGLE_FEED_HOST` stands in for
-   * `CGI.HTTP_HOST`, which `integrationServices/google/views/feed/product.cfm:L14` interpolates with NO
-   * validation of any kind, so refusing a value the legacy served is an outcome change rather than a
-   * preserved behaviour. AAP §0.6.7.7 licenses EXACTLY ONE such departure (D18, the importer's
-   * parameterised SQL) and §0.8.2 guideline 4 admits no proportionality test.
+   * ⛔ WHY THEY WERE WITHDRAWN, AND WHY THAT ARGUMENT NO LONGER GOVERNS. The withdrawal reasoned that
+   * `GOOGLE_FEED_HOST` stands in for `CGI.HTTP_HOST`, which
+   * `integrationServices/google/views/feed/product.cfm:L14` interpolates with NO validation, so refusing a
+   * value the legacy served is an outcome change — and that AAP §0.6.7.7 licenses EXACTLY ONE such departure
+   * (D18). The current review's finding F8 classifies the unvalidated read as a MAJOR security defect
+   * (CWE-20 feeding CWE-601) and directs that the value be validated as `host [ ":" port ]`.
    *
-   * ⭐ WHAT STILL HOLDS, AND IT IS NOT NOTHING. The loader still reads `GOOGLE_FEED_HOST` as REQUIRED and
-   * NON-BLANK — a configuration-COMPLETENESS rule rather than a grammar, and one the legacy has an
-   * equivalent of, since a deployment with no host cannot compose a URL at all. That rule is asserted by
-   * the case kept below, and a legal host still passes through byte-for-byte, asserted by the accepting
-   * cases kept with it. Downstream, SEC-2's XML-representability gate still refuses a host carrying `<`,
-   * `&` or `]]>` at a raw sink, because those make the document unparseable; and the residual exposure — a
-   * host carrying `/`, `@`, `?` or `#` — is asserted as a CARRIED DEFECT by the
-   * `TODO(parity) — WITHDRAWAL REGRESSION` case in `../integrations/ProductFeedBuilder.test.ts`.
+   * ⭐ AND THE COUNT OBJECTION DOES NOT REACH THE RULE, WHICH IS WHAT RESOLVES THE TWO READINGS. RFC 9110
+   * §7.2 DEFINES the HTTP `Host` field — which is what `CGI.HTTP_HOST` carries — as an RFC 3986 §3.2.2
+   * `host` with §3.2.3's optional `port`, userinfo expressly excluded. So no value refused below could ever
+   * have reached `:L14`: the legacy served none of them, and "refusing a value the legacy served" is not
+   * what this rule does. A rule that admits every value the legacy input could hold and refuses only values
+   * it could not is ALIGNMENT of a port-introduced variable with the value space of the legacy input it
+   * replaces, and it enters no divergence register.
+   *
+   * ⚠️ WHAT DOES ENTER THE REGISTER IS THE SCHEME, AND IT IS NOT ASSERTED HERE. The serializer emits
+   * `https://` where all five legacy lines hard-code `http://`; that is the port's second and only other
+   * declared divergence beside D18, it is directed by the same finding F8 (CWE-319), and
+   * `../integrations/ProductFeedBuilder.test.ts` pins it at the sink that makes it.
    * ================================================================================================== */
+
+  describe('NET-NEW env — F8: GOOGLE_FEED_HOST refuses everything outside the authority production', () => {
+    it.each([
+      ['a scheme prefix', 'https://store.example.com'],
+      ['a cleartext scheme prefix', 'http://store.example.com'],
+      ['a path', 'store.example.com/feed'],
+      ['bare userinfo', 'user@store.example.com'],
+      ['userinfo with a password', 'user:pw@store.example.com'],
+      ['a query', 'store.example.com?a=1'],
+      ['a fragment', 'store.example.com#top'],
+      ['a backslash', 'store.example.com\\feed'],
+      ['embedded whitespace', 'store example.com'],
+      ['leading whitespace', ' store.example.com'],
+      ['trailing whitespace', 'store.example.com '],
+      ['an embedded newline', 'store.example.com\nevil'],
+      ['embedded markup', 'store.example.com<script>'],
+      ['a NUL byte', 'store.example.com\u0000'],
+      ['a bare unbracketed IPv6 literal', '2001:db8::1'],
+      ['an unterminated bracket', '[2001:db8::1'],
+      ['trailing text after the bracket', '[2001:db8::1]x'],
+      ['a truncated percent-encoding', 'store%2.example'],
+      ['a non-ASCII label', 'b\u00fccher.example'],
+      ['a non-numeric port', 'store.example.com:http'],
+      ['a port above the addressable range', 'store.example.com:65536'],
+      ['a zero port', 'store.example.com:0'],
+      ['an empty port', 'store.example.com:'],
+    ])('[NET-NEW] refuses %s, naming the variable', (_description: string, host: string) => {
+      /*
+       * ⭐ THE FAILURE NAMES THE VARIABLE AND NEVER ECHOES THE VALUE. A rejected authority is
+       * attacker-supplied by hypothesis, so `expectVariableRejection` checks the variable name is present —
+       * and the case below checks the value is absent, which is the half a naming assertion cannot cover.
+       */
+      expectVariableRejection(captureLoadFailure({ GOOGLE_FEED_HOST: host }), 'GOOGLE_FEED_HOST');
+    });
+
+    it('[NET-NEW] the refusal names the variable but NOT the rejected value', () => {
+      /* ⛔ Copying a rejected authority into a configuration error would carry the payload into whatever
+       * reads the log. The message states the production and names `GOOGLE_FEED_HOST`; the value appears
+       * nowhere, and neither does the host inside it. */
+      const failure = captureLoadFailure({ GOOGLE_FEED_HOST: 'store.example.com@evil.example' });
+      /* `captureLoadFailure` answers `unknown` on purpose — see its own note on why `instanceof` cannot be
+       * used across `jest.resetModules()` — so the message is read through a narrowing test rather than an
+       * assertion, and the serialised form is appended so a value hidden in `context` is caught too. */
+      const message = failure instanceof Error ? failure.message : '';
+      const rendered = `${message} ${JSON.stringify(failure)}`;
+
+      expect(rendered).toContain('GOOGLE_FEED_HOST');
+      expect(rendered).not.toContain('evil.example');
+      expect(rendered).not.toContain('store.example.com@evil.example');
+    });
+
+    it('[NET-NEW] the port half is held to the SAME range DB_PORT is, by the same reader', () => {
+      /* One definition of "addressable TCP port" for the whole module: the boundary values pass and the
+       * values one step outside them are refused, which is the observable form of the delegation. */
+      expect(loadConfigWith({ GOOGLE_FEED_HOST: 'store.example.com:1' }).googleFeed.host).toBe(
+        'store.example.com:1',
+      );
+      expect(loadConfigWith({ GOOGLE_FEED_HOST: 'store.example.com:65535' }).googleFeed.host).toBe(
+        'store.example.com:65535',
+      );
+      expectVariableRejection(
+        captureLoadFailure({ GOOGLE_FEED_HOST: 'store.example.com:65536' }),
+        'GOOGLE_FEED_HOST',
+      );
+    });
+  });
 
   describe('NET-NEW env — GOOGLE_FEED_HOST is required, non-blank, and otherwise unmodified', () => {
     it.each([
@@ -5323,7 +5451,7 @@ describe('test/config/env.test.ts — the configuration loader, which every laye
       expect(config.database.port).toBe(3306);
       expect(config.database.database).toBe('Slatwall');
       expect(config.database.user).toBe('slatwall');
-      expect(config.database.password).toBe('slatwall_pw');
+      expect(config.database.password).toBe('fixture-not-a-real-password');
     });
 
     it('[NET-NEW] an unset transport mode resolves to the verified one, never to cleartext', () => {
@@ -5415,7 +5543,7 @@ describe('test/config/env.test.ts — the configuration loader, which every laye
       expect(surface).toContain('DB_PASSWORD');
       expect(surface).not.toContain('sentinel-user-value');
       expect(surface).not.toContain('sentinel-schema-value');
-      expect(surface).not.toContain('slatwall_pw');
+      expect(surface).not.toContain('fixture-not-a-real-password');
     });
   });
 
@@ -5640,7 +5768,7 @@ describe('test/config/container.test.ts — the PRODUCTION composition root: the
     DB_PORT: '3306',
     DB_NAME: 'Slatwall',
     DB_USER: 'slatwall',
-    DB_PASSWORD: 'slatwall_pw',
+    DB_PASSWORD: 'fixture-not-a-real-password',
     DB_TLS_MODE: 'disabled',
     DB_CONNECTION_LIMIT: '10',
     DB_QUEUE_LIMIT: '1',

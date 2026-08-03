@@ -1058,9 +1058,10 @@ describe('NET-NEW parameter order — option IDs in list order, then the product
  * `skuID=` and `model/entity/Product.cfc:L626` passes `productID=`. A literal zero-arity transcription
  * of the service member would compile in TypeScript — a lower-arity function is assignable wherever a
  * higher-arity one is expected — and would then DISCARD the identifier the entity had just supplied,
- * silently turning a scoped guard into a GLOBAL one that answers `true` for the whole catalogue. The
- * declared decision is therefore to keep the DAO-side optional signature, because
- * `model/dao/SkuDAO.cfc:L54-L55` declares both `productID` and `skuID` untyped and not required.
+ * silently turning a scoped guard into a GLOBAL one. One revision did exactly that, and review finding F1
+ * restored `(skuID?, productID?)` on the service under TR-1. This repository keeps the DAO-side optional
+ * signature either way, because `model/dao/SkuDAO.cfc:L54-L55` declares both `productID` and `skuID`
+ * untyped and not required.
  *
  * The two layers stay ordered differently as a result, and neither order may be "tidied": the entity /
  * caller contract is SKU-first `(skuID?, productID?)` because that is how the call sites read, while
@@ -1266,9 +1267,9 @@ describe('NET-NEW transactionExists — a call with neither scope is rejected, f
   });
 });
 
-describe('NET-NEW transactionExists — the undeclared-argument forwarding [model/service/SkuService.cfc:L285-L287], the caller-order crossing', () => {
+describe('NET-NEW transactionExists — the caller-order crossing [model/service/SkuService.cfc:L285-L287]', () => {
   /*
-   * TODO(parity) the undeclared-argument forwarding [model/service/SkuService.cfc:L285-L287] — the crossing exists because the two layers are ordered differently ON PURPOSE
+   * TODO(parity) — the crossing exists because the two layers are ordered differently ON PURPOSE
    * (see the G6 note above this section). `createTransactionExistenceChecker` is the single place the
    * inversion happens, and it must be pinned BEHAVIOURALLY: both identifiers are 32-character hex
    * strings (IR-6), so a crossing written backwards type-checks perfectly and then silently restricts

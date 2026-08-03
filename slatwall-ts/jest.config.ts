@@ -20,21 +20,24 @@
 //      `docblockPragmas['jest-config-loader'] || 'ts-node'`, and `registerTsLoader` accepts
 //      only `ts-node` or `esbuild-register` before throwing
 //      "'<loader>' is not a valid TypeScript configuration loader."
-//   3. Node 20.20.2, the runtime .nvmrc pins (engines ">=20.19.0"), reports no
+//   3. Node 20.20.2, the runtime .nvmrc pins (engines ">=20.20.2"), reports no
 //      type-stripping support at all: `process.features.typescript` is `undefined`,
 //      measured on this host, because that flag first appears in the 22.x line.
-//      ⚠️ READ THE TWO FIGURES AS THE TWO DIFFERENT THINGS THEY ARE. `.nvmrc` pins the EXACT
-//      version this toolchain was verified against, 20.20.2. `package.json` declares the FLOOR, and
-//      the floor is ">=20.19.0" — AAP 0.5.3.1 derives that value and requires it verbatim, because
-//      eslint@10.8.0's `^20.19.0` is the highest lower bound anywhere in the dependency graph and a
-//      bare ">=20" would let an install land on 20.0-20.18 and fail lint. A pin is not a floor, and
-//      quoting one where the other belongs is the near-miss this line exists to prevent.
-//      ⛔ AND THE FLOOR IS NOT RAISED TO 20.20.2 TO MAKE THE TWO MATCH. Fact 3 above needs only that
-//      the runtime be on the 20.x line, which every version at or above the floor satisfies; raising
-//      the floor to the pin would invent a constraint no dependency states, which AAP 0.5.3.1
-//      forbids by construction. A QA pass DID raise it to the pin and a later review recorded that as
-//      finding F1; it is back at the derived value here and in the manifest, and the two must not be
-//      conflated again. Review finding F12 (CWE-1104) turns on the `engines` field, so it is
+//      ⚠️ READ THE TWO FIGURES AS THE TWO DIFFERENT THINGS THEY ARE, EVEN THOUGH THEY NOW AGREE.
+//      `.nvmrc` pins the EXACT version this toolchain was verified against, 20.20.2. `package.json`
+//      declares the FLOOR. A pin is not a floor, and quoting one where the other belongs is the
+//      near-miss this line exists to prevent — they coincide at present, which makes the confusion
+//      easier rather than harder.
+//      ⭐ THE FLOOR IS ">=20.20.2", AND IT HAS MOVED TWICE. AAP 0.5.3.1 DERIVES ">=20.19.0" from
+//      eslint@10.8.0's `^20.19.0`, the highest lower bound anywhere in the dependency graph, and
+//      explains why a bare ">=20" is wrong: an install could land on 20.0-20.18 and fail lint. One
+//      revision raised the floor to the pin, a review recorded that as its finding F1 and it was
+//      returned to the derived value — and the CURRENT review's finding F6 requires ">=20.20.2",
+//      because that is the floor the project's verified setup contract states and the version the
+//      whole toolchain was validated against. The derived value is a LOWER bound on what the graph
+//      tolerates, not a ceiling on what the project may require, so declaring the verified version
+//      states a real constraint rather than inventing one; every version it admits also satisfies
+//      AAP 0.5.3.1's derivation. Review finding F12 (CWE-1104) turns on the `engines` field, so it is
 //      quoted here exactly as the manifest declares it — a disclosure argued from a misquoted floor
 //      is worth nothing. build/esbuild.mjs carries the F12 lifecycle gate itself.
 //
@@ -300,13 +303,19 @@ const config = {
   verbose: true,
 
   // --- 4f. Coverage: collected, deliberately NOT gated -------------------------------
-  // Collection is switched on in the configuration rather than left to a `--coverage`
-  // flag, because package.json declares exactly four scripts (AAP 0.4.1.2 — build, test,
-  // lint, typecheck) and its single `test` script passes no `--coverage`: relying on the
-  // flag would mean the signal was, in practice, never produced. An earlier revision
-  // carried a fifth `test:coverage` script for it, which review finding F2 removed as
-  // outside the frozen four; declaring collection here is what makes that removal costless
-  // rather than a loss of signal. Output goes to coverage/,
+  // Collection is switched on in the CONFIGURATION rather than left to a `--coverage`
+  // flag, so the signal is produced by every run and cannot be lost by a script that forgot
+  // to ask for it. `package.json` also declares a `test:coverage` script that passes the flag
+  // explicitly, so the intent is addressable by name as well as always-on — the two are
+  // deliberately redundant rather than alternatives.
+  //
+  // ⚠️ THAT SCRIPT WAS REMOVED FOR ONE REVISION AND REVIEW FINDING F6 RESTORED IT, ALONG WITH
+  // `format:check`. The removal read AAP 0.4.1.2's `build`/`test`/`lint`/`typecheck` list as a
+  // CLOSED set and called a fifth script "outside the frozen four". That section declares which
+  // scripts the manifest must carry; it does not forbid others, and the project's verified
+  // command contract names all six — so removing two left two documented commands that did not
+  // exist. Collection stays declared here regardless, which is what makes the pair costless.
+  // Output goes to coverage/,
   // which .gitignore already excludes — and Prettier 3 honours .gitignore, so the same
   // single entry covers the formatter too, with no separate .prettierignore to keep in
   // sync. slatwall-ts/.gitignore is the one place that records that file's removal and the

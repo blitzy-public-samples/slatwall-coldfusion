@@ -1192,7 +1192,7 @@ export function createOptionHandler(
  * ⭐ THE COMPOSITION ROOT IS REACHED THROUGH A DEFERRED REQUIRE, and that is the one subtle thing here.
  * `../config/container` reaches `../config/database`, whose `mysql2` pool is created at module scope,
  * and `../config/env`, which validates the environment as a module-load side effect. A STATIC import
- * would run both when this module is loaded — including by `test/handlers/optionHandler.test.ts`, which
+ * would run both when this module is loaded — including by `test/services/OptionService.test.ts`'s folded `optionHandler` block, which
  * has neither an environment nor a database. Deferring it to the first invocation keeps module load
  * free of side effects while the pool still lives at module scope of the module that owns it, created
  * once and reused across warm invocations exactly as AAP §0.3.2 requires.
@@ -1368,7 +1368,7 @@ export const handler = async (event: APIGatewayProxyEvent): Promise<APIGatewayPr
        *
        * ⚠️ THE DEFERRAL ITSELF IS UNCHANGED, AND IT IS LOAD-BEARING. The call sits inside this one-time
        * initialisation branch, so importing this module still constructs no container and reads no
-       * environment — the property `test/handlers/entrySurface.test.ts` asserts, and the reason
+       * environment — the property `test/regression/issues.test.ts`'s folded `entrySurface` block asserts, and the reason
        * `./router.ts`, which resolves the graph at module load, fails a misconfigured deployment at cold
        * start while this entry stays loadable and answers the classified configuration failure per
        * invocation.

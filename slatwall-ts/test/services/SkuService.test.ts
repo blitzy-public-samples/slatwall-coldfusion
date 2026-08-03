@@ -196,8 +196,9 @@ import {
   createSubscriptionTermDouble,
   /*
    * The production crossing, re-exported for tests. It is imported HERE — in the service suite — because
-   * the the undeclared-argument forwarding [model/service/SkuService.cfc:L285-L287] block below has to prove that the identifier-scoped probe the two delete guards use is this
-   * checker and NOT the zero-argument service member AAP §0.4.2.2 freezes.
+   * the `getTransactionExistsFlag` block below has to prove that the identifier-scoped probe the two
+   * delete guards use is this CHECKER, whose caller order it crosses onto the repository's, and not the
+   * service member it now happens to share a shape with.
    */
   createTransactionExistenceChecker,
   createValidatorHarness,
@@ -378,6 +379,17 @@ function buildColorAndSizeOptions(): {
  * THE HARNESS
  * ===================================================================================================
  */
+
+/**
+ * The verdict the image-path double answers when a case does not set `saveImageSucceeds`.
+ *
+ * Named rather than inlined because `processImageUpload` answers the image service's own boolean
+ * ([model/service/SkuService.cfc:L213-L217]), so every case that does not care WHICH way the write went
+ * still has to state the default it is riding on. `createImagePathDouble` in
+ * `../support/inMemoryRepositories.ts` defaults `saveSucceeds` to `true`; this constant is that default,
+ * declared once so the two cannot drift.
+ */
+const SAVE_IMAGE_SUCCEEDS_BY_DEFAULT = true;
 
 /** Everything a case may vary. Every field is optional; omitting one means "nothing seeded". */
 interface HarnessOptions {
@@ -2851,23 +2863,22 @@ describe('SkuService.processImageUpload', () => {
     serverFileExt: 'jpg',
   };
 
-  it('NET-NEW answers with the SAME SKU instance, for BOTH image-service outcomes', async () => {
+  it('NET-NEW answers with the image-write VERDICT, distinctly for BOTH image-service outcomes', async () => {
     /*
-     * ⭐ THE RETURN TYPE IS `Sku`, NOT `boolean`, BECAUSE AAP §0.4.2.2 TABULATES IT (review finding F2b).
-     * The legacy declares `public any function` and then returns `true`/`false` from both arms at [:L214]
-     * and [:L216], so the BODY answers with a verdict; the plan resolves that loose `any` to the entity and
-     * the plan is frozen (AAP §0.1.2.1). The divergence is carried as an annotation at
-     * [model/service/SkuService.cfc:L213-L217] rather than repaired, and the service's own docblock
-     * transcribes the three arguments for the boolean with the precedence point that answers them.
+     * ⭐ THE RETURN TYPE IS `boolean`, NOT `Sku`, BECAUSE THE LEGACY BODY ANSWERS A VERDICT. The
+     * declaration is `public any function` — loose — and [:L213-L217] settles what that `any` is:
+     * `return true;` at [:L214] and `return false;` at [:L216], and never the entity. TR-1 tightens a loose
+     * signature to the OBSERVED contract, which is what this case pins.
      *
-     * ⛔ SO THE VERDICT IS NOT OBSERVABLE HERE, AND THAT IS ASSERTED RATHER THAN GLOSSED: a stored write
-     * and a declined one produce the SAME answer, the caller's own instance. An operator who needs the
-     * distinction closes it in their `ImagePathPort` adapter by rejecting a declined write, which this
-     * member propagates untouched.
+     * ⚠️ A REVISION TYPED THE MEMBER `Promise<Sku>` AND THIS CASE ASSERTED THE ENTITY — that a stored write
+     * and a declined one produced the SAME answer. Review finding F2 withdrew it: a member answering a
+     * different KIND of value than the legacy body answers does not preserve the interface boundary, and it
+     * made the verdict unobservable anywhere in the port. The two outcomes are now DISTINGUISHABLE, which is
+     * what the legacy caller of `saveImageFile` could always see.
      *
      * TODO(parity) — [:L213-L216] is a redundant boolean identity: `if(imageSaved) return true; else
-     * return false;` is exactly `return imageSaved;`. Neither form is reproduced, because the port answers
-     * with the entity; the redundancy is recorded here rather than carried as dead branching.
+     * return false;` is exactly `return imageSaved;`. The port writes the direct form, because the dead
+     * branching carries no behaviour; the redundancy is recorded rather than reproduced.
      */
     const succeeding = buildHarness({
       saveImageSucceeds: true,
@@ -2882,9 +2893,13 @@ describe('SkuService.processImageUpload', () => {
       ...PERMITTED_IMAGE_UPLOAD,
       fileWasSaved: true,
     });
-    /* IDENTITY, not equality — [:L211-L217] neither re-reads nor clones, so the caller still holds the
-     * very object it passed in. */
-    expect(saved).toBe(savedSku);
+    /* A STORED write is `true` — [:L214]. Asserted as an exact boolean rather than truthiness, so a
+     * revision answering with an entity again fails here by value rather than passing on coercion. */
+    expect(saved).toBe(true);
+
+    /* ⚠️ AND THE ENTITY IS NOT MUTATED ON THE WAY THROUGH. [:L211-L217] neither re-reads nor clones nor
+     * writes, so the caller's own instance is unchanged. */
+    expect(savedSku.imageFile).toBe(CONTAINED_IMAGE_FILE);
 
     const failing = buildHarness({
       saveImageSucceeds: false,
@@ -2899,9 +2914,11 @@ describe('SkuService.processImageUpload', () => {
       ...PERMITTED_IMAGE_UPLOAD,
       fileWasSaved: false,
     });
-    /* ⛔ THE DECLINED WRITE ANSWERS THE ENTITY TOO. This is the S8 consequence of the tabulated contract,
-     * asserted so it cannot be mistaken for an oversight later. */
-    expect(notSaved).toBe(rejectedSku);
+    /* ⛔ A DECLINED write is `false` — [:L216] — and it is NOT a raise, NOT a `null` and NOT an error
+     * recorded on the entity. The distinction between the two outcomes is the whole of what this member
+     * publishes. */
+    expect(notSaved).toBe(false);
+    expect(rejectedSku.imageFile).toBe(CONTAINED_IMAGE_FILE);
   });
 
   it('NET-NEW a DECLINED write still resolves, records no error and raises nothing [model/service/SkuService.cfc:L213-L217]', async () => {
@@ -2911,8 +2928,8 @@ describe('SkuService.processImageUpload', () => {
      * would fabricate behaviour the legacy lacks (AAP §0.8.2 Guideline 4). The port asked the image port
      * exactly once and then answered; nothing was retried and no second path was composed.
      *
-     * ⚠️ AND THE ENTITY IS NOT MUTATED ON THE WAY THROUGH, which is what makes "answers with the SKU"
-     * different from "answers with a report". The instance is field-for-field what it was.
+     * ⚠️ AND THE ENTITY IS NOT MUTATED ON THE WAY THROUGH. The SKU is READ for its path and nothing else,
+     * so the caller's instance is field-for-field what it was.
      */
     const harness = buildHarness({
       saveImageSucceeds: false,
@@ -2922,7 +2939,7 @@ describe('SkuService.processImageUpload', () => {
     const before = { ...sku };
 
     await expect(harness.service.processImageUpload(sku, PERMITTED_IMAGE_UPLOAD)).resolves.toBe(
-      sku,
+      false,
     );
 
     /* Nothing was written onto the entity, and nothing was raised — the two things a "helpful" port would
@@ -3003,7 +3020,9 @@ describe('SkuService.processImageUpload', () => {
     const harness = buildHarness();
     const sku = buildSku({ skuID: ID.existingSku, price: 10 });
 
-    await expect(harness.service.processImageUpload(sku, {})).resolves.toBe(sku);
+    await expect(harness.service.processImageUpload(sku, {})).resolves.toBe(
+      SAVE_IMAGE_SUCCEEDS_BY_DEFAULT,
+    );
     /* Composed AND asked to write, with the empty file position intact. */
     expect(harness.imagePaths.calls.map((call) => call.member)).toEqual([
       'getImagePath',
@@ -3513,57 +3532,128 @@ describe('SkuService.getTransactionExistsFlag', () => {
    * `model/service/SkuService.cfc:L285-L287`.
    *
    * ===================================================================================================
-   * G6 — THE MEMBER DECLARES ZERO ARGUMENTS, AND THE IDENTIFIER-SCOPED PROBE LIVES ONE LAYER DOWN
+   * G6 — THE MEMBER DECLARES ZERO ARGUMENTS AND OBSERVABLY TAKES TWO, SO THE PORT DECLARES TWO
    * ===================================================================================================
    * [:L285] declares `public boolean function getTransactionExistsFlag()` — no formal arguments at all —
    * and [:L286] forwards `argumentCollection=arguments`. CFML puts UNDECLARED named arguments into that
    * collection regardless, which is how the two ENTITY call sites,
    * `model/entity/Sku.cfc:L594` (`skuID=`) and `model/entity/Product.cfc:L626` (`productID=`), scope the
-   * question through a signature that names neither. That is carried the undeclared-argument forwarding [model/service/SkuService.cfc:L285-L287].
+   * question through a signature that names neither.
    *
-   * ⭐ AAP §0.4.2.2 FREEZES THIS MEMBER AT ZERO ARGUMENTS. Its Discrepancy 4 says so in its own words:
-   * "the service member takes no arguments while the underlying DAO member accepts optional productID and
-   * skuID. The narrower service contract is preserved." The plan is frozen and is aligned to, never
-   * reinterpreted, so the cases below assert the narrow contract.
+   * ⭐ TR-1 IS THE RULE THAT SETTLES IT. AAP §0.4.2.2's Discrepancy 4 records the DECLARATION — "the
+   * service member takes no arguments while the underlying DAO member accepts optional productID and
+   * skuID" — and TR-1 says what the port then declares: "Where a legacy signature is loose … the target
+   * signature is tightened to the observed contract." Every call this member ever receives scopes the
+   * probe, so the observed contract is `(skuID?, productID?)` and that is what the cases below assert.
    *
-   * ⚠️ A REVISION WIDENED THIS MEMBER TO `(skuID?, productID?)` AND THIS BLOCK ASSERTED THE WIDER SHAPE.
-   * The justification recorded here at the time was that reading the declaration literally "would turn
-   * the product delete guard into a GLOBAL one". It would not, and that is the whole reason the widening
-   * was withdrawn: NEITHER DELETE GUARD CONSUMES THIS MEMBER. `Sku` and `Product` each receive a branded
-   * checker — `SkuTransactionExistenceChecker` and `ProductTransactionExistenceChecker` — whose single
-   * implementation is `createTransactionExistenceChecker`, declared in
-   * `src/adapters/mysql/MySqlSkuRepository.ts` and re-exported for tests by
-   * `test/support/inMemoryRepositories.ts`. The last case below proves that, so the coverage the widening
-   * claimed to protect is asserted where it actually lives.
+   * ⚠️ A REVISION NARROWED THIS MEMBER TO ZERO PARAMETERS AND THIS BLOCK ASSERTED THE NARROW SHAPE — that
+   * a call forwarded NOTHING, and that every invocation therefore rejected. Review finding F1 withdrew
+   * it: a member that discards the only input it is ever given cannot answer the question its callers
+   * ask, and the route above it became a permanent 501 for a capability the legacy exercises on every
+   * product and SKU delete. The refusal for a genuinely UNSCOPED call is still asserted, because that one
+   * IS the legacy's behaviour (`model/dao/SkuDAO.cfc:L90` dereferences a key that is not there) — it is
+   * simply no longer the only outcome.
    *
-   * WHERE THE CROSSING ITSELF IS PINNED. `(skuID?, productID?)` on the checkers versus
-   * `(productID?, skuID?)` on `SkuRepository.transactionExists` (AAP §0.4.2.6, TR-4 — the DAO's own
-   * declaration order at `model/dao/SkuDAO.cfc:L54-L55`). Both identifiers are 32-character strings
-   * (IR-6), so a swap type-checks; `test/adapters/MySqlSkuRepository.test.ts` owns the exhaustive
-   * slot-by-slot assertions over the production factory, and this file asserts only what belongs to the
-   * service.
+   * WHERE THE CROSSING IS PINNED. This member is SKU-first, matching
+   * `SkuTransactionExistenceChecker` in `src/domain/sku/Sku.ts` and
+   * `ProductTransactionExistenceChecker` in `src/domain/product/Product.ts`;
+   * `SkuRepository.transactionExists` is PRODUCT-first (AAP §0.4.2.6, TR-4 — the DAO's own declaration
+   * order at `model/dao/SkuDAO.cfc:L54-L55`). Both identifiers are 32-character strings (IR-6), so a swap
+   * type-checks; the slot assertions below are what would catch it.
+   * `test/adapters/MySqlSkuRepository.test.ts` owns the same assertions for the checker factory.
    */
 
-  it('NET-NEW declares no parameters, so a call forwards NOTHING to the repository', async () => {
+  it('NET-NEW declares BOTH optional identifiers, restoring the contract [:L286] forwards', () => {
     /*
-     * The narrow contract, asserted behaviourally rather than by prose. `Function.length` counts declared
-     * parameters before the first default — zero here — and the repository sees a call with both slots
-     * `undefined`, which is exactly what `[:L286]` forwards when `arguments` is empty.
+     * `Function.length` counts declared parameters before the first default or rest element. Two here,
+     * and the guard `SkuServiceAcceptsBothTransactionIdentifiers` in `src/services/SkuService.ts` makes a
+     * re-narrowing a build failure; this case makes it a test failure as well, so the regression cannot
+     * return quietly through either route.
      */
     const harness = buildHarness({ transactionProductIDs: [ID.product] });
 
-    expect(harness.service.getTransactionExistsFlag.length).toBe(0);
-
-    await expect(harness.service.getTransactionExistsFlag()).rejects.toThrow(DomainError);
-
-    const call = requireAt(harness.skuRepository.calls, 0, 'the transaction probe');
-    if (call.member !== 'transactionExists') {
-      throw new Error('The first repository call was expected to be the transaction probe.');
-    }
-    expect([call.productID, call.skuID]).toEqual([undefined, undefined]);
+    expect(harness.service.getTransactionExistsFlag.length).toBe(2);
   });
 
-  it('NET-NEW raises for that call shape at the layer the legacy raises, and answers nothing global', async () => {
+  it('NET-NEW a SKU-scoped probe reaches the repository SECOND slot and answers that SKU alone', async () => {
+    /*
+     * `model/entity/Sku.cfc:L594` passes `skuID=` and nothing else. The service parameter is FIRST and
+     * the repository parameter is SECOND, so the crossing is what this case pins: a `skuID` that arrived
+     * in the repository's `productID` slot would query `ss.product.productID = :skuID`, match no row and
+     * answer `false` — from a flag whose `false` PERMITS A DELETE.
+     */
+    const harness = buildHarness({ transactionSkuIDs: [ID.existingSku] });
+
+    await expect(harness.service.getTransactionExistsFlag(ID.existingSku)).resolves.toBe(true);
+    await expect(harness.service.getTransactionExistsFlag(ID.secondExistingSku)).resolves.toBe(
+      false,
+    );
+
+    expect(
+      harness.skuRepository.calls.map((call) =>
+        call.member === 'transactionExists' ? [call.productID, call.skuID] : call.member,
+      ),
+    ).toEqual([
+      [undefined, ID.existingSku],
+      [undefined, ID.secondExistingSku],
+    ]);
+  });
+
+  it('NET-NEW a product-scoped probe reaches the repository FIRST slot and answers that product alone', async () => {
+    /*
+     * `model/entity/Product.cfc:L626` passes `productID=` and leaves the SKU slot absent, which is why
+     * the service call below supplies `undefined` first. One product participating in a transaction must
+     * not make a DIFFERENT product undeletable, so the negative case is asserted alongside the positive.
+     */
+    const harness = buildHarness({ transactionProductIDs: [ID.product] });
+
+    await expect(harness.service.getTransactionExistsFlag(undefined, ID.product)).resolves.toBe(
+      true,
+    );
+    await expect(
+      harness.service.getTransactionExistsFlag(undefined, ID.otherProduct),
+    ).resolves.toBe(false);
+
+    expect(
+      harness.skuRepository.calls.map((call) =>
+        call.member === 'transactionExists' ? [call.productID, call.skuID] : call.member,
+      ),
+    ).toEqual([
+      [ID.product, undefined],
+      [ID.otherProduct, undefined],
+    ]);
+  });
+
+  it("NET-NEW both identifiers are forwarded when both are supplied, and the DAO precedence is the repository's", async () => {
+    /*
+     * `model/dao/SkuDAO.cfc:L58` lets `skuID` WIN when both are present, and that precedence belongs to
+     * the layer that composes the statement. This member forwards BOTH slots rather than dropping one, so
+     * the repository can apply the legacy rule where the legacy applies it.
+     */
+    const harness = buildHarness({
+      transactionSkuIDs: [ID.existingSku],
+      transactionProductIDs: [ID.otherProduct],
+    });
+
+    /* SKU present and participating, product present and also participating: the SKU branch answers. */
+    await expect(
+      harness.service.getTransactionExistsFlag(ID.existingSku, ID.otherProduct),
+    ).resolves.toBe(true);
+
+    /* SKU present but NOT participating: still the SKU branch, so the participating product is ignored. */
+    await expect(
+      harness.service.getTransactionExistsFlag(ID.secondExistingSku, ID.otherProduct),
+    ).resolves.toBe(false);
+
+    const probe = requireAt(harness.skuRepository.calls, 0, 'the transaction probe');
+
+    if (probe.member !== 'transactionExists') {
+      throw new Error('The first repository call was expected to be the transaction probe.');
+    }
+    expect([probe.productID, probe.skuID]).toEqual([ID.otherProduct, ID.existingSku]);
+  });
+
+  it('NET-NEW an UNSCOPED probe still raises where the legacy raises, and answers nothing global', async () => {
     /*
      * A genuinely argument-free legacy invocation falls past the `structKeyExists` test at
      * `model/dao/SkuDAO.cfc:L58` and binds `arguments.productID` at [:L90] — dereferencing a key that is
@@ -3599,19 +3689,19 @@ describe('SkuService.getTransactionExistsFlag', () => {
       if (probe.member !== 'transactionExists') {
         throw new Error('The filter should have retained only transaction probes.');
       }
-      expect(probe.productID).not.toBe('');
-      expect(probe.skuID).not.toBe('');
+      expect(probe.productID).toBeUndefined();
+      expect(probe.skuID).toBeUndefined();
     }
   });
 
-  it('NET-NEW the identifier-scoped probe the two delete guards use is the CHECKER, not this member', async () => {
+  it('NET-NEW the branded entity checker reaches the same capability, in the same slots', async () => {
     /*
-     * ⭐ THE CASE THAT REPLACES THE WIDENED ONES, AND THE ONE THAT REFUTES THE ARGUMENT FOR WIDENING.
-     * `model/entity/Sku.cfc:L594` and `model/entity/Product.cfc:L626` are entity-level reads, and in the
-     * port each entity is handed `createTransactionExistenceChecker` — the production crossing in
-     * `src/adapters/mysql/MySqlSkuRepository.ts`. So the delete guards keep their identifier scoping with
-     * the service member at zero arity: one product participating in a transaction does NOT make every
-     * product undeletable, which is precisely what the widening was said to prevent.
+     * ⭐ THE TWO ROUTES TO ONE CAPABILITY, ASSERTED SIDE BY SIDE. `model/entity/Sku.cfc:L594` and
+     * `model/entity/Product.cfc:L626` are ENTITY-level reads, and in the port each entity is handed
+     * `createTransactionExistenceChecker` — the production crossing in
+     * `src/adapters/mysql/MySqlSkuRepository.ts` — rather than a service. The checker is SKU-first, exactly
+     * as this service member now is, so the two agree by construction; this case proves that rather than
+     * asserting it in prose.
      */
     const harness = buildHarness({
       transactionProductIDs: [ID.product],
@@ -3619,7 +3709,7 @@ describe('SkuService.getTransactionExistsFlag', () => {
     });
     const checker = createTransactionExistenceChecker(harness.skuRepository.repository);
 
-    /* The SKU-side caller's slot: first. */
+    /* The SKU-side caller's slot: first — the same slot the service declares first. */
     await expect(checker.getTransactionExistsFlag(ID.existingSku)).resolves.toBe(true);
     await expect(checker.getTransactionExistsFlag(ID.secondExistingSku)).resolves.toBe(false);
 
@@ -3627,12 +3717,6 @@ describe('SkuService.getTransactionExistsFlag', () => {
     await expect(checker.getTransactionExistsFlag(undefined, ID.product)).resolves.toBe(true);
     await expect(checker.getTransactionExistsFlag(undefined, ID.otherProduct)).resolves.toBe(false);
 
-    /*
-     * The crossing, at the one place it happens: the checker is SKU-first and the repository is
-     * PRODUCT-first. `test/adapters/MySqlSkuRepository.test.ts` asserts this slot by slot over a
-     * recording executor; here it is asserted once so this file's account of "where the capability lives"
-     * is proven rather than promised.
-     */
     expect(
       harness.skuRepository.calls.map((call) =>
         call.member === 'transactionExists' ? [call.productID, call.skuID] : call.member,
@@ -3644,7 +3728,8 @@ describe('SkuService.getTransactionExistsFlag', () => {
       [ID.otherProduct, undefined],
     ]);
 
-    /* And the brand the service member does not carry, which is what makes a mis-binding a type error. */
+    /* And the brand, which is what makes binding the service member where a checker is expected — the two
+     * orders happen to agree, so assignability alone would permit it — a type error. */
     expect(checker.argumentOrder).toBe('skuID-first-productID-second');
   });
 });
@@ -5254,7 +5339,9 @@ describe('SkuService — the image write, the composition and the probe: NOTHING
     });
     const sku = buildSkuWithImageFile(TRAVERSAL_VECTOR);
 
-    await expect(harness.service.processImageUpload(sku, {})).resolves.toBe(sku);
+    await expect(harness.service.processImageUpload(sku, {})).resolves.toBe(
+      SAVE_IMAGE_SUCCEEDS_BY_DEFAULT,
+    );
     expect(harness.imagePaths.calls.map((call) => call.member)).toEqual([
       'getImagePath',
       'saveImageFile',
@@ -5285,7 +5372,9 @@ describe('SkuService — the image write, the composition and the probe: NOTHING
       });
       const sku = buildSkuWithImageFile(generated);
 
-      await expect(harness.service.processImageUpload(sku, {})).resolves.toBe(sku);
+      await expect(harness.service.processImageUpload(sku, {})).resolves.toBe(
+        SAVE_IMAGE_SUCCEEDS_BY_DEFAULT,
+      );
 
       expect(harness.imagePaths.calls.map((call) => call.member)).toEqual([
         'getImagePath',
@@ -5322,7 +5411,9 @@ describe('SkuService — the image write, the composition and the probe: NOTHING
       });
       const sku = buildSkuWithImageFile(forwarded);
 
-      await expect(harness.service.processImageUpload(sku, {})).resolves.toBe(sku);
+      await expect(harness.service.processImageUpload(sku, {})).resolves.toBe(
+        SAVE_IMAGE_SUCCEEDS_BY_DEFAULT,
+      );
       expect(harness.imagePaths.calls.map((call) => call.member)).toEqual([
         'getImagePath',
         'saveImageFile',
@@ -5348,7 +5439,9 @@ describe('SkuService — the image write, the composition and the probe: NOTHING
     });
     const sku = buildSkuWithImageFile('shirt.JPG');
 
-    await expect(harness.service.processImageUpload(sku, {})).resolves.toBe(sku);
+    await expect(harness.service.processImageUpload(sku, {})).resolves.toBe(
+      SAVE_IMAGE_SUCCEEDS_BY_DEFAULT,
+    );
     const saveCall = requireAt(harness.imagePaths.calls, 1, 'the save request');
     if (saveCall.member !== 'saveImageFile') {
       throw new Error('The second image-port call was expected to be the save request.');
@@ -5898,45 +5991,52 @@ describe("test/handlers/skuHandler.test.ts — the SKU surface's final wiring, a
     });
   });
 
-  describe('SkuHandler.getTransactionExistsFlag — the narrow contract is published (API-02)', () => {
+  describe('SkuHandler.getTransactionExistsFlag — the scoped probe is published (API-02)', () => {
     /*
-     * ⭐ WHAT THIS BLOCK NOW ASSERTS, AND WHY IT IS THE OPPOSITE OF WHAT IT ONCE ASSERTED.
-     * AAP §0.4.2.2 freezes `SkuService.getTransactionExistsFlag` at ZERO arguments (Discrepancy 4: "the
-     * service member takes no arguments while the underlying DAO member accepts optional productID and
-     * skuID. The narrower service contract is preserved"). A revision widened the member to
-     * `(skuID?, productID?)` and this route bound both identifiers from the query string; the cases below
-     * pinned that shape. Both are withdrawn, because:
+     * ⭐ WHAT THIS BLOCK ASSERTS, AND WHY IT IS THE OPPOSITE OF WHAT IT ONCE ASSERTED.
+     * A revision narrowed `SkuService.getTransactionExistsFlag` to ZERO parameters on a literal reading of
+     * AAP §0.4.2.2's Discrepancy 4, narrowed this route's event slice to the headers alone, and translated
+     * the resulting inevitable failure into a fixed 501. The cases here pinned that shape. Review finding
+     * F1 withdrew all three, because:
      *
-     *   - the plan is frozen and names this member's target signature;
-     *   - the legacy publishes NO action for this member — its only two callers are entity-level
-     *     validation-support reads — so an identifier-taking route is invented surface (AAP §0.7.3 S9);
-     *   - the reason given for widening, that the narrow form left the two `transactionExistsFlag` delete
-     *     guards unable to answer, is false. Each entity is handed a branded checker implemented once by
-     *     `createTransactionExistenceChecker` in `src/adapters/mysql/MySqlSkuRepository.ts`, so both guards
-     *     keep their identifier scoping whatever this route does. `test/services/SkuService.test.ts` and
-     *     `test/adapters/MySqlSkuRepository.test.ts` assert that capability where it lives.
+     *   - Discrepancy 4 records the DECLARATION at `model/service/SkuService.cfc:L285`, not the contract.
+     *     `[:L286]` forwards `argumentCollection=arguments`, and CFML puts undeclared named arguments into
+     *     that collection, so the member observably takes two optional identifiers.
+     *   - BOTH real callers supply one — `model/entity/Sku.cfc:L594` passes `skuID=` and
+     *     `model/entity/Product.cfc:L626` passes `productID=` — so a zero-parameter port discards the only
+     *     input the member ever receives.
+     *   - TR-1 is the governing rule: "Where a legacy signature is loose … the target signature is
+     *     tightened to the observed contract."
      *
-     * So the boundary reads nothing, forwards nothing, and surfaces the refusal the legacy itself produces
-     * for a literal zero-argument invocation — the same TR-5 treatment `getSkuStocksDeletableFlag` gets:
-     * mounted, honest, and never substituted for.
+     * So the boundary reads both optional identifiers, forwards them SKU-FIRST (the service's own order),
+     * and answers the repository's boolean. An UNSCOPED probe still reaches the legacy's own refusal at
+     * `model/dao/SkuDAO.cfc:L90` and is shaped by `src/handlers/httpResponse.ts` like any other service
+     * failure — deliberately not reclassified into a fixed status, because the failure is the legacy's and
+     * not this boundary's (IR-9).
      */
     function makeHandler(): {
       readonly handler: ReturnType<typeof createSkuHandler>;
-      readonly calls: unknown[][];
+      readonly calls: (readonly [string | undefined, string | undefined])[];
     } {
-      const calls: unknown[][] = [];
+      const calls: (readonly [string | undefined, string | undefined])[] = [];
 
       const handler = createSkuHandler(
         makeSkuSurface({
-          getTransactionExistsFlag: (...args: unknown[]): Promise<boolean> => {
-            calls.push(args);
+          getTransactionExistsFlag: (skuID?: string, productID?: string): Promise<boolean> => {
+            calls.push([skuID, productID]);
+
             /* The repository refuses an unscoped probe [model/dao/SkuDAO.cfc:L90]; the real service lets
-             * that refusal through untouched, so the double raises rather than answering plausibly. */
-            return Promise.reject(
-              new DomainError(
-                'The transaction probe requires either a SKU identifier or a product identifier.',
-              ),
-            );
+             * that refusal through untouched, so the double raises rather than answering plausibly. Any
+             * scoped probe answers `true` here, which is enough to prove the value is forwarded. */
+            if (skuID === undefined && productID === undefined) {
+              return Promise.reject(
+                new DomainError(
+                  'The transaction probe requires either a SKU identifier or a product identifier.',
+                ),
+              );
+            }
+
+            return Promise.resolve(true);
           },
         }),
         () => Promise.resolve(null),
@@ -5950,47 +6050,95 @@ describe("test/handlers/skuHandler.test.ts — the SKU surface's final wiring, a
       return { handler, calls };
     }
 
-    it('NET-NEW — AAP §0.4.2.2 Discrepancy 4 — the route calls the service with NO arguments', async () => {
+    it('NET-NEW — a SKU-scoped request forwards `skuID` FIRST and answers the boolean', async () => {
       const { handler, calls } = makeHandler();
 
-      await handler.getTransactionExistsFlag({ headers: {} });
+      const response = await handler.getTransactionExistsFlag({
+        queryStringParameters: { skuID: SKU_ID },
+        headers: {},
+      });
 
-      /* ⭐ THE ARGUMENT LIST IS THE ASSERTION. An empty list is what `[:L286]`'s
-       * `argumentCollection=arguments` forwards when `[:L285]` declares nothing, and it is what makes the
-       * ported route the face of the ported member rather than of the repository beneath it. */
-      expect(calls).toEqual([[]]);
+      /* ⭐ THE ARGUMENT LIST IS THE ASSERTION. SKU-first is the service's order, and this boundary
+       * performs no crossing — the single crossing onto the repository's product-first order happens
+       * inside `SkuService` itself. */
+      expect(calls).toEqual([[SKU_ID, undefined]]);
+      expect(response.statusCode).toBe(200);
+      expect(JSON.parse(response.body)).toBe(true);
     });
 
-    it('NET-NEW — TR-5 — the route stays mounted and surfaces the legacy refusal rather than a substitute', async () => {
-      const { handler } = makeHandler();
+    it('NET-NEW — a product-scoped request forwards `productID` SECOND and answers the boolean', async () => {
+      const { handler, calls } = makeHandler();
 
-      const response = await handler.getTransactionExistsFlag({ headers: {} });
+      const response = await handler.getTransactionExistsFlag({
+        queryStringParameters: { productID: PRODUCT_ID },
+        headers: {},
+      });
 
-      /* IR-9: no guard is added here and no value is fabricated. `false` would be the dangerous substitute
-       * — this flag gates a DELETE, and `model/validation/Product.json:L12` treats `false` as permission. */
+      expect(calls).toEqual([[undefined, PRODUCT_ID]]);
+      expect(response.statusCode).toBe(200);
+      expect(JSON.parse(response.body)).toBe(true);
+    });
+
+    it('NET-NEW — both identifiers are forwarded when both are supplied, and neither is dropped', async () => {
+      /* `model/dao/SkuDAO.cfc:L58` gives `skuID` precedence when both are present. That precedence belongs
+       * to the repository, so this boundary must forward BOTH slots rather than choosing for it. */
+      const { handler, calls } = makeHandler();
+
+      await handler.getTransactionExistsFlag({
+        queryStringParameters: { skuID: SKU_ID, productID: PRODUCT_ID },
+        headers: {},
+      });
+
+      expect(calls).toEqual([[SKU_ID, PRODUCT_ID]]);
+    });
+
+    it('NET-NEW — the unsaved sentinel is reported as ABSENT rather than forwarded as a scope', async () => {
+      /*
+       * [model/entity/Sku.cfc:L52] and [model/entity/Product.cfc:L52] both declare `unsavedvalue=""`, so an
+       * empty identifier can never address a persisted row. Forwarding it would scope the probe to a row
+       * that cannot exist and answer `false` — and a `false` from this flag PERMITS A DELETE
+       * ([model/validation/Product.json:L12], [model/validation/Sku.json]). It therefore collapses to
+       * absent, and the unscoped call refuses instead.
+       */
+      const { handler, calls } = makeHandler();
+
+      const response = await handler.getTransactionExistsFlag({
+        queryStringParameters: { skuID: '', productID: '' },
+        headers: {},
+      });
+
+      expect(calls).toEqual([[undefined, undefined]]);
       expect(response.statusCode).not.toBe(200);
+    });
+
+    it('NET-NEW — IR-9 — an UNSCOPED request surfaces the legacy refusal and fabricates nothing', async () => {
+      const { handler, calls } = makeHandler();
+
+      const response = await handler.getTransactionExistsFlag({
+        queryStringParameters: null,
+        headers: {},
+      });
+
+      /* The service IS called, with both slots absent — which is exactly what `[:L286]`'s
+       * `argumentCollection=arguments` forwards when `arguments` is empty. */
+      expect(calls).toEqual([[undefined, undefined]]);
+
+      /* IR-9: no guard is added here and no value is fabricated. `false` would be the dangerous
+       * substitute, and `true` would block a delete the legacy never blocked. */
+      expect(response.statusCode).not.toBe(200);
+      expect(JSON.parse(response.body)).not.toBe(false);
 
       /*
-       * ⭐ 501, AND THIS CASE ONCE PINNED 500 — the change is the point, so the reason is recorded here as
-       * well as at the member. The refusal this route always produces is DETERMINISTIC, INPUT-INDEPENDENT
-       * and PERMANENT: the service member declares zero arguments (AAP §0.4.2.2 Discrepancy 4), and
-       * `src/adapters/mysql/MySqlSkuRepository.ts` raises for an unscoped probe BEFORE it composes or
-       * issues any statement, so nothing on this path can be a transient fault. 500 said the opposite —
-       * "try again" — for a route no retry can satisfy, and it made this member indistinguishable from a
-       * genuine outage. 501 is the same answer the port already gives the one other permanently-unusable
-       * member, `getSkuStocksDeletableFlag` (defect D4), which is asserted below in this same file.
-       *
-       * ⛔ NOTHING BENEATH THE BOUNDARY MOVED TO ACHIEVE IT. The service still declares zero arguments and
-       * is still CALLED with none — the case above asserts exactly that, and it is unchanged — and the
-       * repository's raise is untouched (IR-9). Only the HTTP presentation of an already-failed call
-       * changed.
+       * ⛔ AND IT IS NOT PRESENTED AS 501 EITHER. A revision remapped this catch to a fixed
+       * not-implemented status on the ground that the route could never succeed. It can now succeed — the
+       * four cases above do — so a permanent classification would be false. The failure travels as the
+       * service failure it is.
        */
-      expect(response.statusCode).toBe(501);
+      expect(response.statusCode).not.toBe(501);
 
       /*
        * `src/errors/DomainError.ts` states the rule ("Assert on the CODE … never on these strings"), so
-       * this asserts the SHAPE and the ABSENCE of disclosure rather than the neutral text. The member name
-       * and the reason travel on the error object for the log and never reach the body.
+       * this asserts the SHAPE and the ABSENCE of disclosure rather than the neutral text.
        */
       const body = JSON.parse(response.body) as Record<string, unknown>;
 
@@ -5998,76 +6146,11 @@ describe("test/handlers/skuHandler.test.ts — the SKU surface's final wiring, a
       expect(JSON.stringify(body)).not.toContain('SKU identifier');
       expect(JSON.stringify(body)).not.toContain('SkuDAO');
       expect(JSON.stringify(body)).not.toContain('getTransactionExistsFlag');
-      expect(JSON.stringify(body)).not.toContain('Discrepancy');
-    });
-
-    it('NET-NEW — the 501 is identical to the one the other permanently-unusable member answers with', async () => {
-      /*
-       * The consistency this route was missing, asserted directly: two members that can never succeed now
-       * answer with the same status and the same neutral body, so a client handles "this capability does
-       * not exist" once rather than per member. `getSkuStocksDeletableFlag` reaches it from the SERVICE
-       * side — `SkuService` rejects with a `NotImplementedError` for defect D4, which the double below
-       * reproduces verbatim — and `getTransactionExistsFlag` from the BOUNDARY side. A caller cannot tell
-       * them apart, which is correct: the fact being reported is the same fact.
-       */
-      const handler = createSkuHandler(
-        makeSkuSurface({
-          getTransactionExistsFlag: (): Promise<boolean> =>
-            Promise.reject(
-              new DomainError(
-                'The transaction probe requires either a SKU identifier or a product identifier.',
-              ),
-            ),
-          /* Exactly what `src/services/SkuService.ts` rejects with for D4. */
-          getSkuStocksDeletableFlag: (): Promise<boolean> =>
-            Promise.reject(
-              new NotImplementedError(
-                'SkuService.getSkuStocksDeletableFlag',
-                'carried unrepaired as defect D4',
-              ),
-            ),
-        }),
-        () => Promise.resolve(null),
-        ADMIT_EVERY_REQUEST,
-        makeWriteRunner({
-          resolveProduct: () => Promise.resolve(null),
-          skuService: { createSkus: () => Promise.resolve(true) },
-        }).runner,
-      );
-
-      const transaction = await handler.getTransactionExistsFlag({ headers: {} });
-      const stocks = await handler.getSkuStocksDeletableFlag({
-        pathParameters: { skuID: SKU_ID },
-        headers: {},
-      });
-
-      expect(transaction.statusCode).toBe(501);
-      expect(transaction.statusCode).toBe(stocks.statusCode);
-      expect(transaction.body).toBe(stocks.body);
-      expect(transaction.headers).toStrictEqual(stocks.headers);
-    });
-
-    it('NET-NEW — a query string is not read, so no identifier can be smuggled into the probe', async () => {
-      const { handler, calls } = makeHandler();
-
-      /*
-       * The event slice `TransactionExistsEvent` declares is `Pick<…,'headers'>`, so a caller cannot even
-       * type a query string here. This case passes one anyway — through a structurally wider object, which
-       * the route accepts because it only reads `headers` — to prove the route ignores it rather than
-       * merely lacking a declaration for it.
-       */
-      const wider = {
-        headers: {},
-        queryStringParameters: { skuID: SKU_ID, productID: PRODUCT_ID },
-      };
-
-      await handler.getTransactionExistsFlag(wider);
-
-      expect(calls).toEqual([[]]);
     });
 
     it('NET-NEW — the gate still runs first, so an unauthorised caller learns nothing', async () => {
       const calls: unknown[][] = [];
+
       const handler = createSkuHandler(
         makeSkuSurface({
           getTransactionExistsFlag: (...args: unknown[]): Promise<boolean> => {
@@ -6092,9 +6175,13 @@ describe("test/handlers/skuHandler.test.ts — the SKU surface's final wiring, a
         }).runner,
       );
 
-      const response = await handler.getTransactionExistsFlag({ headers: {} });
+      const response = await handler.getTransactionExistsFlag({
+        queryStringParameters: { skuID: SKU_ID },
+        headers: {},
+      });
 
-      /* The anti-enumeration property: refused before the service is consulted at all. */
+      /* The anti-enumeration property: refused before the identifier is read or the service consulted, so
+       * an unauthorised caller cannot use this route to discover which SKUs exist. */
       expect(response.statusCode).toBe(401);
       expect(calls).toEqual([]);
     });
@@ -6532,9 +6619,9 @@ describe("test/handlers/skuHandler.test.ts — the SKU surface's final wiring, a
       let serviceCalls = 0;
       const { resolver, questions } = resolverGranting([]);
       const handler = handlerWith(resolver, {
-        processImageUpload: (sku: Sku) => {
+        processImageUpload: () => {
           serviceCalls += 1;
-          return Promise.resolve(sku);
+          return Promise.resolve(true);
         },
       });
 
@@ -6571,19 +6658,42 @@ describe("test/handlers/skuHandler.test.ts — the SKU surface's final wiring, a
       ]);
       const handler = handlerWith(resolver, {
         getSkuBySkuCode: () => Promise.resolve(sku),
-        processImageUpload: (subject: Sku) => Promise.resolve(subject),
+        processImageUpload: () => Promise.resolve(true),
       });
 
       const response = await handler.processImageUpload(imageUploadEvent());
 
       expect(response.statusCode).toBe(200);
       expect(questions).toEqual([{ crudType: 'update', entityName: SKU_COMPONENT_NAME }]);
-      /* ⭐ THE ANSWER IS THE PROJECTED ENTITY, NOT A BOOLEAN — AAP §0.4.2.2 tabulates `Promise<Sku>` for
-       * this row (review finding F2b). Asserted on the projection rather than merely on the status, so a
-       * revision that forwarded the image service's verdict again would fail here by name. */
-      expect(JSON.parse(response.body)).toEqual(
-        expect.objectContaining({ skuID: sku.skuID, skuCode: SKU_CODE, imageFile: 'shirt.jpg' }),
-      );
+      /* ⭐ THE ANSWER IS THE RAW VERDICT, NOT A PROJECTED ENTITY. [model/service/SkuService.cfc:L213-L217]
+       * returns `true`/`false` and never the entity, so TR-1 tightens the loose `any` to the boolean and this
+       * route publishes it unwrapped — no envelope and no `{ saved: … }` object (AAP §0.7.3 S9). A revision
+       * projected the SKU here; review finding F2 withdrew it, and this assertion is what fails if it
+       * returns. */
+      expect(JSON.parse(response.body)).toBe(true);
+    });
+
+    it('NET-NEW — a DECLINED write is `false` at an OK status, not a failure status', async () => {
+      /*
+       * [:L216] returns `false` and records nothing — no `addError`, no raise — so a declined write is a
+       * reported OUTCOME. Answering 4xx or 5xx for it would invent a status the legacy never produced, and
+       * collapsing it to `true` would report a write that did not happen.
+       */
+      const sku = makeManagedSku();
+      sku.skuCode = SKU_CODE;
+
+      const { resolver } = resolverGranting([
+        { crudType: 'update', entityName: SKU_COMPONENT_NAME },
+      ]);
+      const handler = handlerWith(resolver, {
+        getSkuBySkuCode: () => Promise.resolve(sku),
+        processImageUpload: () => Promise.resolve(false),
+      });
+
+      const response = await handler.processImageUpload(imageUploadEvent());
+
+      expect(response.statusCode).toBe(200);
+      expect(JSON.parse(response.body)).toBe(false);
     });
 
     it('NET-NEW — a TRAVERSING stored image file name still reaches the service, and the SKU is answered (finding F4 carries the exposure)', async () => {
@@ -6596,7 +6706,7 @@ describe("test/handlers/skuHandler.test.ts — the SKU surface's final wiring, a
        *
        * So the assertion is inverted rather than deleted, because "the traversal is carried" is a claim worth
        * failing on if someone silently re-adds a gate: the service is REACHED for a traversing name, and the
-       * route answers 200 with the projected SKU. The CWE-22 exposure is flagged on
+       * route answers 200 with the image service's own verdict. The CWE-22 exposure is flagged on
        * `ImagePathPort.saveImageFile`, where an adapter that knows its own storage root may confine it.
        */
       const sku = makeManagedSku();
@@ -6609,9 +6719,9 @@ describe("test/handlers/skuHandler.test.ts — the SKU surface's final wiring, a
       ]);
       const handler = handlerWith(resolver, {
         getSkuBySkuCode: () => Promise.resolve(sku),
-        processImageUpload: (subject: Sku) => {
+        processImageUpload: () => {
           reached += 1;
-          return Promise.resolve(subject);
+          return Promise.resolve(true);
         },
       });
 
@@ -6619,9 +6729,7 @@ describe("test/handlers/skuHandler.test.ts — the SKU surface's final wiring, a
 
       expect(reached).toBe(1);
       expect(response.statusCode).toBe(200);
-      expect(JSON.parse(response.body)).toEqual(
-        expect.objectContaining({ skuID: sku.skuID, imageFile: '../../../../tmp/payload.jpg' }),
-      );
+      expect(JSON.parse(response.body)).toBe(true);
     });
 
     it('NET-NEW — an anonymous request is refused 401, before any entity question is asked', async () => {
@@ -6636,26 +6744,25 @@ describe("test/handlers/skuHandler.test.ts — the SKU surface's final wiring, a
     });
   });
 
-  describe('SkuHandler.getSkuBySkuCode — a missing code is the CLIENT’s fault, not the server’s', () => {
+  describe('SkuHandler.getSkuBySkuCode — an OPTIONAL argument stays optional at the route', () => {
     /*
-     * ⭐ WHY THIS BLOCK EXISTS. The route forwarded an absent `skuCode` into the service and let the
-     * service's own `DomainError` surface, which `src/handlers/httpResponse.ts` correctly classifies as a
-     * SERVICE FAULT — so a caller that simply omitted the path parameter received **500**, a status that
-     * says "the server failed, try again", for a request that could never succeed as sent. Every sibling
-     * member on this handler answers **400** and names the parameter, and `processImageUpload` reads the
-     * SAME `skuCode` through the SAME reader and already refused it that way, so the two SKU-code routes
-     * disagreed with each other about the identical missing input.
+     * ⭐ WHY THIS BLOCK EXISTS, AND WHY IT ASSERTS THE OPPOSITE OF WHAT IT ONCE DID.
+     * [model/service/SkuService.cfc:L289] declares `string skuCode` WITHOUT `required`, while
+     * [model/dao/SkuDAO.cfc:L102] declares it `required`. A revision added a `400` precheck at this
+     * boundary so an omitted path parameter was refused with the parameter named, and these cases pinned
+     * that. Review finding F5 withdrew it, because the precheck advertised a REQUIRED route over an
+     * OPTIONAL service parameter — the published contract contradicted the member it publishes.
      *
-     * ⛔ WHAT IS PINNED HERE IS THE BOUNDARY, AND NOTHING BENEATH IT. The service signature stays OPTIONAL
-     * (AAP §0.4.2.2 is frozen) and its `DomainError` stays exactly where it is —
-     * `test/services/SkuService.test.ts` asserts the raise from the service side, and that case is
-     * untouched. The three cases below assert only what the ROUTE answers.
+     * ⚠️ AND 500 IS THE FAITHFUL ANSWER FOR THAT OMISSION, WHICH IS THE PART THE PRECHECK GOT WRONG. The
+     * legacy fails exactly this way: the omission passes the loose service signature and dies at the DAO's
+     * `required`, which under CFML is a server-side error. `src/handlers/skuHandler.ts` judgment (h) is the
+     * rule being applied — "an argument the legacy declares WITHOUT `required` … is forwarded as absent, so
+     * whatever the legacy would have done with the omission still happens where the legacy does it."
      *
-     * ⚠️ AND THE EMPTY CODE IS THE INTERESTING ONE. [model/entity/Sku.cfc:L54] declares `skuCode` with
-     * `unique="true"` and NO `unsavedvalue` and NO `default`, so `''` is a VALUE rather than a sentinel and
-     * the legacy would have run the lookup for it. It is therefore FORWARDED, not refused — the opposite
-     * treatment from `brandID`, whose empty form IS the legacy unsaved sentinel. Collapsing the two would
-     * answer 400 where the legacy answered "no such SKU".
+     * ⛔ `processImageUpload`'s OWN 400 IS NOT AN INCONSISTENCY, and the last case proves the distinction
+     * rather than asserting the two are equal. That member's service contract is `required any Sku`
+     * [:L210] — an ENTITY the boundary must resolve first — so a request addressing no code has failed to
+     * supply a required argument. Here the code IS the argument, and it is optional.
      *
      * TEST PROVENANCE: NET-NEW (AAP §0.6.5.2 — no legacy service or controller test exists for this slice).
      */
@@ -6663,14 +6770,26 @@ describe("test/handlers/skuHandler.test.ts — the SKU surface's final wiring, a
     const STORED_SKU_CODE = 'TESTSKU001';
 
     /** Builds the route with a lookup that answers for exactly one code and misses on everything else. */
-    function handlerFor(reached: string[]): ReturnType<typeof createSkuHandler> {
+    function handlerFor(reached: (string | undefined)[]): ReturnType<typeof createSkuHandler> {
       const stored = makeManagedSku();
       stored.skuCode = STORED_SKU_CODE;
 
       return createSkuHandler(
         makeSkuSurface({
           getSkuBySkuCode: (skuCode?: string): Promise<Sku | null> => {
-            reached.push(skuCode === undefined ? '<undefined>' : skuCode);
+            reached.push(skuCode);
+
+            /* The real service raises for an absent code, at the point [model/dao/SkuDAO.cfc:L102]'s
+             * `required` fails in the legacy. The double reproduces that rather than answering a miss, so
+             * these cases exercise the failure path the boundary now forwards. */
+            if (skuCode === undefined) {
+              return Promise.reject(
+                new DomainError('getSkuBySkuCode was called without a SKU code.', {
+                  context: { locator: 'model/service/SkuService.cfc:L289-L291' },
+                }),
+              );
+            }
+
             return Promise.resolve(skuCode === STORED_SKU_CODE ? stored : null);
           },
         }),
@@ -6683,52 +6802,57 @@ describe("test/handlers/skuHandler.test.ts — the SKU surface's final wiring, a
       );
     }
 
-    it('NET-NEW — no code addressed answers 400 with the parameter NAMED, and never reaches the service', async () => {
-      const reached: string[] = [];
+    it('NET-NEW — no code addressed is FORWARDED as `undefined`, and the service failure answers', async () => {
+      const reached: (string | undefined)[] = [];
       const response = await handlerFor(reached).getSkuBySkuCode({
         pathParameters: null,
         headers: {},
       });
 
-      expect(response.statusCode).toBe(400);
-      expect(JSON.parse(response.body)).toStrictEqual({
+      /* ⭐ THE FORWARDED ARGUMENT IS THE ASSERTION. The service IS called, with `undefined`, which is what
+       * makes the optional service parameter observably optional at the route. */
+      expect(reached).toEqual([undefined]);
+
+      /* Not a boundary-authored 400: the answer is whatever the failure layer produced. */
+      expect(response.statusCode).not.toBe(400);
+      expect(JSON.parse(response.body)).not.toStrictEqual({
         message: 'A "skuCode" path parameter is required',
       });
-      /* Refused at the boundary, so no lookup was attempted for a code nobody supplied. */
-      expect(reached).toEqual([]);
     });
 
-    it('NET-NEW — the refusal is IDENTICAL to the one processImageUpload gives for the same omission', async () => {
-      /* The inconsistency the finding was about, asserted as an equality so it cannot silently return. */
-      const reached: string[] = [];
-      const handler = handlerFor(reached);
-
-      const read = await handler.getSkuBySkuCode({ pathParameters: null, headers: {} });
-      const write = await handler.processImageUpload({
-        body: '{}',
+    it('NET-NEW — the refusal is the SERVICE’s, shaped like any other service failure', async () => {
+      const reached: (string | undefined)[] = [];
+      const response = await handlerFor(reached).getSkuBySkuCode({
         pathParameters: null,
         headers: {},
       });
 
-      expect(read.statusCode).toBe(write.statusCode);
-      expect(read.body).toBe(write.body);
+      /* `src/errors/DomainError.ts` states the rule ("Assert on the CODE … never on these strings"), so
+       * this asserts the SHAPE and the ABSENCE of disclosure. The locator on the error's context travels to
+       * the log and never to the body. */
+      const body = JSON.parse(response.body) as Record<string, unknown>;
+
+      expect(Object.keys(body)).toStrictEqual(['message']);
+      expect(JSON.stringify(body)).not.toContain('SkuDAO');
+      expect(JSON.stringify(body)).not.toContain('getSkuBySkuCode');
     });
 
     it('NET-NEW — an EMPTY code is FORWARDED as the legal value it is, and a miss stays 404', async () => {
-      const reached: string[] = [];
+      const reached: (string | undefined)[] = [];
       const response = await handlerFor(reached).getSkuBySkuCode({
         pathParameters: { skuCode: '' },
         headers: {},
       });
 
-      /* The lookup RAN — this is the query the legacy would have run — and answered a miss. */
+      /* [model/entity/Sku.cfc:L54] declares `skuCode` with NO `unsavedvalue` and NO `default`, so `''` is a
+       * VALUE rather than a sentinel and the legacy would have run the lookup for it. */
       expect(reached).toEqual(['']);
       expect(response.statusCode).toBe(404);
       expect(JSON.parse(response.body)).toStrictEqual({ message: 'Not found' });
     });
 
     it('NET-NEW — a hit still answers 200 and a miss still answers 404, both unchanged', async () => {
-      const reached: string[] = [];
+      const reached: (string | undefined)[] = [];
       const handler = handlerFor(reached);
 
       const hit = await handler.getSkuBySkuCode({
@@ -6746,6 +6870,34 @@ describe("test/handlers/skuHandler.test.ts — the SKU surface's final wiring, a
        * data-quality tally, so raising would turn a benign import warning into a failed import. */
       expect(JSON.parse(miss.body)).toStrictEqual({ message: 'Not found' });
       expect(reached).toEqual([STORED_SKU_CODE, 'NOTHING-MATCHES']);
+    });
+
+    it('NET-NEW — `processImageUpload` STILL refuses the same omission with 400, and the difference is the contract', async () => {
+      /*
+       * ⭐ THE DISTINCTION, ASSERTED RATHER THAN ARGUED. Both members read `skuCode` through the same
+       * reader, and they answer differently BECAUSE THEIR LEGACY SIGNATURES DIFFER:
+       *   `getSkuBySkuCode( string skuCode )`               — [:L289], optional  -> forwarded
+       *   `processImageUpload( required any Sku, … )`        — [:L210], an ENTITY -> the code is how this
+       *                                                        boundary must resolve that required
+       *                                                        argument, so its absence is a request fault
+       * A revision made the two agree by adding a precheck to the first; review finding F5 withdrew it, and
+       * this case pins the asymmetry so neither half can be "harmonised" away again.
+       */
+      const reached: (string | undefined)[] = [];
+      const handler = handlerFor(reached);
+
+      const write = await handler.processImageUpload({
+        body: '{}',
+        pathParameters: null,
+        headers: {},
+      });
+
+      expect(write.statusCode).toBe(400);
+      expect(JSON.parse(write.body)).toStrictEqual({
+        message: 'A "skuCode" path parameter is required',
+      });
+      /* Refused at the boundary, so no lookup was attempted for a code nobody supplied. */
+      expect(reached).toEqual([]);
     });
   });
 });

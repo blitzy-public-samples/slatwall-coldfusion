@@ -36,10 +36,10 @@
  * -------------------------------------------------------------------------------------------
  * Every signature this handler calls was read from ../services/SkuService rather than from a table,
  * and where AAP 0.4.2.2's target column and that file disagree, the file wins. Two of those
- * divergences are carried defects and are recorded below as judgments (a) and (b). The first of them —
- * the declared-versus-passed arity of `getTransactionExistsFlag` — is the one place the plan's own two
- * sections read as though they disagree, and judgment (a) records how AAP §0.1.1.3 IR-1 adjudicates it.
- * Nothing here "corrects" the service (AAP 0.8.2 Guideline 4).
+ * divergences are recorded below as judgments (a) and (b), and both were re-adjudicated by a code review:
+ * in each case the legacy BODY, not the plan's target column, states the contract, and TR-1 is the rule
+ * that resolves a loose legacy signature to its observed shape. Nothing here "corrects" the service (AAP
+ * 0.8.2 Guideline 4) — the service was corrected first, and this file follows it.
  *
  * NINE ROUTED MEMBERS OVER A TEN-MEMBER SERVICE, AND BOTH COUNTS ARE THE POINT
  * ---------------------------------------------------------------------------
@@ -82,8 +82,8 @@
  * seven groups the file's own brief mandates are (a) to (g); (h) to (o) are the judgments this file
  * makes on its own account. Each is restated at the declaration or member that makes it.
  *
- * (a) TODO(parity) the undeclared-argument forwarding [model/service/SkuService.cfc:L285-L287] — `getTransactionExistsFlag` DECLARES NO ARGUMENTS AND IS PASSED TWO, SO THE
- *     LEGACY IS ZERO-ARG AND EFFECTIVELY TWO-ARG AT ONCE. The declaration at
+ * (a) TODO(parity) `getTransactionExistsFlag` DECLARES NO ARGUMENTS AND IS PASSED TWO, SO THE LEGACY IS
+ *     ZERO-ARG AND EFFECTIVELY TWO-ARG AT ONCE. The declaration at
  *     model/service/SkuService.cfc:L285 is literally `public boolean function
  *     getTransactionExistsFlag()`, with no formal parameter of any kind, yet its body at [:L286]
  *     forwards `argumentCollection=arguments` to a DAO member that
@@ -94,35 +94,49 @@
  *         model/entity/Sku.cfc:L594      -> getTransactionExistsFlag( skuID = this.getSkuID() )
  *         model/entity/Product.cfc:L626  -> getTransactionExistsFlag( productID = this.getProductID() )
  *
- *     ADJUDICATION. AAP §0.4.2.2's target signature for this row is
- *     `getTransactionExistsFlag(): Promise<boolean>`, and its Discrepancy 4 gives the reason in its own
- *     words: "the service member takes no arguments while the underlying DAO member accepts optional
- *     productID and skuID. The narrower service contract is preserved." The plan is FROZEN and is
- *     aligned to, never reinterpreted (AAP §0.1.2.1), so ../services/SkuService declares ZERO
- *     parameters and this handler reads and forwards nothing. IR-1's requirement that CFML's implicitly
- *     passed argument become an explicit declaration is satisfied where AAP §0.4.2.6 places the
- *     filtered capability — `SkuRepository.transactionExists(productID?, skuID?)` — and on the two
- *     entity checker contracts that consume it through `createTransactionExistenceChecker` in
+ *     ADJUDICATION. AAP §0.4.2.2's Discrepancy 4 records the DECLARATION accurately — "the service
+ *     member takes no arguments while the underlying DAO member accepts optional productID and skuID" —
+ *     and TR-1 is the rule that says what the port then declares: "Where a legacy signature is loose …
+ *     the target signature is tightened to the OBSERVED contract." The observed contract is the one
+ *     above, in which every call scopes the probe. ../services/SkuService therefore declares
+ *     `(skuID?, productID?)`, and this handler binds both from the query string, optionally. That is
+ *     also IR-1 applied to this member: the argument CFML passes implicitly becomes an explicit, typed
+ *     declaration — here, on `SkuRepository.transactionExists(productID?, skuID?)` (AAP §0.4.2.6), and
+ *     on the two entity checker contracts served by `createTransactionExistenceChecker` in
  *     ../adapters/mysql/MySqlSkuRepository.
  *
- *     ⚠️ A REVISION WIDENED THE SERVICE MEMBER TO `(skuID?, productID?)` AND BOUND BOTH IDENTIFIERS
- *     HERE, ON THE GROUND THAT THE NARROW FORM LEFT THE TWO `transactionExistsFlag` DELETE GUARDS
- *     UNABLE TO ANSWER. That ground was false: neither guard consumes the service member. Both are
- *     entity-level reads served by the branded checkers named above, so each keeps its identifier
- *     scoping whatever this route does. The widening also republished, as an HTTP capability, a probe
- *     the legacy exposes through no action at all — invented surface under AAP §0.7.3 S9 and §0.8.2
- *     Guideline 4. It is withdrawn; see {@link SkuHandler.getTransactionExistsFlag}.
+ *     ⚠️ A REVISION NARROWED THE SERVICE MEMBER TO ZERO PARAMETERS, NARROWED THIS ROUTE'S EVENT SLICE TO
+ *     THE HEADERS ALONE, AND ANSWERED A PERMANENT NOT-IMPLEMENTED STATUS. Review finding F1 withdrew all
+ *     three. The narrowing read Discrepancy 4 as freezing the SIGNATURE, when what it records is the
+ *     DECLARATION; the effect was a public route that could never answer the scoped question its two
+ *     legacy callers ask on every product and SKU delete. The two identifiers are restored, and the
+ *     repository's refusal for an unscoped probe is forwarded rather than reclassified (IR-9). See
+ *     {@link SkuHandler.getTransactionExistsFlag}.
  *
- * (b) TODO(parity) the image-verdict divergence [model/service/SkuService.cfc:L213-L217] — `processImageUpload` ANSWERS THE ENTITY, WHILE THE LEGACY BODY RETURNS A
- *     BOOLEAN. AAP 0.4.2.2's target column resolves the legacy's loose `returntype="any"` to
- *     `Promise<Sku>`, and the body at model/service/SkuService.cfc:L210-L218 disagrees with it in the
- *     plainest possible way: it returns `true` at [:L214] and `false` at [:L216] and never returns the
- *     entity at all. The plan is frozen (D1 precedence 1), so ../services/SkuService answers with the
- *     SKU and this handler PROJECTS it (judgment (k)); the lost verdict is flagged on that member and at
- *     the route rather than compensated for. THE LEGACY PARAMETER IS ALSO SPELLED WITH A CAPITAL S —
- *     `required any Sku` at [:L210], read back as `arguments.Sku` at [:L211] — which is CFML idiom
- *     rather than behavior; the service renamed it `sku` and this file uses the same spelling, which
- *     AAP 0.8.1 expressly permits ("It does not mean preserving CFML idioms in TypeScript").
+ *     ⛔ THE TWO ORDERS ARE NOT THE SAME AND ARE CROSSED EXACTLY ONCE. This route and the service are
+ *     SKU-FIRST; the repository is PRODUCT-FIRST, because [model/dao/SkuDAO.cfc:L54-L55] declares
+ *     `productID` first. The service body crosses them on one commented line; this file crosses nothing.
+ *
+ * (b) TODO(parity) `processImageUpload` ANSWERS THE IMAGE-WRITE BOOLEAN, BECAUSE THAT IS WHAT THE LEGACY
+ *     BODY ANSWERS. The declaration at model/service/SkuService.cfc:L210 is `returntype="any"` — loose —
+ *     and the body at [:L213-L217] settles it in the plainest possible way: `return true;` at [:L214],
+ *     `return false;` at [:L216], and the entity never at all. TR-1 tightens a loose signature to the
+ *     OBSERVED contract, so ../services/SkuService declares `Promise<boolean>` and this route publishes
+ *     that verdict RAW. A revision typed the member `Promise<Sku>` on the reading that AAP §0.4.2.2's
+ *     tabulated cell outranks TR-1; review finding F2 withdrew it, because a member answering a different
+ *     KIND of value than the legacy body answers is not the interface-boundary preservation Goal B asks
+ *     for. The service's own block carries the adjudication.
+ *
+ *     ⚠️ THE LEGACY BODY DOES DEPART FROM ITS OWN FRAMEWORK'S CONVENTION — [org/Hibachi/HibachiService.cfc:L117]
+ *     states that "all process methods should return an entity" — and that departure is the legacy's, not
+ *     this port's. It is annotated by locator rather than repaired. The dispatcher that would enforce the
+ *     convention cannot reach this member anyway: [org/Hibachi/HibachiService.cfc:L114] composes
+ *     `processSku_imageUpload`, a name the component does not declare.
+ *
+ *     THE LEGACY PARAMETER IS ALSO SPELLED WITH A CAPITAL S — `required any Sku` at [:L210], read back as
+ *     `arguments.Sku` at [:L211] — which is CFML idiom rather than behavior; the service renamed it `sku`
+ *     and this file uses the same spelling, which AAP 0.8.1 expressly permits ("It does not mean
+ *     preserving CFML idioms in TypeScript").
  *
  * (c) TODO(parity) D4 — `getSkuStocksDeletableFlag` DELEGATES TO A DAO MEMBER THAT DOES NOT EXIST,
  *     AND THIS BOUNDARY REPORTS THAT HONESTLY. model/service/SkuService.cfc:L281-L283 forwards to
@@ -254,20 +268,19 @@ import { collectSkuBatchErrors, skuBatchHasErrors } from '../services/SkuService
 import type { UnitOfWork } from '../adapters/mysql/UnitOfWork';
 
 /*
- * THE ONE ERROR CLASS THIS BOUNDARY CONSTRUCTS ITSELF, AND WHY IT IS NOT A RECLASSIFICATION.
+ * THE ONE ERROR CLASS THIS BOUNDARY CONSTRUCTS, AND IT IS NOT A CLASSIFICATION DECISION.
  *
- * {@link SkuHandler.getTransactionExistsFlag} publishes a member that NO request shape can satisfy, and
- * this is the class the port already uses to say so — judgment (c)'s `getSkuStocksDeletableFlag` reaches
- * it from the service side for the same reason. Constructing it here, at the boundary, is what lets the
- * service and the repository keep their frozen parity behaviour untouched while the HTTP answer stops
- * claiming a transient fault. The full argument, including the verification that no transient fault can
- * reach that catch, is at the member itself.
+ * {@link ValidationError} is raised where a request's own payload is refused. Every mapping from a
+ * failure to a status and to a body belongs to ./httpResponse, and this file never chooses a status for a
+ * failure directly.
  *
- * ⛔ IT IS THE ONLY ERROR CLASS THIS FILE CONSTRUCTS APART FROM {@link ValidationError}, and neither is
- * a classification decision: ./httpResponse owns every mapping from a failure to a status and to a body,
- * and this file never chooses a status for a failure directly.
+ * ⛔ NO `NotImplementedError` IS CONSTRUCTED HERE ANY MORE. A revision built one in
+ * {@link SkuHandler.getTransactionExistsFlag} to present that route's then-permanent failure as a fixed
+ * not-implemented status; review finding F1 restored the route's two optional identifiers, so there is no
+ * permanent failure left to present and the class is not imported. Where a service member genuinely
+ * cannot resolve — judgment (c)'s `getSkuStocksDeletableFlag`, defect D4 — the SERVICE raises it and this
+ * boundary merely forwards, which is where that decision belongs.
  */
-import { NotImplementedError } from '../errors/DomainError';
 import { ValidationError } from '../errors/ValidationError';
 
 import {
@@ -365,20 +378,31 @@ const TERM_QUERY_PARAMETER = 'term';
  */
 const PRODUCT_TYPE_ID_QUERY_PARAMETER = 'productTypeID';
 
-/*
- * ⛔ THERE IS DELIBERATELY NO `skuID` AND NO `productID` QUERY PARAMETER CONSTANT HERE, AND THE ABSENCE
- * IS THE CONTRACT RATHER THAN AN OMISSION. A revision declared both and bound them in
- * {@link SkuHandler.getTransactionExistsFlag}, on the reading that IR-1 required this boundary to make
- * CFML's implicitly passed identifiers explicit. AAP §0.4.2.2 freezes the SERVICE member at ZERO
- * arguments (Discrepancy 4, "The narrower service contract is preserved"), and this file is the
- * AWS-facing face of that service member — so there is nothing for either parameter to be forwarded to.
- * The identifier-scoped form of the probe is the REPOSITORY's, reached by the two entity checkers
- * (`SkuTransactionExistenceChecker` in ../domain/sku/Sku and `ProductTransactionExistenceChecker` in
- * ../domain/product/Product, both implemented once by `createTransactionExistenceChecker` in
- * ../adapters/mysql/MySqlSkuRepository), and it is not re-published as an HTTP capability: the legacy has
- * no action for it, and minting one would be an invented route (AAP §0.7.3 S9, §0.8.2 Guideline 4). The
- * account is at {@link SkuHandler.getTransactionExistsFlag} and judgment (a).
+/**
+ * The query parameter carrying the SKU identifier the transaction probe is scoped to.
+ *
+ * ⭐ IT IS A QUERY PARAMETER RATHER THAN A PATH PARAMETER BECAUSE IT IS OPTIONAL. The DAO declares it
+ * `<cfargument name="skuID" />` with no `required` [model/dao/SkuDAO.cfc:L55], and the service forwards
+ * whatever the caller named [model/service/SkuService.cfc:L286], so the probe may legitimately arrive
+ * scoped to a SKU, scoped to a product, or scoped to neither — and a path segment cannot be absent.
+ * The NAME is the legacy's own, taken from [model/entity/Sku.cfc:L594]'s `skuID=` keyword.
+ *
+ * ⚠️ THE `unsavedvalue` SENTINEL IS APPLIED HERE TOO, through {@link readTransactionScopeIdentifier}:
+ * [model/entity/Sku.cfc:L52] declares `unsavedvalue=""`, so an empty identifier cannot address a
+ * persisted row and is treated exactly as an absent one — the same rule
+ * {@link readSkuIdentifier} applies to the path form.
  */
+const SKU_ID_QUERY_PARAMETER = 'skuID';
+
+/**
+ * The query parameter carrying the product identifier the transaction probe is scoped to.
+ *
+ * Optional for the same reason as {@link SKU_ID_QUERY_PARAMETER} — `<cfargument name="productID" />` at
+ * [model/dao/SkuDAO.cfc:L54] carries no `required` — and named after
+ * [model/entity/Product.cfc:L626]'s `productID=` keyword. [model/entity/Product.cfc:L52] declares the
+ * same `unsavedvalue=""`, so the same sentinel rule applies.
+ */
+const PRODUCT_ID_QUERY_PARAMETER = 'productID';
 
 /**
  * The identifier value that means "this record has never been persisted".
@@ -493,6 +517,14 @@ const PRODUCT_ID_REQUIRED_MESSAGE = `A "${PRODUCT_ID_PATH_PARAMETER}" path param
 
 const SKU_ID_REQUIRED_MESSAGE = `A "${SKU_ID_PATH_PARAMETER}" path parameter is required`;
 
+/*
+ * ⚠️ USED BY EXACTLY ONE MEMBER, AND NOT BY THE OTHER THAT READS THE SAME PARAMETER.
+ * {@link SkuHandler.processImageUpload} refuses an unaddressed code with this text, because its SERVICE
+ * contract takes `required any Sku` [model/service/SkuService.cfc:L210] — an ENTITY this boundary must
+ * resolve before it can call. {@link SkuHandler.getSkuBySkuCode} does NOT, because there the code IS the
+ * argument and [:L289] declares it WITHOUT `required`, so judgment (h) forwards the absence. A revision
+ * used it in both places; review finding F5 withdrew the second use.
+ */
 const SKU_CODE_REQUIRED_MESSAGE = `A "${SKU_CODE_PATH_PARAMETER}" path parameter is required`;
 
 const SORTED_REQUIRED_MESSAGE = `A "${SORTED_QUERY_PARAMETER}" query parameter is required`;
@@ -531,12 +563,12 @@ const FETCH_OPTIONS_NOT_BOOLEAN_MESSAGE = `The "${FETCH_OPTIONS_QUERY_PARAMETER}
  *
  * THE TEN MEMBERS, WITH THE SOURCE LOCATOR AND THE CARRIED FINDING FOR EACH:
  *   createSkus                [:L58]  the combination engine; `data` unreshaped — judgment (e), M6
- *   processImageUpload        [:L210] answers the ENTITY per AAP 0.4.2.2 — judgment (b), the image-verdict divergence [model/service/SkuService.cfc:L213-L217]
+ *   processImageUpload        [:L210] answers the image-write BOOLEAN, as [:L213-L217] does — judgment (b)
  *   getProductSkus            [:L220] `sorted` REQUIRED — Discrepancy 2; carries D13
  *   getSortedProductSkus      [:L246] carries D13
  *   searchSkusByProductType   [:L271] BOTH arguments optional — Discrepancy 3; SINGULAR — judgment (f)
  *   getSkuStocksDeletableFlag [:L281] delegates to an absent DAO member — judgment (c), D4
- *   getTransactionExistsFlag  [:L285] ZERO declared, and ZERO ported — judgment (a), Discrepancy 4 / the undeclared-argument forwarding [model/service/SkuService.cfc:L285-L287]
+ *   getTransactionExistsFlag  [:L285] ZERO declared, TWO observed, TWO ported — judgment (a)
  *   getSkuBySkuCode           [:L289] optional argument, `null` on a miss
  *   getSkuSmartList           [:L309] entity, three joins, five keyword properties
  *   newSku                    no legacy declaration at all — IR-1; DECLARED HERE, NOT ROUTED
@@ -912,23 +944,26 @@ export type SkuIdentifierEvent = Pick<APIGatewayProxyEvent, 'pathParameters' | '
 export type SkuCodeEvent = Pick<APIGatewayProxyEvent, 'pathParameters' | 'headers'>;
 
 /**
- * The slice {@link SkuHandler.getTransactionExistsFlag} reads: the headers, and nothing else.
+ * The slice {@link SkuHandler.getTransactionExistsFlag} reads: the two optional query identifiers.
  *
- * ⭐ THE QUERY STRING IS ABSENT BECAUSE THE SERVICE MEMBER TAKES NO ARGUMENTS. AAP §0.4.2.2's target
- * signature for [model/service/SkuService.cfc:L285] is `getTransactionExistsFlag(): Promise<boolean>` and
- * its Discrepancy 4 states why: "the service member takes no arguments while the underlying DAO member
- * accepts optional `productID` and `skuID`. The narrower service contract is preserved." A slice
- * carrying `queryStringParameters` would advertise inputs this boundary has nowhere to send.
+ * ⭐ THE QUERY STRING IS PRESENT BECAUSE THE SERVICE MEMBER TAKES TWO OPTIONAL ARGUMENTS. The legacy
+ * DECLARATION at [model/service/SkuService.cfc:L285] names none, but `[:L286]` forwards
+ * `argumentCollection=arguments` and both real callers name an identifier —
+ * [model/entity/Sku.cfc:L594] passes `skuID=` and [model/entity/Product.cfc:L626] passes `productID=` —
+ * so the OBSERVED contract takes both, optionally. TR-1 tightens the port's signature to that observed
+ * contract, and this slice carries the two inputs the boundary now has somewhere to send.
  *
- * ⚠️ A REVISION WIDENED THIS SLICE TO INCLUDE THE QUERY STRING AND BOUND BOTH IDENTIFIERS. It is
- * withdrawn. The identifiers CFML smuggles through the empty signature reach the query in the port
- * through the REPOSITORY member AAP §0.4.2.6 names for that purpose, consumed by the two entity checkers
- * — which is where both real legacy call sites ([model/entity/Sku.cfc:L594] and
- * [model/entity/Product.cfc:L626]) live. Neither is an HTTP request. ../services/SkuService carries the
- * full account under the undeclared-argument forwarding [model/service/SkuService.cfc:L285-L287], including why the "the delete guards could not otherwise be evaluated" reading
- * that justified the widening was factually wrong.
+ * ⚠️ A REVISION NARROWED THIS SLICE TO `Pick<…,'headers'>` AND THE ROUTE ANSWERED A PERMANENT 501. It is
+ * withdrawn under review finding F1: a route that can never carry an identifier can never answer the
+ * scoped question the two legacy callers ask, so it published a member that no request shape could
+ * satisfy. Both identifiers are OPTIONAL here, exactly as they are on the DAO
+ * [model/dao/SkuDAO.cfc:L54-L55]; supplying neither still reaches the legacy's own refusal at `[:L90]`
+ * rather than a boundary-authored substitute (IR-9).
  */
-export type TransactionExistsEvent = Pick<APIGatewayProxyEvent, 'headers'>;
+export type TransactionExistsEvent = Pick<
+  APIGatewayProxyEvent,
+  'queryStringParameters' | 'headers'
+>;
 
 /**
  * The slice {@link SkuHandler.getSkuSmartList} reads: the whole query-string container, which stands in
@@ -1407,11 +1442,12 @@ export interface SkuHandler {
    * The AWS-facing face of `processImageUpload` at [model/service/SkuService.cfc:L210]. Addresses the SKU
    * by its code — judgment (j) — and forwards the upload-result payload unchanged.
    *
-   * Responses: the PROJECTED SKU at an OK status, per AAP 0.4.2.2 — judgment (b), with the legacy body's
-   * image-write boolean at [model/service/SkuService.cfc:L213-L217] carried as an annotated divergence;
-   * unauthorised when no logged-in principal is established; a bad request when no SKU code is addressed
-   * or the body is absent, malformed or not a JSON object; not found when no SKU carries that code; and
-   * not implemented when the image boundary declines the write by raising — judgment (g).
+   * Responses: the image-write VERDICT — a bare `true` or `false` — at an OK status, reproducing
+   * [model/service/SkuService.cfc:L213-L217] (judgment (b)); unauthorised when no logged-in principal is
+   * established; a bad request when no SKU code is addressed or the body is absent, malformed or not a
+   * JSON object; not found when no SKU carries that code; and not implemented when the image boundary
+   * RAISES rather than declining — judgment (g). ⚠️ A DECLINED write is `false` at an OK status, not a
+   * failure status: [:L216] returns `false` and records nothing.
    */
   readonly processImageUpload: (event: ProcessImageUploadEvent) => Promise<APIGatewayProxyResult>;
 
@@ -1472,23 +1508,25 @@ export interface SkuHandler {
   readonly getSkuStocksDeletableFlag: (event: SkuIdentifierEvent) => Promise<APIGatewayProxyResult>;
 
   /**
-   * Publishes the transaction-existence probe exactly as the service declares it: with no input at all.
+   * Publishes the transaction-existence probe, scoped by either optional identifier the legacy accepts.
    *
    * The AWS-facing face of `getTransactionExistsFlag` at [model/service/SkuService.cfc:L285]. That
-   * declaration names no formal parameter, and AAP §0.4.2.2 freezes the ported signature the same way
-   * (Discrepancy 4, "The narrower service contract is preserved") — so this boundary reads nothing from
-   * the request beyond the headers the gate needs. Carried the undeclared-argument forwarding [model/service/SkuService.cfc:L285-L287] records the CFML facility that let
-   * the two ENTITY call sites pass an identifier through that empty signature anyway; in the port that
-   * capability is the repository's, reached by the branded entity checkers rather than by a route.
+   * DECLARATION names no formal parameter, but `[:L286]` forwards `argumentCollection=arguments` and both
+   * real callers name an identifier — [model/entity/Sku.cfc:L594] passes `skuID=` and
+   * [model/entity/Product.cfc:L626] passes `productID=` — so TR-1 tightens the ported signature to the
+   * observed `(skuID?, productID?)` and this boundary binds exactly those two from the query string.
+   * Judgment (a) carries the full adjudication, including why a revision's zero-parameter reading of AAP
+   * §0.4.2.2's Discrepancy 4 was withdrawn by review finding F1.
    *
-   * ⚠️ SO EVERY AUTHORISED REQUEST SURFACES THE LEGACY'S OWN REFUSAL. The DAO's else-branch dereferences
-   * an unbound `arguments.productID` at [model/dao/SkuDAO.cfc:L90] after the `structKeyExists` test at
-   * [:L58] has failed, which is what a literal zero-argument legacy invocation does. The failure is left
-   * to surface from the repository rather than pre-empted here, and nothing is substituted for it —
-   * the same treatment judgment (c) gives `getSkuStocksDeletableFlag`, and for the same TR-5 reason.
+   * ⚠️ AN UNSCOPED REQUEST STILL SURFACES THE LEGACY'S OWN REFUSAL. With neither identifier supplied, the
+   * DAO's else-branch dereferences an unbound `arguments.productID` at [model/dao/SkuDAO.cfc:L90] after
+   * the `structKeyExists` test at [:L58] has failed — which is what a literal zero-argument legacy
+   * invocation does. That failure is left to surface from the repository rather than pre-empted here, and
+   * nothing is substituted for it: a fabricated `false` would PERMIT a delete
+   * ([model/validation/Product.json:L12], [model/validation/Sku.json]).
    *
-   * Responses: unauthorised or forbidden per {@link SKU_ACCESS_MATRIX}; otherwise the refusal the
-   * repository raises, shaped by {@link errorResponse} at the layer that owns it.
+   * Responses: unauthorised or forbidden per {@link SKU_ACCESS_MATRIX}; the scoped boolean for a scoped
+   * probe; otherwise the refusal the repository raises, shaped by {@link errorResponse}.
    */
   readonly getTransactionExistsFlag: (
     event: TransactionExistsEvent,
@@ -1505,8 +1543,10 @@ export interface SkuHandler {
    * Responses: the projected SKU at an OK status; not found when no SKU carries the code, because the
    * service returns `null` for a miss and MUST NOT be made to throw — the out-of-scope caller
    * [model/service/PhysicalService.cfc:L199] counts misses as a data-quality tally; unauthorised or
-   * forbidden per {@link SKU_ACCESS_MATRIX}; and a bad request when no code was addressed, which is the
-   * service's own explicit failure surfacing through {@link errorResponse} rather than a check made here.
+   * forbidden per {@link SKU_ACCESS_MATRIX}; and, when no code was addressed at all, the SERVICE's own
+   * explicit failure surfacing through {@link errorResponse} rather than a status invented here — which is
+   * what the legacy produces for the same omission, since [:L289] admits it and
+   * [model/dao/SkuDAO.cfc:L102]'s `required` is what fails.
    */
   readonly getSkuBySkuCode: (event: SkuCodeEvent) => Promise<APIGatewayProxyResult>;
 
@@ -1599,6 +1639,41 @@ function readSkuIdentifier(
  */
 function readSkuCode(event: Pick<APIGatewayProxyEvent, 'pathParameters'>): string | undefined {
   return readPathParameter(event, SKU_CODE_PATH_PARAMETER);
+}
+
+/**
+ * Reads one of the transaction probe's two optional scope identifiers from the query string.
+ *
+ * Both slots are OPTIONAL, so "absent" is a legal and meaningful input rather than a fault: the DAO
+ * declares neither argument `required` [model/dao/SkuDAO.cfc:L54-L55], and the service forwards whatever
+ * the caller named. Nothing is refused here.
+ *
+ * ⚠️ THE `unsavedvalue` SENTINEL COLLAPSES INTO ABSENCE, exactly as {@link readProductIdentifier} and
+ * {@link readSkuIdentifier} collapse it for the path forms. Both primary keys declare
+ * `unsavedvalue=""` — [model/entity/Product.cfc:L52] and [model/entity/Sku.cfc:L52] — so an empty
+ * identifier can never address a persisted row. Forwarding it instead would scope the probe to a row that
+ * cannot exist and answer `false`, and a `false` from this flag PERMITS A DELETE
+ * ([model/validation/Product.json:L12], [model/validation/Sku.json]). Reporting it as absent instead
+ * lets the repository's own refusal decide, which is where the legacy decides.
+ *
+ * The value is otherwise returned exactly as received — never trimmed, case-folded or format-checked,
+ * following ./httpResponse's pass-through rule.
+ *
+ * @param event the proxy event, or any object carrying its query-string-parameters member
+ * @param name the parameter name, {@link SKU_ID_QUERY_PARAMETER} or {@link PRODUCT_ID_QUERY_PARAMETER}
+ * @returns the identifier, or nothing when it was not supplied or is the unsaved sentinel
+ */
+function readTransactionScopeIdentifier(
+  event: Pick<APIGatewayProxyEvent, 'queryStringParameters'>,
+  name: string,
+): string | undefined {
+  const identifier: string | undefined = readQueryStringParameter(event, name);
+
+  if (identifier === undefined || identifier === UNSAVED_IDENTIFIER) {
+    return undefined;
+  }
+
+  return identifier;
 }
 
 /**
@@ -2127,21 +2202,19 @@ export function createSkuHandler(
    * `sku` and this file follows, which AAP 0.8.1 expressly permits because a parameter name is idiom
    * rather than behavior — judgment (b).
    *
-   * ⭐ IT ANSWERS WITH THE SKU, PROJECTED — AAP 0.4.2.2's target column for this row is `Promise<Sku>`,
-   * and ../services/SkuService implements it. TODO(parity) the image-verdict divergence [model/service/SkuService.cfc:L213-L217] records the divergence that makes the row
-   * worth reading twice: the legacy BODY returns the image-write verdict instead, `return true;` at
-   * [:L214] and `return false;` at [:L216], and never the entity — even though
-   * [org/Hibachi/HibachiService.cfc:L117] states that "all process methods should return an entity".
-   * The plan is frozen and resolves the loose `returntype="any"` to the entity, so that is the contract;
-   * the service's own block carries the adjudication, including the revision that declared
-   * `Promise<boolean>` and the three grounds for it that do not carry.
+   * ⭐ IT ANSWERS WITH THE IMAGE-WRITE VERDICT, RAW — a bare `true` or `false`. The legacy declaration is
+   * `returntype="any"` and its body settles what that means: `return true;` at [:L214] and
+   * `return false;` at [:L216], never the entity. TR-1 tightens a loose signature to the observed
+   * contract, so ../services/SkuService declares `Promise<boolean>` and this line forwards it unwrapped.
+   * A revision projected an entity here instead, on the reading that AAP §0.4.2.2's tabulated
+   * `Promise<Sku>` cell outranks TR-1; review finding F2 withdrew it. TODO(parity)
+   * [org/Hibachi/HibachiService.cfc:L117] states that "all process methods should return an entity", so the
+   * legacy body departs from its own framework — that departure is the legacy's and is carried, and the
+   * service's own block holds the full adjudication.
    *
-   * ⚠️ THE IMAGE SERVICE'S VERDICT IS THEREFORE NOT VISIBLE AT THIS BOUNDARY, AND THAT IS FLAGGED RATHER
-   * THAN PAPERED OVER (S8). A declined write and a stored one produce the SAME response here, because
-   * the service consumes the boolean internally and neither raises nor records on the entity — exactly as
-   * [:L213-L217] does neither. An operator who needs the distinction closes it in their `ImagePathPort`
-   * adapter, by rejecting a declined write; this file invents no second channel for it, and substitutes
-   * no status of its own.
+   * ⚠️ A DECLINED WRITE IS AN OUTCOME, NOT A FAILURE, AND IT ANSWERS 200 WITH `false`. [:L213-L217] neither
+   * raises nor records on the entity for a declined write, so no status is substituted here either. What a
+   * failing PORT raises — as distinct from a declining one — still travels through {@link errorResponse}.
    *
    * G6 TRANSLATION DECISION (g) — THE HIDDEN DYNAMIC DEPENDENCY AND THE BOUNDARY STUB, TR-5. [:L212]
    * reaches the image service through `getService("imageService")`, which is NEVER DECLARED AS A
@@ -2208,19 +2281,25 @@ export function createSkuHandler(
         return notFoundResponse();
       }
 
-      /* Judgment (k): the SKU the service answers with is PROJECTED through {@link toSkuResponse}, exactly
-       * as every other entity-answering member of this file projects, rather than serialised whole — the
-       * entity carries twelve relationship collections into out-of-scope domains.
+      /* THE VERDICT IS THE ANSWER, RAW. [model/service/SkuService.cfc:L213-L217] contains exactly two
+       * returns, `return true;` and `return false;`, so the boolean IS the member's observable value and
+       * this boundary publishes it unwrapped — no envelope, no `{ saved: … }` object and no status
+       * substitution, none of which the legacy has any counterpart for (AAP §0.7.3 S9). ./httpResponse
+       * serialises a bare boolean exactly as it serialises a projected entity.
        *
-       * ⛔ DO NOT REPLACE THE PROJECTED ENTITY WITH THE PORT'S BOOLEAN. AAP §0.4.2.2 tabulates
-       * `Promise<Sku>` for this row and the plan governs; the legacy BODY does answer with a verdict
-       * instead — [model/service/SkuService.cfc:L213-L217] contains exactly two returns, `return true;`
-       * and `return false;` — and that divergence is carried and annotated in the service, not repaired
-       * and not re-litigated here.
+       * ⛔ DO NOT REPLACE THE VERDICT WITH A PROJECTED SKU. A revision did, on the reading that AAP
+       * §0.4.2.2's tabulated `Promise<Sku>` outranks TR-1's tightening of a loose `any` to the observed
+       * contract; review finding F2 withdrew it, and ../services/SkuService carries the full adjudication.
+       * Judgment (k)'s projection rule governs the members that DO answer with an entity, and this is not
+       * one of them.
+       *
+       * ⚠️ A DECLINED WRITE IS STILL 200. [:L216] returns `false` and records nothing, so `false` is a
+       * reported OUTCOME rather than a failure; answering 4xx or 5xx for it would invent a status the
+       * legacy never produced.
        *
        * The upload result is forwarded opaquely, because the port consumes it and this layer does not
        * read it. */
-      return okResponse(toSkuResponse(await skuService.processImageUpload(sku, body.value)));
+      return okResponse(await skuService.processImageUpload(sku, body.value));
     } catch (error) {
       return errorResponse(error);
     }
@@ -2498,83 +2577,59 @@ export function createSkuHandler(
    * Ports the boundary for [model/service/SkuService.cfc:L285]
    * `public boolean function getTransactionExistsFlag()`.
    *
-   * ⚠️⚠️ TODO(parity) the undeclared-argument forwarding [model/service/SkuService.cfc:L285-L287] — ZERO ARGUMENTS DECLARED, AND THE PORT KEEPS IT AT ZERO. Judgment (a) carries
-   * the whole account. The short version is that [:L285] declares no formal parameter of any kind while
-   * [:L286] forwards `argumentCollection=arguments` to a DAO member that DOES declare two
-   * [model/dao/SkuDAO.cfc:L54-L55], and CFML puts an undeclared named argument into that scope — which is
-   * how the two ENTITY call sites, [model/entity/Sku.cfc:L594] and [model/entity/Product.cfc:L626],
-   * smuggle an identifier through a signature that names none. AAP §0.4.2.2 freezes the SERVICE member at
-   * `getTransactionExistsFlag(): Promise<boolean>` (Discrepancy 4, "The narrower service contract is
-   * preserved"), so this boundary — the AWS-facing face of that member — reads nothing and forwards
-   * nothing.
-   *
-   * ⚠️ A REVISION OF THIS BOUNDARY BOUND BOTH IDENTIFIERS FROM THE QUERY STRING. It is withdrawn, for
-   * three reasons, none of them stylistic:
-   *   1. AAP §0.4.2.2 is FROZEN and names THIS member's target signature. IR-1's requirement that the
-   *      implicitly passed argument become explicit is satisfied where AAP §0.4.2.6 puts it — on
-   *      `SkuRepository.transactionExists(productID?, skuID?)` — and on the two entity checker contracts
-   *      that consume it.
-   *   2. THE LEGACY HAS NO ACTION FOR THIS MEMBER AT ALL. Both real call sites are entity-level
-   *      validation-support reads, not requests. An identifier-taking HTTP capability is therefore
-   *      invented surface, which AAP §0.7.3 S9 and §0.8.2 Guideline 4 forbid.
-   *   3. THE JUSTIFICATION GIVEN FOR THE WIDENING WAS FACTUALLY WRONG. It claimed a zero-argument service
-   *      member left both `transactionExistsFlag` delete guards unable to answer. Neither guard consumes
-   *      this member: each entity receives a branded checker whose single implementation is
-   *      `createTransactionExistenceChecker` in ../adapters/mysql/MySqlSkuRepository, and both keep their
-   *      identifier scoping regardless of what this route does.
-   *
-   * ⚠️ SO THIS ROUTE ANSWERS WITH THE LEGACY'S OWN REFUSAL, AND THAT IS PARITY RATHER THAN A GAP. With an
-   * empty `arguments` scope the DAO's `structKeyExists(arguments,"skuID")` test at
-   * [model/dao/SkuDAO.cfc:L58] fails and its else-branch dereferences an unbound `arguments.productID` at
-   * [:L90]. The repository reproduces that refusal and {@link errorResponse} shapes it. No guard
-   * pre-empts it here, no identifier is invented to fill either slot, and the answer is NOT collapsed
-   * into a global "does any transaction exist anywhere" — the one answer the legacy can never give.
-   *
-   * ⭐ THE ROUTE STAYS MOUNTED, WHICH IS TR-5 APPLIED THE SAME WAY JUDGMENT (c) APPLIES IT TO
-   * `getSkuStocksDeletableFlag`: "The member is never quietly dropped from the interface." A member the
-   * legacy cannot satisfy is published and reports honestly; it is not removed, and no `true`, `false`,
-   * `null` or fabricated result is ever substituted on that path.
+   * ⚠️ ZERO ARGUMENTS DECLARED, TWO ARGUMENTS ACCEPTED — AND THIS ROUTE CARRIES BOTH. Judgment (a) holds
+   * the full account. In short: `[:L285]` names no formal parameter, `[:L286]` forwards
+   * `argumentCollection=arguments`, and CFML puts an UNDECLARED named argument into that collection, so
+   * both real callers scope the probe through a signature that names neither —
+   * [model/entity/Sku.cfc:L594] with `skuID=` and [model/entity/Product.cfc:L626] with `productID=`.
+   * ../services/SkuService therefore declares `(skuID?, productID?)` under TR-1 ("the target signature is
+   * tightened to the observed contract"), and this boundary binds exactly those two, optionally.
    *
    * =================================================================================================
-   * ⭐ AND IT REPORTS THAT HONESTLY AS 501, NOT AS 500 — THE FIX FOR A REAL PRESENTATION DEFECT
+   * ⭐ A REVISION PUBLISHED THIS ROUTE AS A PERMANENT 501, AND REVIEW FINDING F1 WITHDREW IT
    * =================================================================================================
-   * The refusal above is DETERMINISTIC, INPUT-INDEPENDENT AND PERMANENT. It was previously handed to
-   * {@link errorResponse} as the bare `DomainError` the repository raises, which that module correctly
-   * classifies as a SERVICE FAULT and answers with 500 — a status whose whole meaning is "something went
-   * wrong that might not go wrong next time". The result was a route that invited retries no retry could
-   * ever satisfy, and that an operator could not tell apart from a genuine transient fault.
+   * That revision narrowed the service member to zero parameters, narrowed {@link TransactionExistsEvent}
+   * to the headers alone, and translated the repository's inevitable refusal into a fixed
+   * not-implemented status. The reasoning was internally consistent and rested on a false premise: that
+   * AAP §0.4.2.2's Discrepancy 4 froze the member at zero arguments. Discrepancy 4 records the
+   * DECLARATION, and TR-1 is the rule that governs what the port declares when a legacy signature is
+   * looser than its observed contract. The consequence of getting that wrong was a public route that could
+   * never answer the scoped question its two legacy callers ask — a member published as permanently
+   * unusable when the legacy uses it on every product and SKU delete.
    *
-   * Three facts settle that this is a boundary-presentation matter and nothing deeper:
-   *   1. NO INPUT SHAPE CAN SUCCEED. The member declares zero parameters, so there is nothing a caller
-   *      could add. Identifiers in the path or the query string are not read and would change nothing.
-   *   2. NO TRANSIENT FAULT IS BEING MASKED, and this was verified rather than assumed:
-   *      ../services/SkuService's member forwards straight to `SkuRepository.transactionExists()` with
-   *      both identifiers absent, and ../adapters/mysql/MySqlSkuRepository raises on that condition
-   *      BEFORE it composes or issues any statement. No connection is acquired, so no failure on this
-   *      path can be anything other than the permanent refusal.
-   *   3. THE PORT ALREADY HAS A PATTERN FOR EXACTLY THIS, one member away. Judgment (c)'s
-   *      `getSkuStocksDeletableFlag` (defect D4) is also permanently unusable and answers 501 with the
-   *      member and reason kept SERVER-SIDE. Answering the same question two different ways was the
-   *      only real inconsistency here.
+   * ⛔ SO NO STATUS IS MANUFACTURED HERE ANY MORE. A scoped probe answers the repository's boolean. An
+   * UNSCOPED probe — neither identifier supplied — reaches the refusal
+   * ../adapters/mysql/MySqlSkuRepository raises before it composes any statement, which reproduces
+   * [model/dao/SkuDAO.cfc:L90]'s dereference of a key that is not there, and {@link errorResponse} shapes
+   * it exactly as it shapes any other service failure. Nothing is pre-empted and nothing is
+   * reclassified (IR-9).
    *
-   * ⛔ WHAT IS NOT CHANGED, AND MUST NOT BE. The service signature stays at zero arguments (AAP §0.4.2.2
-   * Discrepancy 4 is frozen); the repository's raise stays exactly as it is (IR-9); the service is still
-   * CALLED, with no arguments, so the legacy's `[:L286]` forward with an empty scope is still what this
-   * boundary performs — the mapping happens only once that call has already refused. Nothing is
-   * pre-empted, so the parity behaviour remains observable rather than being replaced by a guard.
+   * ⛔ AND NO IDENTIFIER IS DEFAULTED TO MAKE THE UNSCOPED CASE "WORK". Substituting an empty string
+   * would match no row and answer `false` — and a `false` from this flag PERMITS A DELETE
+   * ([model/validation/Product.json:L12], [model/validation/Sku.json]), so a fabricated answer here would
+   * authorise a deletion the legacy refuses to authorise. {@link readTransactionScopeIdentifier} moves in
+   * the same direction for the same reason: the `unsavedvalue=""` sentinel collapses to ABSENT rather than
+   * being forwarded as a scope no row can satisfy.
    *
-   * ⛔ AND THE MAPPING IS NOT A RECLASSIFICATION OF ARBITRARY FAILURES. The original failure is attached
-   * as the `cause`, so the diagnostic chain reaches the log intact, and {@link errorResponse} still owns
-   * every decision about what a client sees: the 501 body is its fixed neutral text, and the member name
-   * and reason travel on the error object without reaching the response.
+   * ⭐ BOTH IDENTIFIERS ARE FORWARDED SKU-FIRST, MATCHING THE SERVICE. The service crosses them onto the
+   * repository's product-first order [model/dao/SkuDAO.cfc:L54-L55] on one line of its own body; this
+   * boundary performs NO crossing, which is why the argument order here is the service's and not the
+   * DAO's. Both are 32-character strings (IR-6), so a transposition would type-check — which is why the
+   * order is stated at every layer and asserted in `test/services/SkuService.test.ts`.
+   *
+   * ⛔ THE PRECEDENCE BETWEEN THE TWO IS NOT REPRODUCED HERE EITHER. [model/dao/SkuDAO.cfc:L58] lets
+   * `skuID` win when both are present; that belongs to the repository, and this boundary forwards both
+   * slots untouched rather than dropping one.
    *
    * ⛔ THE GATE STILL RUNS FIRST, WHICH IS THE ANTI-ENUMERATION PROPERTY. Because the refusal is decided
-   * without consulting the repository, an unauthorised caller cannot tell this route's failure apart from
-   * any other. `read` on `Sku` ({@link SKU_ACCESS_MATRIX}).
+   * before any identifier is read, an unauthorised caller cannot tell this route's failure apart from any
+   * other, and cannot use it to discover which SKUs or products exist. `read` on `Sku`
+   * ({@link SKU_ACCESS_MATRIX}).
    *
-   * @param event the invocation's event, or any object carrying its headers member
-   * @returns the refusal, or the not-implemented presentation of the permanent failure this call shape
-   *   always produces
+   * @param event the invocation's event, or any object carrying its query-string-parameters and headers
+   *   members
+   * @returns the scoped boolean, the refusal, or — for an unscoped probe — the service failure the legacy
+   *   itself produces for that call shape
    */
   const getTransactionExistsFlag = async (
     event: TransactionExistsEvent,
@@ -2585,28 +2640,23 @@ export function createSkuHandler(
       return refusal;
     }
 
+    /* Both optional, both forwarded as received — including as nothing. Judgment (h): an argument the
+     * legacy declares without `required` is forwarded absent rather than refused here. */
+    const skuID: string | undefined = readTransactionScopeIdentifier(event, SKU_ID_QUERY_PARAMETER);
+    const productID: string | undefined = readTransactionScopeIdentifier(
+      event,
+      PRODUCT_ID_QUERY_PARAMETER,
+    );
+
     try {
-      /*
-       * ⛔ NO ARGUMENT IS PASSED, AND NONE MAY BE ADDED. The service member declares none (AAP §0.4.2.2
-       * Discrepancy 4), so this is the whole of the legacy's `[:L286]` forward with an empty `arguments`
-       * scope. The identifier-scoped probe belongs to the repository and is reached by the entity
-       * checkers; re-routing it through here would republish it as an HTTP capability the legacy never
-       * had.
-       */
-      return okResponse(await skuService.getTransactionExistsFlag());
+      /* SKU-FIRST, matching ../services/SkuService's own parameter order. The single crossing onto the
+       * repository's product-first order happens inside that service, not here. */
+      return okResponse(await skuService.getTransactionExistsFlag(skuID, productID));
     } catch (error) {
-      /* The permanent, input-independent refusal, presented as such. See the ⭐ 501 section above for why
-       * every failure reaching this line is that refusal and cannot be a transient fault. */
-      return errorResponse(
-        new NotImplementedError(
-          'SkuHandler.getTransactionExistsFlag',
-          'AAP §0.4.2.2 Discrepancy 4 freezes the service member at zero arguments, and ' +
-            'model/dao/SkuDAO.cfc:L90 refuses an unscoped probe, so no request shape can satisfy this ' +
-            'route; the identifier-scoped probe reaches SkuRepository.transactionExists through the two ' +
-            'entity checkers instead',
-          { cause: error },
-        ),
-      );
+      /* An unscoped probe lands here, carrying the repository's own refusal. It is shaped like any other
+       * service failure — deliberately not reclassified into a fixed status, because the failure belongs
+       * to the legacy [model/dao/SkuDAO.cfc:L90] rather than to this boundary. */
+      return errorResponse(error);
     }
   };
 
@@ -2616,33 +2666,36 @@ export function createSkuHandler(
    *
    * ONE ARGUMENT, AND IT IS OPTIONAL — there is no `required` keyword at [:L289] — while the lookup one
    * layer down declares it `required` [model/dao/SkuDAO.cfc:L102]. ../services/SkuService preserves that
-   * looseness deliberately and raises at the point the legacy raises, and that service contract is
-   * UNCHANGED by anything below.
+   * looseness deliberately and raises at the point the legacy raises.
    *
    * =================================================================================================
-   * ⭐ AN UNADDRESSED CODE IS REFUSED HERE, WITH THE PARAMETER NAMED — A CORRECTED PRESENTATION
+   * ⭐ AN UNADDRESSED CODE IS FORWARDED, NOT REFUSED HERE — JUDGMENT (h) APPLIED WITHOUT EXCEPTION
    * =================================================================================================
-   * This boundary once forwarded an absent code into the service and let the service's own
-   * `DomainError` surface. That was defensible as layering and wrong as an HTTP contract: a plain
-   * `DomainError` presents as a SERVICE FAULT, so a caller that simply forgot the path parameter
-   * received **500** — a status meaning "the server failed", inviting a retry of a request that can
-   * never succeed — where every sibling member on this same handler answers **400** and names the
-   * parameter. `processImageUpload` (judgment (j)) reads the very same `skuCode` through the very same
-   * {@link readSkuCode} and already refused it with {@link SKU_CODE_REQUIRED_MESSAGE}, so the two
-   * SKU-code routes disagreed with each other about the identical missing input.
+   * Judgment (h) states the rule this file follows everywhere: an argument the legacy declares `required`
+   * is answered here with a bad request, and an argument it declares WITHOUT `required` is forwarded as
+   * absent, "so whatever the legacy would have done with the omission still happens where the legacy does
+   * it." `skuCode` is in the second class.
    *
-   * ⛔ WHAT IS NOT CHANGED. The service signature stays OPTIONAL (AAP §0.4.2.2 is frozen) and its
-   * `DomainError` stays exactly where it is, so a direct caller of the service still gets the legacy's
-   * own failure at the point the legacy fails — `test/services/SkuService.test.ts` asserts that from the
-   * service side. What changed is only that this boundary no longer manufactures a server-fault status
-   * out of a client's own omission.
+   * ⚠️ A REVISION ADDED A `400` PRECHECK HERE, and review finding F5 withdrew it. Its reasoning was that a
+   * plain `DomainError` presents as a SERVICE FAULT, so a caller who forgot the path parameter received
+   * **500**, and that every sibling answers **400** and names the parameter. The observation about the
+   * status was accurate; the remedy was not. The precheck advertised a REQUIRED route over an OPTIONAL
+   * service parameter, so the published contract contradicted the member it publishes — and 500 is in fact
+   * the faithful answer, because the legacy fails exactly this way: the omission passes the loose service
+   * signature at [:L289] and dies at the DAO's `required string skuCode` [model/dao/SkuDAO.cfc:L102],
+   * which under CFML is a server-side error page. The failure layer stays authoritative.
    *
-   * ⚠️ AND ONLY GENUINE ABSENCE IS REFUSED — AN EMPTY CODE IS STILL FORWARDED. {@link readSkuCode}
-   * records the evidence: [model/entity/Sku.cfc:L54] declares `skuCode` with `unique="true"` and NO
-   * `unsavedvalue` and NO `default`, so the empty string is a VALUE rather than a sentinel and the legacy
-   * would have run the lookup for it. Refusing it here would suppress a real, if unproductive, query and
-   * would answer 400 where the legacy answered "no such SKU". An empty code therefore reaches the
-   * repository and comes back as a miss, which is the 404 below.
+   * ⛔ WHICH DOES NOT MAKE `processImageUpload`'s OWN `400` INCONSISTENT WITH THIS, and the distinction is
+   * worth stating because both members read the same parameter through the same {@link readSkuCode}. That
+   * member's SERVICE contract is `required any Sku` [model/service/SkuService.cfc:L210] — an ENTITY, not a
+   * code — so this boundary must resolve one before it can call at all, and a request that addressed no
+   * code has failed to address the required argument. Here the code IS the argument, and it is optional.
+   * The two answers differ because the two legacy signatures differ.
+   *
+   * ⚠️ THE EMPTY CODE IS FORWARDED TOO, AND FOR A SEPARATE REASON. {@link readSkuCode} records the
+   * evidence: [model/entity/Sku.cfc:L54] declares `skuCode` with `unique="true"` and NO `unsavedvalue` and
+   * NO `default`, so the empty string is a VALUE rather than a sentinel and the legacy would have run the
+   * lookup for it. It reaches the repository and comes back as a miss, which is the 404 below.
    *
    * ⚠️ A MISS IS `null` AND MUST STAY `null` — IT IS NOT AN ERROR AND MUST NOT BECOME ONE. The
    * out-of-scope caller [model/service/PhysicalService.cfc:L199] does
@@ -2660,7 +2713,8 @@ export function createSkuHandler(
    * ({@link SKU_ACCESS_MATRIX}).
    *
    * @param event the proxy event, or any object carrying its path-parameters and headers members
-   * @returns the projected SKU, or the response describing why it could not be returned
+   * @returns the projected SKU, the not-found response for a miss, or — for an unaddressed code — the
+   *   service failure the legacy itself produces for that call shape
    */
   const getSkuBySkuCode = async (event: SkuCodeEvent): Promise<APIGatewayProxyResult> => {
     const refusal = refuseUnauthorized(event, 'getSkuBySkuCode');
@@ -2669,18 +2723,14 @@ export function createSkuHandler(
       return refusal;
     }
 
-    /* `readSkuCode` reports only GENUINE absence; an empty code is a value, not a sentinel, and is
-     * forwarded below exactly as received. */
+    /* `readSkuCode` reports only GENUINE absence; an empty code is a value, not a sentinel. BOTH are
+     * forwarded, because [:L289] declares the argument without `required` — judgment (h). */
     const skuCode: string | undefined = readSkuCode(event);
 
-    /* A request that addressed no code at all is a REQUEST fault and is named as one, matching every
-     * sibling member on this handler — including `processImageUpload`, which reads the same parameter.
-     * See the ⭐ section above for why this is presented here rather than left to the service. */
-    if (skuCode === undefined) {
-      return messageResponse(HTTP_STATUS.BAD_REQUEST, SKU_CODE_REQUIRED_MESSAGE);
-    }
-
     try {
+      /* ⛔ NO PRECHECK. `undefined` is forwarded, and the service's own `DomainError` — raised at the point
+       * [model/dao/SkuDAO.cfc:L102]'s `required` fails in the legacy — is what answers. See the ⭐ section
+       * above for why a boundary-authored 400 was withdrawn under review finding F5. */
       const sku: Sku | null = await skuService.getSkuBySkuCode(skuCode);
 
       // A miss stays a miss. PROJECTED, never serialised whole; see {@link SkuResponse}.
@@ -2781,7 +2831,7 @@ export function createSkuHandler(
  * ⭐ THE COMPOSITION ROOT IS REACHED THROUGH A DEFERRED REQUIRE, and that is the one subtle thing here.
  * `../config/container` reaches `../config/database`, whose `mysql2` pool is created at module scope,
  * and `../config/env`, which validates the environment as a module-load side effect. A STATIC import
- * would run both when this module is loaded — including by `test/handlers/skuHandler.test.ts`, which has
+ * would run both when this module is loaded — including by `test/services/SkuService.test.ts`'s folded `skuHandler` block, which has
  * neither an environment nor a database. Deferring it to the first invocation keeps module load free of
  * side effects while the pool still lives at module scope of the module that owns it, created once and
  * reused across warm invocations exactly as AAP §0.3.2 requires.
@@ -2985,7 +3035,7 @@ export const handler = async (event: APIGatewayProxyEvent): Promise<APIGatewayPr
        *
        * ⚠️ THE DEFERRAL ITSELF IS UNCHANGED, AND IT IS LOAD-BEARING. The call sits inside this one-time
        * initialisation branch, so importing this module still constructs no container and reads no
-       * environment — the property `test/handlers/entrySurface.test.ts` asserts, and the reason
+       * environment — the property `test/regression/issues.test.ts`'s folded `entrySurface` block asserts, and the reason
        * `./router.ts`, which resolves the graph at module load, fails a misconfigured deployment at cold
        * start while this entry stays loadable and answers the classified configuration failure per
        * invocation. The read-back ordering of AAP §0.6.2 is untouched: the creation boundary this entry

@@ -215,7 +215,18 @@ const LEGACY_SPECIFICATION_URL =
 
 /* Byte-exact envelope literals read from the legacy view. */
 const EXPECTED_XML_DECLARATION = '<?xml version="1.0"?>';
-const EXPECTED_RSS_OPEN_TAG = '<rss version="2.0" xmlns:g="http://base.google.com/ns/1.0">';
+/**
+ * The `g:` namespace URI, byte-exact from `integrationServices/google/views/feed/product.cfm:L11`.
+ *
+ * ⚠️ IT IS AN `http://` URL AND MUST STAY ONE, WHICH IS WHY IT IS NAMED SEPARATELY. A namespace URI is an
+ * IDENTIFIER compared by exact string equality, not a fetch target: rewriting it to `https://` would declare
+ * a DIFFERENT namespace and every `g:` element in the document would cease to be a Google feed element.
+ * Review finding F8's HTTPS direction reaches the five absolute URLs the feed publishes, and this is not one
+ * of them — so the scheme census cases below measure `http://` occurrences against THIS constant rather than
+ * requiring zero.
+ */
+const GOOGLE_FEED_NAMESPACE_URI = 'http://base.google.com/ns/1.0';
+const EXPECTED_RSS_OPEN_TAG = `<rss version="2.0" xmlns:g="${GOOGLE_FEED_NAMESPACE_URI}">`;
 const EXPECTED_CHANNEL_TITLE_ELEMENT = '<title>Slatwall Product Feed</title>';
 
 /*
@@ -249,7 +260,7 @@ const RENDER_INSTANT_EPOCH_MS = new Date(2024, 0, 1, 9, 5, 7).getTime();
 const SALE_EXPIRATION_EPOCH_MS = new Date(2024, 1, 9, 14, 15, 0).getTime();
 const RAW_UTC_HOUR_OFFSET = '5';
 const RENDER_HOST = 'catalog.example.test';
-const ABSOLUTE_URL_PREFIX = `http://${RENDER_HOST}`;
+const ABSOLUTE_URL_PREFIX = `https://${RENDER_HOST}`;
 
 /*
  * The two endpoint timestamps, WITHOUT the offset label — the components of the two instants above,
@@ -961,7 +972,7 @@ interface PartitionedSource {
 /*
  * Split the source into comment spans and code spans.
  *
- * A naive `indexOf('//')` scan would mistake the `//` inside a `'http://…'` literal for a comment, and
+ * A naive `indexOf('//')` scan would mistake the `//` inside a `'https://…'` literal for a comment, and
  * the builder contains eleven such literals, so the walk tracks string, template-literal and
  * `${…}`-substitution state explicitly. Template substitutions nest arbitrarily, hence the frame stack
  * rather than a boolean. `charAt` is used rather than indexing because it answers `string` for an
@@ -1233,7 +1244,7 @@ describe('NET-NEW ProductFeedBuilder — RSS envelope and channel', () => {
     expect(countOccurrences(xml, EXPECTED_RSS_OPEN_TAG)).toBe(1);
   });
 
-  it('[NET-NEW] emits the exact channel title, hard-coded http link and channel description', async () => {
+  it('[NET-NEW] emits the exact channel title, the HTTPS channel link and the channel description', async () => {
     const scenario = createScenario();
 
     const xml = await scenario.render();
@@ -1241,17 +1252,28 @@ describe('NET-NEW ProductFeedBuilder — RSS envelope and channel', () => {
     /* `:L13` — a fixed literal, not derived from any setting. */
     expect(xml).toContain(channelField(EXPECTED_CHANNEL_TITLE_ELEMENT));
     /*
-     * `:L14` — `http://#CGI.HTTP_HOST#`. The scheme is HARD-CODED `http://` in the legacy template; it is
-     * never HTTPS and is never negotiated from the request, so no scheme normalisation is applied here.
+     * `:L14` — `http://#CGI.HTTP_HOST#` in the legacy template, `https://` here.
+     *
+     * ⚠️ THE SCHEME IS THE PORT'S ONE DECLARED BEHAVIOURAL DIVERGENCE IN THIS FILE, AND THIS CASE PINS IT.
+     * The legacy hard-codes `http://` at all five absolute URLs, with no `https` branch, no setting behind it
+     * and no request-scheme read. Review finding F8 classified that as CWE-319 and directed "emit HTTPS or
+     * enforce an equivalent mandatory boundary"; the equivalent boundary would be infrastructure this
+     * deliverable does not author (AAP §0.2.2.5), so the scheme is upgraded. It is neither negotiated from a
+     * request nor configurable — one constant, `FEED_SCHEME_PREFIX`, reaches all five URLs.
      */
-    expect(xml).toContain(channelField(`<link>http://${RENDER_HOST}</link>`));
-    expect(xml).not.toContain('https://');
+    expect(xml).toContain(channelField(`<link>https://${RENDER_HOST}</link>`));
+    /* ⭐ AND NO CLEARTEXT ORIGIN SURVIVES ANYWHERE IN THE DOCUMENT. The assertion is written against the
+     * HOST rather than against the bare scheme, because the RSS namespace URI is itself an `http://` URL
+     * (`xmlns:g`) and always will be — it is an identifier, not a fetch target. An earlier revision asserted
+     * `not.toContain('https://')`, requiring the cleartext form; finding F8 withdrew that. */
+    expect(xml).not.toContain(`http://${RENDER_HOST}`);
+    expect(countOccurrences(xml, 'http://')).toBe(countOccurrences(xml, GOOGLE_FEED_NAMESPACE_URI));
     /*
      * `:L15` — the channel description. It is required output even though a summary field list can omit
-     * it, and it repeats the same hard-coded `http://` prefix rather than reusing the link element.
+     * it, and it repeats the same prefix rather than reusing the link element.
      */
     expect(xml).toContain(
-      channelField(`<description>Google Product Feed for http://${RENDER_HOST}</description>`),
+      channelField(`<description>Google Product Feed for https://${RENDER_HOST}</description>`),
     );
   });
 
@@ -1486,16 +1508,24 @@ function gateSalePriceReads(pricing: PricingPort, operations: OperationGate): Pr
 const SEQUENCING_SECOND_PRODUCT_ID = 'bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb3';
 const SEQUENCING_FIRST_IMAGE_FILE = 'first-primary.jpg';
 const SEQUENCING_SECOND_IMAGE_FILE = 'second-primary.jpg';
+/* ⭐ THE PRIMARY PATHS ARE SEEDED ROOTED, AND THE SEEDING IS NOT COSMETIC. The image double answers
+ * `getImagePath` with `imagePathsByImageFile[file] ?? file`, so leaving it unseeded made the port echo a
+ * BARE FILE NAME where the real adapter composes `<image folder>/product/default/<file>` — an artefact of
+ * the double, not a value the port can produce. Review finding F8 added
+ * `assertSameOriginRelativePath` at all three URL sinks, and the bare name fails it correctly, so the
+ * harness now seeds the composed form the same way the main scenario does at `imagePathsByImageFile`. */
+const SEQUENCING_FIRST_COMPOSED_IMAGE_PATH = `/product/default/${SEQUENCING_FIRST_IMAGE_FILE}`;
+const SEQUENCING_SECOND_COMPOSED_IMAGE_PATH = `/product/default/${SEQUENCING_SECOND_IMAGE_FILE}`;
 const SEQUENCING_FIRST_ADDITIONAL_PATH = '/product/default/first-additional.jpg';
 const SEQUENCING_SECOND_ADDITIONAL_PATH = '/product/default/second-additional.jpg';
 
 const SEQUENCING_FIRST_RECORD_OPERATIONS: readonly string[] = Object.freeze([
-  `resize:${SEQUENCING_FIRST_IMAGE_FILE}`,
+  `resize:${SEQUENCING_FIRST_COMPOSED_IMAGE_PATH}`,
   `resize:${SEQUENCING_FIRST_ADDITIONAL_PATH}`,
   `pricing:${PRODUCT_ID}`,
 ]);
 const SEQUENCING_SECOND_RECORD_OPERATIONS: readonly string[] = Object.freeze([
-  `resize:${SEQUENCING_SECOND_IMAGE_FILE}`,
+  `resize:${SEQUENCING_SECOND_COMPOSED_IMAGE_PATH}`,
   `resize:${SEQUENCING_SECOND_ADDITIONAL_PATH}`,
   `pricing:${SEQUENCING_SECOND_PRODUCT_ID}`,
 ]);
@@ -1509,9 +1539,17 @@ interface SequencingHarness {
 function createSequencingHarness(): SequencingHarness {
   const operations = createOperationGate();
   const settings = createSettingResolverDouble({ settings: [...DEFAULT_SETTING_SEEDS] });
-  /* Unseeded resize answers, so the double echoes each request's own path and every gated label is
-   * distinct — a single global answer would make the two records' operations indistinguishable. */
-  const images = createImagePathDouble();
+  /* Unseeded RESIZE answers, so the double echoes each request's own path and every gated label is
+   * distinct — a single global answer would make the two records' operations indistinguishable. The
+   * per-file IMAGE PATHS are seeded, though, for the reason recorded at
+   * {@link SEQUENCING_FIRST_COMPOSED_IMAGE_PATH}: an unseeded `getImagePath` echoes a bare file name, which
+   * is not a same-origin relative path and which the real adapter never produces. */
+  const images = createImagePathDouble({
+    imagePathsByImageFile: {
+      [SEQUENCING_FIRST_IMAGE_FILE]: SEQUENCING_FIRST_COMPOSED_IMAGE_PATH,
+      [SEQUENCING_SECOND_IMAGE_FILE]: SEQUENCING_SECOND_COMPOSED_IMAGE_PATH,
+    },
+  });
   const pricing = createPricingDouble();
 
   const builder = new ProductFeedBuilder(
@@ -1823,26 +1861,29 @@ describe('NET-NEW ProductFeedBuilder — identity, title, description, category,
  * ================================================================================================== */
 
 describe('NET-NEW ProductFeedBuilder — links and images', () => {
-  it('[NET-NEW] emits the item link over hard-coded http, keeping the product URL leading and trailing slashes', async () => {
+  it('[NET-NEW] emits the item link over HTTPS, keeping the product URL leading and trailing slashes', async () => {
     const scenario = createScenario({ urlTitle: 'nike-air' });
 
     const xml = await scenario.render();
 
     /*
-     * `integrationServices/google/views/feed/product.cfm:L22` concatenates the hard-coded `http://`, the
+     * `integrationServices/google/views/feed/product.cfm:L22` concatenates a hard-coded scheme, the
      * configured host and `product.getProductURL()`. `model/entity/Product.cfc:L207-L209` composes that
      * path as `/#setting('globalURLKeyProduct')#/#getURLTitle()#/`, so it carries BOTH a leading and a
      * trailing slash. Neither is trimmed, and the two slashes are why the concatenation needs no separator.
      *
-     * ⚠️ THE TITLE'S "hard-coded http" IS ABOUT THE SCHEME, NOT ABOUT ESCAPING. `:L22` writes the literal
-     * `http://` with no `https` branch and no setting behind it, which is what the negative assertion
-     * below pins. The value itself IS escaped — the neighbouring case proves that — and this case is the
-     * byte-identity half of the same claim: a title with no XML metacharacter emits unchanged.
+     * ⭐ THE LEADING SLASH IS ALSO WHY REVIEW FINDING F8's PATH CONSTRAINT FORECLOSES NOTHING. The legacy
+     * writes that slash into the composed literal itself, so `assertSameOriginRelativePath`'s requirement is
+     * satisfied by every value the legacy composition can produce — the case below exercises the refusal.
+     *
+     * ⚠️ THE SCHEME IS `https`, WHERE `:L22` HARD-CODES `http`. That is the port's one declared behavioural
+     * divergence in this file, directed by finding F8 (CWE-319); the channel-link case carries the full
+     * argument. The negative assertion below pins it: no item link may be published over cleartext.
      */
     expect(xml).toContain(
       itemField(`<link>${ABSOLUTE_URL_PREFIX}/${SETTING_GLOBAL_URL_KEY_PRODUCT}/nike-air/</link>`),
     );
-    expect(xml).not.toContain('<link>https://');
+    expect(xml).not.toContain('<link>http://');
     /* The URL key is read through the setting resolver, not hard-coded in the builder. */
     expect(resolvedSettingNames(scenario.settings)).toContain('globalURLKeyProduct');
   });
@@ -1875,7 +1916,7 @@ describe('NET-NEW ProductFeedBuilder — links and images', () => {
     expect(safeXml).not.toContain(`/${RAW_SAFE_SENTINEL_ESCAPED}/`);
     /* And the separators the legacy relies on survive, as they did under the encoder. */
     expect(safeXml).toContain(`<link>${ABSOLUTE_URL_PREFIX}/${SETTING_GLOBAL_URL_KEY_PRODUCT}/`);
-    expect(safeXml).not.toContain('<link>https://');
+    expect(safeXml).not.toContain('<link>http://');
     /* The URL key is still read through the setting resolver, not hard-coded in the builder. */
     expect(resolvedSettingNames(safeScenario.settings)).toContain('globalURLKeyProduct');
 
@@ -2671,7 +2712,7 @@ function itemChildElementNames(xml: string, itemIndex = 0): readonly string[] {
   return names;
 }
 
-/** The element name opening a rendered line, e.g. `g:image_link` from `<g:image_link>http://…`. */
+/** The element name opening a rendered line, e.g. `g:image_link` from `<g:image_link>https://…`. */
 function elementNameOfLine(markup: string): string {
   const match = /^<([^\s/>]+)[\s>]/.exec(markup);
   if (match === null) {
@@ -3182,13 +3223,13 @@ describe('NET-NEW ProductFeedBuilder — escaping every dynamic field', () => {
       productImages: [{ imagePath: FIRST_ADDITIONAL_IMAGE_PATH }],
     });
 
-    expect(xml).toContain(channelField(`<link>http://${rawHost}</link>`));
+    expect(xml).toContain(channelField(`<link>https://${rawHost}</link>`));
     expect(xml).toContain(
-      channelField(`<description>Google Product Feed for http://${rawHost}</description>`),
+      channelField(`<description>Google Product Feed for https://${rawHost}</description>`),
     );
-    expect(xml).toContain(itemField(`<link>http://${rawHost}/`));
-    expect(xml).toContain(itemField(`<g:image_link>http://${rawHost}/`));
-    expect(xml).toContain(itemField(`<g:additional_image_link>http://${rawHost}/`));
+    expect(xml).toContain(itemField(`<link>https://${rawHost}/`));
+    expect(xml).toContain(itemField(`<g:image_link>https://${rawHost}/`));
+    expect(xml).toContain(itemField(`<g:additional_image_link>https://${rawHost}/`));
     /* Five interpolations, five RAW occurrences, and no escaped one anywhere. */
     expect(countOccurrences(xml, rawHost)).toBe(5);
     expect(xml).not.toContain(RAW_SAFE_SENTINEL_ESCAPED);
@@ -3206,8 +3247,8 @@ describe('NET-NEW ProductFeedBuilder — escaping every dynamic field', () => {
 
     const xml = await scenario.render();
 
-    expect(xml).toContain(channelField('<link>http://catalog.example.test:8080</link>'));
-    expect(xml).toContain(itemField('<link>http://catalog.example.test:8080/'));
+    expect(xml).toContain(channelField('<link>https://catalog.example.test:8080</link>'));
+    expect(xml).toContain(itemField('<link>https://catalog.example.test:8080/'));
     expect(xml).not.toContain('%3A8080');
   });
 
@@ -3726,12 +3767,12 @@ describe('NET-NEW ProductFeedBuilder — no input can change the document shape'
     const channel = parseFeedChannel(xml);
 
     /* The channel pair round-trips to the composed value, every sub-delimiter intact. */
-    expect(soleChildText(channel, 'link')).toBe(`http://${CONFORMING_HOSTILE_HOST}`);
+    expect(soleChildText(channel, 'link')).toBe(`https://${CONFORMING_HOSTILE_HOST}`);
     expect(soleChildText(channel, 'description')).toBe(
-      `Google Product Feed for http://${CONFORMING_HOSTILE_HOST}`,
+      `Google Product Feed for https://${CONFORMING_HOSTILE_HOST}`,
     );
     /* On the wire there is NO entity anywhere: `:L14` and `:L15` are raw sinks. */
-    expect(xml).toContain(channelField(`<link>http://${CONFORMING_HOSTILE_HOST}</link>`));
+    expect(xml).toContain(channelField(`<link>https://${CONFORMING_HOSTILE_HOST}</link>`));
     expect(xml).not.toContain('&amp;');
     expect(xml).not.toContain('&apos;');
   });
@@ -3758,7 +3799,7 @@ describe('NET-NEW ProductFeedBuilder — no input can change the document shape'
 
     const xml = await scenario.render({ productImages: [{ imagePath: '/product/default/b.jpg' }] });
     const item = parseSoleFeedItem(xml);
-    const prefix = `http://${CONFORMING_HOSTILE_HOST}`;
+    const prefix = `https://${CONFORMING_HOSTILE_HOST}`;
 
     expect(xml).toContain(
       itemField(`<link>${prefix}/${SETTING_GLOBAL_URL_KEY_PRODUCT}/nike-air/</link>`),
@@ -3790,51 +3831,118 @@ describe('NET-NEW ProductFeedBuilder — no input can change the document shape'
     expect(xml).not.toContain(encodeURIComponent(CONFORMING_HOSTILE_HOST));
   });
 
-  it('[NET-NEW] TODO(parity) — WITHDRAWAL REGRESSION: an origin-moving host renders, unrefused', async () => {
+  it('[NET-NEW] F8 REFUSES an origin-moving host, atomically, before any byte is produced', async () => {
     /*
-     * ⛔ THE SHARPEST CARRIED EXPOSURE IN THIS FILE, AND THE ONE THAT WENT THROUGH THE MOST REVISIONS.
-     * `ProductFeedRenderContext.host` is a plain `string` with no brand, and every one of the five absolute
-     * URLs is composed from it. A host carrying `/`, `@`, `?` or `#` MOVES THE ORIGIN of every URL in the
-     * document, and one carrying `<` breaks the CHANNEL out of its own element.
+     * ⭐ THE SHARPEST EXPOSURE IN THIS FILE, NOW CLOSED, AND THE CASE THAT WENT THROUGH THE MOST REVISIONS.
+     * {@link ProductFeedRenderContext.host} is a plain `string` with no brand, and every one of the five
+     * absolute URLs is composed from it. A host carrying `/`, `@`, `?` or `#` MOVES THE ORIGIN of every URL
+     * in the document; one carrying `<` breaks the CHANNEL out of its own element.
      *
-     * ⛔ THREE ANSWERS WERE TRIED. Revision 1 escaped the value, so the document stayed well-formed with
-     * `http://x</title>…` sitting inside `<link>` as text — which is well-formed and still wrong, because
-     * the harm is in the VALUE rather than in the markup. Revision 2 added a `validateFeedHostAuthority`
-     * deny check at the sink and refused the render outright; that is what this case used to assert, along
-     * with the offending index and code point in the error's context. Revision 3 withdraws both: AAP
-     * §0.6.7.7 authorises exactly ONE departure from behavioural preservation in this port (D18) and
-     * `product.cfm:L14` interpolates `CGI.HTTP_HOST` with no test whatsoever.
+     * ⛔ FOUR ANSWERS WERE TRIED, AND THE HISTORY IS KEPT BECAUSE EACH ARGUMENT IS WORTH HAVING ON RECORD.
+     * Revision 1 ESCAPED the value, so the document stayed well-formed with `http://x</title>…` sitting
+     * inside `<link>` as text — well-formed and still wrong, because the harm is in the VALUE rather than in
+     * the markup. Revision 2 added a `validateFeedHostAuthority` deny check at the sink and refused the
+     * render. Revision 3 WITHDREW it, reasoning that AAP §0.6.7.7 authorises exactly ONE departure from
+     * behavioural preservation (D18) and that `product.cfm:L14` interpolates `CGI.HTTP_HOST` with no test
+     * whatsoever — and this case then asserted the hostile OUTCOME, so that the carry was visible.
      *
-     * ⚠️ SO THE RENDER SUCCEEDS AND THE INJECTION LANDS. The assertion is the hostile OUTCOME rather than a
-     * refusal, and it is spelled out with the literal payload so that a reader of this suite can see what
-     * the carry costs — and so that any reinstated AUTHORITY gate fails here loudly.
+     * ⭐ REVISION 4 REINSTATES THE REFUSAL, ON REVIEW FINDING F8, AND THE COUNT ARGUMENT DOES NOT REACH IT.
+     * F8 classifies the unvalidated read as a MAJOR security defect — CWE-20 feeding CWE-601. Revision 3's
+     * objection presumes the gate IS a behavioural departure; it is not. RFC 9110 §7.2 defines the `Host`
+     * field value that `ProductFeedRenderContext.host` stands in for as an RFC 3986 §3.2.2 `host` with
+     * §3.2.3's optional `port`, userinfo expressly excluded — so NO value this gate refuses could ever have
+     * reached `product.cfm:L14`. A rule that admits every value the legacy input could hold and refuses only
+     * values it could not enters no divergence register at all.
      *
-     * ⭐ THE PAYLOAD IS ORIGIN-MOVING BUT XML-REPRESENTABLE, AND THE DISTINCTION IS THE WHOLE REASON THIS
-     * CASE AND ITS SEC-2 SIBLING CAN BOTH BE TRUE. Two different gates were once conflated here:
-     *   • The withdrawn `validateFeedHostAuthority` gated the five ORIGIN-MOVING characters `/ @ ? # \\`.
-     *     That is a URL-semantics rule with no counterpart in `product.cfm:L14`, which interpolates
-     *     `CGI.HTTP_HOST` with no test whatsoever — so it is WITHDRAWN, and this case asserts the carry.
-     *   • SEC-2's `assertRepresentableInXml` gates only `<`, `&` and `]]>` at a RAW sink, because those
-     *     three make the DOCUMENT UNPARSEABLE — the legacy's own document would not parse either, so
-     *     refusing is not an added behaviour but the only truthful answer. That gate is IN FORCE.
-     * `legit.example@attacker.example` moves the origin to `attacker.example` for all five URLs while
-     * containing no markup character, so it reaches the sink the withdrawn gate used to guard. The
-     * `<`-bearing variant is refused, and its sibling case above asserts exactly that.
+     * ⭐ THE PAYLOAD IS ORIGIN-MOVING BUT XML-REPRESENTABLE, AND THE DISTINCTION IS WHY THIS CASE PROVES THE
+     * AUTHORITY GATE RATHER THAN THE MARKUP ONE. `legit.example@attacker.example` moves the origin to
+     * `attacker.example` for all five URLs while containing NO markup character, so
+     * {@link renderRawFeedNode}'s `&`/`<`/`]]>` refusal cannot fire on it and only
+     * `validateFeedHostAuthority` can. The `<`-bearing variant is refused by the OTHER gate, and its sibling
+     * case above asserts that.
      */
     const hostileHost = 'legit.example@attacker.example';
     const scenario = createScenario({ host: hostileHost });
 
-    const xml = await scenario.render();
+    await expect(scenario.render()).rejects.toBeInstanceOf(DataIntegrityError);
+  });
 
-    /* No refusal: a complete document is produced, with the payload verbatim in both channel sinks. */
-    expect(xml).toContain(channelField(`<link>http://${hostileHost}</link>`));
-    expect(xml).toContain(
-      channelField(`<description>Google Product Feed for http://${hostileHost}</description>`),
-    );
-    /* And nothing encoded it on the way through — the userinfo delimiter travels as itself, which is the
-     * whole of the carried exposure: every absolute URL in the document now resolves to `attacker.example`. */
-    expect(xml).not.toContain('%40');
-    expect(xml).toContain('@attacker.example');
+  it('[NET-NEW] F8 refuses every origin-moving character, and admits the conforming authority forms', async () => {
+    /*
+     * THE GATE'S WHOLE ALPHABET, ASSERTED RATHER THAN READ OFF ITS DOCBLOCK. Each refused character has a
+     * distinct mechanism: `@` introduces userinfo; `/` and `\\` end the authority and begin a path; `?` and
+     * `#` begin a query and a fragment; whitespace and control characters are admitted in no authority. A
+     * blank host is refused too, because five URLs with no authority resolve nowhere.
+     *
+     * ⭐ AND THE ADMITTED FORMS ARE ASSERTED IN THE SAME CASE, WHICH IS THE HALF THAT KEEPS THE GATE HONEST.
+     * A bracketed IPv6 literal, a `host:port` pair, an underscore label and an RFC 3986 sub-delimiter all
+     * RENDER — they are legitimate authorities, and a gate that refused them would be the invented
+     * DNS-label grammar AAP §0.7.3 S9 forbids and that this port withdrew twice.
+     */
+    for (const refused of [
+      'legit.example@attacker.example',
+      'legit.example/attacker',
+      'legit.example\\attacker',
+      'legit.example?q=1',
+      'legit.example#frag',
+      'legit example',
+      'legit.example\u0009',
+      '   ',
+    ]) {
+      await expect(createScenario({ host: refused }).render()).rejects.toBeInstanceOf(
+        DataIntegrityError,
+      );
+    }
+
+    for (const admitted of ['[2001:db8::1]', 'catalog.example.test:8080', 'under_score.example']) {
+      await expect(createScenario({ host: admitted }).render()).resolves.toContain(
+        `<link>https://${admitted}</link>`,
+      );
+    }
+  });
+
+  it('[NET-NEW] F8 refuses a URL path that is not same-origin relative, at all three sinks', async () => {
+    /*
+     * ⭐ THE PATH HALF OF THE SAME FINDING, AND THE ROUTE IT CLOSES IS THE MISSING LEADING SLASH. A stored
+     * path of `attacker.example/x` appended to `https://<host>` yields the authority `<host>attacker.example`
+     * — a DIFFERENT origin, reached without any delimiter the host gate inspects. `//x` is refused as well,
+     * on the narrower ground that RFC 3986 §4.2 classifies it as a network-path reference rather than the
+     * absolute-path reference F8 constrains these values to.
+     *
+     * ⭐ IT FORECLOSES NOTHING THE LEGACY COULD PRODUCE. `model/entity/Product.cfc:L207-L209` writes the
+     * leading slash into the composed product URL literal, and the image paths are composed beneath a rooted
+     * image-folder setting — the legacy appends all three to `http://#CGI.HTTP_HOST#` precisely because they
+     * are root-relative. The conforming forms in the third loop below are the proof.
+     *
+     * ⭐ ONLY TWO OF THE THREE SINKS ARE REACHABLE BY A HOSTILE VALUE, AND THAT IS A FINDING RATHER THAN A
+     * GAP IN THIS CASE. The item `link` reads `Product.getProductURL`, which composes
+     * `/${'${'}setting('globalURLKeyProduct')}/${'${'}urlTitle}/` — the leading slash is a LITERAL in the composition,
+     * not part of either datum, so no setting value and no stored title can remove it. The gate still runs
+     * there, because the composition is the domain's and this file must not assume it; the last assertion
+     * below proves the conforming path renders. The two sinks a hostile value CAN reach are `g:image_link`
+     * and each `g:additional_image_link`, whose whole value arrives from the port.
+     */
+    for (const hostilePath of ['attacker.example/x.jpg', '//attacker.example/x.jpg', 'x.jpg']) {
+      /* `g:image_link`: the SKU's composed path, seeded directly. */
+      await expect(
+        createScenario({
+          imagePathsByImageFile: { [SKU_IMAGE_FILE]: hostilePath },
+        }).render(),
+      ).rejects.toBeInstanceOf(DataIntegrityError);
+
+      /* Each `g:additional_image_link`: the image's own path, echoed by the unseeded resize answer. */
+      await expect(
+        createScenario().render({ productImages: [{ imagePath: hostilePath }] }),
+      ).rejects.toBeInstanceOf(DataIntegrityError);
+    }
+
+    /* And the conforming forms still render at all three sinks, including a path carrying a dot segment —
+     * dot-segment resolution stays same-origin, so it is not a rebasing route and is not refused. */
+    await expect(
+      createScenario({
+        imagePathsByImageFile: { [SKU_IMAGE_FILE]: '/product/default/../default/a.jpg' },
+      }).render({ productImages: [{ imagePath: '/product/default/b.jpg' }] }),
+    ).resolves.toContain('<g:image_link>');
   });
 
   it('[NET-NEW] keeps one item per SKU when every ESCAPED field is hostile', async () => {
@@ -3883,7 +3991,7 @@ describe('NET-NEW ProductFeedBuilder — no input can change the document shape'
 
     /* The item link is unaffected: a legitimate `urlTitle` travels raw, byte-for-byte. */
     expect(soleChildText(item, 'link')).toBe(
-      `http://${CONFORMING_HOSTILE_HOST}/${SETTING_GLOBAL_URL_KEY_PRODUCT}/nike-air/`,
+      `https://${CONFORMING_HOSTILE_HOST}/${SETTING_GLOBAL_URL_KEY_PRODUCT}/nike-air/`,
     );
     expect(childrenNamed(item, 'link')).toHaveLength(1);
   });
@@ -3935,7 +4043,7 @@ describe('NET-NEW ProductFeedBuilder — no input can change the document shape'
     const traversalItem = parseSoleFeedItem(traversalXml);
 
     expect(soleChildText(traversalItem, 'link')).toBe(
-      `http://${RENDER_HOST}/${SETTING_GLOBAL_URL_KEY_PRODUCT}/../../etc/passwd/`,
+      `https://${RENDER_HOST}/${SETTING_GLOBAL_URL_KEY_PRODUCT}/../../etc/passwd/`,
     );
     expect(childrenNamed(traversalItem, 'link')).toHaveLength(1);
   });
@@ -4602,9 +4710,9 @@ describe('NET-NEW ProductFeedBuilder — parsed well-formedness over hostile val
     ]);
     const [channelTitle, channelLink, channelDescription] = channel.children;
     expect(channelTitle?.text).toBe('Slatwall Product Feed');
-    expect(channelLink?.text).toBe(`http://${CONFORMING_HOSTILE_HOST}`);
+    expect(channelLink?.text).toBe(`https://${CONFORMING_HOSTILE_HOST}`);
     expect(channelDescription?.text).toBe(
-      `Google Product Feed for http://${CONFORMING_HOSTILE_HOST}`,
+      `Google Product Feed for https://${CONFORMING_HOSTILE_HOST}`,
     );
 
     expect(soleElement(item, 'title').text).toBe(HOSTILE_TEXT);
@@ -4616,13 +4724,13 @@ describe('NET-NEW ProductFeedBuilder — parsed well-formedness over hostile val
      * URLs, and the host returns byte-identical because it was never transformed at all.
      */
     expect(soleElement(item, 'link').text).toBe(
-      `http://${CONFORMING_HOSTILE_HOST}/${SETTING_GLOBAL_URL_KEY_PRODUCT}/nike-air/`,
+      `https://${CONFORMING_HOSTILE_HOST}/${SETTING_GLOBAL_URL_KEY_PRODUCT}/nike-air/`,
     );
     expect(soleElement(root, 'g:image_link').text).toBe(
-      `http://${CONFORMING_HOSTILE_HOST}${SKU_COMPOSED_IMAGE_PATH}`,
+      `https://${CONFORMING_HOSTILE_HOST}${SKU_COMPOSED_IMAGE_PATH}`,
     );
     expect(soleElement(root, 'g:additional_image_link').text).toBe(
-      `http://${CONFORMING_HOSTILE_HOST}${FIRST_ADDITIONAL_IMAGE_PATH}`,
+      `https://${CONFORMING_HOSTILE_HOST}${FIRST_ADDITIONAL_IMAGE_PATH}`,
     );
 
     /*
@@ -4792,12 +4900,18 @@ const THIRD_PRODUCT_ID = 'bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb3';
 const THIRD_SKU_ID = 'aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa3';
 
 /**
- * A second SKU image file, so two records can own two DISTINCT resized reads.
+ * A second SKU image file, so two records can own two DISTINCT resized reads, and the composed path the
+ * image port answers for it.
  *
- * Left unseeded in `imagePathsByImageFile` on purpose: the image double then echoes the name back for both
- * path members, which is enough for an ordering case and invents no directory layout.
+ * ⭐ IT IS SEEDED RATHER THAN LEFT TO THE DOUBLE'S ECHO. It was unseeded while the echo's bare file name
+ * was harmless — an ordering case cares only that the two labels differ. Review finding F8 added
+ * `assertSameOriginRelativePath` at the three URL sinks, and a bare file name is not a same-origin relative
+ * path, so the echo would now be REFUSED: the double composes no directory on purpose, which means an
+ * unseeded name comes back without the leading slash the real adapter always supplies. Seeding it keeps the
+ * two labels distinct AND keeps the value one the port can actually produce.
  */
 const SECOND_SKU_IMAGE_FILE = 'nike-air-2.jpg';
+const SECOND_SKU_COMPOSED_PATH = `/product/default/${SECOND_SKU_IMAGE_FILE}`;
 
 /**
  * Hands control back to the event loop until every pending microtask has run.
@@ -5287,7 +5401,15 @@ describe('NET-NEW — one dependency read outstanding at a time (F8a)', () => {
   });
 
   it('NET-NEW — record two starts no image read until every image read of record one has resolved', async () => {
-    const scenario = createScenario({ deferImages: true });
+    const scenario = createScenario({
+      deferImages: true,
+      /* BOTH files seeded, because supplying this member REPLACES the default single-entry map. See
+       * {@link SECOND_SKU_COMPOSED_PATH} for why an unseeded second file is no longer viable. */
+      imagePathsByImageFile: {
+        [SKU_IMAGE_FILE]: SKU_COMPOSED_IMAGE_PATH,
+        [SECOND_SKU_IMAGE_FILE]: SECOND_SKU_COMPOSED_PATH,
+      },
+    });
     const otherProduct = buildOtherProduct(scenario.productType, OTHER_PRODUCT_ID, 'OTHER', 50);
     /*
      * A DIFFERENT image file on record two, and no additional images on either record.
@@ -5345,7 +5467,7 @@ describe('NET-NEW — one dependency read outstanding at a time (F8a)', () => {
       `getImagePath:${SKU_IMAGE_FILE}`,
       `getResizedImagePath:${SKU_COMPOSED_IMAGE_PATH}`,
       `getImagePath:${SECOND_SKU_IMAGE_FILE}`,
-      `getResizedImagePath:${SECOND_SKU_IMAGE_FILE}`,
+      `getResizedImagePath:${SECOND_SKU_COMPOSED_PATH}`,
     ]);
     expect(scenario.images.pending).toHaveLength(0);
     expect(countOccurrences(xml, `${CHANNEL_FIELD_INDENT}<item>`)).toBe(2);
@@ -5431,7 +5553,7 @@ const FEED_WIRING_ENVIRONMENT: Readonly<Record<string, string>> = Object.freeze(
   DB_PORT: '3306',
   DB_NAME: 'Slatwall',
   DB_USER: 'slatwall',
-  DB_PASSWORD: 'slatwall_pw',
+  DB_PASSWORD: 'fixture-not-a-real-password',
   DB_TLS_MODE: 'disabled',
   DB_CONNECTION_LIMIT: '10',
   DB_QUEUE_LIMIT: '1',
@@ -7682,7 +7804,7 @@ describe('test/integrations/IntegrationContract.test.ts — the five-method `<cf
  *      from the same records, the same context and the same serializer — which is the only form of
  *      the claim that cannot pass while the handler quietly alters a character.
  *   2. THE CONFIGURED HOST REACHES EVERY ABSOLUTE URL. `product.cfm` composes four content URLs and
- *      the channel description from `http://` plus the host. The host is read ONCE at creation,
+ *      the channel description from `https://` plus the host. The host is read ONCE at creation,
  *      which is asserted with a counting accessor, because AAP §0.6.6 M7 records that it cannot vary
  *      between invocations of one container.
  *   3. NOTHING SURVIVES BETWEEN INVOCATIONS. The selection is re-issued every call, the clock is read
@@ -7783,7 +7905,7 @@ describe("test/handlers/googleFeedHandler.test.ts — the feed's HANDLER — the
    * lives in the out-of-scope setting service, so inventing a default would be fabrication.
    * ============================================================================================== */
   const RENDER_HOST = 'catalog.example.test';
-  const ABSOLUTE_URL_PREFIX = 'http://catalog.example.test';
+  const ABSOLUTE_URL_PREFIX = 'https://catalog.example.test';
   const SECOND_RENDER_HOST = 'second.example.test';
 
   /** `product.cfm:L1-L11` — the envelope, byte for byte. */
@@ -8231,7 +8353,7 @@ describe("test/handlers/googleFeedHandler.test.ts — the feed's HANDLER — the
   });
 
   describe('NET-NEW googleFeedHandler — the configured host reaches every absolute URL (INT-06)', () => {
-    it('[NET-NEW] puts http://<host> in the channel link, the channel description and the item link', async () => {
+    it('[NET-NEW] puts https://<host> in the channel link, the channel description and the item link', async () => {
       const { response } = await invoke(createHandlerScenario().handler);
       const body = response.body;
 
@@ -8246,17 +8368,27 @@ describe("test/handlers/googleFeedHandler.test.ts — the feed's HANDLER — the
       expect(body).toContain(`${ABSOLUTE_URL_PREFIX}${ADDITIONAL_IMAGE_PATH}`);
     });
 
-    it('[NET-NEW] emits http:// and never https://, because the legacy prefix is literal', async () => {
+    it('[NET-NEW] F8 emits every content URL over HTTPS, and no cleartext origin anywhere', async () => {
       const { response } = await invoke(createHandlerScenario().handler);
       const body = response.body;
 
       /*
-       * TODO(parity) — the legacy template hard-codes `http://`. Upgrading it to `https://` would be a
-       * silent behavioural change of exactly the kind AAP §0.8.2 guideline 4 forbids, so the scheme is
-       * asserted as it is. The `g:` namespace URI is itself an `http://` URL, so counting occurrences of
-       * the PREFIXED host is what distinguishes content URLs from the namespace declaration.
+       * ⚠️ THE SCHEME IS THE PORT'S ONE DECLARED BEHAVIOURAL DIVERGENCE, AND THIS IS ITS ROUTE-LEVEL PIN.
+       * `integrationServices/google/views/feed/product.cfm:L14` and its four siblings hard-code `http://`;
+       * `ProductFeedBuilder.FEED_SCHEME_PREFIX` emits `https://`. Review finding F8 classified the hard-coded
+       * cleartext as CWE-319 and directed "emit HTTPS or enforce an equivalent mandatory boundary" — and the
+       * equivalent boundary would be infrastructure this deliverable does not author (AAP §0.2.2.5), so the
+       * scheme is upgraded and DECLARED rather than left as parity.
+       *
+       * ⭐ THE NEGATIVE IS WRITTEN AGAINST THE HOST, NOT THE BARE SCHEME. The `g:` namespace URI is itself an
+       * `http://` URL and must stay one — it is an identifier compared by string equality, not a fetch target
+       * — so the census counts `http://` occurrences against it rather than requiring zero. An earlier
+       * revision asserted `not.toContain('https://')`, requiring the cleartext form; F8 withdrew that.
        */
-      expect(body).not.toContain('https://');
+      expect(body).not.toContain(`http://${RENDER_HOST}`);
+      expect(countOccurrences(body, 'http://')).toBe(
+        countOccurrences(body, GOOGLE_FEED_NAMESPACE_URI),
+      );
       expect(countOccurrences(body, ABSOLUTE_URL_PREFIX)).toBeGreaterThanOrEqual(4);
     });
 
@@ -8270,59 +8402,106 @@ describe("test/handlers/googleFeedHandler.test.ts — the feed's HANDLER — the
 
       /*
        * AAP §0.6.6 M7 — the host cannot vary between invocations of one container, and the module binds it
-       * once so the `http://<host>` text is sourced from exactly one place. A counting accessor is the only
+       * once so the `https://<host>` text is sourced from exactly one place. A counting accessor is the only
        * way to observe that, and it also proves the value is not re-validated or re-normalised per call.
        */
       expect(scenario.hostReads.reads).toBe(1);
     });
 
-    it('[NET-NEW] passes a legal host through unmodified — the gate refuses or does nothing', async () => {
+    it('[NET-NEW] passes a legal host through unmodified — the gate refuses, it never rewrites', async () => {
       const scenario = createHandlerScenario({ host: SECOND_RENDER_HOST });
       const { response } = await invoke(scenario.handler);
 
       /*
-       * ⭐ THE TITLE USED TO SAY "without validating or normalising it", AND HALF OF THAT IS NO LONGER
-       * TRUE OF THE SECOND HALF ONLY, AND THAT HALF IS WHAT THIS CASE PINS. A revision reinstated
-       * `validateFeedHostAuthority` under findings F7 and SEC-06, so the value was validated at construction
-       * and again per render; that apparatus is WITHDRAWN — see the withdrawal record below. What survives,
-       * and is asserted here, is that a host is used EXACTLY as configured: nothing is trimmed, case-folded,
-       * punycoded, stripped of a default port or upgraded to a secure scheme, so the emitted bytes for a
-       * legal host are the configured bytes.
+       * ⭐ VALIDATION AND NORMALISATION ARE DIFFERENT THINGS, AND THIS CASE PINS THE SECOND HALF ONLY.
+       * `validateFeedHostAuthority` IS applied — at construction here and again per render in the serializer,
+       * under review finding F8 — so the value is judged. What it never does is REWRITE: a host that passes
+       * is emitted byte-for-byte, with nothing trimmed, case-folded, punycoded or stripped of a default port.
+       * A gate that silently corrected a value would publish a URL the operator did not configure, which is
+       * the failure mode `assertSameOriginRelativePath` gives the same answer to.
+       *
+       * ⚠️ THE SCHEME IS THE ONE EXCEPTION AND IT IS NOT A NORMALISATION OF THIS VALUE. `https://` is a
+       * module constant applied to every URL, not a rewrite of the configured host; the case above declares it.
        */
-      expect(response.body).toContain(`<link>http://${SECOND_RENDER_HOST}</link>`);
+      expect(response.body).toContain(`<link>https://${SECOND_RENDER_HOST}</link>`);
       expect(response.body).not.toContain(RENDER_HOST);
     });
 
     /* ==============================================================================================
-     * ⛔ NINE CASES STOOD HERE AND ARE WITHDRAWN — THEY ASSERTED A GATE THIS PORT NO LONGER HAS
+     * ⭐ THE NINE CASES BELOW WERE WITHDRAWN FOR ONE REVISION AND REVIEW FINDING F8 REINSTATED THEM
      *
-     * WHAT THEY ASSERTED. One case required `createHandlerScenario({ host: '<configured>@evil.example' })`
-     * to throw `DataIntegrityError` at construction, and an `it.each` required the same of eight further
-     * values: a path delimiter, a backslash, a query delimiter, a fragment delimiter, an embedded space, an
-     * embedded newline, a whitespace-only host and an empty host. All nine drove
-     * `validateFeedHostAuthority`, a deny check over the five origin-moving characters.
+     * WHAT THEY ASSERT. That `createHandlerScenario` REFUSES at construction for a host carrying a userinfo
+     * delimiter, a path delimiter, a backslash, a query delimiter, a fragment delimiter, an embedded space,
+     * an embedded newline, a whitespace-only value or an empty value. All nine drive
+     * {@link validateFeedHostAuthority}, a deny check over the origin-moving characters, which
+     * `createGoogleFeedHandler` applies to `hostConfiguration.host` at construction.
      *
-     * WHO WITHDREW IT AND ON WHAT AUTHORITY. The gate was added under findings F7/SEC-06 and INT-06 and
-     * removed by a later review's withdrawal of seven hardening categories. The decisive argument is
-     * CARDINALITY rather than merits: `integrationServices/google/views/feed/product.cfm:L14` interpolates
-     * `CGI.HTTP_HOST` into the channel link with NO test of any kind, and AAP §0.6.7.7 licenses EXACTLY ONE
-     * departure from behavioural preservation in this port — D18, the importer's parameterised SQL — so that
-     * a reviewer comparing generated behaviour against legacy behaviour has exactly one entry to check.
-     * §0.8.2 guideline 4 admits no proportionality test. `src/config/env.ts` records the same withdrawal for
-     * the same value from the configuration side, at its THERE IS NO `requireHostAuthorityValue` note.
+     * ⛔ WHY THEY WERE WITHDRAWN, AND WHY THAT ARGUMENT NO LONGER GOVERNS. The gate was added under findings
+     * F7/SEC-06 and INT-06 and removed by a later review's withdrawal of seven hardening categories, on
+     * CARDINALITY rather than merits: `product.cfm:L14` interpolates `CGI.HTTP_HOST` with NO test, and AAP
+     * §0.6.7.7 licenses EXACTLY ONE departure from behavioural preservation (D18). The current review's
+     * finding F8 classifies the unvalidated read as a MAJOR security defect (CWE-20 feeding CWE-601), and the
+     * cardinality objection does not reach it: RFC 9110 §7.2 defines the `Host` field value this variable
+     * stands in for as an RFC 3986 §3.2.2 `host` with §3.2.3's optional `port`, userinfo expressly excluded,
+     * so NO value the gate refuses could ever have reached `:L14`. A rule that admits every value the legacy
+     * input could hold and refuses only values it could not is ALIGNMENT, and enters no departure register.
      *
-     * ⭐ WHAT STILL HOLDS, SO THE WITHDRAWAL IS NOT A COVERAGE HOLE.
-     *   • `GOOGLE_FEED_HOST` is still REQUIRED and NON-BLANK at the configuration boundary, which is where
-     *     every deployed value comes from — so the whitespace-only and empty cases are answered there, and
-     *     `../regression/issues.test.ts` asserts it.
-     *   • SEC-2's XML-representability gate is IN FORCE, so a host carrying `<`, `&` or `]]>` is refused
-     *     rather than published unparseable — the ampersand case immediately below asserts exactly that,
-     *     and it is a well-formedness rule rather than a URL-semantics one.
-     *   • The residual exposure — a host carrying `/`, `@`, `?` or `#`, which moves the origin of all five
-     *     absolute URLs — is asserted as a CARRIED DEFECT by the serializer block's
-     *     `TODO(parity) — WITHDRAWAL REGRESSION` case, with the literal payload spelled out, so any
-     *     reinstated gate fails loudly there instead of silently passing here.
+     * ⭐ CONSTRUCTION, NOT INVOCATION, AND THE POSITION IS THE POINT. A misconfiguration is reported when the
+     * container is built rather than as a 500 on the first public request, so an operator learns of it at
+     * deploy time. `src/config/env.ts` additionally applies the FULL RFC 3986 production to
+     * `GOOGLE_FEED_HOST` at load, and `ProductFeedBuilder.build` re-applies the deny set per render — three
+     * checks of one rule at three trust boundaries, none trusting the others to have run.
      * ============================================================================================== */
+
+    it('[NET-NEW] F8 REFUSES a userinfo-bearing host at CONSTRUCTION, before any request', () => {
+      /* The sharpest of the nine: `<configured>@evil.example` resolves every one of the five absolute URLs
+       * to `evil.example`, with the intended host demoted to userinfo, and it carries no markup character so
+       * no XML gate can catch it. */
+      expect(() => createHandlerScenario({ host: `${RENDER_HOST}@evil.example` })).toThrow(
+        DataIntegrityError,
+      );
+    });
+
+    it('[NET-NEW] F8 REFUSES every origin-moving and blank host at CONSTRUCTION', () => {
+      /*
+       * The remaining eight, each with its own mechanism: `/` and `\\` end the authority and begin a path;
+       * `?` and `#` begin a query and a fragment, and `#` in particular collapses all five URLs onto one
+       * page; whitespace and control characters are admitted in no authority; and a blank host leaves five
+       * URLs with no authority at all, resolving nowhere.
+       */
+      for (const host of [
+        `${RENDER_HOST}/evil`,
+        `${RENDER_HOST}\\evil`,
+        `${RENDER_HOST}?q=1`,
+        `${RENDER_HOST}#frag`,
+        `${RENDER_HOST} evil`,
+        `${RENDER_HOST}\nevil`,
+        '   ',
+        '',
+      ]) {
+        expect(() => createHandlerScenario({ host })).toThrow(DataIntegrityError);
+      }
+    });
+
+    it('[NET-NEW] the construction refusal NEVER echoes the rejected host', () => {
+      /*
+       * ⛔ A REJECTED AUTHORITY IS ATTACKER-SUPPLIED BY HYPOTHESIS, so copying it into the diagnostic would
+       * carry the payload one layer further — into a log, and from there into whatever reads the log. The
+       * message names the rule and the offending code point by `U+XXXX`; the value appears nowhere in it.
+       * The same discipline `assertRepresentableInXml` and `src/config/env.ts` follow.
+       */
+      const payload = `${RENDER_HOST}@evil.example`;
+
+      try {
+        createHandlerScenario({ host: payload });
+        throw new Error('The hostile authority was admitted.');
+      } catch (error) {
+        expect(error).toBeInstanceOf(DataIntegrityError);
+        const rendered = `${(error as Error).message} ${JSON.stringify(error)}`;
+        expect(rendered).not.toContain(payload);
+        expect(rendered).not.toContain('evil.example');
+      }
+    });
 
     it('[NET-NEW] admits an IPv6 literal, a port and an underscore, because no grammar was invented', async () => {
       /*
@@ -8337,7 +8516,7 @@ describe("test/handlers/googleFeedHandler.test.ts — the feed's HANDLER — the
         'my_host.example.test.',
       ]) {
         const { response } = await invoke(createHandlerScenario({ host }).handler);
-        expect(response.body).toContain(`<link>http://${host}</link>`);
+        expect(response.body).toContain(`<link>https://${host}</link>`);
       }
     });
 
@@ -8348,7 +8527,7 @@ describe("test/handlers/googleFeedHandler.test.ts — the feed's HANDLER — the
        * the serializer. What happens there has changed twice, and the current answer is the one this case
        * asserts.
        *
-       * ⛔ IT USED TO BE ESCAPED, and this case required `<link>http://a&amp;b.example.test</link>`, reasoning
+       * ⛔ IT USED TO BE ESCAPED, and this case required `<link>https://a&amp;b.example.test</link>`, reasoning
        * that a working document beats a refusal. Review finding CQ-9 withdrew that escape: the channel link at
        * `integrationServices/google/views/feed/product.cfm:L14` is one of NINE RAW sinks, and escaping it emits
        * bytes the legacy never emitted.
@@ -9200,6 +9379,15 @@ describe("test/handlers/googleFeedHandler.test.ts — the feed's HANDLER — the
 /** The configured feed host for this section, distinct from {@link RENDER_HOST} so its source is visible. */
 const END_TO_END_HOST = 'feed.example.test';
 
+/**
+ * The default SKU's stored image file, and the composed path the image port answers for it.
+ *
+ * Both exist so the SECOND record of the end-to-end feed reaches the image port on the same terms as the
+ * first. See the `SwSku` default row for why the column is stored rather than generated.
+ */
+const END_TO_END_DEFAULT_SKU_IMAGE_FILE = 'feed-product-default.jpg';
+const END_TO_END_DEFAULT_SKU_COMPOSED_IMAGE_PATH = `/product/default/${END_TO_END_DEFAULT_SKU_IMAGE_FILE}`;
+
 /** The budget for the one case that dispatches five times; see its own note. */
 const END_TO_END_MULTI_DISPATCH_TIMEOUT_MS = 30_000;
 
@@ -9209,7 +9397,7 @@ const END_TO_END_ENVIRONMENT: Readonly<Record<string, string>> = Object.freeze({
   DB_PORT: '3306',
   DB_NAME: 'Slatwall',
   DB_USER: 'slatwall',
-  DB_PASSWORD: 'slatwall_pw',
+  DB_PASSWORD: 'fixture-not-a-real-password',
   DB_TLS_MODE: 'disabled',
   DB_QUEUE_LIMIT: '1',
   /* Short on purpose: no statement here reaches a driver, so this only bounds the failure of a
@@ -9254,6 +9442,14 @@ const END_TO_END_TABLES: Readonly<Record<string, readonly MySqlRow[]>> = Object.
       skuID: END_TO_END_ID.defaultSku,
       skuCode: 'FP-1-DEFAULT',
       price: '99.00',
+      /* ⭐ A STORED FILE NAME RATHER THAN NONE, AND THE REASON IS THE IMAGE DOUBLE'S ECHO. With this
+       * column absent the SKU falls back to `generateImageFileName()`, whose output the double then echoes
+       * BARE — the double composes no directory on purpose, so an unseeded name comes back without a
+       * leading slash, which is a value the real adapter cannot produce and which review finding F8's
+       * `assertSameOriginRelativePath` correctly refuses. Naming the file here lets it be SEEDED to the
+       * composed form below, so the record exercises the port exactly as the selected SKU does. The
+       * generator itself is covered directly in `test/domain/Sku.test.ts`. */
+      imageFile: END_TO_END_DEFAULT_SKU_IMAGE_FILE,
       productID: END_TO_END_ID.product,
     },
   ],
@@ -9411,10 +9607,13 @@ async function dispatchEndToEndFeed(action = 'google:feed.product'): Promise<End
   const { executor, statements } = createEndToEndExecutor();
   const settings = createSettingResolverDouble({ settings: DEFAULT_SETTING_SEEDS });
   const images = createImagePathDouble({
-    /* Seeded so the selected SKU's own image resolves to a composed path; the resize answer is left
+    /* Seeded so BOTH selected SKUs' images resolve to composed paths; the resize answer is left
      * unseeded so the double ECHOES each request's `imagePath`, which is the only configuration under
      * which "each additional image used its OWN resized path" is falsifiable. */
-    imagePathsByImageFile: { [SKU_IMAGE_FILE]: SKU_COMPOSED_IMAGE_PATH },
+    imagePathsByImageFile: {
+      [SKU_IMAGE_FILE]: SKU_COMPOSED_IMAGE_PATH,
+      [END_TO_END_DEFAULT_SKU_IMAGE_FILE]: END_TO_END_DEFAULT_SKU_COMPOSED_IMAGE_PATH,
+    },
   });
   const pricing = createPricingDouble({});
   const imageReaderSubjects: string[] = [];
@@ -9738,10 +9937,10 @@ describe('NET-NEW — the feed end to end, from the public route to the document
 
     /* The configured host reaches every absolute URL, and the product URL key comes from a setting. */
     expect(soleChildText(selected, 'link')).toBe(
-      `http://${END_TO_END_HOST}/${SETTING_GLOBAL_URL_KEY_PRODUCT}/feed-product/`,
+      `https://${END_TO_END_HOST}/${SETTING_GLOBAL_URL_KEY_PRODUCT}/feed-product/`,
     );
     expect(soleChildText(selected, 'g:image_link')).toBe(
-      `http://${END_TO_END_HOST}${SKU_COMPOSED_IMAGE_PATH}`,
+      `https://${END_TO_END_HOST}${SKU_COMPOSED_IMAGE_PATH}`,
     );
 
     /* Both settings that compose one field, in one value — `product.cfm`'s two-setting weight. */
@@ -9772,10 +9971,10 @@ describe('NET-NEW — the feed end to end, from the public route to the document
       (element) => element.text,
     );
     expect(emitted).toStrictEqual([
-      `http://${END_TO_END_HOST}${THIRD_ADDITIONAL_IMAGE_PATH}`,
-      `http://${END_TO_END_HOST}${FIRST_ADDITIONAL_IMAGE_PATH}`,
-      `http://${END_TO_END_HOST}${SECOND_ADDITIONAL_IMAGE_PATH}`,
-      `http://${END_TO_END_HOST}${FIRST_ADDITIONAL_IMAGE_PATH}`,
+      `https://${END_TO_END_HOST}${THIRD_ADDITIONAL_IMAGE_PATH}`,
+      `https://${END_TO_END_HOST}${FIRST_ADDITIONAL_IMAGE_PATH}`,
+      `https://${END_TO_END_HOST}${SECOND_ADDITIONAL_IMAGE_PATH}`,
+      `https://${END_TO_END_HOST}${FIRST_ADDITIONAL_IMAGE_PATH}`,
     ]);
 
     /* The record the reader answered `[]` for emits none — the empty collection's legacy output. */
@@ -9814,7 +10013,7 @@ describe('NET-NEW — the feed end to end, from the public route to the document
 
       const channel = parseFeedChannel(response.body);
       expect(soleChildText(channel, 'title')).toBe('Slatwall Product Feed');
-      expect(soleChildText(channel, 'link')).toBe(`http://${END_TO_END_HOST}`);
+      expect(soleChildText(channel, 'link')).toBe(`https://${END_TO_END_HOST}`);
 
       /*
        * ⭐ THE ADDRESS IS EXACT IN ITS PUNCTUATION AND CASE-INSENSITIVE IN ITS LETTERS, WHICH IS TWO
