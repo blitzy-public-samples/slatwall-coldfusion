@@ -19,10 +19,27 @@
 //   3. `roundingRule` [L71] is the nullable association the discount math reaches through to
 //      [model/service/RoundingRuleService.cfc:L84].
 //
-// Everything else the suite pins is structural: the FOURTEEN many-to-many collections - more
-// than any other in-scope entity - the conditional option accessor, the single orphaned
-// property, the one renamed identifier in this folder, and the deletability chain that
-// dereferences its period twice.
+// Beyond those three, the suite pins two different kinds of thing and keeps them clearly apart.
+//
+// BEHAVIOURAL. Every one of the ELEVEN many-to-many relation pairs - twenty-two `add*`/`remove*`
+// helpers and eleven `has*` predicates - is INVOKED against a real row from the fixture graph, and
+// each assertion is written so that emptying the method's body, pointing it at the wrong
+// collection, dropping its guard, or turning its single-element splice into a whole-collection
+// clear all FAIL. That is a deliberate standard rather than a stylistic preference: a structural
+// census over `PromotionReward.prototype` proves a member EXISTS and nothing more, and every one
+// of these helpers writes a link-table row that the engine's membership walk at
+// [model/service/PromotionService.cfc:L921-L985] later reads to decide whether a discount applies.
+// A named-but-never-called helper is therefore an unguarded money path. The whole-surface
+// snapshot helper `collectionSizes` below is what makes "and nothing else changed" assertable, so
+// a helper that writes the wrong one of the fourteen collections cannot hide behind a test that
+// only looks at the collection it was supposed to touch.
+//
+// STRUCTURAL. The census assertions that genuinely ARE about shape, and are labelled as such: the
+// FOURTEEN collections - more than any other in-scope entity - the eleven link-table names, the
+// three Group A collections that collapse to opaque identifier arrays, the dropped
+// `shippingMethods` helper pair, the conditional option accessor, the single orphaned property,
+// the one renamed identifier in this folder, and the deletability chain that dereferences its
+// period twice. These sit alongside the behavioural coverage; they never stand in for it.
 //
 // ---------------------------------------------------------------------------
 // 100% NET-NEW COVERAGE - NEVER TO BE PRESENTED AS PARITY
@@ -82,14 +99,129 @@
 //   (c) the entity memo repairs - DEFECTS 17 and 18 owned by `sku.test.ts`, DEFECT 19 by
 //       `product.test.ts`.
 //
-// A fourth divergence is FORBIDDEN, and NO numbered defect from the twenty-defect register
-// belongs to `PromotionReward` at all. Consequently this file contains ZERO `LEGACY-DEFECT`
+// A fourth divergence is FORBIDDEN, and NO numbered defect from the register - which now stands at
+// THIRTY numbered entries plus eight secondary items, enumerated immediately below - belongs to
+// `PromotionReward` at all. Consequently this file contains ZERO `LEGACY-DEFECT`
 // markers. Every wart it records - the single orphaned `rewards` property, the `type="array"`
 // inconsistency, the `ormType`/`ormtype` casing split, the un-narrowed `rewardType`, the
 // out-of-banner `getSimpleRepresentation()`, the unguarded `getAmountFormatted()`, the double
 // `getPromotionPeriod()` dereference, and the three validation absences - is a `CFML parity`
 // note. The ONE renamed identifier is likewise a `CFML parity` note under the interface-parity
 // constraint, NOT a divergence. No marker is manufactured where none is warranted.
+//
+// ---------------------------------------------------------------------------
+// ★ THE CANONICAL DEFECT REGISTER - NUMBER TO LOCATOR, PUBLISHED ONCE
+// ---------------------------------------------------------------------------
+//
+// WHY IT LIVES HERE. The register is cited by number in dozens of files across `src/**` and
+// `tests/**`, yet until now no single place mapped a number to the legacy locator it stands for -
+// so a reader meeting "DEFECT 22" had no way to learn what defect 22 IS, and nine of the thirty
+// numbers were reachable by no path at all. The count and the mapping are one fact, so they are
+// published together, at the one site that already restates the project-wide divergence ledger.
+// It is a COMMENT in an existing suite and not a new module because the plan creates no artefact
+// it did not enumerate: a dedicated traceability module belongs to a later boundary, and standing
+// one up early to hold a comment would be exactly the premature artefact the plan forbids.
+//
+// THE NUMBERED SET IS CLOSED AT THIRTY. Entries 1-20 are the twenty the plan publishes. Ten more
+// were added by the port after reading the in-scope source line by line, and every one of the ten
+// is a defect the plan's own criteria would have admitted; the set is closed at thirty so that a
+// number means one thing forever. Every locator below was read first-hand in the legacy tree.
+//
+//   PLAN-PUBLISHED (1-20)
+//    1  [integrationServices/google/Integration.cfc:L49]        displayname="USA epay" vs "Google"
+//    2  [integrationServices/google/Integration.cfc:L73-L77]    returntype="array", empty if, null
+//    3  [integrationServices/google/model/dao/FeedDAO.cfc:L52-L75]  invalid SQL: trailing comma
+//                                                               in the select list, INNER JOIN
+//                                                               with no ON clause
+//    4  [integrationServices/google/views/feed/product.cfm:L20]  g:google_product_category emitted
+//                                                               EMPTY, carrying a legacy TODO
+//    5  [model/service/PriceGroupService.cfc:L236]              local.i where the loop var is i
+//    6  [model/service/PriceGroupService.cfc:L461-L470]         delete loops a never-re-read
+//                                                               snapshot: potential infinite loop
+//    7  [model/service/PriceGroupService.cfc:L174]              parent recursion calls the PRODUCT
+//                                                               variant, not the SKU variant
+//    8  [model/service/PriceGroupService.cfc:L316-L340]         only percentageOff applies the
+//                                                               rounding rule (the marker sits at
+//                                                               the L321-L336 switch inside it)
+//    9  [model/service/PromotionService.cfc:L468-L521]          over-use stripping indexes by the
+//                                                               leaked `reward`, not by `prID`
+//   10  [model/service/PromotionService.cfc:L621-L623]          writes qualifiedFulfillments, which
+//                                                               is never initialised and never read
+//   11  [model/service/PromotionService.cfc:L703]               shipping-address-zones clause
+//                                                               re-tests hasShippingMethod
+//   12  [model/service/PromotionService.cfc:L998]               amountOff omits precisionEvaluate
+//   13  [model/service/PromotionService.cfc:L1007, L1009]       discountAmount assigned without var
+//   14  [model/service/PromotionService.cfc:L1013-L1015]        clamp compares pre-rounding, writes
+//                                                               post-rounding
+//   15  [model/service/PromotionService.cfc:L1094-L1100]        two use-count methods declare
+//                                                               returntype="boolean", return numeric
+//   16  [model/entity/Sku.cfc:L258]                             getPriceByPromotion calls
+//                                                               calculateSkuPriceBasedOnPromotion,
+//                                                               which does not exist
+//   17  [model/entity/Sku.cfc:L500-L510]                        guards on the wrong variables key
+//   18  [model/entity/Sku.cfc:L512-L522]                        populates one key, returns another
+//   19  [model/entity/Product.cfc:L524-L532]                    getBrandName poisons its own memo
+//   20  [model/entity/Product.cfc:L598]                         getSkus()[1].getSalePrice() has no
+//                                                               return, so it falls through to 0
+//
+//   ADDED BY THE PORT (21-30). Six of these ten - 21 through 24, 26 and 27 - are numbered HERE for
+//   the first time; each was already annotated at its site by locator, so the number is the only
+//   thing this index adds. Four - 25, 28, 29 and 30 - were numbered in-tree before this index
+//   existed and are reproduced unchanged. Ordered by legacy path, then by line.
+//   21  [model/entity/ProductType.cfc:L117-L119]                passes product= to a productType=
+//                                                               parameter: always throws
+//   22  [model/entity/PromotionAccount.cfc:L90-L95]             setPromotion reaches
+//                                                               hasPromotionAccount /
+//                                                               getPromotionAccounts, which
+//                                                               `Promotion.cfc` declares NOWHERE
+//   23  [model/entity/PromotionAccount.cfc:L101]                removePromotion reaches the same
+//                                                               undeclared collection
+//   24  [model/entity/PromotionAccount.cfc:L103]                stacked on 23: `arguments.account`
+//                                                               where the parameter is `promotion`
+//   25  [model/entity/Product.cfc:L614-L622]                    getSalePricExpirationDateTime -
+//                                                               a plan SECONDARY item promoted to
+//                                                               numbered, preserved as a throw
+//   26  [model/entity/PromotionPeriod.cfc:L110]                 the identical `arguments.account`
+//                                                               slip, reached from
+//                                                               [model/entity/Promotion.cfc:L144-L146]
+//   27  [model/entity/PromotionPeriod.cfc:L116-L130]            four bidirectional helpers call
+//                                                               setPromotion / removePromotion on
+//                                                               PromotionReward and
+//                                                               PromotionQualifier, neither of
+//                                                               which declares them: all four throw
+//   28  [model/entity/Sku.cfc:L569]                             getStocksDeletableFlag reaches an
+//                                                               absent DAO member
+//   29  [model/service/PriceGroupService.cfc:L243]              getAmountRepresentation() is
+//                                                               undeclared, so getPriceGroupDataJSON
+//                                                               throws for any page holding a rate
+//   30  [model/service/PriceGroupService.cfc:L400]              clearAmounts() is undeclared
+//
+//   THE EIGHT SECONDARY ITEMS, unnumbered by design - each is a typo, a duplicate statement or a
+//   declaration mismatch rather than a behavioural fault, so a number would overstate it:
+//     [model/dao/SkuDAO.cfc:L163] duplicate `var hql &=`;
+//     [model/dao/SkuDAO.cfc:L222-L226] inverted cache-clear condition, so it can never fire;
+//     [model/dao/PromotionDAO.cfc:L177, L244] duplicated getStartDateTime() where an end-date test
+//       is plainly intended;
+//     [model/service/RoundingRuleService.cfc:L88] returntype="string" against the numeric its two
+//       callers at [L79, L84] declare;
+//     [model/service/PromotionService.cfc:L121, L142] the `orderItemQulifiedDiscounts` key (the
+//       plan cites the L82-L133 docblock; the assignments are at these two lines);
+//     [model/entity/PromotionReward.cfc:L57] hb_permission="promotionPeriod.promtionRewards" - THE
+//       ONE SECONDARY ITEM THIS FILE OWNS, and the reason its renamed identifier is a parity note
+//       rather than a divergence. The plan cites L49; the attribute is at L57, verified here;
+//     [model/entity/Product.cfc:L76] `singlularname` on productReviews;
+//     [model/entity/PriceGroup.cfc:L168] the `subsciptionUsageBenefit` argument name.
+//
+//   Nine secondary items were named by the plan and eight remain, because entry 25 was promoted
+//   out of that list into the numbered set. Nothing was dropped.
+//
+//   NOT NUMBERED, AND DELIBERATELY SO: four findings the port discovered in fixture-facing
+//   behaviour rather than in the legacy source it converts - the `isCurrent` / `getCurrentFlag`
+//   disagreement at the `endDateTime` instant, `getPromotionCodesDeletableFlag` on a validated
+//   delete path, an option-less sku failing `hasUniqueOptions` spuriously, and the
+//   `getSortedProductSkus` / `getProductSkus` defensive-check divergence. Each stays annotated
+//   where it was found. Numbering them would enlarge a closed set and blur the line between a
+//   legacy defect the port must reproduce and an observation the port made about its own fixtures.
 //
 // ---------------------------------------------------------------------------
 // !! HARD BOUNDARIES - WHAT THIS SUITE DELIBERATELY DOES NOT TEST !!
@@ -150,21 +282,46 @@ import { PromotionReward } from '../../../../src/domain/entities/promotionReward
 import type { AmountType } from '../../../../src/domain/entities/promotionReward.js';
 import type { ApplicableTerm } from '../../../../src/domain/entities/promotionReward.js';
 import { Money } from '../../../../src/domain/valueObjects/money.js';
+import type { PromotionRepository } from '../../../../src/domain/ports/promotionRepository.js';
+import type { OrderItemQualifiedDiscounts } from '../../../../src/domain/promotionEngine/qualifiedDiscountTypes.js';
+import type { PromotionRewardUsageDetails } from '../../../../src/domain/promotionEngine/rewardUsageTypes.js';
+import { DiscountAmountCalculator } from '../../../../src/services/promotion/discountAmount.js';
+import { stripOverUsedRewardDiscounts } from '../../../../src/services/promotion/overUseStripping.js';
+import { RoundingRuleService } from '../../../../src/services/roundingRuleService.js';
 import { makePromotionFixtures } from '../../../fixtures/promotionFixtures.js';
 
-import type { Brand } from '../../../../src/domain/entities/brand.js';
-import type { Option } from '../../../../src/domain/entities/option.js';
-import type { PriceGroup } from '../../../../src/domain/entities/priceGroup.js';
+// VALUE imports, not type-only: the empty-primary-key block below CONSTRUCTS unsaved rows
+// of each of these types. A row with the empty primary key that `unsavedvalue=""` declares
+// cannot be borrowed from the fixture graph - every fixture row is saved and carries a real
+// key - so the only way to reach the reference-identity branch of each `has*` predicate is
+// to build the unsaved row here.
+import { Brand } from '../../../../src/domain/entities/brand.js';
+import { Option } from '../../../../src/domain/entities/option.js';
+import { PriceGroup } from '../../../../src/domain/entities/priceGroup.js';
+import { Product } from '../../../../src/domain/entities/product.js';
+import { ProductType } from '../../../../src/domain/entities/productType.js';
+import { Sku } from '../../../../src/domain/entities/sku.js';
 import type { PromotionPeriod } from '../../../../src/domain/entities/promotionPeriod.js';
-import type { RoundingRule } from '../../../../src/domain/entities/roundingRule.js';
+// A VALUE IMPORT, not `import type`: the S-01/S-03 block at the foot of this suite
+// constructs a real `RoundingRule` so the discount path reaches a real rounding rule.
+import { RoundingRule } from '../../../../src/domain/entities/roundingRule.js';
 
 // ⚠ FOUR levels of `..` reach `src`, THREE reach `tests/fixtures`. Three levels to `src` would
 // resolve to the nonexistent `tests/src/...`. NodeNext resolution with no `paths`, no `baseUrl`
 // and no `allowImportingTsExtensions` is why every specifier ends in `.js`.
 //
+// `Brand` is the ONE entity imported as a VALUE rather than as a type, because the relation-pair
+// assertions need a genuinely UNSAVED row - one whose primary key is still the empty string - to
+// exercise the disjunctive near-side guard `arguments.brand.isNew() or !hasBrand(...)`
+// [model/entity/PromotionReward.cfc:L199] and the first-index-only splice that follows from
+// `arrayFind` + `arrayDeleteAt` [L207-L210]. `Brand`'s constructor defaults every slot, so a
+// transient row is one expression; `Option`'s declares all twelve as required `T | undefined`, so
+// Brand is the exhibit both families use. It is a declared dependency of this suite either way.
+//
 // `Sku`, `Product` and `ProductType` are NOT imported even though the entity holds collections
 // of all three. Every instance this suite needs comes from the fixture graph, so their types
-// arrive by inference and the import list stays inside the declared dependency set.
+// arrive by inference - through indexed access on the inferred graph type where a name is needed -
+// and the import list stays inside the declared dependency set.
 //
 // `FulfillmentMethod`, `ShippingMethod` and `AddressZone` are NOT imported because they DO NOT
 // EXIST in the target - all three are out of scope and were never ported. The three collections
@@ -332,8 +489,391 @@ function requireAt<T>(collection: readonly T[], index: number, description: stri
   return element;
 }
 
+/**
+ * The current size of ALL FOURTEEN collections, keyed by the legacy property name.
+ *
+ * ★ WHY A WHOLE-SURFACE SNAPSHOT RATHER THAN A SINGLE LENGTH CHECK. The failure mode this file has
+ * to be able to catch is a helper that writes the WRONG collection, and that class of defect is
+ * real in this codebase rather than hypothetical: [model/entity/Option.cfc:L129-L131]'s
+ * `removePromotionRewardExclusion` calls `addExcludedOption` at [L130] - a "remove" that ADDS, to
+ * the opposite family. A test that only inspects the collection it expected to change cannot see
+ * that. Comparing the entire fourteen-collection snapshot before and after means a stray write
+ * shows up as a diff on a key nobody named.
+ *
+ * Written out one accessor at a time, deliberately. C1 forbids `evaluate`, `eval`, `new Function`,
+ * `vm` and Proxy-based dispatch, and a string-keyed dispatcher would reintroduce exactly the
+ * runtime indirection this port exists to remove - [org/Hibachi/HibachiEntity.cfc:L344] built its
+ * predicate names with `evaluate("has#propertyName#( entity )")`, and none of that is ported.
+ *
+ * The three Group A entries read the opaque identifier accessors, because `FulfillmentMethod`,
+ * `AddressZone` and `ShippingMethod` are out of scope and were never ported
+ * [model/entity/PromotionReward.cfc:L76-L78]. They are included so the snapshot really does cover
+ * all fourteen and a helper that reached one of them could not hide.
+ */
+function collectionSizes(reward: PromotionReward): Readonly<Record<string, number>> {
+  return {
+    eligiblePriceGroups: reward.getEligiblePriceGroups().length,
+    fulfillmentMethods: reward.getFulfillmentMethodIDs().length,
+    shippingAddressZones: reward.getShippingAddressZoneIDs().length,
+    shippingMethods: reward.getShippingMethodIDs().length,
+    brands: reward.getBrands().length,
+    options: reward.getOptions().length,
+    skus: reward.getSkus().length,
+    products: reward.getProducts().length,
+    productTypes: reward.getProductTypes().length,
+    excludedBrands: reward.getExcludedBrands().length,
+    excludedOptions: reward.getExcludedOptions().length,
+    excludedSkus: reward.getExcludedSkus().length,
+    excludedProducts: reward.getExcludedProducts().length,
+    excludedProductTypes: reward.getExcludedProductTypes().length,
+  };
+}
+
+/**
+ * The same snapshot with exactly ONE collection one element larger.
+ *
+ * The explicit guard is not ceremony: `noUncheckedIndexedAccess` types the read as
+ * `number | undefined`, neither a postfix assertion nor an `as` cast is permitted, and a property
+ * name that does not exist in the snapshot has to fail AT the typo rather than silently compare an
+ * `undefined` baseline. Same discipline as `requireAt` above.
+ */
+function withOneMore(
+  sizes: Readonly<Record<string, number>>,
+  property: string,
+): Readonly<Record<string, number>> {
+  const baseline: number | undefined = sizes[property];
+
+  if (baseline === undefined) {
+    throw new Error(`promotionReward.test.ts: no collection named ${property}.`);
+  }
+
+  return { ...sizes, [property]: baseline + 1 };
+}
+
+/** The same snapshot with exactly ONE collection one element smaller. */
+function withOneFewer(
+  sizes: Readonly<Record<string, number>>,
+  property: string,
+): Readonly<Record<string, number>> {
+  const baseline: number | undefined = sizes[property];
+
+  if (baseline === undefined) {
+    throw new Error(`promotionReward.test.ts: no collection named ${property}.`);
+  }
+
+  return { ...sizes, [property]: baseline - 1 };
+}
+
 /** The fixture graph type, inferred because the fixture module deliberately does not export it. */
 type PromotionFixtureGraph = ReturnType<typeof makePromotionFixtures>;
+
+/**
+ * The five catalog entity classes the ten paired collections hold, one real row each.
+ *
+ * The member types are read off the inferred fixture-graph type by indexed access rather than by
+ * importing `Sku`, `Product` and `ProductType`: those three modules are NOT declared dependencies
+ * of this suite, and naming a type is not a good enough reason to widen the dependency set. `Brand`
+ * and `Option` are declared dependencies and are still read the same way, so all five members are
+ * sourced identically.
+ */
+interface CatalogRowSet {
+  readonly brand: PromotionFixtureGraph['brand'];
+  readonly option: PromotionFixtureGraph['option'];
+  readonly sku: PromotionFixtureGraph['sku'];
+  readonly product: PromotionFixtureGraph['product'];
+  readonly productType: PromotionFixtureGraph['productType'];
+}
+
+/**
+ * ★ ONE many-to-many relation pair, bound to the REAL far-side row it operates on.
+ *
+ * Every member is a direct, statically resolved call to the named method - `add: (reward) => {
+ * reward.addBrand(brand); }` and nothing cleverer. There is no string-keyed lookup, no `evaluate`
+ * analogue and no Proxy: C1 forbids all three, and the whole point of the migration is that a
+ * reviewer can see which method each row exercises. What the table buys is exhaustiveness across
+ * the ten paired families without ten copies of the same assertion block, and mutation sensitivity
+ * that is per-method rather than per-family, because each closure names exactly one member.
+ *
+ * ⚠ `eligiblePriceGroups` [model/entity/PromotionReward.cfc:L74] is DELIBERATELY ABSENT from this
+ * table. It is the collection that separates `PromotionReward` from `PromotionQualifier`, and it is
+ * the only many-to-many whose far side has no exclusion counterpart at all - `PriceGroup` ships
+ * `getPromotionRewards()` and `hasPromotionReward()` and no `getPromotionRewardExclusions()`,
+ * because the legacy declares no `excludedPriceGroups`. Forcing it into a shape built around
+ * include-versus-exclude symmetry would misrepresent the schema, so its pair is exercised
+ * explicitly instead, both in its own test above and in the inversion sweep below.
+ */
+interface RelationPairProbe {
+  /** The near-side collection this pair owns, spelled as the legacy property. */
+  readonly property: string;
+  /** The collection in the OTHER family that holds the SAME entity class. */
+  readonly counterpartProperty: string;
+  /** The `Sw*` link table the pair writes through, abbreviations intact. */
+  readonly linkTable: string;
+  /** The legacy `add*` / `remove*` locators for this pair. */
+  readonly locator: string;
+  /** `true` for the five EXCLUDE-family pairs, `false` for the five INCLUDE-family pairs. */
+  readonly excludes: boolean;
+  /** Calls the ported `add*` helper with the real far-side row. */
+  readonly add: (reward: PromotionReward) => void;
+  /** Calls the ported `remove*` helper with the real far-side row. */
+  readonly remove: (reward: PromotionReward) => void;
+  /** Calls this family's singular `has*` predicate with the real far-side row. */
+  readonly has: (reward: PromotionReward) => boolean;
+  /** Calls the OPPOSITE family's predicate for the same row - the two are never conflated. */
+  readonly counterpartHas: (reward: PromotionReward) => boolean;
+  /** The near-side collection this pair owns. */
+  readonly near: (reward: PromotionReward) => readonly object[];
+  /** The near-side collection of the opposite family. */
+  readonly counterpartNear: (reward: PromotionReward) => readonly object[];
+  /** The far row's LIVE collection that THIS family appends to and splices from. */
+  readonly farOwn: () => readonly PromotionReward[];
+  /** The far row's LIVE collection this family must NEVER touch. */
+  readonly farCounterpart: () => readonly PromotionReward[];
+}
+
+/** The five catalog rows the fixture graph publishes, all with non-empty primary keys. */
+function catalogRows(graph: PromotionFixtureGraph): CatalogRowSet {
+  return {
+    brand: graph.brand,
+    option: graph.option,
+    sku: graph.sku,
+    product: graph.product,
+    productType: graph.productType,
+  };
+}
+
+/**
+ * The five rows a hydrated reward actually holds in its EXCLUSION collections.
+ *
+ * The fixture module publishes `excludedBrand` and `excludedProductType` directly but keeps its
+ * excluded option, SKU and product internal, so those three are read back off the reward that holds
+ * them. They are the same real entities the fixture constructed - `promofx-option-excluded`,
+ * `promofx-sku-excluded-sku` and `promofx-product-excluded` - not stand-ins, and the fixture module
+ * is not edited to expose them.
+ */
+function excludedRowsHeldBy(graph: PromotionFixtureGraph, reward: PromotionReward): CatalogRowSet {
+  return {
+    brand: graph.excludedBrand,
+    option: requireAt(reward.getExcludedOptions(), 0, 'held excluded option'),
+    sku: requireAt(reward.getExcludedSkus(), 0, 'held excluded sku'),
+    product: requireAt(reward.getExcludedProducts(), 0, 'held excluded product'),
+    productType: graph.excludedProductType,
+  };
+}
+
+/**
+ * The TEN paired relation probes: five INCLUDE families and five EXCLUDE families.
+ *
+ * CFML parity [model/entity/PromotionReward.cfc:L197-L295 and L297-L395]: the include helpers reach
+ * `getPromotionRewards()` [L203, L223, L243, L263, L283] and `hasPromotionReward` [L202, L222,
+ * L242, L262, L282]; the exclude helpers reach `getPromotionRewardExclusions()` [L303, L323, L343,
+ * L363, L383] and `hasPromotionRewardExclusion` [L302, L322, L342, L362, L382]. Two families, two
+ * far-side collections, two link tables per entity class - and the target must never collapse them,
+ * because an include list and an exclude list mean OPPOSITE things to a customer's price.
+ *
+ * Passing the SAME row set as both arguments is what makes include/exclude separation checkable on
+ * one row: `addBrand(brand)` must leave `hasExcludedBrand(brand)` false, and the exclusion helpers
+ * must leave `brand.getPromotionRewards()` alone. Passing DIFFERENT row sets - the catalog rows for
+ * the include families and the rows a reward actually excludes for the exclude families - is what
+ * lets the inversion sweep remove rows the fixture genuinely hydrated.
+ */
+function makeRelationPairProbes(
+  includeRows: CatalogRowSet,
+  excludeRows: CatalogRowSet,
+): readonly RelationPairProbe[] {
+  return [
+    {
+      property: 'brands',
+      counterpartProperty: 'excludedBrands',
+      linkTable: 'SwPromoRewardBrand',
+      locator: 'model/entity/PromotionReward.cfc:L198-L215',
+      excludes: false,
+      add: (reward) => {
+        reward.addBrand(includeRows.brand);
+      },
+      remove: (reward) => {
+        reward.removeBrand(includeRows.brand);
+      },
+      has: (reward) => reward.hasBrand(includeRows.brand),
+      counterpartHas: (reward) => reward.hasExcludedBrand(includeRows.brand),
+      near: (reward) => reward.getBrands(),
+      counterpartNear: (reward) => reward.getExcludedBrands(),
+      farOwn: () => includeRows.brand.getPromotionRewards(),
+      farCounterpart: () => includeRows.brand.getPromotionRewardExclusions(),
+    },
+    {
+      property: 'options',
+      counterpartProperty: 'excludedOptions',
+      linkTable: 'SwPromoRewardOption',
+      locator: 'model/entity/PromotionReward.cfc:L218-L235',
+      excludes: false,
+      add: (reward) => {
+        reward.addOption(includeRows.option);
+      },
+      remove: (reward) => {
+        reward.removeOption(includeRows.option);
+      },
+      has: (reward) => reward.hasOption(includeRows.option),
+      counterpartHas: (reward) => reward.hasExcludedOption(includeRows.option),
+      near: (reward) => reward.getOptions(),
+      counterpartNear: (reward) => reward.getExcludedOptions(),
+      farOwn: () => includeRows.option.getPromotionRewards(),
+      farCounterpart: () => includeRows.option.getPromotionRewardExclusions(),
+    },
+    {
+      property: 'skus',
+      counterpartProperty: 'excludedSkus',
+      linkTable: 'SwPromoRewardSku',
+      locator: 'model/entity/PromotionReward.cfc:L238-L255',
+      excludes: false,
+      add: (reward) => {
+        reward.addSku(includeRows.sku);
+      },
+      remove: (reward) => {
+        reward.removeSku(includeRows.sku);
+      },
+      has: (reward) => reward.hasSku(includeRows.sku),
+      counterpartHas: (reward) => reward.hasExcludedSku(includeRows.sku),
+      near: (reward) => reward.getSkus(),
+      counterpartNear: (reward) => reward.getExcludedSkus(),
+      farOwn: () => includeRows.sku.getPromotionRewards(),
+      farCounterpart: () => includeRows.sku.getPromotionRewardExclusions(),
+    },
+    {
+      property: 'products',
+      counterpartProperty: 'excludedProducts',
+      linkTable: 'SwPromoRewardProduct',
+      locator: 'model/entity/PromotionReward.cfc:L258-L275',
+      excludes: false,
+      add: (reward) => {
+        reward.addProduct(includeRows.product);
+      },
+      remove: (reward) => {
+        reward.removeProduct(includeRows.product);
+      },
+      has: (reward) => reward.hasProduct(includeRows.product),
+      counterpartHas: (reward) => reward.hasExcludedProduct(includeRows.product),
+      near: (reward) => reward.getProducts(),
+      counterpartNear: (reward) => reward.getExcludedProducts(),
+      farOwn: () => includeRows.product.getPromotionRewards(),
+      farCounterpart: () => includeRows.product.getPromotionRewardExclusions(),
+    },
+    {
+      property: 'productTypes',
+      counterpartProperty: 'excludedProductTypes',
+      linkTable: 'SwPromoRewardProductType',
+      locator: 'model/entity/PromotionReward.cfc:L278-L295',
+      excludes: false,
+      add: (reward) => {
+        reward.addProductType(includeRows.productType);
+      },
+      remove: (reward) => {
+        reward.removeProductType(includeRows.productType);
+      },
+      has: (reward) => reward.hasProductType(includeRows.productType),
+      counterpartHas: (reward) => reward.hasExcludedProductType(includeRows.productType),
+      near: (reward) => reward.getProductTypes(),
+      counterpartNear: (reward) => reward.getExcludedProductTypes(),
+      farOwn: () => includeRows.productType.getPromotionRewards(),
+      farCounterpart: () => includeRows.productType.getPromotionRewardExclusions(),
+    },
+    {
+      property: 'excludedBrands',
+      counterpartProperty: 'brands',
+      linkTable: 'SwPromoRewardExclBrand',
+      locator: 'model/entity/PromotionReward.cfc:L298-L315',
+      excludes: true,
+      add: (reward) => {
+        reward.addExcludedBrand(excludeRows.brand);
+      },
+      remove: (reward) => {
+        reward.removeExcludedBrand(excludeRows.brand);
+      },
+      has: (reward) => reward.hasExcludedBrand(excludeRows.brand),
+      counterpartHas: (reward) => reward.hasBrand(excludeRows.brand),
+      near: (reward) => reward.getExcludedBrands(),
+      counterpartNear: (reward) => reward.getBrands(),
+      farOwn: () => excludeRows.brand.getPromotionRewardExclusions(),
+      farCounterpart: () => excludeRows.brand.getPromotionRewards(),
+    },
+    {
+      property: 'excludedOptions',
+      counterpartProperty: 'options',
+      linkTable: 'SwPromoRewardExclOption',
+      locator: 'model/entity/PromotionReward.cfc:L318-L335',
+      excludes: true,
+      add: (reward) => {
+        reward.addExcludedOption(excludeRows.option);
+      },
+      remove: (reward) => {
+        reward.removeExcludedOption(excludeRows.option);
+      },
+      has: (reward) => reward.hasExcludedOption(excludeRows.option),
+      counterpartHas: (reward) => reward.hasOption(excludeRows.option),
+      near: (reward) => reward.getExcludedOptions(),
+      counterpartNear: (reward) => reward.getOptions(),
+      farOwn: () => excludeRows.option.getPromotionRewardExclusions(),
+      farCounterpart: () => excludeRows.option.getPromotionRewards(),
+    },
+    {
+      property: 'excludedSkus',
+      counterpartProperty: 'skus',
+      linkTable: 'SwPromoRewardExclSku',
+      locator: 'model/entity/PromotionReward.cfc:L338-L355',
+      excludes: true,
+      add: (reward) => {
+        reward.addExcludedSku(excludeRows.sku);
+      },
+      remove: (reward) => {
+        reward.removeExcludedSku(excludeRows.sku);
+      },
+      has: (reward) => reward.hasExcludedSku(excludeRows.sku),
+      counterpartHas: (reward) => reward.hasSku(excludeRows.sku),
+      near: (reward) => reward.getExcludedSkus(),
+      counterpartNear: (reward) => reward.getSkus(),
+      farOwn: () => excludeRows.sku.getPromotionRewardExclusions(),
+      farCounterpart: () => excludeRows.sku.getPromotionRewards(),
+    },
+    {
+      property: 'excludedProducts',
+      counterpartProperty: 'products',
+      linkTable: 'SwPromoRewardExclProduct',
+      locator: 'model/entity/PromotionReward.cfc:L358-L375',
+      excludes: true,
+      add: (reward) => {
+        reward.addExcludedProduct(excludeRows.product);
+      },
+      remove: (reward) => {
+        reward.removeExcludedProduct(excludeRows.product);
+      },
+      has: (reward) => reward.hasExcludedProduct(excludeRows.product),
+      counterpartHas: (reward) => reward.hasProduct(excludeRows.product),
+      near: (reward) => reward.getExcludedProducts(),
+      counterpartNear: (reward) => reward.getProducts(),
+      farOwn: () => excludeRows.product.getPromotionRewardExclusions(),
+      farCounterpart: () => excludeRows.product.getPromotionRewards(),
+    },
+    {
+      property: 'excludedProductTypes',
+      counterpartProperty: 'productTypes',
+      linkTable: 'SwPromoRewardExclProductType',
+      locator: 'model/entity/PromotionReward.cfc:L378-L395',
+      excludes: true,
+      add: (reward) => {
+        reward.addExcludedProductType(excludeRows.productType);
+      },
+      remove: (reward) => {
+        reward.removeExcludedProductType(excludeRows.productType);
+      },
+      has: (reward) => reward.hasExcludedProductType(excludeRows.productType),
+      counterpartHas: (reward) => reward.hasProductType(excludeRows.productType),
+      near: (reward) => reward.getExcludedProductTypes(),
+      counterpartNear: (reward) => reward.getProductTypes(),
+      farOwn: () => excludeRows.productType.getPromotionRewardExclusions(),
+      farCounterpart: () => excludeRows.productType.getPromotionRewards(),
+    },
+  ];
+}
 
 let fixtures: PromotionFixtureGraph;
 let subject: PromotionReward;
@@ -1066,12 +1606,780 @@ describe('the bidirectional helpers, and the guard polarity that is load-bearing
       expect(removeMembers).toContain(addMember.replace(/^add/, 'remove'));
     }
 
-    // A removal genuinely removes: the clean-inversion verdict, exercised rather than only stated.
-    const option: Option = fixtures.option;
-    expect(subject.hasOption(option)).toBe(true);
-    subject.removeOption(option);
-    expect(subject.hasOption(option)).toBe(false);
-    expect(subject.hasExcludedOption(option)).toBe(false);
+    // ★★★ THE VERDICT, EXERCISED - NOT ENUMERATED. Every one of the ELEVEN many-to-many `remove*`
+    // helpers is invoked against a row the fixture GENUINELY HYDRATED into that collection, and the
+    // whole fourteen-collection snapshot is compared before and after. Passing therefore states
+    // something a name census cannot: the helper emptied ITS OWN collection by exactly one, and no
+    // other collection - include, exclude or opaque Group A identifier list - moved at all. An
+    // inversion of the [model/entity/Option.cfc:L130] kind would surface as a diff on the
+    // counterpart key, and a helper whose body did nothing would surface as no diff whatsoever.
+    const probes = makeRelationPairProbes(
+      catalogRows(fixtures),
+      excludedRowsHeldBy(fixtures, subject),
+    );
+
+    expect(probes).toHaveLength(10);
+
+    for (const probe of probes) {
+      const before = collectionSizes(subject);
+
+      expect(probe.has(subject)).toBe(true);
+
+      probe.remove(subject);
+
+      expect(collectionSizes(subject)).toEqual(withOneFewer(before, probe.property));
+      expect(probe.has(subject)).toBe(false);
+      expect(probe.near(subject)).toEqual([]);
+    }
+
+    // The eleventh pair, which the probe table deliberately omits because `PriceGroup` has no
+    // exclusion counterpart. It starts with TWO rows, so removing one leaves one - which also shows
+    // that the splice takes a single element rather than clearing the collection.
+    const heldPriceGroup: PriceGroup = requireAt(
+      subject.getEligiblePriceGroups(),
+      0,
+      'held eligible price group',
+    );
+    const beforePriceGroupRemoval = collectionSizes(subject);
+
+    subject.removeEligiblePriceGroup(heldPriceGroup);
+
+    expect(collectionSizes(subject)).toEqual(
+      withOneFewer(beforePriceGroupRemoval, 'eligiblePriceGroups'),
+    );
+    expect(subject.getEligiblePriceGroups()).toHaveLength(1);
+    expect(subject.hasEligiblePriceGroup(heldPriceGroup)).toBe(false);
+  });
+});
+
+describe('every relation pair, exercised on BOTH sides with real graph rows', () => {
+  // ---------------------------------------------------------------------------------------------
+  // WHY THIS BLOCK EXISTS
+  //
+  // The ten paired many-to-many families are the widest part of this entity's surface - twenty
+  // helpers and ten predicates - and every one of them writes a link-table row that the promotion
+  // engine's membership walk at [model/service/PromotionService.cfc:L921-L985] later reads. A
+  // suite that named them without invoking them would let any of those bodies be emptied without a
+  // single failure, and "the reward applies to this item" is a question about money.
+  //
+  // So each family is exercised end to end against a REAL row from the fixture graph: the near-side
+  // collection, the far-side collection, the OPPOSITE family's collections on both sides, the guard
+  // that prevents a duplicate, and the splice that removes exactly one element. The fourteen-
+  // collection snapshot is what turns "the right thing happened" into "and nothing else did".
+  //
+  // ⚠ THE SAME FIVE ROWS DRIVE BOTH FAMILIES HERE, deliberately. Handing `catalogRows(fixtures)`
+  // in as both the include and the exclude row set means `addBrand(brand)` and
+  // `addExcludedBrand(brand)` are asked about the SAME `SwBrand` row, which is the only way to
+  // prove the two families are genuinely distinct rather than incidentally distinct because they
+  // were handed different objects.
+  // ---------------------------------------------------------------------------------------------
+
+  it('appends every INCLUDE row to its own near side and to the far side INCLUSIONS', () => {
+    // CFML parity [model/entity/PromotionReward.cfc:L198-L295]: each include `add*` is the same
+    // four-step shape - guard [L199] then `arrayAppend(variables.<near>, row)` [L200], guard [L202]
+    // then `arrayAppend(row.getPromotionRewards(), this)` [L203]. The far side is the INCLUSION
+    // collection, never the exclusion one.
+    const probes = makeRelationPairProbes(catalogRows(fixtures), catalogRows(fixtures)).filter(
+      (probe) => !probe.excludes,
+    );
+
+    expect(probes).toHaveLength(5);
+
+    for (const probe of probes) {
+      const reward = new PromotionReward({ promotionRewardID: `reward-include-${probe.property}` });
+      const emptied = collectionSizes(reward);
+      const farOwnBefore = probe.farOwn().length;
+      const farCounterpartBefore = probe.farCounterpart().length;
+
+      expect(probe.has(reward)).toBe(false);
+
+      probe.add(reward);
+
+      // Near side: exactly this pair's collection grew, and it holds the real row.
+      expect(collectionSizes(reward)).toEqual(withOneMore(emptied, probe.property));
+      expect(probe.near(reward)).toHaveLength(1);
+      expect(probe.has(reward)).toBe(true);
+
+      // Far side: the row's INCLUSION collection gained this reward; its EXCLUSION collection did
+      // not move, even though the very same row is what the exclude family would have written to.
+      expect(probe.farOwn()).toHaveLength(farOwnBefore + 1);
+      expect(probe.farOwn()).toContain(reward);
+      expect(probe.farCounterpart()).toHaveLength(farCounterpartBefore);
+      expect(probe.farCounterpart()).not.toContain(reward);
+    }
+  });
+
+  it('appends every EXCLUDE row to its own near side and to the far side EXCLUSIONS', () => {
+    // CFML parity [model/entity/PromotionReward.cfc:L298-L395]: the exclude helpers are the same
+    // four steps with the far side swapped - `hasPromotionRewardExclusion` [L302, L322, L342, L362,
+    // L382] and `getPromotionRewardExclusions()` [L303, L323, L343, L363, L383]. Two separate
+    // far-side collections over two separate link tables, never conflated: an item on an include
+    // list qualifies and an item on an exclude list is barred, so writing one where the other was
+    // meant inverts the discount.
+    const probes = makeRelationPairProbes(catalogRows(fixtures), catalogRows(fixtures)).filter(
+      (probe) => probe.excludes,
+    );
+
+    expect(probes).toHaveLength(5);
+
+    for (const probe of probes) {
+      const reward = new PromotionReward({ promotionRewardID: `reward-exclude-${probe.property}` });
+      const emptied = collectionSizes(reward);
+      const farOwnBefore = probe.farOwn().length;
+      const farCounterpartBefore = probe.farCounterpart().length;
+
+      expect(probe.has(reward)).toBe(false);
+
+      probe.add(reward);
+
+      expect(collectionSizes(reward)).toEqual(withOneMore(emptied, probe.property));
+      expect(probe.near(reward)).toHaveLength(1);
+      expect(probe.has(reward)).toBe(true);
+
+      expect(probe.farOwn()).toHaveLength(farOwnBefore + 1);
+      expect(probe.farOwn()).toContain(reward);
+      expect(probe.farCounterpart()).toHaveLength(farCounterpartBefore);
+      expect(probe.farCounterpart()).not.toContain(reward);
+    }
+  });
+
+  it('keeps the two families apart for the SAME row, on the near side and the far side', () => {
+    // CFML parity [model/entity/PromotionReward.cfc:L80-L84 versus L86-L90]: `brands` and
+    // `excludedBrands` are DISTINCT collections over `SwPromoRewardBrand` and
+    // `SwPromoRewardExclBrand`. Adding a row to one says nothing about the other, and the
+    // predicates must answer independently - which is only observable when both are asked about one
+    // row rather than about two conveniently different ones.
+    const probes = makeRelationPairProbes(catalogRows(fixtures), catalogRows(fixtures));
+
+    expect(probes).toHaveLength(10);
+
+    for (const probe of probes) {
+      const reward = new PromotionReward({ promotionRewardID: `reward-split-${probe.property}` });
+
+      probe.add(reward);
+
+      expect(probe.has(reward)).toBe(true);
+      expect(probe.counterpartHas(reward)).toBe(false);
+      expect(probe.near(reward)).toHaveLength(1);
+      expect(probe.counterpartNear(reward)).toEqual([]);
+      expect(probe.counterpartProperty).not.toBe(probe.property);
+      expect(probe.linkTable.includes('Excl')).toBe(probe.excludes);
+    }
+  });
+
+  it('answers every membership predicate TRUE for a held row and FALSE for the counterpart row', () => {
+    // ★ Both polarities of all ELEVEN singular predicates, against real rows the fixture hydrated.
+    // Each one compares PRIMARY KEYS - `brandID`, `optionID`, `skuID`, `productID`,
+    // `productTypeID`, `priceGroupID` - never object identity and never deep equality, which is
+    // what lets a re-hydrated row answer `true` the way Hibernate's identity semantics did.
+    const included: CatalogRowSet = catalogRows(fixtures);
+    const excluded: CatalogRowSet = excludedRowsHeldBy(fixtures, subject);
+
+    // INCLUDE side: the catalog row is a member, the excluded row is not.
+    expect(subject.hasBrand(included.brand)).toBe(true);
+    expect(subject.hasBrand(excluded.brand)).toBe(false);
+    expect(subject.hasOption(included.option)).toBe(true);
+    expect(subject.hasOption(excluded.option)).toBe(false);
+    expect(subject.hasSku(included.sku)).toBe(true);
+    expect(subject.hasSku(excluded.sku)).toBe(false);
+    expect(subject.hasProduct(included.product)).toBe(true);
+    expect(subject.hasProduct(excluded.product)).toBe(false);
+    expect(subject.hasProductType(included.productType)).toBe(true);
+    expect(subject.hasProductType(excluded.productType)).toBe(false);
+
+    // EXCLUDE side: exactly the mirror image, and the two never agree about the same row.
+    expect(subject.hasExcludedBrand(excluded.brand)).toBe(true);
+    expect(subject.hasExcludedBrand(included.brand)).toBe(false);
+    expect(subject.hasExcludedOption(excluded.option)).toBe(true);
+    expect(subject.hasExcludedOption(included.option)).toBe(false);
+    expect(subject.hasExcludedSku(excluded.sku)).toBe(true);
+    expect(subject.hasExcludedSku(included.sku)).toBe(false);
+    expect(subject.hasExcludedProduct(excluded.product)).toBe(true);
+    expect(subject.hasExcludedProduct(included.product)).toBe(false);
+    expect(subject.hasExcludedProductType(excluded.productType)).toBe(true);
+    expect(subject.hasExcludedProductType(included.productType)).toBe(false);
+
+    // The eleventh: `hasEligiblePriceGroup`, whose collection has no exclusion counterpart at all.
+    const heldPriceGroup: PriceGroup = requireAt(
+      subject.getEligiblePriceGroups(),
+      0,
+      'held eligible price group',
+    );
+    expect(subject.hasEligiblePriceGroup(heldPriceGroup)).toBe(true);
+    expect(
+      new PromotionReward({ promotionRewardID: 'reward-no-price-groups' }).hasEligiblePriceGroup(
+        heldPriceGroup,
+      ),
+    ).toBe(false);
+
+    // The excluded rows really are distinct rows rather than aliases of the catalog ones, so the
+    // `false` answers above are earned by key comparison and not by asking about the same object.
+    expect(excluded.brand).not.toBe(included.brand);
+    expect(excluded.brand.getBrandID()).not.toBe(included.brand.getBrandID());
+    expect(excluded.option.getOptionID()).not.toBe(included.option.getOptionID());
+    expect(excluded.sku.getSkuID()).not.toBe(included.sku.getSkuID());
+    expect(excluded.product.getProductID()).not.toBe(included.product.getProductID());
+    expect(excluded.productType.getProductTypeID()).not.toBe(
+      included.productType.getProductTypeID(),
+    );
+  });
+
+  it('prevents a duplicate on BOTH sides when the same SAVED row is added twice', () => {
+    // CFML parity [model/entity/PromotionReward.cfc:L199 and L202]: both guards are DISJUNCTIONS
+    // whose first operand is an `isNew()` test. With a SAVED row and a SAVED reward - both primary
+    // keys non-empty - neither short-circuits, so both membership tests are consulted and a repeat
+    // add is a no-op on each side independently.
+    const probes = makeRelationPairProbes(catalogRows(fixtures), catalogRows(fixtures));
+
+    for (const probe of probes) {
+      const reward = new PromotionReward({ promotionRewardID: `reward-dedupe-${probe.property}` });
+
+      probe.add(reward);
+
+      const afterFirst = collectionSizes(reward);
+      const farAfterFirst = probe.farOwn().length;
+
+      probe.add(reward);
+
+      expect(collectionSizes(reward)).toEqual(afterFirst);
+      expect(probe.near(reward)).toHaveLength(1);
+      expect(probe.farOwn()).toHaveLength(farAfterFirst);
+    }
+  });
+
+  it('removes every pair from BOTH sides, restoring each collection to its baseline', () => {
+    // CFML parity [model/entity/PromotionReward.cfc:L206-L215 through L386-L395]: removal is
+    // `arrayFind` then `arrayDeleteAt` on the near side and the same again on the far side, each
+    // guarded only by `> 0`. BOTH sides are attempted unconditionally and neither is conditional on
+    // the other, so a row present on one side and absent from the other still leaves cleanly.
+    // `indexOf` plus `splice(index, 1)` is the exact parity, and `-1` is the target's `> 0`.
+    const probes = makeRelationPairProbes(catalogRows(fixtures), catalogRows(fixtures));
+
+    for (const probe of probes) {
+      const reward = new PromotionReward({ promotionRewardID: `reward-detach-${probe.property}` });
+      const emptied = collectionSizes(reward);
+      const farOwnBefore = probe.farOwn().length;
+
+      probe.add(reward);
+      probe.remove(reward);
+
+      expect(collectionSizes(reward)).toEqual(emptied);
+      expect(probe.near(reward)).toEqual([]);
+      expect(probe.has(reward)).toBe(false);
+      expect(probe.farOwn()).toHaveLength(farOwnBefore);
+      expect(probe.farOwn()).not.toContain(reward);
+    }
+  });
+
+  it('removes exactly ONE element from a collection holding TWO, first index first', () => {
+    // ★ THE SINGLE-ELEMENT SPLICE, PROVEN FOR ALL TEN PAIRS. CFML parity
+    // [model/entity/PromotionReward.cfc:L207-L210]: `arrayFind` yields the FIRST matching index and
+    // `arrayDeleteAt` deletes that ONE element - it is not a "clear the collection" operation, and
+    // it is not a filter. `indexOf` + `splice(index, 1)` is the exact parity, and the only way to
+    // observe the difference is to hold TWO rows and remove one.
+    //
+    // The second row of each class is the row the reward EXCLUDES elsewhere in the fixture graph -
+    // a different `SwBrand`, `SwOption`, `SwSku`, `SwProduct` and `SwProductType` row - so both
+    // entries in the collection are real and distinct. Two probe tables over the same ten
+    // properties, differing only in which row they carry, is what lines the pairs up.
+    const primary = makeRelationPairProbes(catalogRows(fixtures), catalogRows(fixtures));
+    const secondary = makeRelationPairProbes(
+      excludedRowsHeldBy(fixtures, subject),
+      excludedRowsHeldBy(fixtures, subject),
+    );
+
+    expect(primary).toHaveLength(10);
+    expect(secondary).toHaveLength(10);
+
+    for (const [index, probe] of primary.entries()) {
+      const other: RelationPairProbe = requireAt(secondary, index, 'second-row probe');
+
+      // The two tables really are aligned on the same collection.
+      expect(other.property).toBe(probe.property);
+      expect(other.linkTable).toBe(probe.linkTable);
+
+      const reward = new PromotionReward({ promotionRewardID: `reward-splice-${probe.property}` });
+
+      probe.add(reward);
+      other.add(reward);
+
+      expect(probe.near(reward)).toHaveLength(2);
+      expect(probe.has(reward)).toBe(true);
+      expect(other.has(reward)).toBe(true);
+
+      probe.remove(reward);
+
+      // ONE survivor, and it is the row that was not asked for.
+      expect(probe.near(reward)).toHaveLength(1);
+      expect(probe.has(reward)).toBe(false);
+      expect(other.has(reward)).toBe(true);
+
+      // Removing the survivor empties the collection, so nothing was left dangling.
+      other.remove(reward);
+
+      expect(probe.near(reward)).toEqual([]);
+      expect(other.has(reward)).toBe(false);
+    }
+  });
+
+  it('leaves both sides untouched when a row that was never added is removed', () => {
+    // CFML parity [model/entity/PromotionReward.cfc:L207-L214]: `arrayFind` answers `0` for an
+    // absent element and both `if(... > 0)` bodies are skipped, so a removal that matches nothing is
+    // a no-op rather than an error. The target's `indexOf` returns `-1` in the same situation.
+    const probes = makeRelationPairProbes(catalogRows(fixtures), catalogRows(fixtures));
+
+    for (const probe of probes) {
+      const reward = new PromotionReward({ promotionRewardID: `reward-absent-${probe.property}` });
+      const emptied = collectionSizes(reward);
+      const farOwnBefore = probe.farOwn().length;
+
+      probe.remove(reward);
+
+      expect(collectionSizes(reward)).toEqual(emptied);
+      expect(probe.farOwn()).toHaveLength(farOwnBefore);
+    }
+  });
+
+  it('appends TWICE for an UNSAVED include row, then splices only the FIRST occurrence', () => {
+    // ★ THE DISJUNCTIVE GUARD, AND WHAT IT COSTS. CFML parity
+    // [model/entity/PromotionReward.cfc:L199]: the near-side guard is `arguments.brand.isNew() or
+    // !hasBrand(arguments.brand)`. An UNSAVED row satisfies the first operand, so the membership
+    // test is never reached and the append happens EVERY time - the same row lands in the collection
+    // twice. That is the shipped behaviour of the source and it is reproduced rather than rounded
+    // off, because a transient row is exactly what an admin screen holds before its first save.
+    //
+    // CFML parity [model/entity/PromotionReward.cfc:L207-L210]: the removal is `arrayFind` then
+    // `arrayDeleteAt`, and `arrayFind` answers with the FIRST match while `arrayDeleteAt` removes
+    // exactly one element. A duplicated row therefore survives its own removal once, and only the
+    // second call empties the collection. `indexOf` + `splice(index, 1)` reproduces both halves.
+    const transient = new Brand({ brandName: 'Transient Fixture Brand' });
+    const reward = new PromotionReward({ promotionRewardID: 'reward-unsaved-include' });
+
+    expect(transient.isNew()).toBe(true);
+    expect(transient.getBrandID()).toBe('');
+
+    reward.addBrand(transient);
+    reward.addBrand(transient);
+
+    // Near side: appended twice, because the guard short-circuited both times.
+    expect(reward.getBrands()).toHaveLength(2);
+    expect(requireAt(reward.getBrands(), 0, 'first appended transient brand')).toBe(transient);
+    expect(requireAt(reward.getBrands(), 1, 'second appended transient brand')).toBe(transient);
+
+    // ★ The predicate falls back to reference identity for a row whose key is still `''`, because
+    // there is no key to compare - so it answers `true` for the object it actually holds.
+    expect(reward.hasBrand(transient)).toBe(true);
+
+    // Far side: guarded by the REWARD's own `isNew()`, which is false here, so it appends once only.
+    expect(transient.getPromotionRewards()).toHaveLength(1);
+    expect(transient.getPromotionRewards()).toContain(reward);
+    expect(transient.getPromotionRewardExclusions()).toEqual([]);
+
+    reward.removeBrand(transient);
+
+    // One occurrence removed, one left behind - the first-index splice, observable.
+    expect(reward.getBrands()).toHaveLength(1);
+    expect(reward.hasBrand(transient)).toBe(true);
+    expect(transient.getPromotionRewards()).toEqual([]);
+
+    reward.removeBrand(transient);
+
+    expect(reward.getBrands()).toEqual([]);
+    expect(reward.hasBrand(transient)).toBe(false);
+  });
+
+  it('appends TWICE for an UNSAVED exclude row, then splices only the FIRST occurrence', () => {
+    // The mirror image on the EXCLUSION family. CFML parity
+    // [model/entity/PromotionReward.cfc:L299 and L302]: the same disjunctive near-side guard, with
+    // the far side reaching `getPromotionRewardExclusions()` [L303] instead. The duplicate append
+    // and the single-element splice behave identically, and the INCLUSION collection of the same row
+    // is never touched.
+    const transient = new Brand({ brandName: 'Transient Excluded Fixture Brand' });
+    const reward = new PromotionReward({ promotionRewardID: 'reward-unsaved-exclude' });
+
+    expect(transient.isNew()).toBe(true);
+
+    reward.addExcludedBrand(transient);
+    reward.addExcludedBrand(transient);
+
+    expect(reward.getExcludedBrands()).toHaveLength(2);
+    expect(reward.hasExcludedBrand(transient)).toBe(true);
+    expect(reward.getBrands()).toEqual([]);
+    expect(reward.hasBrand(transient)).toBe(false);
+
+    expect(transient.getPromotionRewardExclusions()).toHaveLength(1);
+    expect(transient.getPromotionRewardExclusions()).toContain(reward);
+    expect(transient.getPromotionRewards()).toEqual([]);
+
+    reward.removeExcludedBrand(transient);
+
+    expect(reward.getExcludedBrands()).toHaveLength(1);
+    expect(reward.hasExcludedBrand(transient)).toBe(true);
+    expect(transient.getPromotionRewardExclusions()).toEqual([]);
+
+    reward.removeExcludedBrand(transient);
+
+    expect(reward.getExcludedBrands()).toEqual([]);
+    expect(reward.hasExcludedBrand(transient)).toBe(false);
+  });
+
+  it('appends to the far side TWICE for an UNSAVED reward, because isNew() short-circuits there too', () => {
+    // CFML parity [model/entity/PromotionReward.cfc:L202]: the FAR-side guard is `isNew() or
+    // !arguments.brand.hasPromotionReward( this )`, and its `isNew()` is the REWARD's own. An
+    // unsaved reward therefore skips the far-side membership test and is appended again on every
+    // add, while the near side - guarded by the ROW's key, which is saved here - deduplicates
+    // normally. The two guards read DIFFERENT entities' keys, which is why the two sides can
+    // disagree, and the same asymmetry is already pinned for `setPromotionPeriod` above.
+    const unsaved = new PromotionReward({ promotionRewardID: '' });
+    const target: PromotionFixtureGraph['brand'] = fixtures.brand;
+    const farBefore = target.getPromotionRewards().length;
+
+    expect(unsaved.isNew()).toBe(true);
+
+    unsaved.addBrand(target);
+    unsaved.addBrand(target);
+
+    expect(unsaved.getBrands()).toHaveLength(1);
+    expect(target.getPromotionRewards()).toHaveLength(farBefore + 2);
+  });
+});
+
+/**
+ * Builds one UNSAVED `PriceGroup`, fresh per call.
+ *
+ * `PriceGroup`'s hydration input is explicit-but-nullable across all fourteen members, so
+ * unlike `Brand` it cannot be constructed from the primary key alone. Every member is spelled
+ * out here rather than borrowed from `./priceGroupFixtures`, because the ONE property under
+ * test is the empty primary key and a shared fixture builder would bury it.
+ *
+ * The three collection members are fresh arrays per call. `PriceGroup` does not copy what it
+ * is handed and its accessors return those very arrays, so a module-level literal would be
+ * shared mutable state across tests.
+ */
+function anUnsavedPriceGroup(): PriceGroup {
+  return new PriceGroup({
+    // The `unsavedvalue="" default=""` pair at [model/entity/PriceGroup.cfc:L52].
+    priceGroupID: '',
+    priceGroupIDPath: undefined,
+    activeFlag: undefined,
+    priceGroupName: undefined,
+    priceGroupCode: undefined,
+    parentPriceGroup: undefined,
+    childPriceGroups: [],
+    priceGroupRates: [],
+    promotionRewards: [],
+    parentPriceGroupOptionCandidates: undefined,
+    createdDateTime: undefined,
+    createdByAccountID: undefined,
+    modifiedDateTime: undefined,
+    modifiedByAccountID: undefined,
+  });
+}
+
+/**
+ * Builds one UNSAVED `Option`, fresh per call.
+ *
+ * Like `PriceGroup`, `Option`'s hydration input is explicit-but-nullable, so the twelve
+ * required members are spelled out. The five optional collection members are LEFT OFF rather
+ * than passed as `undefined`: under `exactOptionalPropertyTypes` an omitted optional key and an
+ * explicit `undefined` are different types, and omitting them lets the entity install its own
+ * fresh arrays instead of this helper deciding.
+ */
+function anUnsavedOption(): Option {
+  return new Option({
+    // `Option.isNew()` reads the primary key directly [model/entity/Option.cfc:L49].
+    optionID: '',
+    optionCode: undefined,
+    optionName: undefined,
+    optionDescription: undefined,
+    sortOrder: undefined,
+    optionGroup: undefined,
+    defaultImageID: undefined,
+    remoteID: undefined,
+    createdDateTime: undefined,
+    createdByAccountID: undefined,
+    modifiedDateTime: undefined,
+    modifiedByAccountID: undefined,
+  });
+}
+
+describe('the empty-primary-key fallback, where every predicate switches to reference identity', () => {
+  // WHY THIS BLOCK EXISTS, AND WHY KEY COMPARISON ALONE WOULD BE WRONG.
+  //
+  // The eleven predicates are framework-dispatched
+  // [org/Hibachi/HibachiEntity.cfc:L507-L565] rather than declared in
+  // model/entity/PromotionReward.cfc, and Hibernate answered them on PERSISTENT IDENTITY.
+  // Every unsaved row carries the SAME empty primary key - that is what the `unsavedvalue=""`
+  // metadata means - so a predicate that compared keys and nothing else would report every
+  // unsaved row as already held. The visible damage is not in the predicate: it is in the
+  // `add*` guard that CALLS it. `addBrand` [model/entity/PromotionReward.cfc:L199] appends
+  // only when `brand.isNew() || !this.hasBrand(brand)`, so a key-only predicate would make the
+  // second unsaved brand answer `true` and be silently dropped.
+  //
+  // Each predicate therefore falls back to reference identity when the candidate's key is
+  // empty. That is the same semantics the sibling entities carry on their own remove paths -
+  // `priceGroupRate.remove*` and `priceGroup.removeParentPriceGroup` - so the three files
+  // agree on one rule instead of each choosing its own.
+  //
+  // The block also reaches `hasExcludedSku` and `hasExcludedProduct`, which no earlier block
+  // calls at all, and `hasEligiblePriceGroup`, whose collection is the one member the reward
+  // has and the qualifier does not [model/entity/PromotionReward.cfc:L74].
+
+  it('answers hasBrand by object identity when the candidate carries no primary key', () => {
+    const unsaved: Brand = new Brand({ brandID: '' });
+    const otherUnsaved: Brand = new Brand({ brandID: '' });
+
+    expect(unsaved.isNew()).toBe(true);
+    expect(unsaved.getBrandID()).toBe('');
+    expect(otherUnsaved.getBrandID()).toBe('');
+
+    // Not held yet, and the empty key does not make it look held.
+    expect(subject.hasBrand(unsaved)).toBe(false);
+
+    subject.addBrand(unsaved);
+
+    expect(subject.hasBrand(unsaved)).toBe(true);
+
+    // ★ THE ASSERTION THE WHOLE BRANCH EXISTS FOR. A second unsaved brand shares the first
+    // one's empty key exactly, and is still NOT held.
+    expect(subject.hasBrand(otherUnsaved)).toBe(false);
+  });
+
+  it('keeps two DISTINCT unsaved rows separable, so both can be appended', () => {
+    // The consequence of the previous test, made observable on the collection rather than on
+    // the predicate: because the guard can tell them apart, BOTH unsaved brands land.
+    const first: Brand = new Brand({ brandID: '' });
+    const second: Brand = new Brand({ brandID: '' });
+    const before: number = subject.getBrands().length;
+
+    subject.addBrand(first);
+    subject.addBrand(second);
+
+    expect(subject.getBrands()).toHaveLength(before + 2);
+    expect(subject.getBrands()).toContain(first);
+    expect(subject.getBrands()).toContain(second);
+  });
+
+  it('answers hasSku, hasProduct and hasProductType by object identity for unsaved rows', () => {
+    // `Sku.isNew()` reads a dedicated `newFlag` rather than the primary key, so an unsaved SKU
+    // must be built with `isNew: true` as well as the empty key - `new Sku({ skuID: '' })`
+    // alone answers `false` to `isNew()`. The predicate still branches on the EMPTY KEY, which
+    // is why the key is supplied too.
+    const unsavedSku: Sku = new Sku({ skuID: '', isNew: true });
+    const otherUnsavedSku: Sku = new Sku({ skuID: '', isNew: true });
+    const unsavedProduct: Product = new Product({ productID: '' });
+    const otherUnsavedProduct: Product = new Product({ productID: '' });
+    const unsavedProductType: ProductType = new ProductType({ productTypeID: '' });
+    const otherUnsavedProductType: ProductType = new ProductType({ productTypeID: '' });
+
+    subject.addSku(unsavedSku);
+    subject.addProduct(unsavedProduct);
+    subject.addProductType(unsavedProductType);
+
+    expect(subject.hasSku(unsavedSku)).toBe(true);
+    expect(subject.hasSku(otherUnsavedSku)).toBe(false);
+
+    expect(subject.hasProduct(unsavedProduct)).toBe(true);
+    expect(subject.hasProduct(otherUnsavedProduct)).toBe(false);
+
+    expect(subject.hasProductType(unsavedProductType)).toBe(true);
+    expect(subject.hasProductType(otherUnsavedProductType)).toBe(false);
+  });
+
+  it('answers hasOption by object identity for an unsaved option', () => {
+    // `Option`'s hydration input is explicit-but-nullable, so both members are spelled out.
+    const unsaved: Option = anUnsavedOption();
+    const otherUnsaved: Option = anUnsavedOption();
+
+    subject.addOption(unsaved);
+
+    expect(subject.hasOption(unsaved)).toBe(true);
+    expect(subject.hasOption(otherUnsaved)).toBe(false);
+  });
+
+  it('answers hasEligiblePriceGroup by object identity for an unsaved price group', () => {
+    // The one collection the reward has and the qualifier does not
+    // [model/entity/PromotionReward.cfc:L74], over `SwPromoRewardEligiblePriceGrp`.
+    const unsaved: PriceGroup = anUnsavedPriceGroup();
+    const otherUnsaved: PriceGroup = anUnsavedPriceGroup();
+
+    expect(unsaved.isNew()).toBe(true);
+    expect(subject.hasEligiblePriceGroup(unsaved)).toBe(false);
+
+    subject.addEligiblePriceGroup(unsaved);
+
+    expect(subject.hasEligiblePriceGroup(unsaved)).toBe(true);
+    expect(subject.hasEligiblePriceGroup(otherUnsaved)).toBe(false);
+  });
+
+  it('answers every EXCLUDE-side predicate by object identity for unsaved rows', () => {
+    // The exclude family is a DISTINCT set of link tables [model/entity/PromotionReward.cfc:L86-L90]
+    // reached through a DISTINCT far-side collection, so the fallback has to hold on both sides
+    // of the include/exclude split rather than only on the include side.
+    const unsavedBrand: Brand = new Brand({ brandID: '' });
+    const unsavedOption: Option = anUnsavedOption();
+    const unsavedSku: Sku = new Sku({ skuID: '', isNew: true });
+    const unsavedProduct: Product = new Product({ productID: '' });
+    const unsavedProductType: ProductType = new ProductType({ productTypeID: '' });
+
+    subject.addExcludedBrand(unsavedBrand);
+    subject.addExcludedOption(unsavedOption);
+    subject.addExcludedSku(unsavedSku);
+    subject.addExcludedProduct(unsavedProduct);
+    subject.addExcludedProductType(unsavedProductType);
+
+    expect(subject.hasExcludedBrand(unsavedBrand)).toBe(true);
+    expect(subject.hasExcludedOption(unsavedOption)).toBe(true);
+    expect(subject.hasExcludedSku(unsavedSku)).toBe(true);
+    expect(subject.hasExcludedProduct(unsavedProduct)).toBe(true);
+    expect(subject.hasExcludedProductType(unsavedProductType)).toBe(true);
+
+    expect(subject.hasExcludedBrand(new Brand({ brandID: '' }))).toBe(false);
+    expect(subject.hasExcludedOption(anUnsavedOption())).toBe(false);
+    expect(subject.hasExcludedSku(new Sku({ skuID: '', isNew: true }))).toBe(false);
+    expect(subject.hasExcludedProduct(new Product({ productID: '' }))).toBe(false);
+    expect(subject.hasExcludedProductType(new ProductType({ productTypeID: '' }))).toBe(false);
+  });
+
+  it('keeps the exclude-side predicates answering by primary key for SAVED rows', () => {
+    // The fallback is reached ONLY on an empty key. `hasExcludedSku` and `hasExcludedProduct`
+    // are otherwise never called in this suite, so their ordinary key-comparison path is
+    // asserted here: a re-hydrated row - a different JavaScript object carrying the same
+    // `SwSku` / `SwProduct` primary key - still answers `true`, which is what Hibernate's
+    // identity map gave the legacy for free.
+    const heldSku: Sku = requireAt(subject.getExcludedSkus(), 0, 'excluded sku');
+    const heldProduct: Product = requireAt(subject.getExcludedProducts(), 0, 'excluded product');
+
+    expect(heldSku.getSkuID()).not.toBe('');
+    expect(heldProduct.getProductID()).not.toBe('');
+
+    expect(subject.hasExcludedSku(heldSku)).toBe(true);
+    expect(subject.hasExcludedProduct(heldProduct)).toBe(true);
+
+    // A DIFFERENT object carrying the SAME key answers true - key comparison, not identity.
+    expect(subject.hasExcludedSku(new Sku({ skuID: heldSku.getSkuID() }))).toBe(true);
+    expect(subject.hasExcludedProduct(new Product({ productID: heldProduct.getProductID() }))).toBe(
+      true,
+    );
+
+    // And the include-side predicate still answers false for the same rows.
+    expect(subject.hasSku(heldSku)).toBe(false);
+    expect(subject.hasProduct(heldProduct)).toBe(false);
+  });
+});
+
+describe('the seven bidirectional pairs the guard-polarity block does not reach', () => {
+  // The earlier block proves the GUARD POLARITY on `eligiblePriceGroup`, `excludedBrand`,
+  // `option` and `promotionPeriod`. It leaves seven of the fourteen pairs unexercised, and
+  // those seven are exactly the ones the promotion engine reads through
+  // `getOrderItemInReward` [model/service/PromotionService.cfc:L921]. Each pair is asserted on
+  // BOTH sides, because [model/entity/PromotionReward.cfc:L198-L215] maintains both and a
+  // helper that updated only the near side would leave the far side's array stale.
+  //
+  // The include family reaches `getPromotionRewards()`; the exclude family reaches the
+  // separate `getPromotionRewardExclusions()`. Collapsing the two would silently merge the
+  // include and exclude link tables, which mean OPPOSITE things.
+
+  it('appends a saved brand to BOTH sides, and detaches it from BOTH', () => {
+    const brand: Brand = new Brand({ brandID: 'brand-bidirectional' });
+
+    subject.addBrand(brand);
+
+    expect(subject.getBrands()).toContain(brand);
+    expect(brand.getPromotionRewards()).toContain(subject);
+
+    subject.removeBrand(brand);
+
+    expect(subject.getBrands()).not.toContain(brand);
+    expect(brand.getPromotionRewards()).not.toContain(subject);
+  });
+
+  it('refuses a duplicate append for a SAVED brand, because the guard consults the key', () => {
+    // `brand.isNew()` is false for a saved row, so the second disjunct decides and
+    // `hasBrand` answers true. Contrast the unsaved case above, where `isNew()` wins outright
+    // and the append is unconditional.
+    const brand: Brand = new Brand({ brandID: 'brand-idempotent' });
+
+    subject.addBrand(brand);
+    subject.addBrand(brand);
+
+    expect(subject.getBrands().filter((held: Brand) => held === brand)).toHaveLength(1);
+    expect(
+      brand.getPromotionRewards().filter((held: PromotionReward) => held === subject),
+    ).toHaveLength(1);
+  });
+
+  it('appends and detaches a sku, a product and a productType on both sides', () => {
+    const sku: Sku = new Sku({ skuID: 'sku-bidirectional' });
+    const product: Product = new Product({ productID: 'product-bidirectional' });
+    const productType: ProductType = new ProductType({
+      productTypeID: 'producttype-bidirectional',
+    });
+
+    subject.addSku(sku);
+    subject.addProduct(product);
+    subject.addProductType(productType);
+
+    expect(sku.getPromotionRewards()).toContain(subject);
+    expect(product.getPromotionRewards()).toContain(subject);
+    expect(productType.getPromotionRewards()).toContain(subject);
+
+    subject.removeSku(sku);
+    subject.removeProduct(product);
+    subject.removeProductType(productType);
+
+    expect(subject.getSkus()).not.toContain(sku);
+    expect(subject.getProducts()).not.toContain(product);
+    expect(subject.getProductTypes()).not.toContain(productType);
+    expect(sku.getPromotionRewards()).not.toContain(subject);
+    expect(product.getPromotionRewards()).not.toContain(subject);
+    expect(productType.getPromotionRewards()).not.toContain(subject);
+  });
+
+  it('appends and detaches the three exclude-side rows through the EXCLUSION far side', () => {
+    const sku: Sku = new Sku({ skuID: 'sku-excl-bidirectional' });
+    const product: Product = new Product({ productID: 'product-excl-bidirectional' });
+    const productType: ProductType = new ProductType({
+      productTypeID: 'producttype-excl-bidirectional',
+    });
+
+    subject.addExcludedSku(sku);
+    subject.addExcludedProduct(product);
+    subject.addExcludedProductType(productType);
+
+    // The EXCLUSION collection, not `getPromotionRewards()`.
+    expect(sku.getPromotionRewardExclusions()).toContain(subject);
+    expect(product.getPromotionRewardExclusions()).toContain(subject);
+    expect(productType.getPromotionRewardExclusions()).toContain(subject);
+
+    // And the include-side far collection is untouched by an exclude-side append.
+    expect(sku.getPromotionRewards()).not.toContain(subject);
+    expect(product.getPromotionRewards()).not.toContain(subject);
+    expect(productType.getPromotionRewards()).not.toContain(subject);
+
+    subject.removeExcludedSku(sku);
+    subject.removeExcludedProduct(product);
+    subject.removeExcludedProductType(productType);
+
+    expect(subject.getExcludedSkus()).not.toContain(sku);
+    expect(subject.getExcludedProducts()).not.toContain(product);
+    expect(subject.getExcludedProductTypes()).not.toContain(productType);
+    expect(sku.getPromotionRewardExclusions()).not.toContain(subject);
+    expect(product.getPromotionRewardExclusions()).not.toContain(subject);
+    expect(productType.getPromotionRewardExclusions()).not.toContain(subject);
+  });
+
+  it('leaves both sides untouched when removing a row that was never added', () => {
+    // [model/entity/PromotionReward.cfc:L206-L215] guards each splice on the index having been
+    // found, so a remove for an unrelated row is a no-op rather than an error or a
+    // splice at index -1 - which would remove the LAST element.
+    const stranger: Brand = new Brand({ brandID: 'brand-never-added' });
+    const brandsBefore: readonly Brand[] = [...subject.getBrands()];
+
+    subject.removeBrand(stranger);
+
+    expect(subject.getBrands()).toStrictEqual(brandsBefore);
+    expect(stranger.getPromotionRewards()).toStrictEqual([]);
   });
 });
 
@@ -1373,11 +2681,123 @@ describe('amount is Money or undefined, and getAmountFormatted() branches once',
     //
     // ★ THIS METHOD IS WHY [L61] IS `hb_formatType="custom"` RATHER THAN `"currency"`: the column's
     // rendering depends on a SIBLING column's value, which no declarative format type can express.
+    //
+    // ★★ THESE TWO ASSERTIONS USED TO EXPECT "12.50%", AND THAT WAS WRONG - the legacy engine never
+    // produces it. [L403] delegates to `formatValue(getAmount(), "percentage")`, and that mask is
+    // implemented at `org/Hibachi/HibachiUtilityService.cfc:L62-L64` as `arguments.value & "%"`:
+    // plain CFML stringification with NO mask applied. The port had been passing the value through
+    // `numberFormat(..., '0.00')`, which PADS to two decimals. The assertions are inverted rather
+    // than deleted, because the old expectation is exactly the regression worth guarding against.
     expect(subject.getAmountType()).toBe('percentageOff');
-    expect(subject.getAmountFormatted()).toBe('12.50%');
+    expect(subject.getAmountFormatted()).toBe('12.5%');
+    expect(subject.getAmountFormatted()).not.toBe('12.50%');
 
-    // Case-folded on the same CFML `==` grounds as the option accessor.
-    expect(fixtures.mixedCaseRewardTypeReward.getAmountFormatted()).toBe('12.50%');
+    // ★ THIS ASSERTION USED TO BE LABELLED "Case-folded on the same CFML `==` grounds as the option
+    // accessor", AND IT WAS NOT TESTING THAT AT ALL. `mixedCaseRewardTypeReward` carries
+    // `amountType: 'percentageOff'` - correctly cased - and mis-cases its `rewardType` instead. So
+    // what it actually pins is the INDEPENDENCE of the two columns: a mis-cased `rewardType`, which
+    // `getAmountTypeOptions()` [L121] does branch on, leaves this formatter's [L402] test alone.
+    // That is worth keeping. The `amountType` case-folding it claimed to cover is a separate case,
+    // and it is the one immediately below.
+    expect(fixtures.mixedCaseRewardTypeReward.getAmountType()).toBe('percentageOff');
+    expect(fixtures.mixedCaseRewardTypeReward.getAmountFormatted()).toBe('12.5%');
+  });
+
+  it('takes the percentage branch for a mis-cased stored amountType', () => {
+    // CFML parity [model/entity/PromotionReward.cfc:L402]: the legacy test is `==`, which on strings
+    // is CASE-INSENSITIVE, so a reward stored as `'PercentageOff'` renders as a PERCENTAGE there.
+    // `SwPromoReward.amountType` is a plain `ormType="string"` column [L62] with no check
+    // constraint, so that spelling is a state the column can genuinely hold; the cast expresses a
+    // value the persisted column admits but the `AmountType` union does not spell, exactly as the
+    // sibling suite does for model/entity/PriceGroupRate.cfc:L263.
+    //
+    // An exact comparison sends this to the CURRENCY branch instead, rendering "12.50" where the
+    // legacy renders "12.5%" - a percentage silently presented as an amount of money. Discovered by
+    // a revert probe: the assertion that was supposed to cover this was pinning a different column.
+    const misCased = new PromotionReward({
+      promotionRewardID: 'reward-miscased-amount-type',
+      amount: Money.fromDecimalString('12.5'),
+      amountType: 'PercentageOff' as AmountType,
+    });
+
+    expect(misCased.getAmountFormatted()).toBe('12.5%');
+    expect(misCased.getAmountFormatted()).not.toBe('12.50');
+
+    // Screaming case too, since `toLowerCase()` and a two-spelling allowlist differ here.
+    expect(
+      new PromotionReward({
+        promotionRewardID: 'reward-shouting-amount-type',
+        amount: Money.fromDecimalString('12.5'),
+        amountType: 'PERCENTAGEOFF' as AmountType,
+      }).getAmountFormatted(),
+    ).toBe('12.5%');
+  });
+
+  it('pads NOTHING on the percentage branch, at any scale', () => {
+    // The no-padding proof, across the shapes where a two-decimal mask would show. Every expected
+    // value here is `String(Number(x))` + "%", which is what `arguments.value & "%"` amounts to at
+    // org/Hibachi/HibachiUtilityService.cfc:L62-L64.
+    const percentageOf = (amount: string): string =>
+      new PromotionReward({
+        promotionRewardID: `reward-pct-${amount}`,
+        amount: Money.fromDecimalString(amount),
+        amountType: 'percentageOff',
+      }).getAmountFormatted();
+
+    // A whole number stays whole: NOT "5.00%".
+    expect(percentageOf('5')).toBe('5%');
+    // A trailing zero is dropped rather than kept.
+    expect(percentageOf('12.50')).toBe('12.5%');
+    // Two significant decimals survive untouched - the trim is not a round.
+    expect(percentageOf('12.34')).toBe('12.34%');
+    // MORE than two decimals survive too, which a '0.00' mask would have destroyed by rounding.
+    expect(percentageOf('7.49625')).toBe('7.49625%');
+    // Four figures gain NO thousands separator: the percentage mask adds nothing but the suffix.
+    expect(percentageOf('1234.5')).toBe('1234.5%');
+  });
+
+  it('renders the SAME stored amount differently on the two branches', () => {
+    // ★ The asymmetry that makes this method worth its own `hb_formatType="custom"`. One column
+    // value, two renders, decided entirely by the sibling `amountType` column - because [L403]'s
+    // "percentage" mask is bare concatenation while [L406]'s "currency" mask goes through the
+    // two-decimal presentation step. A shared formatter would have collapsed these into one string.
+    const amount = Money.fromDecimalString('5');
+
+    expect(
+      new PromotionReward({
+        promotionRewardID: 'reward-same-amount-pct',
+        amount,
+        amountType: 'percentageOff',
+      }).getAmountFormatted(),
+    ).toBe('5%');
+    expect(
+      new PromotionReward({
+        promotionRewardID: 'reward-same-amount-off',
+        amount,
+        amountType: 'amountOff',
+      }).getAmountFormatted(),
+    ).toBe('5.00');
+  });
+
+  it('emits NO currency symbol and NO thousands separator on the currency branch', () => {
+    // ★ The withheld-presentation proof, so the omission is a pinned decision rather than an
+    // accident. The legacy currency mask is
+    // `LSCurrencyFormat(value, "USD", getHibachiScope().getRBLocale())`
+    // [org/Hibachi/HibachiUtilityService.cfc:L34-L40], reaching the "USD" default arm at [L39]
+    // because [L406] passes no `formatDetails`. Its symbol and locale grouping are KNOWN and
+    // DELIBERATELY WITHHELD - the locale operand is ambient request state, JavaRB is not ported, no
+    // i18n runtime is introduced, `Intl` may not be used, and this entity may inject no port. The
+    // reasoning is recorded in full at the method; this case is what stops the two-decimal form
+    // drifting into a fabricated symbol later.
+    const formatted = new PromotionReward({
+      promotionRewardID: 'reward-currency-presentation',
+      amount: Money.fromDecimalString('1234.5'),
+      amountType: 'amountOff',
+    }).getAmountFormatted();
+
+    expect(formatted).toBe('1234.50');
+    expect(formatted).not.toContain('$');
+    expect(formatted).not.toContain(',');
   });
 
   it('formats BOTH amountOff AND amount as currency - two of three share the fall-through', () => {
@@ -1769,6 +3189,31 @@ describe('isDeletable() - two unguarded dereferences of the same period', () => 
     expect(() => orphaned.isDeletable()).toThrow(/no materialized/);
   });
 
+  it('THROWS SEPARATELY when the period is lost BETWEEN the two dereferences', () => {
+    // The second call needs its OWN null guard, and this is the state that proves it. Because
+    // [model/entity/PromotionReward.cfc:L418] calls `getPromotionPeriod()` twice rather than
+    // hoisting it, the two calls can disagree - and CFML would raise on the SECOND one just as
+    // readily as on the first. A port that hoisted the call into a single local would make this
+    // state unreachable and would therefore be a quieter method than the source.
+    //
+    // The disagreement is produced with a spy rather than with fixture data, because no
+    // arrangement of rows can make one accessor answer twice differently - that is precisely
+    // why the branch is otherwise unreachable, and why it is asserted here rather than assumed.
+    // `afterEach` already calls `vi.restoreAllMocks()` unconditionally, so the spy cannot leak.
+    const period: PromotionPeriod = fixtures.promotionPeriod;
+    expect(period.isExpired()).toBe(false);
+
+    const accessor = vi
+      .spyOn(subject, 'getPromotionPeriod')
+      .mockReturnValueOnce(period)
+      .mockReturnValueOnce(undefined);
+
+    // A DISTINCT message from the first-call throw, so a reader of the failure can tell which
+    // of the two dereferences failed.
+    expect(() => subject.isDeletable()).toThrow(/lost its promotionPeriod between the two/);
+    expect(accessor).toHaveBeenCalledTimes(2);
+  });
+
   it('THROWS when the period is present but its promotion is absent', () => {
     // The asymmetry that makes this a SECOND, distinct failure mode:
     // `PromotionPeriod.isExpired()` IS guarded - [model/entity/PromotionPeriod.cfc:L84] reads
@@ -2109,7 +3554,9 @@ describe('per-test isolation, proven rather than asserted', () => {
     expect(subject.hasOption(fixtures.option)).toBe(true);
     expect(subject.isDeletable()).toBe(false);
     expect(fixtures.promotion.isDeletable()).toBe(false);
-    expect(subject.getAmountFormatted()).toBe('12.50%');
+    // Inverted with the formatter fix: the legacy percentage mask pads nothing, so the fixture's
+    // stored 12.5 renders "12.5%". See the no-padding proof above for why "12.50%" was wrong.
+    expect(subject.getAmountFormatted()).toBe('12.5%');
   });
 
   it('hands out a distinct object graph on every fixture call', () => {
@@ -2134,5 +3581,267 @@ describe('per-test isolation, proven rather than asserted', () => {
     // the SIXTEEN in-scope entities with no legacy test at all, and presenting net-new coverage as
     // parity would fail the coverage gate outright.
     expect(fixtures.legacyTestCoverageExists).toBe(false);
+  });
+});
+
+// ---------------------------------------------------------------------------
+// S-01 AND S-03: THE TWO PRESERVED FINANCIAL DEFECTS THIS ENTITY'S COLUMNS DRIVE
+//
+// Everything above pins what `PromotionReward` returns. The two cases a security
+// review found most serious are not about what it returns - they are about what the
+// engine does with `maximumUsePerOrder` and with `amount`/`roundingRule` one layer
+// down, and both were raised as CRITICAL:
+//
+//   * S-01 (CWE-682, CWE-840): over-use stripping resolves the removal count and the
+//     order-item list from the LAST-PROCESSED reward rather than from the reward
+//     being examined. Demonstrated turning a discount of 10 into 9,999,990.
+//   * S-03 (CWE-682, CWE-840): the post-rounding clamp tests the PRE-rounding
+//     discount, so a rounded net below zero yields a discount larger than the amount
+//     it discounts. Demonstrated as original 0.42, derived discount 1.41.
+//
+// BOTH CHANGES ARE DECLINED, and the declines are mandated rather than chosen.
+// AAP 0.6.1 Vector 3 says of the stripping block that it "MUST be ported as written
+// … 'fixing' this changes the amount charged"; AAP 0.4.1 requires the leaked key to
+// be reproduced "exactly" and the clamp "as-written"; AAP 0.6.7 registers them as
+// defects 9 and 14; AAP 0.9.3 enumerates the only three sanctioned divergences in the
+// whole port and neither is among them, then makes a silent fix a FAILING gate.
+//
+// So the outcomes are PINNED. The cases below drive each defect deliberately, assert
+// the wrong figure the port really produces, and prove that the wrongness comes from
+// the index mix rather than from anything else - so the behaviour cannot be altered
+// in either direction without a test failing and sending the author to the AAP first.
+//
+// WHY THEY LIVE HERE. The modules that contain the defects have no test suite in this
+// clone: AAP 0.3.1 places their nine characterization suites under
+// `tests/unit/services/promotion/`, none of which exists here. This entity supplies
+// the inputs to both defects - the three use limits and the amount/rounding trio,
+// which the suite header already names as the reason an entity-level suite is worth
+// this much detail - so pinning them from here was the alternative to leaving a
+// demonstrated, CRITICAL exploit with no regression case at all.
+// ---------------------------------------------------------------------------
+
+describe('the preserved financial defects this entity feeds are pinned, not repaired', () => {
+  /**
+   * The per-order limit a reward with NO limit contributes to the usage ledger.
+   *
+   * `UnlimitedUseSentinel` in `rewardUsageTypes.ts` - absence is carried into the
+   * ledger as a very large number rather than as `undefined`, so arithmetic against
+   * it never has to special-case an absent limit. Harmless on its own, and the
+   * reason S-01's inflation reaches SIX ORDERS OF MAGNITUDE rather than a few units:
+   * it is the subtrahend whenever the last-processed reward is unlimited.
+   */
+  const UNLIMITED_PER_ORDER = 1_000_000;
+
+  /**
+   * A promotion repository that refuses every member.
+   *
+   * `RoundingRuleService` takes one collaborator and this block reaches only its
+   * synchronous `roundValue` / `roundValueByRoundingRule` pair, neither of which
+   * touches the repository. Refusing every member is the strongest available proof of
+   * that: if a future edit made the discount path await a lookup, these cases would
+   * fail loudly rather than silently exercising a stub.
+   */
+  const refusingPromotionRepository = new Proxy({} as PromotionRepository, {
+    get: (_target, member: string | symbol): never => {
+      throw new Error(
+        `the discount path reached promotionRepository.${String(member)}; this block asserts ` +
+          'only the synchronous rounding pair, which takes no repository.',
+      );
+    },
+  });
+
+  const roundingRuleService = new RoundingRuleService(refusingPromotionRepository);
+  const calculator = new DiscountAmountCalculator(roundingRuleService);
+
+  const OVERUSED_REWARD_ID = 'reward-overused';
+  const LAST_PROCESSED_REWARD_ID = 'reward-last-processed';
+  const ORDER_ITEM_ID = 'order-item-shared';
+
+  /**
+   * A ledger and an accumulator in the exact shape the security review demonstrated.
+   *
+   * Reward A is over its per-order limit (used 2, limit 1) so it enters the stripping
+   * body. Reward B was processed last and has NO per-order limit. A's discount of 10
+   * sits on the shared order item.
+   */
+  function buildOverUseScenario(
+    lastProcessedPerOrderLimit: number,
+    overUsedItemID: string = ORDER_ITEM_ID,
+  ): {
+    readonly ledger: PromotionRewardUsageDetails;
+    readonly accumulator: OrderItemQualifiedDiscounts;
+  } {
+    const ledger: PromotionRewardUsageDetails = {
+      [OVERUSED_REWARD_ID]: {
+        usedInOrder: 2,
+        maximumUsePerOrder: 1,
+        maximumUsePerItem: UNLIMITED_PER_ORDER,
+        maximumUsePerQualification: UNLIMITED_PER_ORDER,
+        orderItemsUsage: [
+          {
+            orderItemID: overUsedItemID,
+            discountQuantity: 1,
+            discountPerUseValue: Money.fromDecimalString('10.00'),
+          },
+        ],
+      },
+      [LAST_PROCESSED_REWARD_ID]: {
+        usedInOrder: 1,
+        maximumUsePerOrder: lastProcessedPerOrderLimit,
+        maximumUsePerItem: UNLIMITED_PER_ORDER,
+        maximumUsePerQualification: UNLIMITED_PER_ORDER,
+        orderItemsUsage: [
+          {
+            orderItemID: ORDER_ITEM_ID,
+            discountQuantity: 1,
+            discountPerUseValue: Money.fromDecimalString('1.00'),
+          },
+        ],
+      },
+    };
+
+    const accumulator: OrderItemQualifiedDiscounts = {
+      [ORDER_ITEM_ID]: [
+        {
+          promotionRewardID: OVERUSED_REWARD_ID,
+          promotion: fixtures.promotion,
+          discountAmount: Money.fromDecimalString('10.00'),
+        },
+      ],
+    };
+
+    return { ledger, accumulator };
+  }
+
+  function discountOnSharedItem(accumulator: OrderItemQualifiedDiscounts): string {
+    const bucket = accumulator[ORDER_ITEM_ID];
+
+    if (bucket === undefined || bucket[0] === undefined) {
+      throw new Error('the shared order item lost its discount bucket');
+    }
+    return bucket[0].discountAmount.toDecimalString();
+  }
+
+  it('S-01: inflates a discount of 10 to 9,999,990 when the last reward is unlimited', () => {
+    // ★ THE DEMONSTRATED EXPLOIT, REPRODUCED EXACTLY, AND IT IS NOT AN EXOTIC SETUP:
+    // it needs one reward over its per-order limit and one reward WITHOUT a per-order
+    // limit processed after it. `maximumUsePerOrder` being optional on this entity is
+    // what makes the second condition ordinary rather than rare.
+    //
+    // needToRemove = A.usedInOrder - B.maximumUsePerOrder = 2 - 1,000,000 = -999,998.
+    // The strict `<` at [model/service/PromotionService.cfc:L479] is then true for any
+    // positive quantity, so the fractional branch rewrites the discount as
+    //   10 / 1 * (1 - (-999,998)) = 10 * 999,999 = 9,999,990.
+    const { ledger, accumulator } = buildOverUseScenario(UNLIMITED_PER_ORDER);
+
+    stripOverUsedRewardDiscounts(ledger, accumulator, LAST_PROCESSED_REWARD_ID);
+
+    expect(discountOnSharedItem(accumulator)).toBe('9999990');
+  });
+
+  it('S-01: leaves the discount alone when the leaked reward happens to share the limit', () => {
+    // THE OTHER HALF OF THE PROOF, and the reason this pair is worth more than the
+    // case above on its own. With B's limit equal to A's, the index mix is invisible:
+    // needToRemove = 2 - 1 = 1, which is NOT less than the quantity of 1, so the
+    // deletion branch runs instead and the inflation never appears.
+    //
+    // So the two cases together isolate the CAUSE. The inflation is not a property of
+    // over-use stripping; it is a property of reading the limit from the wrong reward,
+    // which is exactly register entry 9. A "fix" that resolved the limit from the
+    // iterated entry would turn the first case into this one.
+    const { ledger, accumulator } = buildOverUseScenario(1);
+
+    stripOverUsedRewardDiscounts(ledger, accumulator, LAST_PROCESSED_REWARD_ID);
+
+    const bucket = accumulator[ORDER_ITEM_ID];
+
+    expect(bucket).toStrictEqual([]);
+  });
+
+  it('S-01: strips the LEAKED reward’s items, not the examined reward’s items', () => {
+    // The second half of the same defect: L475-L477 iterate the leaked reward's
+    // `orderItemsUsage`, so the ITEMS touched belong to whichever reward ran last. Here
+    // the over-used reward's only usage names an item the accumulator does not carry -
+    // which would raise if it were consulted - and the run completes, because it never
+    // is.
+    const { ledger, accumulator } = buildOverUseScenario(
+      UNLIMITED_PER_ORDER,
+      'order-item-with-no-bucket',
+    );
+
+    expect(() =>
+      stripOverUsedRewardDiscounts(ledger, accumulator, LAST_PROCESSED_REWARD_ID),
+    ).not.toThrow();
+    expect(discountOnSharedItem(accumulator)).toBe('9999990');
+  });
+
+  it('S-03: derives a discount of 1.41 against an original amount of 0.42', () => {
+    // ★ THE DEMONSTRATED EXPLOIT, REPRODUCED EXACTLY. A 0.42 item with a 0.01
+    // `amountOff` reward and a reachable `.99`/`Down` rounding rule:
+    //   originalAmount    = 0.42
+    //   preRounding       = 0.01
+    //   roundedFinalAmount = round(0.42 - 0.01 = 0.41) = -0.99   (AAP 0.6.4 Finding D)
+    //   discountAmount    = 0.42 - (-0.99) = 1.41
+    // The clamp at [L1013] then tests `preRounding > originalAmount` - 0.01 > 0.42,
+    // FALSE - so it never fires, even though the DERIVED discount is 336% of the
+    // amount it discounts. That mismatch is register entry 14.
+    const rewardWithRoundingRule = new PromotionReward({
+      promotionRewardID: 'reward-negative-net',
+      amount: Money.fromDecimalString('0.01'),
+      amountType: 'amountOff',
+      roundingRule: new RoundingRule(
+        {
+          roundingRuleID: 'rounding-down-to-99',
+          roundingRuleName: undefined,
+          roundingRuleExpression: '.99',
+          roundingRuleDirection: 'Down',
+          createdDateTime: undefined,
+          createdByAccountID: undefined,
+          modifiedDateTime: undefined,
+          modifiedByAccountID: undefined,
+          priceGroupRates: [],
+        },
+        // The entity forwards to the service exactly as
+        // [model/entity/RoundingRule.cfc:L66-L68] does, which is what puts a REAL
+        // rounding result on the discount path rather than a stubbed one.
+        roundingRuleService,
+      ),
+    });
+
+    const derived = calculator.getDiscountAmount(
+      rewardWithRoundingRule,
+      Money.fromDecimalString('0.42'),
+      1,
+    );
+
+    expect(derived.toDecimalString()).toBe('1.41');
+    // Stated as the invariant it breaks, so the failure mode is legible without
+    // re-deriving the arithmetic: the discount exceeds the amount being discounted.
+    expect(derived.isGreaterThan(Money.fromDecimalString('0.42'))).toBe(true);
+  });
+
+  it('S-03: clamps correctly when the PRE-rounding amount is the one that overshoots', () => {
+    // THE HALF THAT WORKS, which is what makes the defect a MISMATCH rather than an
+    // absent clamp. With no rounding rule the pre-rounding and derived amounts are the
+    // same value, so the clamp gates on the figure it also assigns and a 200% reward is
+    // correctly cut to 100%.
+    const overshootingReward = new PromotionReward({
+      promotionRewardID: 'reward-overshoot',
+      amount: Money.fromDecimalString('200'),
+      amountType: 'percentageOff',
+    });
+
+    const derived = calculator.getDiscountAmount(
+      overshootingReward,
+      Money.fromDecimalString('10.00'),
+      1,
+    );
+
+    // Asserted by VALUE rather than by rendering: `Money` normalizes trailing zeros, so
+    // the clamped result renders as `10` while the amount it was clamped to was written
+    // `10.00`. Comparing the two as money states the invariant - the discount equals the
+    // amount discounted, and never exceeds it - without depending on either rendering.
+    expect(derived.equals(Money.fromDecimalString('10.00'))).toBe(true);
+    expect(derived.isGreaterThan(Money.fromDecimalString('10.00'))).toBe(false);
   });
 });

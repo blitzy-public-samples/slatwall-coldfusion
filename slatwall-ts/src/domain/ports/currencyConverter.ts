@@ -230,16 +230,36 @@
 // WHO IMPLEMENTS THIS PORT
 //   `src/repositories/mysql/**` implements six of the thirteen ports -
 //   product, sku, option, productType, promotion and priceGroup. This is not
-//   one of them: `currencyConverter` has NO adapter file anywhere in the
-//   target layout, so ITS ONLY LEGAL IMPLEMENTATION HOME IS
-//   `src/handlers/bootstrap.ts` (planned), the composition root.
+//   one of them. Its shipped implementation is
+//   `src/integrations/europeanCentralBankCurrencyConverter.ts`, a secondary
+//   adapter that reproduces `model/service/CurrencyService.cfc` over a rate
+//   table and a `SwCurrency` projection handed to it at construction.
+//   `src/handlers/bootstrap.ts` (planned) CONSTRUCTS that adapter and injects
+//   it; it does not implement the interface itself.
 //
-//   Stated plainly for whoever writes that wiring, because every one of these
+//   An earlier revision of this note claimed the port had no adapter file and
+//   that the composition root was its only legal home. That was true when it
+//   was written and is not true now, and the correction is recorded rather
+//   than quietly applied: a must-preserve money algorithm carrying a pivot
+//   currency, an order-sensitive guard, a silent fallback and a rounding step
+//   belongs in a module that can be cited and characterised, not inside
+//   wiring.
+//
+//   Stated plainly for whoever reads that adapter, because every one of these
 //   obligations is invisible from this side of the interface. The
 //   implementation - never the domain - owns: the European Central Bank rate
 //   retrieval; the memo and its daily re-read; the `"EUR"` pivot described on
 //   `convertCurrency` (named here in commentary only, never as a value in this
 //   file); and case-insensitive comparison of every currency code it touches.
+//
+//   Two of those five are settled by the shipped adapter and two are pushed
+//   OUTWARD of it, which is worth knowing before reading it: it owns the pivot
+//   and the case-insensitive comparison, it holds NO memo and opens NO socket,
+//   and it takes the rate table as a constructor argument instead. So the
+//   retrieval and the freshness guard become obligations of whoever builds
+//   that table - which keeps the rate state per-instance and therefore
+//   per-request, and makes the cross-request staleness hazard described above
+//   structurally impossible rather than merely avoided.
 //
 //   `getAllActiveCurrencyIDList` has a second consumer in that same file. The
 //   `skuEligibleCurrencies` setting declares a RUNTIME-COMPUTED default -
@@ -388,8 +408,8 @@ import type { CurrencyCode } from '../valueObjects/currencyCode.js';
  * the full argument; the short version is that the currency-detail map is
  * materialised during entity hydration, before the domain ever sees the SKU.
  *
- * IMPLEMENTED IN `src/handlers/bootstrap.ts` (planned), which is the only legal home for
- * it - this port has no adapter file in the target layout.
+ * IMPLEMENTED BY `src/integrations/europeanCentralBankCurrencyConverter.ts`,
+ * which `src/handlers/bootstrap.ts` (planned) constructs and injects.
  */
 export interface CurrencyConverter {
   // JUDGMENT CALL: The legacy comma-delimited return is exposed as an array so callers do not parse a list.

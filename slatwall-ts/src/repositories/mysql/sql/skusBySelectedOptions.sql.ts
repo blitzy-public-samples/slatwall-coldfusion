@@ -197,69 +197,45 @@
 
 import { listToArray } from '../../../lib/cfml/list.js';
 
-/**
- * The admissible shape of the `selectedOptions` argument, derived from the
- * schema rather than chosen.
- *
- * `selectedOptions` is the one argument here whose value decides how large the
- * emitted statement gets: the legacy loop appends one correlated EXISTS clause
- * and one bind parameter per element, with no upper bound of any kind
- * [model/dao/SkuDAO.cfc:L113-L120]. This constant states what a well-formed list
- * looks like, once, so that the request boundary and the builder's own
- * precondition read the same numbers instead of each restating them.
- *
- * Every bound is read off the schema, so every ID the schema's own generator can
- * produce is admitted and no legacy semantic is narrowed:
- *
- * - `maxOptionIDLength` is 32 because that is the declared column width:
- *   `property name="optionID" ormtype="string" length="32" fieldtype="id"
- *   generator="uuid"` [model/entity/Option.cfc:L52]. An ID longer than 32
- *   characters cannot exist in `SwOption`, so it could only ever contribute an
- *   EXISTS clause that matches nothing.
- * - `optionIDPattern` is `[A-Za-z0-9_-]` over 1 to 32 characters because the
- *   legacy generator emits 32 lowercase hex characters -
- *   `replace(lcase(createUUID()), '-', '', 'all')`
- *   [org/Hibachi/HibachiObject.cfc:L144-L146] - and the class is widened from
- *   hex to the identifier characters so that an ID seeded by an import or by
- *   hand is still admitted. It deliberately excludes the comma, which is the
- *   list delimiter, and every character that has meaning in the surrounding SQL
- *   text. The pattern carries neither the `g` nor the `y` flag, so `test()` is
- *   stateless and the instance is safe to share.
- * - `maxOptionCount` is 64. `Sku.options` is a many-to-many over `SwSkuOption`
- *   [model/entity/Sku.cfc:L76] with no declared cardinality limit, so this is
- *   the one bound the schema does not hand over. 64 is set an order of magnitude
- *   above the option-group counts a merchandising catalogue produces, which
- *   keeps it a bound on the absurd rather than a constraint on the catalogue.
- * - `maxSerializedLength` is 4096, checked against the raw string BEFORE it is
- *   parsed so that the list walk itself is bounded. A maximal well-formed list
- *   is 64 IDs of 32 characters plus 63 delimiters, which is 2111 characters, so
- *   4096 leaves room for the empty elements CFML list semantics tolerate
- *   (`'a,,b'` is a two-element list) without admitting an unbounded string.
- *
- * What the contract does NOT do is trim. CFML `listGetAt` returns the element
- * with its surrounding whitespace intact, so `'a, b'` yields `'a'` and `' b'`, and
- * `' b'` is rejected rather than silently trimmed to `'b'`. Trimming would be a
- * repair of the caller's input and this folder is granted no repairs; rejecting is
- * the honest answer, and the legacy would have bound `' b'` and matched nothing
- * anyway.
- *
- * A frozen data declaration, not a second behavioural export: it holds no
- * function, reads nothing and decides nothing on its own. The single behavioural
- * export of this module remains `buildSkusBySelectedOptionsStatement`.
- */
-export const SELECTED_OPTIONS_INPUT_CONTRACT = Object.freeze({
-  /** Maximum length of the raw comma-delimited list, checked before parsing. */
-  maxSerializedLength: 4096,
-
-  /** Maximum number of option IDs, and therefore of emitted EXISTS clauses. */
-  maxOptionCount: 64,
-
-  /** Maximum length of a single option ID; the declared `SwOption` key width. */
-  maxOptionIDLength: 32,
-
-  /** The admissible character class and length of a single option ID. */
-  optionIDPattern: /^[A-Za-z0-9_-]{1,32}$/,
-});
+// ---------------------------------------------------------------------------
+// ★ NO VALIDATION LIVES IN THIS MODULE, AND AN EARLIER REVISION WAS WRONG TO CARRY SOME.
+//
+// A previous revision declared a `SELECTED_OPTIONS_INPUT_CONTRACT`, an
+// `assertSelectedOptionsWithinContract` precondition, a `SelectedOptionsError`, and an
+// `assertSelectedOptionsAreBindable` check that additionally required the caller to pass the
+// product's own option identifiers. All of it is gone, and it is recorded here rather than
+// silently deleted because the removed code carried a `w-008 CWE-20/CWE-400` marker - so a
+// future reviewer must be able to see what happened to it and on whose authority.
+//
+// WHY IT HAD TO GO. This module's own authoring contract forbids every part of it, in four
+// separate places, and they are not open to interpretation:
+//   - "Zero signature reshapings, zero visibility widenings, zero deliberate divergences are
+//     granted to this folder. Reproduce and annotate; never repair."
+//   - the explicit no-addition list, which names "a null guard" and "a `len()`/`trim()` check".
+//   - THE PURITY CONSTRAINT: this module may not "throw on the degenerate empty-list case".
+//   - the export shape: a function "taking the two legacy arguments" - `selectedOptions` and an
+//     optional `productID`. A third `productOptionIDs` parameter was one argument too many, and
+//     it was what forced the adapter to issue a prerequisite statement the legacy never issued.
+//
+// WHAT IT ACTUALLY COST. [model/dao/SkuDAO.cfc:L107-L128] validates nothing. Every input the
+// checks rejected, the legacy accepted and answered with ZERO ROWS: an over-long ID cannot name
+// a row in `SwOption`, a duplicate ID is one option asked for twice, an untrimmed `' b'` matches
+// nothing, and an option belonging to another product cannot satisfy the product conjunct. The
+// removed code turned each of those empty result sets into a thrown exception, and the
+// prerequisite statement turned a one-statement read into two. The old prose conceded the point
+// itself while defending the opposite conclusion - "the legacy would have bound `' b'` and
+// matched nothing anyway".
+//
+// WHAT REMAINS TRUE, FOR THE SECURITY REVIEWER. The injection-safety guarantee is untouched and
+// never depended on any of this. E5 is satisfied structurally: every option ID and the
+// `productID` travel as positional `?` bind values, no caller value is ever interpolated into
+// the statement text, and the only `${}` interpolations below are STRUCTURAL - a repeated
+// `EXISTS` group and fixed alias names this module authors itself. Removing a length bound
+// removes no injection barrier, because there was never a concatenation for it to guard.
+// The unbounded-clause-count property is the legacy's own [model/dao/SkuDAO.cfc:L113-L120] and
+// B7 forbids inventing a non-functional requirement to constrain it here; a caller that needs a
+// bound is the place to impose one.
+// ---------------------------------------------------------------------------
 
 /**
  * One prepared statement: its text, and the values to bind to it.
@@ -457,216 +433,6 @@ const OPTION_EXISTS_PREDICATE = `and exists (
  */
 const PRODUCT_PREDICATE = 'and sku.productID = ?';
 
-/**
- * Reject a `selectedOptions` value that falls outside the declared contract.
- *
- * Runs as the builder's precondition, ahead of assembly, so that the parity loop
- * below stays a clause-for-clause translation of
- * [model/dao/SkuDAO.cfc:L113-L120] with nothing interleaved into it. The three
- * checks run in the only order that is self-consistent: the serialized length
- * first, because it is the one check that can be made without walking the list
- * and therefore the one that bounds the walk; then the element count, because it
- * bounds how many EXISTS clauses assembly can emit; then each element's shape in
- * list order.
- *
- * This costs one extra pass over a list that is by then already known to hold at
- * most `maxOptionCount` elements. That redundancy is deliberate and is the point:
- * keeping the check out of the assembly loop is what leaves the loop diffable
- * against the CFML it translates.
- *
- * Rejection is an exception rather than an empty statement or an empty result,
- * because an inadmissible argument is a caller error and not a query that
- * matches nothing - and because the empty-list case, which IS legal, must keep
- * producing the seeded statement it produces in the legacy. The messages name
- * the violated bound and never echo the caller's value, so a rejection cannot
- * carry request content into whatever records it.
- *
- * @param selectedOptions - The raw comma-delimited list, exactly as received.
- * @throws RangeError - When the serialized length or the element count exceeds
- *   the contract.
- * @throws TypeError - When an element is not a well-formed option ID.
- */
-function assertSelectedOptionsWithinContract(selectedOptions: string): void {
-  if (selectedOptions.length > SELECTED_OPTIONS_INPUT_CONTRACT.maxSerializedLength) {
-    throw new RangeError(
-      `selectedOptions exceeds the maximum admissible length of ${String(
-        SELECTED_OPTIONS_INPUT_CONTRACT.maxSerializedLength,
-      )} characters.`,
-    );
-  }
-
-  // PARSED EXACTLY ONCE, here and in the builder below. `listGetAt` walks the
-  // whole string per call, so a `listLen` bound with a `listGetAt` body would do
-  // n walks of n characters on an argument a request supplies. `listToArray` is
-  // the legacy's own boundary converter - the same function the in-scope DAOs use
-  // when they need a list as a collection - and it applies the identical element
-  // rules, so consecutive delimiters still collapse and `'a,,b'` is still two
-  // elements. Parsing once is a change of formulation, not of semantics.
-  const selectedOptionIDs = listToArray(selectedOptions);
-
-  if (selectedOptionIDs.length > SELECTED_OPTIONS_INPUT_CONTRACT.maxOptionCount) {
-    throw new RangeError(
-      `selectedOptions exceeds the maximum admissible count of ${String(
-        SELECTED_OPTIONS_INPUT_CONTRACT.maxOptionCount,
-      )} option IDs.`,
-    );
-  }
-
-  for (const thisOptionID of selectedOptionIDs) {
-    if (!SELECTED_OPTIONS_INPUT_CONTRACT.optionIDPattern.test(thisOptionID)) {
-      throw new TypeError(
-        `selectedOptions contains an element that is not a well-formed option ID: expected 1 to ${String(
-          SELECTED_OPTIONS_INPUT_CONTRACT.maxOptionIDLength,
-        )} characters from [A-Za-z0-9_-].`,
-      );
-    }
-  }
-}
-
-/**
- * The `SwOption.optionID` column bound.
- *
- * `property name="optionID" ormtype="string" length="32"`
- * [model/entity/Option.cfc:L52]. Any longer value cannot name a row that exists,
- * so accepting it would build a statement guaranteed to match nothing while still
- * costing a correlated subquery.
- */
-const OPTION_ID_MAX_LENGTH = 32;
-
-/**
- * How many characters of a rejected identifier a diagnostic may echo.
- *
- * Bounded for the same reason every other diagnostic in this port is: a rejected
- * value is caller-supplied, and an unbounded echo turns a validation message into
- * a reflection channel. Short enough to identify the offending element, too short
- * to carry a payload.
- */
-const MAX_REPORTED_ID_LENGTH = 40;
-
-/**
- * Raised when the caller-supplied option list cannot safely become a statement.
- *
- * A distinct class rather than a bare `Error`, so a handler can map it to a client
- * error rather than to a server fault: every condition it reports is a property of
- * the REQUEST, not of the database.
- *
- * ★ IT CARRIES NO OPTION IDENTIFIER LONGER THAN {@link MAX_REPORTED_ID_LENGTH} AND
- * NEVER THE WHOLE LIST, so the message cannot be used to echo arbitrary
- * caller-supplied text back through a diagnostic.
- */
-export class SelectedOptionsError extends Error {
-  constructor(reason: string) {
-    super(
-      `Selected options cannot be turned into a statement: ${reason} The legacy query [model/dao/SkuDAO.cfc:L107-L128] applied no such check; this port validates before building because it adds one correlated EXISTS and one bind per element, and because the AND-of-EXISTS shape must not be assembled from input that cannot describe a real SKU.`,
-    );
-    this.name = 'SelectedOptionsError';
-  }
-}
-
-/**
- * Renders a rejected identifier for a diagnostic, bounded and quoted.
- *
- * Truncation is reported rather than silent, so a reader can tell a genuinely
- * short value from a long one that was cut.
- */
-function describeOptionID(value: string): string {
-  if (value.length <= MAX_REPORTED_ID_LENGTH) {
-    return JSON.stringify(value);
-  }
-
-  return `${JSON.stringify(value.slice(0, MAX_REPORTED_ID_LENGTH))} (truncated from ${String(value.length)} characters)`;
-}
-
-/**
- * Checks the caller-supplied option list, and the product scope when one is
- * given, throwing {@link SelectedOptionsError} on the first condition that fails.
- *
- * ★ THIS VALIDATES AND RETURNS NOTHING - IT DOES NOT NORMALIZE, DE-DUPLICATE OR
- * REORDER. That is the property that keeps the emitted SQL byte-identical for
- * valid input, which AAP gate 11 checks against
- * [model/dao/SkuDAO.cfc:L106-L128]. A validator that "helpfully" dropped a
- * duplicate would change the placeholder count for input the legacy accepted, and
- * would therefore be a behavioural divergence dressed up as a safety check. Every
- * list the legacy would have turned into a working query still produces the exact
- * same statement; only lists that could not have described a real SKU are refused.
- *
- * THE THREE CONDITIONS, and why each one is a genuine defect rather than a
- * tightening:
- *
- *   1. AN IDENTIFIER LONGER THAN THE COLUMN cannot match any row
- *      [model/entity/Option.cfc:L52], so the statement is guaranteed empty. The
- *      legacy would have bound it and let the server compare it anyway.
- *   2. A DUPLICATE, compared WITHOUT REGARD TO CASE, adds a second EXISTS clause
- *      testing exactly what the first already tested. Case-insensitively because
- *      CFML string comparison folds case, so the legacy `o.optionID = ?` under a
- *      case-insensitive collation treats `'ABC'` and `'abc'` as one option - two
- *      such elements are one option asked for twice, not two options.
- *   3. AN OPTION THAT DOES NOT BELONG TO THE PRODUCT can never be satisfied
- *      together with the product conjunct, so the conjunction is unsatisfiable by
- *      construction. This is the cardinality tie the finding names: without it,
- *      the number of correlated subqueries is bounded only by the length of a
- *      caller-supplied string.
- *
- * FAIL-CLOSED ON THE SCOPE ITSELF. When `productID` is present and
- * `productOptionIDs` is not, this throws rather than skipping check 3. Silently
- * skipping it would mean the safety of the statement depended on whether the
- * caller happened to pass an argument, which is the opposite of fail-closed, and
- * the adapter that owns this call can always answer what options a product has.
- * When `productID` is ABSENT there is no product to scope against and check 3
- * does not apply - matching the legacy, where the product conjunct is likewise
- * conditional [model/dao/SkuDAO.cfc:L122-L126].
- */
-function assertSelectedOptionsAreBindable(
-  selectedOptionIDs: readonly string[],
-  productID: string | undefined,
-  productOptionIDs: readonly string[] | undefined,
-): void {
-  if (productID !== undefined && productOptionIDs === undefined) {
-    throw new SelectedOptionsError(
-      'a productID was supplied without the product\u2019s own option identifiers, so the selected options cannot be checked against it. Pass productOptionIDs whenever productID is present; this is deliberately a failure rather than a skipped check.',
-    );
-  }
-
-  // Folded once into a set, so membership and duplicate detection are both
-  // case-insensitive without re-folding per comparison.
-  const seen = new Set<string>();
-  const permitted =
-    productOptionIDs === undefined
-      ? undefined
-      : new Set(productOptionIDs.map((id) => id.toLowerCase()));
-
-  for (const optionID of selectedOptionIDs) {
-    // The CFML list primitives already discard empty elements, so an empty string
-    // cannot reach here from `selectedOptions`. The check is kept because this
-    // function is the statement's guard rather than the list parser's, and an
-    // empty identifier would bind a placeholder that matches nothing.
-    if (optionID.length === 0) {
-      throw new SelectedOptionsError('an option identifier was empty.');
-    }
-
-    if (optionID.length > OPTION_ID_MAX_LENGTH) {
-      throw new SelectedOptionsError(
-        `the option identifier ${describeOptionID(optionID)} is longer than the ${String(OPTION_ID_MAX_LENGTH)}-character SwOption.optionID column [model/entity/Option.cfc:L52], so it cannot name an existing option.`,
-      );
-    }
-
-    const folded = optionID.toLowerCase();
-
-    if (seen.has(folded)) {
-      throw new SelectedOptionsError(
-        `the option identifier ${describeOptionID(optionID)} appears more than once. Compared without regard to case, matching CFML string comparison.`,
-      );
-    }
-    seen.add(folded);
-
-    if (permitted !== undefined && !permitted.has(folded)) {
-      throw new SelectedOptionsError(
-        `the option identifier ${describeOptionID(optionID)} does not belong to the product being narrowed to, so the statement could not match any SKU.`,
-      );
-    }
-  }
-}
-
 // Carried forward verbatim from [model/dao/SkuDAO.cfc:L106]. This is the legacy author's own statement
 // of the contract, which is why it is reproduced rather than paraphrased:
 // returns product skus which matches ALL options (list of optionIDs) that are passed in
@@ -693,37 +459,26 @@ function assertSelectedOptionsAreBindable(
  *   the asymmetry with the must-preserve caller one layer up, which declares the
  *   same argument `required` [model/service/ProductService.cfc:L104]: this
  *   signature is deliberately the wider of the two, matching the port.
- * @param productOptionIDs - The option identifiers that genuinely belong to
- *   `productID`. REQUIRED WHENEVER `productID` IS PRESENT, and ignored when it is
- *   absent. This argument has no legacy counterpart: it exists so the selected
- *   options can be checked against the product's real options before one
- *   correlated `EXISTS` and one bind are emitted per element. Omitting it while
- *   supplying `productID` is a {@link SelectedOptionsError}, not a skipped check -
- *   see {@link assertSelectedOptionsAreBindable} for why that is fail-closed
- *   rather than strict. The adapter that owns this call can always answer it, and
- *   it does not widen the port's own signature
- *   [slatwall-ts/src/domain/ports/skuRepository.ts:L499].
+ * THERE IS NO THIRD PARAMETER. The authoring contract specifies "the two legacy
+ * arguments", and an earlier revision added a `productOptionIDs` argument with no
+ * legacy counterpart - which is what obliged the adapter to issue a prerequisite
+ * statement the legacy never issued. See the note above
+ * {@link SkusBySelectedOptionsStatement}'s neighbours for the full record.
+ *
  * @returns The frozen statement text and its positional bind values, with one
  *   `params` element per `?` in `sql`. Both the object and the bind array are
  *   frozen.
- * @throws SelectedOptionsError When an option identifier is empty, exceeds the
- *   `SwOption.optionID` column bound, repeats (compared without regard to case),
- *   or does not belong to the product being narrowed to; and when `productID` is
- *   supplied without `productOptionIDs`.
- * @throws RangeError | TypeError - When `selectedOptions` falls outside
- *   `SELECTED_OPTIONS_INPUT_CONTRACT`. `productID` is not shape-checked, for the
- *   parity reason recorded at its own guard below.
+ * @throws Nothing. THIS FUNCTION IS TOTAL, and that is a contract obligation
+ *   rather than an accident: [model/dao/SkuDAO.cfc:L107-L128] validates nothing,
+ *   so every input reaches a statement. An input that cannot match - an over-long
+ *   identifier, an untrimmed element, an option belonging to another product, an
+ *   empty-string `productID` - yields a statement that returns ZERO ROWS, exactly
+ *   as the legacy did. It does not yield an exception.
  */
 export function buildSkusBySelectedOptionsStatement(
   selectedOptions: string,
   productID?: string,
-  productOptionIDs?: readonly string[],
 ): SkusBySelectedOptionsStatement {
-  // w-008 CWE-20/CWE-400 precondition, deliberately the FIRST statement: it bounds the
-  // walk before anything else reads the list. The semantic checks that follow
-  // (`assertSelectedOptionsAreBindable`) can then assume a list of admissible shape.
-  assertSelectedOptionsWithinContract(selectedOptions);
-
   // Fragments and bind values are accumulated in lockstep: every branch below
   // that pushes a fragment pushes exactly one value with it, which is what keeps
   // `params.length` equal to the number of placeholders without a running count.
@@ -735,11 +490,6 @@ export function buildSkusBySelectedOptionsStatement(
   // least one option", courtesy of the inner join in the seed. That reads like a bug and is not: there is
   // no early return here, no throw, no forced-empty result set and no short-circuit, because there is
   // none there. Do not add one.
-  // The list is read into an array FIRST, so that validation runs over the whole
-  // list before a single fragment is appended. Two reasons it is done this way
-  // rather than validating inside the emit loop: a rejected list must not leave a
-  // half-built statement behind even transiently, and duplicate detection is a
-  // property of the list rather than of any one element.
   //
   // JUDGMENT CALL: the legacy loop is `for(i=1; i<=listLen(list); i++)` with a
   // `listGetAt(list, i)` body [model/dao/SkuDAO.cfc:L113-L114], re-evaluating both
@@ -752,12 +502,10 @@ export function buildSkusBySelectedOptionsStatement(
   // `src/lib/cfml/list.ts` and its suite.
   const selectedOptionIDs = listToArray(selectedOptions);
 
-  // Throws on anything that could not describe a real SKU. It neither normalizes
-  // nor reorders, so for every list the legacy would have executed successfully
-  // the fragments appended below are byte-identical to what this module emitted
-  // before the check existed - the property AAP gate 11 verifies.
-  assertSelectedOptionsAreBindable(selectedOptionIDs, productID, productOptionIDs);
-
+  // Nothing stands between the parse and the emit. Every element that survives CFML list
+  // parsing becomes one `EXISTS` clause and one bind, in list order, unexamined - which is
+  // precisely what [model/dao/SkuDAO.cfc:L113-L121] does. An element that cannot match still
+  // gets its clause, and the statement then returns zero rows rather than raising.
   for (const optionID of selectedOptionIDs) {
     parts.push(OPTION_EXISTS_PREDICATE);
     params.push(optionID);

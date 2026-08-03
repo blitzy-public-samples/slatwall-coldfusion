@@ -1,178 +1,70 @@
 // ---------------------------------------------------------------------------
 // slatwall-ts - GOLDEN ORDER-VIEW TEST DATA
 //
-// WHAT THIS FILE IS
-// A single deterministic factory returning one fully-formed, read-only
-// `OrderView` - the multi-item, multi-reward "golden order" that drives the
-// decomposed promotion pipeline end to end. Nothing here asserts anything,
-// nothing here is registered as a global, and nothing here touches a database, a
-// connection pool, a network socket or the filesystem.
+// A single deterministic factory returning one fully-formed, read-only `OrderView` - the
+// multi-item, multi-reward "golden order" that drives the decomposed promotion pipeline end to end.
+// Nothing here asserts, registers a global, or touches a database, pool, socket or the filesystem.
+// It is module #5 of five and the top of an acyclic fixture order - priceGroupFixtures ->
+// productFixtures -> skuFixtures -> promotionFixtures -> orderViewFixtures - so all four lower
+// modules are imported here and nothing in `tests/fixtures/` imports this one.
 //
-// IT IS MODULE #5 OF FIVE, AND THE TOP OF AN ACYCLIC FIXTURE ORDER
-//   priceGroupFixtures -> productFixtures -> skuFixtures -> promotionFixtures
-//   -> orderViewFixtures
-// All four lower modules may be imported from here, and are. Nothing inside
-// `tests/fixtures/` imports THIS module, which is what keeps the folder a DAG.
-// Nothing under `tests/unit/**`, `tests/integration/**`, `tests/traceability/**`
-// or `../setup` is imported from here, and neither is anything under
-// `src/handlers/**`, `src/repositories/**` or `src/integrations/**`: the test
-// tier is not a back door around the domain layer boundary that
-// `eslint.config.mjs` enforces on `src/domain/**`.
-//
-// WHY IT EXISTS AT ALL - THE ANTI-CORRUPTION BOUNDARY, EXPRESSED AS DATA
+// WHY IT EXISTS - THE ANTI-CORRUPTION BOUNDARY, EXPRESSED AS DATA
 // `PromotionService.updateOrderAmountsWithPromotions(required any order)`
 // [model/service/PromotionService.cfc:L58] takes an Order, and
 // `PriceGroupService.updateOrderAmountsWithPriceGroups(required any order)`
-// [model/service/PriceGroupService.cfc:L364] takes one too - yet
-// `model/entity/Order.cfc`, `model/entity/OrderItem.cfc`,
-// `model/entity/OrderFulfillment.cfc`, `model/service/OrderService.cfc` and the
-// whole cart, checkout and payment pipeline are OUT OF SCOPE. The target
-// therefore consumes read-only, order-shaped INPUT VIEWS and returns
-// applied-promotion INTENTS instead of mutating an ORM graph. That inversion is
-// the seam that makes this slice independently deployable, and this factory is
-// what makes the seam testable.
+// [model/service/PriceGroupService.cfc:L364] takes one too - yet `model/entity/Order.cfc`,
+// `OrderItem.cfc`, `OrderFulfillment.cfc`, `model/service/OrderService.cfc` and the whole cart,
+// checkout and payment pipeline are OUT OF SCOPE. The target therefore consumes read-only,
+// order-shaped INPUT VIEWS and returns applied-promotion INTENTS instead of mutating an ORM graph,
+// and this factory makes that seam testable. `src/domain/views/orderView.ts`, `orderItemView.ts`
+// and `orderFulfillmentView.ts` own the shapes; no member here is invented.
 //
-// THE SHAPES ARE NOT DECLARED HERE. `src/domain/views/orderView.ts`,
-// `orderItemView.ts` and `orderFulfillmentView.ts` own them; this file only
-// populates them. Every member below traces to a member of one of those three
-// modules, and no member is invented.
+// THE GOLDEN ORDER, AS COMPOSED BY DEFAULT. `orderType.systemCode` is 'otSalesOrder' so the L61
+// gate admits it; `accountID` is present so the price-group pass is not short-circuited at
+// [model/service/PriceGroupService.cfc:L365]; `currencyCode` is 'USD'; `promotionCodeList` carries
+// one code built with `listAppend` from `''`; `appliedPromotions` is empty so the order-level
+// branch takes the first-writer-wins arm at L427; and there are THREE 'oitSale' items plus TWO
+// fulfillments, one shipping with method AND address, one pickup with both absent. Every variation
+// off that default is a member of `OrderViewFixtureOverrides`, documented where it is declared.
 //
-// ===========================================================================
-// THE GOLDEN ORDER, AS COMPOSED BY DEFAULT
+// THE THREE ITEMS EXIST BECAUSE THE L241 DISCRIMINATOR HAS THREE ARMS, NOT TWO. `noPriceGroup` has
+// no applied group, so `isNull(...)` selects the FIRST arm, `getPrice()`, at 19.99 x 3 - the
+// pre-verified reference calculation. `priceGroupAccepted` has a group the reward NAMES, so the
+// second disjunct selects that same arm. `priceGroupRejected` has a group the reward REJECTS and is
+// the only item on the SECOND arm, `getSkuPrice()` plus the correction term; its `skuPrice` differs
+// from its `price` and its `extendedSkuPrice` from its `extendedPrice`, so the correction term is
+// NON-ZERO and the cross-service ordering dependency is visible.
 //
-//   orderType.systemCode  'otSalesOrder'  - so the L61 gate admits the order and
-//                                           the whole discount body runs.
-//   accountID             present         - so the price-group pass is not
-//                                           short-circuited at
-//                                           [model/service/PriceGroupService.cfc:L365].
-//   currencyCode          'USD'           - the branded three-character type.
-//   promotionCodeList     one code        - built with `listAppend` from `''`.
-//   appliedPromotions     []              - so the order-level branch takes the
-//                                           first-writer-wins arm at L427.
-//   orderItems            THREE, all 'oitSale', covering ALL THREE arms of the
-//                         L241 discriminator (see below).
-//   orderFulfillments     TWO - one shipping (shipping method AND address
-//                         present), one pickup (both absent).
+// EVERY CALL RETURNS A COMPLETELY FRESH GRAPH, and every downstream note about freshness refers
+// here. The engine increments `usedInOrder` in place at [model/service/PromotionService.cfc:L297]
+// and splices arrays at [model/service/PromotionService.cfc:L502], so on a warm Lambda container
+// shared state would carry one request's discounts into the next.
 //
-// THE THREE ITEMS EXIST BECAUSE THE L241 DISCRIMINATOR HAS THREE ARMS, NOT TWO
-//   1. `noPriceGroup`       appliedPriceGroup undefined
-//                           -> FIRST arm, `getPrice()`, via `isNull(...)`.
-//                           price 19.99 x quantity 3, which is the pre-verified
-//                           reference calculation.
-//   2. `priceGroupAccepted` appliedPriceGroup present AND named among the
-//                           reward's eligible price groups
-//                           -> FIRST arm, `getPrice()`, via the second disjunct.
-//   3. `priceGroupRejected` appliedPriceGroup present and NOT eligible
-//                           -> SECOND arm, `getSkuPrice()` plus the correction
-//                           term. Its `skuPrice` deliberately differs from its
-//                           `price`, and its `extendedSkuPrice` from its
-//                           `extendedPrice`, so the correction term is NON-ZERO
-//                           and the ordering dependency is visible.
+// "OMIT THE KEY" AND "WRITE THE KEY AS `undefined`" ARE DIFFERENT REQUESTS.
+// `exactOptionalPropertyTypes` is on, so an absent `accountID` means "use the documented default"
+// while an explicit `undefined` means guest checkout; likewise `appliedPriceGroup` on an item and
+// `shippingMethod`/`address` on a fulfillment. `Object.hasOwn` separates the two intents and `??`
+// cannot, so `??` is used only where absence carries no meaning.
 //
-// WHICH OVERRIDE REACHES WHICH CHARACTERIZATION SCENARIO
-//   orderTypeSystemCode: 'otReturnOrder' | 'otExchangeOrder'
-//                                   -> the preserved `issue #1766` no-op branch.
-//   nonSaleOrderItemTypeSystemCode  -> an item the L206 `oitSale` gate skips.
-//   priceGroupEligibility: 'none'   -> every item takes the `getPrice()` arm,
-//                                      which is also the state a guest order is
-//                                      left in when the price-group pass is
-//                                      short-circuited.
-//   accountID: undefined            -> the guest order that short-circuits the
-//                                      price-group pass entirely.
-//   inconsistentExtendedPrices      -> an extended/unit price pair that cannot
-//                                      arise in production, for pinning what the
-//                                      engine does with one anyway.
-//   rewardOrdering: 'empty'         -> the reward array is EMPTY, so pass two
-//                                      never runs at all.
-//   rewardOrdering: 'orderRewardFirst' | 'noOrderReward' | 'orderRewardLast'
-//                                   -> the same rewards threaded in a different
-//                                      order through the mutable ledger.
-//   lastRewardPeriodQualifies: false-> the LAST reward sits in a period whose
-//                                      `qualificationsMeet` is false, so the
-//                                      L458-L461 reset never fires.
-//   ledgerSharesOrderItems: true    -> the defect-9 contrast: leaked reward and
-//                                      `prID` touching the SAME item.
-//   zeroDiscountQuantity: true      -> a `discountQuantity` of 0, which reaches
-//                                      the unguarded divisions at L299 and L486.
-//   shippingMethodPresent: false    -> reaches defect 11 and the L355 guard.
-//   addressIsInZone                 -> the caller-controlled answer of the
-//                                      address-zone evaluator double.
-//   capture                         -> the caller-owned sink described below.
-// ===========================================================================
+// [meta/tests/unit/Helper.cfc:L49-L77] is the only fixture-construction artefact in the legacy
+// tree, and its SHAPE is carried over: one named function, a bag of documented defaults, one
+// fully-formed subject returned, disposable by dropping the reference. Its MECHANISM - `entityNew`,
+// `ormFlush`, `entityDelete`, `javaCast("null","")`, `request.slatwallScope`, `getService(...)` -
+// is dropped, and there is no `destroy*` export since nothing is persisted. Regression suites
+// follow the `issue_<ticket#>` convention from [meta/tests/unit/IssuesTest.cfc], including
+// `issue_1766` below.
 //
-// JUDGMENT CALL: THE ENGINE-SIDE SCAFFOLDING IS HANDED BACK THROUGH A
-// CALLER-OWNED `capture` SINK RATHER THAN THROUGH A SECOND EXPORT. This module
-// has exactly ONE export and its return type is `OrderView`, which by
-// construction cannot carry the reward array, the mutable usage ledger, the
-// qualified-discount accumulator, the period qualifications, the comma-delimited
-// qualified-fulfillment list or the address-zone evaluator double - none of
-// which are order state. Adding a second export would break the one-unit-per-
-// file rule the whole subtree is built on, and returning a wider graph type
-// would contradict the declared signature. So a caller that needs any of that
-// scaffolding passes an empty object as `overrides.capture` and reads it back
-// afterwards. The sink is the caller's object: this factory writes into it and
-// keeps no reference of its own.
+// CFML parity [meta/tests/unit/Helper.cfc:L53]: the legacy helper assigned `productData` without
+// `var`, leaking it into component scope. A harness hygiene defect rather than a preserved
+// business-logic defect, so not reproduced here.
 //
-// THE LEGACY REFERENCE PATTERN, AND WHAT IS DELIBERATELY DROPPED
-// [meta/tests/unit/Helper.cfc:L49-L77] is the only fixture-construction artefact
-// in the legacy tree. Its SHAPE is carried over: one named function, a small
-// literal data bag with documented defaults, one fully-formed subject returned,
-// disposable by dropping the reference. Its MECHANISM is dropped entirely -
-// `entityNew`, `ormFlush`, `entityDelete`, `javaCast("null","")`,
-// `request.slatwallScope` and every `getService(...)` lookup go away, because
-// there is no ORM, no DI container and no ambient request scope here. There is
-// deliberately NO `destroy*` export: nothing is persisted, so there is nothing
-// to tear down, and a suite wanting teardown symmetry uses the runner's own
-// per-test hook.
-//
-// CFML parity [meta/tests/unit/Helper.cfc:L53]: the legacy helper assigned
-// `productData` without `var`, leaking it into component scope. That is a
-// harness hygiene defect, not one of the preserved business-logic defects, and
-// is deliberately NOT reproduced here.
-//
-// THE ANTI-PATTERN THIS FILE IS THE OPPOSITE OF
-// [meta/tests/unit/SlatwallUnitTestBase.cfc:L52] instantiates the whole
-// `Slatwall.Application`, L60 calls `bootstrap()` to raise the ORM and the DI/1
-// container before EVERY test, L62 elevates the request account to superuser,
-// and the teardown at L53 and L70 is commented out. Every legacy "unit" test
-// boots the real application, so the legacy suite is integration-style at every
-// level. This factory constructs plain objects and ported entity instances and
-// nothing else.
-//
-// TEST COVERAGE BUILT ON THIS FIXTURE IS NET-NEW, NOT PARITY. No legacy test
-// touches the promotion engine, the order aggregate or any order-shaped input:
-// `meta/tests/unit/service/` holds only AccountServiceTest, HibachiServiceTest,
-// PaymentServiceTest and UtilityRBServiceTest, none of them in scope. Every
-// suite consuming this module must therefore be labelled NET-NEW in
-// `tests/traceability/legacyTestMap.ts` and none of it may be presented as
-// carried-forward coverage. Regression suites follow the `issue_<ticket#>`
-// convention from [meta/tests/unit/IssuesTest.cfc], including `issue_1766` for
-// the preserved no-op recorded below.
-//
-// THE BINDING STANDARD: NO USER RULES WERE PROVIDED FOR THIS PROJECT. The rules
-// document returns exactly "No user rules provided.", so zero rules govern this
-// file and none is invented. Their absence is not licence to lower the bar:
-// enterprise-standard best practice applies in their place - maximal strictness
-// with no `any`, no `@ts-ignore` and no non-null assertion; a single arithmetic
-// surface, so every monetary value here is `Money` and no floating-point
-// operation is ever applied to one; no credential, no `process.env` read and no
-// I/O of any kind; one exported unit and no barrel file; and an in-code
-// annotation on every judgment call and every preserved defect.
-//
-// MONEY IS `Money`, COUNTS AND WEIGHTS ARE `number`. `price`, `skuPrice`,
-// `extendedPrice`, `extendedSkuPrice`, `fulfillmentCharge`, `discountAmount`,
-// `subtotal`, `subtotalAfterItemDiscounts`, `fulfillmentChargeAfterDiscountTotal`
-// and `discountPerUseValue` are all `Money`, constructed only from decimal
-// STRING literals through `Money.fromDecimalString` - the class constructor is
-// private, so there is no numeric path into it. `quantity`,
-// `totalSaleQuantity`, `totalShippingWeight`, `discountQuantity`, `usedInOrder`
-// and the three `maximumUse*` limits are plain `number`s, and none of them may
-// be promoted to `Money` for symmetry.
-//
-// EVERY INSTANT IS AN EXPLICIT UTC ISO-8601 STRING LITERAL. There is no
-// `new Date()` without an argument, no `Date.now()` and no offset from the
-// wall clock anywhere in this file, so two runs a month apart produce the same
-// graph.
+// MONEY IS `Money`, COUNTS AND WEIGHTS ARE `number`. `price`, `skuPrice`, the two extended amounts,
+// `fulfillmentCharge`, `discountAmount`, `subtotal`, `subtotalAfterItemDiscounts`,
+// `fulfillmentChargeAfterDiscountTotal` and `discountPerUseValue` are `Money`, built only from
+// decimal STRING literals through `Money.fromDecimalString`, whose constructor is private so there
+// is no numeric path into it. `quantity`, `totalSaleQuantity`, `totalShippingWeight`,
+// `discountQuantity`, `usedInOrder` and the three `maximumUse*` limits are plain `number`s, and
+// every instant is an explicit UTC ISO-8601 literal.
 // ---------------------------------------------------------------------------
 
 import { makePriceGroupFixtures } from './priceGroupFixtures.js';
@@ -226,21 +118,16 @@ import type {
 } from '../../src/domain/views/orderView.js';
 
 // ---------------------------------------------------------------------------
-// LOCAL TYPES - none of them exported
-//
-// One exported unit per file, so every type below stays private to this module.
-// Where a sibling's type is needed it is DERIVED structurally rather than
-// re-declared, exactly as the four sibling fixtures do, so a change to the owner
-// breaks the build here instead of drifting silently.
+// LOCAL TYPES - none exported. A sibling's type is DERIVED structurally rather than re-declared, so
+// a change to the owner breaks this build.
 // ---------------------------------------------------------------------------
 
 /** The whole graph the promotion fixture hands back, reached without an import. */
 type PromotionFixtureGraphRef = ReturnType<typeof makePromotionFixtures>;
 
 /**
- * The four named reward arrangements, taken from the owner rather than retyped.
- *
- * `'empty'` is a first-class member: with no rewards the loop body at
+ * The four named reward arrangements, taken from the owner rather than retyped. `'empty'` is a
+ * first-class member: with no rewards the loop body at
  * [model/service/PromotionService.cfc:L167-L465] never executes.
  */
 type RewardOrderingName = PromotionFixtureGraphRef['rewardOrderings'][number]['name'];
@@ -249,21 +136,16 @@ type RewardOrderingName = PromotionFixtureGraphRef['rewardOrderings'][number]['n
 type ReferenceCalculationRef = PromotionFixtureGraphRef['referenceCalculation'];
 
 /**
- * The order item's type shape, reached STRUCTURALLY.
- *
- * `orderItemView.ts` declares `OrderItemTypeView` beside its exported unit and
- * deliberately does not export it, recording that a consumer which needs to name
- * the shape reaches it through this indexed access. This is that consumer.
+ * The order item's type shape, reached STRUCTURALLY. `orderItemView.ts` declares
+ * `OrderItemTypeView` beside its exported unit and does not export it, recording that a consumer
+ * needing the shape reaches it through this indexed access.
  */
 type OrderItemTypeViewRef = OrderItemView['orderItemType'];
 
 /**
- * The `Promotion` entity, reached through the accumulator that already names it.
- *
- * `src/domain/entities/promotion.ts` is not in this module's dependency set, and
- * inventing an import to a file the plan did not authorise would be a scope
- * violation. `QualifiedDiscount` already declares the member, so an indexed access
- * gets the type with no new edge in the graph.
+ * The `Promotion` entity, reached through the accumulator that already names it:
+ * `src/domain/entities/promotion.ts` is not in this module's dependency set, so an indexed access
+ * off `QualifiedDiscount` gets the type with no new edge.
  */
 type PromotionRef = QualifiedDiscount['promotion'];
 
@@ -271,10 +153,9 @@ type PromotionRef = QualifiedDiscount['promotion'];
 type PromotionQualifierRef = QualifierQualification['qualifier'];
 
 /**
- * How the golden order's items relate to the reward's eligible price groups.
- *
- * `'mixed'` is the default and is the only value under which all three arms of
- * the L241 discriminator are reachable from one order.
+ * How the golden order's items relate to the reward's eligible price groups. `'mixed'` is the
+ * default and the only value under which all three arms of the L241 discriminator are reachable
+ * from one order.
  */
 type PriceGroupEligibility = 'mixed' | 'none' | 'allAccepted' | 'allRejected';
 
@@ -286,12 +167,9 @@ interface RecordedAddressZoneCall {
 }
 
 /**
- * Which arm of the L241 discriminator an item selects, and why.
- *
- * Published so a suite can pin the POLARITY rather than re-derive it. The two
- * boolean columns are the two disjuncts of the legacy condition, evaluated with
- * the same null semantics the legacy `isNull` has, and `correctionTerm` is the
- * `extendedSkuPrice - extendedPrice` difference the second arm subtracts.
+ * Which arm of the L241 discriminator an item selects, and why. Published so a suite pins the
+ * POLARITY: the two boolean columns are the legacy condition's two disjuncts under `isNull`
+ * semantics, and `correctionTerm` is the difference the second arm subtracts.
  */
 interface ItemPriceArmSelection {
   readonly orderItemID: string;
@@ -311,61 +189,34 @@ interface ItemPriceArmSelection {
 /**
  * The caller-owned sink for everything the `OrderView` return type cannot carry.
  *
- * MUTABLE BY DESIGN, and the only mutable surface this module produces apart
- * from the ledger and the accumulator it holds. The caller creates an empty
- * object, passes it as `overrides.capture`, and reads the members back after the
- * call; this factory writes each member exactly once per call and retains no
- * reference to the sink, so two calls with two sinks share nothing.
- *
- * Every member is optional because the caller starts from `{}`. All of them are
- * populated on every call.
+ * MUTABLE BY DESIGN. The caller creates `{}` and reads the members back; this factory writes each
+ * one once and retains no reference. Every member is optional because the caller starts from `{}`,
+ * and all are populated.
  */
 interface OrderViewFixtureCapture {
   /**
-   * The reward array IN THE CALLER'S ORDER.
-   *
-   * LEGACY-DEFECT [model/dao/PromotionDAO.cfc:L51-L132]: getActivePromotionRewards applies no
-   * ORDER BY, so reward iteration order - which the mutable usage ledger at
-   * model/service/PromotionService.cfc:L297 makes outcome-affecting - is non-deterministic.
-   * Preserved deliberately; do not fix without a product decision.
-   *
-   * This array is therefore handed back exactly as it was assembled and is never
-   * sorted, re-ordered or normalised here. A suite asserts behaviour GIVEN an
-   * order, and selects that order by name through `overrides.rewardOrdering`.
+   * The reward array IN THE CALLER'S ORDER, never sorted, re-ordered or normalised - see the
+   * no-`ORDER BY` defect at the builder. A suite selects an order by name through
+   * `overrides.rewardOrdering`.
    */
   promotionRewards?: readonly PromotionReward[];
 
   /** Which named arrangement produced `promotionRewards`. */
   rewardOrderingName?: RewardOrderingName;
 
-  /**
-   * Whether that arrangement reaches pass two.
-   *
-   * LEGACY-DEFECT [model/service/PromotionService.cfc:L457-L461]: the two-pass reset mutates the
-   * loop counter from inside the loop body, so pass two never runs when the reward collection is
-   * empty, and only runs when the LAST reward belongs to a qualifying period.
-   * Preserved deliberately; do not fix without a product decision.
-   */
+  /** Whether that arrangement reaches pass two; see the reset defect below. */
   rewardOrderingReachesPassTwo?: boolean;
 
   /**
-   * The FRESH, MUTABLE reward usage ledger, keyed by promotion reward ID.
-   *
-   * Mutable because the engine increments `usedInOrder` IN PLACE at
-   * [model/service/PromotionService.cfc:L297]; fresh per call because on a warm
-   * Lambda container module-level state would persist between unrelated
-   * requests, which is exactly the hazard the four legacy component-level caches
-   * present (AAP 0.6.5).
+   * The FRESH, MUTABLE reward usage ledger, keyed by promotion reward ID. Mutable because the
+   * engine increments `usedInOrder` IN PLACE at [model/service/PromotionService.cfc:L297].
    */
   rewardUsageDetails?: PromotionRewardUsageDetails;
 
   /** The ledger key whose `usedInOrder` exceeds its own `maximumUsePerOrder`. */
   overusedRewardID?: string;
 
-  /**
-   * The ledger key the stripping loop reads by mistake - the LAST reward the
-   * preceding loop touched. Deliberately different from `overusedRewardID`.
-   */
+  /** The key the stripping loop reads by mistake - the LAST reward touched. */
   leakedRewardID?: string;
 
   /** The `1000000` stand-in for "unlimited", from its owner. */
@@ -380,21 +231,14 @@ interface OrderViewFixtureCapture {
   /** The period every default reward belongs to. */
   promotionPeriod?: PromotionPeriod;
 
-  /**
-   * A period whose `qualificationsMeet` is false, present only when
-   * `overrides.lastRewardPeriodQualifies` is false.
-   */
+  /** A period whose `qualificationsMeet` is false; present only on demand. */
   nonQualifyingPromotionPeriod?: PromotionPeriod;
 
   /**
    * The qualified fulfillment identifiers as a COMMA-DELIMITED STRING.
    *
-   * CFML parity [model/service/PromotionService.cfc:L752-L757]:
-   * `getPromotionPeriodQualifiedFulfillmentIDList` starts from `""` and
-   * `listAppend`s, so an order with no fulfillments yields the EMPTY STRING and
-   * never an absent value. Built here with the `src/lib/cfml/list.ts` helpers
-   * rather than `Array.prototype.join`, so the empty-list convention is applied
-   * deliberately instead of by accident.
+   * CFML parity [model/service/PromotionService.cfc:L752-L757]: the legacy builder starts from `""`
+   * and `listAppend`s, so no fulfillments yields the EMPTY STRING, never an absent value.
    */
   qualifiedFulfillmentIDList?: string;
 
@@ -405,12 +249,9 @@ interface OrderViewFixtureCapture {
   promotionCodeListIsEmpty?: boolean;
 
   /**
-   * The minimal in-memory address-zone evaluator double.
-   *
-   * Its answer is entirely caller-controlled through `overrides.addressIsInZone`.
-   * No zone logic is implemented here: the real predicate is
-   * [model/service/AddressService.cfc:L57] and porting it belongs to
-   * `src/services/**`, not to a fixture.
+   * The minimal in-memory address-zone evaluator double, whose answer is entirely caller-controlled
+   * through `overrides.addressIsInZone`. No zone logic here: the real predicate is
+   * [model/service/AddressService.cfc:L57].
    */
   addressZoneEvaluator?: AddressZoneEvaluator;
 
@@ -421,20 +262,15 @@ interface OrderViewFixtureCapture {
   addressZone?: AddressZoneProjection;
 
   /**
-   * The shipping fulfillment's address already projected onto the port's shape.
-   *
-   * Absent columns are projected as `null`, which is both what
-   * `AddressProjection` permits and the honest projection of a NULL column.
-   * Published so a suite hands the port a ready argument instead of re-deriving
-   * the projection - and so the projection lives in exactly one place.
+   * The shipping fulfillment's address projected onto the port's shape, with absent columns as
+   * `null` - both what `AddressProjection` permits and the honest projection of a NULL column.
    */
   shippingAddressProjection?: AddressProjection;
 
   /**
-   * The item-type code that is NOT `oitSale`, so a suite need not hardcode it.
-   *
-   * Pass it through `itemOverrides[n].orderItemTypeSystemCode` to prove the item
-   * is skipped by [model/service/PromotionService.cfc:L206].
+   * The item-type code that is NOT `oitSale`. Pass it through
+   * `itemOverrides[n].orderItemTypeSystemCode` to prove the item is skipped by
+   * [model/service/PromotionService.cfc:L206].
    */
   nonSaleOrderItemTypeSystemCode?: string;
 
@@ -451,12 +287,10 @@ interface OrderViewFixtureCapture {
   itemPriceArmSelections?: readonly ItemPriceArmSelection[];
 
   /**
-   * The three `appliedType` values the engine writes, and no fourth.
-   *
-   * Taken from the union `src/domain/entities/promotionApplied.ts` declares:
-   * `'orderItem'` at [model/service/PromotionService.cfc:L531], `'order'` at
-   * [model/service/PromotionService.cfc:L448] and the fulfillment-level value at
-   * [model/service/PromotionService.cfc:L402].
+   * The three `appliedType` values the engine writes, and no fourth, taken from the union
+   * `src/domain/entities/promotionApplied.ts` declares: `'orderItem'` at
+   * [model/service/PromotionService.cfc:L531], `'order'` at [L448] and the fulfillment-level value
+   * at [L402].
    */
   appliedTypes?: readonly PromotionAppliedType[];
 
@@ -485,29 +319,15 @@ interface OrderViewFixtureCapture {
 // ---------------------------------------------------------------------------
 // The overrides surface
 //
-// EVERY variation this module supports flows through this ONE optional
-// parameter. There is never a second export, so a suite cannot reach past the
-// factory to a shared literal and mutate it.
+// EVERY variation flows through this ONE optional parameter, so a suite cannot reach past the
+// factory to a shared literal and mutate it. Every member is `?: T | undefined` rather than `?: T`,
+// for the reason the header records.
 //
-// Every member is `?: T | undefined` rather than `?: T`. `exactOptionalPropertyTypes`
-// is on, so "key absent" and "key present carrying undefined" are genuinely
-// different types, and three members here depend on the distinction: an absent
-// `accountID` means "use the documented default", while an explicitly-passed
-// `undefined` means "the guest-checkout case, no account at all". Likewise for
-// `appliedPriceGroup` on an item and `shippingMethod` / `address` on a
-// fulfillment.
-//
-// ⭐ SOURCE-WINS CORRECTION (i). The folder requirements instruct "OMIT THE KEY
-// ENTIRELY" to express an absent `appliedPriceGroup` / `shippingMethod`. That is
-// the right rule for THIS interface and it is followed here - but it is NOT how
-// the three view modules model absence. `orderItemView.ts`,
-// `orderFulfillmentView.ts` and `orderView.ts` each carry an explicit JUDGMENT
-// CALL recording that a value the legacy schema permits to be NULL is declared as
-// a REQUIRED member whose type includes `undefined`, never as an optional `?:`
-// member, precisely so that "absent" is one unambiguous state instead of two. The
-// views are the authority for their own shape, so the returned graph writes
-// `appliedPriceGroup: undefined` explicitly while the overrides bags below omit
-// the key. The two conventions are deliberate and they meet at this factory.
+// THE TWO ABSENCE CONVENTIONS MEET HERE. The bags below express an absent `appliedPriceGroup` /
+// `shippingMethod` / `address` by OMITTING THE KEY, while the three view modules do the opposite:
+// each records that a value the legacy schema permits to be NULL is a REQUIRED member whose type
+// includes `undefined`, so "absent" is one unambiguous state. The views own their own shape, so the
+// returned graph writes `appliedPriceGroup: undefined` explicitly.
 // ---------------------------------------------------------------------------
 
 /** Per-item overrides, applied POSITIONALLY over the golden order's items. */
@@ -528,34 +348,24 @@ interface OrderItemFixtureOverrides {
   readonly skuPrice?: Money | undefined;
 
   /**
-   * ⭐ SOURCE-WINS CORRECTION (c): CALCULATED, not persistent.
-   *
-   * Overriding this INDEPENDENTLY of `price` and `quantity` produces a pair that
-   * production cannot produce, because [model/entity/OrderItem.cfc:L200-L202]
-   * derives it. That is the point: a suite can pin what the engine does with an
-   * inconsistent pair without having to fake an ORM.
+   * CALCULATED, not persistent: [model/entity/OrderItem.cfc:L200-L202] derives it. Overriding it
+   * INDEPENDENTLY of `price` and `quantity` produces a pair production cannot, which is the point.
    */
   readonly extendedPrice?: Money | undefined;
 
-  /** ⭐ Also CALCULATED, at [model/entity/OrderItem.cfc:L204-L206]. */
+  /** Also CALCULATED, at [model/entity/OrderItem.cfc:L204-L206]. */
   readonly extendedSkuPrice?: Money | undefined;
 
   /**
-   * OMIT this key for the documented default; write it as `undefined` to force
-   * the price-group-ineligible state.
-   *
-   * [model/entity/OrderItem.cfc:L79] declares no `notnull`, so NULL is a real
-   * column state, and it is the state `PriceGroupService` leaves an item in when
-   * it declines to apply a group.
+   * OMIT for the default; write `undefined` to force the price-group-ineligible state.
+   * [model/entity/OrderItem.cfc:L79] declares no `notnull`, so NULL is the real state
+   * `PriceGroupService` leaves an item in when it declines a group.
    */
   readonly appliedPriceGroup?: PriceGroup | undefined;
 
   /**
-   * ⭐ SOURCE-WINS CORRECTION (b): the `oitSale` gate.
-   *
-   * [model/service/PromotionService.cfc:L206] admits an item into the discount
-   * body only when this equals `'oitSale'`, so a non-`oitSale` value is how a
-   * suite proves an item is skipped.
+   * The `oitSale` gate: [model/service/PromotionService.cfc:L206] admits an item into the discount
+   * body only when this equals `'oitSale'`.
    */
   readonly orderItemTypeSystemCode?: string | undefined;
 
@@ -575,10 +385,9 @@ interface OrderFulfillmentFixtureOverrides {
   readonly fulfillmentMethod?: FulfillmentMethodView | undefined;
 
   /**
-   * OMIT for the documented default; write `undefined` for the NULL column.
-   *
-   * [model/entity/OrderFulfillment.cfc:L74] declares no `notnull`, and the NULL
-   * case is what reaches LEGACY-DEFECT 11 at [model/service/PromotionService.cfc:L703].
+   * OMIT for the default; write `undefined` for the NULL column.
+   * [model/entity/OrderFulfillment.cfc:L74] declares no `notnull`, and the NULL case reaches
+   * LEGACY-DEFECT 11 at [model/service/PromotionService.cfc:L703] and the guard at [L355].
    */
   readonly shippingMethod?: ShippingMethodView | undefined;
 
@@ -586,20 +395,16 @@ interface OrderFulfillmentFixtureOverrides {
   readonly appliedPromotions?: readonly AppliedPromotionView[] | undefined;
 
   /**
-   * ⭐ SOURCE-WINS CORRECTION (h): WEIGHT, NOT MONEY.
-   *
-   * [model/entity/OrderFulfillment.cfc] declares it `hb_formatType="weight"`, and
-   * it feeds the two weight gates at [model/entity/PromotionQualifier.cfc:L63-L64].
-   * Routing it through `Money` would be a category error - no currency, no
-   * rounding rule and no conversion applies to a weight.
+   * WEIGHT, NOT MONEY: declared `hb_formatType="weight"` on the fulfillment and feeding the two
+   * weight gates at [model/entity/PromotionQualifier.cfc:L63-L64]. No currency, rounding rule or
+   * conversion applies to a weight.
    */
   readonly totalShippingWeight?: number | undefined;
 
   /**
    * The PRE-RESOLVED address. OMIT for the default; write `undefined` for none.
    *
-   * See the JUDGMENT CALL at the builder: legacy `getAddress()` is not a pure
-   * accessor and a read-only view cannot reproduce it.
+   * See the JUDGMENT CALL at the builder.
    */
   readonly address?: ShippingAddressView | undefined;
 
@@ -612,21 +417,13 @@ interface OrderViewFixtureOverrides {
   readonly idPrefix?: string | undefined;
 
   /**
-   * The instant every predicate in this graph is evaluated against.
-   *
-   * Defaults to a fixed UTC literal. `PromotionPeriod.isCurrent(now)` takes its
-   * instant as a parameter precisely so a fixture never has to consult the wall
-   * clock, and nothing here calls `new Date()` with no argument or `Date.now()`.
+   * The instant every predicate is evaluated against, defaulting to a fixed UTC literal.
+   * `PromotionPeriod.isCurrent(now)` takes its instant as a parameter precisely so a fixture never
+   * consults the wall clock.
    */
   readonly now?: Date | undefined;
 
-  /**
-   * The caller-owned sink for the engine-side scaffolding.
-   *
-   * Pass `{}` and read the members back after the call. This factory writes each
-   * member exactly once and keeps NO reference to the object, so two calls with
-   * two sinks share nothing at all.
-   */
+  /** The caller-owned sink. Pass `{}` and read the members back afterwards. */
   readonly capture?: OrderViewFixtureCapture | undefined;
 
   // --- Order-level ----------------------------------------------------------
@@ -635,21 +432,15 @@ interface OrderViewFixtureOverrides {
   readonly orderID?: string | undefined;
 
   /**
-   * OMIT for the documented default; write `undefined` for guest checkout.
-   *
-   * `Account` is out of scope, so this is an opaque identifier and never an
-   * object [model/entity/PromotionAccount.cfc:L58].
+   * OMIT for the default; write `undefined` for guest checkout. `Account` is out of scope, so this
+   * is an opaque identifier and never an object [model/entity/PromotionAccount.cfc:L58].
    */
   readonly accountID?: string | undefined;
 
   /**
-   * ⭐ SOURCE-WINS CORRECTION (a): `OrderView` MUST carry an order-type code.
-   *
-   * The folder requirements list three order-level accessors; there are at least
-   * five, and this is the one they omit. Both gates in the engine read it:
-   * [model/service/PromotionService.cfc:L61] admits the discount body, and
-   * [model/service/PromotionService.cfc:L542] selects the preserved no-op.
-   * Defaults to the sales-order code so the golden order actually flows.
+   * `OrderView` MUST carry an order-type code: both engine gates read it.
+   * [model/service/PromotionService.cfc:L61] admits the discount body and [L542] selects the
+   * preserved no-op.
    */
   readonly orderTypeSystemCode?: string | undefined;
 
@@ -657,10 +448,8 @@ interface OrderViewFixtureOverrides {
   readonly currencyCode?: CurrencyCode | undefined;
 
   /**
-   * The promotion codes, as an ARRAY here and a comma list on the view.
-   *
-   * Defaults to empty, which yields the CFML empty list `''` - never `undefined`
-   * - matching `order.getPromotionCodeList()` as the DAO call at
+   * The promotion codes, an ARRAY here and a comma list on the view. Defaults to empty, yielding
+   * the CFML empty list `''` and never `undefined`, matching `order.getPromotionCodeList()` as
    * [model/service/PromotionService.cfc:L165] consumes it.
    */
   readonly promotionCodes?: readonly string[] | undefined;
@@ -683,11 +472,9 @@ interface OrderViewFixtureOverrides {
   // --- Items ----------------------------------------------------------------
 
   /**
-   * Replace the item array WHOLESALE, for the narrow single-item variants.
-   *
-   * Supplying this bypasses `itemOverrides`, `priceGroupEligibility` and
-   * `orderItemTypeSystemCode`, because the caller has taken ownership of the
-   * array. The array is still COPIED before it reaches the frozen view.
+   * Replace the item array WHOLESALE, which bypasses `itemOverrides`, `priceGroupEligibility` and
+   * `orderItemTypeSystemCode` because the caller has taken ownership. Still COPIED before it
+   * reaches the frozen view.
    */
   readonly orderItems?: readonly OrderItemView[] | undefined;
 
@@ -695,10 +482,9 @@ interface OrderViewFixtureOverrides {
   readonly itemOverrides?: readonly OrderItemFixtureOverrides[] | undefined;
 
   /**
-   * How the golden items relate to the reward's eligible price groups.
-   *
-   * `'mixed'` - the default - is the ONLY value under which all three arms of the
-   * L241 discriminator are reachable from a single order.
+   * How the golden items relate to the reward's eligible price groups. `'mixed'`, the default, is
+   * the ONLY value under which all three arms of the L241 discriminator are reachable from a single
+   * order.
    */
   readonly priceGroupEligibility?: PriceGroupEligibility | undefined;
 
@@ -706,11 +492,8 @@ interface OrderViewFixtureOverrides {
   readonly orderItemTypeSystemCode?: string | undefined;
 
   /**
-   * Whether the two calculated extended amounts agree with `price x quantity`.
-   *
-   * `'consistent'` is the default and is the only state production can reach.
-   * `'inconsistent'` exists so a suite can pin engine behaviour on a pair the ORM
-   * could never have produced.
+   * Whether the two calculated extended amounts agree with `price x quantity`. `'consistent'` is
+   * the default and the only state production can reach.
    */
   readonly extendedAmountConsistency?: 'consistent' | 'inconsistent' | undefined;
 
@@ -723,39 +506,29 @@ interface OrderViewFixtureOverrides {
   readonly fulfillmentOverrides?: readonly OrderFulfillmentFixtureOverrides[] | undefined;
 
   /**
-   * Keep the second, PICKUP fulfillment - no shipping method, no address.
-   *
-   * `true` by default. It is the only fulfillment that reaches the unguarded
-   * `getAddress()` dereference at [model/service/PromotionService.cfc:L703].
+   * Keep the second, PICKUP fulfillment - no shipping method, no address. `true` by default, and
+   * the only fulfillment reaching the unguarded `getAddress()` dereference at
+   * [model/service/PromotionService.cfc:L703].
    */
   readonly includePickupFulfillment?: boolean | undefined;
 
   // --- Rewards --------------------------------------------------------------
 
   /**
-   * Which NAMED reward arrangement to hand back, in that exact order.
-   *
-   * `'empty'` is the explicit empty-reward-array variant. `'orderRewardLast'` is
-   * the default and the only arrangement whose LAST reward is the order-level
-   * one, which is what makes pass two reachable.
+   * Which NAMED reward arrangement to hand back, in that exact order. `'orderRewardLast'` is the
+   * default and the only arrangement whose LAST reward is the order-level one, which is what makes
+   * pass two reachable.
    */
   readonly rewardOrdering?: RewardOrderingName | undefined;
 
-  /**
-   * Replace the reward array WHOLESALE, IN THE CALLER'S ORDER.
-   *
-   * Never sorted, re-ordered or normalised here - see the no-`ORDER BY` defect on
-   * the capture sink.
-   */
+  /** Replace the reward array WHOLESALE, IN THE CALLER'S ORDER. Never re-sorted. */
   readonly promotionRewards?: readonly PromotionReward[] | undefined;
 
   /**
-   * Does the period the LAST reward belongs to qualify?
-   *
-   * `true` by default. `false` builds a SECOND promotion graph under a distinct
-   * `idPrefix`, so its period identifier differs, and marks that period's
-   * `qualificationsMeet` false - which is how a suite proves pass two is skipped
-   * even though the reward array is non-empty.
+   * Does the period the LAST reward belongs to qualify? `true` by default; `false` builds a SECOND
+   * promotion graph under a distinct `idPrefix` so its period identifier differs, and marks that
+   * period's `qualificationsMeet` false - proving the [L458-L461] reset never fires, so pass two is
+   * skipped even with a non-empty reward array.
    */
   readonly lastRewardPeriodQualifies?: boolean | undefined;
 
@@ -768,10 +541,8 @@ interface OrderViewFixtureOverrides {
   readonly overusedRewardUsedInOrder?: number | undefined;
 
   /**
-   * OMIT for the documented default; write `undefined` for the NULL column.
-   *
-   * `undefined` is what routes the seeder down the `1000000` sentinel path at
-   * [model/service/PromotionService.cfc:L175].
+   * OMIT for the default; write `undefined` for the NULL column, which routes the seeder down the
+   * `1000000` sentinel path at [model/service/PromotionService.cfc:L175].
    */
   readonly rewardMaximumUsePerOrder?: number | undefined;
 
@@ -782,51 +553,40 @@ interface OrderViewFixtureOverrides {
   readonly rewardMaximumUsePerQualification?: number | undefined;
 
   /**
-   * Do the two over-used ledger entries reference the SAME order items?
-   *
-   * `'differentOrderItems'` is the default and is the ONLY layout under which
-   * LEGACY-DEFECT 9 is observable. `'sameOrderItems'` is the contrast case, where
-   * the cross-wired lookup happens to find a matching discount and strips a WRONG
-   * AMOUNT rather than silently stripping nothing.
+   * Do the two over-used ledger entries reference the SAME order items? `'differentOrderItems'` is
+   * the default and the ONLY layout under which LEGACY-DEFECT 9 is observable; `'sameOrderItems'`
+   * is the contrast, where the cross-wired lookup finds a discount and strips a WRONG AMOUNT.
    */
   readonly usageLedgerLayout?: 'differentOrderItems' | 'sameOrderItems' | undefined;
 
   /**
-   * `discountQuantity` on the seeded usage entries.
-   *
-   * Set it to `0` to reach the two unguarded divisions at
-   * [model/service/PromotionService.cfc:L299] and [model/service/PromotionService.cfc:L486].
+   * `discountQuantity` on the seeded usage entries. Set it to `0` to reach the unguarded divisions
+   * at [model/service/PromotionService.cfc:L299] and [L486].
    */
   readonly usageDiscountQuantity?: number | undefined;
 
   // --- Qualified discounts --------------------------------------------------
 
   /**
-   * The discount amounts seeded onto the FIRST golden item, as decimal strings.
-   *
-   * Three DISTINCT descending amounts by default, so both the descending
-   * insert-sort and "only index [1] is applied" are observable at once. Supplied
-   * as strings because a monetary value is never built from a JavaScript number.
+   * The discount amounts seeded onto the FIRST golden item, as decimal strings. Three DISTINCT
+   * descending amounts by default, so the descending insert-sort and "only index [1] is applied"
+   * are both observable at once.
    */
   readonly qualifiedDiscountAmounts?: readonly string[] | undefined;
 
   // --- Collaborator doubles -------------------------------------------------
 
   /**
-   * The answer the address-zone evaluator double returns, for EVERY call.
-   *
-   * `false` by default. Caller-controlled precisely so no zone logic is
-   * implemented here - the real predicate is [model/service/AddressService.cfc:L57].
+   * The answer the evaluator double returns for EVERY call; `false` by default. Caller-controlled
+   * precisely so no zone logic is implemented here - the real predicate is
+   * [model/service/AddressService.cfc:L57].
    */
   readonly addressIsInZone?: boolean | undefined;
 
   /**
-   * The price groups the reward NAMES as eligible.
-   *
-   * ⭐ SHARED IDENTITY IS REQUIRED, and it is the one deliberate exception to the
-   * fresh-graph rule documented at the builder: `reward.hasEligiblePriceGroup(...)`
-   * can only resolve if the instance the reward holds IS the instance an order
-   * item's `appliedPriceGroup` references.
+   * The price groups the reward NAMES as eligible. SHARED IDENTITY IS REQUIRED here, the one
+   * deliberate exception to the fresh-graph rule: `reward.hasEligiblePriceGroup(...)` resolves only
+   * if the instance the reward holds IS the instance an item's `appliedPriceGroup` references.
    */
   readonly eligiblePriceGroups?: readonly PriceGroup[] | undefined;
 }
@@ -834,42 +594,28 @@ interface OrderViewFixtureOverrides {
 // ---------------------------------------------------------------------------
 // Module-scope constants
 //
-// IMMUTABLE PRIMITIVES ONLY - strings, numbers and booleans. There is no
-// counter, no identifier sequence with cross-call memory, no registry, no
-// lazily-cached instance and no frozen object literal handed to two callers.
-//
-// That prohibition is not stylistic. Four legacy component-level caches show
-// exactly what module state costs on a warm Lambda container, where it survives
-// between UNRELATED requests: `SkuDAO.variables.nextOptionGroupSortOrder`
-// [model/dao/SkuDAO.cfc:L204-L220], whose clear method at
-// [model/dao/SkuDAO.cfc:L222-L226] has an inverted condition and can never fire;
-// `RoundingRuleService.variables.roundingRuleDetails`
-// [model/service/RoundingRuleService.cfc:L67-L77]; the un-`var`'d `discountAmount`
-// leaking into component scope at [model/service/PromotionService.cfc:L1007]
-// and [model/service/PromotionService.cfc:L1009]; and every entity memo. All four
-// become request-scoped in the target, and a fixture that reintroduced shared
-// state here would reintroduce the hazard the port exists to remove.
+// IMMUTABLE PRIMITIVES ONLY - no counter, identifier sequence, registry, cached instance or frozen
+// literal handed to two callers. The four legacy component-level caches show what module state
+// costs on a warm container; the clearest is `SkuDAO.variables.nextOptionGroupSortOrder`
+// [model/dao/SkuDAO.cfc:L204-L220], whose clear method at [L222-L226] has an inverted condition and
+// can never fire.
 // ---------------------------------------------------------------------------
 
 /**
- * The instant this graph is evaluated against, as an explicit UTC ISO-8601
- * literal.
+ * The instant this graph is evaluated against, as an explicit UTC literal.
  *
- * `PromotionPeriod.isCurrent(now: Date)` takes its instant as a parameter - the
- * one deliberate signature widening in the entity layer - precisely so a fixture
- * never consults the wall clock. The legacy pair calls `now()` independently in
- * `isCurrent()` [model/entity/PromotionPeriod.cfc:L78-L81], which is
+ * `PromotionPeriod.isCurrent(now: Date)` takes its instant as a parameter - the one deliberate
+ * signature widening in the entity layer - so a fixture never consults the wall clock. The legacy
+ * pair calls `now()` independently in `isCurrent()` [model/entity/PromotionPeriod.cfc:L78-L81],
  * start-inclusive and end-exclusive with no `isDate` guard, and in `isExpired()`
  * [model/entity/PromotionPeriod.cfc:L83-L85], which does guard.
  */
 const FIXED_NOW_ISO = '2024-06-01T12:00:00.000Z';
 
 /**
- * The two order-type gates, as the comma lists the legacy source spells them.
- *
- * ⭐ SOURCE-WINS CORRECTION (a). `otExchangeOrder` appears in BOTH lists, so an
- * exchange order runs the whole discount body AND then enters the preserved
- * no-op. Neither gate is the negation of the other.
+ * The two order-type gates, as the comma lists the legacy source spells them. `otExchangeOrder`
+ * appears in BOTH, so an exchange order runs the whole discount body AND then enters the preserved
+ * no-op: neither gate negates the other.
  */
 const SALE_OR_EXCHANGE_ORDER_TYPES = 'otSalesOrder,otExchangeOrder';
 
@@ -880,12 +626,10 @@ const RETURN_OR_EXCHANGE_ORDER_TYPES = 'otReturnOrder,otExchangeOrder';
 const SALES_ORDER_SYSTEM_CODE = 'otSalesOrder';
 
 /**
- * ⭐ SOURCE-WINS CORRECTION (b): the item-type gate the folder requirements omit.
- *
- * [model/service/PromotionService.cfc:L206] admits an order item into the
- * discount body only when its type system code equals this value, and
- * [model/entity/Order.cfc:L686] adds an item's extended price to the subtotal
- * only for the same code - throwing outright for any code it does not recognise.
+ * The item-type gate. [model/service/PromotionService.cfc:L206] admits an item into the discount
+ * body only when its type system code equals this, and [model/entity/Order.cfc:L686] adds an item's
+ * extended price to the subtotal only for the same code, throwing for any code it does not
+ * recognise.
  */
 const SALE_ORDER_ITEM_SYSTEM_CODE = 'oitSale';
 
@@ -902,51 +646,39 @@ const FULFILLMENT_ID_SHIPPING = 'of-shipping-1';
 const FULFILLMENT_ID_PICKUP = 'of-pickup-1';
 
 /**
- * Item 1 - the REFERENCE item, and the reason its numbers are not negotiable.
+ * Item 1 - the REFERENCE item, and why its numbers are not negotiable.
  *
- * 19.99 x 3 = 59.97; less 12.5% = 7.49625; net 52.47375; presented "52.47".
- * That chain was verified end to end during planning and it is what proves an
- * arbitrary-precision decimal plus an explicit two-decimal presentation step
- * reproduces `numberFormat(discountAmount,"0.00")`
+ * 19.99 x 3 = 59.97; less 12.5% = 7.49625; net 52.47375; presented "52.47". That chain was verified
+ * end to end during planning and proves an arbitrary-precision decimal plus a two-decimal
+ * presentation step reproduces `numberFormat(discountAmount,"0.00")`
  * [model/service/PromotionService.cfc:L1017] with no IEEE-754 drift.
- *
- * This item carries NO applied price group, so `PriceGroupService` never lowered
- * its price and `skuPrice` therefore equals `price`.
  */
 const ITEM_1_PRICE = '19.99';
 const ITEM_1_QUANTITY = 3;
 
 /**
- * Item 2 - a price group the reward ACCEPTS.
- *
- * `price` sits BELOW `skuPrice` because that is the only state
- * [model/service/PriceGroupService.cfc:L370-L372] will write: it applies a group
- * only when the computed price is strictly less than the item's current price.
+ * Item 2 - a price group the reward ACCEPTS. `price` sits BELOW `skuPrice` because that is the only
+ * state [model/service/PriceGroupService.cfc:L370-L372] writes: it applies a group only when the
+ * computed price is strictly lower.
  */
 const ITEM_2_PRICE = '17.99';
 const ITEM_2_SKU_PRICE = '22.49';
 const ITEM_2_QUANTITY = 2;
 
 /**
- * Item 3 - a price group the reward REJECTS, and the ONLY item that reaches the
- * second arm of the L241 discriminator.
- *
- * The gap between the two extended amounts is 14.00, deliberately non-zero: a
- * zero correction term would make the cross-service ordering dependency
- * invisible, which is the whole point of this item.
+ * Item 3 - a price group the reward REJECTS, and the ONLY item reaching the second arm of the L241
+ * discriminator. The 14.00 gap between the two extended amounts is deliberately non-zero: a zero
+ * correction term would make the cross-service ordering dependency invisible.
  */
 const ITEM_3_PRICE = '8.50';
 const ITEM_3_SKU_PRICE = '12.00';
 const ITEM_3_QUANTITY = 4;
 
 /**
- * The deliberately WRONG extended price for the inconsistent-pair variant.
- *
- * Production cannot reach this state, because both extended amounts are derived
- * [model/entity/OrderItem.cfc:L200-L206]. It exists so a suite can pin what the
- * engine does when handed a pair that disagrees with `price x quantity` - the
- * correction term at [model/service/PromotionService.cfc:L252] is computed from
- * these two values and from nothing else, so a disagreement is money.
+ * The deliberately WRONG extended price for the inconsistent-pair variant, which production cannot
+ * reach because both extended amounts are derived [model/entity/OrderItem.cfc:L200-L206]. The
+ * correction term at [model/service/PromotionService.cfc:L252] is computed from these two values
+ * and nothing else, so a disagreement is money.
  */
 const INCONSISTENT_EXTENDED_PRICE = '1.00';
 
@@ -965,21 +697,16 @@ const PICKUP_FULFILLMENT_CHARGE = '0.00';
 const GOLDEN_TOTAL_SALE_QUANTITY = 9;
 
 /**
- * ⭐ WEIGHT, NOT MONEY - see SOURCE-WINS CORRECTION (h).
- *
- * `hb_formatType="weight"` on the fulfillment, feeding
+ * WEIGHT, NOT MONEY: `hb_formatType="weight"` on the fulfillment, feeding
  * [model/entity/PromotionQualifier.cfc:L63-L64]. A plain number.
  */
 const SHIPPING_TOTAL_WEIGHT = 12.5;
 const PICKUP_TOTAL_WEIGHT = 0;
 
 /**
- * THREE DISTINCT amounts, already in descending order.
- *
- * Distinct because equal amounts make an insert-sort's tie behaviour the thing
- * under test rather than the ordering itself; three because two cannot
- * distinguish "sorted descending" from "reversed". The middle value is the
- * reference discount, so one figure ties the accumulator to the money suite.
+ * THREE DISTINCT amounts, already descending. Distinct because equal amounts make tie behaviour the
+ * thing under test; three because two cannot distinguish "sorted descending" from "reversed". The
+ * middle value is the reference discount.
  */
 const GOLDEN_QUALIFIED_DISCOUNT_AMOUNTS: readonly string[] = ['12.00', '7.49625', '3.25'];
 
@@ -1005,6 +732,16 @@ const SHIPPING_ADDRESS_CITY = 'San Francisco';
 const SHIPPING_ADDRESS_STATE_CODE = 'CA';
 const SHIPPING_ADDRESS_COUNTRY_CODE = 'US';
 
+/**
+ * The zone identifier used only when a caller overrides the qualifier's
+ * `shippingAddressZoneIDs` to an EMPTY list.
+ *
+ * `AddressZoneProjection.addressZoneID` is required, so the projection still
+ * needs an identifier in that case; it is never the identifier of a zone the
+ * qualifier actually configures, so no suite can mistake it for one.
+ */
+const FALLBACK_ADDRESS_ZONE_ID = 'unconfigured-shipping-address-zone';
+
 /** The three-character default from [model/service/SettingService.cfc:L221]. */
 const DEFAULT_CURRENCY_CODE = 'USD';
 
@@ -1024,20 +761,8 @@ const PICKUP_FULFILLMENT_METHOD_ID = 'fm-pickup';
 const PICKUP_FULFILLMENT_METHOD_TYPE = 'pickup';
 
 // ---------------------------------------------------------------------------
-// Overrides plumbing
-//
-// Two helpers, and the reason there are two rather than one `??`.
-//
-// `exactOptionalPropertyTypes` makes "key absent" and "key present carrying
-// undefined" distinct types, and several members here need both states to be
-// reachable: an absent `accountID` means "use the documented default", while an
-// explicit `undefined` means "guest checkout, no account at all". `??` cannot
-// express that difference - it would silently replace the caller's `undefined`
-// with the default and make the absent state unreachable. `Object.hasOwn`
-// separates the two intents exactly.
-//
-// `??` remains the right operator wherever absence carries no distinct meaning,
-// and it is used directly at those sites rather than routed through here.
+// Overrides plumbing - two presence helpers rather than one `??`, for the reason the header
+// records. `??` stays right wherever absence carries no meaning.
 // ---------------------------------------------------------------------------
 
 /** Was `key` written by the caller at all, whatever value it carries? */
@@ -1077,11 +802,9 @@ function hasFulfillmentOverride(
 }
 
 /**
- * The positional bag at `index`, or `undefined`.
- *
- * Written as an explicit read rather than `bags[index]` with a non-null
- * assertion, because `noUncheckedIndexedAccess` is on and `!` is not used in
- * this file at all.
+ * The positional bag at `index`, or `undefined`. An explicit read rather than `bags[index]` with a
+ * non-null assertion, because `noUncheckedIndexedAccess` is on and `!` is not used in this file at
+ * all.
  */
 function bagAt<TBag>(bags: readonly TBag[] | undefined, index: number): TBag | undefined {
   if (bags === undefined || index < 0 || index >= bags.length) {
@@ -1091,19 +814,14 @@ function bagAt<TBag>(bags: readonly TBag[] | undefined, index: number): TBag | u
 }
 
 // ---------------------------------------------------------------------------
-// Module-scope pure builders
+// Module-scope pure builders - FUNCTIONS, NEVER DATA, so no array, object, `Date`, `Money` or
+// double is shared between graphs.
 //
-// FUNCTIONS, NEVER DATA. Each returns a freshly constructed value on every call,
-// so no array, no object, no `Date`, no `Money` and no double is ever shared
-// between two graphs.
-//
-// ⭐ DEFENSIVE COPYING IS MANDATORY, and the reason is a CFML/TypeScript
-// divergence that silently changes behaviour. [model/service/PriceGroupService.cfc:L276]
-// does `var priceGroups = account.getPriceGroups();` and then `arrayAppend`s to it
-// at [model/service/PriceGroupService.cfc:L282]. CFML COPIES ARRAYS BY VALUE, so
-// the account's own collection is untouched. The direct TypeScript transliteration
-// holds a REFERENCE and would mutate it. Every collection this module hands out is
-// therefore a fresh array, never an alias of an input.
+// CFML parity [model/service/PriceGroupService.cfc:L276]: the legacy cascade takes
+//   `var priceGroups = account.getPriceGroups();`
+// then `arrayAppend`s at [L282], leaving the account's own collection untouched because CFML COPIES
+// ARRAYS BY VALUE. The transliteration would hold a REFERENCE and mutate it, so every collection
+// handed out here is a fresh array.
 // ---------------------------------------------------------------------------
 
 /** A fresh, independent copy of a read-only array. */
@@ -1112,13 +830,8 @@ function copyOf<TElement>(source: readonly TElement[]): TElement[] {
 }
 
 /**
- * The item type shape, freshly built.
- *
- * ⭐ SOURCE-WINS CORRECTION (b), as data. `orderItemView.ts` declares
- * `OrderItemTypeView` beside its exported unit and deliberately does not export
- * it, recording that a consumer needing to name the shape reaches it through an
- * indexed access. This is that consumer, and `OrderItemTypeViewRef` is that
- * indexed access - so a change to the owner breaks this build instead of drifting.
+ * The item type shape, freshly built. `OrderItemTypeViewRef` is the indexed access
+ * `orderItemView.ts` records for a consumer needing the unexported shape.
  */
 function buildOrderItemType(systemCode: string): OrderItemTypeViewRef {
   return Object.freeze({ systemCode });
@@ -1131,13 +844,10 @@ function buildOrderItemType(systemCode: string): OrderItemTypeViewRef {
  * accessor - it falls back to copying the account address via setShippingAddress(...) and, when
  * both are null, constructs a new Address through getService("addressService"). A read-only
  * anti-corruption view cannot reproduce a mutating, service-locating accessor, so this fixture
- * supplies a single PRE-RESOLVED address plus an explicit isNew boolean for the
- * Address.isNew() call at model/service/PromotionService.cfc:L359.
+ * supplies a single PRE-RESOLVED address plus an explicit isNew boolean for the Address.isNew()
+ * call at model/service/PromotionService.cfc:L359.
  *
- * The persistent column is `shippingAddress` and there is no `address` column at
- * all; `address` is the name the ENGINE uses, at
- * [model/service/PromotionService.cfc:L358-L360], and the view is shaped to the
- * call site rather than to the table because the call site is what it feeds.
+ * The persistent column is `shippingAddress`; `address` is the ENGINE's name at [L358-L360].
  */
 function buildShippingAddress(isNew: boolean): ShippingAddressView {
   return Object.freeze({
@@ -1150,12 +860,10 @@ function buildShippingAddress(isNew: boolean): ShippingAddressView {
 }
 
 /**
- * Projects a view address onto the port's input shape.
- *
- * Absent columns become `null` rather than an omitted key, because
- * `AddressProjection` declares each column `?: string | null` and
- * `exactOptionalPropertyTypes` forbids writing an explicit `undefined` into an
- * optional member. `null` is also the honest projection of a NULL column.
+ * Projects a view address onto the port's input shape. Absent columns become `null` rather than an
+ * omitted key, because `AddressProjection` declares each column `?: string | null` and
+ * `exactOptionalPropertyTypes` forbids an explicit `undefined` there - and `null` is the honest
+ * projection of a NULL column.
  */
 function toAddressProjection(address: ShippingAddressView): AddressProjection {
   return Object.freeze({
@@ -1166,9 +874,22 @@ function toAddressProjection(address: ShippingAddressView): AddressProjection {
   });
 }
 
-/** A single-location zone, to hand the evaluator double as its second argument. */
-function buildAddressZone(): AddressZoneProjection {
+/**
+ * A single-location zone, to hand the evaluator double as its second argument.
+ *
+ * `addressZoneID` is REQUIRED by `AddressZoneProjection` and is carried here
+ * verbatim from the qualifier that configured the zone, so a suite handing this
+ * projection to the double is handing it the same opaque identifier the engine
+ * would have handed a real adapter. The identifier is what makes the projection
+ * resolvable at all: a zone whose location list is empty because the domain
+ * publishes none is resolved by the adapter FROM this ID
+ * [src/domain/ports/addressZoneEvaluator.ts, {@link AddressZoneProjection}].
+ * This fixture publishes one location anyway, so both halves of the port's
+ * contract - "locations supplied" and "identifier supplied" - are exercised.
+ */
+function buildAddressZone(addressZoneID: string): AddressZoneProjection {
   return Object.freeze({
+    addressZoneID,
     addressZoneLocations: Object.freeze([
       Object.freeze({
         postalCode: null,
@@ -1183,15 +904,10 @@ function buildAddressZone(): AddressZoneProjection {
 /**
  * The minimal in-memory address-zone evaluator double, plus its call log.
  *
- * The answer is CALLER-CONTROLLED and constant: whatever `answer` says, for every
- * call. No zone logic is implemented here, deliberately. The real predicate is
- * [model/service/AddressService.cfc:L57] and porting it belongs to
- * `src/services/**`; a fixture that reimplemented it would be asserting its own
- * arithmetic instead of the engine's behaviour.
- *
- * The call log exists because the address-zone qualifier is the one place a suite
- * needs to prove a collaborator was CONSULTED - and, at the L703 defect below,
- * that it was NOT.
+ * The answer is CALLER-CONTROLLED and constant for every call. No zone logic here; the real
+ * predicate is [model/service/AddressService.cfc:L57], and a fixture that reimplemented it would
+ * assert its own arithmetic. The call log exists because the address-zone qualifier is the one
+ * place a suite must prove a collaborator was CONSULTED - and, at the L703 defect, that it was NOT.
  */
 function buildAddressZoneEvaluatorDouble(answer: boolean): {
   readonly evaluator: AddressZoneEvaluator;
@@ -1210,26 +926,21 @@ function buildAddressZoneEvaluatorDouble(answer: boolean): {
 }
 
 /**
- * One usage-ledger entry, seeded exactly as [model/service/PromotionService.cfc:L173-L188] seeds it.
+ * One usage-ledger entry, seeded as [model/service/PromotionService.cfc:L173-L188] seeds it.
  *
- * LEGACY-DEFECT [model/service/PromotionService.cfc:L173-L188]: null max-use limits are seeded
- * with the magic number 1000000 as a stand-in for "unlimited"
- * [model/entity/PromotionReward.cfc:L65-L67 hb_nullRBKey="define.unlimited"]. An explicit limit
- * of 0 is falsy but not null and therefore does NOT take the sentinel path.
+ * LEGACY-DEFECT [model/service/PromotionService.cfc:L173-L188]: null max-use limits are seeded with
+ * the magic number 1000000 as a stand-in for "unlimited" [model/entity/PromotionReward.cfc:L65-L67
+ * hb_nullRBKey="define.unlimited"]. An explicit limit of 0 is falsy but not null and therefore does
+ * NOT take the sentinel path.
+ *
  * Preserved deliberately; do not fix without a product decision.
  *
- * ⭐ THE ZERO TRAP, precisely. The legacy guards are
- * `!isNull(reward.getMaximumUsePerOrder()) && reward.getMaximumUsePerOrder() > 0`
- * at [model/service/PromotionService.cfc:L180], so a limit of `0` fails the SECOND
- * conjunct, never overwrites the sentinel, and leaves the entry effectively
- * unlimited - the exact opposite of what "maximum use: 0" reads as. That is
- * reproduced here: `0` keeps the sentinel.
- *
- * `usedInOrder` and `maximumUsePerOrder` are left MUTABLE because the engine
- * writes both - `usedInOrder` at [model/service/PromotionService.cfc:L297] and
- * `maximumUsePerOrder` through the over-use correction. `orderItemsUsage` is a
- * mutable array for the same reason: [model/service/PromotionService.cfc:L502]
- * deletes from it in place.
+ * THE ZERO TRAP: the guard at [L180] is
+ *   `!isNull(reward.getMaximumUsePerOrder())`
+ *   `&& reward.getMaximumUsePerOrder() > 0`
+ * so `0` fails the SECOND conjunct and leaves the entry effectively unlimited. `usedInOrder`,
+ * `maximumUsePerOrder` and `orderItemsUsage` are MUTABLE because the engine writes all three -
+ * [L502] deletes from the last in place.
  */
 function seedRewardUsageDetail(
   sentinel: number,
@@ -1255,10 +966,9 @@ function seedRewardUsageDetail(
 
 /** The `!isNull(x) && x > 0` guard, as one place rather than three. */
 function applySeededLimit(sentinel: number, limit: number | undefined): number {
-  // The absent test is written in the form the compiler can follow rather than
-  // delegated to `isNullish()`, whose `boolean` return - correct for its own
-  // contract - does not narrow the union. It is the same test asked differently,
-  // and `src/lib/cfml/truthiness.ts` records the identical trade-off in `cfLen`.
+  // Written in the form the compiler can follow rather than delegated to `isNullish()`, whose
+  // `boolean` return does not narrow the union; `src/lib/cfml/truthiness.ts` records the identical
+  // trade-off in `cfLen`.
   if (limit === undefined) {
     // [L175]/[L176]/[L177]: a NULL limit leaves the sentinel standing.
     return sentinel;
@@ -1267,25 +977,22 @@ function applySeededLimit(sentinel: number, limit: number | undefined): number {
     // [L180]/[L183]/[L186]: only a non-null POSITIVE limit overwrites it.
     return limit;
   }
-  // An explicit 0 - or a negative - is falsy but NOT null, so it fails the second
-  // conjunct and the sentinel stands. That is the trap, reproduced.
+  // An explicit 0 - or a negative - is falsy but NOT null, so it fails the second conjunct and the
+  // sentinel stands.
   return sentinel;
 }
 
 /**
  * One `orderItemsUsage` entry.
  *
- * LEGACY-DEFECT [model/service/PromotionService.cfc:L299]: discountAmount / discountQuantity has
- * no zero check on the divisor. Same at L486.
+ * LEGACY-DEFECT [model/service/PromotionService.cfc:L299]: discountAmount / discountQuantity has no
+ * zero check on the divisor. Same at L486.
+ *
  * Preserved deliberately; do not fix without a product decision.
  *
- * ⭐ The fixture SUPPLIES the zero divisor and deliberately does NOT perform the
- * division itself. `Money.dividedBy` refuses a zero divisor outright and lets the
- * refusal propagate - by design, because returning zero would silently invent
- * money. Whether the CALL SITE at L299 wants a guard is a decision owned by
- * `src/services/promotion/rewardUsageLedger.ts`, not by a fixture, so a
- * `discountQuantity` of 0 yields `Money.zero` here and leaves the engine to meet
- * the unguarded division on its own terms.
+ * The fixture SUPPLIES the zero divisor and does not perform the division. `Money.dividedBy`
+ * refuses one and lets the refusal propagate; whether the CALL SITE wants a guard is owned by
+ * `src/services/promotion/rewardUsageLedger.ts`.
  */
 function buildOrderItemUsage(
   orderItemID: string,
@@ -1303,25 +1010,17 @@ function buildOrderItemUsage(
 /**
  * `getExtendedPrice()`, reproduced - INCLUDING the `val()` coercion.
  *
- * LEGACY-DEFECT [model/entity/OrderItem.cfc:L200-L206]: getExtendedPrice() wraps quantity in
- * val() (null coerces to 0) but getExtendedSkuPrice() does not, so a null quantity yields 0
- * from one accessor and fails in the other.
+ * LEGACY-DEFECT [model/entity/OrderItem.cfc:L200-L206]: getExtendedPrice() wraps quantity in val()
+ * (null coerces to 0) but getExtendedSkuPrice() does not, so a null quantity yields 0 from one
+ * accessor and fails in the other.
+ *
  * Preserved deliberately; do not fix without a product decision.
  *
- * ⭐ SOURCE-WINS CORRECTION (c) and (d). The folder requirements treat both
- * extended amounts as persistent columns of equal standing. They are neither:
- * both are NON-PERSISTENT CALCULATED properties, `extendedSkuPrice` does not
- * appear in the property block at all, and the two derivations DIFFER -
- * `precisionEvaluate('getPrice() * val(getQuantity())')` at
- * [model/entity/OrderItem.cfc:L200-L202] against
- * `precisionEvaluate('getSkuPrice() * getQuantity()')` at
- * [model/entity/OrderItem.cfc:L204-L206]. The asymmetry is reproduced here as two
- * separate functions rather than one shared multiply, so it cannot be lost to a
- * later tidy-up.
- *
- * The view carries both as PRE-COMPUTED values, which is correct for an
- * anti-corruption view: neither the view nor the engine recomputes them, exactly
- * as neither recomputes a column.
+ * Both extended amounts are NON-PERSISTENT CALCULATED properties - `extendedSkuPrice` is not in the
+ * property block at all - and the derivations differ:
+ *   `precisionEvaluate('getPrice() * val(getQuantity())')` at [L200-L202]
+ *   `precisionEvaluate('getSkuPrice() * getQuantity()')` at [L204-L206]
+ * Two functions rather than one shared multiply, so the asymmetry survives a later tidy-up.
  */
 function computeExtendedPrice(price: Money, quantity: number): Money {
   // The `val()` coercion: a non-numeric quantity becomes 0 rather than propagating.
@@ -1336,30 +1035,18 @@ function computeExtendedSkuPrice(skuPrice: Money, quantity: number): Money {
 /**
  * One order item view.
  *
- * LEGACY ORDERING CONSTRAINT [model/service/PromotionService.cfc:L241-L254 reads state written
- * by model/service/PriceGroupService.cfc:L371]: the price-group pass MUST run before the
- * promotion pass. The legacy code leaves this implicit - it holds only because OrderService
- * happens to call them in that sequence [model/service/OrderService.cfc:L60-L61]. This fixture
- * deliberately mixes eligible and ineligible items so the dependency is provable.
+ * CFML parity [model/service/PromotionService.cfc:L241-L254]: this range reads state written by
+ * [model/service/PriceGroupService.cfc:L371], so the price-group pass MUST run before the promotion
+ * pass. The legacy code leaves the constraint implicit - it holds only because OrderService happens
+ * to call them in that sequence [model/service/OrderService.cfc:L60-L61]. This fixture deliberately
+ * mixes eligible and ineligible items so it is provable.
  *
- * ⭐ THE POLARITY, VERIFIED IN THE SOURCE AND NOT ASSUMED. The folder
- * requirements state it BACKWARDS. Read at [model/service/PromotionService.cfc:L241]:
- *
- *   if( isNull(orderItem.getAppliedPriceGroup())
- *       || reward.hasEligiblePriceGroup( orderItem.getAppliedPriceGroup() ) ) {
- *       -> getDiscountAmount(reward, orderItem.getPrice(), discountQuantity)   [L244]
- *   } else {
- *       -> originalDiscountAmount = getDiscountAmount(reward, orderItem.getSkuPrice(), ...) [L249]
- *       -> discountAmount = originalDiscountAmount
- *                           - (getExtendedSkuPrice() - getExtendedPrice())     [L252]
- *   }
- *
- * So `getPrice()` is the arm taken when there is NO applied price group OR the
- * reward ACCEPTS the one there is; the `getSkuPrice()`-plus-correction arm
- * requires a PRESENT group the reward REJECTS. That is a three-state
- * discriminator over two disjuncts, not the two-state one the requirements
- * describe, which is why the golden order carries THREE items rather than two:
- * absent, present-and-accepted, present-and-rejected.
+ * THE POLARITY, VERIFIED IN THE SOURCE. The L241 condition is
+ *   `isNull(orderItem.getAppliedPriceGroup())`
+ *   `|| reward.hasEligiblePriceGroup(orderItem.getAppliedPriceGroup())`
+ * Its true branch passes `getPrice()` to `getDiscountAmount` at [L244]; its else branch passes
+ * `getSkuPrice()` at [L249] then subtracts the `extendedSkuPrice`-minus-`extendedPrice` correction
+ * at [L252].
  */
 function buildOrderItem(spec: {
   readonly orderItemID: string;
@@ -1381,9 +1068,9 @@ function buildOrderItem(spec: {
     skuPrice: spec.skuPrice,
     extendedPrice: spec.extendedPrice,
     extendedSkuPrice: spec.extendedSkuPrice,
-    // ⭐ SOURCE-WINS CORRECTION (i): written EXPLICITLY as `undefined`, never omitted.
-    // `orderItemView.ts` declares this a REQUIRED member whose type includes
-    // `undefined`, so that "no applied price group" is one unambiguous state.
+    // Written EXPLICITLY as `undefined`, never omitted: `orderItemView.ts` declares this a REQUIRED
+    // member whose type includes `undefined`, so that "no applied price group" is one unambiguous
+    // state.
     appliedPriceGroup: spec.appliedPriceGroup,
     orderItemType: buildOrderItemType(spec.orderItemTypeSystemCode),
     orderFulfillmentID: spec.orderFulfillmentID,
@@ -1391,12 +1078,10 @@ function buildOrderItem(spec: {
 }
 
 /**
- * Which arm the item selects, evaluated with the legacy null semantics.
- *
- * Published on the capture sink so a suite can pin the POLARITY as data rather
- * than re-deriving it from the source every time. `isNullish` supplies the
- * `isNull()` semantics of the first disjunct; `hasEligiblePriceGroup` is the
- * entity's own predicate and is called, not reimplemented.
+ * Which arm the item selects, under the legacy null semantics, published on the capture sink so a
+ * suite pins the POLARITY as data. `isNullish` supplies the `isNull()` semantics of the first
+ * disjunct, and `hasEligiblePriceGroup` is the entity's own predicate, called rather than
+ * reimplemented.
  */
 function buildItemPriceArmSelection(
   item: OrderItemView,
@@ -1411,8 +1096,8 @@ function buildItemPriceArmSelection(
     reward !== undefined &&
     reward.hasEligiblePriceGroup(appliedPriceGroup);
 
-  // [L241] The first disjunct OR the second selects `getPrice()`; only when BOTH
-  // fail does the `getSkuPrice()`-plus-correction arm run.
+  // [L241] Either disjunct selects `getPrice()`; only when BOTH fail does the
+  // `getSkuPrice()`-plus-correction arm run.
   const takesPriceArm = appliedPriceGroupIsNull || rewardAcceptsAppliedPriceGroup;
 
   return Object.freeze({
@@ -1430,17 +1115,14 @@ function buildItemPriceArmSelection(
  *
  * LEGACY-DEFECT [model/service/PromotionService.cfc:L703]: the shipping-address-zones clause
  * re-tests hasShippingMethod instead of testing the zone condition.
+ *
  * Preserved deliberately; do not fix without a product decision.
  *
- * ⭐ A SECOND, SHARPER PROBLEM AT THE SAME LINE, and the reason the pickup
- * fulfillment exists. L703 also dereferences `orderFulfillment.getAddress()`
- * UNGUARDED, in pointed contrast with [model/service/PromotionService.cfc:L358-L360],
- * which guards the identical call with `!isNull(getAddress()) && !getAddress().isNew()`.
- * The legacy accessor could never return null - its third branch CONSTRUCTS an
- * Address - so the unguarded form was safe by accident. A read-only view that
- * pre-resolves the address to `undefined` removes that accident, which makes the
- * pickup fulfillment the only place the difference between the two call sites is
- * observable.
+ * A SECOND PROBLEM AT THE SAME LINE, and the reason the pickup fulfillment exists: L703 also
+ * dereferences `getAddress()` UNGUARDED, in pointed contrast with [L358-L360], which guards the
+ * identical call with `!isNull(getAddress())` and `!getAddress().isNew()`. The legacy accessor
+ * could never return null - its third branch CONSTRUCTS an Address - so the unguarded form was safe
+ * by accident.
  */
 function buildOrderFulfillment(spec: {
   readonly orderFulfillmentID: string;
@@ -1455,10 +1137,10 @@ function buildOrderFulfillment(spec: {
     orderFulfillmentID: spec.orderFulfillmentID,
     fulfillmentCharge: spec.fulfillmentCharge,
     fulfillmentMethod: spec.fulfillmentMethod,
-    // ⭐ SOURCE-WINS CORRECTION (i): explicit `undefined`, never an omitted key.
+    // Explicit `undefined`, never an omitted key.
     shippingMethod: spec.shippingMethod,
     appliedPromotions: Object.freeze(copyOf(spec.appliedPromotions)),
-    // ⭐ SOURCE-WINS CORRECTION (h): WEIGHT, so a plain number and never `Money`.
+    // WEIGHT, so a plain number and never `Money`.
     totalShippingWeight: spec.totalShippingWeight,
     address: spec.address,
   });
@@ -1467,16 +1149,12 @@ function buildOrderFulfillment(spec: {
 /**
  * Inserts one candidate into the DESCENDING accumulator, by the legacy algorithm.
  *
- * LEGACY BEHAVIOUR [model/service/PromotionService.cfc:L523-L537]: only index [1] - the single
- * largest discount after the descending insert-sort at L266-L294 - is ever applied per order
- * item. Every other qualified discount is discarded.
+ * CFML parity [model/service/PromotionService.cfc:L523-L537]: only index [1] - the single largest
+ * discount after the descending insert-sort at L266-L294 - is ever applied per order item, and
+ * every other qualified discount is discarded.
  *
- * The ordering is produced by an actual insert-sort rather than by writing an
- * already-ordered literal, so what a suite observes is the algorithm's output and
- * not the fixture author's arithmetic. The legacy loop walks from the front and
- * splices ahead of the first strictly-smaller entry, which is reproduced exactly -
- * including that a TIE lands AFTER the incumbent, so the first-inserted of two
- * equal discounts wins index [1].
+ * The legacy loop splices ahead of the first strictly-smaller entry, so a TIE lands AFTER the
+ * incumbent and the first-inserted wins index [1].
  */
 function insertQualifiedDiscountDescending(
   discounts: QualifiedDiscount[],
@@ -1498,13 +1176,11 @@ function insertQualifiedDiscountDescending(
 /**
  * One qualified-discount entry.
  *
- * CFML parity [model/service/PromotionService.cfc:L82-L133]: the legacy accumulator key is
- * spelled `orderItemQulifiedDiscounts` (sic). The target symbol is renamed; the original
- * spelling is recorded here so the two surfaces can be diffed.
+ * CFML parity [model/service/PromotionService.cfc:L82-L133]: the legacy accumulator key is spelled
+ * `orderItemQulifiedDiscounts` (sic). The target symbol is renamed; the original spelling is
+ * recorded here so the two surfaces can be diffed.
  *
- * `discountAmount` is the ONE mutable member, because
- * [model/service/PromotionService.cfc:L486] rewrites it in place on a partial
- * strip. The other two are readonly, as the owner declares them.
+ * `discountAmount` is the ONE mutable member: [L486] rewrites it on a partial strip.
  */
 function buildQualifiedDiscount(
   promotionRewardID: string,
@@ -1521,21 +1197,16 @@ function buildQualifiedDiscount(
 /**
  * The FRESH, MUTABLE qualified-discount accumulator.
  *
- * Not frozen, and deliberately so: the engine splices entries out of these arrays
- * at [model/service/PromotionService.cfc:L502] and rewrites `discountAmount` at
- * [model/service/PromotionService.cfc:L486]. A frozen accumulator would make the
- * over-use correction untestable, which is the opposite of this fixture's purpose.
+ * Not frozen, deliberately: the engine splices entries out of these arrays at
+ * [model/service/PromotionService.cfc:L502] and rewrites `discountAmount` at
+ * [model/service/PromotionService.cfc:L486], so a frozen accumulator would make the over-use
+ * correction untestable.
  *
- * ⭐ SOURCE-WINS CORRECTION (f): THE GUARD ASYMMETRY. The inner searches at
- * [model/service/PromotionService.cfc:L482] and [model/service/PromotionService.cfc:L498]
- * index this record by order item ID with NO `structKeyExists` test, while the
- * application loop at [model/service/PromotionService.cfc:L529] DOES guard with
- * `structKeyExists` and `arrayLen`. On the normal path the key is created alongside
- * the usage entry, so the unguarded form is safe by construction - but it is safe
- * only because of an invariant the author evidently did not trust at the other site.
- * This is stated as an unguarded index whose safety rests on that invariant, NOT as
- * a certain crash. The seeding below can be pointed at an item that has no usage
- * entry, so a suite can probe the difference deliberately.
+ * THE GUARD ASYMMETRY. The inner searches at [L482] and [L498] index this record by order item ID
+ * with NO `structKeyExists` test, while the application loop at [L529] DOES guard with
+ * `structKeyExists` and `arrayLen`. On the normal path the key is created alongside the usage
+ * entry, so the unguarded form is safe only by an invariant the author evidently did not trust at
+ * the other site - and the seeding below can be pointed at an item with no usage entry.
  */
 function buildOrderItemQualifiedDiscounts(spec: {
   readonly bestDiscountOrderItemID: string;
@@ -1560,10 +1231,9 @@ function buildOrderItemQualifiedDiscounts(spec: {
   }
   accumulator[spec.bestDiscountOrderItemID] = primary;
 
-  // [L145-L162] The sale-price seeding pass runs BEFORE the main reward loop and
-  // creates the accumulator array at [L152] with an EMPTY reward identifier at
-  // [L156] - a sale price is not attributable to a promotion reward, so the key
-  // carries no reward. Reproduced verbatim: the empty string is data, not a gap.
+  // [L145-L162] The sale-price seeding pass runs BEFORE the main reward loop and creates the
+  // accumulator array at [L152] with an EMPTY reward identifier at [L156]: a sale price is not
+  // attributable to a reward, so the key carries none.
   accumulator[spec.salePriceSeedOrderItemID] = [
     buildQualifiedDiscount(
       SALE_PRICE_SEED_REWARD_ID,
@@ -1578,13 +1248,9 @@ function buildOrderItemQualifiedDiscounts(spec: {
 /**
  * The comma-delimited qualified-fulfillment identifier list.
  *
- * CFML parity [model/service/PromotionService.cfc:L752-L757]:
- * `getPromotionPeriodQualifiedFulfillmentIDList` starts from `""` and `listAppend`s,
- * so an order with no fulfillments yields the EMPTY STRING and never an absent
- * value. Built with the `src/lib/cfml/list.ts` helpers rather than
- * `Array.prototype.join`, so the empty-list convention and the `listFindNoCase`
- * de-duplication are applied deliberately instead of by accident. Note that
- * `listFindNoCase` returns a ONE-BASED position, so `0` - not `-1` - means absent.
+ * CFML parity [model/service/PromotionService.cfc:L752-L757]: the legacy builder starts from `""`
+ * and `listAppend`s, so an order with no fulfillments yields the EMPTY STRING. `listFindNoCase`
+ * positions are ONE-BASED, so `0` - not `-1` - means absent.
  */
 function buildQualifiedFulfillmentIDList(fulfillments: readonly OrderFulfillmentView[]): string {
   let list = '';
@@ -1601,12 +1267,10 @@ function buildQualifiedFulfillmentIDList(fulfillments: readonly OrderFulfillment
  *
  * LEGACY-DEFECT [model/service/PromotionService.cfc:L621-L623]: qualifiedFulfillments is written
  * but never initialised and never read; the caller reads qualifiedFulfillmentIDs.
+ *
  * Preserved deliberately; do not fix without a product decision.
  *
- * The dead key is populated whenever the owner declares it, so the field survives
- * as documented dead weight rather than being quietly dropped - and a suite can
- * assert that nothing reads it. Note the legacy member spelling `qualificationsMeet`
- * (not "Met"), carried over verbatim for interface parity.
+ * The legacy member spelling `qualificationsMeet` (not "Met") is carried over verbatim.
  */
 function buildPeriodQualification(spec: {
   readonly qualifier: PromotionQualifierRef;
@@ -1641,21 +1305,16 @@ function buildPeriodQualification(spec: {
     qualifiedFulfillmentIDs,
     qualifierDetails,
     orderItems,
-    // The dead key, written with the same value the live one carries - which is
-    // what [L621-L623] does, from `explicitlyQualifiedFulfillmentIDs`.
+    // The dead key, written with the value the live one carries - which is what [L621-L623] does,
+    // from `explicitlyQualifiedFulfillmentIDs`.
     qualifiedFulfillments: copyOf(qualifiedFulfillmentIDs),
   };
 }
 
 /**
- * Applies one positional item bag over one item's documented defaults.
- *
- * `??` is used for every member whose view type EXCLUDES `undefined`, because for
- * those an explicit `undefined` from the caller cannot be honoured and the
- * documented default is the only correct answer. `hasItemOverride` is used for the
- * single member whose view type INCLUDES `undefined` - `appliedPriceGroup` - where
- * "omit the key" and "write the key as undefined" must stay distinguishable,
- * because the second is how a caller forces the price-group-ineligible state.
+ * Applies one positional item bag over one item's documented defaults. `??` for every member whose
+ * view type EXCLUDES `undefined`; `hasItemOverride` for the one whose type INCLUDES it -
+ * `appliedPriceGroup` - where the second intent forces the price-group-ineligible state.
  */
 function resolveOrderItem(
   defaults: {
@@ -1675,8 +1334,8 @@ function resolveOrderItem(
   const price = bag?.price ?? defaults.price;
   const skuPrice = bag?.skuPrice ?? defaults.skuPrice;
 
-  // Consistent by default: the two calculated amounts agree with `price x quantity`,
-  // which is the ONLY state [model/entity/OrderItem.cfc:L200-L206] can produce.
+  // Consistent by default: the two calculated amounts agree with `price x quantity`, the ONLY state
+  // [model/entity/OrderItem.cfc:L200-L206] can produce.
   const consistentExtendedPrice = computeExtendedPrice(price, quantity);
   const consistentExtendedSkuPrice = computeExtendedSkuPrice(skuPrice, quantity);
 
@@ -1702,12 +1361,10 @@ function resolveOrderItem(
 }
 
 /**
- * Applies one positional fulfillment bag over one fulfillment's defaults.
- *
- * Two members need the presence test rather than `??`: `shippingMethod`, whose
- * NULL state reaches LEGACY-DEFECT 11, and `address`, whose absent state is the
- * only way the unguarded dereference at [model/service/PromotionService.cfc:L703]
- * becomes observable at all.
+ * Applies one positional fulfillment bag over one fulfillment's defaults. Two members need the
+ * presence test rather than `??`: `shippingMethod`, whose NULL state reaches LEGACY-DEFECT 11, and
+ * `address`, whose absent state is the only way the unguarded dereference at [L703] becomes
+ * observable.
  */
 function resolveOrderFulfillment(
   defaults: {
@@ -1722,9 +1379,8 @@ function resolveOrderFulfillment(
 ): OrderFulfillmentView {
   const address = hasFulfillmentOverride(bag, 'address') ? bag?.address : defaults.address;
 
-  // `addressIsNew` re-resolves the address rather than mutating it, because
-  // `Address.isNew()` is an ORM lifecycle call with no read-only-view equivalent
-  // and the view carries it as a plain flag.
+  // `addressIsNew` re-resolves the address rather than mutating it, because `Address.isNew()` is an
+  // ORM lifecycle call with no read-only-view equivalent.
   const addressIsNew = bag?.addressIsNew;
   const resolvedAddress =
     address !== undefined && addressIsNew !== undefined && addressIsNew !== address.isNew
@@ -1744,31 +1400,16 @@ function resolveOrderFulfillment(
   });
 }
 
-// ---------------------------------------------------------------------------
-// THE SINGLE EXPORT
-// ---------------------------------------------------------------------------
+// --- THE SINGLE EXPORT -----------------------------------------------------
 
 /**
  * Builds the golden multi-item, multi-reward read-only `OrderView`.
  *
- * EVERY CALL RETURNS A COMPLETELY FRESH OBJECT GRAPH - fresh order, fresh item
- * array, fresh fulfillment array, fresh usage ledger, fresh accumulator, fresh
- * qualification map, fresh `Money` instances, fresh collaborator double. Two calls
- * share nothing that either can mutate, so a suite can prove that a second,
- * independent invocation does not observe the first invocation's mutations. That
- * property is not decoration: the engine increments `usedInOrder` in place at
- * [model/service/PromotionService.cfc:L297] and splices arrays at
- * [model/service/PromotionService.cfc:L502], and on a warm Lambda container shared
- * state would carry one request's discounts into the next.
- *
- * ⭐ THE ONE DELIBERATE EXCEPTION TO THE FRESH-GRAPH RULE, and the trade-off it
- * buys. `reward.hasEligiblePriceGroup(priceGroup)` can only resolve when the
- * `PriceGroup` INSTANCE the reward holds IS the instance an order item's
- * `appliedPriceGroup` references. Identity is therefore SHARED between the reward
- * and the item - there is no way to exercise the L241 discriminator without it.
- * What is still fresh per call is the price group itself (a new instance every
- * call, because the price-group graph is rebuilt) and every ARRAY that contains
- * it, so the sharing is confined to a single call's graph and never spans calls.
+ * Every call returns a completely fresh graph, for the reason the header records. THE ONE
+ * DELIBERATE EXCEPTION: `reward.hasEligiblePriceGroup(priceGroup)` resolves only when the
+ * `PriceGroup` INSTANCE the reward holds IS the instance an item's `appliedPriceGroup` references,
+ * so identity is SHARED between reward and item; the L241 discriminator cannot be exercised without
+ * it. The price group and every array containing it are still fresh per call.
  *
  * @param overrides the single variation channel; see the interface above.
  * @returns a frozen `OrderView` whose engine-side scaffolding is written into
@@ -1777,8 +1418,7 @@ function resolveOrderFulfillment(
 export function makeOrderViewFixture(overrides?: OrderViewFixtureOverrides): OrderView {
   const idPrefix = overrides?.idPrefix ?? '';
 
-  // An explicit UTC instant, never the wall clock. `new Date(literal)` is a fresh
-  // object each call, so no two graphs share a mutable date.
+  // An explicit UTC instant, never the wall clock, and a fresh object each call.
   const now = overrides?.now ?? new Date(FIXED_NOW_ISO);
 
   // --- Opaque identifiers ---------------------------------------------------
@@ -1830,11 +1470,8 @@ export function makeOrderViewFixture(overrides?: OrderViewFixtureOverrides): Ord
 
   // --- The three items, one per arm of the L241 discriminator --------------
   //
-  // `'mixed'` is the default because it is the ONLY arrangement under which all
-  // three states are reachable from a single order: no applied group at all, a
-  // group the reward accepts, and a group the reward rejects. The other three
-  // values collapse the order onto one arm, which is useful for a narrow suite
-  // and useless for proving the ordering dependency.
+  // `'mixed'` is the default because it is the ONLY arrangement under which all three states are
+  // reachable from a single order.
   const eligibility: PriceGroupEligibility = overrides?.priceGroupEligibility ?? 'mixed';
   const itemTypeSystemCode = overrides?.orderItemTypeSystemCode ?? SALE_ORDER_ITEM_SYSTEM_CODE;
   const extendedAmountConsistency = overrides?.extendedAmountConsistency ?? 'consistent';
@@ -1865,9 +1502,8 @@ export function makeOrderViewFixture(overrides?: OrderViewFixtureOverrides): Ord
         sku: skuNoPriceGroup,
         quantity: ITEM_1_QUANTITY,
         price: Money.fromDecimalString(ITEM_1_PRICE),
-        // No price group was applied, so nothing lowered the price and
-        // `skuPrice` equals `price`. The correction term is consequently zero -
-        // which is exactly why this item alone could not prove the dependency.
+        // No price group applied, so nothing lowered the price and `skuPrice` equals `price`. The
+        // correction term is zero, which is why this item alone could not prove the dependency.
         skuPrice: Money.fromDecimalString(ITEM_1_PRICE),
         appliedPriceGroup: item1PriceGroup,
         orderItemTypeSystemCode: itemTypeSystemCode,
@@ -1923,11 +1559,9 @@ export function makeOrderViewFixture(overrides?: OrderViewFixtureOverrides): Ord
     address: buildShippingAddress(false),
   } as const;
 
-  // The PICKUP fulfillment: no shipping method and no address. It is the only
-  // fulfillment that reaches the unguarded `getAddress()` dereference at
-  // [model/service/PromotionService.cfc:L703] and the guarded one at
-  // [model/service/PromotionService.cfc:L358-L360], so it is what makes the
-  // difference between those two call sites observable.
+  // The PICKUP fulfillment: no shipping method, no address. The only one reaching both the
+  // unguarded `getAddress()` dereference at [model/service/PromotionService.cfc:L703] and the
+  // guarded one at [L358-L360].
   const pickupFulfillmentDefaults = {
     orderFulfillmentID: fulfillmentIDPickup,
     fulfillmentCharge: Money.fromDecimalString(PICKUP_FULFILLMENT_CHARGE),
@@ -1980,13 +1614,8 @@ export function makeOrderViewFixture(overrides?: OrderViewFixtureOverrides): Ord
 }
 
 // ---------------------------------------------------------------------------
-// The second half of the factory
-//
-// Split out purely so neither half is unreadably long, and declared AFTER the
-// export because the export is what a reader opens this file for. It is a plain
-// module-scope function, not a second export, and it holds no state: everything
-// it needs arrives in `context` and everything it produces is returned or written
-// into the caller's sink.
+// The second half of the factory - split out purely so neither half is unreadably long, and
+// declared after the export because the export is what a reader opens this file for.
 // ---------------------------------------------------------------------------
 
 function finishOrderViewFixture(context: {
@@ -2009,16 +1638,12 @@ function finishOrderViewFixture(context: {
 
   // --- Rewards, IN THE CALLER'S ORDER --------------------------------------
   //
-  // LEGACY-DEFECT [model/dao/PromotionDAO.cfc:L51-L132]: getActivePromotionRewards applies no
-  // ORDER BY, so reward iteration order - which the mutable usage ledger at
+  // LEGACY-DEFECT [model/dao/PromotionDAO.cfc:L51-L132]: getActivePromotionRewards applies no ORDER
+  // BY, so reward iteration order - which the mutable usage ledger at
   // model/service/PromotionService.cfc:L297 makes outcome-affecting - is non-deterministic.
   // Preserved deliberately; do not fix without a product decision.
   //
-  // The absence was proven programmatically during planning, not assumed. The
-  // consequence for a fixture is a prohibition: this array is handed back exactly
-  // as assembled and is NEVER sorted, re-ordered or normalised, and no default
-  // here is correct only because of an incidental ordering. A suite selects an
-  // ordering BY NAME and then asserts behaviour given that ordering.
+  // So this array is handed back as assembled, NEVER sorted.
   const orderingName: RewardOrderingName = overrides?.rewardOrdering ?? 'orderRewardLast';
   const selectedOrdering = promotionGraph.rewardOrderings.find(
     (candidate: { readonly name: RewardOrderingName }): boolean => candidate.name === orderingName,
@@ -2029,6 +1654,7 @@ function finishOrderViewFixture(context: {
   // LEGACY-DEFECT [model/service/PromotionService.cfc:L457-L461]: the two-pass reset mutates the
   // loop counter from inside the loop body, so pass two never runs when the reward collection is
   // empty, and only runs when the LAST reward belongs to a qualifying period.
+  //
   // Preserved deliberately; do not fix without a product decision.
   const orderingReachesPassTwo =
     selectedOrdering === undefined ? true : selectedOrdering.reachesPassTwo;
@@ -2037,12 +1663,9 @@ function finishOrderViewFixture(context: {
     overrides?.promotionRewards ?? orderingRewards,
   );
 
-  // The non-qualifying-last-reward variant. A SECOND promotion graph is built under
-  // a distinct `idPrefix` so its period identifier genuinely differs, and its
-  // order-level reward replaces the last element - which is the only way to make
-  // the LAST reward belong to a non-qualifying period without reaching inside an
-  // entity the sibling fixture owns. Built lazily, because it is not cheap and the
-  // default never needs it.
+  // The non-qualifying-last-reward variant: a SECOND promotion graph under a distinct `idPrefix` so
+  // its period identifier genuinely differs, whose order-level reward replaces the last element.
+  // Built lazily.
   const lastRewardPeriodQualifies = overrides?.lastRewardPeriodQualifies ?? true;
   let nonQualifyingPromotionPeriod: PromotionPeriod | undefined;
   if (!lastRewardPeriodQualifies && promotionRewards.length > 0) {
@@ -2070,23 +1693,13 @@ function finishOrderViewFixture(context: {
   // finds nothing and the over-use is never corrected. Repairing this changes the money charged.
   // Preserved deliberately; do not fix without a product decision.
   //
-  // ⭐ SOURCE-WINS CORRECTION (e). The AAP describes this as a simple wrong-key
-  // lookup; it is a CROSS-WIRING, and the difference decides what a test can see.
-  // Detection is CORRECT, so the loop always notices the over-use. What is wrong is
-  // the SUBTRAHEND and the ITEM LIST. So the layout below is load-bearing:
-  //
-  //   - `overusedRewardID` is the FIRST reward, over its own `maximumUsePerOrder`,
-  //     with usage entries on items 1 and 2.
-  //   - `leakedRewardID` is the LAST reward - the one the closed loop leaves behind -
-  //     with its usage entry on item 3 by default.
-  //
-  // Walking the leaked reward's item list (item 3) hunting for the over-used
-  // reward's discount entries (which live under item 1) finds NOTHING, so the
-  // over-use is SILENTLY NEVER CORRECTED. Pass `usageLedgerLayout: 'sameOrderItems'`
-  // for the contrast case, where the search does find an entry and strips a WRONG
-  // AMOUNT instead. With one reward, or with two rewards on the same items, the
-  // defect is completely invisible - which is why two rewards on different items is
-  // the default rather than an option.
+  // It is a CROSS-WIRING rather than a wrong-key lookup: detection is CORRECT, so the over-use is
+  // always noticed, and what is wrong is the SUBTRAHEND and the ITEM LIST - which makes the layout
+  // load-bearing. `overusedRewardID` is the FIRST reward, over its own `maximumUsePerOrder`, with
+  // usage entries on items 1 and 2; `leakedRewardID` is the LAST reward, with its entry on item 3.
+  // Walking item 3 for discount entries that live under item 1 finds NOTHING, so the over-use is
+  // SILENTLY NEVER CORRECTED, and `usageLedgerLayout: 'sameOrderItems'` is the contrast where the
+  // search finds an entry and strips a WRONG AMOUNT.
   const rewardCount = promotionRewards.length;
   const overusedReward: PromotionReward | undefined =
     rewardCount > 0 ? promotionRewards[0] : undefined;
@@ -2129,11 +1742,9 @@ function finishOrderViewFixture(context: {
           ),
         ];
 
-  // The over-used entry gets a small, genuinely exceedable per-order limit. EVERY
-  // OTHER entry gets a NULL limit, which is what routes it down the 1000000
-  // sentinel path - so a single order exercises the real limit and the sentinel at
-  // the same time, and a caller passing an explicit 0 exercises the falsy-but-not-null
-  // trap without any further setup.
+  // The over-used entry gets a small, genuinely exceedable per-order limit; EVERY OTHER entry gets
+  // a NULL limit, routing it down the 1000000 sentinel path, so a single order exercises the real
+  // limit and the sentinel at once.
   const boundedMaximumUsePerOrder = hasOverride(overrides, 'rewardMaximumUsePerOrder')
     ? overrides?.rewardMaximumUsePerOrder
     : DEFAULT_OVERUSED_MAXIMUM_USE_PER_ORDER;
@@ -2168,9 +1779,9 @@ function finishOrderViewFixture(context: {
     for (const reward of promotionRewards) {
       const rewardID = reward.getPromotionRewardID();
 
-      // [L172] The legacy seeding is wrapped in `structKeyExists`, so it is
-      // IDEMPOTENT and first-reward-wins: a reward appearing twice in the array
-      // does not re-seed its entry. Reproduced with `Object.hasOwn`.
+      // [L172] The legacy seeding is wrapped in `structKeyExists`, so it is IDEMPOTENT and
+      // first-reward-wins: a reward appearing twice does not re-seed its entry. Reproduced with
+      // `Object.hasOwn`.
       if (Object.hasOwn(rewardUsageDetails, rewardID)) {
         continue;
       }
@@ -2198,8 +1809,8 @@ function finishOrderViewFixture(context: {
     bestDiscountOrderItemID: context.itemIDNoPriceGroup,
     discountAmounts: overrides?.qualifiedDiscountAmounts ?? GOLDEN_QUALIFIED_DISCOUNT_AMOUNTS,
     promotion: promotionGraph.promotion,
-    // Keyed to the OVER-USED reward, so the inner match at [L483]/[L499] has
-    // something to find when the cross-wired item list happens to point at it.
+    // Keyed to the OVER-USED reward, so the inner match at [L483]/[L499] has something to find when
+    // the cross-wired item list points at it.
     promotionRewardID: overusedRewardID,
     salePriceSeedOrderItemID: context.itemIDPriceGroupAccepted,
     salePriceSeedAmount: SALE_PRICE_SEED_AMOUNT,
@@ -2240,9 +1851,8 @@ function finishOrderViewFixture(context: {
     );
   }
 
-  // Registered unconditionally so the EMPTY-reward variant still hands a suite a
-  // qualification map to inspect rather than an empty record it cannot distinguish
-  // from a bug.
+  // Registered unconditionally so the EMPTY-reward variant still hands a suite a qualification map
+  // rather than an empty record it cannot distinguish from a bug.
   registerPeriodQualification(promotionGraph.promotionPeriod, true);
 
   // --- Order-level scalars -------------------------------------------------
@@ -2251,9 +1861,7 @@ function finishOrderViewFixture(context: {
   // with a plain `+` rather than precisionEvaluate, unlike the ten other money sites in this file.
   // Preserved deliberately; do not fix without a product decision.
   //
-  // Both operands are supplied here as separate `Money` values and are deliberately
-  // NOT pre-summed, so whatever the engine does with them at L417 is the engine's
-  // observable behaviour and not an arithmetic the fixture performed on its behalf.
+  // Both operands are supplied separately, deliberately NOT pre-summed.
   const subtotal = overrides?.subtotal ?? Money.fromDecimalString(GOLDEN_SUBTOTAL);
   const subtotalAfterItemDiscounts =
     overrides?.subtotalAfterItemDiscounts ??
@@ -2268,8 +1876,8 @@ function finishOrderViewFixture(context: {
   const orderTypeSystemCode = overrides?.orderTypeSystemCode ?? SALES_ORDER_SYSTEM_CODE;
   const orderType: OrderTypeView = Object.freeze({ systemCode: orderTypeSystemCode });
 
-  // The comma list, built from `''` with `listAppend` so the CFML empty-list
-  // convention holds: no promotion codes yields `''`, never `undefined`.
+  // Built from `''` with `listAppend` so the CFML empty-list convention holds: no promotion codes
+  // yields `''`, never `undefined`.
   let promotionCodeList = '';
   for (const promotionCode of overrides?.promotionCodes ?? []) {
     promotionCodeList = listAppend(promotionCodeList, promotionCode);
@@ -2283,7 +1891,7 @@ function finishOrderViewFixture(context: {
     totalSaleQuantity,
     subtotal,
     orderType,
-    // ⭐ SOURCE-WINS CORRECTION (i): explicit `undefined` for guest checkout.
+    // Explicit `undefined` for guest checkout, never an omitted key.
     accountID: context.accountID,
     subtotalAfterItemDiscounts,
     promotionCodeList,
@@ -2322,21 +1930,13 @@ function finishOrderViewFixture(context: {
 /**
  * Fills the caller-owned capture sink, then forgets it.
  *
- * JUDGMENT CALL - WHY A SINK AT ALL. The mandated return type is `OrderView`, and
- * one exported unit per file forbids a second export, so there is nowhere else to
- * put the engine-side scaffolding a promotion suite needs: the reward array in the
- * caller's order, the mutable usage ledger, the qualified-discount accumulator, the
- * period qualifications, the comma-delimited fulfillment list and the collaborator
- * double. Widening the return type would contradict the interface the views
- * declare; exporting a second symbol would contradict the one-unit rule; and
- * rebuilding all of it inside every suite would duplicate the very invariants this
- * fixture exists to hold in one place. A caller-owned sink satisfies all three
- * constraints: the caller creates it, this function writes each member exactly
- * once, and NO reference is retained - so two calls with two sinks share nothing,
- * and a caller that passes no sink pays nothing.
- *
- * Returns early when no sink was supplied, so the plain `OrderView` case does no
- * extra work.
+ * JUDGMENT CALL: why a sink at all. The mandated return type is `OrderView` and one exported unit
+ * per file forbids a second export, so there is nowhere else to put the engine-side scaffolding a
+ * promotion suite needs - the reward array in the caller's order, the mutable usage ledger, the
+ * qualified-discount accumulator, the period qualifications, the qualified-fulfillment list and the
+ * collaborator double. Widening the return type would contradict the views and a second export the
+ * one-unit rule. The caller creates the sink and this function writes each member once, retaining
+ * NO reference.
  */
 function writeCaptureSink(context: {
   readonly overrides: OrderViewFixtureOverrides | undefined;
@@ -2386,11 +1986,11 @@ function writeCaptureSink(context: {
   }
 
   capture.qualifiedFulfillmentIDList = context.qualifiedFulfillmentIDList;
-  // `listLen('')` is 0, not 1 - the CFML empty-list convention, asserted rather
-  // than assumed, because a naive `split(',')` would report 1.
+  // `listLen('')` is 0, not 1 - the CFML empty-list convention, asserted rather than assumed,
+  // because a naive `split(',')` would report 1.
   capture.qualifiedFulfillmentIDCount = listLen(context.qualifiedFulfillmentIDList);
-  // CFML `len()` semantics, so an empty promotion-code list reads as empty exactly
-  // as `if(len(x))` reads it in the legacy source.
+  // CFML `len()` semantics, so an empty promotion-code list reads as empty exactly as `if(len(x))`
+  // reads it in the legacy source.
   capture.promotionCodeListIsEmpty = cfLen(context.promotionCodeList) === 0;
 
   const addressZoneDouble = buildAddressZoneEvaluatorDouble(
@@ -2398,7 +1998,13 @@ function writeCaptureSink(context: {
   );
   capture.addressZoneEvaluator = addressZoneDouble.evaluator;
   capture.addressZoneEvaluatorCalls = addressZoneDouble.calls;
-  capture.addressZone = buildAddressZone();
+  // The zone identifier is taken from the qualifier that configures it, so the
+  // projection a suite hands the double carries the SAME opaque ID the engine
+  // would have handed a real adapter [model/service/PromotionService.cfc:L681].
+  capture.addressZone = buildAddressZone(
+    context.promotionGraph.promotionQualifier.getShippingAddressZoneIDs()[0] ??
+      FALLBACK_ADDRESS_ZONE_ID,
+  );
 
   const addressedFulfillment = context.orderFulfillments.find(
     (candidate: OrderFulfillmentView): boolean => candidate.address !== undefined,
@@ -2417,10 +2023,9 @@ function writeCaptureSink(context: {
     ),
   );
 
-  // The three values [model/service/PromotionService.cfc:L531],
-  // [model/service/PromotionService.cfc:L448] and
-  // [model/service/PromotionService.cfc:L402] write, and NO fourth. Taken from the
-  // union `src/domain/entities/promotionApplied.ts` declares rather than invented.
+  // The three values [model/service/PromotionService.cfc:L531], [L448] and [L402] write, and NO
+  // fourth, taken from the union `src/domain/entities/promotionApplied.ts` declares rather than
+  // invented.
   const appliedTypes: readonly PromotionAppliedType[] = Object.freeze([
     'orderItem',
     'order',
@@ -2451,13 +2056,12 @@ function writeCaptureSink(context: {
   //
   // LEGACY-DEFECT [model/service/PromotionService.cfc:L541-L544]: the return/exchange branch
   // contains a live `// TODO [issue #1766]` and does nothing at all.
+  //
   // Preserved deliberately; do not fix without a product decision.
   //
-  // ⭐ SOURCE-WINS CORRECTION (a), as evaluated data. `otExchangeOrder` is a member
-  // of BOTH lists, so an exchange order runs the whole discount body AND THEN
-  // enters the no-op; the second gate is not the negation of the first. Both are
-  // evaluated with `listFindNoCase`, which returns a ONE-BASED position, so `> 0`
-  // is the membership test and `0` means absent.
+  // `otExchangeOrder` is in BOTH lists, so an exchange order runs the whole discount body AND THEN
+  // enters the no-op. Both gates use `listFindNoCase`, whose position is ONE-BASED, so `> 0` is the
+  // test.
   capture.reachesDiscountBody =
     listFindNoCase(SALE_OR_EXCHANGE_ORDER_TYPES, context.orderTypeSystemCode) > 0;
   capture.reachesReturnExchangeNoOp =

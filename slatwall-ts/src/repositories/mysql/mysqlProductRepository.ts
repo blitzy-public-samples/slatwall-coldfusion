@@ -5,28 +5,36 @@
  * in-scope DAOs) with the entity-lifecycle surface the service tier needs now that Hibernate is
  * gone. It is the concrete side of `../../domain/ports/productRepository.js`; the composition root
  * at `src/handlers/bootstrap.ts` (planned) constructs it and hands it to
- * `src/services/productService.ts` (planned) and to the already-written
- * `src/services/brandService.ts`, which reaches `saveBrand` through the same port.
+ * `src/services/productService.ts` (planned).
  *
- * ★ THE PORT DECLARES SEVEN METHODS AND THIS CLASS IMPLEMENTS SEVEN. The arithmetic is the port's
+ * ★ THE PORT DECLARES SIX METHODS AND THIS CLASS IMPLEMENTS SIX. The arithmetic is the port's
  * own: four functions are declared in `model/dao/ProductDAO.cfc`, minus the `private`
  * `saveImportData` [model/dao/ProductDAO.cfc:L328], gives three ported DAO methods
  * (`getAttributeSets` [L52], `loadDataFromFile` [L73], `searchProductsByProductType` [L419]); plus
  * three product entity-lifecycle methods, because `entityLoad`, `getHibachiDAO().save`
  * [model/service/ProductService.cfc:L287] and `super.delete`
- * [model/service/ProductService.cfc:L326] have no equivalent in a driver-only stack; plus the one
- * brand save that `return super.save(arguments.brand, arguments.data)`
- * [model/service/BrandService.cfc:L76] collapses into. There is no eighth.
+ * [model/service/ProductService.cfc:L326] have no equivalent in a driver-only stack. That is six,
+ * and the port states it as a lock. There is no seventh.
  *
- * JUDGMENT CALL: where the authoring brief for this file and the port disagree, the PORT WINS, and
- * two disagreements are live. The brief describes a six-method surface; the port declares seven,
- * having absorbed `saveBrand` (its header explains why brand lifecycle lands on the catalog
- * repository: there is no `BrandDAO.cfc` in the legacy tree at all, brand persistence ran entirely
- * through `super.save()`, and the port inventory is fixed at thirteen so no fourteenth port is
- * available). The brief also describes `searchProductsByProductType` as returning the legacy
- * two-key `{"id","value"}` structure; the port publishes `Promise<Product[]>` and assigns hydration
- * to this adapter. Both are recorded here rather than silently resolved, and both are annotated
- * again at the method that carries them.
+ * ★ NO BRAND WRITE LIVES HERE, AND AN EARLIER REVISION OF THIS FILE WAS WRONG TO CARRY ONE. It
+ * declared a seventh method, `saveBrand`, on the grounds that
+ * `return super.save(arguments.brand, arguments.data)` [model/service/BrandService.cfc:L76] is the
+ * one statement that made the legacy brand component durable and that AAP rule T3 converts
+ * `super.save()` into a repository method. The port's member set is LOCKED AT SIX and the port
+ * inventory is LOCKED AT THIRTEEN, so neither a seventh member here nor a fourteenth
+ * `BrandRepository` is available - and a partial brand write, one that stored `urlTitle` and
+ * `brandName` while dropping `activeFlag`, `publishedFlag` and `brandWebsite` and enforcing none of
+ * `model/validation/Brand.json`, would durably store a WRONG ROW and be strictly worse than no
+ * write. `src/domain/ports/productRepository.ts` records the removal and its reasoning in full;
+ * `src/services/brandService.ts` carries the LEGACY-NOTE that leaves the durable half to the
+ * composition root. `Brand` is still constructed in this file, but only as the eager many-to-one
+ * association of a product graph row - a read, never a write.
+ *
+ * JUDGMENT CALL: where the authoring brief for this file and the port disagree, the PORT WINS,
+ * and one disagreement is live. The brief describes `searchProductsByProductType` as returning
+ * the legacy two-key `{"id","value"}` structure; the port publishes `Promise<Product[]>` and
+ * assigns hydration to this adapter. It is recorded here rather than silently resolved, and
+ * annotated again at the method that carries it.
  *
  * NO USER RULES GOVERN THIS FILE. `review_rules` reports that no user rules were provided for this
  * project, so nothing here is written to satisfy a rule and no rule is invented to justify a
@@ -112,6 +120,7 @@
 import { randomUUID } from 'node:crypto';
 import { Brand } from '../../domain/entities/brand.js';
 import { Option } from '../../domain/entities/option.js';
+import { OptionGroup } from '../../domain/entities/optionGroup.js';
 import type { ProductHydrationInput } from '../../domain/entities/product.js';
 import { Product } from '../../domain/entities/product.js';
 import { ProductType } from '../../domain/entities/productType.js';
@@ -119,8 +128,8 @@ import type { SkuHydrationInput } from '../../domain/entities/sku.js';
 import { Sku } from '../../domain/entities/sku.js';
 import type {
   AttributeSetSummary,
-  BrandSavePayload,
   ProductRepository,
+  ProductSavePayload,
 } from '../../domain/ports/productRepository.js';
 import { Money } from '../../domain/valueObjects/money.js';
 import { listToArray } from '../../lib/cfml/list.js';
@@ -309,10 +318,6 @@ const PRODUCT_SKU_OPTIONS_LABEL = 'the sku option read';
 const PRODUCT_INSERT_LABEL = 'the product insert';
 
 const PRODUCT_UPDATE_LABEL = 'the product update';
-
-const BRAND_INSERT_LABEL = 'the brand insert';
-
-const BRAND_UPDATE_LABEL = 'the brand update';
 
 // ---------------------------------------------------------------------------
 // Reading a result-set row
@@ -787,7 +792,7 @@ const PRODUCT_INSERTED_COLUMNS = [
  *
  * `productID` is excluded because it is the key the statement MATCHES on rather than a value it sets.
  * `createdDateTime` and `createdByAccountID` are excluded because
- * `HibachiEntity.preUpdate` [org/Hibachi/HibachiEntity.cfc:L663-L668] stamped only the modified pair
+ * `HibachiEntity.preUpdate` [org/Hibachi/HibachiEntity.cfc:L662-L667] stamped only the modified pair
  * and left the created pair exactly as the insert wrote it - carrying them into the SET list would let
  * a caller that hydrated an entity without them overwrite real creation provenance with NULL.
  */
@@ -812,17 +817,23 @@ const PRODUCT_UPDATED_COLUMNS = [
 ] as const;
 
 /**
- * The eleven physical columns of `SwBrand`, in insert order.
+ * The eleven physical columns of `SwBrand`, read-only in this module.
  *
  * Taken from [model/entity/Brand.cfc]: the six scalars at L52-L57, `remoteID` at L77, and the four
  * audit columns at L80-L83. `attributeValues` (L60) and `products` (L61) are one-to-many collections,
  * and the seven many-to-many associations at L66-L73 live in their own link tables.
  *
  * `SwBrand` HAS NO FOREIGN KEY OF ITS OWN. That is why this list is scalars plus audit and nothing
- * else, and it is also why a brand save cannot fail on a dangling association the way a product save
- * can.
+ * else.
+ *
+ * ★ THIS MODULE NEVER WRITES `SwBrand`, AND NO MODULE IN THE SLICE DOES. The port's member set is
+ * locked at six and the port inventory at thirteen, so there is no brand save here and no
+ * `BrandRepository` to host one; `src/domain/ports/productRepository.ts` records that removal in
+ * full. Brand columns are projected only because [model/entity/Product.cfc:L68] declares
+ * `fetch="join"` on the association, so the brand is materialized in the product's own statement.
+ * There is therefore no insert or update list for this table.
  */
-const BRAND_INSERTED_COLUMNS = [
+const BRAND_READ_COLUMNS = [
   'brandID',
   'activeFlag',
   'publishedFlag',
@@ -832,18 +843,6 @@ const BRAND_INSERTED_COLUMNS = [
   'remoteID',
   'createdDateTime',
   'createdByAccountID',
-  'modifiedDateTime',
-  'modifiedByAccountID',
-] as const;
-
-/** The eight columns a brand update SETs; the same three exclusions as the product update. */
-const BRAND_UPDATED_COLUMNS = [
-  'activeFlag',
-  'publishedFlag',
-  'urlTitle',
-  'brandName',
-  'brandWebsite',
-  'remoteID',
   'modifiedDateTime',
   'modifiedByAccountID',
 ] as const;
@@ -1189,24 +1188,33 @@ const SKU_READ_COLUMNS = [
 ] as const;
 
 /**
- * The eleven `SwOption` columns this module reads - and the ONE it deliberately does not.
+ * The twelve `SwOption` columns this module reads.
  *
- * From [model/entity/Option.cfc]: the five scalars at L52-L56, `defaultImageID` at L60, `remoteID` at
- * L69, and the four audit columns at L72-L75.
+ * From [model/entity/Option.cfc]: the five scalars at L52-L56, `optionGroupID` at L59,
+ * `defaultImageID` at L60, `remoteID` at L69, and the four audit columns at L72-L75.
  *
- * ⚠ `optionGroupID` [model/entity/Option.cfc:L59, `fkcolumn="optionGroupID"`] IS NOT SELECTED, and the
- * omission is a boundary consequence rather than an oversight. `src/domain/entities/optionGroup.ts` is
- * not among this file's declared dependencies, so no `OptionGroup` can be constructed here and
- * `Option`'s `optionGroup` constructor slot is therefore passed `undefined`. Selecting a foreign key
- * that has nowhere to go would be dead weight in the statement text. The consequences are visible and
- * already documented on the entity: `Product.getOptionsByOptionGroup(optionGroupID)` skips an option
- * whose group was not materialized, and `Product.getSkus(true)` returns the UNSORTED projection because
- * the odometer weighting needs both `option.getSortOrder()` and `option.getOptionGroup().getSortOrder()`.
- * A consumer that needs option groups on a product's SKUs must go through
- * `skuRepository.getProductSkus(product, sorted, fetchOptions)` - which is the legacy
- * `SkuService.getProductSkus` path [model/service/SkuService.cfc:L220-L245] and is owned by
- * `mysqlSkuRepository.ts`, the adapter that does import `optionGroup.ts`. Stated as an explicitness
- * fact about the fetch shape, not as a performance claim.
+ * ★ `optionGroupID` IS SELECTED, AND AN EARLIER REVISION OF THIS MODULE DELIBERATELY DID NOT SELECT IT.
+ * That decision rested on one premise - that `src/domain/entities/optionGroup.ts` was not among this
+ * file's dependencies, so no `OptionGroup` could be constructed here and the foreign key would have
+ * nowhere to go. The premise was a statement about this module's own import list, not about the layer
+ * rule: a repository adapter may import any domain entity, and `mysqlSkuRepository.ts` imports this
+ * very one for this very join. What the omission actually cost is now visible from the port's own
+ * contract, which requires a returned `Product` to carry `options` materialized to CONSUMER DEPTH -
+ * and the consumer, `Product.getOptionGroups()`, needs the group and not just the option:
+ *
+ *   * `Product.getOptionGroups()` [model/entity/Product.cfc:L240-L247] is a live member of the
+ *     `getFormattedOptionGroups` validation path and answers from an eagerly-materialized array
+ *     supplied by THIS adapter. With no group on any option there was nothing to derive it from.
+ *   * `Product.getOptionsByOptionGroup(optionGroupID)` skipped every option, since none carried a
+ *     group to match against.
+ *   * `Product.getSkus(true)` returned the UNSORTED projection, because the odometer weighting reads
+ *     both `option.getSortOrder()` and `option.getOptionGroup().getSortOrder()`.
+ *
+ * The group therefore arrives through the same LEFT OUTER JOIN `mysqlSkuRepository.ts` uses, adding no
+ * statement to the fetch shape - see {@link buildSkuOptionsSql}. `mysqlSkuRepository.getProductSkus`
+ * [model/service/SkuService.cfc:L220-L245] remains the path for a caller that wants SKUs on their own
+ * terms rather than a product's; the two now agree about what an option carries instead of differing.
+ * Stated as an explicitness fact about the fetch shape, not as a performance claim.
  */
 const OPTION_READ_COLUMNS = [
   'optionID',
@@ -1214,6 +1222,7 @@ const OPTION_READ_COLUMNS = [
   'optionName',
   'optionDescription',
   'sortOrder',
+  'optionGroupID',
   'defaultImageID',
   'remoteID',
   'createdDateTime',
@@ -1221,6 +1230,41 @@ const OPTION_READ_COLUMNS = [
   'modifiedDateTime',
   'modifiedByAccountID',
 ] as const;
+
+/**
+ * The twelve `SwOptionGroup` columns joined alongside each option.
+ * [model/entity/OptionGroup.cfc:L52-L67]
+ *
+ * Identical to the set `mysqlSkuRepository.ts` reads, deliberately: the two adapters hydrate the same
+ * entity from the same table, and a narrower projection here would make an `OptionGroup` reached
+ * through a product differ from one reached through a SKU.
+ */
+const OPTION_GROUP_READ_COLUMNS = [
+  'optionGroupID',
+  'optionGroupName',
+  'optionGroupCode',
+  'optionGroupImage',
+  'optionGroupDescription',
+  'imageGroupFlag',
+  'sortOrder',
+  'remoteID',
+  'createdDateTime',
+  'createdByAccountID',
+  'modifiedDateTime',
+  'modifiedByAccountID',
+] as const;
+
+/**
+ * Alias prefix for the option-group columns joined alongside an option.
+ *
+ * `SwOption` and `SwOptionGroup` share five column names outright - `optionGroupID`, `sortOrder`,
+ * `remoteID` and two of the four audit columns overlap by name across all four - so one flat row
+ * cannot carry both sets unprefixed. Prefixing the GROUP side leaves the option columns readable under
+ * their own schema names, which keeps the projection diffable against [model/entity/Option.cfc]. The
+ * prefix string is the one `mysqlSkuRepository.ts` uses, so a reviewer reading either module sees the
+ * same labels for the same columns.
+ */
+const OPTION_GROUP_ALIAS_PREFIX = 'optionGroup_';
 
 /**
  * Render an aliased projection for one table of a multi-table read.
@@ -1271,7 +1315,7 @@ function aliasedProjection(
  */
 const PRODUCT_GRAPH_PROJECTION = [
   aliasedProjection('p', 'p_', PRODUCT_INSERTED_COLUMNS),
-  aliasedProjection('b', 'b_', BRAND_INSERTED_COLUMNS),
+  aliasedProjection('b', 'b_', BRAND_READ_COLUMNS),
   aliasedProjection('pt', 'pt_', PRODUCT_TYPE_READ_COLUMNS),
 ].join(',\n  ');
 
@@ -1353,6 +1397,21 @@ WHERE ${predicates.join('\n  OR ')}`;
  * without a second statement per SKU. That is the explicit alternative to the ORM's implicit
  * per-collection load, and it is what makes the fetch shape a property of this method.
  *
+ * ★ THE OPTION GROUP JOINS HERE, AND IT ADDS NO STATEMENT. `Option.optionGroup`
+ * [model/entity/Option.cfc:L59] is a many-to-one on `optionGroupID`, and the join is a `LEFT OUTER`
+ * one BECAUSE THAT COLUMN IS NULLABLE - the declaration carries no `notNull="true"`, so an option with
+ * no group must answer `undefined` from {@link toOptionGroup} rather than vanish from the result set,
+ * which an inner join would do. That distinction is load-bearing twice over:
+ * `Product.getOptionGroups()` must not silently shorten a product's option-group list, and
+ * `Sku.generateImageFileName()` [model/entity/Sku.cfc:L134] reproduces the source's UNGUARDED
+ * dereference of the group - it can only do so if a group-less option actually reaches it.
+ *
+ * The group is materialized WITHOUT its own `options` collection, exactly as `mysqlSkuRepository.ts`
+ * decides for the same join: populating it would load every option of every group these options belong
+ * to, which no consumer of this read asks for, and would point each of those options straight back at
+ * the same group. What the group is needed FOR is `imageGroupFlag` and `sortOrder`, both columns on its
+ * own row.
+ *
  * @param skuIDCount how many SKU identifiers will be bound; must be at least one.
  * @returns the statement text.
  * @throws An error named `SqlPlaceholderCountError` when `skuIDCount` is below one.
@@ -1360,9 +1419,11 @@ WHERE ${predicates.join('\n  OR ')}`;
 function buildSkuOptionsSql(skuIDCount: number): string {
   return `SELECT
   so.skuID as link_skuID,
-  ${OPTION_READ_COLUMNS.map((columnName: string) => `o.${columnName}`).join(',\n  ')}
+  ${OPTION_READ_COLUMNS.map((columnName: string) => `o.${columnName}`).join(',\n  ')},
+  ${aliasedProjection('og', OPTION_GROUP_ALIAS_PREFIX, OPTION_GROUP_READ_COLUMNS)}
 FROM SwSkuOption so
 INNER JOIN SwOption o ON o.optionID = so.optionID
+LEFT JOIN SwOptionGroup og ON og.optionGroupID = o.optionGroupID
 WHERE so.skuID IN (${sqlPlaceholderList(skuIDCount)})`;
 }
 
@@ -1402,56 +1463,233 @@ SET
 WHERE productID = ?`;
 
 /**
- * Delete one product row.
+ * Point a product row at its default SKU, once that SKU has a key.
  *
- * ⚠⚠ THE HIBERNATE CASCADES ARE NOT REPRODUCED, AND THAT IS A DELIBERATE, DOCUMENTED DECISION RATHER
- * THAN AN OMISSION. `model/entity/Product.cfc` declares `cascade="all-delete-orphan"` on `skus` (L73),
- * `productImages` (L74), `attributeValues` (L75) and `productReviews` (L76), and `cascade="delete"` on
- * the `defaultSku` many-to-one (L70). Under Hibernate, deleting a product therefore deleted its SKUs,
- * images, attribute values, reviews and default SKU as one atomic unit of work.
+ * ★★ THIS STATEMENT EXISTS BECAUSE THE TWO FOREIGN KEYS POINT AT EACH OTHER. `SwSku.productID`
+ * references `SwProduct` [model/entity/Sku.cfc:L65] and `SwProduct.defaultSkuID` references `SwSku`
+ * [model/entity/Product.cfc:L70], so neither row can be written with its key already satisfied: the
+ * product row has to exist before any SKU row may name it, and the SKU rows have to exist before the
+ * product row may name one of them. Hibernate resolved exactly this by inserting the parent, inserting
+ * the children, and then issuing a follow-up UPDATE for the parent's own foreign key. That follow-up is
+ * this statement, and it runs inside the same transaction as the two inserts.
  *
- * // JUDGMENT CALL: this statement deletes the `SwProduct` row and nothing else. Reproducing the
- * // cascade would mean four to six dependent DELETEs with NO ENCLOSING TRANSACTION - `./connection.js`
- * // publishes `execute` and `executeMutation` and DELIBERATELY publishes no transaction method, and
- * // §8.4's exclusion note below records that this module does not introduce one. A half-applied
- * // multi-table cascade with no rollback leaves orphaned SKUs and orphaned EAV rows behind and is
- * // strictly worse than a delete that either succeeds or is refused. Silently deleting rows in four
- * // tables that the caller never named would also be the single most destructive thing this adapter
- * // could do on the strength of an inference.
+ * ONE COLUMN, NOT A SECOND FULL UPDATE, AND THE AUDIT STAMPS ARE LEFT ALONE. The row was written
+ * moments earlier in this same unit of work, so its `modifiedDateTime` already reports this write;
+ * re-stamping it would report two modifications where the caller made one. Reusing
+ * {@link UPDATE_PRODUCT_SQL} would also re-bind seventeen columns to settle one, and would re-read them
+ * off an entity whose own state this cascade has already moved past.
  *
- * WHAT HAPPENS INSTEAD, STATED PLAINLY SO THE GAP IS NOT DISCOVERED IN PRODUCTION. Where the schema
- * carries a foreign-key constraint from a dependent table, MySQL refuses the delete and the driver's
- * error propagates - which is also what the legacy did when Hibernate met a constraint it could not
- * satisfy, so that path is parity. Where the schema carries no constraint, the dependent rows remain
- * and this method reports the row it deleted. Whoever ports the order pipeline inherits the cascade
- * question together with the transaction boundary it needs; a compensation story is deliberately NOT
- * authored here (B7 - no invented requirements).
+ * `defaultSkuID` binds first and the key binds last, matching the placeholder order.
+ */
+const UPDATE_PRODUCT_DEFAULT_SKU_SQL = 'UPDATE SwProduct SET defaultSkuID = ? WHERE productID = ?';
+
+/**
+ * Detach a product from its default SKU so that its SKU rows may be deleted.
  *
- * ★ `attributeValues` IS THE ONE THE PORT ASKED THIS FILE TO RECORD. `../../domain/ports/productRepository.js`
- * states that "the unhonoured `cascade="all-delete-orphan"` obligation on the non-ported
- * `attributeValues` collections is recorded in the repositories sibling, not here" - this is that
- * record. The EAV read path is not ported at all, no `SwAttributeValue` statement exists anywhere in
- * this module, and the obligation is therefore UNHONOURED rather than partially honoured. The identical
- * declaration exists on three more in-scope entities - `Sku.attributeValues`
- * [model/entity/Sku.cfc:L70], `ProductType.attributeValues` [model/entity/ProductType.cfc:L67] and
- * `Brand.attributeValues` [model/entity/Brand.cfc:L60] - four in total across the slice, all
- * unhonoured for the same reason.
+ * This is the SQL half of `arguments.product.setDefaultSku(javaCast("null", ""))`
+ * [model/service/ProductService.cfc:L323]. It is not an optimisation and it is not optional: the two
+ * foreign keys point at each other - `SwSku.productID` references `SwProduct`
+ * [model/entity/Sku.cfc:L65] and `SwProduct.defaultSkuID` references `SwSku`
+ * [model/entity/Product.cfc:L70] - so the SKU rows cannot go while the product row still names one of
+ * them. It is the mirror of {@link UPDATE_PRODUCT_DEFAULT_SKU_SQL}, which settles the same column on the
+ * way in.
+ *
+ * THE AUDIT STAMPS ARE LEFT ALONE, unlike the child detachment in the price-group adapter. There the
+ * detached children SURVIVED the delete, so a modification stamp was owed to rows that would still be
+ * read afterwards. Here the row being updated is deleted a few statements later in the same unit of
+ * work, so stamping it would write a modification nobody can ever observe.
+ */
+const DETACH_PRODUCT_DEFAULT_SKU_SQL =
+  'UPDATE SwProduct SET defaultSkuID = NULL WHERE productID = ?';
+
+/**
+ * The three link tables the product OWNS, whose rows go with it.
+ *
+ * `listingPages` -> `SwProductListingPage` [model/entity/Product.cfc:L79], `categories` ->
+ * `SwProductCategory` [L80] and `relatedProducts` -> `SwRelatedProduct` [L81] are all declared
+ * `fieldtype="many-to-many"` with `fkcolumn="productID"` and no `inverse="true"`, which makes this
+ * product the OWNING side of each. Hibernate removed an owner's link rows when the owner was deleted -
+ * that is not the `cascade` attribute doing it, which is why these three need no cascade declaration to
+ * be in scope here. The far-side rows in `SwContent`, `SwCategory` and `SwProduct` are NOT touched: a
+ * category does not cease to exist because a product left it.
+ *
+ * ⚠ `SwRelatedProduct` IS SELF-REFERENTIAL, AND ONLY THE OWNED HALF IS DELETED. Its two columns are
+ * `productID` and `relatedProductID` [L81], so rows naming this product as SOMEONE ELSE'S related
+ * product belong to that other product's collection, not to this one. Hibernate did not reach into
+ * another owner's collection either, so if such a row exists the database refuses the delete and the
+ * driver's error propagates. That refusal is parity, not a gap - see the note on {@link DELETE_PRODUCT_SQL}.
+ */
+const PRODUCT_OWNED_LINK_TABLES: readonly string[] = Object.freeze([
+  'SwProductListingPage',
+  'SwProductCategory',
+  'SwRelatedProduct',
+]);
+
+/**
+ * The seven INVERSE `many-to-many` link tables that name this product, in declaration order.
+ *
+ * ★ THIS LIST IS NOT A JUDGMENT CALL - IT IS TRANSCRIBED FROM THE ONE PLACE THE FRAMEWORK DEFINES IT.
+ * `HibachiService.delete()` calls `arguments.entity.removeAllManyToManyRelationships()`
+ * [org/Hibachi/HibachiService.cfc:L61] before it reaches the DAO, and that method
+ * [org/Hibachi/HibachiEntity.cfc:L271-L284] loops EVERY property, selects the ones whose `fieldtype` is
+ * `many-to-many` and whose `cascade` is absent or is none of `all-delete-orphan,delete,delete-orphan`,
+ * and invokes `remove<singularname>` on each related entity. Its own hint at [L270] states the purpose in
+ * as many words: "to make sure that all of the many-to-many relationships are removed so that it doesn't
+ * violate fkconstrint".
+ *
+ * `model/entity/Product.cfc` declares exactly ten `many-to-many` properties - the three owner tables
+ * above [model/entity/Product.cfc:L79-L81] and the seven inverse ones here [L84-L90] - and NOT ONE of
+ * them declares a `cascade`, so the framework's predicate selects all ten. NO `inverse` TEST APPEARS IN
+ * THAT LOOP, which is why the inverse half is cleaned here rather than left to its owning side: a row in
+ * `SwPromoRewardProduct` that still names a deleted product is exactly the foreign-key violation [L270]
+ * exists to prevent.
+ *
+ * EVERY ONE IS KEYED ON `productID`, verbatim from each property's `fkcolumn`, so the emitted statement
+ * is `DELETE FROM <linktable> WHERE productID = ?` and the reverse iteration order of [L278] is
+ * unobservable - a set of rows removed one at a time in any order is the same set removed by one
+ * predicate.
+ */
+const PRODUCT_INVERSE_LINK_TABLES: readonly string[] = Object.freeze([
+  'SwPromoRewardProduct',
+  'SwPromoRewardExclProduct',
+  'SwPromoQualProduct',
+  'SwPromoQualExclProduct',
+  'SwPriceGroupRateProduct',
+  'SwVendorProduct',
+  'SwPhysicalProduct',
+]);
+
+/**
+ * The product's own one-to-many dependents, each declared `cascade="all-delete-orphan"`.
+ *
+ * `productImages` -> `SwImage` [model/entity/Product.cfc:L74, model/entity/Image.cfc:L61],
+ * `attributeValues` -> `SwAttributeValue` [L75, model/entity/AttributeValue.cfc:L70] and
+ * `productReviews` -> `SwProductReview` [L76, model/entity/ProductReview.cfc:L60]. All three key on
+ * `productID`, and `all-delete-orphan` is exactly the declaration that made Hibernate delete them with
+ * their parent.
+ *
+ * `skus` [L73] carries the same declaration but is deleted separately, because its own dependents have
+ * to go first.
+ */
+const PRODUCT_DEPENDENT_TABLES: readonly string[] = Object.freeze([
+  'SwImage',
+  'SwAttributeValue',
+  'SwProductReview',
+]);
+
+/** The physical table behind the `skus` collection [model/entity/Product.cfc:L73]. */
+const SKU_TABLE_NAME = 'SwSku';
+
+/**
+ * Everything that hangs off a SKU, which the `skus` cascade reached transitively.
+ *
+ * `cascade="all-delete-orphan"` on `Product.skus` [model/entity/Product.cfc:L73] deleted each SKU
+ * entity, and deleting a SKU entity ran ITS OWN declarations in turn. Four are cascaded collections -
+ * `alternateSkuCodes` -> `SwAlternateSkuCode` [model/entity/Sku.cfc:L69], `attributeValues` ->
+ * `SwAttributeValue` [L70], `skuCurrencies` -> `SwSkuCurrency` [L72] and `stocks` -> `SwStock` [L73] -
+ * and four are owned link tables that go with their owner: `options` -> `SwSkuOption` [L76],
+ * `accessContents` -> `SwSkuAccessContent` [L77], `subscriptionBenefits` -> `SwSkuSubsBenefit` [L78]
+ * and `renewalSubscriptionBenefits` -> `SwSkuRenewalSubsBenefit` [L79].
+ *
+ * ⚠ `orderItems` [model/entity/Sku.cfc:L71] IS ABSENT ON PURPOSE. It is the one SKU collection declared
+ * with NO cascade, so Hibernate never deleted an order item to make room for a product delete - the
+ * foreign key stood and the delete failed. Reproducing the absence is what keeps a sold SKU
+ * undeletable; adding `SwOrderItem` here would silently destroy order history, and the order aggregate
+ * is out of scope besides.
+ *
+ * ★ TWO SUBSCRIPTION-OWNED LINK TABLES APPEAR HERE, AND THAT IS NOT A SCOPE BREACH.
+ * `SwSkuSubsBenefit` and `SwSkuRenewalSubsBenefit` are LINK tables owned by `Sku` itself, not
+ * subscription business logic: their rows exist only to join a SKU to a benefit, they carry no payload,
+ * and deleting them is the SKU's own declaration [L78-L79] rather than anything the subscription module
+ * decides. No `SwSubscriptionBenefit` row is touched.
+ */
+const SKU_DEPENDENT_TABLES: readonly string[] = Object.freeze([
+  'SwAlternateSkuCode',
+  'SwAttributeValue',
+  'SwSkuCurrency',
+  'SwStock',
+  'SwSkuOption',
+  'SwSkuAccessContent',
+  'SwSkuSubsBenefit',
+  'SwSkuRenewalSubsBenefit',
+]);
+
+/**
+ * Delete every row of one table that names this product directly.
+ *
+ * One shared builder rather than a dozen hand-written constants, because the statement is the same
+ * shape in every case and the table name is the only variable. The names come from frozen lists above,
+ * never from a caller, so no identifier reaches this template from outside the module.
+ *
+ * @param tableName the physical table to delete from.
+ * @returns a single-parameter DELETE keyed on `productID`.
+ */
+function buildDeleteByProductIdSql(tableName: string): string {
+  return `DELETE FROM ${tableName} WHERE productID = ?`;
+}
+
+/**
+ * Delete every row of one table that names any SKU of this product.
+ *
+ * The subquery is what replaces Hibernate's transitive walk. The ORM had every SKU of the product
+ * loaded in the session and could delete each dependent by SKU key one row at a time; without a
+ * session, naming the SKUs in a subquery reaches the same set in ONE statement per table instead of one
+ * per table per SKU. MySQL permits a subquery over a DIFFERENT table than the delete target, which
+ * `SwSku` always is here.
+ *
+ * It runs BEFORE `SwSku` itself is emptied, or the subquery would select nothing and the dependents
+ * would survive as orphans.
+ *
+ * @param tableName the physical table to delete from.
+ * @returns a single-parameter DELETE keyed on the product's SKUs.
+ */
+function buildDeleteBySkuOfProductSql(tableName: string): string {
+  return `DELETE FROM ${tableName} WHERE skuID IN (SELECT skuID FROM ${SKU_TABLE_NAME} WHERE productID = ?)`;
+}
+
+/**
+ * Delete one product row - the last statement of the cascade, not the whole of it.
+ *
+ * ★★ THIS DOC BLOCK ONCE OPENED "⚠⚠ THE HIBERNATE CASCADES ARE NOT REPRODUCED, AND THAT IS A
+ * DELIBERATE, DOCUMENTED DECISION RATHER THAN AN OMISSION", AND THIS IS THE RECORD OF THAT CHANGE.
+ * The old reasoning was: "Reproducing the cascade would mean four to six dependent DELETEs with NO
+ * ENCLOSING TRANSACTION - `./connection.js` publishes `execute` and `executeMutation` and DELIBERATELY
+ * publishes no transaction method... A half-applied multi-table cascade with no rollback leaves
+ * orphaned SKUs and orphaned EAV rows behind and is strictly worse than a delete that either succeeds
+ * or is refused."
+ *
+ * THE CONDITIONAL WAS SOUND AND ITS PREMISE IS NO LONGER TRUE. `./connection.js` now publishes
+ * `transaction`, so the enclosing unit of work the old note said was unavailable is available, and with
+ * it the rollback that made a half-applied cascade unacceptable. The old note's own conclusion
+ * therefore inverts: with a transaction in hand, deleting the dependents is strictly better than
+ * leaving them, because Hibernate deleted them and the schema's foreign keys otherwise refuse the
+ * parent delete outright. The cascade is reproduced in {@link MysqlProductRepository.deleteProduct},
+ * and the tables it walks are enumerated and cited on the four lists above.
+ *
+ * ⚠ AND THE OLD NOTE'S SECOND CLAIM WAS ALREADY FALSE WHEN IT WAS WRITTEN TWICE OVER: this file's own
+ * `saveProduct` opens a transaction to cascade transient SKUs, and `./mysqlSkuRepository.js` opens one
+ * to reconcile `SwSkuOption`. A reader who trusted this paragraph would have concluded the module had
+ * no transactional capability while two of its write paths depended on one.
+ *
+ * ★ `attributeValues` WAS THE ONE THE PORT ASKED THIS FILE TO RECORD, AND THE OBLIGATION IS NOW
+ * HONOURED ON THE DELETE PATH. `../../domain/ports/productRepository.js` states that "the unhonoured
+ * `cascade="all-delete-orphan"` obligation on the non-ported `attributeValues` collections is recorded
+ * in the repositories sibling, not here" - this is still that record, with the status changed. The EAV
+ * READ path remains unported and no `SwAttributeValue` row is ever selected or written; what is now
+ * reproduced is the DELETE, by `productID` [model/entity/Product.cfc:L75] and by `skuID`
+ * [model/entity/Sku.cfc:L70], because those rows are unreachable orphans once their owner is gone and
+ * the legacy removed them. The identical declaration on `ProductType.attributeValues`
+ * [model/entity/ProductType.cfc:L67] and `Brand.attributeValues` [model/entity/Brand.cfc:L60] is still
+ * UNHONOURED - neither entity has a ported delete path at all - so two of the four remain outstanding
+ * rather than all four.
+ *
+ * WHAT STILL PROPAGATES RATHER THAN BEING SWALLOWED. A foreign key this cascade does not clear - an
+ * order item on a SKU [model/entity/Sku.cfc:L71], or an inverse-side `SwRelatedProduct` row - makes
+ * MySQL refuse the delete and the driver's error travels out through the rolled-back transaction. That
+ * is parity: Hibernate raised a constraint violation in exactly those situations rather than reporting
+ * a clean refusal.
  */
 const DELETE_PRODUCT_SQL = 'DELETE FROM SwProduct WHERE productID = ?';
-
-/** Existence read for the brand save path; see {@link SELECT_PRODUCT_ID_SQL} for why one column suffices. */
-const SELECT_BRAND_ID_SQL = 'SELECT brandID FROM SwBrand WHERE brandID = ?';
-
-/** Insert one brand row - eleven columns, eleven placeholders, from {@link BRAND_INSERTED_COLUMNS}. */
-const INSERT_BRAND_SQL = `INSERT INTO SwBrand (
-  ${BRAND_INSERTED_COLUMNS.join(',\n  ')}
-) VALUES (${sqlPlaceholderList(BRAND_INSERTED_COLUMNS.length)})`;
-
-/** Update one brand row - eight SET assignments then the key, nine parameters, key bound LAST. */
-const UPDATE_BRAND_SQL = `UPDATE SwBrand
-SET
-  ${BRAND_UPDATED_COLUMNS.map((columnName: string) => `${columnName} = ?`).join(',\n  ')}
-WHERE brandID = ?`;
 
 // ---------------------------------------------------------------------------
 // Identifier minting
@@ -1573,6 +1811,76 @@ type ProductHydrationCollaborators = Readonly<
 >;
 
 /**
+ * The one write capability this adapter borrows from its SKU sibling, to reproduce
+ * `cascade="all-delete-orphan"` on `Product.skus` [model/entity/Product.cfc:L73].
+ *
+ * ★★ WHY A DEDICATED CONTRACT RATHER THAN THE `SkuRepository` PORT THIS CLASS ALREADY HOLDS.
+ * {@link ProductHydrationCollaborators} already carries a `skuRepository`, and `SkuRepository.saveSku`
+ * already persists a SKU together with its `SwSkuOption` membership - so it looks like the cascade could
+ * simply call it. It cannot, for two reasons that are both invisible at the call site:
+ *
+ *   1. `saveSku(sku)` reaches the executor IT was constructed with. Calling it from inside this
+ *      adapter's transaction would send the SKU inserts down a DIFFERENT connection, where they commit
+ *      independently - so a SKU could survive a product insert that rolled back. The compiler cannot
+ *      catch that, which is exactly why the executor is a parameter here.
+ *   2. `SwSku.productID` cannot be read off the draft's own association on the creation path. A product
+ *      being INSERTED has no identifier until its row is written, and `createSkus`
+ *      [model/service/SkuService.cfc:L100, L128] links every draft to the pre-save instance, so the
+ *      association would bind the empty string into a foreign key. The parent's key has to be handed
+ *      down, which is what Hibernate did once the parent insert had run.
+ *
+ * DECLARED HERE RATHER THAN IN `src/domain/ports/`, AND THAT PLACEMENT IS FORCED. The contract mentions
+ * `PreparedStatementExecutor`, which is a repositories-layer type; a port that named it would make
+ * `src/domain/**` import `src/repositories/**`, which the ESLint layer boundary refuses outright. It is a
+ * seam between two adapters, so it lives with the adapters. `MysqlSkuRepository.saveSkuForProduct`
+ * satisfies it; the composition root supplies that instance.
+ */
+export interface ProductSkuCascadeWriter {
+  /**
+   * Persist one SKU as part of an enclosing product write.
+   *
+   * @param sku the SKU to persist - transient on the creation path.
+   * @param productID the parent product's persisted identifier, to bind as `SwSku.productID`.
+   * @param executor the enclosing transaction's statement sink.
+   * @returns the persisted SKU, carrying the key that was written.
+   */
+  saveSkuForProduct(sku: Sku, productID: string, executor: PreparedStatementExecutor): Promise<Sku>;
+}
+
+/**
+ * What an aggregate write asks the cascade to do, gathered once so the row-writing methods take ONE
+ * extra parameter rather than three.
+ *
+ * Its presence is also the signal that the write is running inside a transaction: `tx` IS the
+ * transaction-bound executor, so a method holding a plan must route every statement through
+ * `plan.tx` and never through `this.executor`.
+ */
+type SkuCascadePlan = {
+  /** The SKUs on the product that have never been persisted, in the collection's own order. */
+  readonly transientSkus: readonly Sku[];
+  /** The sibling adapter that writes a SKU row and its option membership. */
+  readonly writer: ProductSkuCascadeWriter;
+  /** The enclosing transaction's statement sink. */
+  readonly tx: PreparedStatementExecutor;
+};
+
+/**
+ * What the cascade produced, so the returned product can report the aggregate that was actually
+ * written rather than the drafts it was built from.
+ */
+type PersistedSkuCascade = {
+  /**
+   * The product's full SKU collection IN ITS ORIGINAL ORDER, with each persisted draft replaced by the
+   * instance that carries its minted key. Order matters: `createSkus` derives every skuCode from this
+   * array's length as it grows [model/service/SkuService.cfc:L97], so a reordered collection reports a
+   * numbering the rows do not have.
+   */
+  readonly skus: Sku[];
+  /** The designated default SKU, replaced the same way, or `undefined` when none was designated. */
+  readonly defaultSku: Sku | undefined;
+};
+
+/**
  * Build one attribute-set read projection from its row.
  *
  * NOT ENTITY HYDRATION, and deliberately so. `AttributeSet` is not one of the eighteen in-scope
@@ -1648,21 +1956,134 @@ function toAttributeSetSummary(row: SqlRow, statementLabel: string): AttributeSe
 }
 
 /**
+ * Build the joined `OptionGroup` for one option row, or report that the option has none.
+ *
+ * The group arrives through the LEFT OUTER JOIN on the option read rather than through a second
+ * statement - see {@link buildSkuOptionsSql} - and the join's outer-ness is what lets this answer
+ * `undefined` for an option whose nullable `optionGroupID` [model/entity/Option.cfc:L59] is NULL,
+ * instead of that option disappearing from the result set entirely.
+ *
+ * FETCH SHAPE (T3): the group carries an EMPTY `options` array, and that means "this read did not
+ * materialize them", never "the group has none". The reasoning is `mysqlSkuRepository.ts`'s verbatim,
+ * and it is the same decision so that an `OptionGroup` reached through a product and one reached
+ * through a SKU are the same shape.
+ *
+ * `imageGroupFlag` is handed over UNCOERCED, for the reason {@link readFlag} gives:
+ * `src/domain/entities/optionGroup.ts` calls `cfBoolean()` on it, and its declared `default="0"`
+ * [model/entity/OptionGroup.cfc:L57] belongs in the file that declares it.
+ *
+ * `optionSortTieBreaker` is passed as an explicit `undefined`, which the entity's constructor reads as
+ * "use the legacy random source". It is a required member of that constructor's parameter type, so
+ * omitting it would not compile; passing `undefined` is how the default is requested rather than
+ * overridden.
+ *
+ * @param row one row of the SKU option read.
+ * @param statementLabel the statement that produced it.
+ * @returns the group, or `undefined` when the option has none.
+ * @throws An error named `ProductColumnError` when a projected column is missing or malformed, or when
+ *   the joined group's `sortOrder` is NULL where the schema declares it required.
+ */
+function toOptionGroup(row: SqlRow, statementLabel: string): OptionGroup | undefined {
+  const optionGroupID = readOptionalText(
+    row,
+    `${OPTION_GROUP_ALIAS_PREFIX}optionGroupID`,
+    statementLabel,
+  );
+
+  if (optionGroupID === undefined) {
+    return undefined;
+  }
+
+  // `SwOptionGroup.sortOrder` is `required="true"` [model/entity/OptionGroup.cfc:L58] and
+  // `src/domain/entities/optionGroup.ts` types its slot as a bare `number` in consequence. The group
+  // row provably exists by this point - its key was read above - so a NULL here is a schema violation
+  // rather than the absent-group case, and reporting it beats substituting a zero that would silently
+  // become the most significant term of the odometer's place-value weighting.
+  const optionGroupSortOrder = readOptionalCount(
+    row,
+    `${OPTION_GROUP_ALIAS_PREFIX}sortOrder`,
+    statementLabel,
+  );
+  if (optionGroupSortOrder === undefined) {
+    throw new ProductColumnError(
+      `${OPTION_GROUP_ALIAS_PREFIX}sortOrder`,
+      statementLabel,
+      'the joined option group carries a NULL sortOrder where [model/entity/OptionGroup.cfc:L58] declares it required="true"',
+    );
+  }
+
+  return new OptionGroup({
+    optionGroupID,
+    optionGroupName: readOptionalText(
+      row,
+      `${OPTION_GROUP_ALIAS_PREFIX}optionGroupName`,
+      statementLabel,
+    ),
+    optionGroupCode: readOptionalText(
+      row,
+      `${OPTION_GROUP_ALIAS_PREFIX}optionGroupCode`,
+      statementLabel,
+    ),
+    optionGroupImage: readOptionalText(
+      row,
+      `${OPTION_GROUP_ALIAS_PREFIX}optionGroupImage`,
+      statementLabel,
+    ),
+    optionGroupDescription: readOptionalText(
+      row,
+      `${OPTION_GROUP_ALIAS_PREFIX}optionGroupDescription`,
+      statementLabel,
+    ),
+    imageGroupFlag: readFlag(row, `${OPTION_GROUP_ALIAS_PREFIX}imageGroupFlag`, statementLabel),
+    sortOrder: optionGroupSortOrder,
+    remoteID: readOptionalText(row, `${OPTION_GROUP_ALIAS_PREFIX}remoteID`, statementLabel),
+    createdDateTime: readTimestamp(
+      row,
+      `${OPTION_GROUP_ALIAS_PREFIX}createdDateTime`,
+      statementLabel,
+    ),
+    createdByAccountID: readOptionalText(
+      row,
+      `${OPTION_GROUP_ALIAS_PREFIX}createdByAccountID`,
+      statementLabel,
+    ),
+    modifiedDateTime: readTimestamp(
+      row,
+      `${OPTION_GROUP_ALIAS_PREFIX}modifiedDateTime`,
+      statementLabel,
+    ),
+    modifiedByAccountID: readOptionalText(
+      row,
+      `${OPTION_GROUP_ALIAS_PREFIX}modifiedByAccountID`,
+      statementLabel,
+    ),
+    options: [],
+    optionSortTieBreaker: undefined,
+  });
+}
+
+/**
  * Build one `Option` from a row of the SKU-option read.
  *
  * `Option`'s constructor declares eleven slots as REQUIRED-PRESENT with a `| undefined` type, so every
  * one is passed explicitly and none may be omitted - the opposite of the product and SKU drafts above,
  * and the entity's own declaration is what decides which shape applies.
  *
- * `optionGroup` IS PASSED `undefined`. See {@link OPTION_READ_COLUMNS} for the boundary that forces it
- * and for where a consumer that needs option groups must go instead. `images`, `skus` and the four
- * promotion collections are omitted so the entity applies its own `[]` defaults - CFML parity, since an
- * unpopulated one-to-many read as an empty array under Hibernate and never as null.
+ * `optionGroup` CARRIES THE JOINED GROUP, resolved by {@link toOptionGroup} out of the columns the LEFT
+ * OUTER JOIN in {@link buildSkuOptionsSql} projects alongside the option. An earlier revision passed an
+ * unconditional `undefined` here and directed a consumer that needed option groups to
+ * `skuRepository.getProductSkus(...)` instead; {@link OPTION_READ_COLUMNS} records why that boundary did
+ * not hold. `undefined` still reaches the entity for an option whose nullable `optionGroupID`
+ * [model/entity/Option.cfc:L59] is NULL, and there it means "this option has no group" rather than "this
+ * read did not materialize one". `images`, `skus` and the four promotion collections are omitted so the
+ * entity applies its own `[]` defaults - CFML parity, since an unpopulated one-to-many read as an empty
+ * array under Hibernate and never as null.
  *
  * @param row one row of the SKU-option read.
  * @param statementLabel the statement that produced it.
  * @returns the option.
- * @throws An error named `ProductColumnError` when a projected column is missing or malformed.
+ * @throws An error named `ProductColumnError` when a projected column is missing or malformed, or when
+ *   the joined option group carries a NULL `sortOrder`.
  */
 function toOption(row: SqlRow, statementLabel: string): Option {
   return new Option({
@@ -1671,7 +2092,7 @@ function toOption(row: SqlRow, statementLabel: string): Option {
     optionName: readOptionalText(row, 'optionName', statementLabel),
     optionDescription: readOptionalText(row, 'optionDescription', statementLabel),
     sortOrder: readOptionalCount(row, 'sortOrder', statementLabel),
-    optionGroup: undefined,
+    optionGroup: toOptionGroup(row, statementLabel),
     defaultImageID: readOptionalText(row, 'defaultImageID', statementLabel),
     remoteID: readOptionalText(row, 'remoteID', statementLabel),
     createdDateTime: readTimestamp(row, 'createdDateTime', statementLabel),
@@ -1679,6 +2100,69 @@ function toOption(row: SqlRow, statementLabel: string): Option {
     modifiedDateTime: readTimestamp(row, 'modifiedDateTime', statementLabel),
     modifiedByAccountID: readOptionalText(row, 'modifiedByAccountID', statementLabel),
   });
+}
+
+/**
+ * Reduce one product's SKUs to the DISTINCT option groups reachable through their options, ordered by
+ * `sortOrder` ascending.
+ *
+ * ★ THIS IS THE FETCH SHAPE `src/domain/entities/product.ts` NAMES AS THE ONE THE REPOSITORY OWES.
+ * `Product.getOptionGroups()` [model/entity/Product.cfc:L251-L261] resolved it through a
+ * `HibachiSmartList` - `setSelectDistinctFlag(1)` at [L255], `addFilter("options.skus.product.productID",
+ * getProductID())` at [L256], `addOrder("sortOrder|ASC")` at [L257] - and the smart list is a framework
+ * artefact the plan explicitly declines to clone (AAP 0.6.2). The ported accessor is therefore a
+ * SYNCHRONOUS read over an eagerly-materialized array, and this function is what materializes it. Until
+ * it did, that accessor raised on every product this adapter returned, and `getOptionGroupsStruct()` and
+ * `getOptionGroupCount()` raised with it - which is what made the whole trio unusable, and with it the
+ * `minCollection:1` rules in `model/validation/Product.json` that read through them.
+ *
+ * ALL THREE PARTS OF THE SMART-LIST CONFIGURATION ARE REPRODUCED, and none is added on top:
+ *
+ *   * DISTINCT [L255] becomes the `optionGroupID`-keyed map. One option group is normally carried by
+ *     several options and several SKUs of the same product, so without it the array would repeat.
+ *   * THE TRAVERSAL [L256] is `options.skus.product.productID`, which reaches THROUGH options and SKUs:
+ *     a group belongs to this product only transitively. That is why the input is the product's OWN SKUs
+ *     - `MaterializedSkus.byProductID`, not `bySkuID` - because a default SKU owned by some other product
+ *     is reachable by identifier but does NOT satisfy `skus.product.productID = <this product>`, and
+ *     feeding it in would attribute another product's option groups to this one.
+ *   * ORDER BY `sortOrder` ASC [L257] becomes the numeric sort. `SwOptionGroup.sortOrder` is
+ *     `required="true"` [model/entity/OptionGroup.cfc:L58] so the comparison never meets a NULL, and
+ *     {@link toOptionGroup} refuses the row rather than substituting a zero if the database holds one
+ *     anyway.
+ *
+ * ⚠ TIES ARE LEFT WHERE THE SOURCE LEFT THEM. The smart list orders on `sortOrder` alone and adds no
+ * tie-breaker, so two groups sharing a `sortOrder` came back in whatever order the database chose.
+ * `Array.prototype.sort` is stable, so this preserves the encounter order of the option read for ties
+ * rather than imposing a secondary key the legacy never had.
+ *
+ * IT ADDS NO STATEMENT. The groups arrive on the option rows through the LEFT OUTER JOIN in
+ * {@link buildSkuOptionsSql}, so the graph read remains THREE statements: product graph, SKUs, SKU
+ * options. An option whose `optionGroupID` is NULL contributes nothing here and still reaches its SKU -
+ * which is the outer join's second purpose, recorded at {@link toOptionGroup}.
+ *
+ * @param skus this product's own SKUs, each with its options already materialized.
+ * @returns the distinct option groups, ordered by `sortOrder` ascending.
+ */
+function deriveProductOptionGroups(skus: readonly Sku[]): OptionGroup[] {
+  const byOptionGroupID = new Map<string, OptionGroup>();
+
+  for (const sku of skus) {
+    for (const option of sku.getOptions()) {
+      const optionGroup = option.getOptionGroup();
+      if (optionGroup === undefined) {
+        continue;
+      }
+
+      const optionGroupID = optionGroup.getOptionGroupID();
+      if (!byOptionGroupID.has(optionGroupID)) {
+        byOptionGroupID.set(optionGroupID, optionGroup);
+      }
+    }
+  }
+
+  return [...byOptionGroupID.values()].sort(
+    (left: OptionGroup, right: OptionGroup): number => left.getSortOrder() - right.getSortOrder(),
+  );
 }
 
 /**
@@ -1898,16 +2382,65 @@ function toProductTypeFromGraphRow(row: SqlRow, statementLabel: string): Product
 // ---------------------------------------------------------------------------
 
 /**
+ * The key to bind into `SwProduct.defaultSkuID`, or `undefined` when there is none to bind YET.
+ *
+ * ★ A TRANSIENT DEFAULT SKU BINDS SQL NULL RATHER THAN THE KEY IT IS CARRYING, AND THE DIFFERENCE IS THE
+ * WHOLE POINT. A designation made in memory is what [model/service/SkuService.cfc:L102, L134] make,
+ * before either row exists, so the identifier the designated SKU reports at that moment names nothing.
+ * NULL is the honest intermediate state, and {@link UPDATE_PRODUCT_DEFAULT_SKU_SQL} supplies the key that
+ * was ACTUALLY written later in the same transaction.
+ *
+ * ★★ QUOTE-THEN-REVISE, AND THE REVISION MAKES THE HAZARD WORSE THAN THE VERSION IT REPLACES. The
+ * paragraph above read: "`isNew()` is `getSkuID() === ''` [model/entity/Sku.cfc:L52 `unsavedvalue=""`],
+ * so a designation made in memory would otherwise write `''` into a foreign-key column: a value that
+ * satisfies no constraint and names no row". The LEGACY predicate is precisely that - `getNewFlag()`
+ * [org/Hibachi/HibachiEntity.cfc:L571-L576] is `getPrimaryIDValue() == ""` and `isNew()` [L707-L709] is
+ * its deprecated alias - but the PORTED `Sku` does not test its identifier at all. `Sku.isNew()` reads a
+ * constructor-supplied flag, because `skuService.createSkus` mints a PROVISIONAL 32-hex key for every
+ * draft it builds so that draft is addressable in memory before any row exists. The value this function
+ * would otherwise bind is therefore not `''`: it is a well-formed identifier that
+ * `mysqlSkuRepository.insertSku` DISCARDS - that method mints its own key and rehydrates the SKU around
+ * it - and which consequently names no `SwSku` row. That is strictly worse than the empty string. `''`
+ * is visibly wrong the moment anyone looks at the column, while a well-formed key resolving to nothing
+ * is a dangling foreign key that reads as correct. The guard is unchanged; only the reason it is
+ * load-bearing is.
+ *
+ * ⚠ THIS DOES NOT SOFTEN {@link MysqlProductRepository.assertAssociationsPersisted}. A transient default
+ * SKU is still REFUSED unless the enclosing write is going to persist it, which is decided there, on the
+ * evidence of the product's own SKU collection. This function is only reached once that decision has been
+ * made in the caller's favour.
+ *
+ * @param defaultSku the designated default SKU, if any.
+ * @returns its identifier, or `undefined` when it is absent or not yet persisted.
+ */
+function resolvePersistedDefaultSkuKey(defaultSku: Sku | undefined): string | undefined {
+  if (defaultSku === undefined || defaultSku.isNew()) {
+    return undefined;
+  }
+
+  return defaultSku.getSkuID();
+}
+
+/**
  * Materialize the `SwProduct` row a save is about to write.
  *
  * ★ THE THREE FOREIGN KEYS ARE READ OUT OF THE ASSOCIATIONS, NOT OFF THE ENTITY. `Product` publishes
  * `getBrand()`, `getProductType()` and `getDefaultSku()` and publishes NO `brandID`, `productTypeID` or
  * `defaultSkuID` accessor - deliberately, because the legacy declared those columns as `fkcolumn` on
  * many-to-one properties [model/entity/Product.cfc:L68-L70] and never as properties in their own right.
- * So the key is the associated entity's identifier, or SQL NULL when there is no association. The
- * transient case - an association that exists but has never been persisted, whose identifier is
- * therefore the empty string - is refused BEFORE this function is reached, by
- * {@link MysqlProductRepository.assertAssociationsPersisted}; it is not silently coerced here.
+ * So the key is the associated entity's identifier, or SQL NULL when there is no association.
+ *
+ * ★ QUOTE-THEN-REVISE ON THE TRANSIENT CASE, WHICH IS NOW UNIFORM FOR TWO OF THE THREE AND DELIBERATE
+ * FOR THE THIRD. This paragraph used to continue: "The transient case - an association that exists but
+ * has never been persisted, whose identifier is therefore the empty string - is refused BEFORE this
+ * function is reached, by `assertAssociationsPersisted`; it is not silently coerced here." That still
+ * holds for `brand` and `productType`, which have no cascade and must already exist. It does NOT hold
+ * for `defaultSku`, because `Product.skus` carries `cascade="all-delete-orphan"`
+ * [model/entity/Product.cfc:L73] and the designation is made in memory before any row exists
+ * [model/service/SkuService.cfc:L102, L134] - refusing it outright would make creating a product with
+ * SKUs impossible. It is read through {@link resolvePersistedDefaultSkuKey}, which binds SQL NULL rather
+ * than the empty string, and the follow-up write supplies the key. A transient default SKU that the
+ * enclosing write will NOT persist is still refused.
  *
  * ★ `calculatedSalePrice` HAS NO `default` [model/entity/Product.cfc:L57], so `undefined` becomes SQL
  * NULL and NEVER `Money.zero`. That distinction is load-bearing: substituting zero for an absent price
@@ -1926,9 +2459,22 @@ function toProductTypeFromGraphRow(row: SqlRow, statementLabel: string): Product
  * value passed for it on that path is built and then never bound - which is why an entity hydrated
  * without a creation stamp cannot overwrite real provenance with NULL.
  *
+ * ★ `urlTitle` AND `productName` ARRIVE AS PARAMETERS RATHER THAN BEING READ OFF THE ENTITY: they are
+ * the two members the port's `ProductSavePayload` can supply,
+ * {@link MysqlProductRepository.saveProduct} has already decided which source wins, and reading them off
+ * the argument here would silently discard that decision. The legacy wrote the resolved title
+ * onto the SAVED ENTITY - `arguments.product.setURLTitle(...)`
+ * [model/service/ProductService.cfc:L269] - and the entity then reached the DAO at
+ * [model/service/ProductService.cfc:L287]. `src/services/productService.ts` assigns the resolved title onto
+ * the entity for exactly that reason and states the same value in the payload, so the payload
+ * is the channel that replaces that assignment. Every other column is still read off the entity, because
+ * the payload cannot address any of them.
+ *
  * @param product the entity being written.
  * @param productID the identifier the row will carry - minted for a new entity, the entity's own
  *   otherwise.
+ * @param urlTitle the url title the populate step settled on, if any.
+ * @param productName the product name the populate step settled on, if any.
  * @param createdDateTime the creation stamp; bound on insert, ignored on update.
  * @param modifiedDateTime the modification stamp, bound by both statements.
  * @returns the row, keyed by physical column name, carrying all twenty columns.
@@ -1936,14 +2482,16 @@ function toProductTypeFromGraphRow(row: SqlRow, statementLabel: string): Product
 function toProductRecord(
   product: Product,
   productID: string,
+  urlTitle: string | undefined,
+  productName: string | undefined,
   createdDateTime: Date | undefined,
   modifiedDateTime: Date,
 ): PersistableRecord {
   return {
     productID,
     activeFlag: product.getActiveFlag(),
-    urlTitle: product.getUrlTitle(),
-    productName: product.getProductName(),
+    urlTitle,
+    productName,
     productCode: product.getProductCode(),
     productDescription: product.getProductDescription(),
     publishedFlag: product.getPublishedFlag(),
@@ -1954,7 +2502,7 @@ function toProductRecord(
     calculatedTitle: product.getCalculatedTitle(),
     brandID: product.getBrand()?.getBrandID(),
     productTypeID: product.getProductType()?.getProductTypeID(),
-    defaultSkuID: product.getDefaultSku()?.getSkuID(),
+    defaultSkuID: resolvePersistedDefaultSkuKey(product.getDefaultSku()),
     remoteID: product.getRemoteID(),
     createdDateTime,
     createdByAccountID: product.getCreatedByAccountID(),
@@ -1964,127 +2512,10 @@ function toProductRecord(
 }
 
 /**
- * Materialize the `SwBrand` row a save is about to write.
- *
- * `SwBrand` HAS NO FOREIGN KEY OF ITS OWN [model/entity/Brand.cfc:L52-L57, L77, L80-L83], so this is
- * scalars plus audit and nothing else - there is no association to translate and no transient-reference
- * check to make, which is precisely why {@link MysqlProductRepository.assertAssociationsPersisted} has no
- * brand counterpart.
- *
- * ★ `urlTitle` AND `brandName` ARRIVE AS PARAMETERS RATHER THAN BEING READ OFF THE ENTITY, because they
- * are the two members the port's `BrandSavePayload` can supply and the populate step has already decided
- * which source wins. Reading them off the argument here would silently discard the payload. Every other
- * column is read off the entity, because the payload cannot address any of them.
- *
- * ★ NO URL TITLE IS GENERATED HERE. `model/service/BrandService.cfc:L67-L77` generated a unique url title
- * through `dataService`, and that logic moved to the injected `urlTitleGenerator` port - NOT into this
- * adapter. This function PERSISTS a supplied url title and never derives one; a `urlTitle` of `undefined`
- * is written as SQL NULL, not filled in. The same boundary holds for `globalURLKeyProduct` and
- * `globalURLKeyProductType`, which are settings read through the `settingsProvider` port
- * [model/service/SettingService.cfc:L178-L179] and appear nowhere in this module as literals.
- *
- * The audit contract is the product's, for the same reasons: stamps in, by-account read off the entity.
- *
- * @param brand the entity being written.
- * @param brandID the identifier the row will carry.
- * @param urlTitle the url title the populate step settled on, if any.
- * @param brandName the brand name the populate step settled on, if any.
- * @param createdDateTime the creation stamp; bound on insert, ignored on update.
- * @param modifiedDateTime the modification stamp, bound by both statements.
- * @returns the row, keyed by physical column name, carrying all eleven columns.
- */
-function toBrandRecord(
-  brand: Brand,
-  brandID: string,
-  urlTitle: string | undefined,
-  brandName: string | undefined,
-  createdDateTime: Date | undefined,
-  modifiedDateTime: Date,
-): PersistableRecord {
-  return {
-    brandID,
-    activeFlag: brand.getActiveFlag(),
-    publishedFlag: brand.getPublishedFlag(),
-    urlTitle,
-    brandName,
-    brandWebsite: brand.getBrandWebsite(),
-    remoteID: brand.getRemoteID(),
-    createdDateTime,
-    createdByAccountID: brand.getCreatedByAccountID(),
-    modifiedDateTime,
-    modifiedByAccountID: brand.getModifiedByAccountID(),
-  };
-}
-
-/**
- * Rebuild a brand as the database now holds it.
- *
- * WHY A NEW INSTANCE AT ALL. `brandID` is `readonly` on the entity, so an insert that minted an
- * identifier cannot write it back into the argument, and the port promises the CALLER a brand carrying
- * the persisted identifier. Hibernate solved this by mutating the instance in place; with no ORM the
- * honest equivalent is to construct the persisted state, which also means the two audit stamps and the
- * two populated members come back as what was actually written rather than as what the argument happened
- * to hold. The argument itself is left untouched.
- *
- * ★ ALL FIVE COLLECTIONS ARE FORWARDED, WHICH IS SAFE HERE AND WOULD NOT BE ON THE PRODUCT SIDE. `Brand`
- * defaults each of its five collections to `[]` in its own constructor, and it exposes no
- * "was this association materialized?" distinction to lose - so forwarding the argument's live arrays
- * carries exactly the graph the caller already had. `products` in particular is the one collection with
- * legacy test weight: `meta/tests/unit/entity/BrandTest.cfc`'s `defaults_are_correct()` asserts
- * `getProducts()` equals `[]` on a factory-fresh brand, and passing the argument's array through keeps
- * that true for a saved one.
- *
- * `Brand`'s constructor declares every slot `T | undefined`, so this is ONE literal with no draft and no
- * conditional assignment - contrast {@link rebuildProduct}, whose input type declares its optional
- * members without `| undefined` and therefore cannot be given an explicit `undefined` under
- * `exactOptionalPropertyTypes`. The difference is the entity's own declaration and is not smoothed over.
- *
- * The two booleans are handed over as the real `boolean` values the entity already coerced, which is not
- * a second coercion: `getActiveFlag()` returns `boolean`, and `CfBooleanInput` includes `boolean`, so the
- * value passes through the constructor's `cfBoolean()` unchanged.
- *
- * @param brand the argument that was saved, read for its scalars and its live collections.
- * @param brandID the identifier the row carries.
- * @param urlTitle the url title that was written.
- * @param brandName the brand name that was written.
- * @param createdDateTime the creation stamp the row carries.
- * @param modifiedDateTime the modification stamp that was written.
- * @returns a new brand carrying the persisted state.
- */
-function rebuildBrand(
-  brand: Brand,
-  brandID: string,
-  urlTitle: string | undefined,
-  brandName: string | undefined,
-  createdDateTime: Date | undefined,
-  modifiedDateTime: Date,
-): Brand {
-  return new Brand({
-    brandID,
-    activeFlag: brand.getActiveFlag(),
-    publishedFlag: brand.getPublishedFlag(),
-    urlTitle,
-    brandName,
-    brandWebsite: brand.getBrandWebsite(),
-    products: brand.getProducts(),
-    promotionRewards: brand.getPromotionRewards(),
-    promotionRewardExclusions: brand.getPromotionRewardExclusions(),
-    promotionQualifiers: brand.getPromotionQualifiers(),
-    promotionQualifierExclusions: brand.getPromotionQualifierExclusions(),
-    remoteID: brand.getRemoteID(),
-    createdDateTime,
-    createdByAccountID: brand.getCreatedByAccountID(),
-    modifiedDateTime,
-    modifiedByAccountID: brand.getModifiedByAccountID(),
-  });
-}
-
-/**
  * Rebuild a product as the database now holds it, after an insert minted its identifier.
  *
  * WHY A NEW INSTANCE AT ALL: `productID` is `readonly` on the entity and the port promises the caller a
- * product carrying the persisted identifier. See {@link rebuildBrand} for the same reasoning; the
- * argument is left untouched here too.
+ * product carrying the persisted identifier. The argument is left untouched.
  *
  * ★★ ONLY THE FOUR PORT-REQUIRED ASSOCIATIONS ARE FORWARDED - `brand`, `productType`, `defaultSku` and
  * `skus` - AND THAT OMISSION IS THE POINT, NOT AN OVERSIGHT. `Product` DISTINGUISHES "this association
@@ -2111,20 +2542,49 @@ function rebuildBrand(
  * repository is passed in rather than referenced, so this stays a pure module-level function with no
  * hidden binding to any instance.
  *
+ * ★ THE TWO POPULATED MEMBERS ARRIVE AS PARAMETERS, NOT AS ENTITY READS, so the instance handed back
+ * carries what was WRITTEN rather than what the argument happened to hold. That matters most on the
+ * url-title path this rebuild exists to serve: a caller that saved a new product whose title was resolved
+ * by the `urlTitleGenerator` port and then read the ARGUMENT would still see no title at all, because
+ * the argument is not the instance this adapter answers with. The legacy had no such gap - it assigned
+ * onto the entity at [model/service/ProductService.cfc:L269] - and forwarding the populated values onto
+ * the rebuilt instance is what closes it.
+ *
+ * ★ THE TWO STAMPS ARE SEPARATE PARAMETERS RATHER THAN ONE, WHICH THEY WERE NOT BEFORE. The prior
+ * signature took a single `auditTimestamp` and wrote it to BOTH columns, which is exactly right for an
+ * insert [org/Hibachi/HibachiEntity.cfc:L609] and exactly wrong for anything else - and this function is
+ * now reachable from the update route, where `preUpdate` touches only the modified stamp
+ * [org/Hibachi/HibachiEntity.cfc:L662-L667] and the created stamp is whatever the row already held. One
+ * parameter would have reported the modification instant as the creation instant.
+ *
+ * ★ AND `skus` / `defaultSku` COME FROM THE CASCADE WHEN ONE RAN, FOR THE SAME REASON THE TWO POPULATED
+ * COLUMNS DO. A product save that carried transient SKUs wrote rows for them, so the argument's
+ * collection - drafts whose `getSkuID()` is still `''` - no longer describes the aggregate. When a
+ * cascade is supplied, its ordered replacement collection and its resolved default are forwarded
+ * instead. When none ran, both are read off the argument exactly as before, so every existing save path
+ * is unchanged.
+ *
  * @param product the argument that was saved, read for its scalars and its four associations.
  * @param productID the identifier the row now carries.
- * @param auditTimestamp the single stamp the insert wrote to BOTH audit columns
- *   [org/Hibachi/HibachiEntity.cfc:L609], byte-identical in each.
+ * @param urlTitle the url title that was written, if any.
+ * @param productName the product name that was written, if any.
+ * @param createdDateTime the creation stamp the row carries; omitted from the draft when absent.
+ * @param modifiedDateTime the modification stamp that was written.
  * @param repository the adapter that performed the save, forwarded as the entity's product port.
  * @param collaborators the remaining ports to forward; each is assigned only when present.
+ * @param cascade what the SKU cascade persisted, or `undefined` when no cascade ran.
  * @returns a new product carrying the persisted state.
  */
 function rebuildProduct(
   product: Product,
   productID: string,
-  auditTimestamp: Date,
+  urlTitle: string | undefined,
+  productName: string | undefined,
+  createdDateTime: Date | undefined,
+  modifiedDateTime: Date,
   repository: ProductRepository,
   collaborators: ProductHydrationCollaborators,
+  cascade: PersistedSkuCascade | undefined,
 ): Product {
   const draft: ProductHydrationDraft = {
     productID,
@@ -2132,21 +2592,28 @@ function rebuildProduct(
     publishedFlag: product.getPublishedFlag(),
     calculatedAllowBackorderFlag: product.getCalculatedAllowBackorderFlag(),
     // `getSkus()` with both flags defaulted returns the materialized collection with no reordering and no
-    // option fetch, which is the collection the argument carried. Sorting is a read-path concern.
-    skus: product.getSkus(),
-    createdDateTime: auditTimestamp,
-    modifiedDateTime: auditTimestamp,
+    // option fetch, which is the collection the argument carried. Sorting is a read-path concern. When a
+    // cascade ran, its replacement collection is the same order with the drafts swapped for the rows.
+    skus: cascade === undefined ? product.getSkus() : cascade.skus,
+    modifiedDateTime,
     // T2: the entity's `getService("productService")` reach at [model/entity/Product.cfc:L367] is
     // satisfied by the adapter that just wrote the row.
     productRepository: repository,
   };
 
-  const urlTitle = product.getUrlTitle();
+  // Omitted rather than assigned when absent: `ProductHydrationInput` declares `createdDateTime?: Date`
+  // without `| undefined`, so `exactOptionalPropertyTypes` refuses an explicit `undefined`. On the insert
+  // route this is the same instant as the modified stamp, byte-identical, which is the hook's own contract.
+  if (createdDateTime !== undefined) {
+    draft.createdDateTime = createdDateTime;
+  }
+
+  // The two populated members, assigned from what the save decided rather than from the argument. The
+  // `undefined` case is OMITTED rather than assigned, for the same `exactOptionalPropertyTypes` reason.
   if (urlTitle !== undefined) {
     draft.urlTitle = urlTitle;
   }
 
-  const productName = product.getProductName();
   if (productName !== undefined) {
     draft.productName = productName;
   }
@@ -2193,7 +2660,10 @@ function rebuildProduct(
     draft.productType = productType;
   }
 
-  const defaultSku = product.getDefaultSku();
+  // The cascade's answer wins outright when there was one, INCLUDING its `undefined`: a cascade that
+  // resolved no default means the product designated none, and falling back to the argument there would
+  // reinstate a draft whose key was never written.
+  const defaultSku = cascade === undefined ? product.getDefaultSku() : cascade.defaultSku;
   if (defaultSku !== undefined) {
     draft.defaultSku = defaultSku;
   }
@@ -2240,16 +2710,17 @@ function rebuildProduct(
  * error classes and the entity factories above are all module-private on purpose - they are how this
  * class works, not what it offers.
  *
- * SEVEN PORT METHODS, WHICH IS WHAT THE PORT DECLARES. `../../domain/ports/productRepository.js` states
- * it in its own interface documentation: "Seven methods, locked: the three public functions of
- * `model/dao/ProductDAO.cfc`, the three product entity-lifecycle methods the service tier needs now
- * that Hibernate is gone, and ONE brand save." The arithmetic is four declared DAO functions, less the
- * `private` helper `saveImportData` [model/dao/ProductDAO.cfc:L328], plus load / save / delete for the
- * product, plus `saveBrand` - which lands here because THERE IS NO `BrandDAO.cfc` IN THE LEGACY
- * REPOSITORY AT ALL and brand persistence ran entirely through `super.save()`
- * [model/service/BrandService.cfc:L76]. B4, interface parity: `getAttributeSets`,
- * `loadDataFromFile`, `searchProductsByProductType` and `saveBrand` keep their legacy CFML camelCase
- * names verbatim; the three lifecycle names have no legacy antecedent and the port says so on each.
+ * SIX PORT METHODS, WHICH IS WHAT THE PORT DECLARES. `../../domain/ports/productRepository.js` states
+ * it in its own interface documentation as a LOCK: "Six methods, locked: the three public functions of
+ * `model/dao/ProductDAO.cfc` and the three product entity-lifecycle methods the service tier needs now
+ * that Hibernate is gone." The arithmetic is four declared DAO functions, less the `private` helper
+ * `saveImportData` [model/dao/ProductDAO.cfc:L328], plus load / save / delete for the product. There is
+ * no seventh, and in particular no brand save: the port records why the member was removed rather than
+ * relocated, and `src/services/brandService.ts` carries the LEGACY-NOTE that leaves the durable half of
+ * `super.save` [model/service/BrandService.cfc:L76] to the composition root. B4, interface parity:
+ * `getAttributeSets`, `loadDataFromFile` and `searchProductsByProductType` keep their legacy CFML
+ * camelCase names verbatim; the three lifecycle names have no legacy antecedent and the port says so on
+ * each.
  *
  * // JUDGMENT CALL: the query executor is a CONSTRUCTOR PARAMETER and the connection pool is never
  * // imported as a module singleton. `./connection.js` states that as a mandatory design constraint, and
@@ -2278,14 +2749,27 @@ function rebuildProduct(
  */
 export class MysqlProductRepository implements ProductRepository {
   /**
+   * ★ THE THIRD PARAMETER IS OPTIONAL BY CONSTRUCTION AND MANDATORY BY BEHAVIOUR, WHICH IS NOT A
+   * CONTRADICTION. Most of this class never needs it: every read path, every brand write, the delete,
+   * and any product save whose SKU collection holds nothing transient all proceed without it, which is
+   * what keeps a SQL-shape test able to construct the class with a capturing executor alone. But a save
+   * that DOES carry transient SKUs cannot honour `cascade="all-delete-orphan"`
+   * [model/entity/Product.cfc:L73] without it, and the one thing it must not do then is proceed quietly:
+   * writing the product row and silently dropping its SKUs is precisely the failure this parameter
+   * exists to end. {@link MysqlProductRepository.saveProduct} therefore RAISES when a cascade is needed
+   * and no writer was supplied, rather than defaulting to a no-op.
+   *
    * @param executor the prepared-statement executor; see the class note for why it is a parameter.
    * @param collaborators the ports forwarded into every hydrated entity; see
    *   {@link ProductHydrationCollaborators}. Defaults to `{}` so a SQL-shape test can construct this
    *   class with a capturing executor alone.
+   * @param skuCascadeWriter the sibling adapter that writes a SKU row and its option membership on this
+   *   adapter's transaction; see {@link ProductSkuCascadeWriter}.
    */
   public constructor(
     private readonly executor: PreparedStatementExecutor,
     private readonly collaborators: ProductHydrationCollaborators = {},
+    private readonly skuCascadeWriter?: ProductSkuCascadeWriter,
   ) {}
 
   // =========================================================================
@@ -2632,8 +3116,11 @@ export class MysqlProductRepository implements ProductRepository {
    * `getHibachiDAO().save(target=arguments.product)` [model/service/ProductService.cfc:L287]. T3 converts
    * that construct into this method.
    *
-   * IT TAKES THE ENTITY ALONE, AND NO DATA STRUCT. Population, validation and UNIQUE URL-TITLE
-   * GENERATION all remain at the service tier where the legacy performed them
+   * ★ QUOTE-THEN-REVISE. This paragraph opened "IT TAKES THE ENTITY ALONE, AND NO DATA STRUCT". It now
+   * takes a second argument - see the payload note further down for why - but the DIVISION OF LABOUR the
+   * sentence was really making remains exactly as stated: population of the two columns the payload can
+   * address is applied here because the entity is immutable, while validation and UNIQUE URL-TITLE
+   * GENERATION remain at the service tier where the legacy performed them
    * [model/service/ProductService.cfc:L264-L292]. ⚠ URL-TITLE GENERATION IS NOT THIS FILE'S CONCERN:
    * `createUniqueURLTitle` [model/service/DataService.cfc:L53], reached at
    * [model/service/ProductService.cfc:L269], becomes the separate `urlTitleGenerator` port. This method
@@ -2660,7 +3147,7 @@ export class MysqlProductRepository implements ProductRepository {
    * AUDIT STAMPING, THE HALF OF THE FRAMEWORK BASE HOOK THAT MOVED HERE. `HibachiEntity.preInsert` took
    * ONE `now()` and wrote it to BOTH `createdDateTime` and `modifiedDateTime`
    * [org/Hibachi/HibachiEntity.cfc:L609-L619]; `preUpdate` took one `now()` and wrote only
-   * `modifiedDateTime` [org/Hibachi/HibachiEntity.cfc:L663-L668]. Both are reproduced exactly, including
+   * `modifiedDateTime` [org/Hibachi/HibachiEntity.cfc:L662-L667]. Both are reproduced exactly, including
    * the single-timestamp property - an inserted row's two stamps are byte-identical rather than merely
    * close.
    *
@@ -2691,34 +3178,142 @@ export class MysqlProductRepository implements ProductRepository {
    * `getDefaultSku()` - because the entity publishes the associations and not the keys. An association
    * the caller did not materialize is therefore written as NULL, which is exactly what Hibernate did with
    * a many-to-one set to null, and which is also why a DANGLING key raises on the way IN rather than
-   * being quietly nulled on the way out - see {@link ProductAssociationError}. `skus` is NOT written:
-   * `SwSku.productID` is the SKU's column and `mysqlSkuRepository.ts` owns it, and the legacy's own
-   * `cascade` on that collection is addressed at {@link DELETE_PRODUCT_SQL}. NO LINK TABLE IS WRITTEN.
+   * being quietly nulled on the way out - see {@link ProductAssociationError}.
+   *
+   * ★★ QUOTE-THEN-REVISE, AND THIS ONE WAS A GAP RATHER THAN A DESIGN. The paragraph used to end:
+   * "`skus` is NOT written: `SwSku.productID` is the SKU's column and `mysqlSkuRepository.ts` owns it,
+   * and the legacy's own `cascade` on that collection is addressed at {@link DELETE_PRODUCT_SQL}."
+   *
+   * THE FIRST CLAUSE IS TRUE AND THE INFERENCE FROM IT WAS WRONG. `SwSku.productID` is indeed the SKU's
+   * own column, and this adapter still never writes a SKU row itself - it delegates every one of them to
+   * the sibling that owns them. But "the SKU owns the column" does not mean "the product save has no
+   * obligation": `Product.skus` is declared `cascade="all-delete-orphan"`
+   * [model/entity/Product.cfc:L73], so a product save WAS the operation that inserted its transient SKUs,
+   * and the cross-reference to the delete statement addressed a cascade on the DELETE path while leaving
+   * the SAVE path with none. The cost was not stylistic. `createSkus`
+   * [model/service/SkuService.cfc:L58-L208] is reached from a new-product save
+   * [model/service/ProductService.cfc:L279] and builds every SKU a merchandise product will ever have; a
+   * save that wrote only the `SwProduct` row therefore produced a product with NO variants, whose
+   * `defaultSkuID` was NULL, while the returned entity reported its full SKU collection in memory and
+   * looked entirely correct.
+   *
+   * SO `skus` IS NOW CASCADED, AND ONLY THE TRANSIENT ONES ARE. See
+   * {@link MysqlProductRepository.cascadeTransientSkus} for the ordering the two mutually-referencing
+   * foreign keys force, and {@link ProductSkuCascadeWriter} for why the write is delegated rather than
+   * duplicated. NO LINK TABLE OF THIS ENTITY'S OWN IS WRITTEN - `listingPages`, `categories` and
+   * `relatedProducts` [model/entity/Product.cfc:L79-L81] are untouched, and the SKU's own `SwSkuOption`
+   * membership is written by the sibling that owns it, not by a statement in this module.
    *
    * NET-NEW COVERAGE OBLIGATIONS: a new entity gets a 32-character hexadecimal identifier and emits
    * `INSERT INTO SwProduct` with twenty parameters in the declared column order; an existing entity emits
    * the existence read then `UPDATE SwProduct` with eighteen parameters and THE KEY LAST, and its SET
    * list contains neither created column; an entity carrying an unmatched identifier is INSERTED; an
    * absent value binds as `null` and never as `undefined`; a monetary column binds as a DECIMAL STRING;
-   * an inserted row's created and modified stamps are the SAME instant; and a transient brand, product
-   * type or default SKU raises before any write is executed.
+   * an inserted row's created and modified stamps are the SAME instant; a transient brand or product type
+   * raises before any write is executed, as does a transient default SKU that is NOT among the product's
+   * own SKUs; a save carrying transient SKUs opens EXACTLY ONE transaction, writes the product row first,
+   * then one SKU write per transient SKU, then the deferred `defaultSkuID` update, and answers a rebuilt
+   * instance whose collection carries the minted keys in the original order; the same save RAISES when no
+   * cascade writer was supplied; and a save whose SKUs are all persisted opens no transaction at all.
+   *
+   * ★★ THE PAYLOAD IS THE CHANNEL THAT REPLACES `arguments.product.setURLTitle(...)`, AND IT IS WHY THIS
+   * METHOD TAKES A SECOND ARGUMENT AT ALL. The legacy resolved a unique url title and assigned it ONTO THE
+   * ENTITY BEING SAVED [model/service/ProductService.cfc:L268-L270], and that same entity reached
+   * persistence eighteen lines later [model/service/ProductService.cfc:L287], so the resolved value was
+   * written. `Product.urlTitle` is `private readonly` in this port's domain model - deliberately, because
+   * an entity whose columns can be reassigned from anywhere is what the ORM's dirty-checking made safe and
+   * nothing here replaces - so a service that resolves a title has no way to put it on the argument. Before
+   * this payload existed, the resolved title reached the caller's own request struct and NOTHING ELSE: the
+   * row was written with `product.getUrlTitle()`, still absent, and the gate that generated the title fired
+   * again on the next save. The populate step below is that assignment, relocated to the one tier that can
+   * still perform it.
+   *
+   * // CFML parity [model/service/ProductService.cfc:L266]: the legacy `populate(arguments.data)` copied
+   * // the keys the struct HAS, and `Object.hasOwn` is the exact equivalent of the `structKeyExists` test
+   * // that underpins it. A PRESENT key wins over the entity's current value whatever it holds - including
+   * // an explicit `undefined`, which `ProductSavePayload` declares as `?: string | undefined` so that a
+   * // caller who read a NULL column can express it, and which therefore writes SQL NULL. An ABSENT key
+   * // leaves the entity's value in place, which is what `populate` did key by key.
+   *
+   * ⚠ TWO MEMBERS, NOT A GENERAL POPULATE. The payload addresses `urlTitle` and `productName` and nothing
+   * else, and the port documents why: reproducing `populate` column by column would rebuild the framework
+   * machinery T1 and T3 removed. Every other column on the row is still read off the entity.
    *
    * @param product the product to persist.
+   * @param data the resolved payload to populate from before writing.
    * @returns the persisted product - the argument itself when it already carried an identifier, and a
-   *   new instance carrying the minted identifier when it did not.
+   *   new instance carrying the minted identifier and the populated values when it did not.
    * @throws An error named `ProductPersistenceError` when an association is transient.
    * @throws An error named `ProductColumnError` when the record does not carry a listed column.
    */
-  public async saveProduct(product: Product): Promise<Product> {
-    this.assertAssociationsPersisted(product);
+  public async saveProduct(product: Product, data: ProductSavePayload): Promise<Product> {
+    // ★ THE CASCADE SET IS DECIDED FIRST, BECAUSE EVERY OTHER DECISION BELOW DEPENDS ON IT - whether a
+    // transaction is opened, whether a transient default SKU is refused, and which instance is handed
+    // back. It is `isNew()` on each held SKU and nothing else: Hibernate's cascade INSERTED the transient
+    // children of a saved parent, and it had a dirty-checked session to decide which of the ALREADY
+    // persisted ones also needed writing. Nothing here replaces that session, so re-writing every
+    // materialized SKU on every product save would be inventing behaviour - and worse, it would rewrite
+    // the `SwSkuOption` membership of SKUs that may have been read without their options, which
+    // `mysqlSkuRepository.reconcileSkuOptions` documents as the one hazard of that write.
+    const transientSkus = product.getSkus().filter((held: Sku) => held.isNew());
 
-    const rowExists = product.isNew() ? false : await this.productRowExists(product.getProductID());
+    this.assertAssociationsPersisted(product, transientSkus);
 
-    if (!rowExists) {
-      return await this.insertProduct(product);
+    // The populate step, in the one place it happens. See the CFML parity note above.
+    const populatedUrlTitle: string | undefined = Object.hasOwn(data, 'urlTitle')
+      ? data.urlTitle
+      : product.getUrlTitle();
+    const populatedProductName: string | undefined = Object.hasOwn(data, 'productName')
+      ? data.productName
+      : product.getProductName();
+
+    if (transientSkus.length === 0) {
+      // No cascade, so no transaction: this path issues the single row write it always issued, and
+      // wrapping one statement in a transaction would report a unit of work that has no second member.
+      const rowExists = product.isNew()
+        ? false
+        : await this.productRowExists(product.getProductID());
+
+      if (!rowExists) {
+        return await this.insertProduct(product, populatedUrlTitle, populatedProductName);
+      }
+
+      return await this.updateProduct(product, populatedUrlTitle, populatedProductName);
     }
 
-    return await this.updateProduct(product);
+    const writer = this.skuCascadeWriter;
+
+    if (writer === undefined) {
+      throw new ProductPersistenceError(
+        `it carries ${String(transientSkus.length)} sku(s) that have never been persisted and this ` +
+          'repository was constructed without a sku cascade writer, so those rows would be silently ' +
+          'dropped',
+      );
+    }
+
+    // ★ ONE TRANSACTION FOR THE WHOLE AGGREGATE, WHICH IS THE UNIT HIBERNATE'S FLUSH GAVE IT. Three
+    // groups of statements have to succeed or fail together: the `SwProduct` row, one `SwSku` row plus
+    // its `SwSkuOption` membership per transient SKU, and the deferred `defaultSkuID` update. Any
+    // partial application leaves a product with some of its variants, or with a default SKU column that
+    // names nothing - and neither state is reachable in the legacy.
+    //
+    // ⚠ EVERY STATEMENT BELOW THIS LINE MUST ROUTE THROUGH `tx`. Reaching `this.executor` from inside
+    // the callback would take a different pooled connection, commit independently, and defeat the
+    // rollback - and the compiler cannot see the difference. That is why the plan CARRIES `tx` and why
+    // the row-writing methods read their executor off the plan when they hold one.
+    return await this.executor.transaction(async (tx): Promise<Product> => {
+      const plan: SkuCascadePlan = { transientSkus, writer, tx };
+
+      const rowExists = product.isNew()
+        ? false
+        : await this.productRowExists(product.getProductID(), tx);
+
+      if (!rowExists) {
+        return await this.insertProduct(product, populatedUrlTitle, populatedProductName, plan);
+      }
+
+      return await this.updateProduct(product, populatedUrlTitle, populatedProductName, plan);
+    });
   }
 
   // =========================================================================
@@ -2743,168 +3338,119 @@ export class MysqlProductRepository implements ProductRepository {
    * foreign-key constraint violation surfaces as the driver's error and PROPAGATES - which is parity,
    * because Hibernate raised a constraint violation in that situation too rather than returning false.
    *
-   * ⚠ THE DEFAULT-SKU NULL-OUT AT [model/service/ProductService.cfc:L323] IS NOT REPRODUCED HERE. It is a
-   * three-step sequence - null the association, delete, restore on failure - which is only safe inside a
-   * unit of work, and `./connection.js` deliberately publishes no transaction method (§8.4). Splitting it
-   * across three uncoordinated statements could leave a product with its default SKU nulled and itself
-   * undeleted, which is strictly worse than not attempting it. It is service-tier orchestration and it
-   * stays there.
+   * ★★ THE DEFAULT-SKU SEQUENCE AND THE CASCADE ARE NOW BOTH REPRODUCED, AND THIS IS THE RECORD OF THAT
+   * CHANGE. This block once read: "⚠ THE DEFAULT-SKU NULL-OUT AT [model/service/ProductService.cfc:L323]
+   * IS NOT REPRODUCED HERE. It is a three-step sequence - null the association, delete, restore on
+   * failure - which is only safe inside a unit of work, and `./connection.js` deliberately publishes no
+   * transaction method (§8.4)... It is service-tier orchestration and it stays there." Every clause of
+   * that is still true EXCEPT the premise: `./connection.js` publishes `transaction` now, so the unit of
+   * work the note required exists, and the sequence became safe to perform exactly where the rows are.
    *
-   * AN UNSAVED PRODUCT NEEDS NO SPECIAL CASE. `isNew()` means the identifier is the empty string
-   * [model/entity/Product.cfc:L52], so the statement binds `''`, matches nothing and reports `false` -
-   * the correct answer, reached without a guard.
+   * ★ THE ROLLBACK IS THE RESTORE, WHICH IS WHY NO RESTORE STATEMENT APPEARS. The legacy nulled the
+   * association, called the framework delete, and on failure PUT THE DEFAULT SKU BACK on the in-memory
+   * entity [model/service/ProductService.cfc:L330] - a compensating action it needed because its two
+   * steps were separately visible. Here both steps live in one transaction, so a failure anywhere
+   * discards the detach along with everything else and the row is left exactly as it was found. The
+   * compensating write is not omitted; it is unnecessary, and the transaction is what makes it so.
    *
-   * T3, FETCH SHAPE: nothing is read and nothing is materialized. ONE statement, ONE bound parameter.
+   * ★ THE IN-MEMORY ENTITY IS DELIBERATELY NOT MUTATED, WHICH CLOSES A QUESTION LEFT OPEN ON
+   * `Product.setDefaultSku`. That setter accepts a `Sku` and not `undefined`, and the note there defers
+   * the clear at [model/service/ProductService.cfc:L323] to this method. The answer is that the clear
+   * was never about the caller's object graph - it existed to stop Hibernate flushing a foreign key it
+   * could not satisfy, and there is no session here to appease. Nulling the argument's association would
+   * instead leave a caller holding a product stripped of its default SKU after a delete that a
+   * constraint had refused, which is the very state the legacy's L330 restore existed to prevent. So the
+   * setter stays narrow and the detach happens only in SQL.
    *
-   * NET-NEW COVERAGE OBLIGATIONS: a matched row emits `DELETE FROM SwProduct` with one bound parameter
-   * and returns true; an unmatched identifier returns false; an unsaved product binds the empty string
-   * and returns false; and no dependent table appears in the emitted text.
+   * THE ORDER OF THE STATEMENTS IS THE FOREIGN-KEY ORDER, and it is the only order that works: detach
+   * the product's `defaultSkuID` so the SKU rows are unreferenced; delete what hangs off those SKUs
+   * while a subquery can still find them; delete the SKUs; delete the product's owned link rows and its
+   * own one-to-many children; delete the product last. The four tables lists and the two builders above
+   * carry the per-table citations.
+   *
+   * AN UNSAVED PRODUCT IS REFUSED BEFORE THE TRANSACTION OPENS. `isNew()` means the identifier is the
+   * empty string [model/entity/Product.cfc:L52]. When this method issued ONE statement, binding `''` and
+   * reporting the resulting `false` was the tidier answer and the absence of a guard was a virtue. Now
+   * that it issues seventeen inside a unit of work, opening a transaction to bind `''` seventeen times
+   * against a row that provably does not exist is waste rather than economy, so the guard earns its
+   * place.
+   *
+   * ⚠ DELETABILITY GATES ARE STILL THE SERVICE TIER'S, AND NONE IS ADDED HERE. `model/validation/Product.json`
+   * declares two `"contexts":"delete"` rules - `transactionExistsFlag` must be false and
+   * `physicalCounts` must be an empty collection - and both remain out of this method, because
+   * `ProductService.deleteProduct` ALREADY DISCHARGES THEM. It probes the first through this port's SKU
+   * sibling before delegating here, and it records why the second is unenforceable: `Product.cfc`
+   * declares no `physicalCounts` property at all - the collection it actually declares is `physicals`
+   * [model/entity/Product.cfc:L90] - so the legacy framework resolved `getPhysicalCountsCount()`
+   * through `onMissingMethod` and terminated at a throw. The rule was already unsatisfiable in CFML.
+   * That analysis is not restated here; this note exists so that a reader arriving at the cascade does
+   * not conclude the gates were forgotten. The `SwOrderItem` foreign key is the database-level backstop.
+   *
+   * Note also that `physicals` is `inverse="true"` [L90], as are `priceGroupRates` [L88] and `vendors`
+   * [L89] - the product does not OWN those link tables, so their rows are correctly absent from the
+   * three enumerated on {@link PRODUCT_OWNED_LINK_TABLES}.
+   *
+   * T3, FETCH SHAPE: nothing is read and nothing is materialized. Seventeen mutations, ONE bound parameter
+   * each, all of them the same product key.
+   *
+   * NET-NEW COVERAGE OBLIGATIONS: the detach precedes every delete; each SKU-dependent table is emptied
+   * before `SwSku`; the product row goes last; every statement binds exactly one parameter and travels
+   * the transaction executor; a matched row returns true and an unmatched one false; an unsaved product
+   * opens no transaction at all; `SwOrderItem` appears nowhere; and the emitted text names only
+   * `Sw`-prefixed tables.
    *
    * @param product the product to delete.
-   * @returns true when a row was deleted, false when none matched.
+   * @returns true when the product row was deleted, false when none matched.
    */
   public async deleteProduct(product: Product): Promise<boolean> {
-    const result = await this.executor.executeMutation(DELETE_PRODUCT_SQL, [
-      product.getProductID(),
-    ]);
-
-    return result.affectedRows > 0;
-  }
-
-  // =========================================================================
-  // Port method 7 of 7 - saveBrand [model/service/BrandService.cfc:L67-L77]
-  // =========================================================================
-
-  /**
-   * Persist one brand, populating it from a resolved payload first.
-   *
-   * ★ WHY BRAND PERSISTENCE LIVES ON THE PRODUCT REPOSITORY. `Brand` is one of the six prompt-named
-   * catalog entities and [model/entity/Brand.cfc:L49] routes its CRUD through
-   * `hb_serviceName="brandService"` - but THERE IS NO `BrandDAO.cfc` IN THE LEGACY REPOSITORY AT ALL.
-   * Brand persistence never had a query surface: it ran entirely through
-   * `return super.save(arguments.brand, arguments.data)` [model/service/BrandService.cfc:L76], the single
-   * statement that made the component durable. T3 converts `super.save()` into a repository method, and
-   * the port's own documentation records why the catalog repository is that method's home rather than a
-   * fourteenth port. B4: the name is the legacy name, `saveBrand`.
-   *
-   * ★ IT TAKES TWO ARGUMENTS WHERE {@link MysqlProductRepository.saveProduct} TAKES ONE, AND THE
-   * ASYMMETRY IS FORCED BY THE ENTITY RATHER THAN CHOSEN. `super.save(entity, data)` POPULATED the entity
-   * from the struct and only then flushed, so the struct is not an alternative route to the columns - it
-   * IS the route. `Brand` publishes no mutator and its `urlTitle` field is private and readonly, so the
-   * title that [model/service/BrandService.cfc:L70, L72] resolves cannot be applied to the entity by the
-   * service at all. Dropping the payload here would make the generated title reach nothing - a durable
-   * save that persists the wrong row.
-   *
-   * ⚠ THE TITLE IS STILL NOT GENERATED HERE. `BrandService` resolves it with
-   * `createUniqueURLTitle(..., tableName="SwBrand")` [model/service/BrandService.cfc:L70, L72] before
-   * calling, and that becomes the `urlTitleGenerator` port. This method persists what it is handed.
-   *
-   * // CFML parity [model/service/BrandService.cfc:L67-L77]: the legacy populate step copies the keys the
-   * // struct HAS. `structKeyExists` distinguishes an ABSENT key from a key holding the empty string, and
-   * // `Object.hasOwn` is the exact equivalent of that test. A PRESENT key wins over the entity's current
-   * // value whatever it holds - including an explicit `undefined`, which the port's `BrandSavePayload`
-   * // declares as `?: string | undefined` precisely so that a caller who read a NULL column can express
-   * // it, and which therefore writes SQL NULL. An ABSENT key leaves the entity's value in place.
-   *
-   * VALIDATION IS NOT PART OF THIS CONTRACT. `model/validation/Brand.json` was enforced by the framework
-   * validation service, which is not ported; note that it marks `urlTitle` required while the schema makes
-   * the column nullable [model/entity/Brand.cfc:L55], and this method honours the SCHEMA.
-   *
-   * ★ THE RETURNED INSTANCE IS THE CONTRACT, NOT A COURTESY. The legacy returned what `super.save` handed
-   * back, and a generated `brandID` is assigned during that save [model/entity/Brand.cfc:L52]. A caller
-   * that saved a NEW brand and then read the ARGUMENT would see `brandID` still empty and the
-   * pre-population `urlTitle` - so a new instance is returned, and the entity's immutability is what makes
-   * that load-bearing rather than stylistic. `Brand` is fully reconstructible from its own accessors, so
-   * the new instance carries every column that was written plus THE ARGUMENT'S LIVE COLLECTIONS - the
-   * collections are plain pass-throughs on that entity, defaulted to `[]` by its own constructor, so
-   * forwarding them is lossless.
-   *
-   * `SwBrand` HAS NO FOREIGN KEY OF ITS OWN, so there is no association to check for transience and no
-   * dangling-key hazard on this path. Audit stamping follows the same rules as the product save.
-   *
-   * T3, FETCH SHAPE: no association is read or materialized. An existing brand costs one existence read
-   * plus one write; a new brand costs one write.
-   *
-   * NET-NEW COVERAGE OBLIGATIONS: a new brand emits `INSERT INTO SwBrand` with eleven parameters in the
-   * declared column order and returns an instance carrying the minted identifier; an existing brand emits
-   * the existence read then `UPDATE SwBrand` with nine parameters and THE KEY LAST; a payload carrying
-   * `urlTitle` overrides the entity's value; a payload carrying `urlTitle: undefined` writes NULL; a
-   * payload OMITTING `urlTitle` preserves the entity's value; and the argument instance is never mutated.
-   *
-   * @param brand the brand to persist.
-   * @param data the resolved payload to populate from before flushing.
-   * @returns the persisted brand, carrying any identifier assigned by the save and the populated values.
-   * @throws An error named `ProductColumnError` when the record does not carry a listed column.
-   */
-  public async saveBrand(brand: Brand, data: BrandSavePayload): Promise<Brand> {
-    // The populate step, in the one place it happens. See the CFML parity note above.
-    const populatedUrlTitle: string | undefined = Object.hasOwn(data, 'urlTitle')
-      ? data.urlTitle
-      : brand.getUrlTitle();
-    const populatedBrandName: string | undefined = Object.hasOwn(data, 'brandName')
-      ? data.brandName
-      : brand.getBrandName();
-
-    const rowExists = brand.isNew() ? false : await this.brandRowExists(brand.getBrandID());
-
-    if (!rowExists) {
-      // [org/Hibachi/HibachiEntity.cfc:L609] ONE timestamp, written to both stamps.
-      const auditTimestamp = new Date();
-      const brandID = brand.isNew() ? generatePersistedIdentifier() : brand.getBrandID();
-
-      const record = toBrandRecord(
-        brand,
-        brandID,
-        populatedUrlTitle,
-        populatedBrandName,
-        auditTimestamp,
-        auditTimestamp,
-      );
-
-      await this.executor.executeMutation(
-        INSERT_BRAND_SQL,
-        toBoundParameters(record, BRAND_INSERTED_COLUMNS, BRAND_INSERT_LABEL),
-      );
-
-      return rebuildBrand(
-        brand,
-        brandID,
-        populatedUrlTitle,
-        populatedBrandName,
-        auditTimestamp,
-        auditTimestamp,
-      );
+    if (product.isNew()) {
+      // No row exists, so there is nothing to detach, nothing to cascade and nothing to report as
+      // deleted. See the guard's justification in the doc block above.
+      return false;
     }
 
-    // [org/Hibachi/HibachiEntity.cfc:L663-L668] the modified stamp only; the created pair is absent from
-    // the SET list, so the value passed for it is never written.
-    const modifiedDateTime = new Date();
+    const productID = product.getProductID();
 
-    const record = toBrandRecord(
-      brand,
-      brand.getBrandID(),
-      populatedUrlTitle,
-      populatedBrandName,
-      brand.getCreatedDateTime(),
-      modifiedDateTime,
-    );
+    return await this.executor.transaction(async (tx): Promise<boolean> => {
+      // The SQL half of [model/service/ProductService.cfc:L323], first because the mutual foreign key
+      // between `SwProduct` and `SwSku` blocks everything that follows while it stands.
+      await tx.executeMutation(DETACH_PRODUCT_DEFAULT_SKU_SQL, [productID]);
 
-    await this.executor.executeMutation(UPDATE_BRAND_SQL, [
-      ...toBoundParameters(record, BRAND_UPDATED_COLUMNS, BRAND_UPDATE_LABEL),
-      // THE KEY IS BOUND LAST, matching the statement's `WHERE brandID = ?`.
-      brand.getBrandID(),
-    ]);
+      // SEQUENTIAL, NOT CONCURRENT, throughout: every statement travels the single connection this
+      // transaction holds, which has no statement concurrency to exploit.
+      for (const tableName of SKU_DEPENDENT_TABLES) {
+        await tx.executeMutation(buildDeleteBySkuOfProductSql(tableName), [productID]);
+      }
 
-    return rebuildBrand(
-      brand,
-      brand.getBrandID(),
-      populatedUrlTitle,
-      populatedBrandName,
-      brand.getCreatedDateTime(),
-      modifiedDateTime,
-    );
+      // Now that nothing references them. `cascade="all-delete-orphan"` on `skus`
+      // [model/entity/Product.cfc:L73], which also subsumes the `cascade="delete"` on the `defaultSku`
+      // many-to-one [L70] - that SKU is one of the product's own, so this statement takes it too.
+      await tx.executeMutation(buildDeleteByProductIdSql(SKU_TABLE_NAME), [productID]);
+
+      for (const tableName of PRODUCT_OWNED_LINK_TABLES) {
+        await tx.executeMutation(buildDeleteByProductIdSql(tableName), [productID]);
+      }
+
+      // The seven inverse link tables the framework cleaned in the same sweep; see
+      // {@link PRODUCT_INVERSE_LINK_TABLES} for why the inverse half is not left to its owning side.
+      for (const tableName of PRODUCT_INVERSE_LINK_TABLES) {
+        await tx.executeMutation(buildDeleteByProductIdSql(tableName), [productID]);
+      }
+
+      for (const tableName of PRODUCT_DEPENDENT_TABLES) {
+        await tx.executeMutation(buildDeleteByProductIdSql(tableName), [productID]);
+      }
+
+      const result = await tx.executeMutation(DELETE_PRODUCT_SQL, [productID]);
+
+      // The legacy service's boolean [model/service/ProductService.cfc:L317]. Reporting the PRODUCT
+      // row's own result and not the cascade's: a product with no images and no categories deletes
+      // successfully having affected zero rows in most of the tables above, and that is a true delete.
+      return result.affectedRows > 0;
+    });
   }
 
+  // =========================================================================
   // =========================================================================
   // Private - the read path
   // =========================================================================
@@ -3135,6 +3681,12 @@ export class MysqlProductRepository implements ProductRepository {
   private buildProduct(row: SqlRow, materializedSkus: MaterializedSkus): Product {
     const productID = readIdentifier(row, 'p_productID', PRODUCT_GRAPH_LABEL);
 
+    // Bound once because TWO members read it. `byProductID` carries only the SKUs whose `productID`
+    // matched this product [model/entity/Product.cfc:L73], which is what the one-to-many means and
+    // therefore what both the collection and the option-group derivation must see; a default SKU
+    // belonging to another product appears in `bySkuID` and deliberately not here.
+    const ownSkus = materializedSkus.byProductID.get(productID) ?? [];
+
     const draft: ProductHydrationDraft = {
       productID,
       activeFlag: readFlag(row, 'p_activeFlag', PRODUCT_GRAPH_LABEL),
@@ -3144,7 +3696,14 @@ export class MysqlProductRepository implements ProductRepository {
         'p_calculatedAllowBackorderFlag',
         PRODUCT_GRAPH_LABEL,
       ),
-      skus: materializedSkus.byProductID.get(productID) ?? [],
+      skus: ownSkus,
+      // The option-group association, materialized rather than lazily resolved - see
+      // {@link deriveProductOptionGroups} for the three-part smart-list shape it reproduces and for why
+      // `byProductID` rather than `bySkuID` is the correct input. Assigned UNCONDITIONALLY, including as
+      // an empty array: `src/domain/entities/product.ts` distinguishes "materialized as empty" from
+      // "never materialized" and raises only for the second, so a product with no options must arrive
+      // with an empty array and not with the key absent.
+      optionGroups: deriveProductOptionGroups(ownSkus),
       // T2: the entity's `getService("productService")` reach at [model/entity/Product.cfc:L367] becomes
       // this very instance, injected at construction instead of resolved by name at the point of use.
       productRepository: this,
@@ -3281,10 +3840,24 @@ export class MysqlProductRepository implements ProductRepository {
    *
    * The check runs BEFORE any write and before the existence read, so a refusal changes nothing.
    *
+   * ★ THE DEFAULT-SKU ARM IS CONDITIONAL AND THE OTHER TWO ARE NOT, WHICH MIRRORS THE MAPPING RATHER
+   * THAN SOFTENING THE CHECK. `brand` and `productType` carry no cascade
+   * [model/entity/Product.cfc:L68-L69], so a transient one is a caller error with no remedy - Hibernate
+   * raised `TransientObjectException` and so does this. `defaultSku` is different: `Product.skus` carries
+   * `cascade="all-delete-orphan"` [model/entity/Product.cfc:L73], the designation is made in memory
+   * before either row exists [model/service/SkuService.cfc:L102, L134], and Hibernate persisted the
+   * child and then satisfied the parent's key. So a transient default SKU is permitted EXACTLY WHEN this
+   * write is going to persist it - that is, when it is one of the transient SKUs held on the product's
+   * own collection - and refused otherwise. A default SKU that is transient and NOT in the collection is
+   * unreachable from `createSkus`, which links every draft it designates [L100, L128], so refusing it
+   * closes a hole rather than rejecting a legitimate shape.
+   *
    * @param product the product about to be written.
-   * @throws An error named `ProductPersistenceError` when any of the three associations is transient.
+   * @param transientSkus the never-persisted SKUs this write will cascade to, in collection order.
+   * @throws An error named `ProductPersistenceError` when any of the three associations is transient and
+   *   this write cannot persist it.
    */
-  private assertAssociationsPersisted(product: Product): void {
+  private assertAssociationsPersisted(product: Product, transientSkus: readonly Sku[]): void {
     const brand = product.getBrand();
     if (brand !== undefined && brand.isNew()) {
       throw new ProductPersistenceError(
@@ -3300,9 +3873,10 @@ export class MysqlProductRepository implements ProductRepository {
     }
 
     const defaultSku = product.getDefaultSku();
-    if (defaultSku !== undefined && defaultSku.isNew()) {
+    if (defaultSku !== undefined && defaultSku.isNew() && !transientSkus.includes(defaultSku)) {
       throw new ProductPersistenceError(
-        'its default sku has never been persisted, so `defaultSkuID` would be written as the empty string',
+        'its default sku has never been persisted and is not among the skus held on the product, so ' +
+          'this write cannot cascade to it and `defaultSkuID` would name nothing',
       );
     }
   }
@@ -3311,24 +3885,99 @@ export class MysqlProductRepository implements ProductRepository {
    * Whether a product row carries this identifier.
    *
    * @param productID the identifier to match.
+   * @param executor the statement sink. Defaulted to this instance's own so the no-cascade path is
+   *   unchanged; the cascade path passes its transaction-bound executor so the existence read and the
+   *   writes that depend on it observe the same snapshot.
    * @returns true when a row exists.
    */
-  private async productRowExists(productID: string): Promise<boolean> {
-    const rows = await this.executor.execute(SELECT_PRODUCT_ID_SQL, [productID]);
+  private async productRowExists(
+    productID: string,
+    executor: PreparedStatementExecutor = this.executor,
+  ): Promise<boolean> {
+    const rows = await executor.execute(SELECT_PRODUCT_ID_SQL, [productID]);
 
     return rows.length > 0;
   }
 
   /**
-   * Whether a brand row carries this identifier.
+   * Write the transient SKUs of a product whose row has just been written, then settle the product's own
+   * `defaultSkuID`.
    *
-   * @param brandID the identifier to match.
-   * @returns true when a row exists.
+   * ★★ THIS IS `cascade="all-delete-orphan"` ON `Product.skus` [model/entity/Product.cfc:L73], MADE
+   * EXPLICIT. Under Hibernate a product save flushed its transient children in the same unit of work,
+   * wrote each child's `productID` from the parent's freshly minted key, and then issued a follow-up
+   * UPDATE for the parent's own `defaultSkuID`. All three of those steps are here, in that order, and the
+   * order is forced by the two foreign keys pointing at each other - see
+   * {@link UPDATE_PRODUCT_DEFAULT_SKU_SQL}.
+   *
+   * SERIALLY, NOT CONCURRENTLY, AND THAT IS DELIBERATE. The writes share one connection because they
+   * share one transaction, so there is nothing to gain from issuing them together and one thing to lose:
+   * `mysql2` serialises statements on a connection anyway, and awaiting each in turn keeps the emitted
+   * statement order deterministic, which is what the SQL-shape suites assert against.
+   *
+   * ★ THE REPLACEMENT COLLECTION PRESERVES POSITION, NOT JUST MEMBERSHIP. `createSkus` derives each
+   * skuCode from the collection's length as it grows [model/service/SkuService.cfc:L97], and
+   * `getSortedProductSkusID` orders by option-group sort order rather than by array position
+   * [model/dao/SkuDAO.cfc:L172], so a caller reading `getSkus()` after a save must see the same order it
+   * built. Mapping over the original array rather than concatenating the persisted ones is what
+   * guarantees that, and it also carries through any SKU that was ALREADY persisted untouched.
+   *
+   * ⚠ THE `defaultSkuID` UPDATE IS ISSUED ONLY WHEN THE DESIGNATED SKU WAS ONE OF THE TRANSIENT ONES. A
+   * default SKU that already had a key was written into the row by the insert or update that preceded
+   * this call, so a second statement would rewrite the value it already holds. A product that designated
+   * no default at all gets no statement either, and its column stays NULL - which is what the legacy
+   * leaves when no branch of `createSkus` designates one.
+   *
+   * @param product the product whose collection is authoritative for order.
+   * @param productID the key the row now carries, bound as each SKU's `productID`.
+   * @param plan the cascade set, the sibling writer and the enclosing transaction.
+   * @returns the persisted collection and the resolved default, for the rebuilt instance to report.
    */
-  private async brandRowExists(brandID: string): Promise<boolean> {
-    const rows = await this.executor.execute(SELECT_BRAND_ID_SQL, [brandID]);
+  private async cascadeTransientSkus(
+    product: Product,
+    productID: string,
+    plan: SkuCascadePlan,
+  ): Promise<PersistedSkuCascade> {
+    // Keyed by the DRAFT INSTANCE rather than by an identifier, because the correspondence this map
+    // records is between TWO DIFFERENT identifiers. A draft carries the provisional key
+    // `skuService.createSkus` minted for it; `saveSkuForProduct` returns an instance carrying the key
+    // `insertSku` minted and actually wrote. Neither value is stable across the write, so neither can key
+    // the lookup, and the provisional one is additionally a value that exists nowhere once the statement
+    // has run. The object reference is the only thing that survives unchanged, and it is the correct
+    // discriminator besides: these are the very objects the caller attached.
+    //
+    // ★ QUOTE-THEN-REVISE. This comment read: "a draft has no identifier to key on - `isNew()` means
+    // `getSkuID() === ''`, so every draft on the product would collide under one key." The conclusion
+    // (key by identity) was right and the premise was wrong - see the correction on
+    // {@link resolvePersistedDefaultSkuKey}. Drafts carry DISTINCT provisional keys, so they would not
+    // collide; they would simply be keyed on a value the write throws away.
+    const persistedByDraft = new Map<Sku, Sku>();
 
-    return rows.length > 0;
+    for (const draft of plan.transientSkus) {
+      persistedByDraft.set(draft, await plan.writer.saveSkuForProduct(draft, productID, plan.tx));
+    }
+
+    const skus = product.getSkus().map((held: Sku) => persistedByDraft.get(held) ?? held);
+
+    const designated = product.getDefaultSku();
+
+    if (designated === undefined) {
+      return { skus, defaultSku: undefined };
+    }
+
+    const persistedDefault = persistedByDraft.get(designated);
+
+    if (persistedDefault === undefined) {
+      // Already persisted before this write, so its key went into the row that was just written.
+      return { skus, defaultSku: designated };
+    }
+
+    await plan.tx.executeMutation(UPDATE_PRODUCT_DEFAULT_SKU_SQL, [
+      persistedDefault.getSkuID(),
+      productID,
+    ]);
+
+    return { skus, defaultSku: persistedDefault };
   }
 
   /**
@@ -3348,59 +3997,179 @@ export class MysqlProductRepository implements ProductRepository {
    * An entity that carries an identifier but matches no row - saveOrUpdate's DETACHED case - is inserted
    * with that identifier and THE ARGUMENT IS RETURNED, so its whole in-memory graph survives intact.
    *
+   * ⚠ ON THE DETACHED ROUTE THE POPULATED VALUES ARE WRITTEN AND THE RETURNED INSTANCE DOES NOT CARRY
+   * THEM, because the argument is what is returned and its `urlTitle` is `private readonly`. That is the
+   * pre-existing shape of this route rather than anything the payload introduced - the same is true of
+   * every other column a detached save writes - and it is the price of handing back the caller's whole
+   * in-memory graph. A caller that needs the persisted state reads it back through `getProductByProductID`.
+   * The NEW-entity route has no such gap: {@link rebuildProduct} is given the populated values directly.
+   *
+   * ★ AND WHEN A CASCADE RAN, THE ARGUMENT IS NEVER RETURNED - NOT EVEN ON THE DETACHED ROUTE. The
+   * detached route hands back the caller's graph precisely because that graph is still an accurate
+   * description of the row. A cascade falsifies it: `SwSku` rows now exist whose keys the argument's
+   * drafts cannot report, and `SwProduct.defaultSkuID` now names one of them. So a cascading save always
+   * rebuilds, and the rebuild carries the persisted collection.
+   *
    * @param product the product to insert.
+   * @param urlTitle the url title the populate step settled on, if any.
+   * @param productName the product name the populate step settled on, if any.
+   * @param plan the SKU cascade to run after the row write, when this save carries transient SKUs. Its
+   *   presence also redirects every statement onto the enclosing transaction.
    * @returns the persisted product.
    * @throws An error named `ProductColumnError` when the record does not carry a listed column.
    */
-  private async insertProduct(product: Product): Promise<Product> {
+  private async insertProduct(
+    product: Product,
+    urlTitle: string | undefined,
+    productName: string | undefined,
+    plan?: SkuCascadePlan,
+  ): Promise<Product> {
     // [org/Hibachi/HibachiEntity.cfc:L609] ONE timestamp, written to BOTH stamps, byte-identical.
     const auditTimestamp = new Date();
     const detached = !product.isNew();
     const productID = detached ? product.getProductID() : generatePersistedIdentifier();
+    const executor = plan?.tx ?? this.executor;
 
-    const record = toProductRecord(product, productID, auditTimestamp, auditTimestamp);
+    const record = toProductRecord(
+      product,
+      productID,
+      urlTitle,
+      productName,
+      auditTimestamp,
+      auditTimestamp,
+    );
 
-    await this.executor.executeMutation(
+    await executor.executeMutation(
       INSERT_PRODUCT_SQL,
       toBoundParameters(record, PRODUCT_INSERTED_COLUMNS, PRODUCT_INSERT_LABEL),
     );
 
-    if (detached) {
+    // AFTER the row, because `SwSku.productID` references it, and the transaction is what makes the
+    // in-between state unobservable.
+    const cascade =
+      plan === undefined ? undefined : await this.cascadeTransientSkus(product, productID, plan);
+
+    if (detached && cascade === undefined) {
       return product;
     }
 
-    return rebuildProduct(product, productID, auditTimestamp, this, this.collaborators);
+    return rebuildProduct(
+      product,
+      productID,
+      urlTitle,
+      productName,
+      // [org/Hibachi/HibachiEntity.cfc:L609] the SAME instant in both columns, byte-identical.
+      auditTimestamp,
+      auditTimestamp,
+      this,
+      this.collaborators,
+      cascade,
+    );
   }
 
   /**
    * Update a product whose row already exists.
    *
-   * THE ARGUMENT IS RETURNED, because it already carries its identifier and every value that was written -
-   * only the modified stamp is decided here, and the entity's own `getModifiedDateTime()` is not part of
-   * the port's contract for a returned instance. `Product` declares no `preUpdate` hook to invoke and no
-   * path to maintain, so there is nothing to run before the write and no prior row to feed anything.
+   * ★ QUOTE-THEN-REVISE. This method used to be documented as: "THE ARGUMENT IS RETURNED, because it
+   * already carries its identifier and every value that was written - only the modified stamp is decided
+   * here, and the entity's own `getModifiedDateTime()` is not part of the port's contract for a returned
+   * instance." The reasoning was sound and its PREMISE has now stopped holding in one case. The argument
+   * carries every value that was written ONLY while every value written is read off the argument. The
+   * populate step in {@link MysqlProductRepository.saveProduct} can override two of them, and when it does,
+   * handing the argument back reports a url title the row does not hold - which is the very defect the
+   * payload was introduced to close, merely relocated from the row to the returned instance.
+   *
+   * SO THE ROUTE IS CHOSEN BY WHETHER THE POPULATE STEP ACTUALLY CHANGED ANYTHING, and the two branches
+   * are each honest about what they can claim:
+   *
+   * - NOTHING CHANGED - which covers every save whose payload omits both keys, and every save whose
+   *   payload restates what the entity already held - and THE ARGUMENT IS RETURNED, byte-for-byte the
+   *   prior behaviour. The caller's whole in-memory graph survives, including collections
+   *   {@link rebuildProduct} cannot forward, so the common path loses nothing.
+   * - A MEMBER WAS OVERRIDDEN, and a rebuilt instance carrying the written values is returned. This
+   *   arises when the entity's url title was absent and the service resolved one - exactly the legacy's
+   *   `if(isNull(arguments.product.getURLTitle()))` gate [model/service/ProductService.cfc:L268], which
+   *   only generates when there is nothing there. The legacy then had the value on the entity it returned
+   *   [model/service/ProductService.cfc:L269, L287]; this branch is what keeps that true.
+   *
+   * ⚠ THE REBUILD BRANCH DOES NOT FORWARD THE COLLECTIONS `Product` TREATS AS "MATERIALIZED OR NOT" -
+   * `optionGroups`, `categories`, `relatedProducts`, the promotion collections, `priceGroupRates` - for
+   * the reason {@link rebuildProduct} states at length: forwarding them would be a claim a save path
+   * cannot back, and forwarding them as `[]` would convert "unknown" into a confident "empty". That is
+   * why the branch is entered ONLY when returning the argument would be false rather than merely stale,
+   * and why the no-change branch is not routed through the rebuild for uniformity's sake. A caller that
+   * needs the full graph after a save reads it back through `getProductByProductID`.
+   *
+   * `Product` declares no `preUpdate` hook to invoke and no path to maintain, so there is nothing to run
+   * before the write and no prior row to feed anything.
+   *
+   * ★ A CASCADE IS A THIRD REASON TO REBUILD, AND IT OVERRIDES THE NO-CHANGE BRANCH. An existing product
+   * can acquire new SKUs - `createSkus` is reached from `processProduct_addOption` and
+   * `processProduct_addOptionGroup` as well as from a new-product save
+   * [model/service/ProductService.cfc:L150, L279] - and once rows have been written for them, handing
+   * back the argument would report a collection of keyless drafts against a database that holds their
+   * rows. So when the cascade ran, the rebuild happens whether or not the populate step changed anything.
    *
    * @param product the product to update.
-   * @returns the argument, which is now the persisted state.
+   * @param urlTitle the url title the populate step settled on, if any.
+   * @param productName the product name the populate step settled on, if any.
+   * @param plan the SKU cascade to run after the row write, when this save carries transient SKUs. Its
+   *   presence also redirects every statement onto the enclosing transaction.
+   * @returns the argument when the populate step overrode nothing and no cascade ran, and otherwise a new
+   *   instance carrying the values that were written.
    * @throws An error named `ProductColumnError` when the record does not carry a listed column.
    */
-  private async updateProduct(product: Product): Promise<Product> {
+  private async updateProduct(
+    product: Product,
+    urlTitle: string | undefined,
+    productName: string | undefined,
+    plan?: SkuCascadePlan,
+  ): Promise<Product> {
+    // [org/Hibachi/HibachiEntity.cfc:L662-L667] the modified stamp only; the created pair is not in the
+    // SET list at all, so the value passed here for it is never written.
+    const modifiedDateTime = new Date();
+    const executor = plan?.tx ?? this.executor;
+
     const record = toProductRecord(
       product,
       product.getProductID(),
+      urlTitle,
+      productName,
       product.getCreatedDateTime(),
-      // [org/Hibachi/HibachiEntity.cfc:L663-L668] the modified stamp only; the created pair is not in the
-      // SET list at all, so the value passed here for it is never written.
-      new Date(),
+      modifiedDateTime,
     );
 
-    await this.executor.executeMutation(UPDATE_PRODUCT_SQL, [
+    await executor.executeMutation(UPDATE_PRODUCT_SQL, [
       ...toBoundParameters(record, PRODUCT_UPDATED_COLUMNS, PRODUCT_UPDATE_LABEL),
       // THE KEY IS BOUND LAST, matching the statement's `WHERE productID = ?`.
       product.getProductID(),
     ]);
 
-    return product;
+    const cascade =
+      plan === undefined
+        ? undefined
+        : await this.cascadeTransientSkus(product, product.getProductID(), plan);
+
+    const populateOverrodeNothing =
+      urlTitle === product.getUrlTitle() && productName === product.getProductName();
+
+    if (populateOverrodeNothing && cascade === undefined) {
+      return product;
+    }
+
+    return rebuildProduct(
+      product,
+      product.getProductID(),
+      urlTitle,
+      productName,
+      // The row's own creation stamp, untouched by an update - the created pair is absent from the SET
+      // list entirely, so this reports what the row holds rather than what this write decided.
+      product.getCreatedDateTime(),
+      modifiedDateTime,
+      this,
+      this.collaborators,
+      cascade,
+    );
   }
 }
 

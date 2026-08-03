@@ -204,10 +204,15 @@
 //   layout, so its only implementation home is the composition root at
 //   src/handlers/bootstrap.ts (planned), which wires the single concrete instance.
 //
-//   Two obligations fall on that implementation, both drawn from the legacy
-//   body: compare all four fields case-insensitively, and accept the zone's
-//   locations already materialized, since this contract is synchronous and
-//   performs no fetch of its own.
+//   Three obligations fall on that implementation. Two are drawn from the
+//   legacy body: compare all four fields case-insensitively, and treat a zone
+//   with no matching location - including one with no locations at all - as not
+//   entered. The third is drawn from what the in-scope callers can supply: the
+//   promotion engine publishes a zone association as opaque `addressZoneID`
+//   values and holds no locations, so the implementation MUST resolve locations
+//   from `addressZoneID` whenever the supplied location list is empty. That
+//   resolution is synchronous, because this contract is: the zone-to-locations
+//   state is materialized before the call, never fetched inside it.
 //
 // THE PUBLISHED NAMES ARE CANONICAL
 //   Every subtree that will consume this contract - entities, services,
@@ -268,9 +273,51 @@ export interface AddressZoneLocationProjection {
 }
 
 /**
- * The zone under test, as its ordered list of locations.
+ * The zone under test: its opaque identity, and its ordered list of locations.
+ *
+ * BOTH MEMBERS ARE REQUIRED, AND THE IDENTIFIER IS THE LOAD-BEARING ONE.
+ * `AddressZone` is an out-of-scope entity type, so the in-scope layers publish a zone association as
+ * a list of opaque `addressZoneID` values - `PromotionQualifier.getShippingAddressZoneIDs()` and
+ * `PromotionReward.getShippingAddressZoneIDs()` - and NEVER as zone entities carrying locations
+ * [model/entity/PromotionQualifier.cfc:L75, model/entity/PromotionReward.cfc:L77]. A caller in that
+ * position can therefore supply the identity but not the locations.
+ *
+ * Declaring `addressZoneLocations` alone would make this contract UNIMPLEMENTABLE for exactly the one
+ * caller it exists to serve: the caller would hand over an empty list, the implementation would read
+ * "this zone has no locations", and `isAddressInZone` would answer `false` for every configured zone -
+ * silently, and for a zone the legacy would have entered. `addressZoneID` closes that gap by giving
+ * the implementation the only key it needs to resolve the zone itself.
+ *
+ * THE OBLIGATION THIS PLACES ON AN IMPLEMENTATION, STATED SO IT CANNOT BE MISSED:
+ *   * When `addressZoneLocations` is NON-EMPTY, test those locations and resolve nothing. A caller
+ *     that has already materialized the association is authoritative about it.
+ *   * When `addressZoneLocations` is EMPTY, resolve this zone's locations from `addressZoneID` before
+ *     answering. An empty list from a caller that publishes no locations is "not supplied", not "none
+ *     exist", and the two must not be conflated.
+ *   * A zone that genuinely HAS no locations is still not entered. That restriction is legacy
+ *     behavior - the loop at [model/service/AddressService.cfc:L60-L61] runs zero times and
+ *     `addressInZone` stays `false` - and resolving by identifier must not soften it into a match.
+ *
+ * Resolution stays SYNCHRONOUS, because this contract is synchronous: an implementation materializes
+ * its zone-to-locations state ahead of the call, exactly as the SKU currency-detail map is
+ * materialized during hydration so that the SKU's accessors can stay synchronous.
  */
 export interface AddressZoneProjection {
+  /**
+   * The opaque `addressZoneID` of the zone under test, carried verbatim from the link row
+   * [model/entity/PromotionQualifier.cfc:L75 `inversejoincolumn="addressZoneID"`].
+   *
+   * The identity is preserved with its stored casing. CFML compares identifiers case-insensitively,
+   * so an implementation that resolves against a keyed store must fold case when it looks this up
+   * rather than assume the caller normalized it.
+   */
+  readonly addressZoneID: string;
+
+  /**
+   * The zone's locations when the caller already holds them, and an EMPTY list when the caller
+   * publishes none. See the type's own note for why the two cases are not the same and what each
+   * obliges an implementation to do.
+   */
   readonly addressZoneLocations: readonly AddressZoneLocationProjection[];
 }
 
@@ -301,8 +348,14 @@ export interface AddressZoneEvaluator {
    * a zone with no locations at all — is not entered. Comparison folds case, because the legacy `!=`
    * operator compares strings without regard to case.
    *
+   * WHICH LOCATIONS ARE TESTED is decided by {@link AddressZoneProjection}, not here: an implementation
+   * tests `addressZone.addressZoneLocations` when that list is non-empty and otherwise resolves the
+   * zone's locations from `addressZone.addressZoneID` first. An empty list from a caller that publishes
+   * no locations means "not supplied" and must not be read as "none exist" - see the projection's note
+   * for the full obligation. A zone that genuinely has no locations is still not entered.
+   *
    * @param address the address to test.
-   * @param addressZone the zone to test it against.
+   * @param addressZone the zone to test it against, identified by `addressZoneID`.
    * @returns true when some location of the zone matches on every field it sets.
    */
   isAddressInZone(address: AddressProjection, addressZone: AddressZoneProjection): boolean;

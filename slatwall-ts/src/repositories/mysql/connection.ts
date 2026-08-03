@@ -163,7 +163,14 @@
 // ---------------------------------------------------------------------------
 
 import { createPool } from 'mysql2/promise';
-import type { Pool, PoolOptions, ResultSetHeader, RowDataPacket, SslOptions } from 'mysql2/promise';
+import type {
+  Pool,
+  PoolConnection,
+  PoolOptions,
+  ResultSetHeader,
+  RowDataPacket,
+  SslOptions,
+} from 'mysql2/promise';
 import type { DatabaseTlsConfig } from '../../lib/config.js';
 import { appConfig } from '../../lib/config.js';
 import { logger } from '../../lib/logger.js';
@@ -243,11 +250,13 @@ export interface SqlMutationResult {
  *
  * JUDGMENT CALL: constructor injection exists for two reasons that both matter.
  * First, it makes the emitted SQL text and the bound parameter array assertable
- * WITHOUT A LIVE SERVER. This interface is two methods wide precisely so that a
+ * WITHOUT A LIVE SERVER. This interface is three methods wide precisely so that a
  * suite can implement it outright - recording each `sql` string and each `params`
  * array and returning canned rows - which is how the integration suites under
  * `tests/integration/repositories/` verify statement shape and binding against no
- * database at all. Nothing there needs to imitate a pool or a connection. Second,
+ * database at all. A suite's `transaction` implementation is a one-liner that hands
+ * the work function an executor recording onto the same log, so nothing there needs
+ * to imitate a pool or a connection. Second,
  * it keeps the one sanctioned module-scope pool from leaking into six files; the
  * single wiring point is the composition root at `src/handlers/bootstrap.ts` (planned),
  * which is what replaces DI/1's runtime convention scan under transformation rule
@@ -259,13 +268,58 @@ export interface SqlMutationResult {
  * structural rather than a habit a reviewer has to police. That is the property
  * `<cfqueryparam>` provided in the legacy DAOs and it is preserved exactly.
  *
- * JUDGMENT CALL: there is no transaction method either. The legacy bulk paths ran
- * under an ambient CFML transaction, with a request timeout raised far beyond
- * anything this runtime offers [model/service/ProductService.cfc:L66], and no
- * such ambient scope exists here. Bulk correctness is therefore handled where the
- * plan puts it: explicit batch limits, idempotency on retry, and a documented
- * compensation story in the handlers. Adding a transaction here would imply a
- * guarantee the surrounding execution model does not provide.
+ * JUDGMENT CALL, REVISED TWICE, AND BOTH REVISIONS ARE RECORDED BECAUSE THE ERROR
+ * EACH CORRECTED IS INSTRUCTIVE. There IS a transaction method. The reasoning that
+ * once excluded one ran: the legacy bulk paths relied on an ambient CFML transaction
+ * with a request timeout far beyond anything this runtime offers
+ * [model/service/ProductService.cfc:L66], no such ambient scope exists here, so
+ * offering a transaction would "imply a guarantee the surrounding execution model does
+ * not provide".
+ *
+ * THE ERROR WAS TO ANSWER TWO DIFFERENT PROBLEMS WITH ONE POSITION.
+ *
+ *   BULK MULTI-ROW LOOPS - the SKU cartesian product
+ *   [model/service/SkuService.cfc:L109-L121] and the per-SKU save loop
+ *   [model/service/ProductService.cfc:L216-L233] - ran under that raised budget, and it
+ *   genuinely does not exist here. Wrapping an unbounded loop in one transaction would
+ *   hold locks past the platform timeout and would imply exactly the guarantee the
+ *   execution model cannot keep. Bulk correctness is therefore still handled where AAP
+ *   0.6.5 puts it: explicit batch limits, idempotency on retry, and a documented
+ *   compensation story in the handlers. THAT POSITION IS UNCHANGED.
+ *
+ *   A SINGLE LOGICAL WRITE OVER SEVERAL STATEMENTS is a different problem, and refusing
+ *   a transaction outright answered it wrongly. What a single MySQL connection
+ *   absolutely does promise is that statements sent between `START TRANSACTION` and
+ *   `COMMIT` either all apply or none do. That guarantee is the DATABASE'S, not the
+ *   execution model's, and declining to expose it did not make anything safer - it made
+ *   multi-statement writes silently non-atomic.
+ *
+ * THE COST WAS CONCRETE, AND THE LEGACY REALLY DID HAVE THE GUARANTEE. Saving a
+ * price-group rate touches the rate row and six owner link tables
+ * [model/entity/PriceGroupRate.cfc:L71-L77]; deleting a price group must null its
+ * children's parent link before removing the parent row
+ * [model/entity/PriceGroup.cfc:L195]; deleting a product must clear `defaultSkuID`
+ * before deleting the SKU it points at [model/entity/Product.cfc:L70-L76]. The legacy
+ * performed each of those as `removeAllManyToManyRelationships()` followed by
+ * `entityDelete()` [org/Hibachi/HibachiService.cfc:L49-L80,
+ * org/Hibachi/HibachiDAO.cfc:L68-L76] - BOTH ORM SESSION OPERATIONS. No SQL was emitted
+ * until the session flushed, and Hibernate flushes inside one JDBC transaction, so the
+ * link deletes, the rate deletes and the row delete either all landed or none did. The
+ * framework also reaches for `<cftransaction>` explicitly where it drives raw SQL over
+ * several statements [org/Hibachi/HibachiDAO.cfc:L183-L263].
+ *
+ * Reproducing that with autocommit statements does not preserve behaviour, it DISCARDS a
+ * guarantee the source had: a failure part-way through leaves a price group whose link
+ * rows are gone and whose row remains, which no legacy execution could produce. ADDING
+ * THIS METHOD IS THEREFORE RESTORING PARITY, not inventing a capability - and it is
+ * bounded to that use: a fixed, small, known statement count for ONE aggregate, never a
+ * loop over caller-supplied rows.
+ *
+ * NESTING JOINS RATHER THAN NESTS - see `transaction`. MySQL has no nested transactions:
+ * a second `START TRANSACTION` on the same connection IMPLICITLY COMMITS the first, so a
+ * naive nested implementation would silently commit an outer unit of work halfway
+ * through. The executor handed to the callback therefore treats a further `transaction`
+ * call as PARTICIPATION in the unit already open.
  */
 export interface PreparedStatementExecutor {
   /**
@@ -306,6 +360,66 @@ export interface PreparedStatementExecutor {
    *   raises for a connection or statement failure.
    */
   executeMutation(sql: string, params?: readonly unknown[]): Promise<SqlMutationResult>;
+
+  /**
+   * Runs `work` as one all-or-nothing unit against a single connection.
+   *
+   * This is the replacement for the ambient `cftransaction` the ORM opened around the
+   * legacy save and delete cascades. It exists so that a multi-statement write can
+   * reproduce legacy behaviour: either every statement applies or none does.
+   *
+   * ★★★ ATOMICITY BOUNDARY, AND THE CALLBACK MUST USE THE EXECUTOR IT IS GIVEN. The
+   * `tx` argument is pinned to the one connection carrying the transaction, and every
+   * statement issued through it goes to that connection inside that transaction.
+   * Resolving commits; throwing rolls back and re-raises. Reaching PAST `tx` to the
+   * outer executor - the repository's own `this.executor`, say - sends that statement on
+   * a DIFFERENT pooled connection, outside the transaction, where it commits immediately
+   * and survives a rollback. That is the single most likely way to misuse this method
+   * and the compiler cannot catch it, which is why the transactional executor is handed
+   * in as a parameter rather than left for the caller to guess at, and why every call
+   * site is responsible for threading `tx` through.
+   *
+   * ★ IT IS FOR A SINGLE LOGICAL WRITE OVER A FIXED, SMALL STATEMENT COUNT, and not for
+   * bulk work. The interface docblock above explains the distinction and why it matters
+   * under this runtime's timeout budget; wrapping an unbounded loop here would hold
+   * locks past the platform timeout.
+   *
+   * ★★ JOINS, NEVER NESTS - AND THE ALTERNATIVE WAS CONSIDERED AND REJECTED ON EVIDENCE
+   * RATHER THAN ON TASTE. Calling `transaction` on a `tx` executor does NOT open a
+   * second transaction, because MySQL has none to open: a second `START TRANSACTION` on
+   * a connection implicitly commits whatever was already open, which would silently
+   * commit work the caller believes is still provisional - a corruption, not an
+   * inconvenience. There are two honest answers to that, JOIN or REFUSE, and an earlier
+   * revision chose REFUSE on the stated grounds that "nothing in this codebase needs
+   * nesting, and inventing savepoint semantics for a caller that does not exist would be
+   * speculative." Emulating savepoints would indeed be speculative and is still not
+   * done. But the premise no longer holds: a caller that nests DOES exist, and it is
+   * load-bearing. `mysqlProductRepository.saveProduct` opens a transaction and then, for
+   * every transient SKU the product carries, calls
+   * `MysqlSkuRepository.saveSkuForProduct(draft, productID, tx)` - which funnels through
+   * `persistSku` and opens `executor.transaction` of its own. That is the circular
+   * foreign key between `SwSku.productID` [model/entity/Sku.cfc:L65] and
+   * `SwProduct.defaultSkuID` [model/entity/Product.cfc:L70] being written atomically,
+   * which is the whole reason the outer transaction exists. Refusing the inner call would
+   * make every new product with a SKU fail.
+   *
+   * So the inner call runs `work` INLINE on the same connection: a repository method that
+   * wraps its own writes composes correctly when another adapter calls it from inside a
+   * larger unit, and the OUTERMOST caller owns the commit. Joining is what makes the two
+   * adapters composable without either of them knowing whether it is the outer one.
+   *
+   * @param work - The unit of work. Receives an executor bound to the transaction's
+   *   connection and returns the value the caller wants back. Every statement it issues
+   *   through `tx` participates in the transaction.
+   * @returns Whatever `work` resolves to, after the commit has succeeded. A value
+   *   returned here is a value that is durably committed.
+   * @throws Whatever `work` throws, after the transaction has been rolled back and the
+   *   connection released; or whatever the driver raises acquiring the connection,
+   *   beginning the transaction or committing it. The original failure is preserved and
+   *   re-thrown: a rollback that itself fails is logged and deliberately does not mask
+   *   it, because the caller needs to see why the work failed, not why the cleanup did.
+   */
+  transaction<T>(work: (tx: PreparedStatementExecutor) => Promise<T>): Promise<T>;
 }
 
 // --- Failure reporting -------------------------------------------------------
@@ -932,8 +1046,10 @@ export function getConnectionPool(): Pool {
  * over its argument that reaches no module-scope state. It is the only place in
  * the port that names a driver type, and it is where the pool stops being visible.
  *
- * A test does NOT need this function: `PreparedStatementExecutor` is two methods
- * wide and a suite implements it directly rather than imitating a pool.
+ * A test does NOT need this function: `PreparedStatementExecutor` is three methods
+ * wide and a suite implements it directly rather than imitating a pool - including
+ * `transaction`, whose test implementation is a one-liner that invokes the work
+ * function with an executor recording onto the same log.
  *
  * @param pool - The pool every statement will be sent through. In production this
  *   is always `getConnectionPool()`; the parameter exists so that this function
@@ -967,7 +1083,125 @@ export function createPoolExecutor(pool: Pool): PreparedStatementExecutor {
         warningStatus: header.warningStatus,
       });
     },
+
+    async transaction<T>(work: (tx: PreparedStatementExecutor) => Promise<T>): Promise<T> {
+      // ONE CONNECTION FOR THE WHOLE UNIT - a pooled connection, not the pool.
+      // `pool.execute` picks an arbitrary connection per call, so a transaction cannot be
+      // expressed through it at all: `BEGIN` would land on one connection and the
+      // statements that follow on others. Checking one out explicitly is the only correct
+      // shape.
+      const connection = await pool.getConnection();
+
+      try {
+        await connection.beginTransaction();
+
+        const result = await work(createConnectionExecutor(connection));
+
+        await connection.commit();
+
+        return result;
+      } catch (error: unknown) {
+        await rollBackQuietly(connection);
+
+        // RE-RAISED UNCHANGED. The caller's failure is the failure that matters, and
+        // wrapping it here would hide the driver error a reviewer needs to read.
+        throw error;
+      } finally {
+        // RELEASED ON EVERY PATH, including the one where the rollback itself failed.
+        // A connection left checked out is a pool slot lost for the life of the
+        // container, and a warm container that loses them all stops serving.
+        connection.release();
+      }
+    },
   });
+}
+
+/**
+ * Rolls back, and refuses to let a rollback failure mask the original one.
+ *
+ * ★ THE SWALLOW IS DELIBERATE AND IS NOT SILENT. If the transaction failed because
+ * the connection died, the rollback will fail too - and throwing that second error
+ * would replace the diagnostic the caller actually needs with a symptom of it. The
+ * server also rolls back automatically when a connection drops, so the failure is
+ * usually already handled. It is logged rather than discarded so an operator can see
+ * that it happened.
+ *
+ * NOTHING IS LOGGED BUT THE FACT - no value, and NOT the driver error's own message.
+ * A driver message is free text this module cannot police: `mysql2` composes it from
+ * server output that can quote the offending statement and its literals, so forwarding
+ * it as a context string would hand the log line exactly the SQL-and-binding material
+ * that `src/lib/logger.ts` redacts by key everywhere else. The logger's own answer to
+ * an error is `normalizeError`, which reduces one to its class name and error code and
+ * replaces the message with a marker; passing the message across as a plain string
+ * would route around that reduction rather than use it.
+ *
+ * ★ QUOTE-THEN-REVISE: an earlier revision inlined this and logged
+ * `{ rollbackErrorName: rollbackError instanceof Error ? rollbackError.name : 'unknown' }`
+ * alongside the message. The class name alone leaks nothing, so that was not a defect -
+ * but it routed around `normalizeError` to say something the message already implies, and
+ * it made this one call the only place in the file that attaches context to a lifecycle
+ * failure. Carrying NO CONTEXT AT ALL is the same position the two pool lifecycle lines
+ * take, and for the same reason. The message text names the operation, and the operation
+ * is the whole diagnostic: a rollback failure is interesting because it happened, and the
+ * error that caused the transaction to fail in the first place still reaches the caller
+ * unwrapped on the line above.
+ */
+async function rollBackQuietly(connection: PoolConnection): Promise<void> {
+  try {
+    await connection.rollback();
+  } catch {
+    logger.error('MySQL transaction rollback failed');
+  }
+}
+
+/**
+ * An executor pinned to one connection, for the duration of one transaction.
+ *
+ * Not exported: the only way to obtain one is to be inside
+ * `PreparedStatementExecutor.transaction`, which is what makes "this statement is
+ * inside the transaction" a property of where the executor came from rather than
+ * of a flag someone remembered to pass.
+ *
+ * `transaction` here JOINS rather than nests, for the MySQL reason documented on
+ * the interface: a second `START TRANSACTION` on this connection would implicitly
+ * commit the unit already in progress. Running the callback inline keeps the
+ * outermost caller in charge of the commit and lets a repository method that
+ * wraps its own writes compose inside a larger service-level unit.
+ *
+ * @param connection - The pooled connection carrying the open transaction. This
+ *   function neither begins, commits, rolls back nor releases it; the caller in
+ *   `transaction` owns that whole lifecycle.
+ * @returns A frozen executor whose every statement runs on `connection`.
+ */
+function createConnectionExecutor(connection: PoolConnection): PreparedStatementExecutor {
+  const boundExecutor: PreparedStatementExecutor = Object.freeze({
+    async execute(
+      sql: string,
+      params: readonly unknown[] = NO_PARAMETERS,
+    ): Promise<readonly SqlRow[]> {
+      const [rows] = await connection.execute<RowDataPacket[]>(sql, toBoundParameters(params));
+
+      return rows;
+    },
+
+    async executeMutation(
+      sql: string,
+      params: readonly unknown[] = NO_PARAMETERS,
+    ): Promise<SqlMutationResult> {
+      const [header] = await connection.execute<ResultSetHeader>(sql, toBoundParameters(params));
+
+      return Object.freeze({
+        affectedRows: header.affectedRows,
+        warningStatus: header.warningStatus,
+      });
+    },
+
+    transaction<T>(work: (tx: PreparedStatementExecutor) => Promise<T>): Promise<T> {
+      return work(boundExecutor);
+    },
+  });
+
+  return boundExecutor;
 }
 
 /**

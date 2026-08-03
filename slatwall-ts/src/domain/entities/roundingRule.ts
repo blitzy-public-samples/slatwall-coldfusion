@@ -156,7 +156,7 @@
 //     that makes the guard vacuous in the target.
 //
 // NO NUMBERED LEGACY DEFECT BELONGS TO THIS FILE - CHECKED, NOT OVERLOOKED
-// The migration's twenty-entry legacy defect register contains no entry from
+// The migration's thirty-entry legacy defect register contains no entry from
 // model/entity/RoundingRule.cfc. Consequently the two-line `LEGACY-DEFECT` marker
 // appears NOWHERE below, and its absence is a finding rather than an oversight.
 // This file also spends none of the migration's three deliberate divergences.
@@ -879,7 +879,8 @@ export class RoundingRule {
    * string-returning `roundValue` at [L88] is wrapped by a `numeric` declaration at
    * [L84] and reached through another at [L66] - and [L79]
    * (`roundValueByRoundingRuleID`) is a fourth `numeric` declaration over the same
-   * string. This is a SECONDARY register item: it is not one of the twenty numbered
+   * string. This is one of the register's EIGHT SECONDARY items rather than one of its
+   * thirty numbered
    * legacy defects, it consumes none of the migration's three deliberate divergences,
    * and it is resolved by typing rather than by changing behaviour.
    *

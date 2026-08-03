@@ -407,6 +407,27 @@ WHERE
     params.push(input.startDateTime);
   }
 
+  // SECURITY REVIEW DISPOSITION - RAISED AS S-02, DECLINED ON A CITED MANDATE.
+  //
+  // Raised as finding S-02, MAJOR, CWE-20 (Improper Input Validation) and CWE-840,
+  // with runtime evidence that both the period and the account builder emit
+  // `pa.createdDateTime < ?` with a final bound value of `null`, which SQL
+  // evaluates as UNKNOWN so the count comes back zero and an open-ended period's
+  // use limit never binds. Its suggested resolution was to gate the upper clause on
+  // `endDateTime !== null` and omit it for open-ended periods.
+  //
+  // DECLINED. AAP 0.4.1 specifies this module as preserving "the duplicated
+  // `getStartDateTime()` test defect at L177 and L244", and AAP 0.8.1 names
+  // use-limit enforcement as must-preserve behaviour. Omitting the clause would
+  // make previously-unqualified promotions qualify - or previously-qualified ones
+  // stop qualifying - relative to the system being migrated, which is a change to
+  // money and to promotional eligibility rather than a bug fix at this seam.
+  //
+  // Pinned rather than repaired: `tests/unit/domain/entities/promotionPeriod.test.ts`
+  // carries the all-four-null-combination cases and asserts the null bind and the
+  // zero count directly, so the bypass is documented behaviour rather than a latent
+  // surprise, and cannot be silently altered in either direction.
+  //
   // LEGACY-DEFECT [model/dao/PromotionDAO.cfc:L177]: the second date guard tests getStartDateTime()
   // while assigning getEndDateTime() (L178), so the end-date filter is keyed off the START date.
   // With a null start and a set end the end filter is skipped entirely; with a set start and a null
@@ -600,6 +621,11 @@ WHERE
     params.push(input.startDateTime);
   }
 
+  // SECURITY REVIEW DISPOSITION: this is the SECOND of the two sites finding S-02
+  // names (`promotionUseCounts.sql.ts:410-437,603-617`). The disposition, the
+  // citations and the pinning tests are stated once at the first site above and
+  // govern both; they are not restated here, because two copies of a ruling drift.
+  //
   // LEGACY-DEFECT [model/dao/PromotionDAO.cfc:L244]: the identical duplicated guard, independently
   // present in getPromotionPeriodAccountUseCount - L244 tests getStartDateTime() while L245 assigns
   // getEndDateTime(). Same two reachable failure states as L177. This is a PERIOD method, not a CODE

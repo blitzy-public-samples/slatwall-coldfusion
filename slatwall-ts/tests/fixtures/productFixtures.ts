@@ -129,7 +129,6 @@ import type { ProductHydrationInput } from '../../src/domain/entities/product.js
 import type { Sku } from '../../src/domain/entities/sku.js';
 import type {
   AttributeSetSummary,
-  BrandSavePayload,
   ProductRepository,
 } from '../../src/domain/ports/productRepository.js';
 import type { OptionRepository, SelectOption } from '../../src/domain/ports/optionRepository.js';
@@ -884,11 +883,12 @@ function skuCarriesOptionID(candidate: Sku, selectedOptionID: string): boolean {
  * fixtures that may legitimately carry no product back-reference would drop rows
  * the real statement returns.
  *
- * The six remaining members answer their declared types without inventing
+ * The seven remaining members answer their declared types without inventing
  * behaviour a double cannot have: an empty projection, a nothing-found
- * `undefined`, the argument handed straight back for a save, and `false` for the
- * transaction probe. A suite that must observe repository behaviour supplies its
- * own port through `overrides.skuRepository`.
+ * `undefined`, the argument handed straight back for a save and the collection
+ * handed straight back for a batch save, and `false` for the transaction probe. A
+ * suite that must observe repository behaviour supplies its own port through
+ * `overrides.skuRepository`.
  */
 function makeFixtureSkuRepository(candidateSkus: readonly Sku[]): SkuRepository {
   // A defensive snapshot taken here, inside the call. The caller keeps ownership
@@ -957,6 +957,13 @@ function makeFixtureSkuRepository(candidateSkus: readonly Sku[]): SkuRepository 
       // No persistence: the instance is handed straight back, which is the only
       // part of the legacy save a fixture can honour without a database.
       return Promise.resolve(sku);
+    },
+
+    saveSkus(skus: readonly Sku[]): Promise<Sku[]> {
+      // The collection form, answering in the arrival order the port specifies. No
+      // transaction and therefore no atomicity to demonstrate - that is asserted
+      // against the recording executor in the adapter's own suite, not here.
+      return Promise.resolve([...skus]);
     },
   };
 }
@@ -1067,14 +1074,15 @@ function makeFixtureProductRepository(): ProductRepository {
       return Promise.resolve(false);
     },
 
-    saveBrand(brand: Brand, data: BrandSavePayload): Promise<Brand> {
-      void data;
-
-      // The payload is deliberately NOT applied. Population and unique-URL-title
-      // generation live at the service tier [model/service/BrandService.cfc:L67],
-      // not in a repository and certainly not in a fixture double.
-      return Promise.resolve(brand);
-    },
+    // NO `saveBrand` MEMBER, BECAUSE THE PORT PUBLISHES NONE. Its member set is
+    // locked at six, and `src/domain/ports/productRepository.ts` records why the
+    // brand write was removed rather than relocated: there is no `BrandDAO.cfc` in
+    // the legacy repository, `super.save`
+    // [model/service/BrandService.cfc:L76] is generic Hibachi CRUD that AAP 0.5.3
+    // does not carry forward, and the port inventory is locked at thirteen so no
+    // `BrandRepository` is available either. `BrandService.saveBrand` resolves the
+    // unique URL title and answers the brand; the durable half belongs to the
+    // composition root.
   };
 }
 

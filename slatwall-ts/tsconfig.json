@@ -1,34 +1,26 @@
-// Base TypeScript configuration and the project's typecheck gate: `npm run
-// typecheck` resolves this file, `tsconfig.build.json` extends it to emit,
-// and vitest and typescript-eslint parse with it.
+// Base TypeScript configuration. `tsconfig.build.json` extends it to emit;
+// vitest and typescript-eslint parse with it.
 //
-// If a file fails to compile, fix the file rather than weakening an option
-// here. Two options are deliberately left unset because enabling them would
-// reject required code: `noUnusedParameters`, since interface parity keeps
-// legacy CFML signatures verbatim including unused arguments, and
-// `noImplicitReturns` / `noFallthroughCasesInSwitch`, since legacy defects such
-// as the missing `return` at [model/entity/Product.cfc:L598] are reproduced
-// rather than repaired.
+// `noUnusedParameters`, `noImplicitReturns` and `noFallthroughCasesInSwitch` are
+// deliberately unset: interface parity keeps legacy CFML signatures verbatim
+// including unused arguments, and legacy defects such as the missing `return` at
+// [model/entity/Product.cfc:L598] are reproduced rather than repaired.
 {
   "compilerOptions": {
-    // Node 20, and therefore the `nodejs20.x` runtime, supports ES2022.
     "target": "ES2022",
 
-    // No "DOM": this is a headless backend service that renders no user
-    // interface.
+    // No "DOM": this is a headless backend service.
     "lib": ["ES2022"],
 
-    // NodeNext keeps the source modern ESM, matching `"type": "module"` in
-    // package.json. The Lambda artifact is CommonJS, but that is an esbuild
-    // output concern handled by `format: 'cjs'` in esbuild.config.mjs -
-    // bundling this dependency set to ESM builds cleanly and then fails at
-    // runtime with `Dynamic require of "node:buffer"` through
-    // mysql2 -> sql-escaper. Do not change `module` to "CommonJS" to fix that.
+    // The Lambda artifact is CommonJS, but that is an esbuild output concern
+    // handled by `format: 'cjs'` in esbuild.config.mjs - bundling this
+    // dependency set to ESM builds cleanly and then fails at runtime with
+    // `Dynamic require of "node:buffer"` through mysql2 -> sql-escaper. Do not
+    // change `module` to "CommonJS" to fix that.
     "module": "NodeNext",
     "moduleResolution": "NodeNext",
 
-    // Only Node globals are ambient; `@types/aws-lambda` is consumed through an
-    // explicit `import type` where it is needed.
+    // Only Node globals are ambient; `@types/aws-lambda` is imported explicitly.
     "types": ["node"],
 
     // Null semantics are load-bearing: `getPriceByCurrencyCode`
@@ -45,14 +37,13 @@
     // and this keeps them distinct.
     "exactOptionalPropertyTypes": true,
 
-    // Entities are classes carrying behaviour, so overriding is explicit.
     "noImplicitOverride": true,
 
     // Catches the legacy defect class where a value is computed and then
     // discarded, as at [model/entity/Sku.cfc:L512-L522].
     "noUnusedLocals": true,
 
-    // Inert under `noEmit`; consumed by tsconfig.build.json, which flips it.
+    // Inert under `noEmit`; tsconfig.build.json flips it.
     "declaration": true,
     "declarationMap": true,
     "sourceMap": true,
@@ -61,16 +52,12 @@
     "forceConsistentCasingInFileNames": true,
     "resolveJsonModule": true,
 
-    // Third-party declarations are checked too, and skipping must never be used
-    // to mask a first-party error.
+    // Skipping library checks must never be used to mask a first-party error.
     "skipLibCheck": false,
 
-    // This config typechecks only; every emitted artifact comes from
-    // tsconfig.build.json or esbuild.
     "noEmit": true
   },
 
-  // The gate spans application sources, the test tier and the runner config.
   "include": ["src/**/*.ts", "tests/**/*.ts", "vitest.config.ts"],
 
   "exclude": ["node_modules", "dist", "build", "coverage"]

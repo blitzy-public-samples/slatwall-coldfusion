@@ -40,8 +40,10 @@
 // containment check, and model/dao/PromotionDAO.cfc:L482-L488 concatenates it in dialect-specific
 // SQL. A truncated or mis-ordered path silently changes which promotions apply - it changes money.
 // That is why every path operation here delegates to
-// `src/domain/valueObjects/materializedIdPath.ts` instead of being re-derived, and why the walk
-// carries NO cycle guard and NO depth limit.
+// `src/domain/valueObjects/materializedIdPath.ts` instead of being re-derived. That module is also
+// where the ONE deliberate divergence on this path lives: a cyclic or unbounded parent chain is
+// REFUSED there by a throw, producing no path, precisely because a truncated path would change
+// money. Nothing about the ordering, the delimiter or the contents of a well-founded path changed.
 //
 // THE `extends` CHAIN IS THREE LEVELS DEEP, NOT TWO. `extends="HibachiEntity"` on L49 is
 // UNQUALIFIED, so it resolves to the local model/entity/HibachiEntity.cfc (274 lines), which
@@ -75,7 +77,9 @@
 // session-identity / primary-key based.
 //
 // VALIDATION IS DECLARATIVE AND SERVICE-TIER. model/validation/ProductType.json exists and is one
-// of the twelve in-scope schemas. Read verbatim it declares, and nothing else:
+// of the FIFTEEN in-scope schemas - the twelve the plan enumerates plus SkuCurrency.json,
+// OptionGroup.json and RoundingRule.json, which belong to the three entities pulled in by implicit
+// necessity and were counted by listing model/validation/ rather than by trusting the figure. Read verbatim it declares, and nothing else:
 //
 //   save   - productTypeName required; urlTitle required and unique
 //   delete - products maxCollection:0, childProductTypes maxCollection:0, systemCode maxLength:0,
@@ -98,10 +102,19 @@
 // `tests/traceability/legacyTestMap.ts` fails the suite if this module has no test. No test file
 // is authored from here - the contract that tier has to pin is enumerated at the foot of this file.
 //
-// BUDGET, STATED SO IT IS AUDITABLE: this file spends ZERO signature widenings, ZERO deliberate
-// divergences, ZERO reshapings and ZERO visibility widenings. It carries EXACTLY ONE
-// `LEGACY-DEFECT` marker - the always-throws method at [L117-L119] - and every other annotation is
-// a `LEGACY-NOTE` or a secondary-register item. Nothing here asserts a service level, a latency, a
+// BUDGET, STATED SO IT IS AUDITABLE: this file spends ZERO signature widenings, ZERO of the THREE
+// BUDGETED deliberate divergences, ZERO reshapings and ZERO visibility widenings. It carries
+// EXACTLY ONE `LEGACY-DEFECT` marker - the always-throws method at [L117-L119] - and every other
+// annotation is a `LEGACY-NOTE` or a secondary-register item.
+//
+// ★ THE QUALIFIER ON "DELIBERATE DIVERGENCES" IS LOAD-BEARING, AND THIS LINE ONCE OMITTED IT. It
+// read "ZERO deliberate divergences" flat, while `setParentProductType` below declares
+// "★★★ DELIBERATE DIVERGENCE - A REPARENT THAT WOULD CLOSE A CYCLE IS REFUSED" and the MySQL
+// adapter raises `ProductTypeCycleError` on the same condition. Both statements cannot be read as
+// answering the same question. The three divergences the migration budgets are spent in `sku.ts`
+// and `product.ts`, and NONE of them is spent here; the cycle refusal is a FOURTH, project-local
+// divergence that carries its own four-step justification at the setter rather than drawing on that
+// budget. Read flat, this line denied a divergence the same file declares. Nothing here asserts a service level, a latency, a
 // throughput or an uptime figure, because the legacy system states none.
 //
 // NO USER RULES WERE PROVIDED for this project (the rules source returns exactly "No user rules
@@ -118,6 +131,7 @@ import {
   buildIdPathList,
   getRootIdFromIdPath,
   resolveIdPath,
+  wouldCreateIdPathCycle,
 } from '../valueObjects/materializedIdPath.js';
 import type { PriceGroup } from './priceGroup.js';
 import type { PriceGroupRate } from './priceGroupRate.js';
@@ -198,8 +212,16 @@ export class ProductType {
    *
    * `unique="true"` is recorded for schema continuity and is a DATABASE-level guarantee; it is not
    * re-implemented here, and NO format validation is added - the source declares none.
+   *
+   * NOT `readonly`, for the same reason {@link ProductType.productTypeIDPath} is not: an in-scope
+   * caller assigns to it. `super.save(productType, data)`
+   * [model/service/ProductService.cfc:L303] runs `arguments.entity.populate(argumentCollection=
+   * arguments)` at [org/Hibachi/HibachiService.cfc:L145], and that populate is what carries the
+   * resolved `data.urlTitle` from [L297] / [L299] onto this column BEFORE the `save`-context
+   * validation at [org/Hibachi/HibachiService.cfc:L150] reads it. See
+   * {@link ProductType.setUrlTitle}.
    */
-  private readonly urlTitle: string | undefined;
+  private urlTitle: string | undefined;
 
   /** [model/entity/ProductType.cfc:L57] `ormtype="string"`, nullable - no `notNull="true"`. */
   private readonly productTypeName: string | undefined;
@@ -465,6 +487,46 @@ export class ProductType {
   /** [model/entity/ProductType.cfc:L56] `unique="true"`, enforced by the database, not by this class. */
   getUrlTitle(): string | undefined {
     return this.urlTitle;
+  }
+
+  /**
+   * Assigns this product type's URL title.
+   *
+   * ⭐ AN ORM-GENERATED SETTER, AUTHORED FOR THE SAME REASON {@link ProductType.setProductTypeIDPath}
+   * AND {@link ProductType.addProduct} ARE: it is concretely reached from in-scope code, so the
+   * member-generation principle says author it explicitly rather than emulate dispatch.
+   *
+   * The reaching path is `populate`, not a hand-written call. `saveProductType`
+   * [model/service/ProductService.cfc:L294-L311] resolves the title into the bare unscoped
+   * `data.urlTitle` at [L297] and [L299] - it never calls a setter itself - and then hands the struct
+   * to `super.save(arguments.productType, arguments.data)` at [L303]. That framework method populates
+   * first [org/Hibachi/HibachiService.cfc:L145], validates second [L150] and persists only on a clean
+   * entity [L153-L155], so the resolved title is on this column before the `save` context of
+   * `model/validation/ProductType.json` - which declares `urlTitle` `{required}` - ever reads it.
+   *
+   * That ordering is the whole point of the member. `populate` was metadata-driven dispatch over
+   * every submitted key and is deliberately not ported; the concretely-populated column gets a typed
+   * setter instead, which is what lets the service tier reproduce populate-then-validate-then-save
+   * without a `Proxy`, an index signature or a string-keyed write.
+   *
+   * ⚠ THE ASYMMETRY WITH `Product` IS PRESERVED, NOT SMOOTHED OVER. `saveProduct` resolves ITS title
+   * by calling a setter on the entity directly [model/service/ProductService.cfc:L269], whereas this
+   * override and `saveBrand` [model/service/BrandService.cfc:L70], [L72] both write into the data
+   * struct and let populate carry it. Both routes end with the resolved title on the entity ahead of
+   * validation, and both are reproduced as written.
+   *
+   * `unique="true"` [L56] stays a database guarantee: this setter performs no uniqueness probe,
+   * because the source performs none either - `createUniqueURLTitle` did the de-duplicating, and that
+   * collaborator lives behind the URL-title generator port at the service tier.
+   *
+   * LEGACY-NOTE: the source accessor is `setURLTitle`, CFML's convention for the property `urlTitle`
+   * [model/entity/ProductType.cfc:L56]. The house spelling recorded at the head of this accessor
+   * block is `getUrlTitle()` / `setUrlTitle()`, matched to src/domain/entities/brand.ts and
+   * src/domain/entities/product.ts. Internal naming only - the persistent column reaching
+   * `SwProductType` is untouched.
+   */
+  setUrlTitle(urlTitle: string): void {
+    this.urlTitle = urlTitle;
   }
 
   /**
@@ -1180,8 +1242,67 @@ export class ProductType {
    *
    * The append goes through `getChildProductTypes()`, which returns the parent's LIVE array - that is
    * why that accessor is not `readonly`.
+   *
+   * ★★★ DELIBERATE DIVERGENCE — A REPARENT THAT WOULD CLOSE A CYCLE IS REFUSED.
+   * The legacy setter assigns whatever it is handed, so choosing this node's own
+   * descendant as its parent is accepted and the malformed graph is created. That
+   * is not reproduced, and the reasoning is set out once, in full, on
+   * `buildIdPathList()` in src/domain/valueObjects/materializedIdPath.ts. In
+   * short: the resulting non-termination is an availability defect rather than a
+   * behaviour, it is not an entry in the project's closed defect register, no
+   * preserve-exactly mandate reaches it, and `org/Hibachi/**` is a boundary this
+   * migration REPLACES rather than reproduces.
+   *
+   * WHY THE GUARD IS HERE AND NOT ONLY ON THE PATH BUILD. The path build refuses
+   * to produce a path from a cyclic chain, which is what keeps a SAVE from
+   * hanging. It does nothing for the walks over this same chain that never build
+   * a path: the price-group cascade climbs it on the READ path while pricing an
+   * order [model/service/PriceGroupService.cfc:L68-L77], and
+   * `getSimpleRepresentation()` recurses up it
+   * [model/entity/ProductType.cfc:L273-L278]. Refusing the ASSIGNMENT means a
+   * cycle never enters a live graph, so every one of those walks is safe for one
+   * reason instead of needing a guard each.
+   *
+   * NOTHING IS MUTATED WHEN THE ASSIGNMENT IS REFUSED. The check runs before the
+   * near-side write, so a rejected reparent leaves both nodes exactly as they
+   * were rather than half-linked - which matters because the near side is assigned
+   * unconditionally and the far-side append is what the legacy guards.
+   *
+   * A WELL-FOUNDED REPARENT IS UNAFFECTED, including moving a subtree sideways or
+   * upward: the check answers `true` only when this node is reachable from the
+   * candidate, and a legitimate move never is. THE CONSTRUCTOR IS NOT GUARDED,
+   * deliberately - it is the hydration boundary, and a constructor that threw would
+   * duplicate a decision already taken, and taken more informatively, one layer out.
+   *
+   * ★ THIS PARAGRAPH ONCE ENDED "BOTH REPOSITORY ADAPTERS ALREADY TRUNCATE A CYCLIC
+   * ROW SET INTO AN ACYCLIC GRAPH ON PURPOSE, SO MAKING THE CONSTRUCTOR THROW WOULD
+   * UNDO A DECISION TAKEN ELSEWHERE." The conclusion still holds; the premise no longer
+   * describes the shipped adapters, so it is corrected here rather than left to mislead.
+   * `hydrateWithAncestry` in `mysqlProductTypeRepository.ts` does NOT truncate: it RAISES
+   * `ProductTypeCycleError`, naming the chain it followed. A shortened ancestry is a
+   * DIFFERENT product-type membership set, and product-type membership decides which
+   * promotion rewards and which price-group rate apply, so truncation would have been a
+   * different price arrived at silently.
+   *
+   * The reason the constructor needs no guard is therefore stronger than it was, not
+   * weaker: a cyclic ROW SET never reaches a constructor at all, and the only cyclic
+   * graph a constructor could be handed is one an operator built in memory - which is
+   * exactly what this setter refuses.
    */
   setParentProductType(parentProductType: ProductType): void {
+    if (
+      wouldCreateIdPathCycle<ProductType>(this, parentProductType, (node) =>
+        node.getParentProductType(),
+      )
+    ) {
+      throw new Error(
+        `Product type '${this.getProductTypeID()}' cannot take product type ` +
+          `'${parentProductType.getProductTypeID()}' as its parent: the assignment would make the ` +
+          `parentProductType chain cyclic, so productTypeIDPath could never be built and every walk ` +
+          `up that chain would never terminate. Nothing has been changed.`,
+      );
+    }
+
     this.parentProductType = parentProductType;
     if (this.isNew() || !parentProductType.hasChildProductType(this)) {
       parentProductType.getChildProductTypes().push(this);
@@ -1525,10 +1646,14 @@ export class ProductType {
    * place comma-list path construction lives for all of `productTypeIDPath`, `priceGroupIDPath` and
    * `categoryIDPath`. Path walking and path building are NEVER hand-rolled at a call site.
    *
-   * THE WALK CARRIES NO CYCLE GUARD AND NO DEPTH LIMIT, deliberately. A product type whose parent
-   * chain loops would climb forever, exactly as the legacy does. Adding a guard would be inventing a
-   * non-functional requirement the source does not state, and would mask a data defect the legacy
-   * surfaces loudly.
+   * THE WALK REFUSES A CYCLIC OR UNBOUNDED PARENT CHAIN - the single documented divergence from the
+   * legacy builder, and it lives in the shared value object rather than here. A product type whose
+   * `parentProductType` chain loops climbs forever in the legacy; this port throws instead, producing
+   * NO path, so the malformed hierarchy surfaces as a refusal rather than pinning the invocation until
+   * the Lambda timeout on every retry. Nothing else about the walk changes: the ordering, the
+   * delimiter and the contents of any well-founded path are identical, because the guard is a
+   * visited-identity test that a well-founded chain never trips. The reasoning, and why no
+   * preserve-exactly mandate covers it, is set out in full on `buildIdPathList()`.
    *
    * Return type is `string`, matching the CFML declaration. It can legitimately be the EMPTY STRING -
    * a stored empty column returns it, and that is the value {@link ProductType.getBaseProductType}
@@ -1668,9 +1793,17 @@ export class ProductType {
    * those happens today is the behaviour being preserved.
    *
    * RECURSIVE UP THE PARENT CHAIN, and LEGACY-NOTE: an unbounded parent chain - or a cycle - recurses
-   * without limit and exhausts the stack. NO depth guard, NO cycle detector and NO memo is added,
-   * for the same reason the path walk has none: the source states no such requirement, and inventing
-   * one would be inventing a non-functional requirement.
+   * without limit and exhausts the stack. NO depth guard, NO cycle detector and NO memo is added.
+   *
+   * WHY THIS IS TREATED DIFFERENTLY FROM THE PATH WALK, which now DOES refuse a cycle. The two
+   * failure modes are not the same failure mode. The path walk's is an infinite `do/while`: it never
+   * yields, so it holds the invocation's single-threaded event loop until the platform timeout and the
+   * platform then retries, which turns one malformed row into a repeating denial of the capability.
+   * This one raises `RangeError: Maximum call stack size exceeded` within milliseconds, self-limits,
+   * returns control to the caller and is mapped to an error response like any other thrown value. It
+   * is a crash on malformed data, not a resource-exhaustion vector, so the legacy behaviour is kept
+   * and the source's silence on the matter is respected. If it is ever to change, that is a product
+   * decision about this method, not a consequence of the path walk's.
    *
    * RETURN TYPE IS `string | undefined`, NOT `string`. CFML declares `returntype="string"`, but
    * `getProductTypeName()` reads a NULLABLE column [L57] - model/validation/ProductType.json requires

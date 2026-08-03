@@ -54,8 +54,13 @@
 //     ------------------------------
 //     total                 657
 //
-//   Of those, 22 are in the seven services this migration ports. That is the
-//   scale this one module exists to serve; it is not a convenience wrapper.
+//   Of those, 20 are in the SIX prompt-named services this migration ports,
+//   re-derived by counting each file rather than restating the figure:
+//   ProductService 3, SkuService 8, BrandService 2, OptionService 0,
+//   PromotionService 7, PriceGroupService 0. An earlier revision said "22 ... in
+//   the seven services"; both halves were wrong - adding RoundingRuleService's 3
+//   makes 23, not 22. That is the scale this one module exists to serve; it is
+//   not a convenience wrapper.
 //
 // WHY CASE MAY NEVER BE ASSUMED - THE EMPIRICAL BASIS
 //   CFML identifiers are genuinely case-insensitive, and the legacy source

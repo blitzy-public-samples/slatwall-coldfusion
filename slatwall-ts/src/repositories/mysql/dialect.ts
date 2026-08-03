@@ -5,14 +5,10 @@
  * name and mapped it to a Hibernate dialect, with explicit configuration. Only the MySQL arm is
  * implemented; the other arms exist in the legacy source and are rejected rather than approximated.
  */
-
 import type { DatabaseDialect as ConfiguredDatabaseDialect } from '../../lib/config.js';
 import { appConfig } from '../../lib/config.js';
 
-/**
- * The dialect spellings, carried over verbatim from the legacy mapping
- * [config/configORM.cfm:L10], [config/configORM.cfm:L12] and [config/configORM.cfm:L14].
- */
+/** The dialect spellings, verbatim from [config/configORM.cfm:L10], [:L12] and [:L14]. */
 export type DatabaseDialect = 'MySQL' | 'MicrosoftSQLServer' | 'Oracle10g';
 
 type DialectRoster = {
@@ -37,12 +33,16 @@ const ACCEPTED_DIALECTS_TEXT = CANONICAL_DIALECTS.join(' | ');
 
 const DIALECT_VARIABLE_NAME = 'DB_DIALECT';
 
-// LEGACY-DEFECT [model/dao/PromotionDAO.cfc:L483]: the reward join matches a product-type identifier against `productTypeIDPath` with an unanchored, delimiter-unaware `LIKE`, so any substring occurrence in the path counts as membership.
+// LEGACY-DEFECT [model/dao/PromotionDAO.cfc:L483]: the reward join matches a product-type
+// identifier against `productTypeIDPath` with an unanchored, delimiter-unaware `LIKE`, so any
+// substring occurrence in the path counts as membership.
 // Preserved deliberately; do not fix without a product decision.
 const MATERIALIZED_ID_PATH_SITE =
   'model/dao/PromotionDAO.cfc:L482-L488 (productTypeIDPath LIKE concatenation)';
 
-// LEGACY-NOTE [model/dao/PriceGroupDAO.cfc:L57-L89]: the MySQL arm limits the subquery with a trailing `LIMIT 1` while the other arm uses a leading `SELECT TOP 1`, so the two are not textually interchangeable and the fragment is returned as a prefix/suffix pair.
+// LEGACY-NOTE [model/dao/PriceGroupDAO.cfc:L57-L89]: the MySQL arm limits the subquery with a
+// trailing `LIMIT 1` while the other arm uses a leading `SELECT TOP 1`, so the two are not
+// textually interchangeable and the fragment is returned as a prefix/suffix pair.
 // Retained to preserve the cited legacy behavior.
 const SINGLE_ROW_LIMIT_SITE =
   'model/dao/PriceGroupDAO.cfc:L57-L89 (getAccountSubscriptionPriceGroups row limiting)';
@@ -127,37 +127,17 @@ function describeRejectedValue(raw: string): string {
 
 const SQL_IDENTIFIER_REFERENCE_PATTERN = /^[A-Za-z_][A-Za-z0-9_$]*(?:\.[A-Za-z_][A-Za-z0-9_$]*)*$/;
 
-// THERE IS DELIBERATELY NO GENERIC SQL-EXPRESSION INPUT IN THIS MODULE, AND NONE
-// MAY BE ADDED.
-//
-// An earlier revision exported a fragment that accepted arbitrary numeric SQL
-// EXPRESSION TEXT, guarded by a character allowlist
-// (`/^[A-Za-z0-9_$.?+() -]+$/`) plus a check for the `--` comment marker. The
-// allowlist reasoning was that it admits no quote, no `;`, no `*` and no `/`, so
-// no string literal, statement separator or block comment can be spelled inside
-// it. All of that was true, and all of it was beside the point: SPACES AND
-// PARENTHESES WERE ADMITTED, so the character set spells SQL keywords and
-// function calls freely. `POWER(10, <caller text>)` with that guard accepts a
-// nested `SELECT`, a `CASE`, a `UNION` in a subquery, `SLEEP(...)`, a call to
-// `LOAD_FILE`, or `BENCHMARK(...)` - none of which contains a quote, a semicolon
-// or a comment marker. A guard that permits arbitrary function invocation inside
-// a statement is not an injection guard, it is a syntax filter that reads like
-// one, and that is more dangerous than no guard at all because it invites callers
-// to trust it.
-//
-// The replacement is structural rather than lexical: the one fragment that needed
-// an exponent now takes an IDENTIFIER (validated by
-// `SQL_IDENTIFIER_REFERENCE_PATTERN`, which admits no space and no parenthesis,
-// so no keyword or call can be spelled at all) and composes the operator and the
-// `?` placeholder itself. The emitted text is byte-identical to what the single
-// caller produced before, and the caller no longer has a way to produce anything
-// else.
-//
-// If a future site genuinely needs a different expression SHAPE, add another
-// narrow fragment function that composes that shape from validated identifiers -
-// do not reintroduce a text parameter with a character-class guard.
+// SECURITY CONSTRAINT: no fragment in this module accepts arbitrary SQL EXPRESSION TEXT, and none
+// may be added. A character allowlist is not an injection guard when it admits spaces and
+// parentheses: `POWER(10, <caller text>)` guarded that way still spells a nested `SELECT`, a
+// `CASE`, a `UNION` subquery, `SLEEP(...)`, `LOAD_FILE` or `BENCHMARK(...)`, none of which needs a
+// quote, a semicolon or a comment marker. Fragments therefore take an IDENTIFIER validated by
+// `SQL_IDENTIFIER_REFERENCE_PATTERN`, which admits no space and no parenthesis, and compose the
+// operator and the `?` placeholder themselves. A site needing a different expression SHAPE gets
+// another narrow fragment function, never a text parameter with a character-class guard.
 
-// JUDGMENT CALL: A fragment argument is SQL text and cannot be bound, so it is constrained by pattern; every value is bound as a `?` placeholder instead.
+// JUDGMENT CALL: a fragment argument is SQL text and cannot be bound, so it is constrained by
+// pattern; every value is bound as a `?` placeholder instead.
 function requireSqlIdentifierReference(
   columnReference: string,
   parameterName: string,
@@ -177,12 +157,11 @@ function requireSqlIdentifierReference(
 /**
  * Resolve a configured dialect name.
  *
- * Matching ignores case and then normalizes to the legacy spelling. There is deliberately no default:
- * the legacy chain ends without an `<cfelse>` [config/configORM.cfm:L9-L15] and its probe aborted the
- * request outright when the datasource could not be read [config/configORM.cfm:L4-L7].
+ * Matching ignores case and then normalizes to the legacy spelling. There is deliberately no
+ * default: the legacy chain ends without an `<cfelse>` [config/configORM.cfm:L9-L15] and its probe
+ * aborted the request outright when the datasource could not be read
+ * [config/configORM.cfm:L4-L7].
  *
- * @param rawDialect the configured value.
- * @returns the canonical dialect.
  * @throws when the value names no known dialect.
  */
 export function resolveDialect(rawDialect: string): DatabaseDialect {
@@ -202,7 +181,6 @@ export function resolveConfiguredDialect(): DatabaseDialect {
 /**
  * Narrow a dialect to MySQL or refuse to continue.
  *
- * @param dialect the resolved dialect.
  * @param site the legacy SQL arm being composed, named in the failure so the gap is attributable.
  * @throws when the dialect is recognized but not implemented here.
  */
@@ -220,9 +198,6 @@ export function assertMySqlDialect(
 /**
  * Compose the pattern that tests membership of an identifier in a materialized path.
  *
- * @param dialect the resolved dialect.
- * @param columnReference the path column, as a bare or dot-qualified identifier.
- * @returns the SQL pattern expression.
  * @throws when the dialect is not MySQL, or the reference is not a plain identifier.
  */
 export function materializedIdPathLikePatternFragment(
@@ -249,7 +224,6 @@ const MYSQL_SINGLE_ROW_LIMIT_FRAGMENTS: SingleRowLimitFragments = Object.freeze(
 /**
  * Compose the fragments that limit a subquery to one row.
  *
- * @param dialect the resolved dialect.
  * @returns the prefix to place after `SELECT` and the clause to append.
  * @throws when the dialect is not MySQL.
  */
@@ -262,15 +236,13 @@ export function singleRowLimitFragments(dialect: DatabaseDialect): SingleRowLimi
 /**
  * Compose the positional-weight term that orders SKUs by their option groups.
  *
- * This is the third live dialect branch, and the one the root manifests do not
- * name. It backs a must-preserve behaviour: the option-group odometer ordering
- * that `getSortedProductSkus` depends on, where each option group contributes a
- * digit whose significance is its distance from the highest option-group sort
- * order. Get the term wrong and SKUs come back in a different order.
+ * Backs a must-preserve behaviour: the option-group odometer ordering that
+ * `getSortedProductSkus` depends on, where each option group contributes a digit
+ * whose significance is its distance from the highest option-group sort order.
  *
- * CFML parity [model/dao/SkuDAO.cfc:L194-L198]: inside `getSortedProductSkusID`
- * - whose true span is L172-L202 - the `ORDER BY` has two arms that differ only
- * in casting:
+ * CFML parity [model/dao/SkuDAO.cfc:L194-L198]: inside `getSortedProductSkusID`,
+ * whose true span is L172-L202, the `ORDER BY` has two arms differing only in
+ * casting:
  *
  *     MicrosoftSQLServer  SUM(SwOption.sortOrder
  *                             * POWER(CAST(10 as bigint),
@@ -278,17 +250,14 @@ export function singleRowLimitFragments(dialect: DatabaseDialect): SingleRowLimi
  *     otherwise           SUM(SwOption.sortOrder
  *                             * POWER(10, <next> - SwOptionGroup.sortOrder)) ASC
  *
- * This returns the `POWER(...)` call of the second arm: base `10` unwrapped and
- * exponent unwrapped, with NEITHER `CAST` applied. The SQL Server arm exists in
- * the legacy source and is deliberately unreachable in a MySQL-only target -
- * `assertMySqlDialect` refuses it rather than this module emitting the plain
- * form under the SQL Server name, which would be the one mistake that silently
- * changes the ordering on that engine.
+ * This returns the `POWER(...)` call of the second arm: base `10` and exponent
+ * both unwrapped, with NEITHER `CAST` applied. `assertMySqlDialect` refuses the
+ * SQL Server dialect rather than emitting this plain form under its name, which
+ * would silently change the ordering on that engine.
  *
- * A locator note, per the standing instruction to trust the file over a cited
- * line number: the plan cites this function as L172-L220. The function actually
- * ends at L202; L204 onward is `getNextOptionGroupSortOrder`, and L222 onward is
- * `clearNextOptionGroupSortOrder`. The branch itself is at L194-L198 as cited.
+ * Locator correction: `getSortedProductSkusID` spans L172-L202, not L172-L220;
+ * L204 onward is `getNextOptionGroupSortOrder` and L222 onward is
+ * `clearNextOptionGroupSortOrder`.
  *
  * TODO [model/dao/SkuDAO.cfc:L177]: the legacy source carries this comment
  * immediately above the query - "test to see if this query works with DB's
@@ -297,36 +266,20 @@ export function singleRowLimitFragments(dialect: DatabaseDialect): SingleRowLimi
  * implement, so closing it would require implementing and testing an arm that
  * is out of scope. Do not delete it without doing that work.
  *
- * THE EXPONENT IS COMPOSED HERE, NOT SUPPLIED AS TEXT. This function used to take
- * the whole exponent as SQL expression text - the caller passed the literal string
- * `? - SwOptionGroup.sortOrder` - guarded only by a character allowlist. That
- * signature was the vulnerability, not the guard: the admitted character set
- * included spaces and parentheses, so it spelled arbitrary function calls and
- * subqueries. The exponent's SHAPE is fixed by the legacy source anyway - a bound
- * value minus one column - so there was never a reason for the caller to describe
- * it in SQL. It now supplies only the column, the operator and the placeholder are
- * literals in this function, and the emitted string is byte-for-byte what the
- * caller produced before.
+ * THE EXPONENT IS COMPOSED HERE, NOT SUPPLIED AS TEXT: its shape is fixed by the
+ * legacy source, a bound value minus one column, so the caller supplies only the
+ * column while the operator and the placeholder are literals in this function.
+ * The legacy interpolated that number directly via
+ * `#getNextOptionGroupSortOrder()#`; binding it instead is what carries the
+ * `cfqueryparam` guarantee across to every value in this port.
  *
- * @param dialect - The resolved dialect.
  * @param sortOrderColumnReference - The option-group sort-order COLUMN, as a bare
  *   or dot-qualified identifier; the composing repository passes
- *   `SwOptionGroup.sortOrder`. It is an identifier, not a value, so it cannot be
- *   parameterized and must be a literal in the repository that owns the query.
- *   `requireSqlIdentifierReference` admits no space, no parenthesis, no operator
- *   and no literal, so nothing but an identifier can reach the emitted text.
- *
- *   The value that IS a value - the next option-group sort order - is emitted as a
- *   `?` placeholder by this function and bound by the caller. The legacy source
- *   interpolated that number directly into the statement via
- *   `#getNextOptionGroupSortOrder()#`; binding it instead is what carries the
- *   `cfqueryparam` guarantee across to every value in this port.
+ *   `SwOptionGroup.sortOrder`.
  * @returns The MySQL `POWER` term, to be multiplied by the option sort order
- *   inside the caller's `SUM(...)`. The single `?` it contains must be bound by
- *   the caller, in statement order.
- * @throws An error named `UnsupportedDialectError` for a non-MySQL dialect, or
- *   one named `SqlFragmentInputError` when the column reference is not a bare or
- *   dot-qualified identifier.
+ *   inside the caller's `SUM(...)`. Its single `?` is bound by the caller.
+ * @throws `UnsupportedDialectError` for a non-MySQL dialect, or
+ *   `SqlFragmentInputError` when the column reference is not an identifier.
  */
 export function optionGroupOdometerPowerFragment(
   dialect: DatabaseDialect,

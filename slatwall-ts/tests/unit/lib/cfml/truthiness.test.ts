@@ -72,7 +72,7 @@
 //   Noted and deliberately NOT reproduced: `meta/tests/unit/Helper.cfc:L53` and
 //   `meta/tests/unit/IssuesTest.cfc:L55` both declare `productData` without
 //   `var`, leaking it into component scope. That is a hygiene defect in the
-//   harness being replaced, not one of the twenty preserved business-logic
+//   harness being replaced, not one of the thirty preserved business-logic
 //   defects, so it is not carried forward. There is no mutable module-level
 //   binding anywhere in this file, and every case builds its own data: on a warm
 //   container, module state outlives the request that created it.
@@ -141,7 +141,7 @@
 //   provides, and installs no test double, so it needs no teardown hook of its
 //   own.
 //
-//   No preserved-defect marker belongs here. The twenty-entry numbered legacy
+//   No preserved-defect marker belongs here. The thirty-entry numbered legacy
 //   defect register is pinned by the ported-service and ported-entity suites,
 //   and the one such marker in this folder lives in `numberFormat.test.ts`.
 //   The three authorised deliberate divergences are all owned elsewhere too -

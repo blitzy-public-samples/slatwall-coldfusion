@@ -1,9 +1,6 @@
-// ---------------------------------------------------------------------------
-// slatwall-ts - Promotion entity
+// slatwall-ts - Promotion entity. Port of model/entity/Promotion.cfc (181 lines).
 //
-// PORT OF model/entity/Promotion.cfc (181 lines, re-confirmed by `wc -l` while authoring). The
-// whole component was read verbatim, L1-L181, before a line of this file was written, and every
-// locator quoted below was checked against that read rather than carried over from a summary.
+// The `SwPromotion` row: the hub of the promotion aggregate.
 //
 // THE COMPONENT DECLARATION, VERBATIM [model/entity/Promotion.cfc:L49]
 //
@@ -11,133 +8,77 @@
 //   persistent="true" extends="HibachiEntity" cacheuse="transactional"
 //   hb_serviceName="promotionService" hb_permission="this" {
 //
-// Schema continuity is a binding constraint, so entity property metadata IS the contract: table
-// `SwPromotion`, entity name `SlatwallPromotion`, no migration, no rename, no new table and no
-// column change. Every `hb_*` attribute value is carried forward verbatim as an inert string in a
-// comment so the legacy admin can still resolve it, and no i18n runtime is introduced - JavaRB is
-// not ported. Note `persistent="true"` is QUOTED here, the same shape as PromotionPeriod.cfc:L49,
-// PromotionCode.cfc:L49, PromotionApplied.cfc:L49 and PromotionAccount.cfc:L49, and unlike the
-// unquoted `persistent=true` on PriceGroup.cfc:L49 / PriceGroupRate.cfc:L49. The declaration
+// Schema continuity is binding, so entity property metadata IS the contract: table `SwPromotion`,
+// entity name `SlatwallPromotion`, no migration, no rename, no new table, no column change. Every
+// `hb_*` attribute value is carried forward verbatim as an inert string so the legacy admin can
+// still resolve it, and no i18n runtime is introduced - JavaRB is not ported. The declaration
 // carries NO `accessors=`, NO `output=` and NO `hb_processContexts`.
 //
-// LEGACY-NOTE [model/entity/Promotion.cfc:L49]: `hb_permission="this"` is the SELF-REFERENTIAL
-// form and it appears on no other in-scope entity - every sibling in this aggregate uses a dotted
-// path instead (`hb_permission="promotion.promotionPeriods"` at PromotionPeriod.cfc:L49,
-// `hb_permission="promotion.promotionCodes"` at PromotionCode.cfc:L49). The literal `"this"` is
-// preserved verbatim in this note; permission evaluation is a framework concern that is not ported.
+// LEGACY-NOTE [model/entity/Promotion.cfc:L49]: `hb_permission="this"` is the SELF-REFERENTIAL form
+// and appears on no other in-scope entity - every sibling in this aggregate uses a dotted path
+// instead (`"promotion.promotionPeriods"` at [model/entity/PromotionPeriod.cfc:L49],
+// `"promotion.promotionCodes"` at [model/entity/PromotionCode.cfc:L49]). Preserved verbatim;
+// permission evaluation is a framework concern that is not ported.
 //
 // LEGACY-NOTE [model/entity/Promotion.cfc:L49]: the `extends` chain is THREE levels deep, not two.
-// `extends="HibachiEntity"` is UNQUALIFIED, so it resolves to the local model/entity/HibachiEntity.cfc
-// (274 lines), which itself extends `Slatwall.org.Hibachi.HibachiEntity`. The intermediate class
-// reaches outward through twelve `getService(...)` sites and NONE of them is ported or
-// re-implemented: an entity reaching outward through a service locator is exactly the pattern the
-// ESLint `no-restricted-imports` domain boundary in eslint.config.mjs exists to make impossible.
+// `extends="HibachiEntity"` is UNQUALIFIED, so it resolves to the local
+// model/entity/HibachiEntity.cfc (274 lines), which itself extends
+// `Slatwall.org.Hibachi.HibachiEntity`. The intermediate class reaches outward through twelve
+// `getService(...)` sites and NONE is ported: an entity reaching outward through a service locator
+// is exactly the pattern the ESLint `no-restricted-imports` domain boundary exists to make
+// impossible.
 //
-// WHAT THE FRAMEWORK BASE CONTRIBUTES, AND WHY ALMOST NONE OF IT IS AUTHORED
-// org/Hibachi/HibachiEntity.cfc:L507-L565 is an `onMissingMethod` dispatcher matching eleven
+// [org/Hibachi/HibachiEntity.cfc:L507-L565] is an `onMissingMethod` dispatcher matching eleven
 // method-name patterns - hasUniqueOrNull*, hasUnique*, hasAny*, get*AssignedIDList, get*ID,
 // get*Options, get*OptionsSmartList, get*SmartList, get*Struct, get*Count, and a
-// `getAttributeValue` fallback - and TERMINATING IN A THROW AT L565. TypeScript must not emulate
-// dynamic dispatch, so there is no Proxy here, no index signature, no `evaluate()`, no
-// string-keyed method lookup and no `variables.` scope object. Only concretely-called members are
-// authored, each annotated with the mechanism it replaces. The EAV `getAttributeValue` fallback is
-// unreachable for this entity because `Promotion` declares no `attributeValues` collection.
+// `getAttributeValue` fallback - TERMINATING IN A THROW AT L565. Dynamic dispatch is not emulated:
+// no Proxy, no index signature, no `evaluate()`, no string-keyed method lookup, no `variables.`
+// scope object. Only concretely-called members are authored. NONE of the eleven patterns is a
+// singular `has<Property>`, so the three containment probes below do NOT resolve through that
+// dispatcher - they are generated by the CFML ORM for a collection declared with `singularname`,
+// which L62, L63 and L64 each are.
 //
-// A CORRECTION TO THE PLANNING NOTE, RECORDED BECAUSE IT MATTERS FOR THE ANTI-CONTRACT BELOW.
-// Re-reading L507-L565 line by line shows that NONE of the eleven patterns is a singular
-// `has<Property>` - every branch is `hasUniqueOrNull*`, `hasUnique*`, `hasAny*` or `get*`-prefixed.
-// So `hasPromotionPeriod` / `hasPromotionCode` / `hasAppliedPromotion` do NOT resolve through that
-// dispatcher at all: they are generated by the CFML ORM for a collection declared with
-// `singularname`, which L62, L63 and L64 each are. The dispatcher is what they fall through to when
-// no such collection exists - and that is PRECISELY why `hasPromotionAccount` throws at L565. Both
-// mechanisms are cited on the probes below so the distinction is not lost again.
-//
-// ★★★ THE ANTI-CONTRACT IS AS BINDING AS THE CONTRACT. There is NO `promotionAccounts` collection
-// on this entity and this class must never gain one. A case-insensitive grep of
-// model/entity/Promotion.cfc for `promotionAccount` returns ZERO hits, and the fieldtype census of
-// the verbatim source finds exactly three collections - L62, L63, L64 - and no fourth. That
-// absence is exactly WHY model/entity/PromotionAccount.cfc:L90-L95 is a confirmed throwing defect:
-// its `setPromotion` calls `hasPromotionAccount( this )` and `getPromotionAccounts()` on a
-// Promotion, neither exists, neither is generated because no such collection is declared, and the
-// call falls through to the throw at org/Hibachi/HibachiEntity.cfc:L565. Adding the far side here
-// would SILENTLY REPAIR that defect, invent behaviour the legacy system does not have, and break
-// schema continuity, since there is no `SwPromotion` -> `SwPromotionAccount` inverse mapping to
-// honour. The same rule is published from the other side at promotionAccount.ts,
-// promotionPeriod.ts and promotionCode.ts; all four statements are deliberate duplicates of one
-// rule. So: no `promotionAccounts` field, no `getPromotionAccounts()`, no `hasPromotionAccount()`.
-//
-// THE BANNER CENSUS. `Promotion.cfc` has the CLEANEST banner structure of the entire promotion
-// family - ZERO duplicate pairs, and no Custom Validation, Custom Formatting, Overridden Implecet
-// Getters or Deprecated Methods section at all:
-//
-//   | banner pair                      | locators | state                                      |
-//   |----------------------------------|----------|--------------------------------------------|
-//   | Non-Persistent Property Methods  | 81 / 136 | POPULATED - the four flag getters          |
-//   | Bidirectional Helper Methods     | 138 / 166| POPULATED - the six delegating helpers     |
-//   | Overridden Methods               | 168 / 174| POPULATED - isDeletable                    |
-//   | ORM Event Hooks                  | 176 / 178| EMPTY                                      |
-//
-// For contrast, the duplicate-banner warts elsewhere in the family are PromotionAccount.cfc
-// L117/L119, PromotionPeriod.cfc L154/L156, and PromotionCode.cfc L149/L151 AND L153/L155 - plus
-// PromotionCode.cfc:L98, a Bidirectional START banner with no matching END. This component has
-// none of them, and the ported members below stay in SOURCE ORDER regardless.
+// THE ANTI-CONTRACT IS AS BINDING AS THE CONTRACT. There is NO `promotionAccounts` collection on
+// this entity and this class must never gain one: model/entity/Promotion.cfc contains zero
+// occurrences of `promotionAccount`, and its fieldtype census finds exactly three collections -
+// L62, L63, L64 - and no fourth. That absence is exactly WHY
+// [model/entity/PromotionAccount.cfc:L90-L95] is a confirmed throwing defect: its `setPromotion`
+// calls `hasPromotionAccount( this )` and `getPromotionAccounts()` on a Promotion, neither exists,
+// neither is generated because no such collection is declared, and the call falls through to the
+// throw at [org/Hibachi/HibachiEntity.cfc:L565]. Adding the far side here would SILENTLY REPAIR
+// that defect, invent behaviour the legacy system does not have, and break schema continuity, since
+// there is no `SwPromotion` -> `SwPromotionAccount` inverse mapping to honour. The same rule is
+// published from promotionAccount.ts, promotionPeriod.ts and promotionCode.ts.
 //
 // LEGACY-NOTE [model/entity/Promotion.cfc:L62, L79, L117, L154, L159, L171, L69, L75, L93-L94,
 // L179-L180, L141-L145, L48-L86]: THE COSMETIC WARTS, RECORDED COLLECTIVELY AND ONCE. None is a
-// defect, none changes behaviour, and none spends a budget; they are logged so a future reader can
-// tell "already seen and judged cosmetic" from "not yet read". Measured with `cat -A`: L62 carries
-// FOUR trailing spaces after its semicolon and L79 carries ONE; L117 ends with a stray TAB after
-// its closing brace; L154 and L159 are indented TAB + THREE SPACES where every sibling line uses
-// two tabs; L171 puts spaces inside the call parens, `arrayLen( getAppliedPromotions() )`; the L69
-// banner reads `// Audit properties` and the L75 banner `// Non-persistent properties` with a
-// lower-case `p`, where PromotionCode.cfc:L73/L79 capitalise both; L93 and L94 are a double blank
-// line between getters and L179-L180 a double blank before the closing brace at L181; and L141/L144
-// declare their argument as capital-P `PromotionPeriod` (see the note on that pair below). ONE WART
-// NOT PREDICTED BY THE PLAN AND FOUND ONLY BY MEASURING: THE FILE HAS MIXED LINE ENDINGS - exactly
-// 39 lines, L48 through L86, are CRLF and every other line is LF. Nothing is reproduced from this
-// list; .prettierrc.json fixes `endOfLine: "lf"` for the whole subtree.
+// defect and none changes behaviour: trailing whitespace on L62 and L79; a stray TAB after L117's
+// closing brace; TAB-plus-three-spaces indentation on L154 and L159; spaces inside the call parens
+// at L171; lower-case `p` in the L69 and L75 banners; double blank lines at L93-L94 and L179-L180;
+// capital-P `PromotionPeriod` argument names at L141/L144; and MIXED LINE ENDINGS - exactly 39
+// lines, L48 through L86, are CRLF and every other line is LF. Nothing is reproduced from this
+// list.
 //
-// LEGACY-NOTE [model/entity/Promotion.cfc:L176-L178]: THE ORM EVENT HOOKS BLOCK IS EMPTY, AND THAT
-// IS A DELIBERATE ABSENCE RATHER THAN AN OMISSION. This component declares no `preInsert()` and no
-// `preUpdate()`, has no materialized-path column and no generated value to seed, so this class
-// authors no lifecycle-maintenance method of any kind. Four in-scope entities DO carry hooks, each
-// with its own ordering - Category.cfc L126/L131 with `super` FIRST, PriceGroup.cfc L206/L211 with
-// path maintenance BEFORE `super`, ProductType.cfc L305/L310, and PromotionCode.cfc:L179 which is
-// insert-only and runs its work before `super` - which makes `Promotion` a fifth pattern: none at
-// all. Adding a hook here to "standardise the folder" would invent behaviour the source lacks.
+// LEGACY-NOTE [model/entity/Promotion.cfc:L176-L178]: THE ORM EVENT HOOKS BLOCK IS EMPTY, so this
+// class authors no lifecycle-maintenance method of any kind - no `preInsert`, no `preUpdate`, no
+// materialized-path column, no generated value to seed. Four in-scope entities DO carry hooks, each
+// with its own ordering: [model/entity/Category.cfc:L126, L131] with `super` FIRST,
+// [model/entity/PriceGroup.cfc:L206, L211] with path maintenance BEFORE `super`,
+// [model/entity/ProductType.cfc:L305, L310], and [model/entity/PromotionCode.cfc:L179], which is
+// insert-only. `Promotion` is a fifth pattern: none at all.
 //
-// LEGACY-NOTE [model/entity/Promotion.cfc:L83-L134]: NO CLOCK IS INJECTED INTO THIS ENTITY AND
-// NONE MAY BE ADDED. The component contains ZERO `now()` calls - verified by grep - because every
-// date comparison in this aggregate lives one level down, in PromotionPeriod.getCurrentFlag()
-// [model/entity/PromotionPeriod.cfc:L137-L146] and PromotionCode.getCurrentFlag()
-// [model/entity/PromotionCode.cfc:L85-L94], each of which owns its own injected clock in the
-// shipped sibling module. `Promotion.getCurrentFlag()` is therefore TRANSITIVELY clock-dependent,
-// which is exactly right and requires nothing here: no clock constructor parameter, no date
-// parameter on any method, and no date-related import. Recorded so that a later reader does not
-// "helpfully" add one.
+// LEGACY-NOTE [model/entity/Promotion.cfc:L83-L134]: NO CLOCK IS INJECTED INTO THIS ENTITY AND NONE
+// MAY BE ADDED. The component contains ZERO `now()` calls, because every date comparison in this
+// aggregate lives one level down, in `PromotionPeriod.getCurrentFlag()`
+// [model/entity/PromotionPeriod.cfc:L137-L146] and `PromotionCode.getCurrentFlag()`
+// [model/entity/PromotionCode.cfc:L85-L94], each of which owns its own injected clock.
+// `Promotion.getCurrentFlag()` is therefore TRANSITIVELY clock-dependent, which requires nothing
+// here: no clock parameter, no date parameter on any method, no date-related import.
 //
-// THE BUDGET LEDGER FOR THIS FILE, SPENT: NOTHING. Zero signature widenings - the project permits
-// exactly one entity-layer widening and it was spent on `PromotionPeriod.isCurrent(now: Date)`, so
-// every method here keeps its exact legacy arity, and in particular the children's
-// `getCurrentFlag()` is called with NO argument. Zero deliberate divergences. Zero signature
-// reshapings. Zero visibility widenings - nothing private becomes public. Defects are reproduced,
-// never repaired: a method that throws at runtime today throws here too.
-//
-// TEST COVERAGE FOR THIS MODULE IS NET-NEW AND MUST NEVER BE PRESENTED AS PARITY. Only two of the
-// eighteen in-scope entities have a legacy antecedent - brand.ts from
-// meta/tests/unit/entity/BrandTest.cfc and product.ts from meta/tests/unit/entity/ProductTest.cfc
-// - and meta/tests/functional/admin/entity/ProductTest.cfc is an empty stub that is never counted
-// as coverage. `Promotion` has no legacy test whatsoever. The contract the suite must pin is
-// enumerated at the foot of this file; the suite itself belongs to the test tier and is not
-// authored here.
-//
-// NO USER RULES WERE PROVIDED FOR THIS PROJECT. The project rules document returns exactly "No
-// user rules provided." No rule is invented to fill the gap, and the absence is not treated as
-// licence to lower the bar: the enterprise substitute standard applies at full strength - maximal
-// strictness, no `any` and no suppression comment, no non-null assertion, one exported unit per
-// file, no barrel, parameterless purity where the source is pure, and every judgment call
-// annotated at the point where it was made.
-// ---------------------------------------------------------------------------
+// Every method keeps its exact legacy arity - the project permits exactly one entity-layer
+// signature widening and it is spent on `PromotionPeriod.isCurrent(now: Date)`, so the children's
+// `getCurrentFlag()` is called with NO argument. Nothing private becomes public. Defects are
+// reproduced, never repaired: a method that throws at runtime today throws here too.
 
 import { cfBoolean } from '../../lib/cfml/truthiness.js';
 import type { PromotionApplied } from './promotionApplied.js';
@@ -150,10 +91,11 @@ import type { PromotionPeriod } from './promotionPeriod.js';
  * Declared LOCALLY AND UN-EXPORTED rather than imported, and that is a considered choice with two
  * reasons behind it. First, the legal import surface of this file is exactly four statements, and
  * `@typescript-eslint/consistent-type-imports` is configured with
- * `fixStyle: 'separate-type-imports'`, so pulling `CfBooleanInput` in would necessarily add a
- * FIFTH statement for a type alias rather than for a capability. Second, TypeScript is structural:
- * this union is member-for-member the union `cfBoolean` accepts, so it is assignable without any
- * assertion, and the single value import above remains the only coupling to `src/lib/`.
+ *   `fixStyle: 'separate-type-imports'`,
+ * so pulling `CfBooleanInput` in would necessarily add a FIFTH statement for a type alias rather
+ * than for a capability. Second, TypeScript is structural: this union is member-for-member the
+ * union `cfBoolean` accepts, so it is assignable without any assertion, and the single value import
+ * above remains the only coupling to `src/lib/`.
  *
  * `undefined` is deliberately NOT a member. Absence is expressed by omitting the constructor key,
  * which `exactOptionalPropertyTypes` keeps distinguishable from a present `null` - and the two
@@ -175,53 +117,37 @@ const ACTIVE_FLAG_ORM_DEFAULT = '1' as const;
 /**
  * The one member [model/entity/Promotion.cfc:L127] reaches on a promotion code.
  *
- * ★★★ THE CROSS-FILE GAP THIS EXISTS TO SURFACE, STATED PLAINLY.
- * `getPromotionCodesDeletableFlag()` calls `promotionCode.isDeletable()`. Traced through the
- * legacy tree, that call does NOT resolve to anything on model/entity/PromotionCode.cfc - that
- * component declares no `isDeletable()` at all, re-verified here by grep, and its Custom
- * Validation banner pair at L157/L159 is completely empty. It resolves because `isDeletable()` is
- * a method on the FRAMEWORK BASE at org/Hibachi/HibachiEntity.cfc, which
- * model/entity/Promotion.cfc:L170 and model/entity/PromotionPeriod.cfc:L87 both OVERRIDE - and the
- * fact that L170 sits under the `// START: Overridden Methods` banner at L168 is the proof that it
- * is an override rather than a fresh declaration. So the legacy call RESOLVES AND DOES NOT THROW;
- * it is not a defect.
+ * THE CROSS-FILE GAP THIS EXISTS TO SURFACE. `getPromotionCodesDeletableFlag()` calls
+ * `promotionCode.isDeletable()`, and that call does NOT resolve to anything on
+ * model/entity/PromotionCode.cfc - that component declares no `isDeletable()` and its Custom
+ * Validation banner pair at L157/L159 is empty. It resolves because `isDeletable()` is a method on
+ * the FRAMEWORK BASE at [org/Hibachi/HibachiEntity.cfc:L204-L206], which
+ * [model/entity/Promotion.cfc:L170] and [model/entity/PromotionPeriod.cfc:L87] both OVERRIDE - L170
+ * sitting under the `// START: Overridden Methods` banner at L168 being the proof. So the legacy
+ * call RESOLVES AND DOES NOT THROW; it is not a defect. The base is deliberately not ported, which
+ * turns an inherited method into a structural dependency: `promotionCode.ts` declares no
+ * `isDeletable()`.
  *
- * The framework base is deliberately NOT ported, which turns an inherited method into a structural
- * dependency. `slatwall-ts/src/domain/entities/promotionCode.ts` was read while authoring this
- * file and its declared surface confirms the gap: it exposes `getPromotionCodeID`,
- * `getPromotionCode`, `setPromotionCode`, `getStartDateTime`, `getEndDateTime`,
- * `getMaximumUseCount`, `getMaximumAccountUseCount`, `getPromotion`, `getPromotionID`,
- * `getAccounts`, `getOrders`, the audit accessors, `isNew`, `getCurrentFlag`, `setPromotion`,
- * `removePromotion`, `hasAccount`, `addAccount`, `removeAccount`, `hasOrder`, `addOrder`,
- * `removeOrder`, `hasUniquePromotionCode`, `getSimpleRepresentationPropertyName` and `preInsert` -
- * and NO `isDeletable()`.
+ * The member is NOT invented on that file, nothing is widened to `any`, no suppression comment is
+ * used, and the call is NOT silently dropped. Instead this narrow structural contract names the
+ * single member the legacy body reaches, a runtime probe decides whether a given promotion code
+ * carries it, and `getPromotionCodesDeletableFlag()` calls it exactly as the legacy does when it is
+ * present. When it is absent the method raises, because papering over the gap with a fabricated
+ * boolean is forbidden: both answers are load-bearing on a delete path, and `true` would report a
+ * promotion as safely deletable while its codes are still attached to live orders.
  *
- * WHAT IS DONE ABOUT IT, AND WHAT IS DELIBERATELY NOT. The member is NOT invented on that file: it
- * is owned by another module and inventing there would be a lie about its surface. Nothing is
- * widened to `any`, no suppression comment is used, and the call is NOT silently dropped. Instead
- * this narrow structural contract names the single member the legacy body reaches, a runtime probe
- * decides whether a given promotion code actually carries it, and
- * `getPromotionCodesDeletableFlag()` calls it exactly as the legacy does when it is present. When
- * it is absent the method raises with a message naming the unported base method and the follow-up
- * that closes the contract, because surfacing the gap honestly is mandatory and papering over it
- * with a fabricated boolean is forbidden - both answers are load-bearing on a delete path, and
- * `true` would report a promotion as safely deletable while its codes are still attached to live
- * orders.
- *
- * THE REQUIRED CROSS-FILE FOLLOW-UP, so it is actionable rather than merely noted: declare
- * `isDeletable(): boolean` on `promotionCode.ts` reproducing
- * org/Hibachi/HibachiEntity.cfc:L204-L206, whose body is
+ * THE CROSS-FILE FOLLOW-UP THAT CLOSES THE CONTRACT: declare `isDeletable(): boolean` on
+ * `promotionCode.ts` reproducing [org/Hibachi/HibachiEntity.cfc:L204-L206], whose body is
  * `!getService("hibachiValidationService").validate(object=this, context="delete",
  * setErrors=false).hasErrors()`. For that entity the delete context is exactly one rule -
- * model/validation/PromotionCode.json declares `"orders": [{"contexts":"delete",
- * "maxCollection":0}]` - and the collection it counts is already materialized and already exposed
- * there as `getOrders()`. Once that member exists, the probe below narrows on every call and the
- * raise becomes unreachable, with no change required to this file.
+ * model/validation/PromotionCode.json declares
+ *   `"orders": [{"contexts":"delete","maxCollection":0}]`
+ * over a collection already exposed there as `getOrders()`. Once that member exists the probe
+ * narrows on every call and the raise becomes unreachable, with no change to this file.
  *
- * Declared module-local and un-exported on purpose. The port inventory under `src/domain/ports/`
- * is locked at thirteen EXPORTED contracts, and this entity injects no collaborator port at all -
- * model/entity/Promotion.cfc has ZERO `getService(` sites, verified by grep - so nothing here may
- * become a fourteenth exported contract or a constructor-injected service handle.
+ * Module-local and un-exported on purpose: this entity injects no collaborator port at all -
+ * model/entity/Promotion.cfc has ZERO `getService(` sites - so nothing here may become an exported
+ * port contract or a constructor-injected service handle.
  */
 interface FrameworkDeletableEntity {
   isDeletable(): boolean;
@@ -231,9 +157,9 @@ interface FrameworkDeletableEntity {
  * Whether a promotion code carries the framework-inherited `isDeletable()` described above.
  *
  * The assertion is a DOWNCAST to an intersection that merely adds the member as OPTIONAL - not a
- * widening to `any`, not a bounce through `unknown`, and not a claim that the member is present.
- * It is the narrowest construct that lets a genuine runtime question be asked in a typed language,
- * and the answer is then carried in the type by the predicate so the call site needs no further
+ * widening to `any`, not a bounce through `unknown`, and not a claim that the member is present. It
+ * is the narrowest construct that lets a genuine runtime question be asked in a typed language, and
+ * the answer is then carried in the type by the predicate so the call site needs no further
  * assertion. `@typescript-eslint/no-unnecessary-condition` is deliberately disabled for this
  * subtree, precisely so that checks the type system believes redundant - and this one is not even
  * redundant - remain expressible.
@@ -249,28 +175,21 @@ function reachesFrameworkIsDeletable(
  * The `SwPromotion` row: the hub entity of the promotion aggregate.
  *
  * A CLASS RATHER THAN AN INTERFACE, because the legacy entities carry behaviour and not merely
- * data. Four of this component's members are non-persistent property methods with real bodies
+ * data: four members are non-persistent property methods with real bodies
  * [model/entity/Promotion.cfc:L83-L134] and one overrides the framework's deletability rule
- * [model/entity/Promotion.cfc:L170-L172]. Collapsing them into free functions would break the
- * method-for-method interface parity that is this port's acceptance contract, so method names are
- * the legacy CFML names VERBATIM in camelCase - which is exactly why eslint.config.mjs deliberately
- * enables no `naming-convention`, `camelcase` or `id-match` rule. That includes the plural in
- * `getPromotionCodesDeletableFlag`, which model/validation/Promotion.json invokes by name.
+ * [model/entity/Promotion.cfc:L170-L172]. Method names are the legacy CFML names VERBATIM in
+ * camelCase, which is why eslint.config.mjs enables no `naming-convention`, `camelcase` or
+ * `id-match` rule - including the plural in `getPromotionCodesDeletableFlag`, which
+ * model/validation/Promotion.json invokes by name.
  *
- * ASSOCIATIONS ARRIVE ALREADY MATERIALIZED, AND LAZINESS IS NEVER SIMULATED. Hibernate lazy
- * collections have no equivalent in a driver-only stack, so `src/repositories/mysql/**` owns
- * row-to-entity hydration and association materialization and documents the chosen fetch shape at
- * the producing repository method. None of the three collections here carries `lazy="extra"`, so
- * all three are materialized. This class performs NO loading, NO querying and NO lazy resolution.
+ * ASSOCIATIONS ARRIVE ALREADY MATERIALIZED, AND LAZINESS IS NEVER SIMULATED:
+ * `src/repositories/mysql/**` owns hydration and documents the chosen fetch shape at the producing
+ * method. None of the three collections carries `lazy="extra"`, so all three are materialized.
  *
- * EVERY MEMBER IS SYNCHRONOUS. The async boundary rule for this port is that a method becomes
- * `async` if and only if its legacy body reached the DAO or the ORM. Nothing here does: all four
- * non-persistent property methods, the three containment probes and `isDeletable()` traverse
- * already-materialized associations, and there is no arithmetic anywhere in this component - no
- * `Money`, no `Decimal`, no monetary and no currency column exists on `SwPromotion`.
- *
- * NO COLLABORATOR PORT IS INJECTED. model/entity/Promotion.cfc has ZERO `getService(` sites, so
- * unlike `Sku` and `Product` this entity reaches outward for nothing at all.
+ * EVERY MEMBER IS SYNCHRONOUS - a method becomes `async` only where its legacy body reached the DAO
+ * or the ORM, and nothing here does - and there is no arithmetic anywhere in this component: no
+ * monetary and no currency column exists on `SwPromotion`. NO COLLABORATOR PORT IS INJECTED,
+ * because model/entity/Promotion.cfc has ZERO `getService(` sites.
  */
 export class Promotion {
   /**
@@ -320,20 +239,19 @@ export class Promotion {
    * fieldtype="many-to-one" fkcolumn="defaultImageID";` - `Image` is NOT one of the eighteen
    * in-scope entities, so the association is COLLAPSED TO THE INERT OPAQUE IDENTIFIER
    * `defaultImageID` and no `getDefaultImage()` accessor is authored. The FK column is preserved so
-   * the `SwPromotion` schema contract is unbroken, and nothing in the in-scope slice reads any
-   * other member of a promotion's default image: model/entity/Promotion.cfc never mentions
-   * `defaultImage` again after L59 - no accessor override, no helper, no use in any of the four
-   * non-persistent property methods - and no in-scope service or DAO touches it. This is the same
-   * treatment `category.ts` gives `site` and `promotionApplied.ts` gives its three order-side FKs.
-   * The declaration carries NO `fetch="join"`, and none is added: the project-wide eager-fetch
-   * census stays at exactly four sites - Product.cfc L68, L69, L70 and PromotionPeriod.cfc L59.
+   * the `SwPromotion` schema contract is unbroken, and nothing in the slice reads any other member
+   * of a promotion's default image - model/entity/Promotion.cfc never mentions `defaultImage` again
+   * after L59, and no in-scope service or DAO touches it. Same treatment `category.ts` gives `site`
+   * and `promotionApplied.ts` gives its three order-side FKs. The declaration carries NO
+   * `fetch="join"`, and none is added: the project-wide eager-fetch census stays at exactly four
+   * sites - Product.cfc L68, L69, L70 and PromotionPeriod.cfc L59.
    */
   private readonly defaultImageID: string | undefined;
 
   /**
-   * [model/entity/Promotion.cfc:L62] `property name="promotionPeriods" singularname="promotionPeriod"
-   * cfc="PromotionPeriod" fieldtype="one-to-many" fkcolumn="promotionID"
-   * cascade="all-delete-orphan" inverse="true";`
+   * [model/entity/Promotion.cfc:L62] `property name="promotionPeriods"
+   * singularname="promotionPeriod" cfc="PromotionPeriod" fieldtype="one-to-many"
+   * fkcolumn="promotionID" cascade="all-delete-orphan" inverse="true";`
    *
    * MUTABLE ARRAY, HANDED OUT LIVE. `inverse="true"` means `PromotionPeriod` owns the foreign key,
    * and model/entity/PromotionPeriod.cfc:L101 mutates THIS array in place through
@@ -352,19 +270,19 @@ export class Promotion {
   /**
    * [model/entity/Promotion.cfc:L64] `singularname="appliedPromotion" cfc="PromotionApplied"
    * fieldtype="one-to-many" fkcolumn="promotionID" cascade="all" inverse="true"`. LIVE, per
-   * model/entity/PromotionApplied.cfc:L82 `arrayAppend` and L91 `arrayDeleteAt`. This is also the
-   * collection `isDeletable()` counts.
+   * [model/entity/PromotionApplied.cfc:L82] `arrayAppend` and
+   * [model/entity/PromotionApplied.cfc:L91] `arrayDeleteAt`. This is also the collection
+   * `isDeletable()` counts.
    *
    * LEGACY-NOTE [model/entity/Promotion.cfc:L62-L64]: THE CASCADE ASYMMETRY IS REAL AND IS
    * PRESERVED RATHER THAN NORMALISED. `promotionPeriods` (L62) and `promotionCodes` (L63) are each
-   * `cascade="all-delete-orphan"`, while `appliedPromotions` (L64) is plain `cascade="all"` - so
-   * orphan removal applies to two of the three. That is a genuine schema-contract distinction and
-   * is recorded here for auditability; honouring the cascade obligation itself is a repositories
-   * concern and belongs to `src/repositories/mysql/**`, not to this module.
+   * `cascade="all-delete-orphan"` while `appliedPromotions` (L64) is plain `cascade="all"`, so
+   * orphan removal applies to two of the three. Honouring the cascade obligation itself belongs to
+   * `src/repositories/mysql/**`.
    */
   private readonly appliedPromotions: PromotionApplied[];
 
-  /** [model/entity/Promotion.cfc:L67] `property name="remoteID" ormtype="string";` - the integration correlation column. */
+  /** [model/entity/Promotion.cfc:L67] `remoteID` - the integration correlation column. */
   private readonly remoteID: string | undefined;
 
   /** [model/entity/Promotion.cfc:L70] `hb_populateEnabled="false" ormtype="timestamp"`. */
@@ -372,8 +290,10 @@ export class Promotion {
 
   /**
    * LEGACY-NOTE [model/entity/Promotion.cfc:L71]: `property name="createdByAccount"
-   * hb_populateEnabled="false" cfc="Account" fieldtype="many-to-one" fkcolumn="createdByAccountID";`
-   * - `Account` is explicitly OUT OF SCOPE, so this many-to-one is collapsed to the inert opaque
+   * hb_populateEnabled="false" cfc="Account" fieldtype="many-to-one"
+   * fkcolumn="createdByAccountID";`
+   *
+   * `Account` is explicitly OUT OF SCOPE, so this many-to-one is collapsed to the inert opaque
    * identifier `createdByAccountID`. An audit column needs no behaviour from the far side, the FK
    * is preserved so the schema contract is unbroken, and `hb_populateEnabled="false"` is carried
    * forward verbatim in this note. Identical treatment to every other in-scope entity.
@@ -391,56 +311,51 @@ export class Promotion {
   private readonly modifiedByAccountID: string | undefined;
 
   /**
-   * [model/entity/Promotion.cfc:L76] `property name="currentFlag" type="boolean"
-   * persistent="false";` - the memo behind `getCurrentFlag()`.
+   * [model/entity/Promotion.cfc:L76]
+   *   `property name="currentFlag" type="boolean" persistent="false";` -
+   * the memo behind `getCurrentFlag()`.
    *
    * REQUEST-SCOPED, NOT MODULE-SCOPED. The legacy memo lives in the component's `variables` scope,
    * which on a warm Lambda container would persist between unrelated invocations and could leak one
-   * request's answer into another's. Entity instances in this port are created per request by the
-   * repository, so the memo is instance-scoped and that hazard does not arise. There is no
-   * invalidation in the legacy and none is added here.
+   * request's answer into another's. Entity instances here are created per request by the
+   * repository, so the memo is instance-scoped. There is no invalidation in the legacy and none is
+   * added.
    */
   private currentFlag: boolean | undefined;
 
-  /** [model/entity/Promotion.cfc:L77] `type="boolean" persistent="false"` - memo behind `getCurrentPromotionPeriodFlag()`. */
+  /** [model/entity/Promotion.cfc:L77] memo behind `getCurrentPromotionPeriodFlag()`. */
   private currentPromotionPeriodFlag: boolean | undefined;
 
-  /** [model/entity/Promotion.cfc:L78] `type="boolean" persistent="false"` - memo behind `getCurrentPromotionCodeFlag()`. */
+  /** [model/entity/Promotion.cfc:L78] memo behind `getCurrentPromotionCodeFlag()`. */
   private currentPromotionCodeFlag: boolean | undefined;
 
-  // [model/entity/Promotion.cfc:L79] `property name="promotionCodesDeletableFlag" type="boolean"
-  // persistent="false";` DELIBERATELY HAS NO BACKING FIELD. That is not an omission - it is the
-  // faithful reproduction of the four-way key mismatch documented on
-  // `getPromotionCodesDeletableFlag()` below, whose legacy memo can never take effect. A field
-  // written but never read would be dead state that misrepresents the behaviour, and a field
-  // written AND read would change how many times `PromotionCode.isDeletable()` is invoked, which is
-  // observable. So there is none.
+  // [model/entity/Promotion.cfc:L79]
+  //   `property name="promotionCodesDeletableFlag" type="boolean" persistent="false";`
+  // DELIBERATELY HAS NO BACKING FIELD. That is not an omission - it is the faithful reproduction of
+  // the four-way key mismatch documented on `getPromotionCodesDeletableFlag()` below, whose legacy
+  // memo can never take effect. A field written but never read would be dead state that
+  // misrepresents the behaviour, and a field written AND read would change how many times
+  // `PromotionCode.isDeletable()` is invoked, which is observable. So there is none.
 
   /**
    * Constructed from a repository row plus its materialized associations.
    *
    * Never constructed from a sibling entity module: row-to-entity hydration belongs entirely to
-   * `src/repositories/mysql/**`, which is why no `new Promotion(...)` appears anywhere under
-   * `src/domain/`. A single well-typed parameter object rather than a positional list, because
-   * fourteen positional arguments of which eleven are optional is a defect waiting to happen; every
-   * field is explicitly typed and none is `any`.
+   * `src/repositories/mysql/**`.
    *
-   * EVERY COLLECTION PARAMETER IS OPTIONAL AND DEFAULTS TO `[]`, and that default is not a
-   * convenience. A Hibernate-managed collection never handed back null, so an entity hydrated
-   * without a join must present an empty array rather than `undefined` - the convention the legacy
-   * suite asserts for `Brand.getProducts()` in meta/tests/unit/entity/BrandTest.cfc. It also keeps
-   * every empty-collection semantic on this class reachable and testable.
+   * EVERY COLLECTION PARAMETER IS OPTIONAL AND DEFAULTS TO `[]`, and that is not a convenience: a
+   * Hibernate-managed collection never handed back null, so an entity hydrated without a join must
+   * present an empty array rather than `undefined` - the convention the legacy suite asserts for
+   * `Brand.getProducts()` in meta/tests/unit/entity/BrandTest.cfc.
    *
-   * THE `activeFlag` RESOLUTION, AND WHY IT DISTINGUISHES TWO KINDS OF ABSENCE. The ORM
-   * `default="1"` at [model/entity/Promotion.cfc:L56] applies to a row that never set the column,
-   * so NO VALUE SUPPLIED must read TRUE - the same answer a freshly-created CFML entity gives.
-   * A column that is genuinely SQL NULL is a different state and reads FALSE, which is the answer
-   * `cfBoolean()` documents for a persisted flag and the same answer the legacy engine gave a flag
-   * it had no value for. `mysql2` yields `null` for SQL NULL and never `undefined`, so the two
-   * cases cannot collide: `undefined` (or an omitted key) can only mean "the caller supplied
-   * nothing", and `exactOptionalPropertyTypes` is what keeps the distinction expressible. Both
-   * paths then run through the SAME coercion helper, so the default is coerced exactly as the
-   * legacy engine coerced it rather than being short-circuited by a hand-written `true`.
+   * THE `activeFlag` RESOLUTION DISTINGUISHES TWO KINDS OF ABSENCE. The ORM `default="1"` at
+   * [model/entity/Promotion.cfc:L56] applies to a row that never set the column, so NO VALUE
+   * SUPPLIED must read TRUE - the answer a freshly-created CFML entity gives. A genuinely SQL NULL
+   * column is a different state and reads FALSE. `mysql2` yields `null` for SQL NULL and never
+   * `undefined`, so the two cases cannot collide, and `exactOptionalPropertyTypes` keeps the
+   * distinction expressible. Both paths run through the SAME coercion helper, so the default is
+   * coerced exactly as the legacy engine coerced it rather than being short-circuited by a
+   * hand-written `true`.
    */
   constructor(init: {
     readonly promotionID: string;
@@ -476,7 +391,9 @@ export class Promotion {
     this.modifiedByAccountID = init.modifiedByAccountID;
   }
 
-  // ============ START: Persistent Property Accessors ====================
+  // ============
+  // START: Persistent Property Accessors
+  // ====================
   // None of these has a hand-written legacy body: `accessors="true"` on the intermediate
   // model/entity/HibachiEntity.cfc generates one per declared property. They are authored here with
   // the legacy names VERBATIM because interface parity is the acceptance contract - a reviewer
@@ -491,38 +408,23 @@ export class Promotion {
   /**
    * [model/entity/Promotion.cfc:L53]
    *
-   * ★★★ RETURNS `string | undefined`, AND THE `| undefined` IS NOT OPTIONAL. This is a PUBLISHED
-   * FAR-SIDE CONTRACT - model/entity/PromotionPeriod.cfc:L91-L93 reaches it as
-   * `return getPromotion().getPromotionName();` from `getSimpleRepresentation()`, and
-   * model/service/PromotionService.cfc L403/L449 reach it as
+   * RETURNS `string | undefined`, AND THE `| undefined` IS NOT OPTIONAL. This is a PUBLISHED
+   * FAR-SIDE CONTRACT - [model/entity/PromotionPeriod.cfc:L91-L93] reaches it as
+   *   `return getPromotion().getPromotionName();`,
+   * and [model/service/PromotionService.cfc:L403] and [model/service/PromotionService.cfc:L449] as
    * `reward.getPromotionPeriod().getPromotion().getPromotionName()` - so the return type is a
-   * cross-module decision and is recorded here in full.
+   * cross-module decision.
    *
-   * A DISCREPANCY AGAINST THE PLANNING NOTE, RESOLVED IN FAVOUR OF THE SOURCE AND THE SHIPPED
-   * CONTRACT. The plan for this file predicted `getPromotionName(): string`, returning `''` for an
-   * unset name. That prediction is not adopted, for four independent reasons, each verified while
-   * authoring:
-   *
-   *   1. THE COLUMN IS NULLABLE. [model/entity/Promotion.cfc:L53] reads
-   *      `property name="promotionName" ormtype="string";` with NO `notnull="true"` - contrast
-   *      [model/entity/Product.cfc:L55], which does carry it. Requiredness comes only from
-   *      model/validation/Promotion.json, and only in the `save` context
-   *      (`"promotionName": [{"contexts":"save","required":true}]`), which says nothing about a row
-   *      already in the table or an object hydrated without that column.
-   *   2. THE SHIPPED SIBLING PUBLISHES `string | undefined` AS CANONICAL and explicitly records
-   *      that an earlier revision of its own note had it wrong - see the far-side contract block in
-   *      src/domain/entities/promotionCode.ts. Contracts are honoured, not renegotiated per file.
-   *   3. RETURNING `''` WOULD SILENTLY REPAIR A PRESERVED DEFECT. src/domain/entities/promotionPeriod.ts
-   *      consumes this accessor as `string | undefined` inside `getSimpleRepresentation()` and RAISES
-   *      when it is absent, reproducing the CFML return-type coercion failure that
-   *      model/entity/PromotionPeriod.cfc:L91's `returntype="string"` produces on a null name. An
-   *      empty string here would make that raise unreachable - a repair, not a port.
-   *   4. COALESCING A NULLABLE COLUMN TO A SENTINEL IS FORBIDDEN by this port's standing rule, and
-   *      the carve-out the plan offered was conditional on the contract demanding `string`. The
-   *      real, shipped contract does not.
-   *
-   * No placeholder name is invented. A promotion without a name is a data defect for callers in
-   * `src/services/**` to reject, not a value for this accessor to fabricate.
+   * `''` IS NOT SUBSTITUTED FOR AN UNSET NAME. The column is nullable: L53 reads
+   *   `property name="promotionName" ormtype="string";`
+   * with NO `notnull="true"`, unlike [model/entity/Product.cfc:L55]; requiredness comes only from
+   * model/validation/Promotion.json in the `save` context, which says nothing about a row already
+   * in the table. And returning `''` would SILENTLY REPAIR A PRESERVED DEFECT: `promotionPeriod.ts`
+   * consumes this accessor as `string | undefined` inside `getSimpleRepresentation()` and RAISES
+   * when it is absent, reproducing the CFML return-type coercion failure that
+   * [model/entity/PromotionPeriod.cfc:L91]'s `returntype="string"` produces on a null name. A
+   * promotion without a name is a data defect for callers in `src/services/**` to reject, not a
+   * value for this accessor to fabricate.
    */
   getPromotionName(): string | undefined {
     return this.promotionName;
@@ -542,8 +444,8 @@ export class Promotion {
    * [model/entity/Promotion.cfc:L56] `ormtype="boolean" default="1"`.
    *
    * TOTAL, and already coerced: the single `cfBoolean()` call happens once in the constructor, so
-   * repeated reads cannot disagree with each other and no raw column shape survives past
-   * hydration. See the constructor for the two-kinds-of-absence rule that governs the value.
+   * repeated reads cannot disagree with each other and no raw column shape survives past hydration.
+   * See the constructor for the two-kinds-of-absence rule that governs the value.
    */
   getActiveFlag(): boolean {
     return this.activeFlag;
@@ -574,9 +476,8 @@ export class Promotion {
   }
 
   /**
-   * The `createdByAccountID` FK column, opaque. [model/entity/Promotion.cfc:L71]
-   * Same `get<XXX>ID` provenance as `getDefaultImageID()`, and the same reason no `Account` object
-   * is exposed.
+   * The `createdByAccountID` FK column, opaque. [model/entity/Promotion.cfc:L71] Same `get<XXX>ID`
+   * provenance as `getDefaultImageID()`, and the same reason no `Account` object is exposed.
    */
   getCreatedByAccountID(): string | undefined {
     return this.createdByAccountID;
@@ -592,16 +493,19 @@ export class Promotion {
     return this.modifiedByAccountID;
   }
 
-  // ============  END:  Persistent Property Accessors ====================
+  // ============
+  // END:  Persistent Property Accessors
+  // ====================
 
-  // ============ START: Collection Accessors =============================
+  // ============
+  // Collection Accessors
+  // ============================================================
   // LEGACY-NOTE [model/entity/Promotion.cfc:L141-L164]: ALL THREE ACCESSORS RETURN THE LIVE
-  // INTERNAL ARRAY, AND THAT IS FORCED BY THE STRUCTURE OF THIS COMPONENT RATHER THAN CHOSEN. Every
-  // one of the six bidirectional helpers at L141-L164 is a PURE FAR-SIDE DELEGATION - not one of
-  // them touches `variables.promotionPeriods`, `variables.promotionCodes` or
-  // `variables.appliedPromotions` - so EVERY near-side array mutation in this aggregate is performed
-  // by the child, reaching back in THROUGH these accessors. The receiver-qualified census of the
-  // verbatim source:
+  // INTERNAL ARRAY, and that is forced by the structure of this component rather than chosen. Every
+  // one of the six bidirectional helpers at L141-L164 is a PURE FAR-SIDE DELEGATION - not one
+  // touches `variables.promotionPeriods`, `variables.promotionCodes` or
+  // `variables.appliedPromotions` - so EVERY near-side array mutation in this aggregate is
+  // performed by the child, reaching back in THROUGH these accessors:
   //
   //   getPromotionPeriods()  <- PromotionPeriod.cfc:L101 arrayAppend; L108 arrayFind and L110
   //                             arrayDeleteAt on the reachable found path
@@ -611,9 +515,9 @@ export class Promotion {
   // A defensive copy on any of the three would make all six helpers silent no-ops with respect to
   // this entity's own state and let the two halves of the graph drift apart with no error anywhere.
   // The return types are therefore the mutable `T[]` and NOT `readonly T[]`, so the contract is
-  // visible in the type and not only in prose. Contrast the collections that sibling modules
-  // correctly expose as `readonly` - `PromotionCode.getAccounts()` among them - where the ownership
-  // census finds no far-side mutation through the accessor.
+  // visible in the type. Contrast collections that sibling modules correctly expose as `readonly`,
+  // `PromotionCode.getAccounts()` among them, where the ownership census finds no far-side
+  // mutation.
 
   /** [model/entity/Promotion.cfc:L62] The LIVE array. See the note above before changing this. */
   getPromotionPeriods(): PromotionPeriod[] {
@@ -629,53 +533,45 @@ export class Promotion {
   }
 
   /**
-   * [model/entity/Promotion.cfc:L64] The LIVE array. Also read internally by `isDeletable()` [L171],
-   * which is why its emptiness is load-bearing rather than incidental.
+   * [model/entity/Promotion.cfc:L64] The LIVE array. Also read internally by `isDeletable()`
+   * [L171], which is why its emptiness is load-bearing rather than incidental.
    */
   getAppliedPromotions(): PromotionApplied[] {
     return this.appliedPromotions;
   }
 
-  // ============  END:  Collection Accessors =============================
+  // ============
+  // END:  Collection Accessors
+  // =============================
 
-  // ============ START: Containment Probes ===============================
+  // ============
+  // Containment Probes
+  // ==============================================================
   // None of the three is declared in model/entity/Promotion.cfc, and all three are nonetheless
-  // MANDATORY here, because each is called from across a module boundary by the child that owns the
-  // foreign key: PromotionPeriod.cfc:L100 `!arguments.promotion.hasPromotionPeriod( this )`,
-  // PromotionCode.cfc:L104 `!arguments.promotion.hasPromotionCode(this)` and
-  // PromotionApplied.cfc:L81 `!arguments.promotion.hasAppliedPromotion( this )`.
+  // MANDATORY here, because each is called across a module boundary by the child that owns the
+  // foreign key: [model/entity/PromotionPeriod.cfc:L100], [model/entity/PromotionCode.cfc:L104] and
+  // [model/entity/PromotionApplied.cfc:L81] each guard with
+  //   `!arguments.promotion.has<Child>( this )`.
   //
-  // WHERE THEY COME FROM, STATED PRECISELY. Each is generated by the CFML ORM for a collection
-  // declared with `singularname` - L62, L63 and L64 respectively - which is why all three RESOLVE
-  // AND DO NOT THROW. They are NOT products of the `onMissingMethod` dispatcher at
-  // [org/Hibachi/HibachiEntity.cfc:L507-L565]: re-reading those lines shows every one of the eleven
-  // patterns is `hasUniqueOrNull*`, `hasUnique*`, `hasAny*` or `get*`-prefixed, with no singular
-  // `has<Property>` branch at all. The dispatcher is instead what such a call falls through to when
-  // no matching collection is declared, terminating in the throw at
-  // [org/Hibachi/HibachiEntity.cfc:L565] - which is exactly the fate of `hasPromotionAccount` and
-  // exactly why this class must never declare a `promotionAccounts` collection.
+  // WHERE THEY COME FROM. Each is generated by the CFML ORM for a collection declared with
+  // `singularname` - L62, L63 and L64 respectively - which is why all three RESOLVE AND DO NOT
+  // THROW. They are NOT products of the `onMissingMethod` dispatcher at
+  // [org/Hibachi/HibachiEntity.cfc:L507-L565], which has no singular `has<Property>` branch and so
+  // terminates in the throw at [L565] - the fate of `hasPromotionAccount`, and the reason this
+  // class must never declare a `promotionAccounts` collection.
   //
-  // THE COMPARISON BASIS, AND A RECONCILIATION OF THREE PUBLISHED STATEMENTS ABOUT IT. The basis is
-  // THE PRIMARY KEY, never deep equality, and never object reference as the basis. Reference
-  // identity is consulted for one case only: when the candidate's key is the `unsavedvalue=""`
-  // sentinel, where no primary key exists to compare and Hibernate itself falls back to instance
-  // identity for a transient row. That is the uniform convention across every shipped entity in
-  // this folder - brand.ts, option.ts, productType.ts, promotionReward.ts, promotionQualifier.ts,
-  // and the `isSameRowAs` helpers in promotionCode.ts and promotionApplied.ts - and it is what the
-  // far-side contract in promotionCode.ts means by "never object identity AS ITS ONLY BASIS". A
-  // pure key comparison would report two DIFFERENT unsaved children as the same row and make the
-  // far side skip a legitimate append. In practice the fallback is unreachable from all three
-  // legacy call sites, because each guards as `isNew() or !has<Child>( this )` and short-circuits
-  // on the child's own `isNew()` before ever asking the parent - so the probe answers only for
-  // saved rows there, where key and identity agree by Hibernate's session guarantee.
+  // THE COMPARISON BASIS IS THE PRIMARY KEY, never deep equality and never object reference.
+  // Reference identity is consulted only when the candidate's key is the `unsavedvalue=""`
+  // sentinel, where no primary key exists and Hibernate itself falls back to instance identity for
+  // a transient row; a pure key comparison would report two DIFFERENT unsaved children as the same
+  // row and make the far side skip a legitimate append. The fallback is unreachable from all three
+  // legacy call sites, each guarding as `isNew() or !has<Child>( this )`.
   //
-  // ALL THREE RETURN `false` ON AN EMPTY ARRAY. At the PromotionCode.cfc:L104 site that `false` is
-  // negated to `true` and an append occurs, which is PERMISSIVE and correct.
+  // ALL THREE RETURN `false` ON AN EMPTY ARRAY. At the [model/entity/PromotionCode.cfc:L104] site
+  // that `false` is negated to `true` and an append occurs, which is PERMISSIVE and correct.
   //
-  // ON ARRAY INDEX BASE: `.some(...)` is used rather than an index search precisely so the 1-based
-  // CFML `arrayFind` convention (0 means "not found") cannot be mistranslated into the 0-based
-  // `findIndex` convention (-1 means "not found"). Where an index IS needed elsewhere in this port
-  // the gate is `findIndex(...) !== -1`, never `> 0`, which would silently drop element zero.
+  // ON ARRAY INDEX BASE: `.some(...)` avoids the 1-based CFML `arrayFind` convention entirely;
+  // where an index IS needed the gate is `findIndex(...) !== -1`, never `> 0`.
 
   /** Containment probe for `promotionPeriods` [model/entity/Promotion.cfc:L62]. PK basis. */
   hasPromotionPeriod(promotionPeriod: PromotionPeriod): boolean {
@@ -710,42 +606,40 @@ export class Promotion {
     );
   }
 
-  // ============  END:  Containment Probes ===============================
+  // ============
+  // END:  Containment Probes
+  // ===============================
 
-  // ============ START: Non-Persistent Property Methods ==================
-  // [model/entity/Promotion.cfc:L81] opens this block in the source and L136 closes it. All four
-  // members are ported and each keeps its legacy name verbatim.
+  // ============
+  // Non-Persistent Property Methods [model/entity/Promotion.cfc:L81-L136]
+  // ===========
   //
   // ONE STRUCTURAL NOTE APPLYING TO ALL FOUR. The legacy guard is
-  // `if(!structKeyExists(variables, "<name>"))`, which tests KEY PRESENCE and not truthiness. The
-  // faithful TypeScript equivalent is `if (this.<field> === undefined)`, because these memos hold a
-  // `boolean` and a computed `false` is a legitimate memoized answer that must NOT re-trigger the
-  // computation. `if (!this.<field>)` would recompute forever after a `false` result. This is also
-  // why `src/lib/cfml/struct.ts` is deliberately NOT imported: those four `structKeyExists` calls
-  // are memo guards on PRIVATE STATE, not case-insensitive lookups on domain data, so they become
-  // private backing fields rather than struct-key access. For the same reason `isNullish` is not
-  // used either: the legacy guard is `structKeyExists`, not `isNull`, and collapsing the two would
-  // erase a real distinction.
+  //   `if(!structKeyExists(variables, "<name>"))`,
+  // which tests KEY PRESENCE and not truthiness, so the faithful equivalent is
+  //   `if (this.<field> === undefined)`:
+  // these memos hold a `boolean`, and a computed `false` is a legitimate memoized answer that must
+  // not re-trigger the computation. `if (!this.<field>)` would recompute forever after a `false`
+  // result. This is also why `src/lib/cfml/struct.ts` is NOT imported - those four
+  // `structKeyExists` calls are memo guards on PRIVATE STATE, not case-insensitive lookups on
+  // domain data - and why `isNullish` is not used: the legacy guard is `structKeyExists`, not
+  // `isNull`.
   //
-  // A SECOND STRUCTURAL NOTE, ON HOW THE COLLECTIONS ARE READ INTERNALLY. The legacy bodies reach
-  // their own collections through the generated accessor - `getPromotionCodes()` at L86, L112 and
-  // L126, `getPromotionPeriods()` at L98, `getAppliedPromotions()` at L171 - whereas the bodies
+  // A SECOND NOTE, ON HOW THE COLLECTIONS ARE READ INTERNALLY. The legacy bodies reach their own
+  // collections through the generated accessor (L86, L112, L126, L98, L171) whereas the bodies
   // below read the private field directly. The two are INDISTINGUISHABLE here: each accessor is an
   // identity return of exactly that field, handing back the same live array reference rather than a
-  // copy or a projection, so a field read and an accessor read observe the same object and the same
-  // far-side mutations. Reading the field is the convention every shipped sibling in this folder
-  // follows for its own state, and it is used here for consistency with them. The accessors remain
-  // the sole route for CROSS-module reads, which is what the far-side contracts depend on.
+  // copy, so a field read and an accessor read observe the same object and the same far-side
+  // mutations. The accessors remain the sole route for CROSS-module reads, which is what the
+  // far-side contracts depend on.
   //
   // LEGACY-NOTE [model/entity/Promotion.cfc:L83-L121]: THE FIRST THREE MEMOS ARE CORRECT, AND THAT
-  // IS THE EVIDENCE THAT THE FOURTH IS A DEFECT. In `getCurrentFlag`, `getCurrentPromotionPeriodFlag`
-  // and `getCurrentPromotionCodeFlag` the guard key, the write key and the return key are the SAME
-  // identifier in each case, so no defect marker is attached to any of them. Together with the
-  // equally correct memos in PromotionPeriod.getCurrentFlag()
-  // [model/entity/PromotionPeriod.cfc:L138-L145] and PromotionCode.getCurrentFlag()
-  // [model/entity/PromotionCode.cfc:L86-L93], they are the CONTROL CASES proving the four-way
-  // mismatch in `getPromotionCodesDeletableFlag()` is a genuine copy-paste defect and not a house
-  // idiom - three correct instances of the pattern in this very file, one broken.
+  // IS THE EVIDENCE THAT THE FOURTH IS A DEFECT. In `getCurrentFlag`,
+  // `getCurrentPromotionPeriodFlag` and `getCurrentPromotionCodeFlag` the guard key, the write key
+  // and the return key are the same identifier, so no defect marker is attached to any of them.
+  // Together with the equally correct memos at [model/entity/PromotionPeriod.cfc:L138-L145] and
+  // [model/entity/PromotionCode.cfc:L86-L93] they are the CONTROL CASES proving the four-way
+  // mismatch in `getPromotionCodesDeletableFlag()` is a copy-paste defect and not a house idiom.
 
   /**
    * `getCurrentFlag` - is this promotion currently in force? [model/entity/Promotion.cfc:L83-L92]
@@ -753,30 +647,31 @@ export class Promotion {
    * The legacy body, verbatim:
    *
    *   variables.currentFlag = false;
-   *   if( getCurrentPromotionPeriodFlag() && ( !arrayLen(getPromotionCodes()) || getCurrentPromotionCodeFlag() ) ) {
+   *   if( getCurrentPromotionPeriodFlag() && ( !arrayLen(getPromotionCodes()) ||
+   *   getCurrentPromotionCodeFlag() ) ) {
    *     variables.currentFlag = true;
    *   }
    *
    * THREE SEMANTIC POINTS, ALL PRESERVED DELIBERATELY.
    *
    *   1. THE SEED POLARITY IS `false`, NARROWED TO `true` - the OPPOSITE of
-   *      PromotionPeriod.getCurrentFlag() and PromotionCode.getCurrentFlag(), which each seed `true`
-   *      and narrow to `false`. This file's polarity is reproduced exactly, and the seed is written
-   *      BEFORE the condition is evaluated, exactly as at L85 versus L86.
+   *      `PromotionPeriod.getCurrentFlag()` and `PromotionCode.getCurrentFlag()`, which each seed
+   *      `true` and narrow to `false`. The seed is written BEFORE the condition, exactly as at L85
+   *      versus L86.
    *   2. THE CODE TEST IS PERMISSIVE ON AN EMPTY COLLECTION. `!arrayLen(getPromotionCodes())` means
-   *      a promotion with NO codes is current purely on the strength of its periods - a code is a
-   *      RESTRICTION, not a requirement. This is one of the project's five distinct and opposite
-   *      empty-collection semantics; collapsing it into the restrictive reading would stop every
-   *      codeless promotion from ever applying, which is a money bug. Note the deliberate contrast
-   *      with `getCurrentPromotionPeriodFlag()` immediately below, which is RESTRICTIVE on ITS empty
-   *      collection - two opposite conventions in the same file, and they are never unified behind a
-   *      shared helper. Written `length === 0` rather than `!length`, per this port's standing rule.
-   *   3. `&&` AND `||` SHORT-CIRCUIT IN CFML EXACTLY AS THEY DO IN TYPESCRIPT, so the operand order
-   *      is meaningful and is preserved verbatim: `getCurrentPromotionCodeFlag()` is not evaluated
-   *      at all when the code collection is empty, and neither code-side term is evaluated when no
-   *      period is current. Both callees are themselves memoized, so the ordering is observable only
-   *      through which memos get populated - but "observable only indirectly" is not "not
-   *      observable", so it is preserved anyway.
+   *      a
+   *      promotion with NO codes is current purely on the strength of its periods - a code is a
+   *      RESTRICTION, not a requirement. Collapsing it into the restrictive reading would stop
+   *      every
+   *      codeless promotion from applying, which is a money bug. Contrast
+   *      `getCurrentPromotionPeriodFlag()` immediately below, which is RESTRICTIVE on ITS empty
+   *      collection - two opposite conventions in one file, never unified behind a shared helper.
+   *   3. `&&` AND `||` SHORT-CIRCUIT IN CFML EXACTLY AS IN TYPESCRIPT, so the operand order is
+   *      preserved verbatim: `getCurrentPromotionCodeFlag()` is not evaluated when the code
+   *      collection
+   *      is empty, and neither code-side term is evaluated when no period is current. Both callees
+   *      are
+   *      memoized, so the ordering is observable through which memos get populated.
    */
   getCurrentFlag(): boolean {
     if (this.currentFlag === undefined) {
@@ -798,23 +693,20 @@ export class Promotion {
    * `getCurrentPromotionPeriodFlag` - does ANY of this promotion's periods currently apply?
    * [model/entity/Promotion.cfc:L95-L107]
    *
-   * LEGACY-NOTE [model/entity/Promotion.cfc:L98-L103]: the legacy loop is an indexed `for` from 1 to
-   * `arrayLen(getPromotionPeriods())` that flips the flag and `break`s on the first current period.
-   * `Array.prototype.some` is the exact equivalent - same first-match-wins short-circuit, same
-   * `false` for an empty array - and is used because it removes the 1-based/0-based translation risk
-   * entirely rather than merely handling it. The legacy re-evaluates `arrayLen(...)` on every
-   * iteration; `.some()` does not, which is an efficiency difference and NOT a behavioural one, so
-   * it carries no defect marker.
+   * LEGACY-NOTE [model/entity/Promotion.cfc:L98-L103]: the legacy loop is an indexed `for` from 1
+   * to `arrayLen(getPromotionPeriods())` that flips the flag and `break`s on the first current
+   * period. `Array.prototype.some` is the exact equivalent - same first-match-wins short-circuit,
+   * same `false` for an empty array - and removes the 1-based/0-based translation risk entirely
+   * rather than merely handling it. The legacy re-evaluates `arrayLen(...)` every iteration;
+   * `.some()` does not, which is an efficiency difference and not a behavioural one.
    *
-   * EMPTY `promotionPeriods` YIELDS `false` - RESTRICTIVE. A promotion with no periods is never
-   * current. Contrast point 2 on `getCurrentFlag()` above, whose empty-collection test in the very
-   * same file is PERMISSIVE.
+   * EMPTY `promotionPeriods` YIELDS `false` - RESTRICTIVE. Contrast point 2 on `getCurrentFlag()`
+   * above, whose empty-collection test in the very same file is PERMISSIVE.
    *
-   * `PromotionPeriod.getCurrentFlag()` IS CALLED WITH NO ARGUMENT, which is its legacy arity at
-   * [model/entity/PromotionPeriod.cfc:L137] and the arity the shipped sibling keeps, with the clock
-   * injected into that entity's own constructor. No date is passed and nothing is widened here: the
-   * project's single entity-layer signature widening was spent on `PromotionPeriod.isCurrent(now)`,
-   * which this call path does not use.
+   * `PromotionPeriod.getCurrentFlag()` IS CALLED WITH NO ARGUMENT, its legacy arity at
+   * [model/entity/PromotionPeriod.cfc:L137] and the arity the sibling keeps, with the clock
+   * injected into that entity's own constructor. The project's single entity-layer signature
+   * widening was spent on `PromotionPeriod.isCurrent(now)`, which this call path does not use.
    */
   getCurrentPromotionPeriodFlag(): boolean {
     if (this.currentPromotionPeriodFlag === undefined) {
@@ -831,15 +723,14 @@ export class Promotion {
    * [model/entity/Promotion.cfc:L109-L121]
    *
    * Structurally identical to `getCurrentPromotionPeriodFlag()` above, over `promotionCodes` and
-   * `PromotionCode.getCurrentFlag()` - which is likewise ZERO-ARG at
-   * [model/entity/PromotionCode.cfc:L85]. The memo is correct, so there is no defect marker, and
-   * EMPTY `promotionCodes` YIELDS `false`, which is RESTRICTIVE.
+   * `PromotionCode.getCurrentFlag()`, which is likewise ZERO-ARG at
+   * [model/entity/PromotionCode.cfc:L85]. EMPTY `promotionCodes` YIELDS `false` - RESTRICTIVE.
    *
-   * That is not a contradiction of `getCurrentFlag()`'s permissive empty-codes gate, and the two
-   * must not be conflated: THIS method asks "is some code current?", to which the honest answer for
-   * no codes is no; the CALLER asks "do the codes restrict this promotion?", to which the honest
-   * answer for no codes is also no - which is why L86 tests the collection's emptiness FIRST and
-   * short-circuits past this method entirely rather than relying on its answer.
+   * That is not a contradiction of `getCurrentFlag()`'s permissive empty-codes gate: THIS method
+   * asks "is some code current?", whose honest answer for no codes is no, while the CALLER asks "do
+   * the codes restrict this promotion?", whose honest answer for no codes is also no - which is why
+   * L86 tests emptiness FIRST and short-circuits past this method rather than relying on its
+   * answer.
    */
   getCurrentPromotionCodeFlag(): boolean {
     if (this.currentPromotionCodeFlag === undefined) {
@@ -851,61 +742,54 @@ export class Promotion {
     return this.currentPromotionCodeFlag;
   }
 
-  // LEGACY-DEFECT [model/entity/Promotion.cfc:L124-L133]: four-way key mismatch - declared property `promotionCodesDeletableFlag` (L79), guard key `promotionCodeDeletableFlag` (L124), write/return key `promotionCodeDeleteableFlag` (L125/L128/L133); the guard key is never written so the memo is permanently ineffective, though the returned value is always correct.
+  // LEGACY-DEFECT [model/entity/Promotion.cfc:L124-L133]: four-way key mismatch - declared property
+  // `promotionCodesDeletableFlag` (L79), guard key `promotionCodeDeletableFlag` (L124),
+  // write/return key `promotionCodeDeleteableFlag` (L125/L128/L133). The guard key is never
+  // written, so the memo is permanently ineffective - though the returned value is always correct.
   // Preserved deliberately; do not fix without a product decision.
   //
-  // THE FOUR IDENTIFIERS, ENUMERATED, because the planning note predicted a three-way mismatch and
-  // the verbatim read proves it is four-way:
+  //   | # | identifier                  | role              | locator       | spelling           |
+  //   | 1 | promotionCodesDeletableFlag | declared property | L79           | plural, correct    |
+  //   | 2 | promotionCodeDeletableFlag  | the memo GUARD    | L124          | singular, correct  |
+  //   | 3 | promotionCodeDeleteableFlag | the WRITES        | L125 and L128 | singular, misspelt |
+  //   | 4 | promotionCodeDeleteableFlag | the RETURN        | L133          | same as #3         |
   //
-  //   | # | identifier                    | role                  | locator        | spelling            |
-  //   |---|-------------------------------|-----------------------|----------------|---------------------|
-  //   | 1 | promotionCodesDeletableFlag   | declared property     | L79            | plural, correct     |
-  //   | 2 | promotionCodeDeletableFlag    | the memo GUARD        | L124           | singular, correct   |
-  //   | 3 | promotionCodeDeleteableFlag   | the WRITES            | L125 and L128  | singular, misspelt  |
-  //   | 4 | promotionCodeDeleteableFlag   | the RETURN            | L133           | same as #3          |
-  //
-  // Key #2 is never written, so `structKeyExists(variables,"promotionCodeDeletableFlag")` is ALWAYS
-  // FALSE, the guarded block ALWAYS executes, and the memo is permanently ineffective - the value is
-  // recomputed on every single call. Because the write (#3) and the return (#4) DO agree with each
-  // other, THE RETURNED VALUE IS ALWAYS CORRECT: the defect costs redundant computation, never a
-  // wrong answer. The declared property name (#1) matches neither, so the framework's generated
-  // accessor for `promotionCodesDeletableFlag` would consult a fifth, permanently empty key.
+  // Because the write (#3) and the return (#4) agree, THE RETURNED VALUE IS ALWAYS CORRECT: the
+  // defect costs redundant computation, never a wrong answer. The declared name (#1) matches
+  // neither, so the framework's generated accessor would consult a fifth, permanently empty key.
   //
   // LEGACY-NOTE [model/entity/Promotion.cfc:L124-L133]: THE MEMO IS DELIBERATELY OMITTED IN
-  // TYPESCRIPT, AND THAT IS FAITHFUL REPRODUCTION RATHER THAN A DIVERGENCE - it consumes none of
-  // this port's divergence budget, of which this file has zero. The legacy recomputes on every call;
-  // computing freshly on every call reproduces that observable behaviour EXACTLY. Memoizing under a
-  // single consistent key would be the silent repair: it would change how many times
-  // `PromotionCode.isDeletable()` is invoked, and that count IS observable - `isDeletable()` is a
-  // delete-context validation that reads a collection which can change between two calls. There is
-  // therefore no backing field for L79 anywhere on this class, deliberately. The three CORRECT memos
-  // above are the control cases that make this omission legible rather than arbitrary.
+  // TYPESCRIPT, and that is faithful reproduction rather than a divergence. The legacy recomputes
+  // on every call, so computing freshly on every call reproduces the observable behaviour exactly.
+  // Memoizing under a single consistent key would be the silent repair: it would change how many
+  // times `PromotionCode.isDeletable()` is invoked, and that count IS observable, since
+  // `isDeletable()` is a delete-context validation over a collection that can change between two
+  // calls. There is therefore no backing field for L79 on this class. The three CORRECT memos above
+  // are the control cases that make this omission legible rather than arbitrary.
 
   /**
    * `getPromotionCodesDeletableFlag` - are ALL of this promotion's codes deletable?
    * [model/entity/Promotion.cfc:L123-L134]
    *
    * The legacy body starts from `true` and flips to `false` on the first non-deletable code, with a
-   * `break`. `for(var promotionCode in getPromotionCodes())` iterates ELEMENTS, not indices, in
-   * modern CFML, so `Array.prototype.every` is the exact equivalent: it preserves the accumulation,
-   * the short-circuit at the first `false`, AND the empty-array result.
+   * `break`. `for(var promotionCode in getPromotionCodes())` iterates ELEMENTS in modern CFML, so
+   * `Array.prototype.every` is the exact equivalent: same accumulation, same short-circuit, same
+   * empty-array result.
    *
-   * EMPTY `promotionCodes` YIELDS `true` - PERMISSIVE. A promotion with no codes has no code
-   * blocking its deletion. That is the third distinct empty-collection semantic this one file
-   * exercises, alongside the permissive gate at L86 and the restrictive evaluators at L98 and L112,
-   * and none of the three is unified with the others.
+   * EMPTY `promotionCodes` YIELDS `true` - PERMISSIVE. The third distinct empty-collection semantic
+   * in this one file, alongside the permissive gate at L86 and the restrictive evaluators at L98
+   * and L112, and none of the three is unified with the others.
    *
-   * THE NAME IS VERBATIM, INCLUDING THE PLURAL "Codes", because this method sits on a LIVE
+   * THE NAME IS VERBATIM, INCLUDING THE PLURAL "Codes", because this method sits on a live
    * delete-context validation path: model/validation/Promotion.json declares
-   * `"promotionCodes": [{"contexts":"delete","method":"getPromotionCodesDeletableFlag"}]`, so the
-   * validator resolves it BY NAME. Renaming it would break that rule silently. Enforcement of the
-   * rule itself is a service-tier concern and no zod schema is authored here.
+   *   `"promotionCodes": [{"contexts":"delete","method":"getPromotionCodesDeletableFlag"}]`,
+   * so the validator resolves it BY NAME. Enforcement of the rule itself is a service-tier concern.
    *
-   * NOT MEMOIZED - see the marker and note directly above. Two calls perform two full evaluations.
+   * NOT MEMOIZED - see the marker and note above. Two calls perform two full evaluations.
    *
    * @throws Error when a promotion code does not carry the framework-inherited `isDeletable()`. See
-   *   {@link FrameworkDeletableEntity} for the full account of that gap and the follow-up that
-   *   closes it. The raise cannot occur for an empty collection, because `.every()` never probes.
+   *   {@link FrameworkDeletableEntity}. The raise cannot occur for an empty collection, because
+   *   `.every()` never probes.
    */
   getPromotionCodesDeletableFlag(): boolean {
     return this.promotionCodes.every((promotionCode: PromotionCode): boolean => {
@@ -932,53 +816,46 @@ export class Promotion {
     });
   }
 
-  // ============  END:  Non-Persistent Property Methods ==================
+  // ============
+  // END:  Non-Persistent Property Methods
+  // ==================
 
-  // ============= START: Bidirectional Helper Methods ====================
-  // [model/entity/Promotion.cfc:L138] opens this block in the source and L166 closes it. All six
-  // members are ported, each keeping its legacy name verbatim.
+  // =============
+  // Bidirectional Helper Methods [model/entity/Promotion.cfc:L138-L166]
+  // ============
   //
-  // ★★★ THE STRUCTURAL HEADLINE, AND THE REASON THE THREE COLLECTION ACCESSORS ABOVE RETURN THE LIVE
-  // ARRAY. Not one of these six helpers touches `variables.promotionPeriods`,
-  // `variables.promotionCodes` or `variables.appliedPromotions`. Every single one is a PURE
-  // DELEGATION to the far side, and EVERY near-side array mutation is performed BY the far side
-  // through the accessor:
+  // THE STRUCTURAL HEADLINE, AND THE REASON THE THREE COLLECTION ACCESSORS RETURN THE LIVE ARRAY.
+  // Not one of these six helpers touches `variables.promotionPeriods`, `variables.promotionCodes`
+  // or `variables.appliedPromotions`. Every one PURELY DELEGATES to the far side's `setPromotion`
+  // or `removePromotion`, and every near-side array mutation is performed BY the far side through
+  // the accessor:
   //
-  //   Promotion.addPromotionPeriod  -> PromotionPeriod.setPromotion     -> arrayAppend(arguments.promotion.getPromotionPeriods(),  this)  [PromotionPeriod.cfc:L101]
-  //   Promotion.addPromotionCode    -> PromotionCode.setPromotion       -> arrayAppend(arguments.Promotion.getPromotionCodes(),    this)  [PromotionCode.cfc:L105]
-  //   Promotion.addAppliedPromotion -> PromotionApplied.setPromotion    -> arrayAppend(arguments.promotion.getAppliedPromotions(), this)  [PromotionApplied.cfc:L82]
-  //   Promotion.removePromotionCode -> PromotionCode.removePromotion    -> arrayDeleteAt(arguments.promotion.getPromotionCodes(),    index) [PromotionCode.cfc:L116]
-  //   Promotion.removeAppliedPromotion -> PromotionApplied.removePromotion -> arrayDeleteAt(arguments.promotion.getAppliedPromotions(), index) [PromotionApplied.cfc:L91]
+  //   addPromotionPeriod     arrayAppend   [model/entity/PromotionPeriod.cfc:L101]
+  //   addPromotionCode       arrayAppend   [model/entity/PromotionCode.cfc:L105]
+  //   addAppliedPromotion    arrayAppend   [model/entity/PromotionApplied.cfc:L82]
+  //   removePromotionCode    arrayDeleteAt [model/entity/PromotionCode.cfc:L116]
+  //   removeAppliedPromotion arrayDeleteAt [model/entity/PromotionApplied.cfc:L91]
   //
-  // A DEFENSIVE COPY IN ANY OF THE THREE ACCESSORS WOULD MAKE ALL SIX OF THESE HELPERS A SILENT NO-OP
-  // WITH RESPECT TO THIS ENTITY'S OWN STATE, and would break bidirectional synchronisation across the
-  // whole promotion aggregate. That is why `getPromotionPeriods()`, `getPromotionCodes()` and
-  // `getAppliedPromotions()` return the mutable internal array and are typed `T[]` rather than
-  // `readonly T[]`.
+  // A DEFENSIVE COPY IN ANY OF THE THREE ACCESSORS WOULD MAKE ALL SIX HELPERS A SILENT NO-OP with
+  // respect to this entity's own state, which is why they are typed `T[]` and not `readonly T[]`.
   //
-  // LEGACY-NOTE [model/entity/Promotion.cfc:L141-L145]: THE PERIOD HELPERS USE A CAPITAL-P ARGUMENT
-  // NAME. Both the declaration and the use are `PromotionPeriod` - `required any PromotionPeriod` at
-  // L141 and L144, then `arguments.PromotionPeriod.setPromotion( this )` at L142 and
-  // `arguments.PromotionPeriod.removePromotion( this )` at L145. Internally consistent, but
-  // non-conventional against every other argument in the file, and a different wart from
-  // model/entity/PromotionCode.cfc:L105, where the DECLARATION is lowercase `promotionCode` and only
-  // the USE is capitalised (`arguments.Promotion.getPromotionCodes()`), which is a genuine
-  // declaration/use inconsistency. CFML argument names are case-insensitive so neither form changes
-  // behaviour; both are registered as SECONDARY warts. TypeScript parameter names are lowercase
-  // throughout this class, which is a naming choice on a purely local identifier and therefore not a
-  // signature change: arity, order and types are untouched.
+  // LEGACY-NOTE [model/entity/Promotion.cfc:L141-L145]: the period helpers declare and use a
+  // capital-P argument name - `required any PromotionPeriod` at L141/L144, then
+  // `arguments.PromotionPeriod.setPromotion( this )` at L142/L145. Internally consistent but
+  // non-conventional, and a different wart from [model/entity/PromotionCode.cfc:L105] where the
+  // DECLARATION is lowercase and only the USE is capitalised. CFML argument names are
+  // case-insensitive, so neither changes behaviour; TypeScript parameter names are lowercase.
   //
   // LEGACY-NOTE [model/entity/PromotionCode.cfc:L109-L120]: `PromotionCode.removePromotion` IS
-  // CORRECT, AND THAT IS PRECISELY WHAT PROVES THE OTHER TWO ARE DEFECTS. Its L116 reads
-  // `arrayDeleteAt(arguments.promotion.getPromotionCodes(), index)` - the DECLARED argument. Its two
-  // siblings, model/entity/PromotionPeriod.cfc:L110 and model/entity/PromotionAccount.cfc:L103, both
-  // read `arguments.account...` inside a method whose only declared argument is `promotion`. Three
-  // near-identical methods, one right and two wrong, is copy-paste damage rather than a CFML idiom -
-  // so `Promotion.removePromotionCode` works, `Promotion.removePromotionPeriod` cannot, and the
-  // difference is reproduced rather than smoothed over.
+  // CORRECT, and that is what proves the other two are defects. Its L116 reads
+  // `arrayDeleteAt(arguments.promotion.getPromotionCodes(), index)` - the DECLARED argument - while
+  // [model/entity/PromotionPeriod.cfc:L110] and [model/entity/PromotionAccount.cfc:L103] both read
+  // `arguments.account...` in a method whose only declared argument is `promotion`. Three
+  // near-identical methods, one right and two wrong, is copy-paste damage rather than a CFML idiom.
 
   /**
-   * `addPromotionPeriod` - attach a period to this promotion. [model/entity/Promotion.cfc:L141-L143]
+   * `addPromotionPeriod` - attach a period to this promotion.
+   * [model/entity/Promotion.cfc:L141-L143]
    *
    *   arguments.PromotionPeriod.setPromotion( this );
    *
@@ -995,27 +872,27 @@ export class Promotion {
     promotionPeriod.setPromotion(this);
   }
 
-  // LEGACY-DEFECT [model/entity/PromotionPeriod.cfc:L110]: delegated-to `removePromotion` references the undeclared `arguments.account`, so this always throws and can never remove a period.
+  // LEGACY-DEFECT [model/entity/PromotionPeriod.cfc:L110]: the delegated-to `removePromotion`
+  // references the undeclared `arguments.account`, so this always throws and can never remove a
+  // period.
+  //
   // Preserved deliberately; do not fix without a product decision.
   //
-  // THE MECHANISM, IN FULL, BECAUSE THIS IS A CROSS-FILE DEFECT AND THE THROW ORIGINATES ELSEWHERE.
-  // `PromotionPeriod.removePromotion` is declared at model/entity/PromotionPeriod.cfc:L104 - note the
-  // locator, one earlier revision of this port's brief said L109, which is in fact the `if(index > 0)`
-  // line. Its body computes `var index = arrayFind(arguments.promotion.getPromotionPeriods(), this)`
+  // THE MECHANISM, because the throw originates in another file. `PromotionPeriod.removePromotion`
+  // is declared at [model/entity/PromotionPeriod.cfc:L104]; its body computes
+  //   `var index = arrayFind(arguments.promotion.getPromotionPeriods(), this)`
   // at L108, and when that FIND SUCCEEDS it reaches
   // `arrayDeleteAt(arguments.account.getPromotionPeriods(), index)` at L110. `account` is not a
-  // declared argument of that method, so the expression is unresolvable and the call raises. The
-  // find succeeding is the NORMAL case - it is exactly the case in which a caller wants a removal -
-  // so `Promotion.removePromotionPeriod()` CAN NEVER SUCCESSFULLY REMOVE ANYTHING. It also means the
+  // declared argument, so the expression is unresolvable and the call raises. The find succeeding
+  // is the NORMAL case - exactly the case in which a caller wants a removal - so
+  // `Promotion.removePromotionPeriod()` can never successfully remove anything, and the
   // `structDelete(variables,"promotion")` at L112 is unreachable on the found path.
   //
-  // HOW IT IS PRESERVED HERE. This method delegates to the sibling exactly as the legacy does, so the
-  // throw propagates naturally out of the shipped src/domain/entities/promotionPeriod.ts, which
-  // already reproduces the raise on its own found path. NO SECOND INDEPENDENT THROW IS ADDED HERE,
-  // nothing is caught, guarded or swallowed, and no near-side array is touched - because the legacy
-  // touches none. The return type stays `void` rather than `never`: the legacy declares
-  // `public void function`, the raise originates in the callee, and a `never` return would falsely
-  // assert that no input can ever complete normally.
+  // Preserved by delegating exactly as the legacy does, so the throw propagates out of
+  // `promotionPeriod.ts`. No second independent throw is added here, nothing is caught or guarded,
+  // and no near-side array is touched - because the legacy touches none. The return type stays
+  // `void` rather than `never`: the legacy declares `public void function` and the raise originates
+  // in the callee.
 
   /**
    * `removePromotionPeriod` - detach a period from this promotion.
@@ -1037,22 +914,24 @@ export class Promotion {
    *
    * A pure far-side delegation. `PromotionCode.setPromotion`
    * [model/entity/PromotionCode.cfc:L101-L107] is SOUND - it guards on
-   * `isNew() or !arguments.promotion.hasPromotionCode(this)` at L104 and appends to
-   * `arguments.Promotion.getPromotionCodes()` at L105 - so this helper WORKS. No defect marker.
+   *   `isNew() or !arguments.promotion.hasPromotionCode(this)`
+   * at L104 and appends to `arguments.Promotion.getPromotionCodes()` at L105 - so this helper
+   * WORKS. No defect marker.
    */
   addPromotionCode(promotionCode: PromotionCode): void {
     promotionCode.setPromotion(this);
   }
 
   /**
-   * `removePromotionCode` - detach a code from this promotion. [model/entity/Promotion.cfc:L153-L155]
+   * `removePromotionCode` - detach a code from this promotion.
+   * [model/entity/Promotion.cfc:L153-L155]
    *
    *   arguments.promotionCode.removePromotion(this);
    *
    * A pure far-side delegation, and THIS ONE WORKS: `PromotionCode.removePromotion`
    * [model/entity/PromotionCode.cfc:L109-L120] is CORRECT, using the declared `arguments.promotion`
-   * at L116. NO DEFECT MARKER - see the note above the block for why its correctness is the evidence
-   * against its two broken siblings.
+   * at L116. NO DEFECT MARKER - see the note above the block for why its correctness is the
+   * evidence against its two broken siblings.
    */
   removePromotionCode(promotionCode: PromotionCode): void {
     promotionCode.removePromotion(this);
@@ -1066,8 +945,9 @@ export class Promotion {
    *
    * A pure far-side delegation. `PromotionApplied.setPromotion`
    * [model/entity/PromotionApplied.cfc:L79-L83] is SOUND - it guards on
-   * `isNew() or !arguments.promotion.hasAppliedPromotion( this )` at L81 and appends to
-   * `arguments.promotion.getAppliedPromotions()` at L82 - so this helper WORKS. No defect marker.
+   *   `isNew() or !arguments.promotion.hasAppliedPromotion( this )`
+   * at L81 and appends to `arguments.promotion.getAppliedPromotions()` at L82 - so this helper
+   * WORKS. No defect marker.
    */
   addAppliedPromotion(promotionApplied: PromotionApplied): void {
     promotionApplied.setPromotion(this);
@@ -1081,43 +961,31 @@ export class Promotion {
    *
    * A pure far-side delegation, and THIS ONE WORKS TOO: `PromotionApplied.removePromotion`
    * [model/entity/PromotionApplied.cfc:L85-L94] is clean, verified free of the `arguments.account`
-   * leak and of any add/remove inversion, using the declared `arguments.promotion` at L91. No defect
-   * marker.
+   * leak and of any add/remove inversion, using the declared `arguments.promotion` at L91. No
+   * defect marker.
    */
   removeAppliedPromotion(promotionApplied: PromotionApplied): void {
     promotionApplied.removePromotion(this);
   }
 
-  // ------------------------------------------------------------------------------------------------
-  // THE MANDATORY "remove-that-ADDs" INVERSION CROSS-CHECK - VERDICT TABLE
+  // THE "remove-that-ADDs" INVERSION CROSS-CHECK: ZERO INVERSIONS IN model/entity/Promotion.cfc.
+  // The inversion class is real - [model/entity/Option.cfc:L129-L131] and
+  // [model/entity/Option.cfc:L145-L147] each declare a `remove*` that calls
+  // `addExcludedOption(this)`, which is why the check is performed rather than assumed. Here every
+  // `remove*` (L144, L153, L162) delegates to a `removePromotion` and every `add*` to a
+  // `setPromotion`.
   //
-  // This codebase genuinely contains `remove*` helpers whose bodies ADD: model/entity/Option.cfc
-  // L129-L131 and L145-L147 each declare a `remove*` method that calls `addExcludedOption(this)`.
-  // That inversion class being real is why this check is performed on every entity rather than
-  // assumed away. It was re-run INDEPENDENTLY against the verbatim read of
-  // model/entity/Promotion.cfc L141-L164 while authoring this file, and the independent verdict
-  // AGREES with the brief in every row:
-  //
-  //   | remove* helper          | L   | delegates to                      | verdict                    |
-  //   |-------------------------|-----|-----------------------------------|----------------------------|
-  //   | removePromotionPeriod   | 144 | PromotionPeriod.removePromotion   | CLEAN - correctly a remove |
-  //   | removePromotionCode     | 153 | PromotionCode.removePromotion     | CLEAN                      |
-  //   | removeAppliedPromotion  | 162 | PromotionApplied.removePromotion  | CLEAN                      |
-  //
-  // RESULT: ZERO "ADD" INVERSIONS IN model/entity/Promotion.cfc. Every `remove*` delegates to a
-  // `removePromotion`, and every `add*` delegates to a `setPromotion`. The three `add*` helpers were
-  // checked in the same pass for the mirror-image fault - an `add*` that removes - and none exhibits
-  // it.
-  //
-  // THE VERDICT IS ABOUT DELEGATION DIRECTION, NOT ABOUT OUTCOME, AND THE TWO MUST NOT BE CONFLATED.
-  // `removePromotionPeriod` is CLEAN here - it correctly calls a `remove*` - and SEPARATELY always
-  // throws, because the callee it correctly calls is itself broken at PromotionPeriod.cfc:L110. A
-  // clean verdict in this table is not a claim that the method works.
-  // ------------------------------------------------------------------------------------------------
+  // THE VERDICT IS ABOUT DELEGATION DIRECTION, NOT OUTCOME: `removePromotionPeriod` is clean here -
+  // it correctly calls a `remove*` - and SEPARATELY always throws, because the callee it correctly
+  // calls is itself broken at [model/entity/PromotionPeriod.cfc:L110].
 
-  // =============  END:  Bidirectional Helper Methods ====================
+  // =============
+  // END:  Bidirectional Helper Methods
+  // ====================
 
-  // ================== START: Overridden Methods =========================
+  // ==================
+  // START: Overridden Methods
+  // =========================
   // [model/entity/Promotion.cfc:L168] opens this block and L174 closes it. Exactly one member.
 
   /**
@@ -1125,132 +993,36 @@ export class Promotion {
    *
    *   return arrayLen( getAppliedPromotions() ) == 0;
    *
-   * ★ THIS IS AN OVERRIDE IN THE LEGACY, AND ITS PLACEMENT UNDER THE "Overridden Methods" BANNER IS
-   * THE PROOF. The base implementation lives at org/Hibachi/HibachiEntity.cfc:L204-L206 and runs the
-   * generic delete-context validation. This entity replaces that generic check with a single concrete
-   * predicate over its own applied-promotions collection - and the replacement is faithful to the
-   * declarative rule it stands in for: model/validation/Promotion.json declares
-   * `"appliedPromotions": [{"contexts":"delete","maxCollection":0}]`, which is exactly
-   * `arrayLen(getAppliedPromotions()) == 0`. Inlining a delete rule inside an `isDeletable()`
-   * override is the house pattern, not an inconsistency.
+   * AN OVERRIDE IN THE LEGACY, proved by its placement under the "Overridden Methods" banner. The
+   * base at [org/Hibachi/HibachiEntity.cfc:L204-L206] runs generic delete-context validation; this
+   * entity replaces it with one concrete predicate faithful to the declarative rule it stands in
+   * for - model/validation/Promotion.json declares
+   *   `"appliedPromotions": [{"contexts":"delete","maxCollection":0}]`,
+   * which is exactly `arrayLen(...) == 0`. No `override` modifier is emitted: `noImplicitOverride`
+   * only applies where a TypeScript base class exists.
    *
-   * NO `override` MODIFIER IS EMITTED. `noImplicitOverride` is enabled, but it only applies where a
-   * TypeScript base class exists, and the Hibachi base is deliberately not ported - there is nothing
-   * to override at the type level. The override RELATIONSHIP is recorded here in prose instead.
+   * EMPTY `appliedPromotions` YIELDS `true` - PERMISSIVE. The fifth and last empty-collection site
+   * in this file (L86 permissive, L98 restrictive, L112 restrictive, L126 permissive, L171
+   * permissive). No shared helper is extracted across them even though three reduce to the same
+   * expression, because collapsing an empty-collection convention is a money bug.
    *
-   * EMPTY `appliedPromotions` YIELDS `true` - PERMISSIVE. A promotion that has never been applied to
-   * anything is deletable, which is the intent. That is the fourth and last empty-collection SITE in
-   * this file - L86 permissive, L98 restrictive, L112 restrictive, L126 permissive, and this one at
-   * L171 permissive - and it is annotated on its own rather than folded in with the others. The
-   * project recognises five distinct and opposite empty-collection conventions and collapsing any of
-   * them is a money bug, so no shared helper is extracted across these sites even though three of
-   * them reduce to the same one-line expression.
-   *
-   * READS THROUGH THE LIVE COLLECTION, so it observes far-side mutations performed via
-   * `getAppliedPromotions()` - including one made after a previous call to this method. There is no
-   * memo here in the legacy and none is added.
-   *
-   * CFML writes `==`; `===` is emitted, per `eqeqeq`. Both operands are numbers, so the comparison is
-   * identical.
-   *
-   * ★ THREE SHIPPED SIBLINGS CONSUME THIS MEMBER, which is why its absence is a compile error rather
-   * than a style question: PromotionPeriod.isDeletable() [promotionPeriod.ts:L1083],
-   * PromotionQualifier.isDeletable() [promotionQualifier.ts:L1670] and
-   * PromotionReward.isDeletable() [promotionReward.ts:L2248] each end in `promotion.isDeletable()`,
-   * mirroring the CFML chain `getPromotionPeriod().getPromotion().isDeletable()`.
+   * Reads through the LIVE collection, so it observes far-side mutations - including one made after
+   * a previous call. There is no memo here in the legacy and none is added. Three shipped siblings
+   * consume this member, mirroring `getPromotionPeriod().getPromotion().isDeletable()`.
    */
   isDeletable(): boolean {
     return this.appliedPromotions.length === 0;
   }
 
-  // ==================  END:  Overridden Methods =========================
+  // ==================
+  // END:  Overridden Methods
+  // =========================
 
-  // =================== START: ORM Event Hooks  ==========================
-  // [model/entity/Promotion.cfc:L176] opens this block and L178 closes it, and IT IS COMPLETELY
-  // EMPTY. See the ORM-hooks LEGACY-NOTE in this file's header for why that emptiness is a verified
-  // fact rather than an omission, and for the four hook-bearing in-scope entities it contrasts with.
-  // NOTHING IS AUTHORED HERE: no `preInsert`, no `preUpdate`, no path maintenance, no UUID seeding.
-  // ===================  END:  ORM Event Hooks  ==========================
+  // ===================
+  // ORM Event Hooks [model/entity/Promotion.cfc:L176-L178]
+  // ===================
+  // COMPLETELY EMPTY in the source, so nothing is authored: no `preInsert`, no `preUpdate`, no path
+  // maintenance, no UUID seeding. See the ORM-hooks LEGACY-NOTE in the header.
 }
 
-// =================================================================================================
-// THE B8 TEST OBLIGATION FOR THIS FILE - THE CASES THE SUITE MUST PIN
-//
-// Every converted method needs a test. `tests/unit/domain/entities/promotion.test.ts` is owned by
-// another agent and is NOT authored here; the enumeration below exists so that agent, and
-// `tests/traceability/legacyTestMap.ts`, have an exact target. The `slatwall-ts/tests` subtree
-// currently holds twelve suites and no promotion suite.
-//
-// ★ THIS SUITE IS NET-NEW, AND MUST NEVER BE PRESENTED AS PARITY. `model/entity/Promotion.cfc` HAS NO
-// LEGACY TEST. Only two of the eighteen in-scope entities have a legacy antecedent -
-// meta/tests/unit/entity/BrandTest.cfc and meta/tests/unit/entity/ProductTest.cfc - so sixteen of
-// eighteen entity suites, this one included, are net-new. meta/tests/functional/admin/entity/
-// ProductTest.cfc is an empty stub and is never counted as coverage. Regression cases follow the
-// `issue_<ticket#>` convention from meta/tests/unit/IssuesTest.cfc.
-//
-// HYDRATION
-//   1. `activeFlag` hydrates TRUE from `1`, `"1"` and `true`; FALSE from `0`, `"0"` and `false`; and
-//      ★ TRUE WHEN ABSENT, because model/entity/Promotion.cfc:L56 declares `default="1"`. The
-//      absent case is the one most likely to regress and the one that matters most - a promotion
-//      silently defaulting to inactive would stop applying.
-//
-// getCurrentFlag  [L83-L92]
-//   2. FALSE when no period is current, whatever the codes contain.
-//   3. TRUE when a period is current AND `promotionCodes` IS EMPTY - the permissive gate at L86.
-//   4. FALSE when a period is current, codes exist, and NO code is current.
-//   5. TRUE when a period is current and AT LEAST ONE code is current.
-//
-// getCurrentPromotionPeriodFlag  [L95-L107]
-//   6. FALSE on an EMPTY period array - restrictive, and the deliberate opposite of case 3.
-//   7. Short-circuits on the first current period: a spy on a LATER period's `getCurrentFlag()` is
-//      never invoked.
-//
-// getCurrentPromotionCodeFlag  [L109-L121]
-//   8. Mirrors cases 6 and 7 over `promotionCodes`.
-//
-// MEMOIZATION - the behavioural fork between the three correct memos and the broken fourth
-//   9. All three correct memos compute EXACTLY ONCE: a spy on a child `getCurrentFlag()` fires on the
-//      first call to the parent getter and not on the second.
-//  10. A memoized `false` is NOT recomputed - proves the guard is `=== undefined` and not falsiness.
-//  11. ★ `getPromotionCodesDeletableFlag()` RECOMPUTES ON EVERY CALL: a spy on
-//      `PromotionCode.isDeletable()` fires once per code per invocation, so N calls over M codes
-//      produce N*M invocations. THIS IS THE CASE THAT PINS THE PRESERVED FOUR-WAY KEY MISMATCH at
-//      L124-L133; if someone "tidies" the memo, this is the test that fails.
-//
-// getPromotionCodesDeletableFlag  [L123-L134]
-//  12. TRUE on an empty code array - permissive, and reachable without any `isDeletable()` probe.
-//  13. FALSE when any single code is not deletable, and short-circuits: a spy on a code AFTER the
-//      offending one is never invoked.
-//
-// isDeletable  [L170-L172]
-//  14. TRUE on empty `appliedPromotions`; FALSE with one or more.
-//
-// CONTAINMENT PROBES
-//  15. `hasPromotionPeriod` / `hasPromotionCode` / `hasAppliedPromotion` each: FALSE on empty; TRUE
-//      for a DISTINCT OBJECT CARRYING A MATCHING PK; FALSE for an object with a different PK. ★ The
-//      distinct-object-matching-PK case is what proves primary-key comparison rather than reference
-//      identity, and the different-PK case is what proves it is not deep equality.
-//
-// LIVE COLLECTIONS
-//  16. The three collection accessors return the LIVE array: pushing onto the returned array is
-//      observed by a subsequent accessor call, by `hasAppliedPromotion`, and by `isDeletable()`
-//      flipping from true to false. This is what makes the six delegations meaningful.
-//
-// BIDIRECTIONAL DELEGATION
-//  17. `addPromotionPeriod` / `addPromotionCode` / `addAppliedPromotion` each call the sibling's
-//      `setPromotion` EXACTLY ONCE, with `this` as the argument, and touch no near-side array
-//      directly.
-//  18. `removePromotionCode` and `removeAppliedPromotion` each delegate to the sibling's
-//      `removePromotion` with `this`.
-//  19. ★ `removePromotionPeriod` THROWS - propagated from the preserved
-//      model/entity/PromotionPeriod.cfc:L110 defect reproduced in the shipped promotionPeriod.ts -
-//      and `getPromotionPeriods()` is left UNCHANGED afterwards. Pins the transitive defect.
-//
-// ACCESSOR CONTRACTS
-//  20. `getPromotionName()` returns the stored value when set and `undefined` when not - never `''`
-//      and never a fabricated placeholder. The `undefined` case is load-bearing: it is what
-//      PromotionPeriod.getSimpleRepresentation() raises on, reproducing the CFML return-type
-//      coercion failure.
-//  21. NO member of this class returns a `Promise`: the entire surface is synchronous, because no
-//      method reaches a port.
-// =================================================================================================
+// (end of Promotion entity)

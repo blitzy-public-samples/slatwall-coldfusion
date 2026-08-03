@@ -14,7 +14,7 @@
 //   positional parameter per appended clause. Every locator cited below was
 //   opened in the legacy tree and matched byte-for-byte.
 //
-//   The suite has two halves and they guard opposite things.
+//   The suite has two halves and they guard the same thing from two directions.
 //
 //   THE PARITY HALF asserts the emitted text and the bind order character for
 //   character. That granularity is deliberate: the seed literal ends in a SPACE
@@ -26,20 +26,45 @@
 //   that is declared and never referenced, and the absence of any cardinality
 //   test.
 //
-//   THE CONTRACT HALF asserts that an argument outside
-//   `SELECTED_OPTIONS_INPUT_CONTRACT` is rejected. `selectedOptions` is the one
-//   argument whose value is a multiplier: the legacy loop appends another EXISTS
-//   clause and another placeholder for every element and imposes no upper bound
-//   of any kind [model/dao/SkuDAO.cfc:L113-L120]. Under a CFML request measured
-//   in minutes that was merely slow; behind an HTTP entrypoint the admissible
-//   input has to be stated, and these cases are what hold the statement to it.
+//   ★ THE TOTALITY HALF ASSERTS THAT THE BUILDER NEVER THROWS, AND AN EARLIER
+//   REVISION OF THIS FILE ASSERTED THE OPPOSITE.
 //
-//   The two halves meet at one place worth naming: the EMPTY LIST is legal and
-//   must stay legal. `listLen('')` is 0, so the loop runs zero times and the
-//   statement degenerates to the seed alone. That is what the legacy does, and a
-//   contract that rejected it - or that short-circuited it to an empty result -
-//   would be a divergence dressed up as a safety check. Several cases below exist
-//   only to hold that line.
+//   That revision imported a `SELECTED_OPTIONS_INPUT_CONTRACT` from the module
+//   under test and pinned a list of rejections: a list past a count bound, a list
+//   past a serialized-length bound, an option ID wider than the `SwOption` key
+//   column, an untrimmed element, an element carrying a character with meaning in
+//   SQL. The bounds and the rejections are gone, and the cases that pinned them
+//   have been INVERTED rather than deleted - every input that was rejected is now
+//   asserted to be ACCEPTED and to emit the statement the legacy emitted for it.
+//   Deleting them would have left the restored behaviour unpinned; inverting them
+//   makes a re-introduction of any single guard fail a named case.
+//
+//   The authority is the module's own authoring contract, which grants the folder
+//   "zero deliberate divergences", forbids adding "a null guard" or "a
+//   `len()`/`trim()` check", and forbids throwing on the degenerate empty-list
+//   case. [model/dao/SkuDAO.cfc:L106-L128] validates NOTHING. Every input the
+//   removed checks refused, the legacy accepted, bound, and answered with an
+//   EMPTY RESULT SET - because an over-long identifier cannot name a row in
+//   `SwOption`, a repeated identifier is one option asked for twice, an untrimmed
+//   `' b'` matches nothing, and an option belonging to another product cannot
+//   satisfy the product conjunct. "No SKU matches" is an answer. The earlier
+//   revision turned each of them into a request failure.
+//
+//   Both halves meet at the EMPTY LIST, which is legal and must stay legal.
+//   `listLen('')` is 0, so the loop runs zero times and the statement degenerates
+//   to the seed alone. That is what the legacy does, and a guard that rejected it
+//   - or that short-circuited it to an empty result - would be a divergence
+//   dressed up as a safety check. Several cases below exist only to hold that
+//   line.
+//
+//   One property that removal did NOT touch, stated here so no reader has to
+//   infer it: EVERY option ID and the `productID` still travel as positional `?`
+//   binds, and the only interpolations in the emitted text are structural - a
+//   repeated EXISTS group and fixed alias names. The injection-safety guarantee
+//   that `cfqueryparam` provided is therefore structural and never depended on any
+//   bound that was removed; there was no concatenation of caller input for a
+//   length or shape check to guard. The cases that assert a value is bound rather
+//   than interpolated are what hold that line, and they are unchanged.
 //
 // ---------------------------------------------------------------------------
 // THIS COVERAGE IS 100% NET-NEW. IT IS NOT PARITY AND MUST NEVER BE
@@ -70,10 +95,7 @@
 
 import { describe, expect, it } from 'vitest';
 
-import {
-  SELECTED_OPTIONS_INPUT_CONTRACT,
-  buildSkusBySelectedOptionsStatement,
-} from '../../../src/repositories/mysql/sql/skusBySelectedOptions.sql.js';
+import { buildSkusBySelectedOptionsStatement } from '../../../src/repositories/mysql/sql/skusBySelectedOptions.sql.js';
 
 /**
  * The seed fragment, restated here independently of the module under test.
@@ -111,16 +133,28 @@ const OPTION_B = 'c81d05e4fa6b47289d3e6170ba52cf9e';
 const OPTION_C = '9b6e37f0d24c418aa5710e83c6fd92b1';
 
 /**
- * The product's own option identifiers, passed whenever `productID` is.
+ * The declared width of the `SwOption` key column, restated for readability.
  *
- * The builder validates the selected options against the product's real options
- * and FAILS CLOSED when a `productID` arrives without them - a deliberate
- * precondition, documented on `assertSelectedOptionsAreBindable`, so that a
- * product narrowing can never silently skip the membership check. Supplying the
- * scope keeps every case below a parity case: for admissible input the emitted
- * SQL and the bind order are unchanged, which is what these assertions pin.
+ * It is NOT a bound the builder enforces - the builder enforces nothing - and it
+ * is not imported from the module under test, because the module publishes no
+ * such value any more. It appears here only so the cases that build well-formed
+ * identifiers can say why 32 is the width they pad to:
+ * [model/entity/Option.cfc:L52] declares `length="32"`.
  */
-const PRODUCT_OPTION_SCOPE: readonly string[] = [OPTION_A, OPTION_B, OPTION_C];
+const OPTION_ID_COLUMN_WIDTH = 32;
+
+/**
+ * A list length large enough to stand in for "unbounded", used by the case that
+ * pins the ABSENCE of a count bound.
+ *
+ * The legacy loop appends another EXISTS clause and another placeholder for every
+ * element and imposes no upper bound of any kind [model/dao/SkuDAO.cfc:L113-L120].
+ * An earlier revision of this file capped the count at 64 and asserted a
+ * `RangeError` past it; the cap is gone, so this number now demonstrates the
+ * opposite property and its exact value carries no meaning beyond being well past
+ * any bound a reader might suspect survives.
+ */
+const UNBOUNDED_LIST_LENGTH = 200;
 
 /** Count the positional placeholders in a statement. */
 function placeholderCount(sql: string): number {
@@ -142,57 +176,11 @@ function listOfWellFormedIDs(count: number): string {
   const ids: string[] = [];
 
   for (let index = 0; index < count; index += 1) {
-    ids.push(`opt${String(index).padStart(29, '0')}`);
+    ids.push(`opt${String(index).padStart(OPTION_ID_COLUMN_WIDTH - 3, '0')}`);
   }
 
   return ids.join(',');
 }
-
-describe('SELECTED_OPTIONS_INPUT_CONTRACT', () => {
-  it('publishes the bounds so a request boundary can reject before this builder runs', () => {
-    expect(SELECTED_OPTIONS_INPUT_CONTRACT.maxSerializedLength).toBe(4096);
-    expect(SELECTED_OPTIONS_INPUT_CONTRACT.maxOptionCount).toBe(64);
-    expect(SELECTED_OPTIONS_INPUT_CONTRACT.maxOptionIDLength).toBe(32);
-  });
-
-  it('is frozen, so no caller can widen the bounds it enforces', () => {
-    expect(Object.isFrozen(SELECTED_OPTIONS_INPUT_CONTRACT)).toBe(true);
-  });
-
-  it('bounds the serialized length above the widest well-formed list it admits', () => {
-    // 64 IDs of 32 characters plus 63 delimiters is 2111 characters, so the
-    // length bound cannot be the binding constraint on a well-formed list.
-    const widest =
-      SELECTED_OPTIONS_INPUT_CONTRACT.maxOptionCount *
-        SELECTED_OPTIONS_INPUT_CONTRACT.maxOptionIDLength +
-      (SELECTED_OPTIONS_INPUT_CONTRACT.maxOptionCount - 1);
-
-    expect(widest).toBe(2111);
-    expect(SELECTED_OPTIONS_INPUT_CONTRACT.maxSerializedLength).toBeGreaterThan(widest);
-  });
-
-  it('admits the 32 lowercase hex characters the legacy generator emits', () => {
-    // [org/Hibachi/HibachiObject.cfc:L144-L146]:
-    //   return replace(lcase(createUUID()), '-', '', 'all');
-    expect(SELECTED_OPTIONS_INPUT_CONTRACT.optionIDPattern.test(OPTION_A)).toBe(true);
-    expect(OPTION_A).toHaveLength(SELECTED_OPTIONS_INPUT_CONTRACT.maxOptionIDLength);
-  });
-
-  it('carries neither the global nor the sticky flag, so test() is stateless', () => {
-    // A shared RegExp instance with `g` or `y` would advance `lastIndex` between
-    // calls and start returning false for inputs it had already accepted.
-    expect(SELECTED_OPTIONS_INPUT_CONTRACT.optionIDPattern.global).toBe(false);
-    expect(SELECTED_OPTIONS_INPUT_CONTRACT.optionIDPattern.sticky).toBe(false);
-
-    expect(SELECTED_OPTIONS_INPUT_CONTRACT.optionIDPattern.test(OPTION_A)).toBe(true);
-    expect(SELECTED_OPTIONS_INPUT_CONTRACT.optionIDPattern.test(OPTION_A)).toBe(true);
-    expect(SELECTED_OPTIONS_INPUT_CONTRACT.optionIDPattern.test(OPTION_A)).toBe(true);
-  });
-
-  it('excludes the comma, which is the list delimiter itself', () => {
-    expect(SELECTED_OPTIONS_INPUT_CONTRACT.optionIDPattern.test('a,b')).toBe(false);
-  });
-});
 
 describe('buildSkusBySelectedOptionsStatement - the empty list', () => {
   it('emits the seed alone and binds nothing [model/dao/SkuDAO.cfc:L113]', () => {
@@ -220,7 +208,7 @@ describe('buildSkusBySelectedOptionsStatement - the empty list', () => {
   });
 
   it('still appends the product conjunct when productID accompanies an empty list', () => {
-    const statement = buildSkusBySelectedOptionsStatement('', 'prod-1', PRODUCT_OPTION_SCOPE);
+    const statement = buildSkusBySelectedOptionsStatement('', 'prod-1');
 
     expect(statement.sql).toBe(EXPECTED_SEED + EXPECTED_PRODUCT_PREDICATE);
     expect(statement.params).toEqual(['prod-1']);
@@ -294,7 +282,10 @@ describe('buildSkusBySelectedOptionsStatement - several selected options', () =>
   });
 
   it('keeps one parameter per placeholder for every list length from 0 to 64', () => {
-    for (let count = 0; count <= SELECTED_OPTIONS_INPUT_CONTRACT.maxOptionCount; count += 1) {
+    // 64 is an arbitrary sweep ceiling, not a bound: an earlier revision capped the
+    // count here and the cap is gone. The case below named for UNBOUNDED_LIST_LENGTH
+    // is what proves no ceiling survives.
+    for (let count = 0; count <= 64; count += 1) {
       const statement = buildSkusBySelectedOptionsStatement(listOfWellFormedIDs(count));
 
       expect(statement.params).toHaveLength(count);
@@ -336,11 +327,7 @@ describe('buildSkusBySelectedOptionsStatement - the productID conjunct', () => {
   });
 
   it('appends the conjunct LAST and binds productID LAST', () => {
-    const statement = buildSkusBySelectedOptionsStatement(
-      `${OPTION_A},${OPTION_B}`,
-      'prod-9',
-      PRODUCT_OPTION_SCOPE,
-    );
+    const statement = buildSkusBySelectedOptionsStatement(`${OPTION_A},${OPTION_B}`, 'prod-9');
 
     expect(statement.sql).toBe(
       EXPECTED_SEED + EXPECTED_OPTION_EXISTS + EXPECTED_OPTION_EXISTS + EXPECTED_PRODUCT_PREDICATE,
@@ -354,7 +341,7 @@ describe('buildSkusBySelectedOptionsStatement - the productID conjunct', () => {
     // structKeyExists() with no len()/trim() test, so an empty string appends
     // the clause and binds '', yielding zero rows. Do not add a length guard,
     // and do not let the input contract reach productID.
-    const statement = buildSkusBySelectedOptionsStatement(OPTION_A, '', PRODUCT_OPTION_SCOPE);
+    const statement = buildSkusBySelectedOptionsStatement(OPTION_A, '');
 
     expect(statement.sql).toBe(EXPECTED_SEED + EXPECTED_OPTION_EXISTS + EXPECTED_PRODUCT_PREDICATE);
     expect(statement.params).toEqual([OPTION_A, '']);
@@ -366,11 +353,7 @@ describe('buildSkusBySelectedOptionsStatement - the productID conjunct', () => {
     // same as a well-formed one, so bounding it would buy nothing and would
     // reject the empty string the guard above deliberately accepts.
     expect(() =>
-      buildSkusBySelectedOptionsStatement(
-        OPTION_A,
-        'not a well formed id at all, with a comma',
-        PRODUCT_OPTION_SCOPE,
-      ),
+      buildSkusBySelectedOptionsStatement(OPTION_A, 'not a well formed id at all, with a comma'),
     ).not.toThrow();
   });
 });
@@ -425,7 +408,6 @@ describe('buildSkusBySelectedOptionsStatement - the seed is preserved exactly', 
     const lowered = buildSkusBySelectedOptionsStatement(
       `${OPTION_A},${OPTION_B}`,
       'prod-1',
-      PRODUCT_OPTION_SCOPE,
     ).sql.toLowerCase();
 
     expect(lowered).not.toContain('order by');
@@ -437,9 +419,29 @@ describe('buildSkusBySelectedOptionsStatement - the seed is preserved exactly', 
   });
 });
 
-describe('buildSkusBySelectedOptionsStatement - contract rejection', () => {
-  it('accepts the widest well-formed list: 64 IDs of the full column width', () => {
-    const widest = listOfWellFormedIDs(SELECTED_OPTIONS_INPUT_CONTRACT.maxOptionCount);
+// ---------------------------------------------------------------------------
+// ★ THE INPUTS AN EARLIER REVISION REJECTED, EACH NOW PINNED AS ACCEPTED
+// ---------------------------------------------------------------------------
+// Every case in this block was written the other way round. It asserted a
+// `RangeError` or a `TypeError`; it now asserts the statement the legacy emits.
+// The cases were INVERTED rather than deleted so that re-introducing any single
+// guard fails a case that names it, and so that the reason each input is harmless
+// is recorded next to the input rather than in a commit message.
+//
+// The shared reason, stated once: an input that cannot match is not an input that
+// cannot be asked. [model/dao/SkuDAO.cfc:L106-L128] binds whatever it is handed
+// and lets the database answer, and for all of these the answer is ZERO ROWS. A
+// 33-character identifier cannot name a row in `SwOption`, whose key column is
+// declared `length="32"` [model/entity/Option.cfc:L52]. An untrimmed `' b'`
+// matches no identifier. A repeated identifier is one option asked for twice, and
+// `A and A` is `A`. An identifier belonging to another product cannot satisfy the
+// product conjunct. None of them is a request failure, and the legacy never
+// treated them as one.
+// ---------------------------------------------------------------------------
+
+describe('buildSkusBySelectedOptionsStatement - totality: it never throws', () => {
+  it('accepts the widest list an earlier revision called the widest admissible', () => {
+    const widest = listOfWellFormedIDs(64);
 
     expect(widest).toHaveLength(2111);
 
@@ -449,73 +451,87 @@ describe('buildSkusBySelectedOptionsStatement - contract rejection', () => {
     expect(placeholderCount(statement.sql)).toBe(64);
   });
 
-  it('rejects one option beyond the count bound', () => {
-    const tooMany = listOfWellFormedIDs(SELECTED_OPTIONS_INPUT_CONTRACT.maxOptionCount + 1);
+  it('CARRIES NO COUNT BOUND: one option past the old cap still emits and binds', () => {
+    // The old cap was 64 and this is 65. The clause count and the bind count are
+    // the assertions that matter: a surviving cap could not produce either.
+    const pastTheOldCap = listOfWellFormedIDs(65);
+    const statement = buildSkusBySelectedOptionsStatement(pastTheOldCap);
 
-    expect(() => buildSkusBySelectedOptionsStatement(tooMany)).toThrow(RangeError);
-    expect(() => buildSkusBySelectedOptionsStatement(tooMany)).toThrow(
-      /maximum admissible count of 64 option IDs/,
+    expect(statement.params).toHaveLength(65);
+    expect(placeholderCount(statement.sql)).toBe(65);
+    expect(occurrences(statement.sql, EXPECTED_OPTION_EXISTS)).toBe(65);
+  });
+
+  it('CARRIES NO COUNT BOUND at a length no reader would mistake for admissible', () => {
+    // The legacy loop appends one clause per element and imposes no upper bound
+    // of any kind [model/dao/SkuDAO.cfc:L113-L120]. That an unbounded conjunction
+    // is expensive is true and is not this module's business: it is a request
+    // boundary's, and no such boundary is in scope for this folder.
+    const statement = buildSkusBySelectedOptionsStatement(
+      listOfWellFormedIDs(UNBOUNDED_LIST_LENGTH),
     );
+
+    expect(statement.params).toHaveLength(UNBOUNDED_LIST_LENGTH);
+    expect(occurrences(statement.sql, EXPECTED_OPTION_EXISTS)).toBe(UNBOUNDED_LIST_LENGTH);
   });
 
-  it('rejects a list far beyond the count bound without emitting anything', () => {
-    // The unbounded-expansion case the finding names: 5,000 elements would have
-    // become 5,000 correlated subqueries and 5,000 placeholders.
-    const absurd = listOfWellFormedIDs(5000);
+  it('CARRIES NO SERIALIZED-LENGTH BOUND: a list past the old 4096 still emits', () => {
+    const overlong = 'a'.repeat(4097);
+    const statement = buildSkusBySelectedOptionsStatement(overlong);
 
-    expect(() => buildSkusBySelectedOptionsStatement(absurd)).toThrow(RangeError);
+    // One element, because the string holds no delimiter: `listLen` sees a single
+    // 4097-character identifier. It names no row, so the statement returns none.
+    expect(statement.params).toEqual([overlong]);
+    expect(placeholderCount(statement.sql)).toBe(1);
+    expect(statement.sql).toBe(EXPECTED_SEED + EXPECTED_OPTION_EXISTS);
   });
 
-  it('rejects a list beyond the serialized-length bound BEFORE parsing it', () => {
-    // Length is the one check makeable without walking the list, so it is the
-    // check that bounds the walk. It therefore has to fire first: this input
-    // would also fail the shape check, and the message proves which one ran.
-    const overlong = 'a'.repeat(SELECTED_OPTIONS_INPUT_CONTRACT.maxSerializedLength + 1);
-
-    expect(() => buildSkusBySelectedOptionsStatement(overlong)).toThrow(RangeError);
-    expect(() => buildSkusBySelectedOptionsStatement(overlong)).toThrow(
-      /maximum admissible length of 4096 characters/,
-    );
-  });
-
-  it('accepts a list exactly at the serialized-length bound', () => {
-    // 128 characters short of the bound is 4096 exactly: 124 IDs would exceed
-    // the count bound, so the boundary case is built from the count bound and
-    // padded with ignored delimiters, which CFML list semantics tolerate.
-    const padded = `${listOfWellFormedIDs(SELECTED_OPTIONS_INPUT_CONTRACT.maxOptionCount)}${','.repeat(
-      SELECTED_OPTIONS_INPUT_CONTRACT.maxSerializedLength - 2111,
-    )}`;
-
-    expect(padded).toHaveLength(SELECTED_OPTIONS_INPUT_CONTRACT.maxSerializedLength);
-    expect(() => buildSkusBySelectedOptionsStatement(padded)).not.toThrow();
-  });
-
-  it('rejects an option ID wider than the declared SwOption key column', () => {
+  it('CARRIES NO COLUMN-WIDTH BOUND: a 33-character option ID is bound, not refused', () => {
     // [model/entity/Option.cfc:L52] declares length="32", so a 33-character ID
-    // cannot exist in SwOption.
-    const tooWide = 'a'.repeat(SELECTED_OPTIONS_INPUT_CONTRACT.maxOptionIDLength + 1);
+    // cannot exist in SwOption - which is exactly why binding it is safe. The
+    // EXISTS subquery finds nothing and the statement returns an empty set. The
+    // legacy answer for this input was an empty array; so is this one.
+    const tooWide = 'a'.repeat(OPTION_ID_COLUMN_WIDTH + 1);
+    const statement = buildSkusBySelectedOptionsStatement(tooWide);
 
-    expect(() => buildSkusBySelectedOptionsStatement(tooWide)).toThrow(TypeError);
-    expect(() => buildSkusBySelectedOptionsStatement(tooWide)).toThrow(
-      /expected 1 to 32 characters from \[A-Za-z0-9_-\]/,
-    );
+    expect(statement.sql).toBe(EXPECTED_SEED + EXPECTED_OPTION_EXISTS);
+    expect(statement.params).toEqual([tooWide]);
   });
 
   it('accepts an option ID exactly at the declared column width', () => {
-    const exact = 'a'.repeat(SELECTED_OPTIONS_INPUT_CONTRACT.maxOptionIDLength);
+    const exact = 'a'.repeat(OPTION_ID_COLUMN_WIDTH);
+    const statement = buildSkusBySelectedOptionsStatement(exact);
 
-    expect(() => buildSkusBySelectedOptionsStatement(exact)).not.toThrow();
+    expect(statement.params).toEqual([exact]);
   });
 
-  it('rejects a malformed element wherever it sits in the list', () => {
-    expect(() => buildSkusBySelectedOptionsStatement(`bad id,${OPTION_A}`)).toThrow(TypeError);
-    expect(() => buildSkusBySelectedOptionsStatement(`${OPTION_A},bad id`)).toThrow(TypeError);
-    expect(() => buildSkusBySelectedOptionsStatement(`${OPTION_A},bad id,${OPTION_B}`)).toThrow(
-      TypeError,
-    );
+  it('CARRIES NO SHAPE CHECK: a malformed element is bound wherever it sits', () => {
+    // Position mattered to the old check only because it walked the list to find
+    // the first offender. Nothing walks the list now except the emit loop, so all
+    // three of these bind every element in list order.
+    expect(buildSkusBySelectedOptionsStatement(`bad id,${OPTION_A}`).params).toEqual([
+      'bad id',
+      OPTION_A,
+    ]);
+    expect(buildSkusBySelectedOptionsStatement(`${OPTION_A},bad id`).params).toEqual([
+      OPTION_A,
+      'bad id',
+    ]);
+    expect(buildSkusBySelectedOptionsStatement(`${OPTION_A},bad id,${OPTION_B}`).params).toEqual([
+      OPTION_A,
+      'bad id',
+      OPTION_B,
+    ]);
   });
 
-  it('rejects characters that carry meaning in the surrounding SQL text', () => {
+  it('BINDS characters that carry meaning in SQL rather than refusing them', () => {
+    // ★ THIS IS THE CASE THAT REPLACES THE OLD INJECTION-SHAPED ONE, AND IT PROVES
+    // MORE THAN THE OLD ONE DID. The old case asserted a TypeError, which
+    // demonstrated only that a check existed. These assert the two properties that
+    // actually make the statement safe: the value NEVER APPEARS IN THE TEXT, and
+    // the placeholder count stays 1. Safety here is structural - the value travels
+    // as a positional bind, so there is no concatenation for a shape check to
+    // guard - and structural safety is what these assertions pin.
     for (const malformed of [
       "a'b",
       'a"b',
@@ -530,33 +546,75 @@ describe('buildSkusBySelectedOptionsStatement - contract rejection', () => {
       'a\tb',
       'a.b',
       'a/b',
+      "' or 1=1 --",
+      'a; drop table SwSku; --',
     ]) {
-      expect(() => buildSkusBySelectedOptionsStatement(malformed)).toThrow(TypeError);
+      const statement = buildSkusBySelectedOptionsStatement(malformed);
+
+      expect(statement.sql).toBe(EXPECTED_SEED + EXPECTED_OPTION_EXISTS);
+      expect(statement.sql).not.toContain(malformed);
+      expect(statement.params).toEqual([malformed]);
+      expect(placeholderCount(statement.sql)).toBe(1);
     }
   });
 
-  it('does not silently trim: " b" is rejected rather than repaired to "b"', () => {
+  it('DOES NOT TRIM: " b" is bound as " b", neither repaired nor refused', () => {
     // CFML `listGetAt` returns the element untrimmed, so 'a, b' yields 'a' and
-    // ' b'. Trimming would repair the caller's input, and this folder is granted
-    // no repairs.
-    expect(() => buildSkusBySelectedOptionsStatement(`${OPTION_A}, ${OPTION_B}`)).toThrow(
-      TypeError,
-    );
+    // ' b'. Trimming would repair the caller's input and refusing would fail the
+    // request; the legacy did neither, and the authoring contract forbids adding
+    // "a `len()`/`trim()` check". ' b' names no option, so the answer is zero rows.
+    const statement = buildSkusBySelectedOptionsStatement(`${OPTION_A}, ${OPTION_B}`);
+
+    expect(statement.params).toEqual([OPTION_A, ` ${OPTION_B}`]);
+    expect(occurrences(statement.sql, EXPECTED_OPTION_EXISTS)).toBe(2);
   });
 
-  it('never echoes the rejected value in the message it raises', () => {
-    // A rejection must not carry request content into whatever records it.
-    const planted = 'PLANTED-SECRET-9c41ab27de';
+  it('BINDS A REPEATED OPTION TWICE rather than refusing the duplicate', () => {
+    // `A and A` is `A`, so the duplicate is redundant and harmless: the legacy
+    // emitted two identical EXISTS clauses and matched the same SKUs as one. An
+    // earlier revision refused the input outright.
+    const statement = buildSkusBySelectedOptionsStatement(`${OPTION_A},${OPTION_A}`);
 
-    expect(() => buildSkusBySelectedOptionsStatement(`${planted}!`)).toThrow(TypeError);
+    expect(statement.sql).toBe(EXPECTED_SEED + EXPECTED_OPTION_EXISTS + EXPECTED_OPTION_EXISTS);
+    expect(statement.params).toEqual([OPTION_A, OPTION_A]);
+  });
 
-    try {
-      buildSkusBySelectedOptionsStatement(`${planted}!`);
-      expect.unreachable('the malformed element should have been rejected');
-    } catch (thrown) {
-      expect(thrown).toBeInstanceOf(TypeError);
-      expect((thrown as TypeError).message).not.toContain(planted);
-      expect((thrown as TypeError).message).toContain('not a well-formed option ID');
+  it('BINDS AN OPTION FOREIGN TO THE NARROWED PRODUCT rather than refusing it', () => {
+    // ★ THE CASE THE REMOVED PREREQUISITE QUERY EXISTED TO SERVE. An earlier
+    // revision read the product's own option identifiers first and refused any
+    // selection containing one that did not belong to it. The conjunction already
+    // decides this: a SKU must satisfy both the EXISTS for the foreign option and
+    // `sku.productID = ?`, and no SKU can. The extra statement changed no result
+    // set - it only turned an empty one into an exception.
+    const statement = buildSkusBySelectedOptionsStatement('option-of-another-product', 'prod-1');
+
+    expect(statement.sql).toBe(EXPECTED_SEED + EXPECTED_OPTION_EXISTS + EXPECTED_PRODUCT_PREDICATE);
+    expect(statement.params).toEqual(['option-of-another-product', 'prod-1']);
+  });
+
+  it('IS TOTAL over every input the removed guards named, in one sweep', () => {
+    // A single case that fails if ANY guard returns, whatever form it takes.
+    const previouslyRejected: readonly (readonly [string, string | undefined])[] = [
+      [listOfWellFormedIDs(65), undefined],
+      [listOfWellFormedIDs(UNBOUNDED_LIST_LENGTH), undefined],
+      ['a'.repeat(4097), undefined],
+      ['a'.repeat(OPTION_ID_COLUMN_WIDTH + 1), undefined],
+      [`${OPTION_A}, ${OPTION_B}`, undefined],
+      [`${OPTION_A},${OPTION_A}`, undefined],
+      ["' or 1=1 --", undefined],
+      ['option-of-another-product', 'prod-1'],
+      ['', 'prod-1'],
+      ['', ''],
+      [OPTION_A, ''],
+    ];
+
+    for (const [selectedOptions, productID] of previouslyRejected) {
+      expect(() => buildSkusBySelectedOptionsStatement(selectedOptions, productID)).not.toThrow();
+
+      const statement = buildSkusBySelectedOptionsStatement(selectedOptions, productID);
+
+      // The invariant that holds for every one of them: one bind per placeholder.
+      expect(statement.params).toHaveLength(placeholderCount(statement.sql));
     }
   });
 });

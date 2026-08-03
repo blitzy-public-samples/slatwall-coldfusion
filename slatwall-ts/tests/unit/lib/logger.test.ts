@@ -465,9 +465,22 @@ describe('the key-based never-log policy', () => {
     const captured = captureError('configured', {
       pool: { port: 3306, dbPassword: PLANTED_SECRET },
     });
+    const pool = objectAt(contextOf(captured), 'pool');
 
     expect(captured.line).not.toContain(PLANTED_SECRET);
-    expect(objectAt(contextOf(captured), 'pool')['port']).toBe(3306);
+    // THE RECURSION STILL HAPPENED, which is what this case is really about: the
+    // wrapper survived as an object and both of its children were decided
+    // individually, rather than the whole branch being replaced in one move.
+    expect(Object.keys(pool)).toStrictEqual(['port', 'dbPassword']);
+    expect(pool['dbPassword']).toBe(REDACTED);
+    // `port` WAS `3306` HERE, AND IS NOW REDACTED. It is a number under a name no
+    // allow-list carries, so the fail-closed context rule claims it - and that is
+    // the outcome this project wants rather than a cost it pays.
+    // `src/repositories/mysql/connection.ts` declines to log the port itself and
+    // records why: a database name and a port together are reconnaissance rather
+    // than diagnostics. A test asserting the port legible pinned the opposite of
+    // the position the code beside it takes.
+    expect(pool['port']).toBe(REDACTED);
   });
 });
 
@@ -546,24 +559,55 @@ const NEAR_MISS_SENSITIVE_KEYS: readonly string[] = [
   'streetAddress',
   'postalCode',
   'ipAddress',
+  // A product review's author is a customer's name. This set once cited `author`
+  // as the reason the `auth` FRAGMENT is deliberately absent; the fragment is
+  // still absent - it would capture `authoredDate` and `authorityLevel` - but the
+  // two author spellings are exact `PERSONAL_DATA_KEYS` entries now.
+  'author',
+  'authorName',
+  // The proxy and CDN spellings of a client address: the ones that actually arrive
+  // behind API Gateway, and the ones runtime testing found emitted in cleartext
+  // beside an `authorization` that was correctly redacted.
+  'x-forwarded-for',
+  'x-real-ip',
+  'x-client-ip',
+  'true-client-ip',
+  'cf-connecting-ip',
+  'forwarded',
+  'sourceIP',
+  // Account-recovery secrets, which reconstruct an account outright and read
+  // nothing like a password to a reader enumerating password spellings.
+  'mnemonic',
+  'recoveryPhrase',
+  'seedPhrase',
+  'walletMnemonic',
 ];
 
 /**
- * Ordinary diagnostics that must stay legible, and the reason each one is here.
+ * Diagnostics the policy AUTHORIZES BY NAME, and what changed about this set.
  *
- * A fail-closed policy trades a false-negative risk for a false-positive risk,
- * and this is the assertion that the trade was made carefully. Each entry is a
- * near neighbour of a sensitive fragment: `bypass` and `passedQualification`
- * contain `pass`, `author` contains `auth`, `cacheKey` and `keyCount` contain
- * `key`, `userID` contains `user`, `skuCode` and `statusCode` contain `code`.
+ * A fail-closed context surface trades a false-negative risk for a false-positive
+ * risk, and this is the assertion that the trade was made carefully: every entry
+ * is a name enumerated by `LEGIBLE_DIAGNOSTIC_KEYS` or `LEGIBLE_IDENTIFIER_KEYS`
+ * in `src/lib/logger.ts`, and every one is a name this service actually emits -
+ * eleven of them from `src/handlers/errorMapper.ts` on every mapped failure.
+ *
+ * WHAT IT DELIBERATELY NO LONGER CONTAINS. It once also held `bypassFlag`,
+ * `cacheKey`, `keyCount` and `compassHeading`: near-miss NAMES, present to show
+ * that rules 3 and 4 stay narrow enough not to capture ordinary vocabulary. None
+ * of them is a name this service emits, and widening a security allow-list to keep
+ * a demonstration green is how an allow-list stops meaning anything - so the
+ * demonstration moved to `NEAR_MISS_LEGIBLE_IN_MESSAGES` below, which asserts the
+ * same property on the surface where it is still load-bearing. `bypass` and
+ * `passedQualification` stay here for a different reason: they are booleans, and a
+ * boolean is emitted under any key because one bit can hide no payload.
+ *
+ * `author` AND `authorName` WENT THE OTHER WAY and are now redacted outright, so
+ * they appear in `NEAR_MISS_SENSITIVE_KEYS` instead. A product review's author is
+ * a customer's name, and this set asserted it legible.
  */
 const LEGIBLE_DIAGNOSTIC_KEYS: Readonly<Record<string, string | number | boolean>> = {
   bypass: true,
-  bypassFlag: 'yes',
-  author: 'jane',
-  authorName: 'jane doe',
-  cacheKey: 'sku:ABC',
-  keyCount: 7,
   userID: 'U-9',
   brandName: 'Nike',
   productName: 'Air Jorden',
@@ -580,11 +624,77 @@ const LEGIBLE_DIAGNOSTIC_KEYS: Readonly<Record<string, string | number | boolean
   publishedIssueCount: 2,
   issueCount: 9,
   passedQualification: true,
-  compassHeading: 12,
   quantity: 3,
   discountAmount: '52.47',
   amountType: 'percentageOff',
+  route: 'POST /skus/resolve',
+  occurredAt: '2024-01-02T03:04:05.000Z',
+  rows: 12,
 };
+
+/**
+ * Near-miss names that must stay legible INSIDE A MESSAGE.
+ *
+ * The narrowness of rules 3 and 4 is load-bearing on exactly one surface now. On
+ * the context surface it is unobservable: an unlisted name is redacted whether or
+ * not a rule claims it, so a redacted `cacheKey` there proves nothing either way.
+ * In message content the four rules ARE the whole policy - `redactSensitiveAssignments`
+ * rewrites only the `word=value` pairs `isForbiddenKey` claims and returns every
+ * other pair byte-for-byte - so an over-broad fragment would be visible as prose
+ * going missing from a log line. That is what these assert.
+ *
+ * Each is a near neighbour of a sensitive fragment or word: `bypass` and
+ * `compassHeading` contain `pass`, `cacheKey` and `keyCount` contain `key`,
+ * `userID` contains `user`, `skuCode` and `statusCode` contain `code`,
+ * `passedQualification` splits to `passed` rather than `pass`.
+ */
+/**
+ * Names whose FORBIDDEN status is observable only in message content.
+ *
+ * A necessary companion to the fail-closed context rule, and the reason it is a
+ * separate fixture. On the context surface an exact never-log entry for an
+ * ordinary-looking name is INVISIBLE: `author` is redacted there whether or not
+ * `PERSONAL_DATA_KEYS` lists it, because an unlisted name is redacted anyway. A
+ * mutation deleting the entry therefore passed every context assertion in this
+ * file, which made the entry itself untested.
+ *
+ * Message content is where it is observable, because that surface still defaults to
+ * permissive: a `word=value` pair is rewritten if and only if `isForbiddenKey`
+ * claims the word. Every name below is one this project added to the never-log sets
+ * deliberately, so every one needs an assertion that survives on its own merits
+ * rather than on the fail-closed default standing behind it.
+ */
+const FORBIDDEN_IN_MESSAGES: readonly string[] = [
+  // The wire spellings of a client address.
+  'x-forwarded-for',
+  'x-real-ip',
+  'x-client-ip',
+  'true-client-ip',
+  'cf-connecting-ip',
+  'forwarded',
+  'sourceIP',
+  // Account-recovery secrets, including the compound the fragment rule reaches.
+  'mnemonic',
+  'walletMnemonic',
+  'seedPhrase',
+  'recoveryPhrase',
+  'backupPhrase',
+  // A product review's author is a customer's name.
+  'author',
+  'authorName',
+];
+
+const NEAR_MISS_LEGIBLE_IN_MESSAGES: readonly string[] = [
+  'bypass',
+  'bypassFlag',
+  'cacheKey',
+  'keyCount',
+  'compassHeading',
+  'passedQualification',
+  'skuCode',
+  'statusCode',
+  'userID',
+];
 
 describe('the never-log policy fails closed rather than open', () => {
   it('withholds every near-miss credential, container and personal-data spelling', () => {
@@ -663,14 +773,255 @@ describe('the never-log policy fails closed rather than open', () => {
   });
 
   it('redacts a credential word that is a whole word of the key but not a substring elsewhere', () => {
-    // `dbPass` splits into `db` + `pass`; `bypass` is one word. The two must not
-    // be decided by the same rule, and this is the case that proves they are not.
+    // `dbPass` splits into `db` + `pass`; `bypass` is one word. The two must not be
+    // decided by the same rule, and this is the case that proves they are not.
+    //
+    // THE DISTINCTION IS ASSERTED IN THE MESSAGE, NOT IN THE CONTEXT, and the move
+    // is forced by the fail-closed context rule rather than chosen. `bypass:
+    // 'enabled'` is a string under a name no allow-list carries, so on the context
+    // surface it is redacted for a reason that has nothing to do with rule 4 -
+    // which would have made this case pass while proving nothing. In message
+    // content the four rules are the whole policy, so a `bypass` that survives
+    // there really does establish that rule 4 read the word boundary.
+    const captured = captureError('word boundaries dbPass=s3cret-planted bypass=enabled');
+
+    expect(String(captured.parsed['message'])).toContain(`dbPass=${REDACTED}`);
+    expect(String(captured.parsed['message'])).toContain('bypass=enabled');
+    // And the context surface still redacts the credential, by name, as before.
+    expect(contextOf(captureError('word boundaries', { dbPass: PLANTED_SECRET }))['dbPass']).toBe(
+      REDACTED,
+    );
+  });
+
+  it('leaves every near-miss name legible inside a message, where the rules are the whole policy', () => {
+    const message = NEAR_MISS_LEGIBLE_IN_MESSAGES.map((key) => `${key}=value-of-${key}`).join(' ');
+    const emitted = String(captureError(message).parsed['message']);
+
+    for (const key of NEAR_MISS_LEGIBLE_IN_MESSAGES) {
+      expect(emitted).toContain(`${key}=value-of-${key}`);
+    }
+    expect(emitted).not.toContain(REDACTED);
+  });
+});
+
+// ---------------------------------------------------------------------------
+// S-11: the CONTEXT surface fails closed for a name nobody authorized
+//
+// The cases above establish that an ENUMERATED sensitive name is redacted. These
+// establish the harder half: that a name nobody enumerated is redacted too.
+//
+// The gap they close was demonstrated at runtime rather than reasoned about. A
+// context carrying `x-forwarded-for`, `x-real-ip`, `mnemonic` and `recoveryPhrase`
+// alongside `authorization` and `firstName` emitted the first four IN CLEARTEXT
+// while correctly redacting the last two - a client address and an
+// account-recovery secret published because those particular spellings were not on
+// a list. Adding them was necessary and is asserted through
+// `NEAR_MISS_SENSITIVE_KEYS` above, but it could not be sufficient: the next name
+// nobody listed would have gone out the same way.
+//
+// So the rule inverted. A scalar in a context object is emitted only if an
+// allow-list carries its name; everything else is replaced with the marker. Two
+// properties have to hold together for that to be an improvement rather than a
+// trade, and both are asserted below: nothing unauthorized escapes, and nothing
+// this service actually emits was lost.
+// ---------------------------------------------------------------------------
+
+describe('the context surface fails closed for an unauthorized key', () => {
+  it('reproduces the demonstrated disclosure and shows it closed', () => {
+    // The exact shape that leaked, including the wire spellings of a client
+    // address, which is how one really arrives - inside a forwarded header map.
+    const captured = captureError('request received', {
+      headers: {
+        authorization: `Bearer ${PLANTED_SECRET}`,
+        'x-forwarded-for': '203.0.113.7, 198.51.100.4',
+        'x-real-ip': '203.0.113.7',
+        'accept-language': 'en-US',
+      },
+      mnemonic: `${PLANTED_SECRET}-twelve-word-phrase`,
+      recoveryPhrase: `${PLANTED_SECRET}-recovery`,
+      firstName: 'Jane',
+    });
+    const context = contextOf(captured);
+    const headers = objectAt(context, 'headers');
+
+    expect(captured.line).not.toContain(PLANTED_SECRET);
+    expect(captured.line).not.toContain('203.0.113.7');
+    expect(captured.line).not.toContain('198.51.100.4');
+    expect(headers['authorization']).toBe(REDACTED);
+    expect(headers['x-forwarded-for']).toBe(REDACTED);
+    expect(headers['x-real-ip']).toBe(REDACTED);
+    expect(context['mnemonic']).toBe(REDACTED);
+    expect(context['recoveryPhrase']).toBe(REDACTED);
+    expect(context['firstName']).toBe(REDACTED);
+    // The content-negotiation header is still legible, because it is authorized by
+    // name. This is the half of the fix that keeps a `headers` map worth recursing.
+    expect(headers['accept-language']).toBe('en-US');
+  });
+
+  it('redacts a scalar under a name no allow-list carries, whatever the scalar is', () => {
     const context = contextOf(
-      captureError('word boundaries', { dbPass: PLANTED_SECRET, bypass: 'enabled' }),
+      captureError('unauthorized scalars', {
+        someUnknownField: PLANTED_SECRET,
+        countOfThings: 41,
+        hugeCounter: 9007199254740993n,
+        happenedOn: new Date(Date.UTC(2024, 0, 2)),
+      }),
     );
 
-    expect(context['dbPass']).toBe(REDACTED);
-    expect(context['bypass']).toBe('enabled');
+    // A STRING is the canonical hiding place. A NUMBER can be a card or account
+    // number in numeric form. A BIGINT is emitted as its decimal digits and so is
+    // text by another route. A DATE renders as caller data - a date of birth is a
+    // date. Each of the four needs a name, and none of these has one.
+    expect(context['someUnknownField']).toBe(REDACTED);
+    expect(context['countOfThings']).toBe(REDACTED);
+    expect(context['hugeCounter']).toBe(REDACTED);
+    expect(context['happenedOn']).toBe(REDACTED);
+  });
+
+  it('keeps the key beside the marker, so the record stays truthful about what was supplied', () => {
+    const context = contextOf(captureError('kept', { someUnknownField: PLANTED_SECRET }));
+
+    // Dropping the member would be worse than redacting it: the line would look
+    // complete while a field the caller supplied had vanished from the audit record.
+    expect(Object.keys(context)).toContain('someUnknownField');
+  });
+
+  it('still traverses a plain object under an unauthorized name, and polices its children', () => {
+    const context = contextOf(
+      captureError('nested', {
+        someWrapperNobodyListed: {
+          password: PLANTED_SECRET,
+          issueCount: 4,
+          deeper: { emailAddress: PLANTED_EMAIL, statusCode: 500 },
+        },
+      }),
+    );
+    const wrapper = objectAt(context, 'someWrapperNobodyListed');
+    const deeper = objectAt(wrapper, 'deeper');
+
+    // A plain object holds no data of its own and every child returns to the same
+    // rule under its own name, so admitting the wrapper concedes nothing - and
+    // refusing it would have made a caller's own nesting unreadable for no gain.
+    expect(wrapper['password']).toBe(REDACTED);
+    expect(wrapper['issueCount']).toBe(4);
+    expect(deeper['emailAddress']).toBe(REDACTED);
+    expect(deeper['statusCode']).toBe(500);
+  });
+
+  it('summarizes an error under an unauthorized name, because the summary cannot be unsafe', () => {
+    const context = contextOf(
+      captureError('failed', { whateverICallIt: errorCarryingPlantedData() }),
+    );
+    const summary = objectAt(context, 'whateverICallIt');
+
+    // `normalizeError` reduces an error to a shape-validated class name and code
+    // unconditionally, so no key name could make the result disclose anything.
+    expect(summary['name']).toBe('Error');
+    expect(summary['message']).toBe(REDACTED);
+    expect(context['whateverICallIt']).not.toBe(REDACTED);
+  });
+
+  it('admits an array whose members all police themselves, and refuses one that hides a scalar', () => {
+    const context = contextOf(
+      captureError('arrays', {
+        unlistedErrors: [errorCarryingPlantedData(), errorCarryingPlantedData()],
+        unlistedObjects: [{ statusCode: 500 }],
+        unlistedStrings: [PLANTED_SECRET],
+        unlistedNested: [[PLANTED_SECRET]],
+      }),
+    );
+
+    // AN ARRAY MEMBER HAS NO NAME. `redactArray` reaches `redactValue` directly, so
+    // a scalar inside an array would be emitted with no rule having authorized it -
+    // and wrapping it in another array would not change that. An array is therefore
+    // admitted only when every member is itself self-policing.
+    expect(Array.isArray(context['unlistedErrors'])).toBe(true);
+    expect(Array.isArray(context['unlistedObjects'])).toBe(true);
+    expect(context['unlistedStrings']).toBe(REDACTED);
+    expect(context['unlistedNested']).toBe(REDACTED);
+  });
+
+  it('emits the shapes that can hide nothing, whatever their key', () => {
+    const context = contextOf(
+      captureError('shapes', {
+        someFlagNobodyListed: true,
+        anotherFlag: false,
+        nothingHere: null,
+        callback: (): void => undefined,
+        marker: Symbol('m'),
+        instance: new (class PriceGroupRate {})(),
+      }),
+    );
+
+    // A boolean carries one bit, `null` carries none, and a function, a symbol and a
+    // class instance are DISCARDED in favour of a constant or a constructor name
+    // authored by this codebase. Redacting these would cost diagnosability and buy
+    // nothing, so the fail-closed arm is reached by scalars alone.
+    expect(context['someFlagNobodyListed']).toBe(true);
+    expect(context['anotherFlag']).toBe(false);
+    expect(context['nothingHere']).toBeNull();
+    expect(context['callback']).toBe('[Function]');
+    expect(context['marker']).toBe('[Symbol]');
+    expect(context['instance']).toBe('[PriceGroupRate]');
+  });
+
+  it('leaves every context key this service actually emits legible', () => {
+    // THE REGRESSION THAT WOULD MATTER. `src/handlers/errorMapper.ts` is the only
+    // production caller that supplies a context, and this is every key it can
+    // publish, gathered from `baseLogContext` and from its four call sites. If the
+    // fail-closed rule redacted one of these, the one surface that reports a request
+    // went wrong would go quiet, and no other test in this file would notice.
+    const emitted: Readonly<Record<string, string | number | readonly string[]>> = {
+      category: 'unrecognized',
+      statusCode: 500,
+      requestId: 'rq-1',
+      route: 'POST /skus/resolve',
+      missingMethodName: 'calculateSkuPriceBasedOnPromotion',
+      className: 'Sku',
+      fieldPaths: ['body/selectedOptions', 'body/productID'],
+      publishedIssueCount: 2,
+      issueCount: 9,
+      thrownShape: 'object',
+      errorCode: 'ER_ACCESS_DENIED_ERROR',
+      invalidRequestReason: 'missingBody',
+    };
+    const context = contextOf(captureError('mapped', emitted));
+
+    for (const [key, value] of Object.entries(emitted)) {
+      if (Array.isArray(value)) {
+        expect(context[key]).toStrictEqual(value);
+      } else {
+        expect(context[key]).toBe(value);
+      }
+    }
+  });
+
+  it('redacts every name this project added, inside a message, where the entry is observable', () => {
+    // THE VOCABULARY ADDITIONS ARE NOT MADE REDUNDANT BY THE FAIL-CLOSED RULE, and
+    // this is the case that proves each one carries its own weight. In message
+    // content the four never-log rules are still the whole policy and the default is
+    // still permissive, so a pair is rewritten only because the name is enumerated -
+    // there is no fail-closed default standing behind the assertion to make it pass
+    // for the wrong reason. Deleting any one entry from the never-log sets turns
+    // exactly this case red.
+    const message = FORBIDDEN_IN_MESSAGES.map((key) => `${key}=${PLANTED_SECRET}-${key}`).join(' ');
+    const captured = captureError(`supplied ${message}`);
+    const emitted = String(captured.parsed['message']);
+
+    for (const key of FORBIDDEN_IN_MESSAGES) {
+      expect(emitted).toContain(`${key}=${REDACTED}`);
+    }
+    expect(captured.line).not.toContain(PLANTED_SECRET);
+  });
+
+  it('redacts a proxy address in a message without disclosing the address itself', () => {
+    const emitted = String(
+      captureError('proxied x-forwarded-for=203.0.113.7 x-real-ip=203.0.113.7').parsed['message'],
+    );
+
+    expect(emitted).toContain(`x-forwarded-for=${REDACTED}`);
+    expect(emitted).toContain(`x-real-ip=${REDACTED}`);
+    expect(emitted).not.toContain('203.0.113.7');
   });
 });
 
@@ -1262,8 +1613,11 @@ describe('the redaction record cannot be written through a prototype accessor', 
    * cooperation from the port.
    */
   function contextCarryingProtoKey(): LogContext {
+    // `issueCount` rather than an arbitrary `ordinary` name: the neighbour has to
+    // be a key the fail-closed context rule EMITS, or this case would pass on a
+    // redaction and prove nothing about the prototype write beside it.
     return JSON.parse(
-      '{"__proto__":{"polluted":true},"password":"s3cret","ordinary":1}',
+      '{"__proto__":{"polluted":true},"password":"s3cret","issueCount":1}',
     ) as LogContext;
   }
 
@@ -1285,7 +1639,7 @@ describe('the redaction record cannot be written through a prototype accessor', 
     // `JSON.stringify` serializes a null-prototype object exactly as it serializes
     // `{}`, so no ordinary key and no redaction outcome moves.
     expect(context['password']).toBe('[REDACTED]');
-    expect(context['ordinary']).toBe(1);
+    expect(context['issueCount']).toBe(1);
   });
 
   it('does not let the write reassign the prototype of the record being built', () => {
@@ -1296,6 +1650,6 @@ describe('the redaction record cannot be written through a prototype accessor', 
     // would have replaced the record's own prototype; as an own data property it is
     // recorded as data and nothing is inherited from it.
     expect((context as { polluted?: unknown }).polluted).toBeUndefined();
-    expect(Object.keys(context).sort()).toStrictEqual(['__proto__', 'ordinary', 'password']);
+    expect(Object.keys(context).sort()).toStrictEqual(['__proto__', 'issueCount', 'password']);
   });
 });

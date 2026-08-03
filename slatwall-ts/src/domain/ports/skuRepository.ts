@@ -1,22 +1,15 @@
-// ---------------------------------------------------------------------------
-// CHECKPOINT STATUS - FORWARD REFERENCES CARRY THE MARKER `(planned)`
+// SKU repository port: the reads and writes behind `SkuService` and the SKU side
+// of the catalog.
 //
-// The subtree is authored in boundaries, and AAP 0.4.5 makes the authoring
-// order "a compile-order convenience, not a schedule". Commentary in this file
-// therefore names modules of the target layout that DO NOT EXIST YET. Every such
-// name carries `(planned)` at its point of use, meaning exactly: a planned Agent
-// Action Plan target that is ABSENT from the subtree at this checkpoint. Nothing
-// here asserts that any of them exists now, and no behaviour in this file depends
-// on one. The complete set named below, with the role each will play:
+// Replaces `model/dao/SkuDAO.cfc` (228 lines), which mixes cfscript with
+// `<cffunction>` tag syntax; the tag-syntax bodies carry the raw SQL and are the
+// source of truth for the statements the adapter reproduces.
 //
-//   src/handlers/bootstrap.ts                     composition root (wiring)
-//   src/repositories/mysql/mysqlSkuRepository.ts  MySQL SKU adapter
-//   src/services/skuService.ts                    ported SkuService
-//   tests/integration/repositories                repository integration tier
-// ---------------------------------------------------------------------------
-
-// ---------------------------------------------------------------------------
-// slatwall-ts - SKU repository port
+// PARAMETERIZED SQL. This file declares interfaces only and contains no SQL, so
+// the prepared-statement obligation that preserves `cfqueryparam`'s
+// injection-safety guarantee transfers wholly to `src/repositories/mysql/**`. The
+// comma-delimited option list in particular must be split and each element bound
+// as its own parameter, never interpolated into statement text.
 //
 // PURPOSE
 //   The port that replaces `model/dao/SkuDAO.cfc` (228 lines). That component
@@ -35,7 +28,7 @@
 //   below are fully erased at emit. Any `const`, `class`, `enum` or function
 //   body appearing in the emitted output means this file is wrong.
 //
-// THE METHOD COUNT IS SEVEN, NOT EIGHT
+// THE METHOD COUNT IS EIGHT
 //   `SkuDAO.cfc` declares eight functions. Two of them are not port surface,
 //   so the arithmetic runs:
 //
@@ -49,13 +42,48 @@
 //            repository, and its guard condition is INVERTED
 //            (SkuDAO.cfc:L222-L226 deletes the cache key only when that key is
 //            absent), so it can never fire. It is an implementation detail of
-//            src/repositories/mysql/mysqlSkuRepository.ts (planned), not a contract.
+//            src/repositories/mysql/mysqlSkuRepository.ts, not a contract.
 //     = 6  ported DAO read methods
-//     + 1  one persistence method (see `saveSku` below)
-//     = 7  METHODS. LOCKED.
+//     + 1  one single-SKU persistence method (see `saveSku` below)
+//     + 1  one MULTI-SKU persistence method (see `saveSkus` below), which is the
+//            half of the legacy write path that lived in the ORM's flush rather
+//            than in `SkuDAO.cfc`
+//     = 8  METHODS.
 //
-//   No eighth method may be added: no load-by-ID, no delete, no count, no
-//   existence probe, no bulk save, no overload, no options bag, no cache-clear.
+// ★★ THIS BLOCK ONCE READ "THE METHOD COUNT IS SEVEN, NOT EIGHT", AND THIS IS THE
+// RECORD OF THAT CHANGE
+//   The arithmetic above closed at `= 7 METHODS. LOCKED.` and the sentence after
+//   it read, in full: "No eighth method may be added: no load-by-ID, no delete,
+//   no count, no existence probe, NO BULK SAVE, no overload, no options bag, no
+//   cache-clear." Seven of those eight prohibitions still stand verbatim below.
+//   The bulk-save one does not, and the reason it does not is worth stating
+//   precisely, because the prohibition was not arbitrary - it was reasoning from
+//   `SkuDAO.cfc`'s declared surface, and that surface was never the whole legacy
+//   write path.
+//
+//   WHAT THE ORIGINAL REASONING MISSED. `SkuDAO.cfc` declares no save of any
+//   kind, singular or plural, so a reader enumerating that component correctly
+//   concludes that no write belongs here at all - which is why `saveSku` already
+//   carries the note that it has NO LEGACY ANTECEDENT ON THE DAO. Persistence
+//   reached a SKU through `super.save()` on the service base and through
+//   Hibernate's flush. The flush is the part that matters here: it was
+//   INHERENTLY A BATCH. `ProductService.processProduct_updateSkus`
+//   [model/service/ProductService.cfc:L216-L233] walks every SKU on a product
+//   and calls `setPrice` and `setListPrice` on each, saves nothing itself, and
+//   returns the product; the ORM then wrote EVERY dirtied SKU as ONE unit of
+//   work inside the request's transaction. Reproducing that with a loop over
+//   `saveSku` does not reproduce it: each call opens its own transaction on its
+//   own pooled connection, so a failure part-way through leaves some SKUs
+//   repriced and the rest not - a half-applied price change that the legacy
+//   system could not produce. `saveSkus` is that unit of work, made explicit.
+//
+//   WHAT IS STILL PROHIBITED, UNCHANGED. No load-by-ID, no delete, no count, no
+//   existence probe, no overload, no options bag, no cache-clear. And `saveSkus`
+//   is not a licence for a generic bulk surface either: it takes a collection of
+//   entities and nothing else - no batch size, no chunking parameter, no retry
+//   policy, no timeout and no transaction handle. The BOUND on how many SKUs a
+//   caller may hand it belongs to the service tier that assembles the collection,
+//   exactly as the bound on `createSkus` does, and AAP 0.6.5 places it there.
 //
 //   `getSkuStocksDeletableFlag` is the eighth method a reader will look for and
 //   NOT find, so its absence is recorded rather than left to inference. It is
@@ -69,7 +97,7 @@
 //   here would invent a capability the legacy system does not have. The
 //   LEGACY-DEFECT marker immediately above the interface carries the full
 //   finding, and the consuming service method is ported as a throwing path in
-//   `src/services/skuService.ts` (planned).
+//   `src/services/skuService.ts`.
 //
 // WHAT SURVIVES THE EMIT, MEASURED RATHER THAN ASSUMED
 //   `tsconfig.build.json` sets `removeComments: false`, so the annotations in
@@ -82,7 +110,7 @@
 //       erased declaration is erased with it. The runtime payload is one line:
 //       an empty-module marker.
 //     * the `.d.ts` keeps every `/** */` block - the interface doc and all
-//       seven method docs, including the carried-forward TODO - and drops every
+//       eight method docs, including the carried-forward TODO - and drops every
 //       `//` line comment in EVERY position. That was verified directly: a line
 //       comment survives declaration emit neither at file top, nor above a
 //       declaration, nor beside a TSDoc block, nor inside an interface body.
@@ -103,7 +131,7 @@
 //   transfers wholly to `src/repositories/mysql/**`.
 //
 //   On this port that obligation is unusually pointed, because two of the
-//   seven methods take a caller-supplied comma-delimited list that the legacy
+//   eight methods take a caller-supplied comma-delimited list that the legacy
 //   code expands into a variable number of predicates:
 //
 //     * `getSkusBySelectedOptions(selectedOptions, ...)` expands its list into
@@ -164,7 +192,7 @@
 //   There is no ORM in the target, so associations are MATERIALIZED at the
 //   repository boundary and laziness is NOT simulated. The fetch shape becomes
 //   an explicit, documented decision made at each repository method inside
-//   `src/repositories/mysql/mysqlSkuRepository.ts` (planned), which also owns the
+//   `src/repositories/mysql/mysqlSkuRepository.ts`, which also owns the
 //   row-to-entity factory, port injection into the constructed entities, and
 //   the association materialization itself.
 //
@@ -190,7 +218,8 @@
 //
 // THE ASYNC RULING
 //   A method is async if and only if its legacy body reached the DAO or the
-//   ORM. Every legacy function ported here did exactly that, so all seven
+//   ORM. Every legacy function ported here did exactly that, and both write
+//   methods reach the ORM's own flush, so all eight
 //   methods return a promise. Methods that merely traverse already-materialized
 //   associations or perform pure arithmetic stay synchronous, and those live on
 //   the entities and services rather than on this port.
@@ -279,7 +308,7 @@
 //   is authored separately and none of it lives in this file.
 //
 // WHO IMPLEMENTS THIS PORT
-//   `src/repositories/mysql/mysqlSkuRepository.ts` (planned). `src/handlers/bootstrap.ts` (planned)
+//   `src/repositories/mysql/mysqlSkuRepository.ts`. `src/handlers/bootstrap.ts` (planned)
 //   WIRES the port to that adapter; it does not implement it. Five obligations
 //   transfer to the adapter:
 //
@@ -317,29 +346,29 @@
 
 import type { Sku } from '../entities/sku.js';
 import type { Product } from '../entities/product.js';
-
-// LEGACY-DEFECT [model/service/SkuService.cfc:L281-L282]: getSkuStocksDeletableFlag calls a
-// SkuDAO method that does not exist - it is absent from model/dao/, absent from org/Hibachi/,
-// and org/Hibachi/HibachiDAO.cfc has no onMissingMethod, so the call cannot be dynamically
-// dispatched and the service method throws at runtime today. Verified four ways: the identifier
-// occurs at exactly three non-framework sites, namely model/entity/Sku.cfc:L569 (reached from
-// getStocksDeletableFlag through a getService("skuService") locator), the service declaration at
-// model/service/SkuService.cfc:L281 and the call at model/service/SkuService.cfc:L282; there is no
-// declaration anywhere in model/dao/; there is no occurrence anywhere inside org/Hibachi/, so it
-// is not inherited from the framework base; and neither org/Hibachi/HibachiDAO.cfc (266 lines) nor
-// model/dao/HibachiDAO.cfc (55 lines) declares onMissingMethod, so there is no dynamic-dispatch
-// fallback that could rescue it. Deliberately NOT declared on this port; the consuming service
-// method is ported as a throwing path in src/services/skuService.ts (planned), not invented. Declaring it
-// here - or supplying a stock-deletability method under another name, or a stub returning false -
-// would silently repair behaviour and invent a capability the legacy system does not have, and
-// this port is budgeted ZERO deliberate divergences.
+// LEGACY-DEFECT [model/service/SkuService.cfc:L281-L282]: `getSkuStocksDeletableFlag` calls a
+// `SkuDAO` method that does not exist, so the service method throws at runtime today. Verified four
+// ways: the identifier occurs at exactly three non-framework sites - [model/entity/Sku.cfc:L569]
+// (reached from `getStocksDeletableFlag` through a `getService("skuService")` locator), the service
+// declaration at [model/service/SkuService.cfc:L281] and the call at
+// [model/service/SkuService.cfc:L282]; there is no declaration anywhere in `model/dao/`; there is
+// no
+// occurrence anywhere inside `org/Hibachi/`, so it is not inherited; and neither
+// `org/Hibachi/HibachiDAO.cfc` nor `model/dao/HibachiDAO.cfc` declares `onMissingMethod`, so no
+// dynamic dispatch can rescue it. It is therefore deliberately NOT declared on this port and the
+// consuming service method is ported as a throwing path. Declaring it here - or supplying a
+// stock-deletability method under another name, or a stub returning `false` - would silently repair
+// behaviour and invent a capability the legacy system does not have.
 // Preserved deliberately; do not fix without a product decision.
+
 /**
  * The SKU repository port.
  *
- * Seven methods: the six public data-reading `SkuDAO` functions, plus one
- * persistence method that has no legacy antecedent on that component. The
- * count is locked and the arithmetic behind it is in the file header.
+ * Eight methods: the six public data-reading `SkuDAO` functions, plus two
+ * persistence methods that have no legacy antecedent on that component - one
+ * for a single SKU and one for a collection written as a single unit of work.
+ * The arithmetic behind the count, and the record of its revision from seven,
+ * are in the file header.
  *
  * Every method returns a promise because every legacy body reached the DAO or
  * the ORM. Parameter types replace the legacy `any` with concrete ones, and
@@ -347,23 +376,8 @@ import type { Product } from '../entities/product.js';
  * here if and only if its `<cfargument>` or cfscript declaration omitted
  * `required`.
  *
- * ONE METHOD IS DELIBERATELY ABSENT AND ITS ABSENCE IS PART OF THE CONTRACT.
- * `getSkuStocksDeletableFlag` is NOT declared here, because it does not exist
- * in the legacy DAO. `model/service/SkuService.cfc:L281` declares it and
- * `model/service/SkuService.cfc:L282` calls it on the DAO, and
- * `model/entity/Sku.cfc:L569` reaches that service method through a locator -
- * but there is no declaration anywhere in `model/dao/`, none anywhere inside
- * `org/Hibachi/`, and no `onMissingMethod` in either
- * `org/Hibachi/HibachiDAO.cfc` or `model/dao/HibachiDAO.cfc` that could
- * dispatch it dynamically, so the call cannot resolve and the service method
- * throws at runtime today. Declaring it here - or supplying a stock-deletability
- * method under another name, or a stub returning `false` - would silently repair
- * behaviour and invent a capability the legacy system does not have. The
- * consuming service method is ported as a throwing path in
- * `src/services/skuService.ts` (planned) instead. The LEGACY-DEFECT marker in the source
- * immediately above this declaration carries the same finding in the project's
- * uniform marker shape; this paragraph exists so the omission is also visible in
- * the emitted declaration, which is what a consumer of this port reads.
+ * `getSkuStocksDeletableFlag` is deliberately absent, and its absence is part of the contract - see
+ * the preserved-defect marker above.
  */
 export interface SkuRepository {
   // CFML parity [model/dao/SkuDAO.cfc:L53-L98]: the SKU identifier is preferred when both are
@@ -379,8 +393,10 @@ export interface SkuRepository {
    */
   getTransactionExistsFlag(productID?: string, skuID?: string): Promise<boolean>;
 
-  // CFML parity [model/dao/SkuDAO.cfc:L102-L103]: the same value is matched against both the SKU code
-  // and the alternate SKU codes, and the legacy call asks for a unique result rather than a list, so
+  // CFML parity [model/dao/SkuDAO.cfc:L102-L103]: the same value is matched against both the SKU
+  // code
+  // and the alternate SKU codes, and the legacy call asks for a unique result rather than a list,
+  // so
   // it is not written to tolerate two matches.
   /**
    * Load a SKU by its code or one of its alternate codes.
@@ -390,8 +406,10 @@ export interface SkuRepository {
    */
   getSkuBySkuCode(skuCode: string): Promise<Sku | undefined>;
 
-  // CFML parity [model/dao/SkuDAO.cfc:L106-L128]: one `exists` clause is appended per selected option
-  // and they are joined with AND, so a SKU must carry every option to match — not any of them. This is
+  // CFML parity [model/dao/SkuDAO.cfc:L106-L128]: one `exists` clause is appended per selected
+  // option
+  // and they are joined with AND, so a SKU must carry every option to match — not any of them. This
+  // is
   // the behavior the option-driven SKU resolution depends on and it is preserved exactly.
   /**
    * SKUs carrying all of the selected options.
@@ -403,7 +421,8 @@ export interface SkuRepository {
   getSkusBySelectedOptions(selectedOptions: string, productID?: string): Promise<Sku[]>;
 
   // CFML parity [model/dao/SkuDAO.cfc:L130-L148]: the term is matched against the SKU code with a
-  // leading and trailing wildcard, and the product-type filter is appended only for a non-blank value.
+  // leading and trailing wildcard, and the product-type filter is appended only for a non-blank
+  // value.
   // The legacy statement is raw SQL naming `SlatwallSku`, which is the ORM entity name, while the
   // entity maps to table `SwSku` [model/entity/Sku.cfc:L49].
   /**
@@ -428,8 +447,10 @@ export interface SkuRepository {
    */
   getProductSkus(product: Product, fetchOptions: boolean): Promise<Sku[]>;
 
-  // CFML parity [model/dao/SkuDAO.cfc:L172-L202]: ordering is a positional weighting — each option's
-  // sort order scaled by a power of ten derived from its option group's sort order — so option groups
+  // CFML parity [model/dao/SkuDAO.cfc:L172-L202]: ordering is a positional weighting — each
+  // option's
+  // sort order scaled by a power of ten derived from its option group's sort order — so option
+  // groups
   // act as digits and the lowest-ordered group is the most significant.
   /**
    * SKU identifiers for a product, ordered by option group then option sort order.
@@ -439,5 +460,90 @@ export interface SkuRepository {
    */
   getSortedProductSkusID(productID: string): Promise<string[]>;
 
+  // NO LEGACY ANTECEDENT ON `SkuDAO.cfc`, which declares no save of any kind. Persistence reached a
+  // SKU through `super.save()` on the service base and through Hibernate's flush, and this member
+  // replaces the single-entity half of that. A TSDoc block was added here alongside `saveSkus`
+  // below: the member itself is unchanged, but it was the only declaration on this interface
+  // carrying no doc comment, and since the emitted `.d.ts` keeps only `/** */` blocks, a consumer
+  // reading the declaration file saw this contract stated nowhere at all.
+  /**
+   * Persist one SKU as its own unit of work.
+   *
+   * Insert versus update is decided by the entity's own `isNew()` rather than by
+   * probing the database, which is the legacy's own discriminator: Hibachi read
+   * `getNewFlag()` [org/Hibachi/HibachiEntity.cfc:L571-L576] and never issued a
+   * lookup to classify the write.
+   *
+   * ⚠ BUT `Sku.isNew()` IS NOT THAT LINE, AND THE DIFFERENCE MATTERS TO CALLERS.
+   * The framework DERIVES the flag - `if(getPrimaryIDValue() == "") return true;`
+   * - whereas the ported `Sku` returns a boolean supplied at construction. The two
+   * part company because a SKU draft is built carrying a PROVISIONAL 32-character
+   * key, so an identifier test would classify every draft as already persisted and
+   * this method would issue an UPDATE that matched no row. `Product.isNew()` does
+   * reproduce the identifier test, because a product draft carries `''`. A caller
+   * handing over a SKU it constructed itself must therefore set the flag; handing
+   * over one this port returned needs nothing, since the flag is false on a
+   * persisted instance.
+   *
+   * The returned entity is a NEW instance reflecting the row that was written,
+   * carrying the identifier the adapter minted on an insert and the audit stamps
+   * it bound. It is never the argument mutated: the identifier fields on the
+   * domain entities are `private readonly`, and the caller's instance was never
+   * the row.
+   *
+   * @param sku the SKU to persist.
+   * @returns a new instance reflecting the persisted row.
+   */
   saveSku(sku: Sku): Promise<Sku>;
+
+  // NO LEGACY ANTECEDENT ON `SkuDAO.cfc` EITHER, and its antecedent is not a DAO function at all -
+  // it is Hibernate's flush, which wrote every dirtied SKU of a request as ONE unit of work inside
+  // that request's transaction. `ProductService.processProduct_updateSkus`
+  // [model/service/ProductService.cfc:L216-L233] is the in-scope path that depends on it: it walks
+  // every SKU on a product applying a price and/or a list price, saves nothing itself, and answers
+  // the product. See the record in the file header for why this member exists despite the earlier
+  // prohibition on a bulk save.
+  /**
+   * Persist a collection of SKUs as ONE unit of work.
+   *
+   * ★ THE ATOMICITY IS THE POINT, AND IT IS THE WHOLE REASON THIS MEMBER IS NOT A
+   * LOOP AT THE CALL SITE. A caller that iterates {@link SkuRepository.saveSku}
+   * gets one transaction per SKU on one pooled connection per SKU, so a failure
+   * on the fifth of ten leaves four SKUs repriced and six not. The legacy could
+   * not reach that state: the ORM flush was a single unit inside the request's
+   * transaction, and either every dirtied SKU was written or none was. An
+   * implementation of this member MUST reproduce that - all of the supplied SKUs
+   * commit together, or none of them does.
+   *
+   * ★ IT DECLARES NO CONTROL PARAMETER, DELIBERATELY. There is no batch size, no
+   * chunk count, no retry policy, no timeout and no transaction handle. Bounding
+   * the size of the collection is the calling service's obligation under AAP
+   * 0.6.5, and it is discharged where the collection is assembled - the same
+   * place `SkuService.createSkus` bounds its combination odometer. A control
+   * parameter here would move that decision to the layer least able to make it,
+   * and would also put a transaction type from `src/repositories/**` onto a
+   * `src/domain/**` interface, which the layer boundary refuses outright.
+   *
+   * ★ IT IS IDEMPOTENT IN EVERY COLUMN THE CALLER CONTROLS. Re-running the same
+   * collection issues the same statements binding the same values, so a retry
+   * after a rolled-back attempt converges rather than compounding: a SKU that
+   * was already persisted updates by key to the same column values. The one
+   * column that does advance is the modified stamp, which is exactly what
+   * Hibernate's `preUpdate` advanced on every flush, so the divergence is the
+   * legacy's own.
+   *
+   * AN EMPTY COLLECTION IS A NO-OP that writes nothing and opens nothing. That is
+   * the flush's behaviour when a request dirtied no entity, and it matters here
+   * because the calling loop's flags are permitted to select no SKU at all.
+   *
+   * ORDER IS PRESERVED: the returned array corresponds positionally to the
+   * supplied one, so a caller can pair each persisted instance with the entity it
+   * handed over without matching on identifiers that the write may have minted.
+   *
+   * @param skus the SKUs to persist together. May be empty, in which case nothing
+   *   is written.
+   * @returns new instances reflecting the persisted rows, positionally matching
+   *   the supplied collection.
+   */
+  saveSkus(skus: readonly Sku[]): Promise<Sku[]>;
 }

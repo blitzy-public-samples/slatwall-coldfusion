@@ -117,7 +117,7 @@
 //   Deliberately NOT reproduced: meta/tests/unit/Helper.cfc:L53 assigns
 //   `productData` with no `var`, leaking it into the component's `variables`
 //   scope. That is a hygiene defect in the legacy HARNESS being replaced - not
-//   one of the twenty preserved business-logic defects - so its absence here is
+//   one of the thirty preserved business-logic defects - so its absence here is
 //   a decision rather than an oversight, and it correctly carries no
 //   preserved-defect marker. The literal fixture values on L54-L59 are
 //   likewise out of scope for this file; they belong to tests/fixtures/ (planned).

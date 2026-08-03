@@ -90,23 +90,23 @@
 // L424. The corrected locators are used throughout. The legacy file is NOT
 // touched to make a citation right - it is read as reference only.
 //
-// ⚠ A DISCREPANCY BETWEEN THE BRIEF AND THE SHIPPED CODE, RECORDED RATHER THAN
-// SILENTLY RESOLVED. The brief describes the port as SIX methods. The shipped
-// `src/domain/ports/productRepository.ts` declares SEVEN and says so in its own
-// header: the sixth and seventh are `deleteProduct` and `saveBrand`. The port's
-// stated reason is checkable and correct - THERE IS NO `BrandDAO.cfc` ANYWHERE IN
-// THE LEGACY REPOSITORY, brand persistence ran entirely through
-// `super.save(arguments.brand, arguments.data)` [model/service/BrandService.cfc:L76],
-// and AAP 0.4.1 fixes the port inventory at thirteen so no fourteenth
-// `BrandRepository` was available to host it. The shipped adapter implements all
-// seven.
-//
-// JUDGMENT CALL: the adapter and its port win on SHAPE, so this suite asserts
-// SEVEN methods and pins the seventh alongside the other six. Asserting six
-// would leave a real, reachable, writing method unpinned - the opposite of this
-// folder's purpose - and editing the port to match the brief is out of the
-// question, since the port is not this file's write target. The discrepancy is
-// recorded here so a reviewer meets it as a decision rather than as a surprise.
+// ★ THE PORT IS SIX METHODS AND THIS SUITE PINS SIX. An earlier revision of
+// `src/domain/ports/productRepository.ts` declared a SEVENTH, `saveBrand`, on the
+// grounds that there is no `BrandDAO.cfc` anywhere in the legacy repository and
+// that brand persistence ran entirely through
+// `super.save(arguments.brand, arguments.data)` [model/service/BrandService.cfc:L76].
+// Both of those source facts are correct, and neither licenses the member: the
+// port's member set is LOCKED AT SIX, AAP 0.4.1 fixes the port inventory at
+// THIRTEEN so no fourteenth `BrandRepository` is available either, and AAP 0.5.3
+// lists the Hibachi base classes - which is what `super.save` is - among the
+// dependencies deliberately not carried forward. A partial brand write would have
+// stored a WRONG ROW (`urlTitle` and `brandName` only, with `activeFlag`,
+// `publishedFlag` and `brandWebsite` dropped and `model/validation/Brand.json`
+// unenforced), which is strictly worse than no write. The member, its three
+// `SwBrand` write statements and this suite's group for them are all gone, and
+// `src/services/brandService.ts` carries the LEGACY-NOTE that leaves the durable
+// half to the composition root. `SwBrand` is still READ here, as the eager
+// many-to-one association [model/entity/Product.cfc:L68] declares `fetch="join"`.
 //
 // WHAT IS DELIBERATELY NOT ASSERTED, so a reader can tell an informed omission
 // from a gap:
@@ -146,6 +146,9 @@
 import { describe, expect, it } from 'vitest';
 
 import type { Product } from '../../../src/domain/entities/product.js';
+// Type-only: the cascade contract names `Sku` in its signature, and the recording writer below
+// restates that signature so the compiler checks the shape on every build.
+import type { Sku } from '../../../src/domain/entities/sku.js';
 import type { AttributeSetSummary } from '../../../src/domain/ports/productRepository.js';
 import { listToArray } from '../../../src/lib/cfml/list.js';
 import { cfBoolean } from '../../../src/lib/cfml/truthiness.js';
@@ -156,11 +159,14 @@ import type {
 } from '../../../src/repositories/mysql/connection.js';
 import { MysqlProductRepository } from '../../../src/repositories/mysql/mysqlProductRepository.js';
 import { makeProductFixture } from '../../fixtures/productFixtures.js';
+// The aggregate cascade is driven by the product's OWN sku collection, so the cascade cases
+// have to build SKUs. Nothing else in this file constructs one.
+import { makeSkuFixture } from '../../fixtures/skuFixtures.js';
 
 // --- The recording double ----------------------------------------------------
 //
 // JUDGMENT CALL: the executor is implemented outright rather than mocked. The
-// contract is two methods wide, so `implements PreparedStatementExecutor` makes
+// contract is three methods wide, so `implements PreparedStatementExecutor` makes
 // the compiler check the shape on every build - something no runtime mock can do -
 // and a mocking library is not in the fixed dependency set, so adding one would
 // breach exact pinning (E3). `vi.mock` is available and is deliberately not used.
@@ -184,6 +190,16 @@ interface RecordedStatement {
 
   /** The bound parameters, in the positional order they were supplied. */
   readonly params: readonly unknown[];
+  /**
+   * Whether this statement was issued inside `transaction`.
+   *
+   * Captured per statement so a suite can PROVE atomicity instead of assuming it.
+   * A multi-statement write that must not half-apply is asserted by requiring
+   * every one of its statements to carry `true` - a statement that escaped the
+   * transaction (by reaching past the `tx` executor to the outer one) records
+   * `false` and fails the assertion at the point the mistake is made.
+   */
+  readonly inTransaction: boolean;
 }
 
 /** A statement that matched nothing, which is a legitimate outcome for every read here. */
@@ -255,7 +271,7 @@ class RecordingExecutor implements PreparedStatementExecutor {
    * @returns the next canned result set.
    */
   execute(sql: string, params: readonly unknown[] = []): Promise<readonly SqlRow[]> {
-    this.calls.push({ sql, params: [...params] });
+    this.calls.push({ sql, params: [...params], inTransaction: this.transactionDepth > 0 });
 
     const cannedRows = this.cannedResultSets[this.answeredResultSets] ?? NO_ROWS;
     this.answeredResultSets += 1;
@@ -266,8 +282,8 @@ class RecordingExecutor implements PreparedStatementExecutor {
   /**
    * Record the write and report the configured outcome.
    *
-   * The port declares `saveProduct`, `deleteProduct` and `saveBrand`, so a
-   * recorded mutation is expected here rather than a fault. What is asserted is
+   * The port declares `saveProduct` and `deleteProduct`, so a recorded mutation
+   * is expected here rather than a fault. What is asserted is
    * WHICH statement it was, WHAT it bound, and - in the schema-continuity group -
    * that it is never a schema-changing statement.
    *
@@ -276,9 +292,92 @@ class RecordingExecutor implements PreparedStatementExecutor {
    * @returns the configured mutation result.
    */
   executeMutation(sql: string, params: readonly unknown[] = []): Promise<SqlMutationResult> {
-    this.mutationCalls.push({ sql, params: [...params] });
+    this.mutationCalls.push({
+      sql,
+      params: [...params],
+      inTransaction: this.transactionDepth > 0,
+    });
 
     return Promise.resolve(this.mutationResult);
+  }
+
+  /**
+   * How many times `transaction` was entered, counting a JOINED inner call.
+   *
+   * A write that must be atomic is expected to open EXACTLY ONE OUTER unit of work, so
+   * this being greater than one means either that the work was split into several units
+   * that can half-apply independently, or that an inner call joined the open one - which
+   * {@link transactionEvents} is what tells apart.
+   */
+  transactionCount = 0;
+
+  /** Nesting depth, so joined inner calls do not read as separate units. */
+  private transactionDepth = 0;
+
+  /**
+   * The transaction boundary, in call order: `BEGIN`, then `COMMIT` or `ROLLBACK`.
+   *
+   * Separate from `calls` and `mutationCalls` so that a case asserting the STATEMENT
+   * sequence is unaffected by whether a transaction wrapped it, while a case asserting
+   * ATOMICITY reads this and gets an unambiguous answer.
+   *
+   * ★ A JOINED INNER CALL RECORDS `'JOIN'`, NOT A SECOND `'BEGIN'`, and contributes no
+   * `'COMMIT'`. That mirrors the shipped executor exactly: `createConnectionExecutor` in
+   * `src/repositories/mysql/connection.ts` implements the transactional executor's
+   * `transaction(work)` as `return work(boundExecutor)`, so an inner call issues no
+   * `BEGIN` and the OUTERMOST caller owns the single commit. IT IS LOAD-BEARING HERE:
+   * `saveProduct` opens a unit and then calls `saveSkuForProduct` for each transient
+   * draft, which funnels through `persistSku` and opens a unit on the executor it was
+   * handed. Those are joins, not second commits, and `transactionCount` counts them
+   * while `transactionEvents` shows only the one real boundary.
+   */
+  readonly transactionEvents: string[] = [];
+
+  /**
+   * Record the transaction boundary and run `work` inline against this same recorder.
+   *
+   * ★ THE WORK RECEIVES `this`, DELIBERATELY. Every statement issued inside the
+   * transaction therefore lands on the same `calls` and `mutationCalls` arrays as one
+   * issued outside it, which is what lets a case assert the statement sequence
+   * without caring whether it was transactional - and lets {@link transactionEvents}
+   * be read separately when the boundary itself is the subject. Each statement also
+   * carries an `inTransaction` flag, so the wrapping is observable per statement and
+   * not only in aggregate.
+   *
+   * IT IS NOT A DATABASE. Nothing is buffered and nothing is undone on rollback: the
+   * recorder captures WHAT the adapter asked for, and the real transaction semantics
+   * belong to the pool-backed executor in `src/repositories/mysql/connection.ts`. A
+   * case that needs to see a rollback asserts the recorded ROLLBACK marker and the
+   * statements that preceded it.
+   *
+   * The depth is restored in a `finally` so that a failing unit of work - which is
+   * exactly what a rollback test drives - does not leave the recorder believing it
+   * is still inside a transaction.
+   */
+  async transaction<T>(work: (tx: PreparedStatementExecutor) => Promise<T>): Promise<T> {
+    this.transactionCount += 1;
+    this.transactionDepth += 1;
+
+    const isOutermost = this.transactionDepth === 1;
+    this.transactionEvents.push(isOutermost ? 'BEGIN' : 'JOIN');
+
+    try {
+      const result = await work(this);
+
+      if (isOutermost) {
+        this.transactionEvents.push('COMMIT');
+      }
+
+      return result;
+    } catch (error: unknown) {
+      if (isOutermost) {
+        this.transactionEvents.push('ROLLBACK');
+      }
+
+      throw error;
+    } finally {
+      this.transactionDepth -= 1;
+    }
   }
 }
 
@@ -789,13 +888,20 @@ const EXPECTED_SKU_READ_HEAD = [
 // CFML parity [model/entity/Sku.cfc:L76]: `linktable="SwSkuOption" fkcolumn="skuID"
 // inversejoincolumn="optionID"`, with NO `orderby`.
 /**
- * The SKU option read across the link table.
+ * The SKU option read across the link table, with the option group joined alongside.
  *
- * The `INNER JOIN` is faithful - Hibernate's collection load joins the link table
- * to the target table, and a link row naming an option that does not exist
- * contributes no element. `so.skuID` is projected under its own label so each
+ * The `INNER JOIN` on `SwOption` is faithful - Hibernate's collection load joins the
+ * link table to the target table, and a link row naming an option that does not
+ * exist contributes no element. `so.skuID` is projected under its own label so each
  * option attaches to its SKU without a second statement per SKU, which is what
  * makes the fetch shape a property of the method rather than of the caller.
+ *
+ * The `LEFT JOIN` on `SwOptionGroup` is what makes `Product.getOptionGroups()`
+ * answerable without a fourth statement: `Option.optionGroup`
+ * [model/entity/Option.cfc:L59] is a nullable many-to-one, so an option with no
+ * group has to survive the join rather than disappear from the result set. The
+ * group columns are alias-prefixed because `SwOption` and `SwOptionGroup` share
+ * `optionGroupID`, `sortOrder`, `remoteID` and the four audit column names.
  */
 const EXPECTED_SKU_OPTION_READ_HEAD = [
   'SELECT',
@@ -805,14 +911,28 @@ const EXPECTED_SKU_OPTION_READ_HEAD = [
   '  o.optionName,',
   '  o.optionDescription,',
   '  o.sortOrder,',
+  '  o.optionGroupID,',
   '  o.defaultImageID,',
   '  o.remoteID,',
   '  o.createdDateTime,',
   '  o.createdByAccountID,',
   '  o.modifiedDateTime,',
-  '  o.modifiedByAccountID',
+  '  o.modifiedByAccountID,',
+  '  og.optionGroupID as optionGroup_optionGroupID,',
+  '  og.optionGroupName as optionGroup_optionGroupName,',
+  '  og.optionGroupCode as optionGroup_optionGroupCode,',
+  '  og.optionGroupImage as optionGroup_optionGroupImage,',
+  '  og.optionGroupDescription as optionGroup_optionGroupDescription,',
+  '  og.imageGroupFlag as optionGroup_imageGroupFlag,',
+  '  og.sortOrder as optionGroup_sortOrder,',
+  '  og.remoteID as optionGroup_remoteID,',
+  '  og.createdDateTime as optionGroup_createdDateTime,',
+  '  og.createdByAccountID as optionGroup_createdByAccountID,',
+  '  og.modifiedDateTime as optionGroup_modifiedDateTime,',
+  '  og.modifiedByAccountID as optionGroup_modifiedByAccountID',
   'FROM SwSkuOption so',
   'INNER JOIN SwOption o ON o.optionID = so.optionID',
+  'LEFT JOIN SwOptionGroup og ON og.optionGroupID = o.optionGroupID',
 ].join('\n');
 
 /** The existence read of the save path - one column, because one column is all the decision needs. */
@@ -884,58 +1004,131 @@ const EXPECTED_PRODUCT_UPDATE = [
   'WHERE productID = ?',
 ].join('\n');
 
-/** The product delete - one row, one bound key, and no dependent table named. */
-const EXPECTED_PRODUCT_DELETE = 'DELETE FROM SwProduct WHERE productID = ?';
-
-/** Every statement this suite expects, for the schema-continuity sweep. */
-// JUDGMENT CALL: the brand write statements are pinned here rather than left to a
-// `mysqlBrandRepository.test.ts` that cannot exist, because there is NO `BrandDAO.cfc`
-// in the legacy repository and AAP 0.4.1 fixes the port inventory at THIRTEEN, so no
-// fourteenth brand repository or brand port was available to receive them. Brand
-// persistence ran entirely through the framework base at
-// [model/service/BrandService.cfc:L76] as `super.save(arguments.brand, arguments.data)`,
-// which is not ported - so `saveBrand` landed on THIS adapter, and pinning it is
-// therefore this suite's obligation rather than an overreach into another file's scope.
-
-/** Existence read for the brand save path - one column is enough to answer the question. */
-const EXPECTED_BRAND_EXISTENCE_READ = 'SELECT brandID FROM SwBrand WHERE brandID = ?';
-
-/** Eleven columns, eleven placeholders, in the adapter's declared order. */
-const EXPECTED_BRAND_INSERT = [
-  'INSERT INTO SwBrand (',
-  '  brandID,',
-  '  activeFlag,',
-  '  publishedFlag,',
-  '  urlTitle,',
-  '  brandName,',
-  '  brandWebsite,',
-  '  remoteID,',
-  '  createdDateTime,',
-  '  createdByAccountID,',
-  '  modifiedDateTime,',
-  '  modifiedByAccountID',
-  ') VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)',
-].join('\n');
+/**
+ * The ten product link-row deletes that OPEN the delete sequence, in declaration order.
+ *
+ * Transcribed from `model/entity/Product.cfc:L79-L90` - the three owner and seven
+ * inverse `many-to-many` properties - because that is the set
+ * `HibachiEntity.removeAllManyToManyRelationships()`
+ * [org/Hibachi/HibachiEntity.cfc:L271-L284] selects: every `many-to-many` property
+ * with no delete cascade, and NOT ONE of Product's ten declares one. The framework ran
+ * it before the DAO delete [org/Hibachi/HibachiService.cfc:L61] with the stated purpose
+ * of not violating a foreign-key constraint.
+ */
+// ★ THREE OWNED, THEN SEVEN INVERSE, WHICH IS THE ORDER THE ADAPTER WALKS THEM AND THE
+// REASON THE LIST IS NOT ALPHABETICAL. The first three are declared on the product with no
+// `inverse="true"` [model/entity/Product.cfc:L79-L81], so their rows go with the owner. The
+// other seven are declared on the FAR side and the product only participates in them -
+// `removeAllManyToManyRelationships()` [org/Hibachi/HibachiService.cfc:L61] cleared those
+// too, which is why omitting them would leave the product undeletable where the schema
+// constrains them and the rows orphaned where it does not.
+const EXPECTED_PRODUCT_LINK_DELETES: readonly string[] = [
+  'DELETE FROM SwProductListingPage WHERE productID = ?',
+  'DELETE FROM SwProductCategory WHERE productID = ?',
+  'DELETE FROM SwRelatedProduct WHERE productID = ?',
+  'DELETE FROM SwPromoRewardProduct WHERE productID = ?',
+  'DELETE FROM SwPromoRewardExclProduct WHERE productID = ?',
+  'DELETE FROM SwPromoQualProduct WHERE productID = ?',
+  'DELETE FROM SwPromoQualExclProduct WHERE productID = ?',
+  'DELETE FROM SwPriceGroupRateProduct WHERE productID = ?',
+  'DELETE FROM SwVendorProduct WHERE productID = ?',
+  'DELETE FROM SwPhysicalProduct WHERE productID = ?',
+];
 
 /**
- * Eight SET assignments then the key: nine parameters, KEY LAST.
+ * The default-SKU DETACH, which is the FIRST statement of the delete and not a link delete
+ * at all.
  *
- * The three exclusions match the product update exactly - `brandID` is what the
- * statement MATCHES on, and the created audit pair is left as the insert wrote it.
+ * `SwSku.productID` references `SwProduct` [model/entity/Sku.cfc:L65] and
+ * `SwProduct.defaultSkuID` references `SwSku` [model/entity/Product.cfc:L70], so the SKU
+ * rows cannot go while the product row still names one of them. The legacy solved the same
+ * problem one tier up, nulling the association before delegating to the framework delete
+ * [model/service/ProductService.cfc:L323]; this is the SQL half of that null-out.
+ *
+ * It clears one column and deliberately does NOT re-stamp the audit pair: the row it
+ * updates is deleted twenty-three statements later in the same unit of work, so a
+ * modification stamp would record a change nobody can ever read.
  */
-const EXPECTED_BRAND_UPDATE = [
-  'UPDATE SwBrand',
-  'SET',
-  '  activeFlag = ?,',
-  '  publishedFlag = ?,',
-  '  urlTitle = ?,',
-  '  brandName = ?,',
-  '  brandWebsite = ?,',
-  '  remoteID = ?,',
-  '  modifiedDateTime = ?,',
-  '  modifiedByAccountID = ?',
-  'WHERE brandID = ?',
-].join('\n');
+const EXPECTED_PRODUCT_DEFAULT_SKU_DETACH =
+  'UPDATE SwProduct SET defaultSkuID = NULL WHERE productID = ?';
+
+/**
+ * The eight SKU-dependent tables, reached through a SUBQUERY over the product's SKUs.
+ *
+ * Four are the link tables a SKU OWNS [model/entity/Sku.cfc:L76-L79]; the rest are its
+ * `cascade="all-delete-orphan"` children [L69-L73] whose physical tables this slice can
+ * name. Keying by subquery rather than by a bound SKU list makes the cleanup independent of
+ * whatever the argument happened to have materialized and keeps the statement count fixed.
+ */
+const EXPECTED_PRODUCT_SKU_CHILD_DELETES: readonly string[] = [
+  'DELETE FROM SwAlternateSkuCode WHERE skuID IN (SELECT skuID FROM SwSku WHERE productID = ?)',
+  'DELETE FROM SwAttributeValue WHERE skuID IN (SELECT skuID FROM SwSku WHERE productID = ?)',
+  'DELETE FROM SwSkuCurrency WHERE skuID IN (SELECT skuID FROM SwSku WHERE productID = ?)',
+  'DELETE FROM SwStock WHERE skuID IN (SELECT skuID FROM SwSku WHERE productID = ?)',
+  'DELETE FROM SwSkuOption WHERE skuID IN (SELECT skuID FROM SwSku WHERE productID = ?)',
+  'DELETE FROM SwSkuAccessContent WHERE skuID IN (SELECT skuID FROM SwSku WHERE productID = ?)',
+  'DELETE FROM SwSkuSubsBenefit WHERE skuID IN (SELECT skuID FROM SwSku WHERE productID = ?)',
+  'DELETE FROM SwSkuRenewalSubsBenefit WHERE skuID IN (SELECT skuID FROM SwSku WHERE productID = ?)',
+];
+
+/** The product's own SKU rows - `cascade="all-delete-orphan"` [model/entity/Product.cfc:L73]. */
+const EXPECTED_PRODUCT_SKUS_DELETE = 'DELETE FROM SwSku WHERE productID = ?';
+
+/**
+ * The three product-level children - `cascade="all-delete-orphan"` one-to-many
+ * [model/entity/Product.cfc:L74-L76]. They key on `productID` directly rather than through
+ * a subquery, because each names the product itself.
+ */
+const EXPECTED_PRODUCT_CHILD_DELETES: readonly string[] = [
+  'DELETE FROM SwImage WHERE productID = ?',
+  'DELETE FROM SwAttributeValue WHERE productID = ?',
+  'DELETE FROM SwProductReview WHERE productID = ?',
+];
+
+/** The product row - one row, one bound key, and the LAST statement of the sequence. */
+const EXPECTED_PRODUCT_DELETE = 'DELETE FROM SwProduct WHERE productID = ?';
+
+/**
+ * The whole delete sequence in the order the adapter must emit it: the default-SKU detach,
+ * eight SKU-dependent tables, the SKU rows, the ten link tables, the three product-level
+ * children, then the product row. TWENTY-FOUR statements, and the count does not grow with
+ * the number of rows involved.
+ *
+ * ★ THE ORDER IS THE ONLY ORDER THE FOREIGN KEYS PERMIT. The detach frees `SwSku` from the
+ * product row; the SKU-dependents have to go while `SwSku` still holds the rows their
+ * subquery selects; and the link rows go before their parent because
+ * [org/Hibachi/HibachiEntity.cfc:L270] says in as many words that they do, "so that it
+ * doesn't violate fkconstrint".
+ */
+const EXPECTED_PRODUCT_DELETE_SEQUENCE: readonly string[] = [
+  EXPECTED_PRODUCT_DEFAULT_SKU_DETACH,
+  ...EXPECTED_PRODUCT_SKU_CHILD_DELETES,
+  EXPECTED_PRODUCT_SKUS_DELETE,
+  ...EXPECTED_PRODUCT_LINK_DELETES,
+  ...EXPECTED_PRODUCT_CHILD_DELETES,
+  EXPECTED_PRODUCT_DELETE,
+];
+
+/** Every statement this suite expects, for the schema-continuity sweep. */
+// NO `SwBrand` WRITE STATEMENT IS PINNED, BECAUSE THE ADAPTER EMITS NONE. The port's
+// member set is locked at six and publishes no brand write; `SwBrand` appears only in
+// the product graph's `LEFT JOIN`, which is what [model/entity/Product.cfc:L68]
+// `fetch="join"` requires. The header records why the seventh member and its three
+// write statements were removed rather than relocated.
+
+/**
+ * The deferred `defaultSkuID` write the aggregate cascade issues LAST.
+ *
+ * ★ ONE COLUMN AND A KEY, WHICH IS THE WHOLE STATEMENT. `SwSku.productID` and
+ * `SwProduct.defaultSkuID` point at each other [model/entity/Sku.cfc:L65;
+ * model/entity/Product.cfc:L70], so on a create neither key can be written at the
+ * moment the other row is inserted. Hibernate resolved that by ordering the inserts
+ * and issuing a follow-up update, and this is that update. It deliberately does NOT
+ * re-stamp `modifiedDateTime`: the caller made one modification, and a second full
+ * update would report two.
+ */
+const EXPECTED_PRODUCT_DEFAULT_SKU_UPDATE =
+  'UPDATE SwProduct SET defaultSkuID = ? WHERE productID = ?';
 
 const EVERY_EXPECTED_STATEMENT: readonly string[] = [
   expectedGlobalArmStatement('?'),
@@ -952,10 +1145,8 @@ const EVERY_EXPECTED_STATEMENT: readonly string[] = [
   EXPECTED_PRODUCT_EXISTENCE_READ,
   EXPECTED_PRODUCT_INSERT,
   EXPECTED_PRODUCT_UPDATE,
-  EXPECTED_PRODUCT_DELETE,
-  EXPECTED_BRAND_EXISTENCE_READ,
-  EXPECTED_BRAND_INSERT,
-  EXPECTED_BRAND_UPDATE,
+  ...EXPECTED_PRODUCT_DELETE_SEQUENCE,
+  EXPECTED_PRODUCT_DEFAULT_SKU_UPDATE,
 ];
 
 // --- Fixed inputs ------------------------------------------------------------
@@ -989,13 +1180,61 @@ const PERSISTED_PRODUCT_ID = '3e8a1f7c94d2406bb7150af8c6d29e34';
 /** An identifier no canned row carries, so the miss path is reachable. */
 const UNMATCHED_PRODUCT_ID = 'd47c0b8e31a2496fb85de0c7391a4b62';
 
+/**
+ * The url title `makeProductFixture` defaults to.
+ *
+ * [meta/tests/unit/entity/ProductTest.cfc:L59] `setURLTitle("nike-air-jorden")`, carried
+ * through the fixture verbatim. Named here so the populate cases can assert "the ENTITY's
+ * value survived" without restating a literal the fixture owns.
+ */
+const FIXTURE_URL_TITLE = 'nike-air-jorden';
+
+/** The product name `makeProductFixture` defaults to - [meta/tests/unit/Helper.cfc:L54]. */
+const LEGACY_FIXTURE_PRODUCT_NAME = 'Test Product';
+
+/**
+ * A url title standing in for one the service's generator resolved.
+ *
+ * Deliberately unlike {@link FIXTURE_URL_TITLE} so no populate assertion can pass by
+ * coincidence, and deliberately slug-shaped so it is recognizable as what
+ * `createUniqueURLTitle` [model/service/ProductService.cfc:L269] produces.
+ */
+const RESOLVED_URL_TITLE = 'a-title-the-generator-resolved';
+
+/** A product name standing in for one arriving in the save payload. */
+const OVERRIDING_PRODUCT_NAME = 'A Name The Payload Supplied';
+
+/** Where `urlTitle` sits in {@link EXPECTED_PRODUCT_INSERT}'s bound parameters. */
+const INSERT_URL_TITLE_POSITION = 2;
+
+/** Where `productName` sits in {@link EXPECTED_PRODUCT_INSERT}'s bound parameters. */
+const INSERT_PRODUCT_NAME_POSITION = 3;
+
+/**
+ * Where `urlTitle` sits in {@link EXPECTED_PRODUCT_UPDATE}'s bound parameters.
+ *
+ * One position earlier than on the insert, because the update's SET list omits `productID` -
+ * it is the column the statement MATCHES on rather than one it sets, and it is bound LAST.
+ */
+const UPDATE_URL_TITLE_POSITION = 1;
+
 /** The SKU identifier the graph case hangs off the product. */
 const PERSISTED_SKU_ID = '9b2e75c0a4f14d38be61c07d5a3f298e';
+
+/**
+ * The zero-based position `defaultSkuID` occupies in the product insert's parameter array.
+ *
+ * Named rather than inlined because the deferral case reads the SAME position twice - once
+ * expecting NULL and once expecting a bound key - and a bare `14` repeated in both halves would
+ * let one drift from the other. The position is fixed by {@link EXPECTED_PRODUCT_INSERT}, whose
+ * column list this suite already asserts verbatim, so the two cannot disagree silently.
+ */
+const DEFAULT_SKU_ID_PARAMETER_INDEX = 14;
 
 /** The option identifier the SKU-option read returns. */
 const PERSISTED_OPTION_ID = '2af86d31c957402eb0d47f19a6e35c8b';
 
-/** The brand identifier the brand-save cases update against. */
+/** The brand identifier the eager product-graph join materializes. */
 const PERSISTED_BRAND_ID = '7c4e0a92b5d34816af7e2c05d1b83f6a';
 
 /** The search term the LIKE predicate wraps. */
@@ -1163,20 +1402,44 @@ const SKU_ROW: SqlRow = Object.freeze({
   modifiedByAccountID: null,
 });
 
-/** One SKU-option row, carrying the link column that attaches it to its SKU. */
+/** The identifier of the option group joined onto {@link SKU_OPTION_ROW}. */
+const PERSISTED_OPTION_GROUP_ID = 'ffffffffffffffffffffffffffffff02';
+
+/**
+ * One SKU-option row, carrying the link column that attaches it to its SKU and the
+ * alias-prefixed option-group columns the LEFT JOIN projects alongside it.
+ *
+ * Every projected label is present, including the ones whose value is SQL NULL,
+ * because the row readers distinguish "this column is absent from the result set"
+ * from "this column is NULL" and refuse the first. A fixture that omitted a label
+ * would be testing the reader's absence path rather than the adapter's read.
+ */
 const SKU_OPTION_ROW: SqlRow = Object.freeze({
   link_skuID: PERSISTED_SKU_ID,
   optionID: PERSISTED_OPTION_ID,
   optionCode: 'sizeTen',
   optionName: 'Size 10',
   optionDescription: null,
-  sortOrder: 1,
+  optionGroupID: PERSISTED_OPTION_GROUP_ID,
   defaultImageID: null,
   remoteID: null,
+  sortOrder: 1,
   createdDateTime: null,
   createdByAccountID: null,
   modifiedDateTime: null,
   modifiedByAccountID: null,
+  optionGroup_optionGroupID: PERSISTED_OPTION_GROUP_ID,
+  optionGroup_optionGroupName: 'Size',
+  optionGroup_optionGroupCode: 'size',
+  optionGroup_optionGroupImage: null,
+  optionGroup_optionGroupDescription: null,
+  optionGroup_imageGroupFlag: 1,
+  optionGroup_sortOrder: 3,
+  optionGroup_remoteID: null,
+  optionGroup_createdDateTime: null,
+  optionGroup_createdByAccountID: null,
+  optionGroup_modifiedDateTime: null,
+  optionGroup_modifiedByAccountID: null,
 });
 
 /** The row the existence read returns when the product is already persisted. */
@@ -1206,6 +1469,21 @@ function makeWritableProduct(productID?: string): Product {
     defaultSku: undefined,
   });
 }
+
+/**
+ * A save payload that populates NOTHING, so every column comes off the entity.
+ *
+ * `saveProduct` takes a `ProductSavePayload` whose two members are each optional, and
+ * `Object.hasOwn` is what the adapter's populate step tests - so an object with NEITHER key
+ * present means "leave both columns as the entity holds them". That is the shape every case
+ * concerned with statement text, column order, parameter binding, audit stamping or
+ * transient-association refusal wants, because none of those is about population: passing an
+ * empty payload keeps each of them asserting exactly what it asserted before the payload
+ * existed.
+ *
+ * The cases that ARE about population supply their own payload and say so.
+ */
+const NO_POPULATED_MEMBERS: Parameters<MysqlProductRepository['saveProduct']>[1] = {};
 
 // =============================================================================
 // The suite
@@ -1241,13 +1519,12 @@ describe('MysqlProductRepository - net-new coverage with no legacy antecedent', 
       expect(repository).toBeInstanceOf(MysqlProductRepository);
     });
 
-    it('exposes all SEVEN port methods, including the brand save the brief omits', () => {
-      // C4/B4 - interface parity, asserted against the SHIPPED port rather than
-      // against the brief. The three legacy camelCase names are carried verbatim:
-      // `getAttributeSets` [model/dao/ProductDAO.cfc:L52], `loadDataFromFile`
-      // [:L73] and `searchProductsByProductType` [:L419]. The three lifecycle
-      // methods have no legacy antecedent on the DAO, and `saveBrand` is the
-      // seventh recorded in this file's header.
+    it('exposes exactly the SIX port methods and no brand write', () => {
+      // C4/B4 - interface parity, asserted against the SHIPPED port. The three
+      // legacy camelCase names are carried verbatim: `getAttributeSets`
+      // [model/dao/ProductDAO.cfc:L52], `loadDataFromFile` [:L73] and
+      // `searchProductsByProductType` [:L419]. The three lifecycle methods have no
+      // legacy antecedent on the DAO.
       const repository = new MysqlProductRepository(new RecordingExecutor());
 
       expect(typeof repository.getAttributeSets).toBe('function');
@@ -1256,7 +1533,41 @@ describe('MysqlProductRepository - net-new coverage with no legacy antecedent', 
       expect(typeof repository.getProductByProductID).toBe('function');
       expect(typeof repository.saveProduct).toBe('function');
       expect(typeof repository.deleteProduct).toBe('function');
-      expect(typeof repository.saveBrand).toBe('function');
+
+      // ★ AND NOTHING ELSE. The seventh member an earlier revision carried,
+      // `saveBrand`, is gone: the port's member set is locked at SIX, the port
+      // inventory is locked at THIRTEEN so no `BrandRepository` is available, and
+      // `super.save` [model/service/BrandService.cfc:L76] is framework-inherited
+      // generic CRUD that AAP 0.5.3 does not carry forward. Asserting the ABSENCE
+      // is what keeps the lock enforced rather than merely described.
+      expect('saveBrand' in repository).toBe(false);
+      expect(
+        Object.getOwnPropertyNames(MysqlProductRepository.prototype).filter(
+          (member: string) => member !== 'constructor' && !member.startsWith('#'),
+        ),
+      ).toStrictEqual([
+        'getAttributeSets',
+        'loadDataFromFile',
+        'searchProductsByProductType',
+        'getProductByProductID',
+        'saveProduct',
+        'deleteProduct',
+        'materializeProducts',
+        'readSkus',
+        'readSkuOptions',
+        'buildProduct',
+        'assertAssociationsPersisted',
+        'productRowExists',
+        // The aggregate cascade's own private step. It is not a port member and cannot
+        // become one: `Product.skus` carries `cascade="all-delete-orphan"`
+        // [model/entity/Product.cfc:L73], so a save that arrives holding transient SKUs
+        // has to write them, and the write has to happen between the product INSERT and
+        // the deferred `defaultSkuID` UPDATE. That is an internal ordering obligation of
+        // this one method, so it is a private helper rather than a seventh member.
+        'cascadeTransientSkus',
+        'insertProduct',
+        'updateProduct',
+      ]);
     });
 
     it('publishes NO smart-list surface, because the port deliberately carries none', () => {
@@ -1289,19 +1600,22 @@ describe('MysqlProductRepository - net-new coverage with no legacy antecedent', 
     });
 
     it('reaches the server only through execute and executeMutation, so query() is unreachable', async () => {
-      // B3. `PreparedStatementExecutor` declares exactly two methods and no
-      // `query`, so every statement is a server-side prepared statement and
-      // parameterization is STRUCTURAL rather than a habit a reviewer has to
-      // police. That is the property `<cfqueryparam>` gave the legacy DAOs, and it
-      // is preserved by the shape of the interface itself.
+      // B3. `PreparedStatementExecutor` declares exactly three members - `execute`,
+      // `executeMutation` and `transaction` - and NO `query`, so every statement is a
+      // server-side prepared statement and parameterization is STRUCTURAL rather than a
+      // habit a reviewer has to police. That is the property `<cfqueryparam>` gave the
+      // legacy DAOs, and it is preserved by the shape of the interface itself.
+      // `transaction` does not weaken it: the executor it hands to its work function
+      // routes through the same two statement methods and reaches no `query` either.
       const executor = new RecordingExecutor([[ATTRIBUTE_SET_ROW]]);
       const repository = new MysqlProductRepository(executor);
 
       await repository.getAttributeSets([PRODUCT_ATTRIBUTE_SET_TYPE_CODE], []);
 
-      // The two methods the contract DOES declare, and the one it does not.
+      // The three members the contract DOES declare, and the one it does not.
       expect(declaresMember(executor, 'execute')).toBe(true);
       expect(declaresMember(executor, 'executeMutation')).toBe(true);
+      expect(declaresMember(executor, 'transaction')).toBe(true);
       expect(declaresMember(executor, 'query')).toBe(false);
 
       expect(executor.calls).toHaveLength(1);
@@ -2325,6 +2639,193 @@ describe('MysqlProductRepository - net-new coverage with no legacy antecedent', 
       expect(product.getDefaultSku()?.getSkuID()).toBe(PERSISTED_SKU_ID);
     });
 
+    it('materializes the option groups a product reaches through its SKUs, ordered by sortOrder', async () => {
+      // ★ THE SMART-LIST SUBSTITUTION, ASSERTED END TO END.
+      // `Product.getOptionGroups()` [model/entity/Product.cfc:L251-L261] resolved this
+      // through a `HibachiSmartList` - `setSelectDistinctFlag(1)` at [L255], a filter on
+      // the traversal `options.skus.product.productID` at [L256], `sortOrder|ASC` at
+      // [L257]. The smart list is deliberately not cloned (AAP 0.6.2), so the ported
+      // accessor is a synchronous read over an array THIS adapter owes it. Until the
+      // adapter supplied it the accessor raised, and `getOptionGroupsStruct()` and
+      // `getOptionGroupCount()` raised with it - which took the `minCollection:1` rules
+      // in `model/validation/Product.json` down too, since both read through this value.
+      //
+      // Three option rows across two SKUs, referencing only TWO distinct groups: the
+      // `size` group (sortOrder 3) twice, the `colour` group (sortOrder 1) once. So the
+      // answer exercises both DISTINCT and the ordering in one pass.
+      const secondSkuID = 'c4d19b6ea27f4c85917e3b0d6f8a5241';
+      const colourGroupID = 'ffffffffffffffffffffffffffffff03';
+
+      const secondSkuRow: SqlRow = { ...SKU_ROW, skuID: secondSkuID, skuCode: 'NIKEAIRJORDEN-2' };
+
+      const colourOptionRow: SqlRow = {
+        ...SKU_OPTION_ROW,
+        link_skuID: secondSkuID,
+        optionID: 'aaaaaaaaaaaaaaaaaaaaaaaaaaaaaa11',
+        optionCode: 'colourRed',
+        optionName: 'Red',
+        optionGroupID: colourGroupID,
+        optionGroup_optionGroupID: colourGroupID,
+        optionGroup_optionGroupName: 'Colour',
+        optionGroup_optionGroupCode: 'colour',
+        optionGroup_imageGroupFlag: 0,
+        optionGroup_sortOrder: 1,
+      };
+
+      // The same `size` group again, reached through the second SKU. DISTINCT has to
+      // collapse it; without the map this array would carry three entries.
+      const repeatedSizeOptionRow: SqlRow = {
+        ...SKU_OPTION_ROW,
+        link_skuID: secondSkuID,
+        optionID: 'aaaaaaaaaaaaaaaaaaaaaaaaaaaaaa12',
+        optionCode: 'sizeEleven',
+        optionName: 'Size 11',
+      };
+
+      const executor = new RecordingExecutor([
+        [PRODUCT_GRAPH_ROW],
+        [SKU_ROW, secondSkuRow],
+        [SKU_OPTION_ROW, colourOptionRow, repeatedSizeOptionRow],
+      ]);
+      const repository = new MysqlProductRepository(executor);
+
+      const product = requireProduct(await repository.getProductByProductID(PERSISTED_PRODUCT_ID));
+
+      // The accessor ANSWERS rather than raising - that is the whole point.
+      const optionGroups = product.getOptionGroups();
+
+      // DISTINCT [L255]: three option rows, two groups.
+      expect(optionGroups).toHaveLength(2);
+
+      // ORDER BY sortOrder ASC [L257]: colour (1) before size (3), which is the reverse
+      // of the order the option rows arrived in, so the sort is observably applied.
+      expect(optionGroups.map((group) => group.getOptionGroupID())).toStrictEqual([
+        colourGroupID,
+        PERSISTED_OPTION_GROUP_ID,
+      ]);
+      expect(optionGroups.map((group) => group.getSortOrder())).toStrictEqual([1, 3]);
+
+      // The other two members of the memo trio ride on the same array.
+      expect(product.getOptionGroupCount()).toBe(2);
+      expect(Object.keys(product.getOptionGroupsStruct()).sort()).toStrictEqual(
+        [colourGroupID, PERSISTED_OPTION_GROUP_ID].sort(),
+      );
+
+      // ⭐ AND IT COSTS NO STATEMENT. The groups ride in on the option read's LEFT JOIN,
+      // so the documented three-statement shape is unchanged - no fourth statement and
+      // no per-option follow-up.
+      expect(executor.calls).toHaveLength(3);
+    });
+
+    it('answers an empty option-group array for a product whose SKUs carry no options', async () => {
+      // MATERIALIZED-AS-EMPTY IS NOT THE SAME AS NEVER-MATERIALIZED, and the adapter
+      // has to produce the first. `Product.getOptionGroups()` raises for the second
+      // precisely so a repository that forgot the query cannot report "no option
+      // groups" and silently satisfy the `minCollection:1` validation rules. A product
+      // whose SKUs genuinely carry no options must therefore arrive with `[]`.
+      const executor = new RecordingExecutor([[PRODUCT_GRAPH_ROW], [SKU_ROW], []]);
+      const repository = new MysqlProductRepository(executor);
+
+      const product = requireProduct(await repository.getProductByProductID(PERSISTED_PRODUCT_ID));
+
+      expect(product.getOptionGroups()).toStrictEqual([]);
+      expect(product.getOptionGroupCount()).toBe(0);
+    });
+
+    it('keeps an option whose optionGroupID is NULL and contributes no group for it', async () => {
+      // ⚠ THE OUTER-NESS OF THE JOIN IS LOAD-BEARING TWICE OVER.
+      // `Option.optionGroup` [model/entity/Option.cfc:L59] is a nullable many-to-one, so
+      // an INNER JOIN would have dropped a group-less option out of the SKU's `options`
+      // collection entirely - shortening a must-preserve collection to make an unrelated
+      // association resolvable. It also has to be possible for a group-less option to
+      // REACH an entity method, because `Sku.generateImageFileName()`
+      // [model/entity/Sku.cfc:L131-L139] dereferences `getOptionGroup()` UNGUARDED and
+      // that source behaviour is preserved rather than defended against.
+      const grouplessOptionRow: SqlRow = {
+        ...SKU_OPTION_ROW,
+        optionID: 'aaaaaaaaaaaaaaaaaaaaaaaaaaaaaa13',
+        optionCode: 'ungrouped',
+        optionGroupID: null,
+        optionGroup_optionGroupID: null,
+        optionGroup_optionGroupName: null,
+        optionGroup_optionGroupCode: null,
+        optionGroup_imageGroupFlag: null,
+        optionGroup_sortOrder: null,
+      };
+
+      const executor = new RecordingExecutor([
+        [PRODUCT_GRAPH_ROW],
+        [SKU_ROW],
+        [grouplessOptionRow],
+      ]);
+      const repository = new MysqlProductRepository(executor);
+
+      const product = requireProduct(await repository.getProductByProductID(PERSISTED_PRODUCT_ID));
+
+      const options = product.getSkus()[0]?.getOptions() ?? [];
+
+      // The option SURVIVED the join.
+      expect(options).toHaveLength(1);
+      expect(options[0]?.getOptionCode()).toBe('ungrouped');
+      expect(options[0]?.getOptionGroup()).toBeUndefined();
+
+      // And it contributed no phantom group.
+      expect(product.getOptionGroups()).toStrictEqual([]);
+    });
+
+    it('excludes the option groups of a default SKU that belongs to another product', async () => {
+      // THE TRAVERSAL AT [model/entity/Product.cfc:L256] IS
+      // `options.skus.product.productID`, so a group qualifies only through a SKU whose
+      // `productID` IS THIS PRODUCT. `SwProduct.defaultSkuID` [L70] is declared
+      // independently of the `skus` collection [L73], so a default SKU may belong to
+      // some other product - it is reachable by identifier and NOT by owning product.
+      // Deriving the groups from the identifier index instead of the owning-product
+      // index would attribute another product's option groups to this one.
+      const foreignSkuID = 'e70b53d1a8c94f26b1d40a9c8b5e7263';
+      const foreignGroupID = 'ffffffffffffffffffffffffffffff09';
+
+      const foreignSkuRow: SqlRow = {
+        ...SKU_ROW,
+        skuID: foreignSkuID,
+        skuCode: 'FOREIGN-1',
+        productID: 'aaaaaaaaaaaaaaaaaaaaaaaaaaaaaa99',
+      };
+
+      const foreignOptionRow: SqlRow = {
+        ...SKU_OPTION_ROW,
+        link_skuID: foreignSkuID,
+        optionID: 'aaaaaaaaaaaaaaaaaaaaaaaaaaaaaa14',
+        optionCode: 'foreignOnly',
+        optionGroupID: foreignGroupID,
+        optionGroup_optionGroupID: foreignGroupID,
+        optionGroup_optionGroupName: 'Foreign',
+        optionGroup_optionGroupCode: 'foreign',
+        optionGroup_sortOrder: 1,
+      };
+
+      const graphRow: SqlRow = { ...PRODUCT_GRAPH_ROW, p_defaultSkuID: foreignSkuID };
+
+      const executor = new RecordingExecutor([
+        [graphRow],
+        [SKU_ROW, foreignSkuRow],
+        [SKU_OPTION_ROW, foreignOptionRow],
+      ]);
+      const repository = new MysqlProductRepository(executor);
+
+      const product = requireProduct(await repository.getProductByProductID(PERSISTED_PRODUCT_ID));
+
+      // The foreign SKU IS the default SKU and IS NOT in the product's own collection -
+      // the shape `MaterializedSkus` documents.
+      expect(product.getDefaultSku()?.getSkuID()).toBe(foreignSkuID);
+      expect(product.getSkus().map((sku) => sku.getSkuID())).toStrictEqual([PERSISTED_SKU_ID]);
+
+      // So only the owning product's group is reached, and the foreign one is absent
+      // even though its row was in the same result set.
+      expect(product.getOptionGroups().map((group) => group.getOptionGroupID())).toStrictEqual([
+        PERSISTED_OPTION_GROUP_ID,
+      ]);
+    });
+
     it('binds the product identifier AND the default-sku identifier on the SKU read', async () => {
       // The `OR` in the SKU statement is load-bearing: `skus` is keyed on
       // `SwSku.productID` while `defaultSku` is keyed on `SwProduct.defaultSkuID`,
@@ -2404,15 +2905,83 @@ describe('MysqlProductRepository - net-new coverage with no legacy antecedent', 
       expect(first.getProductID()).toBe(PERSISTED_PRODUCT_ID);
       expect(second.getProductID()).toBe(secondProductID);
     });
+
+    it('materializes the eager brand from the same statement, in one read', async () => {
+      // T3, FETCH SHAPE IS A DECISION. [model/entity/Product.cfc:L68] declares
+      // `fetch="join"` on the brand association, which is Hibernate's instruction to
+      // resolve it in the owning select through an outer join - so the adapter
+      // projects all eleven `SwBrand` columns into the product graph statement and
+      // hydrates the brand from the SAME row. No second statement is sent for it,
+      // which is what makes the association eager rather than an N+1 waiting to
+      // happen.
+      //
+      // This is also the ONLY way `SwBrand` is reached anywhere in this module. The
+      // port publishes no brand write - its member set is locked at six, the port
+      // inventory at thirteen - so the table is read here and written nowhere. See
+      // this file's header for why the seventh member was removed rather than
+      // relocated.
+      const executor = new RecordingExecutor([[PRODUCT_GRAPH_ROW_WITH_BRAND], [], []]);
+      const repository = new MysqlProductRepository(executor);
+
+      const product = requireProduct(await repository.getProductByProductID(PERSISTED_PRODUCT_ID));
+
+      // The product has no SKUs in this row, so the option read is skipped: ONE
+      // statement for the graph plus ONE for the SKUs, and the brand arrived inside
+      // the first of them.
+      expect(executor.calls).toHaveLength(2);
+      expect(statementAt(executor.calls, 0).sql).toContain(
+        'LEFT JOIN SwBrand b ON b.brandID = p.brandID',
+      );
+      for (const call of executor.calls) {
+        expect(call.sql).not.toBe(`SELECT brandID FROM SwBrand WHERE brandID = ?`);
+      }
+
+      // The materialized brand carries the projected column values, so the eager
+      // fetch produced a real entity rather than a sentinel.
+      const brand = product.getBrand();
+
+      if (brand === undefined) {
+        throw new Error('the eager brand join produced no brand, so there is nothing to assert');
+      }
+
+      expect(brand.getBrandID()).toBe(PERSISTED_BRAND_ID);
+      expect(brand.getBrandName()).toBe('Nike');
+      expect(brand.getUrlTitle()).toBe('nike');
+
+      // T3: NO association is materialized on a brand reached through a product.
+      // Populating `products` would present the one product that happened to be read
+      // as though it were the brand's complete product set, which is exactly the claim
+      // a lazy proxy never made. [meta/tests/unit/entity/BrandTest.cfc:L58-L60]
+      // `defaults_are_correct()` asserts the empty array on a factory-fresh brand, and
+      // the constructor default is what answers here.
+      expect(brand.getProducts()).toStrictEqual([]);
+
+      // NOTHING WAS WRITTEN. A read path emits no mutation, and there is no brand
+      // write on this adapter to emit one.
+      expect(executor.mutationCalls).toStrictEqual([]);
+    });
   });
 
   describe('saveProduct - NET-NEW, and the replacement for the ORM save', () => {
     // Persistence ran through Hibernate as
     // `getHibachiDAO().save(target=arguments.product)`
-    // [model/service/ProductService.cfc:L287]. T3 converts that into this method. It
-    // takes the ENTITY ALONE and no data struct, because population, validation and
-    // unique URL-title generation all remain at the service tier where the legacy
-    // performed them [model/service/ProductService.cfc:L264-L292].
+    // [model/service/ProductService.cfc:L287]. T3 converts that into this method.
+    //
+    // ★ QUOTE-THEN-REVISE. This header used to continue: "It takes the ENTITY ALONE and no
+    // data struct, because population, validation and unique URL-title generation all
+    // remain at the service tier where the legacy performed them
+    // [model/service/ProductService.cfc:L264-L292]." Generation and validation DO still
+    // live at the service tier - that half is right and unchanged. It was "the ENTITY
+    // ALONE" that could not survive contact with the entity's immutability: the legacy's
+    // generated title reached persistence because the service assigned it ONTO the entity
+    // at [model/service/ProductService.cfc:L269] and that same entity reached the DAO at
+    // [L287], whereas `Product.urlTitle` is `private readonly` here. With no payload the
+    // adapter wrote `product.getUrlTitle()`, still absent, so the resolved title was never
+    // stored and the service's generation guard fired again on every subsequent save. The
+    // member therefore takes a `ProductSavePayload` carrying the two columns the populate
+    // step can decide, and the populate step itself lives in the adapter - see
+    // {@link NO_POPULATED_MEMBERS} for what an empty one means and the
+    // `the populate step` cases below for what a populated one does.
 
     it('binds every inserted column value and interpolates none', async () => {
       // C5.2. Twenty columns, twenty placeholders, twenty bound parameters - and not
@@ -2420,7 +2989,7 @@ describe('MysqlProductRepository - net-new coverage with no legacy antecedent', 
       const executor = new RecordingExecutor();
       const repository = new MysqlProductRepository(executor);
 
-      await repository.saveProduct(makeWritableProduct());
+      await repository.saveProduct(makeWritableProduct(), NO_POPULATED_MEMBERS);
 
       expect(executor.mutationCalls).toHaveLength(1);
       const insert = statementAt(executor.mutationCalls, 0);
@@ -2450,7 +3019,7 @@ describe('MysqlProductRepository - net-new coverage with no legacy antecedent', 
       const executor = new RecordingExecutor([[PRODUCT_EXISTS_ROW]]);
       const repository = new MysqlProductRepository(executor);
 
-      await repository.saveProduct(makeWritableProduct(PERSISTED_PRODUCT_ID));
+      await repository.saveProduct(makeWritableProduct(PERSISTED_PRODUCT_ID), NO_POPULATED_MEMBERS);
 
       const existenceRead = onlyStatement(executor.calls);
       expect(existenceRead.sql).toBe(EXPECTED_PRODUCT_EXISTENCE_READ);
@@ -2477,7 +3046,7 @@ describe('MysqlProductRepository - net-new coverage with no legacy antecedent', 
       const executor = new RecordingExecutor([[PRODUCT_EXISTS_ROW]]);
       const repository = new MysqlProductRepository(executor);
 
-      await repository.saveProduct(makeWritableProduct(PERSISTED_PRODUCT_ID));
+      await repository.saveProduct(makeWritableProduct(PERSISTED_PRODUCT_ID), NO_POPULATED_MEMBERS);
 
       const update = statementAt(executor.mutationCalls, 0);
       const setClause = update.sql.slice(update.sql.indexOf('SET'), update.sql.indexOf('WHERE'));
@@ -2496,7 +3065,7 @@ describe('MysqlProductRepository - net-new coverage with no legacy antecedent', 
       const executor = new RecordingExecutor();
       const repository = new MysqlProductRepository(executor);
 
-      await repository.saveProduct(makeWritableProduct());
+      await repository.saveProduct(makeWritableProduct(), NO_POPULATED_MEMBERS);
 
       const insert = statementAt(executor.mutationCalls, 0);
       const createdStamp = parameterAt(insert.params, 16);
@@ -2518,7 +3087,7 @@ describe('MysqlProductRepository - net-new coverage with no legacy antecedent', 
       const executor = new RecordingExecutor();
       const repository = new MysqlProductRepository(executor);
 
-      await repository.saveProduct(makeWritableProduct());
+      await repository.saveProduct(makeWritableProduct(), NO_POPULATED_MEMBERS);
 
       const insert = statementAt(executor.mutationCalls, 0);
       const boundSalePrice = parameterAt(insert.params, 8);
@@ -2536,7 +3105,7 @@ describe('MysqlProductRepository - net-new coverage with no legacy antecedent', 
       const executor = new RecordingExecutor();
       const repository = new MysqlProductRepository(executor);
 
-      await repository.saveProduct(makeWritableProduct());
+      await repository.saveProduct(makeWritableProduct(), NO_POPULATED_MEMBERS);
 
       const insert = statementAt(executor.mutationCalls, 0);
 
@@ -2554,21 +3123,142 @@ describe('MysqlProductRepository - net-new coverage with no legacy antecedent', 
       const executor = new RecordingExecutor();
       const repository = new MysqlProductRepository(executor);
 
-      const rejection = await captureRejection(() => repository.saveProduct(makeProductFixture()));
+      const rejection = await captureRejection(() =>
+        repository.saveProduct(makeProductFixture(), NO_POPULATED_MEMBERS),
+      );
 
       expect(rejection.name).toBe('ProductPersistenceError');
       expect(executor.mutationCalls).toHaveLength(0);
       expect(executor.calls).toHaveLength(0);
     });
 
-    it('writes SwProduct alone and never a dependent table', async () => {
-      // ⚠ THE HIBERNATE CASCADES ARE NOT REPRODUCED, and that is documented rather
-      // than accidental. `skus` is NOT written here: `SwSku.productID` is the SKU's
-      // own column and `mysqlSkuRepository.ts` owns it. NO LINK TABLE IS WRITTEN.
+    it('★ DEFERS defaultSkuID as NULL for an unsaved default SKU, and binds it once saved', async () => {
+      // ★★ THE ONE FOREIGN KEY THAT IS DEFERRED RATHER THAN BOUND, AND HIBERNATE
+      // DEFERRED IT TOO. `SwSku.productID` references `SwProduct` and
+      // `SwProduct.defaultSkuID` [model/entity/Product.cfc:L70] references `SwSku` - a
+      // circular INSERT dependency that can only be broken one way: INSERT the owner
+      // with this column NULL, INSERT the SKUs, then UPDATE the owner.
+      //
+      // So an UNSAVED default SKU is bound as NULL here, and for two independent
+      // reasons either of which suffices. The referenced row does not exist yet, so a
+      // non-null bind would violate the constraint. And
+      // `src/repositories/mysql/mysqlSkuRepository.ts` MINTS a fresh `skuID` on insert
+      // rather than honouring the draft's provisional identifier, so the draft's key is
+      // not even the one the row will end up carrying.
+      //
+      // ⚠ Note the contrast with the case immediately above: an unpersisted BRAND
+      // RAISES, because nothing defers a brand and a dangling brand key is simply
+      // wrong. The two associations are treated differently because the schema treats
+      // them differently, not because the rule is inconsistent.
+      //
+      // ★ THE SAVE MUST NOT MERELY BIND NULL - IT MUST ALSO NOT REFUSE. Every new
+      // product with SKUs arrives here carrying a transient default SKU, because
+      // `createSkus` [model/service/SkuService.cfc:L102] designates one of the drafts it
+      // just attached. A guard that refused a transient `defaultSku` outright would
+      // therefore refuse the source's own normal path, so this case asserts that the
+      // write PROCEEDS as well as what it binds.
+      //
+      // ★ AND THE REFUSAL THAT DOES REMAIN IS NARROWER THAN THAT, WHICH IS WHY THIS CASE
+      // ATTACHES THE DRAFT TO THE COLLECTION. A transient default SKU is acceptable
+      // precisely when this write will CASCADE to it - i.e. when it is among
+      // `product.getSkus()` - because only then does the deferred update have a real key
+      // to bind afterwards. A transient default that is NOT in the collection would leave
+      // `defaultSkuID` naming nothing for ever, and that case raises; it has its own
+      // assertion in the cascade describe below.
+      const deferredExecutor = new RecordingExecutor();
+      const unsavedDefaultSku = makeSkuFixture({
+        skuID: 'draft-sku-identifier',
+        isNew: true,
+        product: undefined,
+      });
+
+      // The one-method cascade seam, declared inline: this case is about what the PRODUCT
+      // insert binds, so the writer only has to answer with a persisted instance.
+      const deferredRepository = new MysqlProductRepository(
+        deferredExecutor,
+        {},
+        {
+          saveSkuForProduct: (): Promise<Sku> =>
+            Promise.resolve(makeSkuFixture({ skuID: PERSISTED_SKU_ID, product: undefined })),
+        },
+      );
+
+      const draftBearingProduct = makeProductFixture({
+        brand: undefined,
+        productType: undefined,
+        defaultSku: undefined,
+        skus: [unsavedDefaultSku],
+      });
+      draftBearingProduct.setDefaultSku(unsavedDefaultSku);
+
+      await deferredRepository.saveProduct(draftBearingProduct, NO_POPULATED_MEMBERS);
+
+      const deferredInsert = statementAt(deferredExecutor.mutationCalls, 0);
+
+      expect(deferredInsert.sql).toContain('INSERT INTO SwProduct (');
+      expect(parameterAt(deferredInsert.params, DEFAULT_SKU_ID_PARAMETER_INDEX)).toBeNull();
+      expect(deferredInsert.params).not.toContain('draft-sku-identifier');
+
+      // ...and the deferred UPDATE follows, carrying the key the writer actually minted
+      // rather than the provisional one the draft arrived with.
+      const deferredUpdate = statementAt(
+        deferredExecutor.mutationCalls,
+        deferredExecutor.mutationCalls.length - 1,
+      );
+
+      expect(deferredUpdate.sql).toBe(EXPECTED_PRODUCT_DEFAULT_SKU_UPDATE);
+      expect(deferredUpdate.params[0]).toBe(PERSISTED_SKU_ID);
+
+      // And the positive half: a default SKU that already has a row IS bound IN THE INSERT
+      // ITSELF, so the deferral is specific to the unsaved case rather than a blanket
+      // null-out that would lose the association altogether. No cascade is needed here, so
+      // no writer is supplied either - which also shows the deferral is not what makes the
+      // ordinary save work.
+      const boundExecutor = new RecordingExecutor();
+      const boundRepository = new MysqlProductRepository(boundExecutor);
+
+      await boundRepository.saveProduct(
+        makeProductFixture({
+          brand: undefined,
+          productType: undefined,
+          defaultSku: makeSkuFixture({ skuID: PERSISTED_SKU_ID, product: undefined }),
+        }),
+        NO_POPULATED_MEMBERS,
+      );
+
+      const boundInsert = statementAt(boundExecutor.mutationCalls, 0);
+
+      expect(parameterAt(boundInsert.params, DEFAULT_SKU_ID_PARAMETER_INDEX)).toBe(
+        PERSISTED_SKU_ID,
+      );
+    });
+
+    it('writes SwProduct alone when the product holds no transient SKU', async () => {
+      // ★★ QUOTE-THEN-REVISE. This case was titled "writes SwProduct alone and never a
+      // dependent table" and reasoned: "⚠ THE HIBERNATE CASCADES ARE NOT REPRODUCED,
+      // and that is documented rather than accidental. `skus` is NOT written here:
+      // `SwSku.productID` is the SKU's own column and `mysqlSkuRepository.ts` owns
+      // it."
+      //
+      // THE ASSERTION IS STILL EXACTLY RIGHT AND ITS SCOPE WAS WRONG. `makeWritableProduct()`
+      // builds a product whose SKU collection is EMPTY, so there is nothing for a
+      // cascade to write and one statement is the whole of the correct behaviour -
+      // that is what this case pins, and it now says so in its title. But it was
+      // being read as evidence that a product save NEVER writes a SKU, and
+      // `Product.skus` carries `cascade="all-delete-orphan"`
+      // [model/entity/Product.cfc:L73]: a save that carries transient SKUs must write
+      // them, in one transaction, or a merchandise product created through
+      // `createSkus` [model/service/SkuService.cfc:L58] reaches the database with no
+      // variants at all. The cascading shape is pinned by its own describe below.
+      //
+      // The statement-text assertions are kept verbatim, because the delegation half
+      // of the original claim holds unchanged: this adapter emits no `SwSku` text of
+      // its own even when it does cascade - it hands the write to the sibling that
+      // owns the table.
       const executor = new RecordingExecutor();
       const repository = new MysqlProductRepository(executor);
 
-      await repository.saveProduct(makeWritableProduct());
+      await repository.saveProduct(makeWritableProduct(), NO_POPULATED_MEMBERS);
 
       const insert = statementAt(executor.mutationCalls, 0);
 
@@ -2582,267 +3272,1102 @@ describe('MysqlProductRepository - net-new coverage with no legacy antecedent', 
       ]) {
         expect(insert.sql).not.toContain(dependentTable);
       }
+
+      // And no unit of work was opened, because one statement is not a unit of work.
+      expect(executor.transactionCount).toBe(0);
+    });
+  });
+
+  // -------------------------------------------------------------------------
+  // saveProduct, the aggregate cascade: NET-NEW COVERAGE, no legacy antecedent.
+  //
+  // ★ DECLARED NET-NEW under AAP 0.6.6. `meta/tests/unit/dao/` holds AccountDAOTest and
+  // PaymentDAOTest only, so nothing in the legacy suite reaches `ProductDAO`, and the
+  // behaviour asserted here was Hibernate's flush - framework code that is not ported
+  // and never had a test in this repository either.
+  //
+  // ★ WHAT THESE CASES EXIST TO PREVENT, WHICH IS A PRODUCT WITH NO VARIANTS.
+  // `SkuService.createSkus` [model/service/SkuService.cfc:L58] builds every SKU a new
+  // merchandise product will have, attaches each to `product.getSkus()` and designates
+  // one as the default - and persists NONE of them, exactly as the legacy persisted
+  // none. Under CFML that was correct because `Product.skus` carries
+  // `cascade="all-delete-orphan"` [model/entity/Product.cfc:L73] and the flush wrote
+  // the children with the parent. With the ORM gone, a save that wrote only the
+  // `SwProduct` row left a product with no variants and a NULL `defaultSkuID`, while
+  // the returned entity reported its full collection in memory and looked correct.
+  //
+  // ★ THE WRITE ORDER IS FORCED, NOT CHOSEN. `SwSku.productID`
+  // [model/entity/Sku.cfc:L65] and `SwProduct.defaultSkuID`
+  // [model/entity/Product.cfc:L70] are foreign keys pointing at each other, so the only
+  // order that satisfies both is: product row (with `defaultSkuID` NULL), then each SKU
+  // row carrying the parent key, then a follow-up update for `defaultSkuID`. All three
+  // in ONE transaction, because any partial application leaves a state the legacy
+  // cannot reach.
+  // -------------------------------------------------------------------------
+  describe('saveProduct - the aggregate cascade for transient SKUs', () => {
+    /** The key the cascade writer reports for the nth SKU it is handed. */
+    const PERSISTED_CASCADE_SKU_IDS = [
+      'b7c3f81a04d5426e93a70cd21fe85b46',
+      'd0a49e6b71f8425c8b13ae59042cf7d8',
+    ] as const;
+
+    /**
+     * A recording stand-in for `MysqlSkuRepository` as the cascade contract sees it.
+     *
+     * JUDGMENT CALL: hand-written rather than the real adapter. The contract is ONE method
+     * wide and structural, so declaring the shape makes the compiler check it on every
+     * build; importing `MysqlSkuRepository` would couple two adapter suites and make this
+     * one's assertions depend on the other's statement text. What each SKU write EMITS is
+     * asserted in `mysqlSkuRepository.test.ts`, where the statements live; what is asserted
+     * here is that the cascade calls it, with which parent key, in which order, on which
+     * executor, and what it does with the answers.
+     */
+    class RecordingCascadeWriter {
+      public readonly calls: { readonly sku: Sku; readonly productID: string }[] = [];
+
+      /** The executor each call was handed, so escaping the transaction is observable. */
+      public readonly executors: PreparedStatementExecutor[] = [];
+
+      public saveSkuForProduct(
+        sku: Sku,
+        productID: string,
+        executor: PreparedStatementExecutor,
+      ): Promise<Sku> {
+        this.calls.push({ sku, productID });
+        this.executors.push(executor);
+
+        const mintedKey =
+          PERSISTED_CASCADE_SKU_IDS[this.calls.length - 1] ?? PERSISTED_CASCADE_SKU_IDS[0];
+
+        // A DIFFERENT instance carrying a DIFFERENT key, which is what the real adapter
+        // returns: `insertSku` mints its own identifier and rehydrates around it, so the
+        // draft's provisional key never reaches the database.
+        return Promise.resolve(makeSkuFixture({ skuID: mintedKey, product: undefined }));
+      }
+    }
+
+    /** A SKU that reports itself unsaved, as every draft `createSkus` builds does. */
+    function aTransientSku(provisionalKey: string): Sku {
+      return makeSkuFixture({ skuID: provisionalKey, isNew: true, product: undefined });
+    }
+
+    /** A writable product carrying the supplied SKUs and, optionally, a designated default. */
+    function aProductWithSkus(
+      productID: string | undefined,
+      skus: readonly Sku[],
+      defaultSku?: Sku,
+    ): Product {
+      const product = makeProductFixture({
+        productID,
+        brand: undefined,
+        productType: undefined,
+        defaultSku: undefined,
+        skus: [...skus],
+      });
+
+      if (defaultSku !== undefined) {
+        product.setDefaultSku(defaultSku);
+      }
+
+      return product;
+    }
+
+    it('opens EXACTLY ONE transaction and issues every statement inside it', async () => {
+      // The count assertion is as load-bearing as the flag: a transaction per statement
+      // would satisfy `inTransaction` everywhere while providing none of the atomicity
+      // Hibernate's single flush gave this aggregate.
+      const executor = new RecordingExecutor();
+      const writer = new RecordingCascadeWriter();
+      const draft = aTransientSku('draft-1');
+      const repository = new MysqlProductRepository(executor, {}, writer);
+
+      await repository.saveProduct(aProductWithSkus(undefined, [draft], draft), {});
+
+      expect(executor.transactionCount).toBe(1);
+
+      for (const mutation of executor.mutationCalls) {
+        expect(mutation.inTransaction).toBe(true);
+      }
+    });
+
+    it('writes the product row FIRST, then each SKU, then defaultSkuID LAST', async () => {
+      // The order is the forced one. Two transient SKUs so that "each SKU" is plural and
+      // the parent key can be seen reaching both.
+      const executor = new RecordingExecutor();
+      const writer = new RecordingCascadeWriter();
+      const first = aTransientSku('draft-1');
+      const second = aTransientSku('draft-2');
+      const repository = new MysqlProductRepository(executor, {}, writer);
+
+      const saved = await repository.saveProduct(
+        aProductWithSkus(undefined, [first, second], first),
+        {},
+      );
+
+      // Two mutations from THIS adapter: the insert and the deferred key update. The two
+      // SKU writes went through the writer, which owns `SwSku`.
+      expect(executor.mutationCalls).toHaveLength(2);
+
+      const insert = statementAt(executor.mutationCalls, 0);
+      const deferredUpdate = statementAt(executor.mutationCalls, 1);
+
+      expect(insert.sql).toBe(EXPECTED_PRODUCT_INSERT);
+      // `defaultSkuID` is NULL on the insert even though a default IS designated - the
+      // designated SKU has no persisted key at that moment.
+      expect(parameterAt(insert.params, 14)).toBeNull();
+
+      // Both SKUs were handed the key the insert minted, in collection order.
+      const mintedProductID = saved.getProductID();
+      expect(writer.calls).toHaveLength(2);
+      expect(writer.calls.map((call) => call.productID)).toStrictEqual([
+        mintedProductID,
+        mintedProductID,
+      ]);
+      expect(writer.calls.map((call) => call.sku)).toStrictEqual([first, second]);
+
+      expect(deferredUpdate.sql).toBe(EXPECTED_PRODUCT_DEFAULT_SKU_UPDATE);
+      expect(deferredUpdate.params).toStrictEqual([PERSISTED_CASCADE_SKU_IDS[0], mintedProductID]);
+    });
+
+    it('hands the cascade the TRANSACTION executor, and routes EVERY statement through it', async () => {
+      // ⚠ THE ASSERTION THE COMPILER CANNOT MAKE, AND THE DOUBLE THAT CAN MAKE IT. Every
+      // executor satisfies one interface, so a cascade that reached `this.executor` from
+      // inside the callback would type-check perfectly and would silently send its
+      // statements down a different pooled connection, committing independently of the
+      // product row and defeating the rollback entirely.
+      //
+      // `RecordingExecutor` cannot see that mistake: it hands its callback ITSELF, so the
+      // two candidate executors are the same object and every statement records
+      // `inTransaction` either way. This case therefore uses a purpose-built double whose
+      // `transaction` hands a DISTINCT recorder - which is also what the real
+      // `createPoolExecutor` does, since the transaction executor is pinned to one
+      // connection. Any statement that lands on the OUTER recorder after the transaction
+      // opened is an escape, and it is now visible.
+      const outer = new RecordingExecutor();
+      const inner = new RecordingExecutor();
+      const splitting: PreparedStatementExecutor = {
+        execute: (sql, params) => outer.execute(sql, params),
+        executeMutation: (sql, params) => outer.executeMutation(sql, params),
+        transaction: async <T>(work: (tx: PreparedStatementExecutor) => Promise<T>): Promise<T> =>
+          await inner.transaction(work),
+      };
+
+      const writer = new RecordingCascadeWriter();
+      const draft = aTransientSku('draft-1');
+      const repository = new MysqlProductRepository(splitting, {}, writer);
+
+      await repository.saveProduct(aProductWithSkus(undefined, [draft], draft), {});
+
+      // NOTHING reached the outer recorder: not the row insert, not the deferred update.
+      expect(outer.calls).toStrictEqual([]);
+      expect(outer.mutationCalls).toStrictEqual([]);
+
+      // All of it reached the inner one, inside its single unit of work.
+      expect(inner.transactionCount).toBe(1);
+      expect(inner.mutationCalls).toHaveLength(2);
+      for (const mutation of inner.mutationCalls) {
+        expect(mutation.inTransaction).toBe(true);
+      }
+
+      // And the writer was handed THAT executor rather than the constructed one. Compared by
+      // IDENTITY with `toBe`, not with `toStrictEqual`: two recorders holding equal state
+      // would satisfy a structural comparison while being different objects, which is
+      // precisely the distinction this case exists to draw.
+      expect(writer.executors).toHaveLength(1);
+      expect(writer.executors[0]).toBe(inner);
+      expect(writer.executors[0]).not.toBe(splitting);
+    });
+
+    it('returns a product whose SKUs are the PERSISTED instances, in original order', async () => {
+      // Membership is not enough: `createSkus` derives each skuCode from the collection's
+      // length as it grows [model/service/SkuService.cfc:L97], so a caller reading
+      // `getSkus()` after a save must see the order it built. Mapping over the original
+      // array is what guarantees that, and reversing the writer's answers would not be
+      // caught by a set comparison.
+      const executor = new RecordingExecutor();
+      const writer = new RecordingCascadeWriter();
+      const first = aTransientSku('draft-1');
+      const second = aTransientSku('draft-2');
+      const repository = new MysqlProductRepository(executor, {}, writer);
+
+      const saved = await repository.saveProduct(
+        aProductWithSkus(undefined, [first, second], first),
+        {},
+      );
+
+      expect(saved.getSkus().map((sku) => sku.getSkuID())).toStrictEqual([
+        PERSISTED_CASCADE_SKU_IDS[0],
+        PERSISTED_CASCADE_SKU_IDS[1],
+      ]);
+      // The drafts are GONE from the returned collection - they carry provisional keys
+      // that name no row, so handing them back would be handing back a lie.
+      expect(saved.getSkus()).not.toContain(first);
+      expect(saved.getSkus()).not.toContain(second);
+
+      // And every returned SKU reports itself persisted.
+      for (const sku of saved.getSkus()) {
+        expect(sku.isNew()).toBe(false);
+      }
+    });
+
+    it('reports the PERSISTED default sku, matched by identity rather than by key', async () => {
+      // The correspondence between a draft and its persisted twin is between two DIFFERENT
+      // identifiers, so the designated default has to be found by object identity. Making
+      // the SECOND SKU the default is what proves it: a lookup that matched on position, on
+      // "the first one written" or on the provisional key would answer the wrong SKU here.
+      const executor = new RecordingExecutor();
+      const writer = new RecordingCascadeWriter();
+      const first = aTransientSku('draft-1');
+      const second = aTransientSku('draft-2');
+      const repository = new MysqlProductRepository(executor, {}, writer);
+
+      const saved = await repository.saveProduct(
+        aProductWithSkus(undefined, [first, second], second),
+        {},
+      );
+
+      const deferredUpdate = statementAt(executor.mutationCalls, 1);
+
+      expect(deferredUpdate.params).toStrictEqual([
+        PERSISTED_CASCADE_SKU_IDS[1],
+        saved.getProductID(),
+      ]);
+      expect(saved.getDefaultSku()?.getSkuID()).toBe(PERSISTED_CASCADE_SKU_IDS[1]);
+      expect(saved.getDefaultSku()).toBe(saved.getSkus()[1]);
+    });
+
+    it('issues NO deferred update when the designated default was already persisted', async () => {
+      // A default SKU carrying a key went into the row the insert already wrote, so a
+      // second statement would rewrite the value it holds. The cascade still runs for the
+      // transient sibling; only the follow-up update is absent.
+      const executor = new RecordingExecutor();
+      const writer = new RecordingCascadeWriter();
+      const draft = aTransientSku('draft-1');
+      const alreadyPersisted = makeSkuFixture({ skuID: PERSISTED_SKU_ID, product: undefined });
+      const repository = new MysqlProductRepository(executor, {}, writer);
+
+      const saved = await repository.saveProduct(
+        aProductWithSkus(undefined, [draft, alreadyPersisted], alreadyPersisted),
+        {},
+      );
+
+      expect(writer.calls).toHaveLength(1);
+      expect(executor.mutationCalls).toHaveLength(1);
+      expect(statementAt(executor.mutationCalls, 0).sql).toBe(EXPECTED_PRODUCT_INSERT);
+      // Written by the INSERT, at its own column position, because the key existed.
+      expect(parameterAt(statementAt(executor.mutationCalls, 0).params, 14)).toBe(PERSISTED_SKU_ID);
+      expect(saved.getDefaultSku()).toBe(alreadyPersisted);
+    });
+
+    it('issues NO deferred update when no default is designated at all', async () => {
+      // `createSkus` designates one on every branch, but a caller composing a product by
+      // hand need not - and the column then stays NULL, which is what the legacy leaves.
+      const executor = new RecordingExecutor();
+      const writer = new RecordingCascadeWriter();
+      const repository = new MysqlProductRepository(executor, {}, writer);
+
+      const saved = await repository.saveProduct(
+        aProductWithSkus(undefined, [aTransientSku('draft-1')]),
+        {},
+      );
+
+      expect(writer.calls).toHaveLength(1);
+      expect(executor.mutationCalls).toHaveLength(1);
+      expect(saved.getDefaultSku()).toBeUndefined();
+      expect(parameterAt(statementAt(executor.mutationCalls, 0).params, 14)).toBeNull();
+    });
+
+    it('cascades on the UPDATE route too, and rebuilds even when the populate step overrode nothing', async () => {
+      // An existing product can acquire new variants, so the cascade is not an insert-only
+      // concern. The existence read runs on the TRANSACTION executor, so it observes the
+      // same snapshot as the writes that depend on it - and because a cascade ran, the
+      // rebuilt instance is returned rather than the argument, even though an empty payload
+      // overrode nothing.
+      const executor = new RecordingExecutor([[PRODUCT_EXISTS_ROW]]);
+      const writer = new RecordingCascadeWriter();
+      const draft = aTransientSku('draft-1');
+      const repository = new MysqlProductRepository(executor, {}, writer);
+      const argument = aProductWithSkus(PERSISTED_PRODUCT_ID, [draft], draft);
+
+      const saved = await repository.saveProduct(argument, {});
+
+      const existenceRead = onlyStatement(executor.calls);
+      expect(existenceRead.sql).toBe(EXPECTED_PRODUCT_EXISTENCE_READ);
+      expect(existenceRead.inTransaction).toBe(true);
+
+      expect(statementAt(executor.mutationCalls, 0).sql).toBe(EXPECTED_PRODUCT_UPDATE);
+      expect(statementAt(executor.mutationCalls, 1).sql).toBe(EXPECTED_PRODUCT_DEFAULT_SKU_UPDATE);
+
+      // NOT the argument: the argument still holds the draft, which names no row.
+      expect(saved).not.toBe(argument);
+      expect(saved.getSkus().map((sku) => sku.getSkuID())).toStrictEqual([
+        PERSISTED_CASCADE_SKU_IDS[0],
+      ]);
+      expect(writer.calls[0]?.productID).toBe(PERSISTED_PRODUCT_ID);
+    });
+
+    it('RAISES before any write when a cascade is needed and no writer was supplied', async () => {
+      // ⚠ SILENT LOSS IS THE FAILURE MODE THIS REFUSES. Without a writer the SKU rows have
+      // nowhere to go, and writing the product row anyway would produce exactly the state
+      // the fix exists to prevent - a variant-less product that reports its variants in
+      // memory. The two-argument constructor is still legal, because a repository used only
+      // for reads and for saves of already-persisted graphs needs no writer.
+      const executor = new RecordingExecutor();
+      const repository = new MysqlProductRepository(executor);
+
+      const rejection = await captureRejection(() =>
+        repository.saveProduct(aProductWithSkus(undefined, [aTransientSku('draft-1')]), {}),
+      );
+
+      expect(rejection.name).toBe('ProductPersistenceError');
+      expect(rejection.message).toContain('1 sku(s) that have never been persisted');
+      // NOTHING was written and no unit of work was opened.
+      expect(executor.mutationCalls).toStrictEqual([]);
+      expect(executor.calls).toStrictEqual([]);
+      expect(executor.transactionCount).toBe(0);
+    });
+
+    it('RAISES when a transient default sku is not among the skus this write will cascade to', async () => {
+      // The permission granted to a transient default is exactly "this write is going to
+      // persist it". A designation pointing at a draft the product does not hold is
+      // unreachable from `createSkus`, which links every draft it designates
+      // [model/service/SkuService.cfc:L100, L128], so refusing it closes a hole.
+      const executor = new RecordingExecutor();
+      const writer = new RecordingCascadeWriter();
+      const repository = new MysqlProductRepository(executor, {}, writer);
+      const orphanDesignation = aTransientSku('draft-not-held');
+
+      const rejection = await captureRejection(() =>
+        repository.saveProduct(
+          aProductWithSkus(undefined, [aTransientSku('draft-1')], orphanDesignation),
+          {},
+        ),
+      );
+
+      expect(rejection.name).toBe('ProductPersistenceError');
+      expect(rejection.message).toContain('is not among the skus held on the product');
+      expect(executor.mutationCalls).toStrictEqual([]);
+      expect(writer.calls).toStrictEqual([]);
+    });
+
+    it('emits no SwSku text of its own, delegating the table it does not own', async () => {
+      // The delegation half of the original "writes SwProduct alone" claim, asserted on the
+      // path that DOES cascade: this adapter names `SwProduct` and nothing else, and every
+      // `SwSku` statement is the sibling repository's to emit.
+      const executor = new RecordingExecutor();
+      const writer = new RecordingCascadeWriter();
+      const draft = aTransientSku('draft-1');
+      const repository = new MysqlProductRepository(executor, {}, writer);
+
+      await repository.saveProduct(aProductWithSkus(undefined, [draft], draft), {});
+
+      expect(executor.mutationCalls.length).toBeGreaterThan(0);
+
+      for (const mutation of executor.mutationCalls) {
+        expect(mutation.sql).toContain('SwProduct');
+        for (const foreignTable of ['SwSku', 'SwSkuOption', 'SwProductImage', 'SwProductReview']) {
+          expect(mutation.sql).not.toContain(foreignTable);
+        }
+      }
+    });
+
+    it('takes the no-transaction path unchanged when every held SKU is already persisted', async () => {
+      // The cascade is decided by `isNew()` on each held SKU and by nothing else, so a
+      // product whose collection is fully materialized and fully persisted saves exactly as
+      // it did before the cascade existed: one statement, no transaction, and no writer
+      // needed. This is what keeps every pre-existing case in this file honest.
+      const executor = new RecordingExecutor();
+      const writer = new RecordingCascadeWriter();
+      const persisted = makeSkuFixture({ skuID: PERSISTED_SKU_ID, product: undefined });
+      const repository = new MysqlProductRepository(executor, {}, writer);
+
+      await repository.saveProduct(aProductWithSkus(undefined, [persisted], persisted), {});
+
+      expect(executor.transactionCount).toBe(0);
+      expect(executor.mutationCalls).toHaveLength(1);
+      expect(writer.calls).toStrictEqual([]);
+    });
+  });
+
+  // -------------------------------------------------------------------------
+  // saveProduct, the populate step: NET-NEW COVERAGE, no legacy antecedent.
+  //
+  // ★ DECLARED NET-NEW under AAP 0.6.6. `meta/tests/unit/dao/` holds only
+  // AccountDAOTest and PaymentDAOTest, so no legacy test reaches `ProductDAO` at
+  // all, and the populate step being asserted here was performed by
+  // `HibachiEntity.populate` - framework code that is not ported and never had a
+  // test in this repository either.
+  //
+  // WHAT THESE CASES EXIST TO PREVENT. The legacy resolved a unique url title and
+  // assigned it ONTO the entity being saved
+  // [model/service/ProductService.cfc:L268-L270]; that entity then reached the DAO
+  // eighteen lines later [model/service/ProductService.cfc:L287], so the value was
+  // written. `Product.urlTitle` is `private readonly` here, so before the payload
+  // existed the adapter bound `product.getUrlTitle()` - still absent - and the
+  // generated title was never stored. The service's generation guard, which fires
+  // only when there is no title [L268], then fired again on the very next save. A
+  // `SwProduct` row whose `urlTitle` stays NULL is also a product whose
+  // `getProductURL()` cannot compose [model/entity/Product.cfc:L207].
+  //
+  // THE THREE-WAY DISTINCTION IS THE WHOLE POINT, and it is why `Object.hasOwn` is
+  // the test rather than a truthiness check: a PRESENT key wins, even when it holds
+  // `undefined`, in which case SQL NULL is written; an ABSENT key leaves the
+  // entity's own value in place. `structKeyExists` drew exactly that line in CFML
+  // [model/service/ProductService.cfc:L266], and `saveBrand` already relies on it.
+  // -------------------------------------------------------------------------
+  describe('saveProduct - the populate step, and where a resolved url title lands', () => {
+    it('binds the PAYLOAD url title, not the entity value it overrides', async () => {
+      const executor = new RecordingExecutor();
+      const repository = new MysqlProductRepository(executor);
+
+      // The service's own shape: the entity has no title, the service resolved one, and
+      // the payload is how it travels.
+      const product = makeProductFixture({
+        urlTitle: undefined,
+        brand: undefined,
+        productType: undefined,
+        defaultSku: undefined,
+      });
+
+      expect(product.getUrlTitle()).toBeUndefined();
+
+      const saved = await repository.saveProduct(product, { urlTitle: RESOLVED_URL_TITLE });
+
+      const insert = statementAt(executor.mutationCalls, 0);
+
+      // The row carries it. This is the assertion whose absence let the defect through:
+      // every other case in this file passes an empty payload and so cannot see it.
+      expect(parameterAt(insert.params, INSERT_URL_TITLE_POSITION)).toBe(RESOLVED_URL_TITLE);
+      // And it is BOUND, not interpolated.
+      expect(insert.sql).not.toContain(RESOLVED_URL_TITLE);
+
+      // The returned instance carries it too, which is what the legacy's own entity
+      // assignment achieved. The argument cannot: `urlTitle` is `private readonly`.
+      expect(saved.getUrlTitle()).toBe(RESOLVED_URL_TITLE);
+      expect(product.getUrlTitle()).toBeUndefined();
+      expect(saved).not.toBe(product);
+    });
+
+    it('binds the PAYLOAD product name, and the two members move independently', async () => {
+      const executor = new RecordingExecutor();
+      const repository = new MysqlProductRepository(executor);
+      const saved = await repository.saveProduct(makeWritableProduct(), {
+        productName: OVERRIDING_PRODUCT_NAME,
+      });
+
+      const insert = statementAt(executor.mutationCalls, 0);
+
+      // `productName` present, `urlTitle` absent: one column takes the payload and the
+      // other keeps the entity's value. A populate step that applied the whole payload
+      // or none of it would fail one half of this.
+      expect(parameterAt(insert.params, INSERT_PRODUCT_NAME_POSITION)).toBe(
+        OVERRIDING_PRODUCT_NAME,
+      );
+      expect(parameterAt(insert.params, INSERT_URL_TITLE_POSITION)).toBe(FIXTURE_URL_TITLE);
+      expect(saved.getProductName()).toBe(OVERRIDING_PRODUCT_NAME);
+      expect(saved.getUrlTitle()).toBe(FIXTURE_URL_TITLE);
+    });
+
+    it('writes SQL NULL for a key PRESENT and holding undefined', async () => {
+      const executor = new RecordingExecutor();
+      const repository = new MysqlProductRepository(executor);
+
+      // The entity HAS a title, and the payload explicitly says there is none. A caller
+      // that read a NULL column can only express that this way, which is why
+      // `ProductSavePayload` declares `?: string | undefined` rather than plain `?:`.
+      const saved = await repository.saveProduct(makeWritableProduct(), { urlTitle: undefined });
+
+      const insert = statementAt(executor.mutationCalls, 0);
+
+      expect(parameterAt(insert.params, INSERT_URL_TITLE_POSITION)).toBeNull();
+      expect(insert.params).not.toContain(undefined);
+      expect(saved.getUrlTitle()).toBeUndefined();
+    });
+
+    it('leaves the entity value in place for a key that is ABSENT', async () => {
+      const executor = new RecordingExecutor();
+      const repository = new MysqlProductRepository(executor);
+      const saved = await repository.saveProduct(makeWritableProduct(), NO_POPULATED_MEMBERS);
+
+      const insert = statementAt(executor.mutationCalls, 0);
+
+      // The distinction `Object.hasOwn` draws, from the other side: absent is not
+      // `undefined`, so nothing is overridden and nothing is nulled.
+      expect(parameterAt(insert.params, INSERT_URL_TITLE_POSITION)).toBe(FIXTURE_URL_TITLE);
+      expect(saved.getUrlTitle()).toBe(FIXTURE_URL_TITLE);
+    });
+
+    it('carries the populated url title through the UPDATE route as well', async () => {
+      // An EXISTING row whose `urlTitle` column is NULL is exactly the case the service
+      // generates for on a second save, so the update route has to carry the payload too
+      // or the title would be regenerated forever and stored never.
+      const executor = new RecordingExecutor([[{ productID: PERSISTED_PRODUCT_ID }]]);
+      const repository = new MysqlProductRepository(executor);
+      const product = makeProductFixture({
+        productID: PERSISTED_PRODUCT_ID,
+        urlTitle: undefined,
+        brand: undefined,
+        productType: undefined,
+        defaultSku: undefined,
+      });
+      const argumentCreationStamp = product.getCreatedDateTime();
+
+      const saved = await repository.saveProduct(product, { urlTitle: RESOLVED_URL_TITLE });
+
+      const update = statementAt(executor.mutationCalls, 0);
+
+      expect(update.sql).toBe(EXPECTED_PRODUCT_UPDATE);
+      expect(parameterAt(update.params, UPDATE_URL_TITLE_POSITION)).toBe(RESOLVED_URL_TITLE);
+      expect(update.sql).not.toContain(RESOLVED_URL_TITLE);
+
+      // A rebuilt instance, because handing back the argument would report a title the
+      // row does not hold - and the key it reports is the one it already had, not a
+      // freshly minted one.
+      expect(saved).not.toBe(product);
+      expect(saved.getUrlTitle()).toBe(RESOLVED_URL_TITLE);
+      expect(saved.getProductID()).toBe(PERSISTED_PRODUCT_ID);
+
+      // ★ AND THE CREATION PROVENANCE SURVIVES THE REBUILD. The insert route writes ONE
+      // instant to both stamps [org/Hibachi/HibachiEntity.cfc:L609]; an update touches
+      // only the modified one [org/Hibachi/HibachiEntity.cfc:L662-L667]. A rebuild given
+      // a single timestamp would have reported the modification instant as the creation
+      // instant, which is why the two are separate parameters.
+      expect(saved.getCreatedDateTime()).toBe(argumentCreationStamp);
+
+      const rebuiltModifiedStamp = saved.getModifiedDateTime();
+      expect(rebuiltModifiedStamp).toBeInstanceOf(Date);
+      // The same narrowing idiom the audit-stamp cases above use: `instanceof` rather
+      // than a non-null assertion, which the lint configuration bans outright in `src/**`
+      // and which this file does not reach for either.
+      if (rebuiltModifiedStamp instanceof Date && argumentCreationStamp instanceof Date) {
+        expect(rebuiltModifiedStamp.getTime()).toBeGreaterThan(argumentCreationStamp.getTime());
+      }
+    });
+
+    it('still answers THE ARGUMENT on the update route when the populate step overrode nothing', async () => {
+      // The regression guard for the branch above. Every save whose payload omits both
+      // keys - which is every case in the sibling group - must keep answering the very
+      // instance it was handed, because a rebuild cannot forward the collections
+      // `Product` treats as materialized-or-not and would convert "unknown" into a
+      // confident "empty".
+      const executor = new RecordingExecutor([[{ productID: PERSISTED_PRODUCT_ID }]]);
+      const repository = new MysqlProductRepository(executor);
+      const product = makeWritableProduct(PERSISTED_PRODUCT_ID);
+
+      const saved = await repository.saveProduct(product, NO_POPULATED_MEMBERS);
+
+      expect(saved).toBe(product);
+
+      // A payload that RESTATES what the entity already holds overrides nothing either,
+      // so it takes the same branch.
+      const restatingExecutor = new RecordingExecutor([[{ productID: PERSISTED_PRODUCT_ID }]]);
+      const restated = await new MysqlProductRepository(restatingExecutor).saveProduct(product, {
+        urlTitle: FIXTURE_URL_TITLE,
+        productName: LEGACY_FIXTURE_PRODUCT_NAME,
+      });
+
+      expect(restated).toBe(product);
     });
   });
 
   describe('deleteProduct - NET-NEW, and boolean by legacy service contract', () => {
-    it('emits a DELETE with exactly one bound key and reports true', async () => {
-      // C5.3. The boolean result is the legacy SERVICE-level contract,
+    // ★★ THIS BLOCK ONCE ASSERTED THAT THE CASCADE WAS *NOT* REPRODUCED, AND THIS IS THE
+    // RECORD OF THAT REVERSAL. Four cases lived here, and three of them pinned the
+    // single-statement delete: one asserted `mutationCalls` had length 1, one read the
+    // product key off statement 0, and one - titled 'does not reproduce the service-tier
+    // default-sku null-out' - asserted in as many words that no preceding UPDATE was
+    // emitted, on the stated grounds that "`connection.ts` deliberately publishes no
+    // transaction method".
+    //
+    // That premise stopped being true when `connection.ts` gained `transaction`, and the
+    // conclusion inverted with it: Hibernate DID delete a product's dependents
+    // [model/entity/Product.cfc:L70-L76] and DID null the default SKU first
+    // [model/service/ProductService.cfc:L323], and the schema's foreign keys otherwise
+    // refuse the parent delete outright. So the cases below assert the cascade rather than
+    // its absence. They are rewritten rather than deleted, because the reasoning they
+    // encoded was sound for the capability then available and the change is worth reading.
+    //
+    // ★ AND THE INVERSE HALF OF THE LINK CLEANUP IS HERE FOR A SECOND, INDEPENDENT REASON.
+    // `HibachiService.delete()` ran `entity.removeAllManyToManyRelationships()`
+    // [org/Hibachi/HibachiService.cfc:L61] BEFORE it reached the DAO, and that helper walks
+    // EVERY many-to-many the entity participates in - not only the ones it owns. The
+    // framework states the purpose at [org/Hibachi/HibachiEntity.cfc:L270] in as many words:
+    // the link rows go first "so that it doesn't violate fkconstrint". A cascade that
+    // cleared only the three OWNED link tables would leave `SwPromoRewardProduct` and its
+    // six siblings pointing at a row that is about to vanish, and the product would become
+    // UNDELETABLE where the schema constrains them or the rows ORPHANED where it does not.
+    // Neither is what the legacy did, so all ten link tables are walked.
+    //
+    // NET-NEW under AAP 0.6.6 in full: `meta/tests/unit/dao/` holds only AccountDAOTest and
+    // PaymentDAOTest, so no legacy test covers product deletion at any layer.
+
+    /**
+     * 1 detach + 8 SKU-dependent + 1 SwSku + 3 owned link + 7 inverse link
+     * + 3 product-dependent + 1 product.
+     */
+    const EXPECTED_CASCADE_STATEMENT_COUNT = 24;
+
+    /** Position of the product row's own DELETE: the last statement of the unit of work. */
+    const PRODUCT_DELETE_POSITION = EXPECTED_CASCADE_STATEMENT_COUNT - 1;
+
+    /** Every table the cascade touches, in the order the adapter walks them. */
+    const EXPECTED_CASCADE_TABLES: readonly string[] = Object.freeze([
+      'SwProduct',
+      'SwAlternateSkuCode',
+      'SwAttributeValue',
+      'SwSkuCurrency',
+      'SwStock',
+      'SwSkuOption',
+      'SwSkuAccessContent',
+      'SwSkuSubsBenefit',
+      'SwSkuRenewalSubsBenefit',
+      'SwSku',
+      'SwProductListingPage',
+      'SwProductCategory',
+      'SwRelatedProduct',
+      'SwPromoRewardProduct',
+      'SwPromoRewardExclProduct',
+      'SwPromoQualProduct',
+      'SwPromoQualExclProduct',
+      'SwPriceGroupRateProduct',
+      'SwVendorProduct',
+      'SwPhysicalProduct',
+      'SwImage',
+      'SwAttributeValue',
+      'SwProductReview',
+      'SwProduct',
+    ]);
+
+    /** The eight tables reached through a subquery over the product's SKUs. */
+    const SKU_DEPENDENT_TABLE_NAMES: readonly string[] = EXPECTED_CASCADE_TABLES.slice(1, 9);
+
+    it('deletes the product row LAST, and reports true when it matched', async () => {
+      // The boolean result is the legacy SERVICE-level contract,
       // `public boolean function deleteProduct(required any product)`
-      // [model/service/ProductService.cfc:L317], so this reports two outcomes rather
-      // than throwing on a refusal.
+      // [model/service/ProductService.cfc:L317], so this reports two outcomes rather than
+      // throwing on a refusal - and it reports the PRODUCT row's result, not the cascade's.
       const executor = new RecordingExecutor();
       const repository = new MysqlProductRepository(executor);
 
       const deleted = await repository.deleteProduct(makeWritableProduct(PERSISTED_PRODUCT_ID));
 
       expect(deleted).toBe(true);
-      expect(executor.mutationCalls).toHaveLength(1);
+      expect(executor.mutationCalls).toHaveLength(EXPECTED_CASCADE_STATEMENT_COUNT);
 
-      const statement = statementAt(executor.mutationCalls, 0);
+      const statement = statementAt(executor.mutationCalls, PRODUCT_DELETE_POSITION);
       expect(statement.sql).toBe(EXPECTED_PRODUCT_DELETE);
       expect(statement.params).toStrictEqual([PERSISTED_PRODUCT_ID]);
       expect(placeholderCount(statement.sql)).toBe(1);
 
-      // A DELETE and nothing else - not a TRUNCATE, not a DROP.
-      expect(statement.sql.startsWith('DELETE FROM SwProduct')).toBe(true);
-      expect(statement.sql).not.toContain('TRUNCATE');
-      expect(statement.sql).not.toContain('DROP');
+      // TWENTY-FOUR STATEMENTS, IN ORDER, AS TEXT - and the count is FIXED. It does not
+      // grow with the number of SKUs, link rows or currencies, because every step is one
+      // predicate rather than one statement per row. Pinning the full text here, rather
+      // than only the table names, is what makes a reordered or reworded statement a
+      // failure instead of a silent behaviour change.
+      expect(executor.mutationCalls.map((call: RecordedStatement) => call.sql)).toStrictEqual([
+        ...EXPECTED_PRODUCT_DELETE_SEQUENCE,
+      ]);
+
+      // Every statement binds the product identifier exactly once, so the whole sequence
+      // is idempotent and therefore safely retryable - and every statement after the first
+      // is a plain row DELETE. Statement 0 is the exception BY DESIGN: it is the
+      // default-SKU detach, an UPDATE, and it is checked on its own terms because a
+      // `startsWith('DELETE FROM ')` sweep that included it would have to be weakened to
+      // the point of asserting nothing.
+      expect(statementAt(executor.mutationCalls, 0).sql).toBe(EXPECTED_PRODUCT_DEFAULT_SKU_DETACH);
+
+      for (const [position, call] of executor.mutationCalls.entries()) {
+        expect(call.params).toStrictEqual([PERSISTED_PRODUCT_ID]);
+        expect(placeholderCount(call.sql)).toBe(1);
+        expect(call.sql.startsWith(position === 0 ? 'UPDATE ' : 'DELETE FROM ')).toBe(true);
+        expect(call.sql).not.toContain('TRUNCATE');
+        expect(call.sql).not.toContain('DROP');
+      }
+
+      // LEAF FIRST: the product row is deleted LAST, so a failure part-way through
+      // leaves it present and the call safe to re-issue.
+      expect(statementAt(executor.mutationCalls, PRODUCT_DELETE_POSITION).sql).toBe(
+        EXPECTED_PRODUCT_DELETE,
+      );
+
+      // And the SKU rows go after their own children and before every table keyed on the
+      // product itself.
+      expect(statementAt(executor.mutationCalls, 9).sql).toBe(EXPECTED_PRODUCT_SKUS_DELETE);
+
+      // Nothing was READ - the one place row identity is resolved is inside the
+      // subquery, in SQL.
+      expect(executor.calls).toHaveLength(0);
     });
 
-    it('reports false when the statement matched no row', async () => {
-      // ⚠ WHAT `false` MEANS HERE. The legacy service returned false when the
-      // FRAMEWORK's delete did not proceed - a validation gate evaluated before any
-      // SQL was issued - and it then restored the default SKU it had nulled out
-      // beforehand [model/service/ProductService.cfc:L320-L333]. That gate lived in
-      // `HibachiService`/`HibachiDAO`, which is not ported, so deletability now lives
-      // at the service tier where it belongs. This method's `false` means the DELETE
-      // matched no row, which is the only refusal a driver can report.
+    it('names every out-of-scope child table from its OWN entity declaration', async () => {
+      // ★★ QUOTE-THEN-REVISE, AND THE PREMISE WAS THE THING THAT WAS WRONG. This case was
+      // titled 'names only the tables the source declares, and never an unnameable one'
+      // and asserted the ABSENCE of six table names, reasoning: "Three of Product's
+      // `cascade="all-delete-orphan"` collections point at entities outside the eighteen
+      // in scope [...] and their physical table names appear in NO in-scope source.
+      // Inventing one would be worse than leaving the obligation unhonoured."
+      //
+      // THE CAUTION WAS RIGHT AND THE FACT WAS NOT. Out of PORTED scope is not the same
+      // as absent from the repository, and each of those entities declares its own table
+      // in its own file, in the one place a table name is ever declared:
+      //
+      //   `Image.cfc`            -> `table="SwImage"`            [model/entity/Image.cfc:L49]
+      //   `AttributeValue.cfc`   -> `table="SwAttributeValue"`   [model/entity/AttributeValue.cfc:L54]
+      //   `ProductReview.cfc`    -> `table="SwProductReview"`    [model/entity/ProductReview.cfc:L49]
+      //   `AlternateSkuCode.cfc` -> `table="SwAlternateSkuCode"` [model/entity/AlternateSkuCode.cfc:L49]
+      //   `Stock.cfc`            -> `table="SwStock"`            [model/entity/Stock.cfc:L49]
+      //
+      // Nothing is invented by reading them, and the foreign keys are declared in the same
+      // files - `Image.product` is `fkcolumn="productID"` [model/entity/Image.cfc:L61] and
+      // `AttributeValue` carries BOTH `productID` [L70] and `skuID` [L72], which is why it
+      // is cleaned twice: once by product key and once by subquery over the SKUs.
+      //
+      // So the obligation is HONOURED rather than recorded, and what this case pins is the
+      // opposite of what it used to: the five tables are named, spelled as their entities
+      // spell them, and the names that are genuinely NOT declared anywhere are still absent.
+      const executor = new RecordingExecutor();
+      const repository = new MysqlProductRepository(executor);
+
+      await repository.deleteProduct(makeWritableProduct(PERSISTED_PRODUCT_ID));
+
+      const emitted = executor.mutationCalls.map((call: RecordedStatement) => call.sql).join('\n');
+
+      for (const declaredTable of [
+        'SwImage',
+        'SwAttributeValue',
+        'SwProductReview',
+        'SwAlternateSkuCode',
+        'SwStock',
+      ]) {
+        expect(emitted).toContain(declaredTable);
+      }
+
+      // ⚠ AND THE ONE NAME THAT REALLY IS AN INVENTION STAYS ABSENT. `SwProductImage`
+      // reads like the obvious name for `Product.productImages` [model/entity/Product.cfc:L74]
+      // and NO entity declares it - the collection points at `Image`, whose table is
+      // `SwImage`. Guessing it would have produced a statement against nothing.
+      expect(emitted).not.toContain('SwProductImage');
+
+      // The SIX INVERSE SKU link tables [model/entity/Sku.cfc:L82-L87] are absent too:
+      // an inverse collection is maintained by its owning side and Hibernate did not
+      // delete its rows on the strength of the inverse mapping.
+      for (const inverseSkuLinkTable of [
+        'SwPromoRewardSku',
+        'SwPromoRewardExclSku',
+        'SwPromoQualSku',
+        'SwPromoQualExclSku',
+        'SwPriceGroupRateSku',
+        'SwPhysicalSku',
+      ]) {
+        expect(emitted).not.toContain(inverseSkuLinkTable);
+      }
+
+      // And `SwRelatedProduct` is cleaned from ONE side only - adding
+      // `OR relatedProductID = ?` would delete rows belonging to another product's
+      // collection, which the framework never touched.
+      expect(emitted).not.toContain('relatedProductID');
+    });
+
+    it('reports false when the PRODUCT row matched nothing, whatever the cascade did', async () => {
+      // ⚠ WHAT `false` MEANS HERE. The legacy service returned false when the FRAMEWORK's
+      // delete did not proceed - a validation gate evaluated before any SQL was issued - and
+      // it then restored the default SKU it had nulled out beforehand
+      // [model/service/ProductService.cfc:L320-L333]. That gate lived in
+      // `HibachiService`/`HibachiDAO`, which is not ported, so deletability still lives at
+      // the service tier. This method's `false` means the product's own DELETE matched no
+      // row, which is the only refusal a driver can report.
+      //
+      // ★ THE ASSERTION IS ON THE LAST STATEMENT, NOT THE FIRST. It formerly read statement
+      // 0, which is now the detach UPDATE - and since that binds the same key, the old
+      // assertion would still have passed while no longer testing what it named. The
+      // position is therefore pinned explicitly.
       const executor = new RecordingExecutor([], NO_ROWS_AFFECTED);
       const repository = new MysqlProductRepository(executor);
 
       const deleted = await repository.deleteProduct(makeWritableProduct(UNMATCHED_PRODUCT_ID));
 
       expect(deleted).toBe(false);
-      expect(statementAt(executor.mutationCalls, 0).params).toStrictEqual([UNMATCHED_PRODUCT_ID]);
+
+      const productDelete = statementAt(executor.mutationCalls, PRODUCT_DELETE_POSITION);
+      expect(productDelete.sql).toBe(EXPECTED_PRODUCT_DELETE);
+      expect(productDelete.params).toStrictEqual([UNMATCHED_PRODUCT_ID]);
     });
 
-    it('binds the empty string for an unsaved product and reports false, with no guard', async () => {
-      // `isNew()` means the identifier is the empty string
-      // [model/entity/Product.cfc:L52], so the statement binds `''`, matches nothing
-      // and reports false - the correct answer, reached without a special case.
+    it('refuses an unsaved product before opening a transaction, and writes nothing', async () => {
+      // ★ QUOTE-THEN-REVISE. This case was titled 'binds the empty string for an unsaved
+      // product and reports false, with no guard', and it asserted
+      // `statementAt(mutationCalls, 0).params` was `['']` - celebrating that `isNew()`
+      // needed no special case because binding the empty string matched nothing anyway.
+      //
+      // That was the right call for ONE statement and the wrong one for twenty-four. Opening a
+      // unit of work to bind `''` twenty-four times against a row that provably does not exist
+      // - `isNew()` means the identifier IS the empty string [model/entity/Product.cfc:L52] -
+      // is waste rather than economy, so the guard now earns its place. The observable answer
+      // is unchanged: still `false`.
       const executor = new RecordingExecutor([], NO_ROWS_AFFECTED);
       const repository = new MysqlProductRepository(executor);
 
       const deleted = await repository.deleteProduct(makeWritableProduct());
 
       expect(deleted).toBe(false);
-      expect(statementAt(executor.mutationCalls, 0).params).toStrictEqual(['']);
+      expect(executor.mutationCalls).toStrictEqual([]);
+      expect(executor.calls).toStrictEqual([]);
+      expect(executor.transactionCount).toBe(0);
     });
 
-    it('does not reproduce the service-tier default-sku null-out', async () => {
-      // ⚠ THE THREE-STEP SEQUENCE AT [model/service/ProductService.cfc:L323] IS NOT
-      // REPRODUCED HERE - null the association, delete, restore on failure - because
-      // it is only safe inside a unit of work and `connection.ts` deliberately
-      // publishes no transaction method. Splitting it across three uncoordinated
-      // statements could leave a product with its default SKU nulled and itself
-      // undeleted, which is strictly worse than not attempting it. It is service-tier
-      // orchestration and it stays there. So: ONE statement, no preceding UPDATE.
+    it('detaches the default SKU FIRST, which is the SQL half of the L323 null-out', async () => {
+      // The mutual foreign key is why the order is forced: `SwSku.productID` references
+      // `SwProduct` [model/entity/Sku.cfc:L65] and `SwProduct.defaultSkuID` references
+      // `SwSku` [model/entity/Product.cfc:L70], so the SKU rows cannot go while the product
+      // row still names one of them. The legacy solved the same problem in the service by
+      // nulling the association before delegating to the framework delete
+      // [model/service/ProductService.cfc:L323].
       const executor = new RecordingExecutor();
       const repository = new MysqlProductRepository(executor);
 
       await repository.deleteProduct(makeWritableProduct(PERSISTED_PRODUCT_ID));
 
-      expect(executor.mutationCalls).toHaveLength(1);
-      expect(executor.calls).toHaveLength(0);
-      expect(statementAt(executor.mutationCalls, 0).sql).not.toContain('UPDATE');
-    });
-  });
+      const detach = statementAt(executor.mutationCalls, 0);
+      expect(detach.sql).toBe('UPDATE SwProduct SET defaultSkuID = NULL WHERE productID = ?');
+      expect(detach.params).toStrictEqual([PERSISTED_PRODUCT_ID]);
 
-  describe('saveBrand - the seventh port method, and the one the brief omits', () => {
-    // CFML parity [model/service/BrandService.cfc:L67-L77]: `saveBrand` is the ONLY
-    // method the legacy brand service declares; everything else it offered was
-    // inherited from the framework base, and persistence itself was
-    // `super.save(arguments.brand, arguments.data)` at L76. B4 keeps the legacy
-    // camelCase name verbatim.
-    //
-    // ⚠ WHY THIS BLOCK EXISTS AT ALL. The brief's A6 fixes this port at SIX methods.
-    // The shipped port declares SEVEN and says so in its own header, because there is
-    // NO `BrandDAO.cfc` anywhere in the legacy repository and AAP 0.4.1 fixes the port
-    // inventory at THIRTEEN - so no fourteenth brand port was available to receive a
-    // brand write, and it landed here. Per A4 the adapter wins on shape, and asserting
-    // only six would leave a real, reachable, WRITING method with its statement text
-    // and parameter binding unpinned - which is precisely what this folder exists to
-    // prevent. So the seventh is pinned exactly like the other six.
+      // It is an UPDATE that clears one column - it must not re-stamp the audit columns of a
+      // row that is deleted twenty-three statements later.
+      expect(detach.sql).not.toContain('modifiedDateTime');
 
-    /**
-     * A brand that has never been persisted.
-     *
-     * `makeProductFixture()` builds its brand with an empty `brandID`, which is what
-     * `unsavedvalue=""` means, so the default fixture's brand IS the new-brand case.
-     */
-    function makeNewBrand() {
-      const brand = makeProductFixture().getBrand();
-
-      if (brand === undefined) {
-        throw new Error('Expected the product fixture to carry a brand, but it carried none.');
-      }
-
-      return brand;
-    }
-
-    /** A brand carrying an identifier, hydrated through the adapter's own factory. */
-    async function loadPersistedBrand() {
-      const executor = new RecordingExecutor([[PRODUCT_GRAPH_ROW_WITH_BRAND], []]);
-      const product = requireProduct(
-        await new MysqlProductRepository(executor).getProductByProductID(PERSISTED_PRODUCT_ID),
+      // And it precedes every DELETE, not merely the first one.
+      const firstDeletePosition = executor.mutationCalls.findIndex((statement: RecordedStatement) =>
+        statement.sql.startsWith('DELETE'),
       );
-      const brand = product.getBrand();
+      expect(firstDeletePosition).toBe(1);
+    });
 
-      if (brand === undefined) {
-        throw new Error('Expected the graph row to have materialized a brand, but it did not.');
-      }
-
-      return brand;
-    }
-
-    it('inserts a new brand with eleven bound parameters and no existence read', async () => {
+    it('opens EXACTLY ONE unit of work and runs every statement inside it', async () => {
+      // This is the whole reason the cascade is reproducible at all. Twenty-four statements
+      // spread across twenty-four implicit transactions could half-apply, leaving a product
+      // detached from its default SKU but undeleted, or its SKUs gone and itself present -
+      // states the legacy could never reach, because Hibernate flushed the lot inside the
+      // request's transaction.
       const executor = new RecordingExecutor();
       const repository = new MysqlProductRepository(executor);
 
-      await repository.saveBrand(makeNewBrand(), { brandName: 'Nike', urlTitle: 'nike' });
+      await repository.deleteProduct(makeWritableProduct(PERSISTED_PRODUCT_ID));
 
-      // No association to check and none to read: a new brand costs ONE write.
-      expect(executor.calls).toHaveLength(0);
-      expect(executor.mutationCalls).toHaveLength(1);
+      expect(executor.transactionCount).toBe(1);
 
-      const insert = statementAt(executor.mutationCalls, 0);
-      expect(insert.sql).toBe(EXPECTED_BRAND_INSERT);
-      expect(placeholderCount(insert.sql)).toBe(11);
-      expect(insert.params).toHaveLength(11);
-
-      // The minted identifier is bound, never embedded.
-      const mintedIdentifier = parameterAt(insert.params, 0);
-      expect(typeof mintedIdentifier).toBe('string');
-      if (typeof mintedIdentifier === 'string') {
-        expect(MINTED_IDENTIFIER_PATTERN.test(mintedIdentifier)).toBe(true);
-        expect(insert.sql).not.toContain(mintedIdentifier);
+      for (const statement of executor.mutationCalls) {
+        expect(statement.inTransaction).toBe(true);
       }
-
-      // The payload reached the bound row in the declared column order.
-      expect(parameterAt(insert.params, 3)).toBe('nike');
-      expect(parameterAt(insert.params, 4)).toBe('Nike');
     });
 
-    it('returns an instance carrying the minted identifier', async () => {
+    it('routes all twenty-four statements through the TRANSACTION executor, not its own', async () => {
+      // ★ WHY A SECOND DOUBLE IS NEEDED, AND WHAT THE CASE ABOVE CANNOT SHOW.
+      // `RecordingExecutor.transaction` hands the callback ITSELF, so `tx` and
+      // `this.executor` are the same object inside it: a statement issued against the
+      // adapter's own field lands in the same log, with the same `inTransaction` flag, as
+      // one issued against `tx`. The previous case therefore proves a unit of work was
+      // OPENED but not that the work went INSIDE it.
+      //
+      // This was not a hypothetical. Replacing all six `tx.executeMutation` calls with
+      // `this.executor.executeMutation` - which is precisely the escape that would commit
+      // each statement independently and reintroduce the half-applied cascade - left all
+      // 105 cases of this file GREEN. So the split double exists to make that mutation
+      // fail, and it does.
+      class SplittingExecutor implements PreparedStatementExecutor {
+        public readonly calls: RecordedStatement[] = [];
+
+        public readonly mutationCalls: RecordedStatement[] = [];
+
+        /** The recorder every in-transaction statement is expected to land on instead. */
+        public readonly inner = new RecordingExecutor();
+
+        public transactionCount = 0;
+
+        public execute(sql: string, params: readonly unknown[] = []): Promise<readonly SqlRow[]> {
+          this.calls.push({ sql, params: [...params], inTransaction: false });
+
+          return Promise.resolve(NO_ROWS);
+        }
+
+        public executeMutation(
+          sql: string,
+          params: readonly unknown[] = [],
+        ): Promise<SqlMutationResult> {
+          this.mutationCalls.push({ sql, params: [...params], inTransaction: false });
+
+          return Promise.resolve(WRITE_RESULT);
+        }
+
+        public async transaction<T>(
+          work: (tx: PreparedStatementExecutor) => Promise<T>,
+        ): Promise<T> {
+          this.transactionCount += 1;
+
+          return await work(this.inner);
+        }
+      }
+
+      const executor = new SplittingExecutor();
+      const repository = new MysqlProductRepository(executor);
+
+      const deleted = await repository.deleteProduct(makeWritableProduct(PERSISTED_PRODUCT_ID));
+
+      // The outer executor opened the unit and then issued nothing at all.
+      expect(executor.transactionCount).toBe(1);
+      expect(executor.mutationCalls).toStrictEqual([]);
+      expect(executor.calls).toStrictEqual([]);
+
+      // ...and the transaction's own executor carries the entire cascade.
+      expect(executor.inner.mutationCalls).toHaveLength(EXPECTED_CASCADE_STATEMENT_COUNT);
+      expect(deleted).toBe(true);
+    });
+
+    it('empties every SKU-dependent table BEFORE SwSku, reaching them by subquery', async () => {
+      // Hibernate had the product's SKUs loaded and could delete each dependent by SKU key.
+      // With no session, a subquery over `SwSku` reaches the same set in one statement per
+      // table - and it has to run while `SwSku` still holds the rows, or it selects nothing
+      // and the dependents survive as orphans.
       const executor = new RecordingExecutor();
       const repository = new MysqlProductRepository(executor);
 
-      const saved = await repository.saveBrand(makeNewBrand(), { brandName: 'Nike' });
+      await repository.deleteProduct(makeWritableProduct(PERSISTED_PRODUCT_ID));
 
-      const boundIdentifier = parameterAt(statementAt(executor.mutationCalls, 0).params, 0);
-      expect(saved.getBrandID()).toBe(boundIdentifier);
-      expect(saved.isNew()).toBe(false);
+      const emitted = executor.mutationCalls.map((statement: RecordedStatement) => statement.sql);
+      const skuTablePosition = emitted.indexOf('DELETE FROM SwSku WHERE productID = ?');
+      expect(skuTablePosition).toBe(9);
+
+      SKU_DEPENDENT_TABLE_NAMES.forEach((tableName: string, offset: number) => {
+        const position = offset + 1;
+        const statement = statementAt(executor.mutationCalls, position);
+
+        expect(statement.sql).toBe(
+          `DELETE FROM ${tableName} WHERE skuID IN (SELECT skuID FROM SwSku WHERE productID = ?)`,
+        );
+        expect(statement.params).toStrictEqual([PERSISTED_PRODUCT_ID]);
+        expect(position).toBeLessThan(skuTablePosition);
+      });
     });
 
-    it('reads the row then updates an existing brand, binding THE KEY LAST', async () => {
-      const brand = await loadPersistedBrand();
-      const executor = new RecordingExecutor([[{ brandID: PERSISTED_BRAND_ID }]]);
+    it('walks the link tables and the product-level children, in that order', async () => {
+      // The first three link tables are OWNED many-to-many [model/entity/Product.cfc:L79-L81],
+      // so their rows go with the owner; the next seven are the ones the product merely
+      // participates in; the three child tables are `all-delete-orphan` one-to-many
+      // [L74-L76]. Every group keys on `productID` directly rather than through a subquery,
+      // because every one of them names the product itself.
+      const executor = new RecordingExecutor();
       const repository = new MysqlProductRepository(executor);
 
-      await repository.saveBrand(brand, { brandName: 'Nike Sportswear' });
+      await repository.deleteProduct(makeWritableProduct(PERSISTED_PRODUCT_ID));
 
-      const existenceRead = onlyStatement(executor.calls);
-      expect(existenceRead.sql).toBe(EXPECTED_BRAND_EXISTENCE_READ);
-      expect(existenceRead.params).toStrictEqual([PERSISTED_BRAND_ID]);
+      const emitted = executor.mutationCalls.map((statement: RecordedStatement) => statement.sql);
 
-      const update = statementAt(executor.mutationCalls, 0);
-      expect(update.sql).toBe(EXPECTED_BRAND_UPDATE);
-      expect(placeholderCount(update.sql)).toBe(9);
-      expect(update.params).toHaveLength(9);
-      expect(parameterAt(update.params, 8)).toBe(PERSISTED_BRAND_ID);
-      expect(update.sql.endsWith('WHERE brandID = ?')).toBe(true);
+      expect(emitted.slice(10, 13)).toStrictEqual([
+        'DELETE FROM SwProductListingPage WHERE productID = ?',
+        'DELETE FROM SwProductCategory WHERE productID = ?',
+        'DELETE FROM SwRelatedProduct WHERE productID = ?',
+      ]);
+
+      // Then the seven the product only PARTICIPATES in, which
+      // `removeAllManyToManyRelationships()` [org/Hibachi/HibachiService.cfc:L61] cleared
+      // as well. Their member column is spelled exactly like the owned tables' - so they
+      // key on `productID` identically and are distinguishable only by table name.
+      expect(emitted.slice(13, 20)).toStrictEqual([
+        'DELETE FROM SwPromoRewardProduct WHERE productID = ?',
+        'DELETE FROM SwPromoRewardExclProduct WHERE productID = ?',
+        'DELETE FROM SwPromoQualProduct WHERE productID = ?',
+        'DELETE FROM SwPromoQualExclProduct WHERE productID = ?',
+        'DELETE FROM SwPriceGroupRateProduct WHERE productID = ?',
+        'DELETE FROM SwVendorProduct WHERE productID = ?',
+        'DELETE FROM SwPhysicalProduct WHERE productID = ?',
+      ]);
+
+      // And last the three product-level children.
+      expect(emitted.slice(20, 23)).toStrictEqual([
+        'DELETE FROM SwImage WHERE productID = ?',
+        'DELETE FROM SwAttributeValue WHERE productID = ?',
+        'DELETE FROM SwProductReview WHERE productID = ?',
+      ]);
     });
 
-    it('excludes brandID and the created audit pair from the SET list', async () => {
-      const brand = await loadPersistedBrand();
-      const executor = new RecordingExecutor([[{ brandID: PERSISTED_BRAND_ID }]]);
+    it('binds exactly one parameter - the product key - in all twenty-four statements', async () => {
+      // No statement takes a list, a limit or a second key. That matters because the whole
+      // cascade is driven by one identifier: a second bound value would mean some statement
+      // was reaching for state the method was not given.
+      const executor = new RecordingExecutor();
+      const repository = new MysqlProductRepository(executor);
 
-      await new MysqlProductRepository(executor).saveBrand(brand, {});
+      await repository.deleteProduct(makeWritableProduct(PERSISTED_PRODUCT_ID));
 
-      const update = statementAt(executor.mutationCalls, 0);
-      const setClause = update.sql.slice(update.sql.indexOf('SET'), update.sql.indexOf('WHERE'));
-
-      expect(setClause).not.toContain('brandID');
-      expect(setClause).not.toContain('createdDateTime');
-      expect(setClause).not.toContain('createdByAccountID');
+      for (const statement of executor.mutationCalls) {
+        expect(statement.params).toStrictEqual([PERSISTED_PRODUCT_ID]);
+        expect(placeholderCount(statement.sql)).toBe(1);
+      }
     });
 
-    it('lets a payload urlTitle override the entity value', async () => {
-      const brand = await loadPersistedBrand();
-      const executor = new RecordingExecutor([[{ brandID: PERSISTED_BRAND_ID }]]);
+    it('names SwOrderItem NOWHERE, so a sold SKU stays undeletable', async () => {
+      // ⚠ `orderItems` [model/entity/Sku.cfc:L71] is the one SKU collection declared with NO
+      // cascade, so Hibernate never deleted an order item to make room for a product delete:
+      // the foreign key stood and the delete failed. Reproducing that ABSENCE is what
+      // preserves order history, and it is asserted rather than assumed because adding the
+      // table would be a one-line, catastrophic, and entirely plausible-looking mistake.
+      const executor = new RecordingExecutor();
+      const repository = new MysqlProductRepository(executor);
 
-      await new MysqlProductRepository(executor).saveBrand(brand, { urlTitle: 'nike-sportswear' });
+      await repository.deleteProduct(makeWritableProduct(PERSISTED_PRODUCT_ID));
 
-      expect(parameterAt(statementAt(executor.mutationCalls, 0).params, 2)).toBe('nike-sportswear');
+      const everyStatement = executor.mutationCalls
+        .map((statement: RecordedStatement) => statement.sql)
+        .join('\n');
+
+      expect(everyStatement).not.toContain('SwOrderItem');
+      expect(everyStatement).not.toContain('SwOrder');
+
+      // Nor does it reach the far side of any owned link: a category outlives the products
+      // filed under it.
+      expect(everyStatement).not.toContain('SwCategory ');
+      expect(everyStatement).not.toContain('SwContent');
+      expect(everyStatement).not.toContain('SwSubscriptionBenefit');
     });
 
-    it('writes NULL when the payload carries urlTitle: undefined', async () => {
-      // ⚠ THE DISTINCTION `exactOptionalPropertyTypes` MAKES OBSERVABLE. A payload that
-      // carries the key with the value `undefined` is an explicit instruction to clear
-      // the column, and it is NOT the same input as a payload that omits the key - the
-      // next case proves the two diverge. Under a looser compiler setting the two would
-      // be indistinguishable, and one of them would silently wipe a URL title.
-      const brand = await loadPersistedBrand();
-      const executor = new RecordingExecutor([[{ brandID: PERSISTED_BRAND_ID }]]);
+    it('touches only the tables the legacy cascade did, and every one is Sw-prefixed', async () => {
+      // The complete inventory in the emitted order, so a table added or dropped in the
+      // adapter shows up here as a diff rather than as silent behaviour drift.
+      const executor = new RecordingExecutor();
+      const repository = new MysqlProductRepository(executor);
 
-      await new MysqlProductRepository(executor).saveBrand(brand, { urlTitle: undefined });
+      await repository.deleteProduct(makeWritableProduct(PERSISTED_PRODUCT_ID));
 
-      expect(parameterAt(statementAt(executor.mutationCalls, 0).params, 2)).toBeNull();
-    });
+      const touchedTables = executor.mutationCalls.map((statement: RecordedStatement) => {
+        const match = /^(?:DELETE FROM|UPDATE) (\w+)/.exec(statement.sql);
 
-    it('preserves the entity value when the payload OMITS urlTitle', async () => {
-      const brand = await loadPersistedBrand();
-      const executor = new RecordingExecutor([[{ brandID: PERSISTED_BRAND_ID }]]);
+        if (match?.[1] === undefined) {
+          throw new Error(`statement names no table: ${statement.sql}`);
+        }
 
-      await new MysqlProductRepository(executor).saveBrand(brand, { brandName: 'Nike' });
-
-      // The hydrated value from `b_urlTitle` survives untouched.
-      expect(parameterAt(statementAt(executor.mutationCalls, 0).params, 2)).toBe('nike');
-    });
-
-    it('never mutates the argument instance', async () => {
-      // The argument is an input, not a mutable output. A caller that inspects its own
-      // object after the call must see what it passed in.
-      const brand = await loadPersistedBrand();
-      const originalBrandName = brand.getBrandName();
-      const executor = new RecordingExecutor([[{ brandID: PERSISTED_BRAND_ID }]]);
-
-      const saved = await new MysqlProductRepository(executor).saveBrand(brand, {
-        brandName: 'Nike Sportswear',
+        return match[1];
       });
 
-      expect(brand.getBrandName()).toBe(originalBrandName);
-      expect(saved.getBrandName()).toBe('Nike Sportswear');
-      expect(saved).not.toBe(brand);
-    });
+      expect(touchedTables).toStrictEqual(EXPECTED_CASCADE_TABLES);
 
-    it('reads and writes SwBrand alone, with no association and no product table', async () => {
-      // T3, FETCH SHAPE: `SwBrand` carries no foreign key of its own, so there is no
-      // association to materialize and no dangling-key hazard - which is why a brand
-      // save, unlike a product save, cannot be refused for transience.
-      const brand = await loadPersistedBrand();
-      const executor = new RecordingExecutor([[{ brandID: PERSISTED_BRAND_ID }]]);
-
-      await new MysqlProductRepository(executor).saveBrand(brand, {});
-
-      for (const call of [...executor.calls, ...executor.mutationCalls]) {
-        expect(call.sql).toContain('SwBrand');
-        expect(call.sql).not.toContain('SwProduct');
-        expect(call.sql).not.toContain('SwSku');
+      for (const tableName of touchedTables) {
+        expect(tableName.startsWith('Sw')).toBe(true);
       }
     });
   });
+
+  // NO `saveBrand` GROUP, BECAUSE THE ADAPTER PUBLISHES NO SUCH METHOD. An earlier
+  // revision of this suite pinned the existence read, the eleven-column `SwBrand`
+  // insert, the eight-assignment update with the key bound last, and the populate
+  // precedence between the payload and the entity - all against a seventh port member
+  // that has since been removed. The header records why: the port's member set is
+  // LOCKED AT SIX, AAP 0.4.1 fixes the port inventory at THIRTEEN so no
+  // `BrandRepository` is available either, and AAP 0.5.3 does not carry the Hibachi
+  // base classes forward - which is all `super.save`
+  // [model/service/BrandService.cfc:L76] ever was. `src/services/brandService.ts`
+  // resolves the unique URL title into the payload and answers the brand; the durable
+  // half belongs to the composition root, and its LEGACY-NOTE says so at the
+  // statement that used to perform it. `SwBrand` is still exercised in this file, as
+  // the eager `LEFT JOIN` of the product graph.
 
   describe('the hydration path resolves collaborators by injection, not by a locator', () => {
     it('materializes a product with no getService lookup anywhere in the path', async () => {
@@ -2950,7 +4475,13 @@ describe('MysqlProductRepository - net-new coverage with no legacy antecedent', 
       // C6.3 / C5/B5. The migration reads and writes the EXISTING `Sw*` schema
       // unchanged - no migration, no rename, no new table, no column change. Every
       // statement this suite pins is checked against the tables it is allowed to name.
+      //
+      // Every name below is DECLARED IN IN-SCOPE SOURCE: the entity `table=` attributes,
+      // or a `linktable=` on one of the eighteen in-scope entities. That is the test -
+      // a table this adapter may name is one the slice can point at, not one that seemed
+      // likely.
       const permittedTables: readonly string[] = [
+        // Read paths.
         'SwAttributeSet',
         'SwAttribute',
         'SwType',
@@ -2961,6 +4492,35 @@ describe('MysqlProductRepository - net-new coverage with no legacy antecedent', 
         'SwSku',
         'SwSkuOption',
         'SwOption',
+        'SwOptionGroup',
+        // The ten `Product` many-to-many link tables [model/entity/Product.cfc:L79-L90],
+        // cleaned by the reproduction of `removeAllManyToManyRelationships()`.
+        'SwProductListingPage',
+        'SwProductCategory',
+        'SwRelatedProduct',
+        'SwPromoRewardProduct',
+        'SwPromoRewardExclProduct',
+        'SwPromoQualProduct',
+        'SwPromoQualExclProduct',
+        'SwPriceGroupRateProduct',
+        'SwVendorProduct',
+        'SwPhysicalProduct',
+        // The SKU's own owned link tables [model/entity/Sku.cfc:L76-L79] and its
+        // `all-delete-orphan` child tables [L69-L73].
+        'SwSkuAccessContent',
+        'SwSkuSubsBenefit',
+        'SwSkuRenewalSubsBenefit',
+        'SwSkuCurrency',
+        'SwAlternateSkuCode',
+        'SwStock',
+        // The three product-level children. Each entity is outside the ported eighteen and
+        // each declares its own table in its own file, which is where these names come
+        // from: `SwImage` [model/entity/Image.cfc:L49], `SwAttributeValue`
+        // [model/entity/AttributeValue.cfc:L54] and `SwProductReview`
+        // [model/entity/ProductReview.cfc:L49].
+        'SwImage',
+        'SwAttributeValue',
+        'SwProductReview',
       ];
 
       for (const statement of EVERY_EXPECTED_STATEMENT) {
@@ -2994,7 +4554,7 @@ describe('MysqlProductRepository - net-new coverage with no legacy antecedent', 
       const repository = new MysqlProductRepository(executor);
 
       await repository.getProductByProductID(PERSISTED_PRODUCT_ID);
-      await repository.saveProduct(makeWritableProduct());
+      await repository.saveProduct(makeWritableProduct(), NO_POPULATED_MEMBERS);
       await repository.deleteProduct(makeWritableProduct(PERSISTED_PRODUCT_ID));
       await repository.getAttributeSets([PRODUCT_ATTRIBUTE_SET_TYPE_CODE], []);
 
@@ -3109,7 +4669,7 @@ describe('MysqlProductRepository - net-new coverage with no legacy antecedent', 
       const executor = new RecordingExecutor();
       const repository = new MysqlProductRepository(executor);
 
-      await repository.saveProduct(makeWritableProduct());
+      await repository.saveProduct(makeWritableProduct(), NO_POPULATED_MEMBERS);
 
       const insert = statementAt(executor.mutationCalls, 0);
       for (const stampPosition of [16, 18]) {

@@ -1,41 +1,55 @@
 // ---------------------------------------------------------------------------
 // slatwall-ts - unit suite for `src/domain/entities/promotionQualifier.ts`
 //
-// WHAT THIS SUITE PINS
-// `PromotionQualifier` is the `SwPromoQual` row, and it is the GATE half of the promotion
-// engine: `Promotion` -> `PromotionPeriod` -> { QUALIFIERS decide WHETHER a promotion
-// applies, REWARDS decide WHAT it gives }. Everything this entity carries is therefore an
-// eligibility INPUT to a must-preserve money path -
-// `getQualifierQualificationDetails()` [model/service/PromotionService.cfc:L629-L750] reads
-// the ten numeric gates, and `getOrderItemInQualifier()`
-// [model/service/PromotionService.cfc:L852-L919] walks the membership collections.
+// `PromotionQualifier` is the `SwPromoQual` row and the GATE half of the promotion engine:
+// QUALIFIERS decide WHETHER a promotion applies, REWARDS decide WHAT it gives. Everything it
+// carries is an eligibility INPUT to a must-preserve money path -
+// `getQualifierQualificationDetails()` [model/service/PromotionService.cfc:L629-L750] reads the ten
+// numeric gates and `getOrderItemInQualifier()` [model/service/PromotionService.cfc:L852-L919]
+// walks the membership collections. Three properties do the load bearing: the TEN NUMERIC GATES
+// with asymmetric absence semantics [model/entity/PromotionQualifier.cfc:L55-L64], where every
+// `minimum*` declares `hb_nullRBKey="define.0"` and every `maximum*` `define.unlimited`, both
+// modelled `undefined` because coercing a `maximum*` to `0` would forbid every order; the THIRTEEN
+// MANY-TO-MANY OWNER COLLECTIONS [L73-L87], one FEWER than `PromotionReward`'s fourteen because the
+// qualifier has no `eligiblePriceGroups`, three of which point at out-of-scope entities and
+// collapse to opaque identifier arrays so only ten materialize; and an `isDeletable()` that CLIMBS
+// TWO LEVELS OF PARENT WITH NO NULL GUARD [L359-L361].
 //
-// Three properties of the row do the load bearing, and the suite is organised around them:
+// COVERAGE IS 100% NET-NEW, MEASURED: no file under `meta/tests/` mentions `PromotionQualifier`,
+// `qualifierType` or `rewardMatchingType`. The only legacy suites extended anywhere in this port
+// are [meta/tests/unit/entity/BrandTest.cfc] and [meta/tests/unit/entity/ProductTest.cfc], neither
+// of which touches this entity, and [meta/tests/functional/admin/entity/ProductTest.cfc] is an
+// empty stub. The four cases [meta/tests/unit/entity/SlatwallEntityTestBase.cfc:L51-L67] handed
+// every legacy entity suite for free are NOT inherited and nothing imitates them:
+// `validate_as_save_for_a_new_instance` [L51-L54] rests on `validate()`/`hasErrors()` and on a
+// schema that DOES NOT EXIST here, `simple_representation_exists_and_is_simple` [L56-L58] is
+// MEASURED rather than forced blindly, `has_primary_id_property_name` [L60-L62] rests on the
+// unported `getPrimaryIDPropertyName()`, and `defaults_are_correct` [L64-L67] survives in its
+// `isNew()` half only.
 //
-//   1. TEN NUMERIC GATES WITH ASYMMETRIC ABSENCE SEMANTICS
-//      [model/entity/PromotionQualifier.cfc:L55-L64]. Every `minimum*` declares
-//      `hb_nullRBKey="define.0"` and every `maximum*` declares
-//      `hb_nullRBKey="define.unlimited"`. Both are modelled as `undefined`, and coercing a
-//      `maximum*` to `0` would forbid every order rather than permit every order.
-//   2. THIRTEEN MANY-TO-MANY OWNER COLLECTIONS [L73-L87] - one FEWER than
-//      `PromotionReward`'s fourteen, because the qualifier has no `eligiblePriceGroups`.
-//      Three of the thirteen point at out-of-scope entities and collapse to opaque
-//      identifier arrays, so only ten materialize as entity arrays.
-//   3. AN `isDeletable()` THAT CLIMBS TWO LEVELS OF PARENT WITH NO NULL GUARD [L359-L361],
-//      which makes two distinct raises reachable rather than theoretical.
+// HARD BOUNDARY: this entity DECLARES the gates, it does not COMPARE them. Gate comparison
+// [model/service/PromotionService.cfc:L629-L750], `productTypeIDPath` membership walking
+// [model/service/PromotionService.cfc:L852-L919], the mutable usage ledger, the two-pass reward
+// iteration and its empty-collection guard, the over-use stripping loop, `getDiscountAmount`'s
+// arithmetic, the price-group-before-promotion ordering and the `issue_1766` return/exchange no-op
+// are all sibling-owned under `tests/unit/services/promotion/**`. No assertion computes a discount
+// and no SQL appears here - link-table reads belong to `tests/integration/repositories/**` - but
+// the thirteen physical link-table names ARE asserted, because they are a schema contract this row
+// owns rather than a query.
 //
-// ---------------------------------------------------------------------------
-// 100% NET-NEW COVERAGE - NEVER TO BE PRESENTED AS PARITY
-// ---------------------------------------------------------------------------
-// Not one assertion below has a legacy antecedent, and that was MEASURED rather than
-// assumed: no file under `meta/tests/` mentions `PromotionQualifier`, `qualifierType` or
-// `rewardMatchingType`. The only legacy suites extended anywhere in this port are
-// [meta/tests/unit/entity/BrandTest.cfc] and [meta/tests/unit/entity/ProductTest.cfc],
-// neither of which touches this entity, and
-// [meta/tests/functional/admin/entity/ProductTest.cfc] is an empty stub contributing zero
-// coverage. There is nothing here to extend, so this file is one of the sixteen NET-NEW
-// entity suites and is labelled as such. Presenting it as parity would fail the coverage
-// gate.
+// NO DEFECT BELONGS TO THIS ENTITY AND THE DIVERGENCE BUDGET SPENT HERE IS ZERO. The register of
+// thirty numbered legacy defects has NOT ONE entry against `model/entity/PromotionQualifier.cfc`,
+// so every wart below is a `CFML parity` fact and never a numbered defect: the property/accessor
+// DOUBLE ORPHAN at [L99] and [L107-L115]; `type="array"` declared on [L83] and [L84] only;
+// `qualifierType` [L53] left un-narrowed while `rewardMatchingType` [L65] is narrowed; the
+// misspelled "Overridden Implicet Getters" banner at [L349]/[L351]; `getSimpleRepresentation()`
+// [L101-L103] floating outside every banner; `getPromotionPeriod()` invoked twice in one expression
+// at [L360]; and the absent validation schema. A fourth project divergence is forbidden, and this
+// entity declares no non-persistent memo for one to live in. Two runtime failures ARE pinned below,
+// in the `isDeletable()` block, as faithful reproduction: [L360] dereferences
+// `getPromotionPeriod()` and then `getPromotion()` with no guard, both foreign keys are nullable
+// ([L68] and [model/entity/PromotionPeriod.cfc:L59] each declare no `notnull`), and CFML raises
+// rather than answering `false`.
 //
 // The four cases [meta/tests/unit/entity/SlatwallEntityTestBase.cfc:L51-L67] handed every
 // legacy entity suite for free are NOT inherited, and NO shared base class is introduced to
@@ -78,7 +92,7 @@
 // ---------------------------------------------------------------------------
 // NO DEFECT BELONGS TO THIS ENTITY, AND NO DIVERGENCE IS SPENT
 // ---------------------------------------------------------------------------
-// The register of twenty numbered legacy defects contains NOT ONE entry against
+// The register of thirty numbered legacy defects contains NOT ONE entry against
 // `model/entity/PromotionQualifier.cfc`. Every wart this suite pins is therefore recorded as
 // a `CFML parity` fact and never as a numbered defect:
 //
@@ -148,44 +162,27 @@ import { makePromotionFixtures } from '../../../fixtures/promotionFixtures.js';
 // `baseUrl`, so extensionless or three-level specifiers would resolve to the nonexistent
 // `tests/src/...`. `import type` is a SEPARATE statement rather than an inline `{ type X }`
 // qualifier, because `@typescript-eslint/consistent-type-imports` is configured with
-// `fixStyle: 'separate-type-imports'` and `no-import-type-side-effects` is an error.
+//   fixStyle: 'separate-type-imports'
+// and `no-import-type-side-effects` is an error. `Brand`, `Option` and `PromotionPeriod` are VALUE
+// imports because this suite constructs far-side doubles; `RewardMatchingType` is type-only.
 //
-// `Brand`, `Option` and `PromotionPeriod` are VALUE imports because this suite constructs
-// far-side doubles from them; `RewardMatchingType` is type-only because it is a union alias
-// with no runtime existence.
-//
-// DELIBERATELY ABSENT, each for a stated reason:
-//   * `FulfillmentMethod`, `ShippingMethod`, `AddressZone` - the Group A far sides
-//     [model/entity/PromotionQualifier.cfc:L73-L75] are OUT OF SCOPE and are not ported.
-//     They are opaque identifier strings in the shipped module and are treated as such here.
-//     Importing or inventing one would breach the scope boundary.
-//   * `Sku`, `Product`, `ProductType` - not in this file's declared dependency set. The three
-//     far sides they provide are reached through the fixture graph instead, which is exactly
-//     what the fixture module exists for.
-//   * `decimal.js` - only the arithmetic surface may import it. Every monetary expectation
-//     below is a `Money` or a decimal STRING; no computed JavaScript float appears anywhere.
-//   * `src/repositories/**`, `src/handlers/**`, `src/integrations/**`, `src/lib/config.ts`,
-//     `src/lib/logger.ts` - a test is not a back door around the domain-inward layer
-//     boundary.
-//   * any mocking, faker, DOM or AWS package - `vi` from the pinned runner is sufficient, and
-//     the two doubles this file spies on are hand-written.
+// DELIBERATELY ABSENT: `FulfillmentMethod`, `ShippingMethod` and `AddressZone`, because the Group A
+// far sides [model/entity/PromotionQualifier.cfc:L73-L75] are OUT OF SCOPE and not ported; `Sku`,
+// `Product` and `ProductType`, reached through the fixture graph instead because they are not in
+// this file's declared dependency set; `decimal.js`, because only the arithmetic surface may import
+// it; and `src/repositories/**`, `src/handlers/**`, `src/integrations/**`, `src/lib/config.ts` and
+// `src/lib/logger.ts`, because a test is not a back door around the domain-inward layer boundary.
 
-// ---------------------------------------------------------------------------
-// TYPES DERIVED FROM THE MODULES UNDER TEST, NEVER RESTATED BY HAND
-// ---------------------------------------------------------------------------
+// --- Types derived from the modules under test, never restated by hand ---------------------------
 
 /**
- * The subject's constructor parameter object.
- *
- * `src/domain/entities/promotionQualifier.ts` declares its init shape INLINE and exports only
- * the class and the `RewardMatchingType` union, so there is no init type to import. Deriving
- * it keeps this suite honest: if a column is added, removed or retyped upstream, the builders
- * below stop compiling instead of silently drifting past the change.
+ * The subject's constructor parameter object. `src/domain/entities/promotionQualifier.ts` declares
+ * its init shape INLINE and exports only the class and the `RewardMatchingType` union, so there is
+ * no init type to import.
  */
 // JUDGMENT CALL: derive the init shapes with `ConstructorParameters` rather than hand-declaring a
 // parallel `type` per entity. Re-declaring would compile today and rot silently the moment a column
-// changes upstream, which is the exact failure a characterization suite must not have. Deriving
-// costs one extra indirection and buys a compile error instead of a false pass.
+// changes upstream, which is the exact failure a characterization suite must not have.
 type PromotionQualifierInit = ConstructorParameters<typeof PromotionQualifier>[0];
 
 /** The period double's constructor parameter object, derived for the same reason. */
@@ -195,14 +192,10 @@ type PromotionPeriodInit = ConstructorParameters<typeof PromotionPeriod>[0];
 type OptionInit = ConstructorParameters<typeof Option>[0];
 
 /**
- * The fixture graph, and the ten-gate metadata table it already carries.
- *
- * `tests/fixtures/promotionFixtures.ts` exports exactly one symbol - the factory - and keeps
- * its graph interface module-local, so the shapes are derived from the factory's return type
- * rather than re-declared. `QualifierGateName` in particular is derived from the table's own
- * `gate` field, which is what makes the gate sweeps below exhaustive BY CONSTRUCTION: adding
- * an eleventh gate upstream without adding a reader here is a compile error, not a silent
- * coverage hole.
+ * The fixture graph, and the ten-gate metadata table it already carries. `QualifierGateName` is
+ * derived from the table's own `gate` field, which is what makes the gate sweeps below exhaustive
+ * BY CONSTRUCTION: adding an eleventh gate upstream without adding a reader here is a compile
+ * error, not a silent coverage hole.
  */
 type PromotionFixtures = ReturnType<typeof makePromotionFixtures>;
 type QualifierGateSpec = PromotionFixtures['qualifierGateNullDefaults'][number];
@@ -225,20 +218,15 @@ type MembershipPairProbe = {
   readonly farSide: () => readonly PromotionQualifier[];
 };
 
-// ---------------------------------------------------------------------------
-// THE SCHEMA AND SURFACE CONTRACTS, STATED ONCE
-// ---------------------------------------------------------------------------
+// --- The schema and surface contracts, stated once ---------------------------------------------
 
 /**
- * The physical table, verbatim.
- *
- * SCHEMA CONTINUITY IS BINDING [model/entity/PromotionQualifier.cfc:L49]: the port reads and
- * writes `SwPromoQual` unchanged - no migration, no rename, no new table, no column change.
+ * The physical table, verbatim. SCHEMA CONTINUITY IS BINDING
+ * [model/entity/PromotionQualifier.cfc:L49]: the port reads and writes `SwPromoQual` unchanged.
  *
  * CFML parity [model/entity/PromotionQualifier.cfc:L49]: the name is ABBREVIATED - `SwPromoQual`
- * and not `SwPromotionQualifier` - matching `PromotionReward`'s `SwPromoReward`. The
- * abbreviation is carried forward exactly and is never expanded; the assertion below exists so
- * that a well-meaning "correction" fails here rather than at a database.
+ * and not `SwPromotionQualifier` - matching `PromotionReward`'s `SwPromoReward`. Carried forward
+ * exactly and never expanded, so a well-meaning "correction" fails here rather than at a database.
  */
 const LEGACY_TABLE = 'SwPromoQual';
 
@@ -246,14 +234,12 @@ const LEGACY_TABLE = 'SwPromoQual';
  * All thirteen many-to-many link tables, verbatim, keyed by the property that declares each.
  *
  * CFML parity [model/entity/PromotionQualifier.cfc:L73-L87]: THIRTEEN owner collections, none
- * marked `inverse="true"`. That is exactly ONE FEWER than `PromotionReward`'s fourteen
- * [model/entity/PromotionReward.cfc:L74 declares `eligiblePriceGroups`, which this entity has
- * no equivalent of]. The single missing collection IS the structural difference between the
- * two entities, and none is invented to close it.
- *
- * Five of the thirteen abbreviate further still - `SwPromoQualExcl*` rather than
- * `SwPromoQualExcluded*` - and `shippingAddressZones` abbreviates differently again, to
- * `SwPromoQualShipAddressZone`. Every abbreviation is preserved.
+ * marked `inverse="true"` - exactly ONE FEWER than `PromotionReward`'s fourteen
+ * [model/entity/PromotionReward.cfc:L74 declares `eligiblePriceGroups`, which this entity has no
+ * equivalent of]. That missing collection IS the structural difference between the two entities,
+ * and none is invented to close it. Five of the thirteen abbreviate further still -
+ * `SwPromoQualExcl*` rather than `SwPromoQualExcluded*` - and `shippingAddressZones` abbreviates
+ * differently again, to `SwPromoQualShipAddressZone`. Every abbreviation is preserved.
  */
 const LEGACY_LINK_TABLES = {
   fulfillmentMethods: 'SwPromoQualFulfillmentMethod',
@@ -275,11 +261,10 @@ const LEGACY_LINK_TABLES = {
  * The three Group A properties [model/entity/PromotionQualifier.cfc:L73-L75].
  *
  * CFML parity: `fulfillmentMethods`, `shippingMethods` and `shippingAddressZones` reference
- * `FulfillmentMethod`, `ShippingMethod` and `AddressZone` - all three OUT OF SCOPE and none
- * ported - so they collapse to `readonly string[]` opaque identifiers. That collapse is
- * LOSSLESS with respect to authored logic rather than merely convenient: these are precisely
- * the three of the fourteen relationships for which the component hand-writes NO `add*` and NO
- * `remove*` anywhere in its 373 lines, relying entirely on framework-generated accessors.
+ * `FulfillmentMethod`, `ShippingMethod` and `AddressZone`, all three OUT OF SCOPE and none ported,
+ * so they collapse to `readonly string[]` opaque identifiers. That collapse is LOSSLESS with
+ * respect to authored logic: these are precisely the three of the fourteen relationships for which
+ * the component hand-writes NO `add*` and NO `remove*` anywhere in its 373 lines.
  */
 const GROUP_A_PROPERTIES = [
   'fulfillmentMethods',
@@ -290,13 +275,10 @@ const GROUP_A_PROPERTIES = [
 /**
  * The `rewardMatchingType` vocabulary, in the source's own order.
  *
- * CFML parity [model/entity/PromotionQualifier.cfc:L109-L113]: these are not five plausible
- * values, they are the exact five rows `getRewardMatchingTypeOptions()` returns, and
- * [L65] declares `hb_formFieldType="select"`, so the option list IS the admin form's domain.
- * No sixth member, none renamed, none reordered.
- *
- * Typed as `readonly RewardMatchingType[]` rather than as bare strings, so the union itself is
- * exercised: a typo here is a compile error.
+ * CFML parity [model/entity/PromotionQualifier.cfc:L109-L113]: not five plausible values but the
+ * exact five rows `getRewardMatchingTypeOptions()` returns, and [L65] declares
+ * `hb_formFieldType="select"`, so the option list IS the admin form's domain. No sixth member, none
+ * renamed, none reordered. Typed as `readonly RewardMatchingType[]`, so a typo is a compile error.
  */
 const REWARD_MATCHING_TYPES: readonly RewardMatchingType[] = [
   'any',
@@ -310,10 +292,9 @@ const REWARD_MATCHING_TYPES: readonly RewardMatchingType[] = [
  * The five option `name` fields, verbatim and UNRESOLVED.
  *
  * CFML parity [model/entity/PromotionQualifier.cfc:L109-L113]: each name is
- * `rbKey('entity.promotionQualifier.rewardMatchingType.<value>')`. JavaRB IS NOT PORTED and no
- * i18n runtime is introduced, so every resource-bundle identifier is preserved verbatim as an
- * INERT STRING CONSTANT and the legacy admin can still resolve it. Nothing below asserts a
- * translated label, because producing one would require a resolver this port does not have.
+ * `rbKey('entity.promotionQualifier.rewardMatchingType.<value>')`. JavaRB IS NOT PORTED and no i18n
+ * runtime is introduced, so every resource-bundle identifier is preserved verbatim as an INERT
+ * STRING CONSTANT and the legacy admin can still resolve it. Nothing asserts a translated label.
  */
 const REWARD_MATCHING_TYPE_OPTION_KEYS: readonly string[] = [
   'entity.promotionQualifier.rewardMatchingType.any',
@@ -326,30 +307,25 @@ const REWARD_MATCHING_TYPE_OPTION_KEYS: readonly string[] = [
 /**
  * The `hb_permission` attribute, verbatim.
  *
- * ★ CFML parity [model/entity/PromotionQualifier.cfc:L49]: THIS SPELLING IS CORRECT, and that
- * is worth an assertion of its own. The direct contrast is
- * [model/entity/PromotionReward.cfc:L57], whose equivalent attribute reads
- * `hb_permission="promotionPeriod.promtionRewards"` - missing the `o` in "promotion". The
- * sibling's misspelling is the ONE identifier in that file requiring a documented rename; THIS
- * FILE REQUIRES NONE, and this correctly-spelled control is what proves the sibling's is a
- * typo rather than a convention. (Locator note: the reward's component declaration is at
- * `PromotionReward.cfc:L57`, not the L49 an upstream summary cites - verified by reading the
- * source. Source wins.)
+ * CFML parity [model/entity/PromotionQualifier.cfc:L49]: THIS SPELLING IS CORRECT, and that is
+ * worth an assertion of its own. The direct contrast is [model/entity/PromotionReward.cfc:L57],
+ * whose equivalent reads `hb_permission="promotionPeriod.promtionRewards"` - missing the `o` in
+ * "promotion". The sibling's misspelling is the ONE identifier in that file requiring a documented
+ * rename; THIS FILE REQUIRES NONE, and this correctly-spelled control is what proves the sibling's
+ * is a typo rather than a convention. (Locator note: the reward's component declaration is at
+ * `PromotionReward.cfc:L57`, not the L49 an upstream summary cites. Source wins.)
  */
 const QUALIFIER_PERMISSION = 'promotionPeriod.promotionQualifiers';
 
 /**
  * Every member the port authors on the prototype, sorted - interface parity in executable form.
  *
- * SEVENTY-ONE names, and every one is a legacy CFML name VERBATIM in camelCase except the three
- * Group A readers, which are renamed to their identifier form (`getFulfillmentMethodIDs` for
- * `fulfillmentMethods`, and so on) because the far sides are opaque strings rather than
- * entities. Nothing is "improved": `getSimpleRepresentationPropertyName`,
- * `hasAnyExcludedOption` and the eleven `add*`/`remove*` pairs all keep their source spelling.
- *
- * `indexOfEntity` is `private static` in the shipped module, so it lives on the constructor and
- * not on the prototype - it adds no instance surface at all, which is asserted below rather
- * than assumed.
+ * SEVENTY-ONE names, each a legacy CFML name VERBATIM in camelCase except the three Group A
+ * readers, renamed to their identifier form (`getFulfillmentMethodIDs` for `fulfillmentMethods`,
+ * and so on) because the far sides are opaque strings rather than entities. Nothing is "improved":
+ * `getSimpleRepresentationPropertyName`, `hasAnyExcludedOption` and the eleven `add*`/`remove*`
+ * pairs all keep their source spelling. `indexOfEntity` is `private static` in the shipped module,
+ * so it lives on the constructor and adds no instance surface - asserted below, not assumed.
  */
 const PORTED_PUBLIC_SURFACE: readonly string[] = [
   'addBrand',
@@ -428,33 +404,29 @@ const PORTED_PUBLIC_SURFACE: readonly string[] = [
 /**
  * The two period-side helpers `PromotionPeriod` calls but this entity does not declare.
  *
- * ⚠️ CFML parity [model/entity/PromotionQualifier.cfc:L121-L137]: the ONLY period-side helpers
- * this component declares are `setPromotionPeriod` [L122-L127] and `removePromotionPeriod`
- * [L128-L137]. There is no `setPromotion` and no `removePromotion` anywhere in its 373 lines.
- *
- * That absence is precisely why [model/entity/PromotionPeriod.cfc:L125-L127]
- * `addPromotionQualifier` - which calls `arguments.promotionQualifier.setPromotion( this )` -
- * and [L128-L130] `removePromotionQualifier` - which calls
- * `arguments.PromotionQualifier.removePromotion( this )` - both THROW. The throws themselves
- * belong to `promotionPeriod.test.ts` and are cited, not re-asserted. What this suite owns is
- * the other half of the explanation: the members really are not here.
+ * CFML parity [model/entity/PromotionQualifier.cfc:L121-L137]: the ONLY period-side helpers this
+ * component declares are `setPromotionPeriod` [L122-L127] and `removePromotionPeriod` [L128-L137];
+ * there is no `setPromotion` and no `removePromotion` anywhere in its 373 lines. That absence is
+ * precisely why [model/entity/PromotionPeriod.cfc:L125-L127] `addPromotionQualifier`, which calls
+ * `arguments.promotionQualifier.setPromotion( this )`, and [L128-L130] `removePromotionQualifier`,
+ * which calls `arguments.PromotionQualifier.removePromotion( this )`, both THROW. The throws belong
+ * to `promotionPeriod.test.ts`; this suite owns the other half of the explanation, that the members
+ * really are not here.
  */
 const ABSENT_PERIOD_SIDE_HELPERS: readonly string[] = ['setPromotion', 'removePromotion'];
 
 /**
- * Members that would exist if the port had "completed" one of the gaps it deliberately keeps.
+ * Members that would exist if the port had "completed" one of the gaps it deliberately keeps. Four
+ * independent scope rulings, asserted rather than merely documented:
  *
- * Four independent scope rulings, asserted rather than merely documented, because a later
- * well-meaning addition would silently undo each one:
- *
- *   * `getQualifierApplicationTypeOptions` - the reader half of the double orphan. [L99]
- *     declares the property; no method for it exists in the source, so none is authored.
+ *   * `getQualifierApplicationTypeOptions` - the reader half of the double orphan. [L99] declares
+ *     the property; no method for it exists in the source.
  *   * `getQualifierTypeOptions` - `qualifierType` [L53] has NO option list anywhere in the
- *     component, which is exactly why the shipped module leaves that column un-narrowed.
+ *     component, which is why the shipped module leaves that column un-narrowed.
  *   * the four `eligiblePriceGroups` members - `PromotionReward` has that collection
- *     [model/entity/PromotionReward.cfc:L74]; the qualifier does not, and none is invented.
+ *     [model/entity/PromotionReward.cfc:L74]; the qualifier does not.
  *   * the nine Group A helpers - no `add*`, `remove*` or `has*` exists for an out-of-scope far
- *     side, matching the source's own silence on all three of those relationships.
+ *     side, matching the source's own silence on all three relationships.
  */
 const ABSENT_BY_SCOPE_RULING: readonly string[] = [
   'getQualifierApplicationTypeOptions',
@@ -482,24 +454,18 @@ const ABSENT_BY_SCOPE_RULING: readonly string[] = [
  *
  * `extends="HibachiEntity"` [model/entity/PromotionQualifier.cfc:L49] is UNQUALIFIED, so it
  * resolves to the local `model/entity/HibachiEntity.cfc`, which itself extends
- * `Slatwall.org.Hibachi.HibachiEntity`. Neither base level is ported and no Hibachi base-class
- * suite is built here.
+ * `Slatwall.org.Hibachi.HibachiEntity`. Neither base level is ported.
  *
- * ★ THE DYNAMIC DISPATCHER IS NOT REPRODUCED. [org/Hibachi/HibachiEntity.cfc:L507-L565] is an
- * `onMissingMethod` dispatcher that terminates in a THROW at L565, and
- * `hasAnyInProperty` [L340-L350] reaches its predicates through `evaluate()` at L344. TypeScript
- * must not emulate that: there is no `Proxy`, no index signature, no `variables.` scope object,
- * no tokenizer and no `eval` anywhere in the port. Only concretely-called members are authored,
- * which is why the shipped module hand-writes ten `has*` predicates plus `hasAnyOption` and
- * `hasAnyExcludedOption` instead.
- *
- * `PromotionQualifier` declares NO `attributeValues` collection [L52-L99 re-read line by line],
- * so the EAV fallback at [org/Hibachi/HibachiEntity.cfc:L559] is unreachable and in CFML an
- * unknown `getX()` on this component throws directly at L565. It is one of the fourteen
- * throwing entities rather than one of the four silent ones. That is documented, not reproduced.
- *
- * The raw `writeDump(getErrors())` debug output at [org/Hibachi/HibachiEntity.cfc:L605] is
- * likewise not ported.
+ * THE DYNAMIC DISPATCHER IS NOT REPRODUCED. [org/Hibachi/HibachiEntity.cfc:L507-L565] is an
+ * `onMissingMethod` dispatcher terminating in a THROW at L565, and `hasAnyInProperty` [L340-L350]
+ * reaches its predicates through `evaluate()` at L344. There is no `Proxy`, no index signature, no
+ * `variables.` scope object, no tokenizer and no `eval` anywhere in the port, which is why the
+ * shipped module hand-writes ten `has*` predicates plus `hasAnyOption` and `hasAnyExcludedOption`.
+ * `PromotionQualifier` declares NO `attributeValues` collection [L52-L99], so the EAV fallback at
+ * [org/Hibachi/HibachiEntity.cfc:L559] is unreachable and an unknown `getX()` throws directly at
+ * L565 - one of the fourteen throwing entities rather than one of the four silent ones. The raw
+ * `writeDump(getErrors())` debug output at [org/Hibachi/HibachiEntity.cfc:L605] is likewise not
+ * ported.
  */
 const UNPORTED_FRAMEWORK_MEMBERS: readonly string[] = [
   'getNewFlag',
@@ -523,25 +489,21 @@ const UNPORTED_FRAMEWORK_MEMBERS: readonly string[] = [
 ];
 
 /**
- * The validation surface that does not exist, and the five declarative validators this entity
- * does not declare.
+ * The validation surface that does not exist, and the five declarative validators this entity does
+ * not declare.
  *
- * ⚠️ CFML parity [model/validation/]: THERE IS NO `PromotionQualifier.json`. Verified by
- * listing the folder - it holds 96 `.json` files and that is not one of them.
- * `PromotionQualifier` is one of EXACTLY SIX in-scope artefacts with no validation schema,
- * alongside `Category`, `PromotionApplied`, `PromotionAccount`, `Product_AddOption` and
- * `Product_AddOptionGroup`. Measured folder-wide split for the in-scope set: 15 PRESENT,
- * 6 ABSENT (an upstream summary's "12 present" is stale - source wins). THE SIX MUST REMAIN
- * ABSENT: legacy validation gaps are carried as-is and never completed.
+ * CFML parity [model/validation/]: THERE IS NO `PromotionQualifier.json`. Verified by listing the
+ * folder - it holds 96 `.json` files and that is not one of them. `PromotionQualifier` is one of
+ * EXACTLY SIX in-scope artefacts with no validation schema, alongside `Category`,
+ * `PromotionApplied`, `PromotionAccount`, `Product_AddOption` and `Product_AddOptionGroup`.
+ * Measured in-scope split: 15 PRESENT, 6 ABSENT (an upstream summary's "12 present" is stale -
+ * source wins). THE SIX MUST REMAIN ABSENT: legacy validation gaps are carried as-is.
  *
  * The five validators listed last are the only entity methods any in-scope schema invokes
  * declaratively - `Sku.hasUniqueOptions`, `Sku.hasOneOptionPerOptionGroup`,
  * `RoundingRule.hasExpressionWithListOfNumericValuesOnly`,
- * `Promotion.getPromotionCodesDeletableFlag` and `PromotionCode.hasUniquePromotionCode`. Not
- * one of them belongs to this entity, and `model/validation/Promotion.json` - read as the
- * reference for what a populated schema looks like - names none of this entity's members.
- *
- * Schema enforcement lives at the service tier in this port, so no zod schema is asserted here.
+ * `Promotion.getPromotionCodesDeletableFlag` and `PromotionCode.hasUniquePromotionCode` - and none
+ * belongs here.
  */
 const ABSENT_VALIDATION_SURFACE: readonly string[] = [
   'validate',
@@ -557,18 +519,14 @@ const ABSENT_VALIDATION_SURFACE: readonly string[] = [
   'hasUniquePromotionCode',
 ];
 
-// ---------------------------------------------------------------------------
-// GATE READERS - one per gate, keyed by the fixture table's own `gate` field
-// ---------------------------------------------------------------------------
+// --- Gate readers - one per gate, keyed by the fixture table's own `gate` field ------------------
 
 /**
- * Every gate's accessor, keyed by property name.
- *
- * EXHAUSTIVE BY CONSTRUCTION: `QualifierGateName` is derived from the fixture table's `gate`
- * field, and `Record<QualifierGateName, ...>` therefore fails to compile if a gate is added
- * upstream and not given a reader here. The value type is the honest union of the two shipped
- * return shapes - `Money | number | undefined` - and is narrowed at each assertion site rather
- * than being widened away.
+ * Every gate's accessor, keyed by property name. EXHAUSTIVE BY CONSTRUCTION: `QualifierGateName` is
+ * derived from the fixture table's `gate` field, so `Record<QualifierGateName, ...>` fails to
+ * compile if a gate is added upstream and not given a reader here. The value type is the honest
+ * union of the two shipped return shapes - `Money | number | undefined` - narrowed at each
+ * assertion site rather than widened away.
  */
 const GATE_READERS: Readonly<
   Record<QualifierGateName, (subject: PromotionQualifier) => Money | number | undefined>
@@ -586,11 +544,9 @@ const GATE_READERS: Readonly<
 };
 
 /**
- * The accessor NAME for each gate, so the surface can be checked as well as the value.
- *
- * Composed mechanically from the property name rather than restated, which is the point: the
- * shipped module derives each accessor from its column, so a hand-written list could agree with
- * itself while disagreeing with the entity.
+ * The accessor NAME for each gate, so the surface can be checked as well as the value. Composed
+ * mechanically rather than restated: the shipped module derives each accessor from its column, so a
+ * hand-written list could agree with itself while disagreeing with the entity.
  *
  * @param gate - the property name as [model/entity/PromotionQualifier.cfc:L55-L64] declares it.
  * @returns the camelCase getter name the port authors for it.
@@ -599,14 +555,11 @@ function gateAccessorName(gate: QualifierGateName): string {
   return `get${gate.charAt(0).toUpperCase()}${gate.slice(1)}`;
 }
 
-// ---------------------------------------------------------------------------
-// INSTANTS - every one an explicit UTC ISO-8601 literal
-// ---------------------------------------------------------------------------
+// --- Instants - every one an explicit UTC ISO-8601 literal ---------------------------------------
 //
-// These deliberately coincide with the instants `tests/fixtures/promotionFixtures.ts` uses, so
-// a period double built here and a period taken from the fixture graph are read against the
-// SAME clock and can never silently disagree about expiry. Nothing below reads a live clock:
-// there is no no-argument `new Date()`, no `Date.now()`, no `new Date(0)` and no fake timer.
+// These deliberately coincide with the instants `tests/fixtures/promotionFixtures.ts` uses, so a
+// period double built here and one taken from the fixture graph are read against the SAME clock and
+// can never silently disagree about expiry. Nothing below reads a live clock.
 
 /** The single "current" instant every assertion in this file is evaluated at. */
 const NOW_UTC = '2024-06-15T12:00:00.000Z';
@@ -622,12 +575,10 @@ const CREATED_DATE_TIME_UTC = '2024-06-01T00:00:00.000Z';
 const MODIFIED_DATE_TIME_UTC = '2024-06-15T12:30:00.000Z';
 
 /**
- * A deterministic clock, injected rather than installed.
- *
- * `PromotionPeriod` takes `now: () => Date` as a constructor argument, which is the port's
- * replacement for CFML's ambient `now()` [model/entity/PromotionPeriod.cfc:L84]. Injecting is
- * what lets `isDeletable()`'s expiry branch be exercised without a global fake timer. A FRESH
- * `Date` is returned on every call so no mutable instant escapes into a subject.
+ * A deterministic clock, injected rather than installed. `PromotionPeriod` takes `now: () => Date`
+ * as a constructor argument, which is the port's replacement for CFML's ambient `now()`
+ * [model/entity/PromotionPeriod.cfc:L84], and injecting is what lets `isDeletable()`'s expiry
+ * branch be exercised without a global fake timer. A FRESH `Date` is returned on every call.
  *
  * @param instantUTC - an explicit UTC ISO-8601 literal.
  * @returns a clock that always reports that instant.
@@ -637,25 +588,18 @@ function fixedClock(instantUTC: string): () => Date {
   return () => new Date(epochMilliseconds);
 }
 
-// ---------------------------------------------------------------------------
-// FRESH SUBJECTS AND FRESH FAR SIDES - functions, never shared literals
-// ---------------------------------------------------------------------------
+// --- Fresh subjects and fresh far sides - functions, never shared literals -----------------------
 
 /**
- * The columns of an unsaved qualifier, all thirty-three slots explicit.
+ * The columns of an unsaved qualifier, all thirty-three slots explicit. A FUNCTION rather than a
+ * shared literal, so no test can reach another test's data - which matters more here than on most
+ * entities, because the ten entity-collection accessors hand out LIVE arrays.
  *
- * A FUNCTION rather than a shared literal, so every subject is built from a fresh object and no
- * test can reach another test's data. That matters more here than on most entities: the ten
- * entity-collection accessors hand out LIVE arrays, so one shared subject would leak membership
- * across test boundaries.
- *
- * CFML parity [model/entity/PromotionQualifier.cfc:L52]: `promotionQualifierID` starts `''`
- * rather than absent, because `unsavedvalue="" default=""` is what makes the empty string the
- * honest answer for a row that has never been saved - and what makes `isNew()` a simple
- * emptiness test.
- *
- * Every nullable column starts `undefined`. For the ten gates that is the WHOLE POINT: [L55-L64]
- * declares no `default=` on any of them, so a fresh qualifier gates nothing.
+ * CFML parity [model/entity/PromotionQualifier.cfc:L52]: `promotionQualifierID` starts `''` rather
+ * than absent, because `unsavedvalue="" default=""` is what makes the empty string the honest
+ * answer for a row that has never been saved - and what makes `isNew()` a simple emptiness test.
+ * Every nullable column starts `undefined`, and for the ten gates that is the WHOLE POINT:
+ * [L55-L64] declares no `default=` on any of them, so a fresh qualifier gates nothing.
  *
  * @returns a fresh, fully-populated init object for an unsaved row.
  */
@@ -699,7 +643,7 @@ function unsavedRowColumns(): PromotionQualifierInit {
 /**
  * Builds one qualifier, overriding only what a test is about.
  *
- * @param overrides - the columns this test cares about; everything else stays unsaved-default.
+ * @param overrides - the columns this test cares about; the rest stays unsaved-default.
  * @returns a fresh `PromotionQualifier`.
  */
 function aQualifier(overrides: Partial<PromotionQualifierInit> = {}): PromotionQualifier {
@@ -707,12 +651,10 @@ function aQualifier(overrides: Partial<PromotionQualifierInit> = {}): PromotionQ
 }
 
 /**
- * Builds a SAVED qualifier - one whose primary key is non-empty.
- *
- * The distinction is load-bearing rather than cosmetic. `isNew()` is the left operand of every
- * far-side guard in this component [L124, L144, L164, ...], CFML `or` short-circuits, and the
- * containment fallback in the shipped module switches from primary-key comparison to reference
- * identity when a key is empty. A test that means "a persisted row" must say so explicitly.
+ * Builds a SAVED qualifier - one whose primary key is non-empty. The distinction is load-bearing:
+ * `isNew()` is the left operand of every far-side guard in this component [L124, L144, L164, ...],
+ * CFML `or` short-circuits, and the containment fallback in the shipped module switches from
+ * primary-key comparison to reference identity when a key is empty.
  *
  * @param promotionQualifierID - the non-empty key to give it.
  * @param overrides - any further columns.
@@ -726,11 +668,10 @@ function aSavedQualifier(
 }
 
 /**
- * Builds a brand double.
- *
- * `Brand`'s constructor is entirely optional and defaults `brandID` to `''`, so omitting the
- * argument yields a TRANSIENT brand - which is exactly the input the `arguments.brand.isNew()`
- * half of the near-side guard [model/entity/PromotionQualifier.cfc:L141] needs.
+ * Builds a brand double. `Brand`'s constructor is entirely optional and defaults `brandID` to `''`,
+ * so omitting the argument yields a TRANSIENT brand - exactly the input the
+ * `arguments.brand.isNew()` half of the near-side guard [model/entity/PromotionQualifier.cfc:L141]
+ * needs.
  *
  * @param brandID - the key, or omitted for a transient brand.
  * @returns a fresh `Brand` holding no qualifiers on either far-side collection.
@@ -740,10 +681,8 @@ function aBrand(brandID?: string): Brand {
 }
 
 /**
- * Builds an option double, all twelve required slots explicit.
- *
- * `optionGroup` is `undefined`, which is deliberate and not laziness: it keeps `OptionGroup` out
- * of this file's import set, and this suite asserts nothing about option grouping - the
+ * Builds an option double, all twelve required slots explicit. `optionGroup` is `undefined`
+ * deliberately: it keeps `OptionGroup` out of this file's import set, and the
  * `sortContext="optionGroup"` ordering belongs to `optionGroup.test.ts`.
  *
  * @param optionID - the key, or `''` for a transient option.
@@ -768,39 +707,27 @@ function anOption(optionID: string): Option {
 }
 
 /**
- * The `promotion` slot's type, derived rather than imported.
- *
- * `Promotion` is NOT in this file's declared dependency set, and it does not need to be: the
- * only promotions this suite uses come from the fixture graph, and the only place the type is
- * needed is this one parameter. Deriving it from the period's own init shape keeps the import
- * ledger closed without resorting to a widened parameter.
+ * The `promotion` slot's type, derived rather than imported. `Promotion` is NOT in this file's
+ * declared dependency set and does not need to be: the only promotions this suite uses come from
+ * the fixture graph, and the only place the type is needed is this one parameter.
  */
 type PromotionForPeriod = PromotionPeriodInit['promotion'];
 
 /**
- * Builds a promotion-period double with an injected clock.
- *
- * Written with an EXPLICIT spec rather than a `Partial` spread, because two of
- * `PromotionPeriod`'s optional init keys are declared without `| undefined` and
- * `exactOptionalPropertyTypes` makes passing `undefined` for them an error. Naming the four
- * things a test actually varies is clearer than working around that.
- *
- * `startDateTime` is fixed and never varied: `isExpired()`
- * [model/entity/PromotionPeriod.cfc:L83-L85] reads only the END bound, and the START bound
- * belongs to `isCurrent()` [L78-L81], which `promotionPeriod.test.ts` owns.
+ * Builds a promotion-period double with an injected clock. `startDateTime` is fixed and never
+ * varied: `isExpired()` [model/entity/PromotionPeriod.cfc:L83-L85] reads only the END bound, and
+ * the START bound belongs to `isCurrent()` [L78-L81], which `promotionPeriod.test.ts` owns.
  *
  * @param spec.promotionPeriodID - the period's key.
  * @param spec.endDateTimeUTC - the end bound, or `undefined` to make `isExpired()` answer false
  *   through its guarded branch.
  * @param spec.promotion - the parent promotion, or `undefined` to leave the many-to-one
  *   unmaterialized.
- * @returns a fresh `PromotionQualifier`-free `PromotionPeriod` reading the `NOW_UTC` clock.
+ * @returns a fresh `PromotionPeriod` reading the `NOW_UTC` clock.
  */
-// JUDGMENT CALL: an explicit three-field spec instead of `Partial<PromotionPeriodInit>`.
-// `PromotionPeriod` declares `promotionRewards?` and `promotionQualifiers?` WITHOUT `| undefined`,
-// so under `exactOptionalPropertyTypes` a spread that forwards `undefined` for them fails to
-// compile. Omitting the keys is the correct fix, and naming only the three fields a test actually
-// varies is clearer than a `Partial` plus a comment explaining what may not be put in it.
+// JUDGMENT CALL: an explicit three-field spec instead of `Partial<PromotionPeriodInit>`, because
+// `PromotionPeriod` declares `promotionRewards?` and `promotionQualifiers?` WITHOUT `| undefined`
+// and under `exactOptionalPropertyTypes` a spread forwarding `undefined` for them fails to compile.
 function aPromotionPeriod(spec: {
   readonly promotionPeriodID: string;
   readonly endDateTimeUTC: string | undefined;
@@ -824,10 +751,8 @@ function aPromotionPeriod(spec: {
 }
 
 /**
- * A fresh fixture graph.
- *
- * Called INSIDE each test that needs one rather than hoisted, so the entities it hands out -
- * whose collections are live arrays - can never be shared across a test boundary.
+ * A fresh fixture graph, called INSIDE each test that needs one rather than hoisted, so the
+ * entities it hands out - whose collections are live arrays - can never cross a test boundary.
  *
  * @returns a fresh graph built at the fixture module's own default instant.
  */
@@ -837,10 +762,8 @@ function freshFixtures(): PromotionFixtures {
 
 /**
  * The first promotion period of a fixture promotion, without a non-null assertion.
- *
- * `noUncheckedIndexedAccess` makes `periods[0]` a `PromotionPeriod | undefined`, and a postfix
- * `!` is not used anywhere in this file. Raising on an empty array turns a broken fixture
- * invariant into a legible failure instead of a confusing `undefined` three assertions later.
+ * `noUncheckedIndexedAccess` makes `periods[0]` a `PromotionPeriod | undefined`, and a postfix `!`
+ * is not used anywhere in this file.
  *
  * @param periods - the promotion's materialized period collection.
  * @param label - what the caller was reaching for, for the failure message.
@@ -867,34 +790,25 @@ function prototypeMembers(): string[] {
 }
 
 afterEach(() => {
-  // A2: the far-side spies below must not outlive their test. `tests/setup.ts` already restores
-  // globally; restating it keeps the guarantee local and visible.
+  // A2: the far-side spies below must not outlive their test.
   vi.restoreAllMocks();
 });
 
 /**
- * All ten entity-collection helper triples, each with both sides of its link already bound.
- *
- * Ten rows, not thirteen: Group A [model/entity/PromotionQualifier.cfc:L73-L75] has no helpers
- * to probe. The `Brand` and `Option` far sides are built here; the `Sku`, `Product` and
- * `ProductType` far sides come from the fixture graph, because those three modules are outside
- * this file's declared dependency set and reaching them through the fixture is exactly what the
- * fixture exists for.
- *
- * The include row and the exclude row of a given far side may safely share one object: they
+ * All ten entity-collection helper triples, each with both sides of its link already bound. Ten
+ * rows, not thirteen: Group A [model/entity/PromotionQualifier.cfc:L73-L75] has no helpers to
+ * probe. The include row and the exclude row of a given far side may share one object because they
  * touch DIFFERENT collections on it - `getPromotionQualifiers()` versus
- * `getPromotionQualifierExclusions()` - which is itself one of the invariants asserted below.
+ * `getPromotionQualifierExclusions()` - itself an invariant asserted below.
  *
  * @param subject - the qualifier under test; every closure is bound to it.
  * @param fixtures - a fresh graph, supplying the three far sides not constructed here.
  * @returns ten probes in declaration order [L77-L87].
  */
 // JUDGMENT CALL: build the `Brand` and `Option` far sides locally but take `Sku`, `Product` and
-// `ProductType` from the fixture graph. Those three modules are NOT in this file's declared
-// dependency set, and reaching for them directly would widen the import ledger past what the schema
-// permits; the fixture is the sanctioned channel for exactly that. The cost is that three of the ten
-// probes carry pre-built entities rather than minimal ones, which is why every sweep asserts the far
-// side is CLEAN before it acts rather than assuming an empty starting state.
+// `ProductType` from the fixture graph, because those three modules are NOT in this file's declared
+// dependency set. The cost is that three probes carry pre-built entities, which is why every sweep
+// asserts the far side is CLEAN before it acts.
 function membershipPairProbes(
   subject: PromotionQualifier,
   fixtures: PromotionFixtures,
@@ -1049,9 +963,7 @@ function membershipPairProbes(
   ];
 }
 
-// ===========================================================================
-// 1. THE PORTED SURFACE, AND WHAT IS DELIBERATELY ABSENT
-// ===========================================================================
+// --- 1. The ported surface, and what is deliberately absent --------------------------------------
 
 describe('the ported surface is the legacy surface, and four scope rulings hold', () => {
   it('installs exactly the seventy-one authored members and nothing else', () => {
@@ -1061,8 +973,8 @@ describe('the ported surface is the legacy surface, and four scope rulings hold'
 
   it('keeps every legacy method name verbatim, including the ones that read oddly', () => {
     // C4 interface parity: the acceptance contract is a name-for-name diff against the CFC, so
-    // `hasAnyExcludedOption` is not "improved" to `hasAnyOptionExclusion`, and
-    // `getSimpleRepresentationPropertyName` keeps all five words.
+    // `hasAnyExcludedOption` is never "improved" and `getSimpleRepresentationPropertyName` keeps
+    // all five words.
     for (const legacyName of [
       'getRewardMatchingTypeOptions',
       'getSimpleRepresentation',
@@ -1081,7 +993,7 @@ describe('the ported surface is the legacy surface, and four scope rulings hold'
   it('exposes eleven bidirectional helper pairs and not one more', () => {
     // CFML parity [model/entity/PromotionQualifier.cfc:L119-L339]: the largest section of the
     // component, 221 lines, holds ELEVEN pairs - one many-to-one plus ten many-to-many - for
-    // FOURTEEN relationships. The three with no hand-written helper anywhere are exactly Group A.
+    // FOURTEEN relationships.
     const helpers = prototypeMembers().filter(
       (name: string) =>
         name.startsWith('add') || name.startsWith('remove') || name.startsWith('set'),
@@ -1108,19 +1020,10 @@ describe('the ported surface is the legacy surface, and four scope rulings hold'
   });
 
   it('widens no signature, so every member keeps its legacy arity', () => {
-    // ★ INTERFACE PARITY IS THE ACCEPTANCE CONTRACT, AND ARITY IS HALF OF IT. A reviewer diffing
-    // the two surfaces checks names AND parameter counts, so arity is asserted mechanically here
-    // rather than left to a comment.
-    //
-    // THE ENTITY-LAYER WIDENING BUDGET IS ALREADY SPENT, AND NOT BY THIS FILE. The one permitted
+    // INTERFACE PARITY IS THE ACCEPTANCE CONTRACT, AND ARITY IS HALF OF IT. The one permitted
     // widening across the whole port is `PromotionPeriod.isCurrent(now)`
     // [model/entity/PromotionPeriod.cfc:L78], which takes an injected clock so the UTC policy is
-    // explicit - and `promotionPeriod.test.ts` owns it. A SECOND WIDENING IS FORBIDDEN.
-    //
-    // `isDeletable()` is exactly where a second one would have been tempting: its chain reaches a
-    // clock through `PromotionPeriod.isExpired()`, so accepting a `now` parameter would have looked
-    // like consistency. It must NOT, because the clock belongs to the period that owns the date
-    // column, and this entity has none. Asserted at zero parameters.
+    // explicit - and `promotionPeriod.test.ts` owns it.
     const prototype: object = PromotionQualifier.prototype;
     const legacyArity: Readonly<Record<string, number>> = {
       // Zero-argument members - readers, the two overrides, and the option list.
@@ -1132,7 +1035,7 @@ describe('the ported surface is the legacy surface, and four scope rulings hold'
       getSimpleRepresentation: 0,
       getSimpleRepresentationPropertyName: 0,
       isNew: 0,
-      // ★ ZERO, NOT ONE. No clock is threaded into this entity.
+      // ZERO, NOT ONE.
       isDeletable: 0,
       // One-argument members - the predicates and the helpers.
       hasBrand: 1,
@@ -1145,13 +1048,12 @@ describe('the ported surface is the legacy surface, and four scope rulings hold'
       removeExcludedOption: 1,
       setPromotionPeriod: 1,
       // `removePromotionPeriod(promotionPeriod?)` reports 1, and MEASURING THAT CORRECTED A WRONG
-      // ASSUMPTION OF MINE: `Function.prototype.length` excludes only parameters carrying a DEFAULT
-      // VALUE (and a rest parameter). A TypeScript `?` is a type-level annotation that compiles to
-      // an ordinary parameter, so an optional-but-undefaulted parameter still counts. 1 is also the
-      // parity-correct number - the legacy declares
-      // `removePromotionPeriod(required any promotionPeriod)` and `PromotionPeriod` calls it with
-      // no argument [model/entity/PromotionPeriod.cfc:L129-L132], which is precisely why the port
-      // made the parameter optional while keeping the arity.
+      // ASSUMPTION: `Function.prototype.length` excludes only parameters carrying a DEFAULT VALUE
+      // (and a rest parameter), and a TypeScript `?` compiles to an ordinary parameter. 1 is also
+      // parity-correct - the legacy declares `removePromotionPeriod(required any promotionPeriod)`
+      // and `PromotionPeriod` calls it with no argument
+      // [model/entity/PromotionPeriod.cfc:L129-L132], which is why the port made the parameter
+      // optional while keeping the arity.
       removePromotionPeriod: 1,
     };
 
@@ -1191,10 +1093,9 @@ describe('the ported surface is the legacy surface, and four scope rulings hold'
       expect(members).not.toContain(absent);
     }
 
-    // ★ NO `Proxy`, AND THIS IS THE ASSERTION THAT PROVES IT. A proxy carrying a `has` trap - the
+    // NO `Proxy`, AND THIS IS THE ASSERTION THAT PROVES IT. A proxy carrying a `has` trap - the
     // only way to emulate [org/Hibachi/HibachiEntity.cfc:L507-L565]'s `onMissingMethod` in
-    // TypeScript - would answer `true` here. The port answers `false`, so an unknown member is
-    // simply absent rather than dynamically synthesised or dynamically thrown.
+    // TypeScript - would answer `true` here.
     expect('getSomeMemberThatWasNeverDeclared' in subject).toBe(false);
     expect(Object.getPrototypeOf(subject)).toBe(PromotionQualifier.prototype);
   });
@@ -1202,10 +1103,10 @@ describe('the ported surface is the legacy surface, and four scope rulings hold'
   it('adds no instance surface through its private comparison helper', () => {
     const subject = aQualifier();
 
-    // `indexOfEntity` is `private static` in the shipped module, so it lives on the constructor.
-    // It is the port's own primary-key comparison, standing in for the CFML `arrayFind`
-    // object-reference searches at [model/entity/PromotionQualifier.cfc:L132, L149, L169];
-    // it is not part of the interface-parity contract and must not appear on an instance.
+    // `indexOfEntity` is `private static`, so it lives on the constructor. It is the port's own
+    // primary-key comparison, standing in for the CFML `arrayFind` object-reference searches at
+    // [model/entity/PromotionQualifier.cfc:L132, L149, L169]; it is not part of the
+    // interface-parity contract and must not appear on an instance.
     expect(prototypeMembers()).not.toContain('indexOfEntity');
     expect('indexOfEntity' in subject).toBe(false);
     expect(Object.getOwnPropertyNames(PromotionQualifier)).toContain('indexOfEntity');
@@ -1213,11 +1114,7 @@ describe('the ported surface is the legacy surface, and four scope rulings hold'
 
   it('injects no collaborator port and no clock', () => {
     // CFML parity: a full read of all 373 lines finds ZERO `getService(` sites in this component,
-    // so nothing is injected and the constructor takes DATA ONLY. (Verified census across the
-    // eighteen in-scope entities: 45 sites in total - Product 18, Sku 19, ProductType 6,
-    // OptionGroup 1, RoundingRule 1 - and this entity contributes none.) The consequence is that
-    // every member is synchronous and total with respect to I/O: no `async`, no `await`, no
-    // `Promise` is reachable from here.
+    // so nothing is injected and the constructor takes DATA ONLY.
     const subject = aQualifier({ promotionQualifierID: 'q-no-collaborators' });
 
     expect(subject.getPromotionQualifierID()).toBe('q-no-collaborators');
@@ -1229,33 +1126,25 @@ describe('the ported surface is the legacy surface, and four scope rulings hold'
   });
 });
 
-// ===========================================================================
-// 2. ★ THE TEN NUMERIC GATES AND THEIR ASYMMETRIC ABSENCE SEMANTICS
-// ===========================================================================
+// --- 2. The ten numeric gates and their asymmetric absence semantics ----------------------------
 //
-// ★ CFML parity [model/entity/PromotionQualifier.cfc:L55-L64]: the ten gates carry ASYMMETRIC
-// null semantics -- every minimum* declares hb_nullRBKey="define.0" (absent means zero, i.e. no
-// lower bound) while every maximum* declares hb_nullRBKey="define.unlimited" (absent means no
-// upper bound). Both are modelled as undefined; coercing a maximum to 0 would forbid every
-// order.
+// CFML parity [model/entity/PromotionQualifier.cfc:L55-L64]: the ten gates carry ASYMMETRIC null
+// semantics -- every minimum* declares hb_nullRBKey="define.0" (absent means zero, i.e. no lower
+// bound) while every maximum* declares hb_nullRBKey="define.unlimited" (absent means no upper
+// bound). Both are modelled as undefined; coercing a maximum to 0 would forbid every order.
 //
 // The asymmetry is systematic rather than incidental - it holds for all five pairs, across all
-// three type families - and there is NO `default=` attribute on any of the ten, so a freshly
-// constructed qualifier gates nothing at all. `hb_nullRBKey` is a DISPLAY hint naming the label
-// the admin shows for an empty column; it is not an ORM default and must never be materialised
-// into one. Coalescing a `minimum*` to `0` would be wrong for the same reason even though it
-// looks harmless: it would turn "no lower bound configured" into "a lower bound of zero was
-// configured", and the two are different rows.
+// three type families - and there is NO `default=` attribute on any of the ten. `hb_nullRBKey` is a
+// DISPLAY hint naming the label the admin shows for an empty column; it is not an ORM default, so
+// coalescing a `minimum*` to `0` would turn "no lower bound configured" into "a lower bound of zero
+// was configured". Nothing here asserts how the gates are COMPARED - the comparison cascade
+// [model/service/PromotionService.cfc:L629-L750] is sibling-owned.
 //
-// WHAT THIS BLOCK DOES NOT DO: it asserts nothing about how the gates are COMPARED. The
-// comparison cascade [model/service/PromotionService.cfc:L629-L750] is sibling-owned. Only the
-// accessors' shapes and their absence semantics are pinned here.
-//
-// JUDGMENT CALL: sweep the ten gates through a derived reader table rather than writing ten
-// hand-rolled assertions per property. The table's key type comes from the fixture's own gate list,
-// so an eleventh gate added upstream is a COMPILE ERROR here rather than a silent coverage hole -
-// which a hand-rolled set of assertions could never give. Where a sweep would obscure the point,
-// the individual gates are still named explicitly: the type-family block spells all ten out.
+// JUDGMENT CALL: sweep the ten gates through a derived reader table rather than ten hand-rolled
+// assertions per property. The table's key type comes from the fixture's own gate list, so an
+// eleventh gate added upstream is a COMPILE ERROR here rather than a silent coverage hole. Where a
+// sweep would obscure the point the gates are still named explicitly: the type-family block spells
+// all ten out.
 
 describe('the ten numeric gates carry asymmetric absence semantics', () => {
   it('declares exactly ten gates, five lower bounds and five upper bounds', () => {
@@ -1318,10 +1207,7 @@ describe('the ten numeric gates carry asymmetric absence semantics', () => {
   });
 
   it('never coerces an absent gate to zero, on either bound', () => {
-    // ★ THE HIGHEST-CONSEQUENCE ASSERTION IN THIS BLOCK. For a `maximum*`, substituting `0` for
-    // absence inverts the rule from "no upper bound" to "an upper bound of nothing", which would
-    // reject every order the promotion was meant to reward. For a `minimum*` it is a quieter but
-    // equally real error: it fabricates a configured floor where the row has none.
+    // THE HIGHEST-CONSEQUENCE ASSERTION IN THIS BLOCK.
     const subject = aQualifier();
 
     for (const [gate, read] of Object.entries(GATE_READERS)) {
@@ -1334,9 +1220,8 @@ describe('the ten numeric gates carry asymmetric absence semantics', () => {
   });
 
   it('reads every gate as undefined on the fixture graph permissive qualifier too', () => {
-    // A second, independently constructed witness: the fixture module builds this exhibit with
-    // all ten columns omitted, which is the shape a repository hands back for a row that gates
-    // nothing. Two witnesses rather than one, because the absence semantics are the whole point.
+    // A second, independently constructed witness: the fixture module builds this exhibit with all
+    // ten columns omitted, which is the shape a repository hands back for a row that gates nothing.
     const { permissivePromotionQualifier } = freshFixtures();
 
     for (const [gate, read] of Object.entries(GATE_READERS)) {
@@ -1365,9 +1250,7 @@ describe('the ten numeric gates carry asymmetric absence semantics', () => {
   });
 
   it('keeps an explicit zero distinguishable from absence on an upper bound', () => {
-    // A `maximumOrderQuantity` of 0 is a REAL, restrictive configuration: nothing qualifies. An
-    // ABSENT `maximumOrderQuantity` is its opposite: everything qualifies. The two must never
-    // collapse into one another, which is exactly what a `?? 0` anywhere in the port would do.
+    // A `maximumOrderQuantity` of 0 is a REAL, restrictive configuration: nothing qualifies.
     const configured = aQualifier({
       maximumOrderQuantity: 0,
       maximumItemPrice: Money.fromDecimalString('0'),
@@ -1384,8 +1267,7 @@ describe('the ten numeric gates carry asymmetric absence semantics', () => {
 
   it('hands every configured gate straight back, unmodified', () => {
     // The entity is a CARRIER for these ten columns: no clamping, no normalisation, no reordering
-    // of a min/max pair, and no rejection of a maximum below its minimum. Anything that decides
-    // what an inconsistent pair MEANS is the engine's, and is not here.
+    // of a min/max pair, and no rejection of a maximum below its minimum.
     const subject = aQualifier({
       minimumOrderQuantity: 9,
       maximumOrderQuantity: 2,
@@ -1412,25 +1294,19 @@ describe('the ten numeric gates carry asymmetric absence semantics', () => {
   });
 });
 
-// ===========================================================================
-// 3. ⚠️ THREE TYPE FAMILIES ACROSS TEN GATES - AND WEIGHT IS NOT MONEY
-// ===========================================================================
+// --- 3. Three type families across ten gates - and weight is not money --------------------------
 //
 // CFML parity [model/entity/PromotionQualifier.cfc:L63-L64]: minimumFulfillmentWeight and
 // maximumFulfillmentWeight are ormtype="big_decimal" like the currency gates, but
 // hb_formatType="weight" -- they are WEIGHTS, not money, and must NOT be modelled as Money.
-// Verified against the shipped surface.
 //
 // So `ormtype` alone does NOT decide the target type; `hb_formatType` does. Four gates are
 // `currency` [L57, L58, L61, L62] and become `Money`. Four are `ormtype="integer"` with no format
-// type at all [L55, L56, L59, L60] and become `number`. Two are `big_decimal` + `weight`
-// [L63, L64] and become `number` as well - typing a shipping weight as `Money` would assert a
-// currency the column does not have and would hand the value currency formatting it must never
-// receive. THIS ENTITY HAS NO `currencyCode` COLUMN, so even the four monetary gates carry no
-// currency of their own; they are compared against amounts whose currency is resolved elsewhere.
-//
-// P4 is honoured throughout: every monetary expectation is a `Money` or a decimal STRING, and no
-// computed JavaScript float appears anywhere - not even for the two weight gates.
+// type at all [L55, L56, L59, L60] and become `number`. Two are `big_decimal` + `weight` [L63, L64]
+// and become `number` as well - typing a shipping weight as `Money` would assert a currency the
+// column does not have. THIS ENTITY HAS NO `currencyCode` COLUMN, so even the four monetary gates
+// carry no currency of their own. Every monetary expectation below is a `Money` or a decimal
+// STRING, and no computed JavaScript float appears anywhere.
 
 describe('the ten gates split into three type families, and weight is never Money', () => {
   it('classifies exactly four gates as monetary and six as plain numbers', () => {
@@ -1465,9 +1341,7 @@ describe('the ten gates split into three type families, and weight is never Mone
       expect(typeof value).not.toBe('number');
     }
 
-    // Decimal STRINGS, never floats. `toFixed2()` is the port's `numberFormat(v,"0.00")` parity
-    // surface; `toDecimalString()` reproduces CFML's trailing-zero dropping, which is why the two
-    // answers legitimately differ for the same value.
+    // Decimal STRINGS, never floats.
     expect(subject.getMinimumOrderSubtotal()?.toFixed2()).toBe('25.00');
     expect(subject.getMinimumOrderSubtotal()?.toDecimalString()).toBe('25');
     expect(subject.getMinimumItemPrice()?.toFixed2()).toBe('9.99');
@@ -1495,9 +1369,9 @@ describe('the ten gates split into three type families, and weight is never Mone
   });
 
   it('returns plain numbers - never Money - from the two weight gates', () => {
-    // ⚠️ THE ASSERTION THIS BLOCK EXISTS FOR. `big_decimal` on [L63-L64] makes these look exactly
-    // like the currency gates in the ORM metadata, and `hb_formatType="weight"` is the only thing
-    // that distinguishes them. A `Money` here would be a category error.
+    // THE ASSERTION THIS BLOCK EXISTS FOR. `big_decimal` on [L63-L64] makes these look exactly like
+    // the currency gates in the ORM metadata, and `hb_formatType="weight"` is the only thing that
+    // distinguishes them.
     const subject = aQualifier({
       minimumFulfillmentWeight: 1,
       maximumFulfillmentWeight: 50,
@@ -1525,8 +1399,6 @@ describe('the ten gates split into three type families, and weight is never Mone
 
   it('carries a fractional weight without rounding it', () => {
     // `big_decimal` [L63] is not an integer column, so a fractional weight is legitimate data.
-    // The value is written as a decimal literal and read straight back; the entity performs no
-    // arithmetic on it, which is why no precision helper is involved on this path.
     const subject = aQualifier({ minimumFulfillmentWeight: 2.5, maximumFulfillmentWeight: 47.5 });
 
     expect(subject.getMinimumFulfillmentWeight()).toBe(2.5);
@@ -1534,33 +1406,27 @@ describe('the ten gates split into three type families, and weight is never Mone
   });
 });
 
-// ===========================================================================
-// 4. ⚠️ THE PROPERTY / ACCESSOR DOUBLE ORPHAN - BOTH HALVES PRESERVED
-// ===========================================================================
+// --- 4. The property / accessor double orphan - both halves preserved ---------------------------
 //
 // CFML parity [model/entity/PromotionQualifier.cfc:L99,L107-L115]: a DOUBLE ORPHAN.
 // qualifierApplicationTypeOptions is declared as a non-persistent property at L99 but has no
 // getter, while getRewardMatchingTypeOptions at L107-L115 is a getter with no declared property.
-// Both halves preserved as-written; neither is completed.
+// Both halves preserved as-written; neither is completed. The two sit FIVE LINES APART and are
+// exact mirror images, which is what makes them a single finding rather than two coincidences:
 //
-// The two sit FIVE LINES APART and are exact mirror images, which is what makes them a single
-// finding rather than two coincidences:
+//   * L99 DECLARES A PROPERTY WITH NO PROVIDER:
+//     `property name="qualifierApplicationTypeOptions" type="array" persistent="false";`
+//     Nothing in the component's 373 lines reads it, writes it, or offers a
+//     `getQualifierApplicationTypeOptions()`. The legacy dispatcher would synthesise an accessor
+//     resolving to nothing; a driver-only port has no dispatcher, so it authors NO member at all.
+//   * L107-L115 declares `getRewardMatchingTypeOptions()` - A PROVIDER WITH NO DECLARED PROPERTY.
+//     It serves `rewardMatchingType` [L65], which IS declared, so the method is genuinely live:
+//     `hb_formFieldType="select"` on L65 means the admin form consumes it.
 //
-//   * L99 declares `property name="qualifierApplicationTypeOptions" type="array"
-//     persistent="false";` - a DECLARED PROPERTY WITH NO PROVIDER. Nothing in the component's
-//     373 lines reads it, writes it, or offers a `getQualifierApplicationTypeOptions()`. In the
-//     legacy runtime the framework's dispatcher would synthesise an accessor that resolves to
-//     nothing; in a driver-only port there is no dispatcher, so the honest port authors NO
-//     member at all.
-//   * L107-L115 declares `getRewardMatchingTypeOptions()` - A PROVIDER WITH NO DECLARED
-//     PROPERTY. It serves `rewardMatchingType` [L65], which IS declared, so the method is
-//     genuinely live: `hb_formFieldType="select"` on L65 means the admin form consumes it.
-//
-// ★ AUTHORING ONE AND NOT THE OTHER IS FIDELITY, NOT REPAIR. Completing either half would
-// invent surface the legacy component does not have - and the ports the plan permits are all in
-// src/services, none here. There is NO numbered legacy defect for this: the orphan pair costs
-// nothing at runtime and changes no money, so it is a `CFML parity` note and the divergence
-// budget stays at zero.
+// AUTHORING ONE AND NOT THE OTHER IS FIDELITY, NOT REPAIR. Completing either half would invent
+// surface the legacy component does not have. There is NO numbered legacy defect for this: the
+// orphan pair costs nothing at runtime and changes no money, so it is a `CFML parity` note and the
+// divergence budget stays at zero.
 
 describe('the double orphan is preserved on both halves and completed on neither', () => {
   it('records both halves of the mismatch with their verified locators', () => {
@@ -1583,8 +1449,8 @@ describe('the double orphan is preserved on both halves and completed on neither
   });
 
   it('authors no accessor for the declared property that has no provider', () => {
-    // HALF ONE. `qualifierApplicationTypeOptions` [L99] is `persistent="false"` and unreachable
-    // in the source; the port therefore exposes nothing for it, under any spelling.
+    // HALF ONE. `qualifierApplicationTypeOptions` [L99] is `persistent="false"` and unreachable in
+    // the source, so the port exposes nothing for it under any spelling.
     const subject = aQualifier();
     const members = prototypeMembers();
 
@@ -1600,7 +1466,7 @@ describe('the double orphan is preserved on both halves and completed on neither
   });
 
   it('authors the provider that has no declared property', () => {
-    // HALF TWO. The mirror image is live and must exist.
+    // HALF TWO.
     const subject = aQualifier();
 
     expect(prototypeMembers()).toContain('getRewardMatchingTypeOptions');
@@ -1609,8 +1475,7 @@ describe('the double orphan is preserved on both halves and completed on neither
   });
 
   it('serves the option list from a bare instance, with no column set', () => {
-    // The list is a CONSTANT of the class, not a projection of the row: an unsaved qualifier with
-    // no `rewardMatchingType` still offers all five modes, because the admin form needs the
+    // The list is a CONSTANT of the class, not a projection of the row: the admin form needs the
     // domain before the user has chosen from it.
     const bare = aQualifier();
 
@@ -1622,7 +1487,7 @@ describe('the double orphan is preserved on both halves and completed on neither
 
   it('serves the same option list from every instance, whatever the column holds', () => {
     // Two independently built subjects - one saved with a chosen mode, one transient with none -
-    // must offer identical vocabularies. The option list is never filtered by current state.
+    // must offer identical vocabularies.
     const chosen = aSavedQualifier('qualifier-with-mode', { rewardMatchingType: 'productType' });
     const bare = aQualifier();
 
@@ -1631,32 +1496,26 @@ describe('the double orphan is preserved on both halves and completed on neither
   });
 });
 
-// ===========================================================================
-// 5. ★ THE MATCHING VOCABULARY, THE INERT rbKeys, AND THE UN-NARROWED qualifierType
-// ===========================================================================
+// --- 5. The matching vocabulary, the inert rbKeys, and the un-narrowed qualifierType ------------
 //
 // CFML parity [model/entity/PromotionQualifier.cfc:L109-L113]: five values in the source's own
-// order - `any`, `sku`, `product`, `productType`, `brand`. `RewardMatchingType` is a CLOSED union
-// of exactly those five, and the option list's `value` fields match them one-for-one IN THAT
-// ORDER. Order is asserted rather than membership alone because L65 declares
-// `hb_formFieldType="select"`: the list IS the admin dropdown, and reordering it reorders what a
-// merchandiser sees.
+// order, `any`, `sku`, `product`, `productType`, `brand`. `RewardMatchingType` is a CLOSED union of
+// exactly those five, and the option list's `value` fields match them one-for-one IN THAT ORDER.
+// Order is asserted, not membership alone, because L65 declares `hb_formFieldType="select"`: the
+// list IS the admin dropdown.
 //
-// ★ A SHIPPED-SURFACE FINDING WORTH STATING PLAINLY, BECAUSE IT INVERTS AN EXPECTATION. The
-// agent contract anticipated that `rewardMatchingType` [L65] would stay an un-narrowed `string`
-// at the property level. The shipped module narrows it and leaves `qualifierType` [L53] as the
-// un-narrowed one, and that asymmetry is EVIDENCE-DRIVEN rather than stylistic:
+// A SHIPPED-SURFACE FINDING THAT INVERTS AN EXPECTATION. The agent contract anticipated that
+// `rewardMatchingType` [L65] would stay an un-narrowed `string`. The shipped module narrows it and
+// leaves `qualifierType` [L53] as the un-narrowed one, and that asymmetry is EVIDENCE-DRIVEN:
 //
 //   * `rewardMatchingType` has a SELF-DECLARED option list on the entity [L107-L115] and
-//     `hb_formFieldType="select"` [L65]. The component itself states the closed domain, so the
-//     union reproduces a constraint the source already asserts.
-//   * `qualifierType` has NO option list - there is no `getQualifierTypeOptions()` anywhere in
-//     the 373 lines - and the engine tests it with a CASE-INSENSITIVE COMMA-LIST MEMBERSHIP
-//     CHECK [model/service/PromotionService.cfc:L714]. Narrowing it would reject rows the legacy
-//     schema accepts, which is a behaviour change dressed as a type improvement.
+//     `hb_formFieldType="select"` [L65], so the union reproduces a constraint the source asserts.
+//   * `qualifierType` has NO option list - there is no `getQualifierTypeOptions()` anywhere in the
+//     373 lines - and the engine tests it with a CASE-INSENSITIVE COMMA-LIST MEMBERSHIP CHECK
+//     [model/service/PromotionService.cfc:L714]. Narrowing it would reject rows the legacy schema
+//     accepts, which is a behaviour change dressed as a type improvement.
 //
-// This suite PINS THE SHIPPED REALITY and does not narrow `qualifierType`. Verify before you
-// quote: the source, then the shipped module, then everything else.
+// This suite PINS THE SHIPPED REALITY and does not narrow `qualifierType`.
 
 describe('the matching vocabulary is closed and ordered, and qualifierType stays open', () => {
   it('closes RewardMatchingType over exactly the five source values', () => {
@@ -1677,7 +1536,7 @@ describe('the matching vocabulary is closed and ordered, and qualifierType stays
     const invented = aQualifier({ rewardMatchingType: 'sixthMode' });
 
     // The value still round-trips at runtime, because the entity is a carrier and performs no
-    // validation - there is no PromotionQualifier.json to reject it. The type is the only gate.
+    // validation - there is no PromotionQualifier.json to reject it.
     expect(invented.getRewardMatchingType()).toBe('sixthMode');
   });
 
@@ -1704,9 +1563,8 @@ describe('the matching vocabulary is closed and ordered, and qualifierType stays
   });
 
   it('keeps every option name an inert resource-bundle key, never a translated label', () => {
-    // JavaRB is not ported and no i18n runtime is introduced, so the keys are preserved verbatim
-    // as strings the legacy admin can still resolve. NOTHING here asserts English text; a
-    // translated label would mean a resolver had been invented.
+    // JavaRB is not ported and no i18n runtime is introduced, so the keys are preserved verbatim as
+    // strings the legacy admin can still resolve.
     const options = aQualifier().getRewardMatchingTypeOptions();
 
     expect(options.map((option) => option.name)).toEqual(REWARD_MATCHING_TYPE_OPTION_KEYS);
@@ -1726,18 +1584,15 @@ describe('the matching vocabulary is closed and ordered, and qualifierType stays
   });
 
   it('leaves qualifierType an un-narrowed string, as the shipped surface has it', () => {
-    // ★ [L53] declares `ormtype="string"` with `hb_formatType="rbKey"` and NO option list and NO
-    // length constraint. The three values the engine actually tests for
-    // [model/service/PromotionService.cfc:L714] are asserted here as DATA the column accepts -
-    // NOT as a closed domain, and NOT as engine behaviour, which is sibling-owned.
+    // [L53] declares `ormtype="string"` with `hb_formatType="rbKey"`, NO option list and NO length
+    // constraint. The three values the engine tests for [model/service/PromotionService.cfc:L714]
+    // are asserted as DATA the column accepts, NOT as a closed domain and NOT as engine behaviour.
     for (const qualifierType of ['merchandise', 'contentAccess', 'subscription']) {
       expect(aQualifier({ qualifierType }).getQualifierType()).toBe(qualifierType);
     }
 
-    // And a value outside that trio is accepted without complaint, at compile time and at run
-    // time - which is precisely what "un-narrowed" means and why narrowing it would be a
-    // behaviour change. Casing is preserved verbatim: CFML compared case-insensitively, the port
-    // stores exactly what the row held.
+    // And a value outside that trio is accepted without complaint, at compile time and at run time,
+    // which is precisely what "un-narrowed" means.
     const unexpected = aQualifier({ qualifierType: 'somethingTheAdminTyped' });
     expect(unexpected.getQualifierType()).toBe('somethingTheAdminTyped');
     expect(aQualifier({ qualifierType: 'MERCHANDISE' }).getQualifierType()).toBe('MERCHANDISE');
@@ -1746,15 +1601,15 @@ describe('the matching vocabulary is closed and ordered, and qualifierType stays
 
   it('resolves an absent qualifierType to undefined rather than to an empty string', () => {
     // A NULL column and a column holding `''` are different rows, and the port keeps them
-    // different - the same discipline the ten gates get, applied to the string column.
+    // different, applying the discipline the ten gates get to the string column.
     expect(aQualifier().getQualifierType()).toBeUndefined();
     expect(aQualifier({ qualifierType: '' }).getQualifierType()).not.toBeUndefined();
   });
 
   it('resolves an absent rewardMatchingType to undefined rather than to the first option', () => {
-    // The narrowed union does NOT imply a default. [L65] declares no `default=`, so an unset
-    // column reads `undefined`; defaulting it to `'any'` would silently widen every qualifier
-    // that had never been configured into one that matches everything.
+    // The narrowed union does NOT imply a default. [L65] declares no `default=`, so an unset column
+    // reads `undefined`; defaulting it to `'any'` would widen every unconfigured qualifier into one
+    // that matches everything.
     const bare = aQualifier();
 
     expect(bare.getRewardMatchingType()).toBeUndefined();
@@ -1762,33 +1617,27 @@ describe('the matching vocabulary is closed and ordered, and qualifierType stays
   });
 });
 
-// ===========================================================================
-// 6. THE THIRTEEN ASSOCIATIONS, THE GROUP A / B / C SPLIT, AND THE LINK TABLES
-// ===========================================================================
+// --- 6. The thirteen associations, the Group A / B / C split, and the link tables ---------------
 //
 // CFML parity [model/entity/PromotionQualifier.cfc:L73-L87]: thirteen many-to-many OWNER
 // collections, one fewer than PromotionReward's fourteen -- the qualifier has NO
-// eligiblePriceGroups. Do not invent one.
-//
-// That single missing collection IS the structural difference between the two entities.
-// `PromotionReward` declares `eligiblePriceGroups` -> `SwPromoRewardEligiblePriceGrp` at
-// [model/entity/PromotionReward.cfc:L74]; nothing in this component corresponds to it, under any
-// spelling, because a qualifier decides WHETHER a period applies while a reward decides WHAT the
-// discount is - and only the latter has a price-group dimension.
+// eligiblePriceGroups. Do not invent one. That single missing collection IS the structural
+// difference between the two entities: `PromotionReward` declares `eligiblePriceGroups` pointing at
+// `SwPromoRewardEligiblePriceGrp` [model/entity/PromotionReward.cfc:L74]; nothing here corresponds
+// to it under any spelling.
 //
 // The thirteen split three ways, and only TEN materialize as entity arrays:
 //
-//   * GROUP A [L73-L75] - `fulfillmentMethods`, `shippingMethods`, `shippingAddressZones`.
-//     Their far sides (`FulfillmentMethod`, `ShippingMethod`, `AddressZone`) are OUT OF SCOPE and
-//     NOT PORTED, so they collapse to `readonly string[]` opaque identifiers with NO add, NO
-//     remove and NO has. That collapse is LOSSLESS with respect to authored logic rather than
-//     merely convenient: these three are exactly the relationships for which the component
-//     hand-writes no helper anywhere in its 373 lines.
+//   * GROUP A [L73-L75] - `fulfillmentMethods`, `shippingMethods`, `shippingAddressZones`. The far
+//     sides (`FulfillmentMethod`, `ShippingMethod`, `AddressZone`) are OUT OF SCOPE and NOT PORTED,
+//     so they collapse to `readonly string[]` opaque identifiers with NO add, NO remove and NO has.
+//     These are the relationships for which the component hand-writes no helper anywhere in its 373
+//     lines, so the collapse is LOSSLESS with respect to authored logic.
 //   * GROUP B [L77-L81] - the five INCLUDE lists, real entity arrays.
 //   * GROUP C [L83-L87] - the five EXCLUDE lists, real entity arrays.
 //
-// NONE of the thirteen is marked `inverse="true"`, so this entity OWNS every link table - which
-// is why both sides of every helper are synchronised by hand rather than by the ORM.
+// NONE of the thirteen is marked `inverse="true"`, so this entity OWNS every link table - which is
+// why both sides of every helper are synchronised by hand rather than by the ORM.
 
 describe('the thirteen associations split three ways, and the fourteenth is not invented', () => {
   it('counts exactly thirteen many-to-many collections', () => {
@@ -1799,8 +1648,7 @@ describe('the thirteen associations split three ways, and the fourteenth is not 
   });
 
   it('declares no eligiblePriceGroups, under any spelling', () => {
-    // ★ The one-collection difference from `PromotionReward` [model/entity/PromotionReward.cfc:L74].
-    // Completing it would invent a price-group dimension the qualifier has never had.
+    // The one-collection difference from `PromotionReward` [model/entity/PromotionReward.cfc:L74].
     const subject = aQualifier();
     const members = prototypeMembers();
 
@@ -1818,9 +1666,9 @@ describe('the thirteen associations split three ways, and the fourteenth is not 
   });
 
   it('collapses the three Group A relationships to opaque identifier arrays', () => {
-    // The renamed readers are the ONE place this file departs from verbatim CFML naming, and the
-    // rename is what makes the departure honest: `getFulfillmentMethodIDs()` says "strings", where
-    // `getFulfillmentMethods()` would have promised entities that do not exist in this port.
+    // The renamed readers are the ONE departure from verbatim CFML naming here, and the rename is
+    // what makes it honest: `getFulfillmentMethodIDs()` says "strings", where
+    // `getFulfillmentMethods()` would promise entities this port does not have.
     const subject = aQualifier({
       fulfillmentMethodIDs: ['fulfillment-method-one', 'fulfillment-method-two'],
       shippingMethodIDs: ['shipping-method-one'],
@@ -1846,8 +1694,7 @@ describe('the thirteen associations split three ways, and the fourteenth is not 
   });
 
   it('gives Group A no add, no remove and no has helper', () => {
-    // ⚠️ The absence is the assertion. Authoring a helper for any of these three would require
-    // importing an out-of-scope entity, which is forbidden, or inventing one, which is worse.
+    // The absence is the assertion.
     const members = prototypeMembers();
 
     for (const property of GROUP_A_PROPERTIES) {
@@ -1871,8 +1718,8 @@ describe('the thirteen associations split three ways, and the fourteenth is not 
 
   it('defaults every Group A array to empty, never to undefined', () => {
     // An unset link table is an EMPTY set of identifiers, not an absent one - the opposite ruling
-    // from the ten gates, and correct for the opposite reason: a collection's emptiness is
-    // knowable from the link table itself, whereas a NULL numeric column is genuinely unset.
+    // from the ten gates, and correct for the opposite reason: emptiness is knowable from the link
+    // table itself, whereas a NULL numeric column is genuinely unset.
     const subject = aQualifier();
 
     expect(subject.getFulfillmentMethodIDs()).toEqual([]);
@@ -1912,10 +1759,7 @@ describe('the thirteen associations split three ways, and the fourteenth is not 
   });
 
   it('preserves all thirteen link-table names verbatim and abbreviated', () => {
-    // C5 SCHEMA CONTINUITY. Every one of these is read and written unchanged, so an "improved"
-    // name here is a production outage there. Five abbreviate `Excluded` to `Excl`, and
-    // `shippingAddressZones` abbreviates differently again to `ShipAddressZone` - preserved as
-    // written rather than regularised.
+    // C5 SCHEMA CONTINUITY.
     expect(LEGACY_TABLE).toBe('SwPromoQual');
     expect(LEGACY_TABLE).not.toBe('SwPromotionQualifier');
 
@@ -1955,14 +1799,7 @@ describe('the thirteen associations split three ways, and the fourteenth is not 
 
   it('carries the type="array" declaration inconsistency forward without normalising it', () => {
     // CFML parity [model/entity/PromotionQualifier.cfc:L83-L84]: ONLY `excludedBrands` and
-    // `excludedOptions` declare `type="array"`; the other ELEVEN many-to-many declarations omit
-    // it. The attribute is inert in the legacy - Hibernate materialises an array either way - so
-    // the inconsistency is a source wart with no behavioural consequence.
-    //
-    // ANNOTATED, NEVER NORMALISED, and in either direction: the port neither adds the attribute
-    // to the eleven that lack it nor strips it from the two that have it, and it certainly does
-    // not give those two a different runtime shape. All ten entity collections behave IDENTICALLY,
-    // which is the assertion that proves the wart was carried and not acted upon.
+    // `excludedOptions` declare `type="array"`; the other ELEVEN many-to-many declarations omit it.
     const subject = aQualifier();
     const probes = membershipPairProbes(subject, freshFixtures());
     const declaredWithTypeArray: readonly string[] = ['excludedBrands', 'excludedOptions'];
@@ -1983,49 +1820,35 @@ describe('the thirteen associations split three ways, and the fourteenth is not 
   });
 });
 
-// ===========================================================================
-// 7. MEMBERSHIP, THE LIVE ARRAYS, AND THE FAR-SIDE GUARD
-// ===========================================================================
+// --- 7. Membership, the live arrays, and the far-side guard -------------------------------------
 //
-// Three separate rulings meet in this block, and each is pinned to the shipped module rather than
-// assumed from the CFC.
+// Three rulings meet in this block, each pinned to the shipped module rather than assumed.
 //
 // (a) COMPARISON IS BY PRIMARY KEY FOR A PERSISTED CANDIDATE - never object identity, never deep
-//     equality. Two distinct objects bearing the same key are the same row and the predicate says
-//     so. ★ BUT THE SHIPPED RULE IS MIXED, NOT UNIFORM: when the candidate's key is still the
+//     equality. BUT THE SHIPPED RULE IS MIXED: when the candidate's key is still the
 //     `unsavedvalue=""` empty string, `indexOfEntity` falls back to REFERENCE IDENTITY, because
-//     every transient entity shares the key `''` and comparing by it would make all of them equal
-//     to one another. Both halves are asserted.
+//     every transient entity shares the key `''`. Both halves are asserted.
 //
 // (b) THE COLLECTION ACCESSORS RETURN LIVE ARRAYS, not defensive copies. That is required rather
-//     than tolerated: `add*`/`remove*` reach the FAR side through the far side's own accessor
-//     (`brand.getPromotionQualifiers().push(this)`), so a defensive copy anywhere in that chain
-//     would silently discard half of every bidirectional update. It also makes A2 freshness
-//     non-negotiable - a shared subject would leak membership between tests - which is why every
-//     test below builds its own.
+//     than tolerated: `add*`/`remove*` reach the FAR side through the far side's own accessor, so a
+//     defensive copy anywhere in that chain would silently discard half of every bidirectional
+//     update. It also makes A2 freshness non-negotiable.
 //
 // (c) THE FAR-SIDE GUARD IS `this.isNew() || !far.hasPromotionQualifier(this)`, reproduced from
 //     [model/entity/PromotionQualifier.cfc:L144] and its nine siblings. CFML `or` short-circuits,
 //     so on a TRANSIENT qualifier the containment probe never runs and a repeated `add*` APPENDS A
-//     DUPLICATE to the far side. That consequence is reproduced deliberately, and it is a
-//     `CFML parity` fact rather than a numbered defect: no in-scope caller adds the same pair
-//     twice, and "fixing" it would change what the legacy writes.
+//     DUPLICATE to the far side - a `CFML parity` fact rather than a numbered defect, since no
+//     in-scope caller adds the same pair twice.
 //
-// INVERSION CROSS-CHECK - VERDICT: ALL ELEVEN `remove*` HELPERS IN THIS COMPONENT ARE CORRECT.
-// Every one of the twenty-two guarded deletions removes from the collection it should, on both the
-// near and the far side; not one calls an `add*` where a `remove*` belongs. The contrast is
+// INVERSION CROSS-CHECK - VERDICT: ALL ELEVEN `remove*` HELPERS HERE ARE CORRECT; all twenty-two
+// guarded deletions remove from the collection they should, near side and far. The contrast is
 // [model/entity/Option.cfc:L145-L147], whose `removePromotionQualifierExclusion` calls
 // `addExcludedOption(this)` at L146 - a genuine inversion on the FAR side of this same link, OWNED
-// AND ASSERTED BY `option.test.ts`. It is cited here and deliberately NOT re-asserted, and the two
-// behaviours are preserved without being reconciled: `PromotionQualifier.removeExcludedOption()`
-// removes correctly, `Option.removePromotionQualifierExclusion()` does not, and both stay as
-// written.
+// AND ASSERTED BY `option.test.ts`, cited and deliberately NOT re-asserted here.
 
 describe('membership compares by primary key, and the collections are live', () => {
   it('matches a persisted far side by primary key across distinct objects', () => {
-    // (a) FIRST HALF. Two independently constructed brands, one key: the predicate must see one
-    // row. A reference-identity comparison would answer `false` here and silently duplicate the
-    // link on the next `add*`.
+    // (a) FIRST HALF.
     const subject = aSavedQualifier('qualifier-membership');
     const held = aBrand('brand-shared-key');
     const twin = aBrand('brand-shared-key');
@@ -2054,9 +1877,7 @@ describe('membership compares by primary key, and the collections are live', () 
   });
 
   it('falls back to reference identity for a transient far side', () => {
-    // ★ (a) SECOND HALF - THE MIXED RULE. Both brands carry the `unsavedvalue=""` key, so a
-    // key comparison would call them equal and a second, genuinely different unsaved brand would
-    // be swallowed. The shipped `indexOfEntity` switches to `indexOf` precisely to avoid that.
+    // (a) SECOND HALF - THE MIXED RULE.
     const subject = aSavedQualifier('qualifier-membership');
     const firstTransient = aBrand();
     const secondTransient = aBrand();
@@ -2078,10 +1899,7 @@ describe('membership compares by primary key, and the collections are live', () 
   });
 
   it('removes a first-position member rather than skipping it', () => {
-    // THE `findIndex` BASE-CHANGE TRAP, asserted rather than trusted. CFML `arrayFind` is 1-based
-    // and returns 0 for "absent", so all eleven source bodies guard with `if(index > 0)`;
-    // `findIndex` is 0-based and returns -1, so the port guards with `!== -1`. Had the `> 0` been
-    // carried over literally, the FIRST element of every collection would have become unremovable.
+    // THE `findIndex` BASE-CHANGE TRAP, asserted rather than trusted.
     const subject = aSavedQualifier('qualifier-membership');
     const first = aBrand('brand-first');
     const second = aBrand('brand-second');
@@ -2097,7 +1915,7 @@ describe('membership compares by primary key, and the collections are live', () 
   });
 
   it('ignores a removal of something that was never a member', () => {
-    // Both guarded deletions simply do not fire. No raise, no silent removal of a neighbour.
+    // Both guarded deletions simply do not fire.
     const subject = aSavedQualifier('qualifier-membership');
     const held = aBrand('brand-held');
     const stranger = aBrand('brand-stranger');
@@ -2111,8 +1929,7 @@ describe('membership compares by primary key, and the collections are live', () 
   });
 
   it('returns the live collection, not a defensive copy, on all ten accessors', () => {
-    // (b). Pushing through the returned reference is observable on the entity - which is exactly
-    // what the far-side half of every `add*` relies on.
+    // (b).
     const subject = aQualifier();
 
     for (const probe of membershipPairProbes(subject, freshFixtures())) {
@@ -2127,8 +1944,7 @@ describe('membership compares by primary key, and the collections are live', () 
 
   it('keeps the include and exclude lists of one far side independent', () => {
     // Ten collections, ten link tables: adding to `excludedBrands` must not touch `brands`, and a
-    // brand may legitimately appear on both lists of the same qualifier - the legacy schema has no
-    // constraint forbidding it, and nothing here invents one.
+    // brand may legitimately sit on both lists - the legacy schema forbids it nowhere.
     const subject = aSavedQualifier('qualifier-membership');
     const brand = aBrand('brand-on-both-lists');
 
@@ -2155,8 +1971,7 @@ describe('membership compares by primary key, and the collections are live', () 
   });
 
   it('synchronises both sides of all ten links on add and on remove', () => {
-    // (c) far-side symmetry, swept across every helper pair rather than sampled. The subject is
-    // SAVED, so the `this.isNew()` short-circuit does not fire and the containment probe runs.
+    // (c) far-side symmetry, swept across every helper pair rather than sampled.
     const subject = aSavedQualifier('qualifier-symmetry');
 
     for (const probe of membershipPairProbes(subject, freshFixtures())) {
@@ -2175,8 +1990,8 @@ describe('membership compares by primary key, and the collections are live', () 
   });
 
   it('appends nothing twice when both sides are already persisted', () => {
-    // The saved-and-saved case: BOTH `isNew()` short-circuits are false, both containment probes
-    // run, and a repeated `add*` is idempotent on both sides.
+    // BOTH `isNew()` short-circuits false, both containment probes run, and a repeated `add*` is
+    // idempotent on both sides.
     const subject = aSavedQualifier('qualifier-idempotent');
 
     for (const probe of membershipPairProbes(subject, freshFixtures())) {
@@ -2190,15 +2005,11 @@ describe('membership compares by primary key, and the collections are live', () 
   });
 
   it('appends a duplicate to the far side when the qualifier itself is transient', () => {
-    // ★ (c) THE SHORT-CIRCUIT CONSEQUENCE, REPRODUCED DELIBERATELY.
-    // CFML parity [model/entity/PromotionQualifier.cfc:L144]: the far-side guard reads
-    // `if(isNew() OR NOT arguments.brand.hasPromotionQualifier(this))`, CFML `or`
-    // short-circuits, and `isNew()` is TRUE for an unsaved qualifier - so the containment probe
-    // is never reached and the far side receives a second copy.
-    //
-    // Preserved as written. No in-scope caller adds the same pair twice before saving, so the
-    // legacy outcome is unobservable in practice; guarding it would nonetheless change what the
-    // port writes relative to the source, and this file spends no divergence.
+    // (c) THE SHORT-CIRCUIT CONSEQUENCE, REPRODUCED DELIBERATELY. CFML parity
+    // [model/entity/PromotionQualifier.cfc:L144], the far-side guard:
+    //   if(isNew() OR NOT arguments.brand.hasPromotionQualifier(this))
+    // CFML `or` short-circuits and `isNew()` is TRUE for an unsaved qualifier, so the containment
+    // probe is never reached and the far side receives a second copy.
     const transient = aQualifier();
     const brand = aBrand('brand-far-duplicate');
 
@@ -2216,7 +2027,6 @@ describe('membership compares by primary key, and the collections are live', () 
   it('appends a duplicate to the near side when the far side is transient', () => {
     // The mirror image, from [model/entity/PromotionQualifier.cfc:L141]: the NEAR-side guard tests
     // `arguments.brand.isNew()`, so a transient brand bypasses `hasBrand()` and lands twice.
-    // Same ruling, same reason, opposite side.
     const subject = aSavedQualifier('qualifier-near-duplicate');
     const transientBrand = aBrand();
 
@@ -2229,9 +2039,7 @@ describe('membership compares by primary key, and the collections are live', () 
   });
 
   it('leaks no membership between tests, because every subject is fresh', () => {
-    // A2 FRESHNESS, proven rather than promised. Two subjects built by the same helper, in the
-    // same test, must not share an array - the live-reference ruling makes this the one place a
-    // hoisted subject would have produced order-dependent failures.
+    // A2 FRESHNESS, proven rather than promised.
     const first = aSavedQualifier('qualifier-fresh-one');
     const second = aSavedQualifier('qualifier-fresh-two');
     const brand = aBrand('brand-not-shared');
@@ -2245,8 +2053,7 @@ describe('membership compares by primary key, and the collections are live', () 
   });
 
   it('keeps every remove helper a removal, on both sides', () => {
-    // THE INVERSION CROSS-CHECK, EXECUTED. Twenty-two guarded deletions across eleven pairs: after
-    // a removal, neither side may have GROWN. The verdict recorded above the block - all eleven
+    // THE INVERSION CROSS-CHECK, EXECUTED. The verdict recorded above the block - all eleven
     // correct - is what this sweep establishes, and it is the reason `Option.cfc:L145-L147`'s
     // inversion is identifiable as a defect of that file rather than a convention of this one.
     const subject = aSavedQualifier('qualifier-inversion');
@@ -2275,7 +2082,7 @@ describe('membership compares by primary key, and the collections are live', () 
   });
 
   it('sets and clears the one many-to-one, and raises when there is nothing to clear', () => {
-    // The period side is the eleventh pair, and the only one that is not many-to-many
+    // The period side is the eleventh pair and the only one that is not many-to-many
     // [model/entity/PromotionQualifier.cfc:L68, helpers at L123-L137].
     const fixtures = freshFixtures();
     const subject = aSavedQualifier('qualifier-period-side');
@@ -2296,44 +2103,37 @@ describe('membership compares by primary key, and the collections are live', () 
 
     // CFML parity [model/entity/PromotionQualifier.cfc:L129-L132]: the source dereferences
     // `arguments.promotionPeriod` / `getPromotionPeriod()` unguarded, so clearing a period that is
-    // neither supplied nor stored raises. Reproduced, with a message that names the locator.
+    // neither supplied nor stored raises.
     expect(() => {
       subject.removePromotionPeriod();
     }).toThrow(/promotionPeriod/i);
   });
 });
 
-// ===========================================================================
-// 8. ★ hasAnyOption / hasAnyExcludedOption, AND THE EMPTY-COLLECTION POLARITY
-// ===========================================================================
+// --- 8. hasAnyOption / hasAnyExcludedOption, and the empty-collection polarity -------------------
 //
-// CFML parity [org/Hibachi/HibachiEntity.cfc:L340-L350]: hasAnyInProperty dispatches via
-// evaluate() (not ported) and returns false at L348 for an empty array. That false is PERMISSIVE
-// when read against an exclude-list (nothing excluded) and RESTRICTIVE when read against an
-// include-list (nothing qualifies) -- two of the five distinct empty-collection semantics in this
-// migration. Collapsing any of them is a money bug.
+// CFML parity [org/Hibachi/HibachiEntity.cfc:L340-L350]: hasAnyInProperty dispatches via evaluate()
+// (not ported) and returns false at L348 for an empty array. That false is PERMISSIVE when read
+// against an exclude-list (nothing excluded) and RESTRICTIVE when read against an include-list
+// (nothing qualifies) -- two of the five distinct empty-collection semantics in this migration.
+// Collapsing any of them is a money bug. The remaining three are NOTED AND DELIBERATELY NOT
+// RE-TESTED, because each is owned elsewhere:
 //
-// The remaining three are NOTED HERE AND DELIBERATELY NOT RE-TESTED, because each is owned
-// elsewhere and duplicating an assertion is how two suites end up disagreeing:
+//   3. RESTRICTIVE in the address-zone evaluator - a zone with an EMPTY `locations` collection
+//      reports "not in zone", so a qualifier gated on it never fires. Owned by the address-zone
+//      port's own suite; this entity holds only opaque zone identifiers.
+//   4. THE FULFILLMENT THREE-WAY GATE [model/service/PromotionService.cfc:L333-L420] - empty
+//      fulfillment-method, shipping-method and address-zone sets read with three DIFFERENT
+//      polarities inside one method. Owned by `tests/unit/services/promotion/**`.
+//   5. `Brand.getProducts()` DEFAULTING TO `[]` - the one with genuine legacy coverage, asserted by
+//      `meta/tests/unit/entity/BrandTest.cfc:L58-L60` and carried forward by `brand.test.ts`.
 //
-//   3. RESTRICTIVE in the address-zone evaluator - an address zone with an EMPTY `locations`
-//      collection reports "not in zone", so a qualifier gated on it never fires. Owned by the
-//      address-zone port's own suite; this entity holds only opaque zone identifiers.
-//   4. THE FULFILLMENT THREE-WAY GATE [model/service/PromotionService.cfc:L333-L420] - an empty
-//      fulfillment-method set, an empty shipping-method set and an empty address-zone set are read
-//      with three DIFFERENT polarities inside one method. Owned by
-//      `tests/unit/services/promotion/**`; nothing about it is asserted here.
-//   5. `Brand.getProducts()` DEFAULTING TO `[]` - the one empty-collection semantic with genuine
-//      legacy coverage, asserted by `meta/tests/unit/entity/BrandTest.cfc:L58-L60` and carried
-//      forward by `brand.test.ts`. Cited, not re-asserted.
-//
-// ⚠️ THE `evaluate()`-BASED DYNAMIC DISPATCH IS NOT PORTED, AND ITS ABSENCE IS A FEATURE.
-// [org/Hibachi/HibachiEntity.cfc:L344] builds a method name as a STRING and evaluates it, so in
-// the legacy runtime `hasAnyOption` and `hasAnyExcludedOption` are synthesised at call time rather
-// than declared. The port authors both explicitly: no `evaluate`, no `eval`, no `new Function`, no
-// `vm`, no tokenizer, no parser, and no `Proxy` dispatch. The BEHAVIOUR is reproduced exactly -
-// primary-key comparison, `false` on an empty array, short-circuit on first match - while the
-// MECHANISM is replaced by two ordinary methods a compiler can check.
+// THE `evaluate()`-BASED DYNAMIC DISPATCH IS NOT PORTED. [org/Hibachi/HibachiEntity.cfc:L344]
+// builds a method name as a STRING and evaluates it, so in the legacy runtime `hasAnyOption` and
+// `hasAnyExcludedOption` are synthesised at call time rather than declared. The port authors both
+// explicitly: no `evaluate`, no `eval`, no `new Function`, no `vm`, no tokenizer, no `Proxy`
+// dispatch. The BEHAVIOUR is reproduced exactly - primary-key comparison, `false` on an empty
+// array, short-circuit on first match.
 
 describe('the any-of predicates keep their polarity, on both an include and an exclude list', () => {
   it('authors both predicates explicitly, with no dynamic dispatch behind them', () => {
@@ -2346,7 +2146,6 @@ describe('the any-of predicates keep their polarity, on both an include and an e
     expect(typeof subject.hasAnyExcludedOption).toBe('function');
 
     // The legacy synthesises ANY `hasAny<Property>` name [org/Hibachi/HibachiEntity.cfc:L517-L519].
-    // The port synthesises none, so the eight properties the source never asks about stay absent.
     for (const notAuthored of [
       'hasAnyBrand',
       'hasAnyExcludedBrand',
@@ -2364,9 +2163,7 @@ describe('the any-of predicates keep their polarity, on both an include and an e
   });
 
   it('finds an option on the include list by primary key across distinct objects', () => {
-    // Comparison is by `optionID` only. The twin carries the same key and a different identity, and
-    // the predicate must see one row - exactly as `hasOption` does, because `hasAnyOption`
-    // delegates to it rather than re-implementing the rule.
+    // Comparison is by `optionID` only.
     const subject = aSavedQualifier('qualifier-any-option');
     const held = anOption('option-shared-key');
     const twin = anOption('option-shared-key');
@@ -2379,8 +2176,7 @@ describe('the any-of predicates keep their polarity, on both an include and an e
   });
 
   it('finds an option on the exclude list without consulting the include list', () => {
-    // The two predicates read two different collections [L78 versus L84]. A qualifier that
-    // INCLUDES an option has not EXCLUDED it, and vice versa.
+    // The two predicates read two different collections [L78 versus L84].
     const subject = aSavedQualifier('qualifier-any-excluded-option');
     const included = anOption('option-included');
     const excluded = anOption('option-excluded');
@@ -2421,11 +2217,8 @@ describe('the any-of predicates keep their polarity, on both an include and an e
   });
 
   it('answers false for an empty supplied array on the include list - RESTRICTIVE', () => {
-    // ★ EMPTY CASE ONE, RESTRICTIVE POLARITY. [org/Hibachi/HibachiEntity.cfc:L348] falls straight
-    // through to `return false` when there is nothing to iterate. Read against an INCLUDE list
-    // that `false` means "this item does not qualify", so an order item carrying no options is
-    // gated OUT by an option-based qualifier. Substituting `true` here would hand a discount to
-    // every optionless item in the catalogue.
+    // EMPTY CASE ONE, RESTRICTIVE POLARITY. [org/Hibachi/HibachiEntity.cfc:L348] falls straight
+    // through to `return false` when there is nothing to iterate.
     const subject = aSavedQualifier('qualifier-empty-input');
 
     subject.addOption(anOption('option-held'));
@@ -2435,13 +2228,8 @@ describe('the any-of predicates keep their polarity, on both an include and an e
   });
 
   it('answers false for an empty supplied array on the exclude list - PERMISSIVE', () => {
-    // ★ EMPTY CASE TWO, PERMISSIVE POLARITY - THE SAME `false` FROM THE SAME LINE, MEANING THE
-    // OPPOSITE THING. Read against an EXCLUDE list, `false` means "nothing about this item is
-    // excluded", so the item survives the exclusion test and remains eligible.
-    //
-    // ONE RETURN VALUE, TWO OPPOSED CONSEQUENCES. That is why the polarity is annotated at every
-    // call rather than reasoned about once: a helper that "normalised" empty-array handling would
-    // have to break one of these two, and either break moves money.
+    // EMPTY CASE TWO, PERMISSIVE POLARITY - THE SAME `false` FROM THE SAME LINE, MEANING THE
+    // OPPOSITE THING.
     const subject = aSavedQualifier('qualifier-empty-input');
 
     subject.addExcludedOption(anOption('option-excluded'));
@@ -2451,9 +2239,7 @@ describe('the any-of predicates keep their polarity, on both an include and an e
   });
 
   it('answers false when the qualifier collection itself is empty, on both lists', () => {
-    // The other emptiness: a populated input against an EMPTY near-side collection. Same `false`,
-    // same two polarities - an option-gated qualifier that lists no options excludes every item
-    // from qualifying, while an exclusion list holding nothing excludes nobody.
+    // The other emptiness: a populated input against an EMPTY near-side collection.
     const subject = aSavedQualifier('qualifier-empty-collections');
     const supplied = [anOption('option-one'), anOption('option-two')];
 
@@ -2472,8 +2258,7 @@ describe('the any-of predicates keep their polarity, on both an include and an e
 
   it('accepts a readonly array without forcing the caller to copy it', () => {
     // The parameter is `readonly Option[]` because the documented call site hands over
-    // `Sku.getOptions()`, which is itself `readonly`. A mutable array is accepted too, so the
-    // arity and the call sites are unchanged from the legacy - only the type is honest.
+    // `Sku.getOptions()`, which is itself `readonly`.
     const subject = aSavedQualifier('qualifier-readonly-input');
     const held = anOption('option-readonly');
     const frozen: readonly Option[] = Object.freeze([held]);
@@ -2486,9 +2271,8 @@ describe('the any-of predicates keep their polarity, on both an include and an e
   });
 
   it('does not mutate either collection while answering', () => {
-    // Both predicates are READ-ONLY, and the live-array ruling makes that worth proving: a probe
-    // that appended a miss while searching would corrupt the very membership the engine is about
-    // to consult for the next order item.
+    // Both predicates are READ-ONLY, which the live-array ruling makes worth proving: a probe that
+    // appended a miss while searching would corrupt the membership the engine reads next.
     const subject = aSavedQualifier('qualifier-read-only-probe');
     const held = anOption('option-held');
     const stranger = anOption('option-stranger');
@@ -2504,8 +2288,7 @@ describe('the any-of predicates keep their polarity, on both an include and an e
   });
 
   it('treats a transient option by identity, on both predicates', () => {
-    // The mixed comparison rule reaches the any-of predicates too, because they delegate. Two
-    // unsaved options both key `''`; only the one actually held may match.
+    // The mixed comparison rule reaches the any-of predicates too, because they delegate.
     const subject = aSavedQualifier('qualifier-transient-any');
     const heldTransient = anOption('');
     const otherTransient = anOption('');
@@ -2520,40 +2303,35 @@ describe('the any-of predicates keep their polarity, on both an include and an e
   });
 });
 
-// ===========================================================================
-// 9. THE SIMPLE REPRESENTATION, ITS PROPERTY NAME, AND THE FORMATTER BOUNDARY
-// ===========================================================================
+// --- 9. The simple representation, its property name, and the formatter boundary -----------------
 //
 // CFML parity [model/entity/PromotionQualifier.cfc:L101-L103], the body verbatim:
 //
 //   return "#rbKey('entity.promotionQualifier')# - #getFormattedValue('qualifierType')#";
 //
 // Two resource-bundle lookups and a literal `" - "` separator. NEITHER LOOKUP RESOLVES IN THE
-// TARGET, and that is the ruling rather than an omission: JavaRB is not ported, no i18n runtime is
-// introduced, and this entity has ZERO `getService(` sites, so injecting a label provider would add
-// a collaborator the source does not have. Both keys are emitted as INERT STRINGS the admin tier
-// can still resolve, and the method is therefore TOTAL - it cannot fail.
+// TARGET: JavaRB is not ported, no i18n runtime is introduced, and this entity has ZERO
+// `getService(` sites, so injecting a label provider would add a collaborator the source does not
+// have. Both keys are emitted as INERT STRINGS the admin tier can still resolve, so the method is
+// TOTAL - it cannot fail.
 //
-// ★ A CASING DISAGREEMENT THAT IS CARRIED, NOT CORRECTED. The first key is hand-written in the
-// source and is lower-camel - `entity.promotionQualifier`. The second is composed by the framework
-// from `getEntityName()` [org/Hibachi/HibachiTransient.cfc:L504-L510] and therefore carries an
-// INITIAL CAPITAL - `entity.PromotionQualifier.qualifierType.<value>`. Normalising either would
-// change a bundle lookup, so both are reproduced exactly as the legacy produces them.
+// A CASING DISAGREEMENT THAT IS CARRIED, NOT CORRECTED. The first key is hand-written in the source
+// and is lower-camel, `entity.promotionQualifier`. The second is composed by the framework from
+// `getEntityName()` [org/Hibachi/HibachiTransient.cfc:L504-L510] and therefore carries an INITIAL
+// CAPITAL, `entity.PromotionQualifier.qualifierType.<value>`. Normalising either would change a
+// bundle lookup, so both are reproduced exactly as the legacy produces them.
 //
-// ⚠️ THE INHERITED LEGACY ASSERTION IS NOT FORCED. `simple_representation_exists_and_is_simple`
-// [meta/tests/unit/entity/SlatwallEntityTestBase.cfc:L56-L58] is one of four cases every legacy
-// entity test inherits, and `PromotionQualifier` HAS NO LEGACY TEST AT ALL, so it inherits nothing
-// - this block is net-new like the rest of the file. Rather than assume what a bare instance
-// produces, the shipped reality was MEASURED: an unset `qualifierType` yields the formatter's empty
-// string, so the value is `'entity.promotionQualifier - '` WITH A TRAILING SPACE. That is odd
-// looking and still perfectly simple - one line, no markup, no raise - and it is asserted as it is
-// rather than tidied into something the port does not do.
+// THE INHERITED LEGACY ASSERTION IS NOT FORCED. `simple_representation_exists_and_is_simple`
+// [meta/tests/unit/entity/SlatwallEntityTestBase.cfc:L56-L58] is inherited by every legacy entity
+// test, and `PromotionQualifier` HAS NO LEGACY TEST AT ALL, so the shipped reality was MEASURED
+// rather than assumed: an unset `qualifierType` yields the formatter's empty string, so the value
+// is `'entity.promotionQualifier - '` WITH A TRAILING SPACE. Odd looking, still perfectly simple,
+// and asserted as it is.
 //
 // BANNER-PLACEMENT WART, ANNOTATED AND NEVER NORMALISED: `getSimpleRepresentation()` sits at
-// L101-L103, OUTSIDE every banner section - the "START: Non-Persistent Property Methods" banner
-// does not open until L105 - while its partner `getSimpleRepresentationPropertyName()` sits
-// properly inside "Overridden Methods" at L353-L363. The two members belong together and the source
-// files them apart. The port records the fact once and reproduces the members, not the banners.
+// L101-L103, OUTSIDE every banner - "START: Non-Persistent Property Methods" opens at L105 - while
+// its partner `getSimpleRepresentationPropertyName()` sits inside "Overridden Methods" at
+// L353-L363. The port reproduces the members, not the banners.
 
 describe('the simple representation composes two inert keys around a literal separator', () => {
   it('composes the entity key, the separator and the formatted qualifier type', () => {
@@ -2565,8 +2343,7 @@ describe('the simple representation composes two inert keys around a literal sep
   });
 
   it('keeps the separator exactly space-hyphen-space', () => {
-    // The literal is `" - "` in the source, not `" | "` and not `": "`. Asserted on its own because
-    // it is the one part of the string neither key contributes.
+    // The literal is `" - "` in the source, not `" | "` and not `": "`.
     const subject = aQualifier({ qualifierType: 'subscription' });
     const representation: string = subject.getSimpleRepresentation();
 
@@ -2576,10 +2353,8 @@ describe('the simple representation composes two inert keys around a literal sep
   });
 
   it('resolves neither key, and emits no translated text', () => {
-    // ⚠️ THE RULING THIS TEST EXISTS FOR. `getFormattedValue('qualifierType')` would resolve a
-    // bundle key in the legacy because [L53] declares `hb_formatType="rbKey"`. In the target it
-    // does NOT resolve - it composes the key and stops. Anything English here would mean a
-    // resolver had been invented.
+    // THE RULING THIS TEST EXISTS FOR. `getFormattedValue('qualifierType')` would resolve a bundle
+    // key in the legacy because [L53] declares `hb_formatType="rbKey"`.
     const representation: string = aQualifier({
       qualifierType: 'merchandise',
     }).getSimpleRepresentation();
@@ -2591,7 +2366,7 @@ describe('the simple representation composes two inert keys around a literal sep
   });
 
   it('carries the framework casing on the composed key and the hand-written casing on the first', () => {
-    // ★ Both spellings in one string, side by side, so the disagreement cannot be quietly
+    //Both spellings in one string, side by side, so the disagreement cannot be quietly
     // regularised in either direction.
     const representation: string = aQualifier({
       qualifierType: 'contentAccess',
@@ -2605,9 +2380,7 @@ describe('the simple representation composes two inert keys around a literal sep
   });
 
   it('emits the measured shipped value for a bare instance, trailing space and all', () => {
-    // ⚠️ MEASURED, NOT ASSUMED. The formatter's empty-value branch contributes nothing after the
-    // separator, so the representation ends in a space. Still simple - one line, no markup, no
-    // raise - which is what the inherited legacy case would have been checking had one existed.
+    // MEASURED, NOT ASSUMED.
     const bare = aQualifier();
     const representation: string = bare.getSimpleRepresentation();
 
@@ -2620,21 +2393,15 @@ describe('the simple representation composes two inert keys around a literal sep
   });
 
   it('distinguishes an empty-string qualifier type from an absent one', () => {
-    // ★ MEASURED, AND IT CORRECTS A PLAUSIBLE ASSUMPTION. The presence test in the shipped body is
-    // `isNullish(...)`, which carries CFML `isNull()` semantics - `null` or `undefined` only - and
-    // is DELIBERATELY NOT `len()`. In CFML an empty string is not null, so
-    // `getFormattedValue('qualifierType')` composes the rbKey with an EMPTY SUFFIX rather than
-    // short-circuiting to nothing.
-    //
-    // So a row holding `''` and a row holding NULL produce DIFFERENT representations, and the
-    // difference is exactly the composed key with nothing after its final dot. That is what the
-    // legacy does; guessing that `''` and NULL collapse together would have been the easy,
-    // plausible, wrong answer - which is why the value was measured before it was asserted.
+    // MEASURED, AND IT CORRECTS A PLAUSIBLE ASSUMPTION. The shipped presence test is `isNullish`,
+    // carrying CFML `isNull()` semantics: `null` or `undefined` only, DELIBERATELY NOT `len()`. So
+    // a row holding `''` composes the rbKey with an EMPTY SUFFIX instead of short-circuiting, and
+    // `''` and NULL produce DIFFERENT representations.
     //
     // JUDGMENT CALL: assert the measured string rather than the tidier one this test originally
-    // expected. The first draft asserted that `''` and NULL collapse to the same representation; it
-    // FAILED, and the failure was correct - `isNullish` is `null || undefined` only. The assertion
-    // was corrected to the shipped reality instead of the port being changed to match the guess.
+    // expected. The first draft asserted that `''` and NULL collapse; it FAILED, and the failure
+    // was correct, so the assertion was corrected to the shipped reality rather than the port to
+    // the guess.
     const emptyString = aQualifier({ qualifierType: '' });
     const absent = aQualifier();
 
@@ -2647,9 +2414,7 @@ describe('the simple representation composes two inert keys around a literal sep
   });
 
   it('never raises, whatever the row holds', () => {
-    // TOTAL. The two throwing members of this class are `isDeletable()` and
-    // `removePromotionPeriod()`; the representation resolves nothing and therefore cannot fail -
-    // not on an unsaved row, not on a row with no period, not on an unexpected qualifier type.
+    // TOTAL.
     for (const subject of [
       aQualifier(),
       aQualifier({ qualifierType: 'somethingTheAdminTyped' }),
@@ -2661,8 +2426,7 @@ describe('the simple representation composes two inert keys around a literal sep
   });
 
   it('is independent of every collection and every gate', () => {
-    // The representation reads ONE column. Populating the thirteen associations and all ten gates
-    // must not change it, which is what makes it usable as an admin label for an unsaved row.
+    // The representation reads ONE column.
     const fixtures = freshFixtures();
     const populated = fixtures.promotionQualifier;
     const bareWithSameType = aQualifier({ qualifierType: populated.getQualifierType() });
@@ -2676,11 +2440,9 @@ describe('the simple representation composes two inert keys around a literal sep
   });
 
   it('names qualifierType as the simple-representation property', () => {
-    // [model/entity/PromotionQualifier.cfc:L355-L357], return at L356. Exactly that string - not
-    // `'QualifierType'`, not `'qualifierTypes'`, not the ID column.
-    //
-    // LOCATOR CORRECTION, RECORDED: an upstream summary cites `L355-L356` for this member. Read
-    // first-hand it spans L355-L357 with its `return` on L356. Source wins.
+    // [model/entity/PromotionQualifier.cfc:L355-L357], return at L356. LOCATOR CORRECTION,
+    // RECORDED: an upstream summary cites `L355-L356` for this member. Read first-hand it spans
+    // L355-L357 with its `return` on L356.
     const subject = aQualifier();
 
     expect(subject.getSimpleRepresentationPropertyName()).toBe('qualifierType');
@@ -2690,8 +2452,7 @@ describe('the simple representation composes two inert keys around a literal sep
 
   it('names the same property the representation actually formats', () => {
     // The two overridden members agree in the source, and the agreement is the point: the property
-    // NAMED here is the property FORMATTED there. A drift between them would make the admin sort a
-    // column it is not displaying.
+    // NAMED here is the property FORMATTED there.
     const subject = aQualifier({ qualifierType: 'merchandise' });
     const named: string = subject.getSimpleRepresentationPropertyName();
 
@@ -2703,12 +2464,11 @@ describe('the simple representation composes two inert keys around a literal sep
 
   it('returns the same property name for every instance, saved or not', () => {
     // A CONSTANT of the class, not a projection of state - the same ruling the option list gets.
-    //
-    // SIBLING COMPARISON, FOR CONTEXT ONLY AND ASSERTED NOWHERE HERE: the other overriding
-    // in-scope entities name `'promotionCode'` [model/entity/PromotionCode.cfc:L171-L173], the
-    // reward type [model/entity/PromotionReward.cfc:L414], the CAPITAL-D `'DisplayName'`
+    // SIBLING COMPARISON, FOR CONTEXT ONLY AND ASSERTED NOWHERE HERE: the other overriding in-scope
+    // entities name `'promotionCode'` [model/entity/PromotionCode.cfc:L171-L173], the reward type
+    // [model/entity/PromotionReward.cfc:L414], the CAPITAL-D `'DisplayName'`
     // [model/entity/PriceGroupRate.cfc:L270-L271] - a wart owned by `priceGroupRate.test.ts` - and
-    // `'productName'` [model/entity/Product.cfc:L791-L793]. Each sibling suite owns its own.
+    // `'productName'` [model/entity/Product.cfc:L791-L793].
     expect(aQualifier().getSimpleRepresentationPropertyName()).toBe(
       aSavedQualifier('qualifier-constant', {
         qualifierType: 'merchandise',
@@ -2720,48 +2480,33 @@ describe('the simple representation composes two inert keys around a literal sep
   });
 });
 
-// ===========================================================================
-// 10. ★ isDeletable() - A THREE-LEVEL CHAIN WITH TWO UNGUARDED DEREFERENCES
-// ===========================================================================
+// --- 10. isDeletable() - a three-level chain with two unguarded dereferences ---------------------
 //
 // CFML parity [model/entity/PromotionQualifier.cfc:L359-L361]: isDeletable chains three levels
 // (qualifier -> period -> promotion) and calls getPromotionPeriod() TWICE in one expression, so an
 // absent period or an absent promotion both throw. PromotionReward.isDeletable follows the
-// identical double-call throw pattern.
-//
-// The source body, verbatim:
+// identical double-call throw pattern. The source body, verbatim:
 //
 //   return !getPromotionPeriod().isExpired() && getPromotionPeriod().getPromotion().isDeletable();
 //
 // FIVE OUTCOMES, and every one of them is reachable rather than theoretical:
 //
-//   1. ABSENT PERIOD                        -> THROWS. [L68] declares no `notnull`, so the foreign
-//                                              key is nullable, and `removePromotionPeriod()`
-//                                              clears it outright.
+//   1. ABSENT PERIOD                        -> THROWS. [L68] declares no `notnull`, so the key is
+//                                              nullable, and `removePromotionPeriod()` clears it.
 //   2. EXPIRED PERIOD                       -> false, by short-circuit. The promotion is NEVER
-//                                              reached on this arm, so it cannot raise even when
-//                                              it is absent.
-//   3. UNEXPIRED PERIOD, ABSENT PROMOTION   -> THROWS. `PromotionPeriod.isExpired()` IS guarded
+//                                              reached, so it cannot raise even when absent.
+//   3. UNEXPIRED PERIOD, ABSENT PROMOTION   -> THROWS. `isExpired()` IS guarded
 //                                              [model/entity/PromotionPeriod.cfc:L84 tests
-//                                              `isDate()`], but `getPromotion()` is NOT, so the
-//                                              second dereference is where the chain breaks.
+//                                              `isDate()`], `getPromotion()` is NOT.
 //   4. UNEXPIRED PERIOD, UNDELETABLE PROMO  -> false, delegated.
 //   5. UNEXPIRED PERIOD, DELETABLE PROMO    -> true, delegated.
 //
-// ★ THE DOUBLE `getPromotionPeriod()` CALL IS A DEREFERENCE-SURFACE FACT, NOT A PERFORMANCE ONE.
-// It matters solely because it names the SAME nullable link twice in one expression, which is why
-// outcome 1 raises on the FIRST call - before `isExpired()` can be consulted - and outcome 3 raises
-// on the SECOND. Nothing here is framed in terms of speed, cost or call count; the port reads the
-// link once into a local because that is the idiomatic way to express the same behaviour, and the
-// behaviour is what is asserted.
-//
-// THE THROWS ARE REPRODUCED, NOT REPAIRED. Answering `false` for an absent period would invent a
-// permissive rule the legacy does not have; answering `true` would invent the opposite. Raising is
-// the parity-correct outcome, and it costs no divergence. `PromotionReward.isDeletable()` follows
-// the identical pattern - cited here, asserted by `promotionReward.test.ts`.
-//
-// DATES: every instant below is an explicit UTC ISO-8601 string handed to an injected clock. No
-// no-argument `new Date()`, no `Date.now()`, no `new Date(0)`, and no global fake timers.
+// THE DOUBLE `getPromotionPeriod()` CALL IS A DEREFERENCE-SURFACE FACT, NOT A PERFORMANCE ONE: it
+// names the SAME nullable link twice in one expression, which is why outcome 1 raises on the FIRST
+// call, before `isExpired()` can be consulted, and outcome 3 on the SECOND. The port reads the link
+// once into a local. THE THROWS ARE REPRODUCED, NOT REPAIRED: answering `false` would invent a
+// permissive rule the legacy does not have, `true` the opposite. `PromotionReward.isDeletable()`
+// follows the identical pattern - asserted by `promotionReward.test.ts`.
 
 describe('isDeletable climbs three levels, and raises where the legacy raises', () => {
   it('raises when the qualifier has no promotion period', () => {
@@ -2774,8 +2519,8 @@ describe('isDeletable climbs three levels, and raises where the legacy raises', 
   });
 
   it('raises after its period has been cleared, which is how the absence is reached', () => {
-    // The nullable link is not merely nullable in theory - `removePromotionPeriod()` sets it back to
-    // `undefined`, so a qualifier that WAS deletable becomes a raising one.
+    // `removePromotionPeriod()` sets the nullable link back to `undefined`, so a qualifier that WAS
+    // deletable becomes a raising one.
     const fixtures = freshFixtures();
     const subject = aSavedQualifier('qualifier-cleared-period');
     const period = firstPeriodOf(
@@ -2793,10 +2538,7 @@ describe('isDeletable climbs three levels, and raises where the legacy raises', 
   });
 
   it('answers false for an expired period, without reaching the promotion', () => {
-    // OUTCOME 2. `endDateTime` precedes the injected clock, so `isExpired()` is true and CFML `&&`
-    // short-circuits. The period deliberately carries NO promotion: if the right-hand operand were
-    // evaluated this test would raise instead of answering, so the short-circuit is what is really
-    // being asserted here.
+    // OUTCOME 2.
     const expiredWithNoPromotion = aPromotionPeriod({
       promotionPeriodID: 'period-expired',
       endDateTimeUTC: EXPIRED_PERIOD_END_UTC,
@@ -2812,9 +2554,9 @@ describe('isDeletable climbs three levels, and raises where the legacy raises', 
   });
 
   it('raises when the period is present and unexpired but its promotion is not', () => {
-    // OUTCOME 3, AND THE SUBTLEST OF THE FIVE. `isExpired()` is GUARDED
-    // [model/entity/PromotionPeriod.cfc:L84] and answers false for an absent end bound, so the
-    // chain proceeds past the first link and breaks on the second, which has no guard at all.
+    // OUTCOME 3, THE SUBTLEST. `isExpired()` IS GUARDED [model/entity/PromotionPeriod.cfc:L84] and
+    // answers false for an absent end bound, so the chain proceeds past the first link and breaks
+    // on the second, which has no guard at all.
     const unexpiredWithNoPromotion = aPromotionPeriod({
       promotionPeriodID: 'period-open-ended',
       endDateTimeUTC: undefined,
@@ -2831,8 +2573,7 @@ describe('isDeletable climbs three levels, and raises where the legacy raises', 
   });
 
   it('distinguishes the two raises by their message', () => {
-    // Two different broken links, two different diagnostics. A single opaque failure would leave a
-    // caller unable to tell which level of the chain was unmaterialized.
+    // Two different broken links, two different diagnostics.
     const orphan = aSavedQualifier('qualifier-first-link');
     const promotionlessPeriod = aPromotionPeriod({
       promotionPeriodID: 'period-second-link',
@@ -2863,9 +2604,7 @@ describe('isDeletable climbs three levels, and raises where the legacy raises', 
   });
 
   it('answers false for an unexpired period whose promotion is not deletable', () => {
-    // OUTCOME 4, delegated. The fixture promotion carries an applied promotion, which is what makes
-    // it undeletable - and WHY it is undeletable belongs to `promotion.test.ts`, not here. This
-    // block asserts only that the qualifier DELEGATES and returns what it is told.
+    // OUTCOME 4, delegated.
     const fixtures = freshFixtures();
     const subject = aSavedQualifier('qualifier-undeletable-promotion');
     const period = firstPeriodOf(fixtures.promotion.getPromotionPeriods(), 'promotion');
@@ -2878,8 +2617,7 @@ describe('isDeletable climbs three levels, and raises where the legacy raises', 
   });
 
   it('answers true for an unexpired period whose promotion is deletable', () => {
-    // OUTCOME 5, delegated. The only arm that answers true, and it requires BOTH conditions - an
-    // unexpired period AND a deletable promotion.
+    // OUTCOME 5, delegated.
     const fixtures = freshFixtures();
     const subject = aSavedQualifier('qualifier-deletable-promotion');
     const period = firstPeriodOf(
@@ -2895,8 +2633,7 @@ describe('isDeletable climbs three levels, and raises where the legacy raises', 
   });
 
   it('lets an expired period veto a deletable promotion', () => {
-    // The two conditions are ANDed, so either one alone is not enough. A deletable promotion behind
-    // an EXPIRED period still answers false - the left operand decides first.
+    // The two conditions are ANDed, so either one alone is not enough.
     const fixtures = freshFixtures();
     const expiredPeriodOverDeletablePromotion = aPromotionPeriod({
       promotionPeriodID: 'period-expired-over-deletable',
@@ -2913,10 +2650,7 @@ describe('isDeletable climbs three levels, and raises where the legacy raises', 
   });
 
   it('reads the period boundary against the injected clock, never a wall clock', () => {
-    // Two periods identical but for their end bound, read through the SAME fixed instant. The
-    // boundary that has passed expires; the boundary that has not does not. `NOW_UTC` is
-    // `2024-06-15T12:00:00.000Z` and both bounds are explicit UTC ISO-8601 strings, so this test
-    // answers the same way on every machine, in every timezone, forever.
+    // Two periods identical but for their end bound, read through the SAME fixed instant.
     const fixtures = freshFixtures();
     const alreadyEnded = aPromotionPeriod({
       promotionPeriodID: 'period-already-ended',
@@ -2942,8 +2676,7 @@ describe('isDeletable climbs three levels, and raises where the legacy raises', 
 
   it('answers the same way however many times it is asked', () => {
     // No memo, no cached verdict: the chain is walked afresh each time, so a period that becomes
-    // undeletable between two calls is reported honestly rather than from a stale answer. This is
-    // the request-scoped-state discipline applied to a derived predicate.
+    // undeletable between two calls is reported honestly rather than from a stale answer.
     const fixtures = freshFixtures();
     const subject = aSavedQualifier('qualifier-no-memo');
     const deletablePeriod = firstPeriodOf(
@@ -2963,8 +2696,7 @@ describe('isDeletable climbs three levels, and raises where the legacy raises', 
 
   it('does not depend on the qualifier being saved', () => {
     // `isDeletable()` reads the PERIOD chain and nothing about the qualifier's own key, so a
-    // transient qualifier answers exactly as a persisted one does. The legacy body never consults
-    // `isNew()`, and neither does the port.
+    // transient qualifier answers exactly as a persisted one does.
     const fixtures = freshFixtures();
     const period = firstPeriodOf(
       fixtures.codelessPromotion.getPromotionPeriods(),
@@ -2979,41 +2711,27 @@ describe('isDeletable climbs three levels, and raises where the legacy raises', 
   });
 });
 
-// ===========================================================================
-// 11. ⚠️ NO VALIDATION SCHEMA - THE ABSENCE IS ASSERTED, AND NOTHING IS INVENTED
-// ===========================================================================
+// --- 11. No validation schema - the absence is asserted, and nothing is invented -----------------
 //
-// CFML parity [model/validation/]: there is NO PromotionQualifier.json. PromotionQualifier is one
-// of exactly six in-scope entities with no validation schema (with Category, PromotionApplied,
-// PromotionAccount, Product_AddOption, Product_AddOptionGroup). The absence is deliberate and is
-// NOT completed here.
+// CFML parity [model/validation/]: there is NO PromotionQualifier.json - one of exactly six
+// in-scope artefacts with no validation schema, enumerated with the folder census on the
+// `ABSENT_VALIDATION_SURFACE` constant above. The absence is deliberate and is NOT completed here.
 //
-// Verified by listing the folder rather than inferred: `model/validation/` holds 96 `.json` files
-// and `PromotionQualifier.json` is not among them. The measured in-scope split is 15 PRESENT / 6
-// ABSENT; an upstream summary's "12 present" is stale, and the source wins.
-//
-// ★ WHAT FOLLOWS FROM THE ABSENCE, STATED AS CONSEQUENCES RATHER THAN AS GAPS TO FILL:
+// WHAT FOLLOWS FROM THE ABSENCE, STATED AS CONSEQUENCES RATHER THAN AS GAPS TO FILL:
 //
 //   * NO required-field rule. A qualifier with no `qualifierType`, no period and no gates is
-//     acceptable data - the ten-gate block already pins that all ten read `undefined`.
-//   * NO `dataType`, NO `minValue`, NO `maxValue`. Nothing rejects a NEGATIVE minimum, and nothing
-//     rejects a maximum BELOW its own minimum. The gate block asserts that inverted pair round-trips
-//     untouched, which is the same finding seen from the validation side.
+//     acceptable data.
+//   * NO `dataType`, NO `minValue`, NO `maxValue`. Nothing rejects a NEGATIVE minimum or a maximum
+//     BELOW its own minimum - the gate block asserts that inverted pair round-trips untouched.
 //   * NO length constraint on `qualifierType` [L53], because L53 declares none.
-//   * ★ NO DELETE GATE, DESPITE `isDeletable()` EXISTING IN CODE. That asymmetry is the sharpest
-//     consequence: `model/validation/Promotion.json` - read as the reference for what a populated
-//     schema looks like - wires a `"method"` validator into its delete context, so the framework
-//     consults it before a delete. This entity has no schema to wire anything into, so its
-//     `isDeletable()` is advisory: it exists, callers may consult it, and NOTHING enforces it.
-//   * NONE of the five declaratively-invoked entity validators. The exhaustive `"method"` census
-//     across the in-scope schemas yields exactly five - `Sku.hasUniqueOptions`,
-//     `Sku.hasOneOptionPerOptionGroup`, `RoundingRule.hasExpressionWithListOfNumericValuesOnly`,
-//     `Promotion.getPromotionCodesDeletableFlag`, `PromotionCode.hasUniquePromotionCode` - and not
-//     one belongs here.
+//   * NO DELETE GATE, DESPITE `isDeletable()` EXISTING IN CODE - the sharpest consequence.
+//     `model/validation/Promotion.json` wires a `"method"` validator into its delete context, so
+//     the framework consults it before a delete. This entity has no schema to wire anything into,
+//     so its `isDeletable()` is advisory: callers may consult it, and NOTHING enforces it.
+//   * NONE of the five declaratively-invoked entity validators, enumerated on the same constant.
 //
 // NO ZOD SCHEMA IS ASSERTED IN THIS FILE. Schema enforcement lives at the service tier in this
-// port; entities carry property metadata. Authoring one here would both invent a rule the legacy
-// lacks and put it at the wrong layer.
+// port; entities carry property metadata.
 
 describe('there is no validation surface, and none is invented', () => {
   it('authors no validation member of any kind', () => {
@@ -3027,10 +2745,7 @@ describe('there is no validation surface, and none is invented', () => {
   });
 
   it('accepts a row that any invented schema would have rejected', () => {
-    // ⚠️ THE ABSENCE, EXERCISED RATHER THAN MERELY STATED. Every field a plausible schema would
-    // have made required is empty, and every numeric a plausible schema would have bounded is
-    // hostile - a negative floor, and a ceiling beneath it. Construction succeeds, all reads succeed,
-    // and nothing raises. That IS the legacy behaviour.
+    // THE ABSENCE, EXERCISED RATHER THAN MERELY STATED.
     const hostile = aQualifier({
       qualifierType: undefined,
       rewardMatchingType: undefined,
@@ -3053,9 +2768,7 @@ describe('there is no validation surface, and none is invented', () => {
   });
 
   it('leaves isDeletable advisory, with nothing enforcing it', () => {
-    // ★ THE DELETE-GATE ASYMMETRY. The predicate exists and answers correctly; there is simply no
-    // schema context that consults it. Asserted by showing that a qualifier reporting `false` is
-    // otherwise entirely unimpeded - every accessor still answers, every helper still mutates.
+    // THE DELETE-GATE ASYMMETRY.
     const fixtures = freshFixtures();
     const subject = aSavedQualifier('qualifier-advisory-gate');
     const period = firstPeriodOf(fixtures.promotion.getPromotionPeriods(), 'promotion');
@@ -3076,53 +2789,43 @@ describe('there is no validation surface, and none is invented', () => {
   });
 });
 
-// ===========================================================================
-// 12. STRUCTURAL FACTS, AND THE FRAMEWORK BASE CLASS THAT IS NOT PORTED
-// ===========================================================================
+// --- 12. Structural facts, and the framework base class that is not ported ----------------------
 //
-// ★ CFML parity [model/entity/PromotionQualifier.cfc:L49]: `hb_permission` IS CORRECTLY SPELLED
-// here - `promotionPeriod.promotionQualifiers`. The direct contrast is
+// CFML parity [model/entity/PromotionQualifier.cfc:L49]: `hb_permission` IS CORRECTLY SPELLED here,
+// `promotionPeriod.promotionQualifiers`. The direct contrast is
 // [model/entity/PromotionReward.cfc:L57], whose equivalent reads
 // `hb_permission="promotionPeriod.promtionRewards"`, missing the `o` in "promotion". THE SIBLING'S
-// MISSPELLING IS THE PROMOTION FOLDER'S SINGLE RENAME; THIS FILE REQUIRES NONE, and this
+// MISSPELLING IS THE PROMOTION FOLDER'S SINGLE RENAME AND THIS FILE REQUIRES NONE; this
 // correctly-spelled control is what makes the sibling's identifiable as a typo rather than a
-// convention. `promotionReward.test.ts` owns the rename; it is cited here, not re-asserted.
+// convention. `promotionReward.test.ts` owns the rename; cited here, not re-asserted.
 //
-// LOCATOR CORRECTION, RECORDED: the reward's component declaration - and therefore its `hb_permission`
-// - is at `PromotionReward.cfc:L57`, not the L49 an upstream summary cites. Verified by reading the
-// source. Source wins.
+// LOCATOR CORRECTION, RECORDED: the reward's component declaration - and therefore its
+// `hb_permission` - is at `PromotionReward.cfc:L57`, not the L49 an upstream summary cites. Source
+// wins.
 //
-// FOUR MORE WARTS, ANNOTATED AND NEVER NORMALISED:
-//
-//   * [L49] declares NEITHER `output="false"` NOR `accessors="true"`, unlike several siblings. Both
-//     are CFML-engine directives with no target analogue, so there is nothing to reproduce and
-//     nothing to add.
-//   * [L83-L84] carry `type="array"` while the other eleven many-to-many declarations omit it -
-//     asserted in the association block, in both directions.
-//   * [L349]/[L351] spell the tail banner "Overridden Implicet Getters" - the same misspelling as
-//     [model/entity/PromotionCode.cfc:L165]/[L167]. The banner is EMPTY, so there is no member to
-//     port; the wart is recorded and the banner is not reproduced as decoration.
-//   * [L101-L103] files `getSimpleRepresentation()` outside every banner - recorded in block 9.
+// FOUR MORE WARTS, ANNOTATED AND NEVER NORMALISED: [L49] declares NEITHER `output="false"` NOR
+// `accessors="true"`, unlike several siblings, and both are CFML-engine directives with no target
+// analogue; [L83-L84] carry `type="array"` while the other eleven many-to-many declarations omit
+// it, asserted in the association block in both directions; [L349]/[L351] spell the tail banner
+// "Overridden Implicet Getters", the same misspelling as
+// [model/entity/PromotionCode.cfc:L165]/[L167], and the banner is EMPTY so there is no member to
+// port; [L101-L103] files `getSimpleRepresentation()` outside every banner, recorded in block 9.
 //
 // [L365]/[L367] IS AN EMPTY ORM EVENT HOOKS PAIR, SO THIS ENTITY HAS NO HOOKS. Contrast
 // [model/entity/PriceGroup.cfc:L206-L214] and [model/entity/ProductType.cfc:L305-L313], which
 // maintain a materialized path BEFORE calling `super`, and [model/entity/Category.cfc:L126-L134],
-// which calls `super` FIRST. This entity has no path column of any kind, so there is nothing to
-// maintain and no hook to reshape into a repository call.
+// which calls `super` FIRST. This entity has no path column of any kind.
 //
 // THE HIBACHI BASE CLASS IS DOCUMENTED, NOT PORTED. `PromotionQualifier` does not declare
 // `attributeValues`, so in CFML an unknown `getX()` THROWS through
-// [org/Hibachi/HibachiEntity.cfc:L565] - it is one of the fourteen throwing entities, against the
-// four silent ones (`Sku.cfc:L70`, `Product.cfc:L75`, `ProductType.cfc:L67`, `Brand.cfc:L60`). The
-// target has NO dynamic dispatch at all, so an unknown member is simply `undefined` and the
-// distinction is moot; it is recorded rather than reproduced. No Hibachi base-class suite is built,
-// no `getNewFlag()`, `getPrintTemplates()`, `getEmailTemplates()` or `clearAttributeCache()` is
-// invented, no inherited memo is simulated, no smart list is authored, and the raw
-// `writeDump(getErrors())` debug output at [org/Hibachi/HibachiEntity.cfc:L605] is NOT ported.
+// [org/Hibachi/HibachiEntity.cfc:L565] - one of the fourteen throwing entities, against the four
+// silent ones (`Sku.cfc:L70`, `Product.cfc:L75`, `ProductType.cfc:L67`, `Brand.cfc:L60`). The
+// target has NO dynamic dispatch, so an unknown member is simply `undefined`. The unported base
+// members are enumerated on `UNPORTED_FRAMEWORK_MEMBERS` above.
 
 describe('the structural facts hold, and the framework base class stays unported', () => {
   it('spells hb_permission correctly, unlike its sibling', () => {
-    // ★ The control that proves the reward's spelling is a typo.
+    // The control that proves the reward's spelling is a typo.
     const { permissionAttributeContrast } = freshFixtures();
 
     expect(QUALIFIER_PERMISSION).toBe('promotionPeriod.promotionQualifiers');
@@ -3156,9 +2859,7 @@ describe('the structural facts hold, and the framework base class stays unported
 
   it('reports a fresh instance as new, because the key default is honest', () => {
     // [L52] declares `unsavedvalue="" default=""`, so an unsaved row's key is the empty string and
-    // `isNew()` can answer truthfully without a separate flag. That honesty is load-bearing: it is
-    // the left operand of every far-side guard, and it selects the reference-identity branch of the
-    // containment rule.
+    // `isNew()` can answer truthfully without a separate flag.
     const fresh = aQualifier();
 
     expect(fresh.getPromotionQualifierID()).toBe('');
@@ -3170,7 +2871,7 @@ describe('the structural facts hold, and the framework base class stays unported
   });
 
   it('carries remoteID as an optional string', () => {
-    // [L90]. An integration key, nullable, with no format constraint and no generation.
+    // [L90].
     expect(aQualifier().getRemoteID()).toBeUndefined();
     expect(aQualifier({ remoteID: 'legacy-system-key-42' }).getRemoteID()).toBe(
       'legacy-system-key-42',
@@ -3178,9 +2879,7 @@ describe('the structural facts hold, and the framework base class stays unported
   });
 
   it('carries the four audit columns as dates or undefined, never an epoch stand-in', () => {
-    // [L93-L96]. ⚠️ `new Date(0)` is forbidden as a substitute for absence: it is a REAL instant -
-    // 1970-01-01T00:00:00.000Z - and a repository that wrote it would be asserting the row was
-    // created then. Absence is `undefined`, exactly as with the ten gates.
+    // [L93-L96].
     const unaudited = aQualifier();
 
     expect(unaudited.getCreatedDateTime()).toBeUndefined();
@@ -3204,7 +2903,7 @@ describe('the structural facts hold, and the framework base class stays unported
   });
 
   it('authors no ORM lifecycle hook, because the source banner is empty', () => {
-    // [L365]/[L367]. No path column, no hook, nothing for a repository to invoke on save.
+    // [L365]/[L367].
     const subject = aQualifier();
     const members = prototypeMembers();
 
@@ -3224,10 +2923,10 @@ describe('the structural facts hold, and the framework base class stays unported
   });
 
   it('resolves an unknown member to undefined rather than dispatching for it', () => {
-    // The base-class distinction, DOCUMENTED and not reproduced. In CFML an unknown `getX()` on this
-    // entity THROWS [org/Hibachi/HibachiEntity.cfc:L565] because it declares no `attributeValues`;
-    // in the target there is no dispatcher, no `Proxy` and no evaluated method name, so an unknown
-    // member is plainly absent. Nothing here simulates either behaviour.
+    // The base-class distinction, DOCUMENTED and not reproduced. In CFML an unknown `getX()` on
+    // this entity THROWS [org/Hibachi/HibachiEntity.cfc:L565] because it declares no
+    // `attributeValues`; in the target there is no dispatcher, no `Proxy` and no evaluated method
+    // name, so an unknown member is plainly absent.
     const subject: unknown = aQualifier();
     const asRecord = subject as Record<string, unknown>;
 
@@ -3238,10 +2937,7 @@ describe('the structural facts hold, and the framework base class stays unported
   });
 
   it('builds without a collaborator port and without a clock', () => {
-    // ZERO `getService(` SITES IN THE SOURCE. The verified census across the eighteen in-scope
-    // entities is 45 sites - Product 18, Sku 19, ProductType 6, OptionGroup 1, RoundingRule 1, and
-    // every other entity 0 - so this one genuinely needs no injection. Its `isDeletable()` reads the
-    // clock only THROUGH the period it was handed, which is where the clock belongs.
+    // ZERO `getService(` SITES IN THE SOURCE.
     const subject = aQualifier();
     const asRecord = subject as unknown as Record<string, unknown>;
 
@@ -3269,8 +2965,7 @@ describe('the structural facts hold, and the framework base class stays unported
 
   it('exposes the fixture graph qualifier as a fully materialized row', () => {
     // A LAST WHOLE-ROW WITNESS, so the shipped surface is checked once against a realistic row
-    // rather than only against hand-built minimal ones. Every gate populated, every collection
-    // materialized, and the qualifier bound to its period on both sides.
+    // rather than only against hand-built minimal ones.
     const fixtures = freshFixtures();
     const populated = fixtures.promotionQualifier;
 
@@ -3310,9 +3005,7 @@ describe('the structural facts hold, and the framework base class stays unported
   });
 
   it('hands out an independent graph on every fixture call', () => {
-    // A2, PROVEN AT THE FIXTURE BOUNDARY TOO. The factory is called inside each test rather than
-    // hoisted, and two calls must share no live array - otherwise the live-collection ruling would
-    // let one test's membership become the next test's starting state.
+    // A2, PROVEN AT THE FIXTURE BOUNDARY TOO.
     const first = freshFixtures();
     const second = freshFixtures();
 

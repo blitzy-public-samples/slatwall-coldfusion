@@ -88,8 +88,11 @@
 // BOTH the near-side array AND the far side's `getPriceGroupRates()`. The three INCLUDED
 // collections are handed out LIVE because they are mutation targets in this very class -
 // [L201, L208-L210], [L221, L228-L230] and [L241, L248-L250] append to and delete from them. The
-// three EXCLUDED collections are handed out readonly because NOTHING mutates them anywhere: this
-// component declares no helper for them at all (see the gap flag on their declarations).
+// three EXCLUDED collections are handed out readonly because NO PER-MEMBER MUTATION REACHES THEM:
+// this component declares no `add*`/`remove*` helper for them at all (see the gap flag on their
+// declarations). They are written only WHOLESALE, by the generated setter that
+// [model/service/PriceGroupService.cfc:L440-L442] calls to empty all three for a global rate, and
+// the port declares that setter for each of them in its Generated Property Accessors section.
 //
 // ★ NONE OF THE SIX DECLARES `type="array"` EITHER, matching the same omission on
 // model/entity/PriceGroup.cfc L63/L64/L67. All six are still materialized as arrays, because a
@@ -176,6 +179,7 @@
 
 import { listAppend, listLen } from '../../lib/cfml/list.js';
 import { cfNumberToString, numberFormat } from '../../lib/cfml/numberFormat.js';
+import { cfEquals } from '../../lib/cfml/struct.js';
 import type { CfBooleanInput } from '../../lib/cfml/truthiness.js';
 import { cfBoolean, cfLen, isNullish } from '../../lib/cfml/truthiness.js';
 import type { Money } from '../valueObjects/money.js';
@@ -204,14 +208,30 @@ import type { Sku } from './sku.js';
  * own label would silently break the pricing dispatch.
  *
  * The three values are lowercase-first camelCase and are written that way at every site in the
- * legacy source, which is what makes a case-sensitive `===` comparison faithful - see
- * {@link PriceGroupRate.getAmountFormatted}.
+ * legacy source. THAT SPELLING IS A CONVENTION OF THE SOURCE, NOT A GUARANTEE ABOUT THE COLUMN, and
+ * an earlier revision of this doc drew the wrong conclusion from it - it claimed the uniform spelling
+ * "is what makes a case-sensitive `===` comparison faithful". It does not. A CFML `switch` on a
+ * string is case-INSENSITIVE [model/service/PriceGroupService.cfc:L316], so the legacy engine matches
+ * `'PercentageOff'` where a `===` comparison does not, and the column carries no check constraint to
+ * keep such a value out. Every comparison against this union therefore FOLDS CASE - see
+ * {@link PriceGroupRate.getAmountFormatted} and the amount-type Strategy dispatch in
+ * src/services/priceGroupService.ts.
  *
  * NARROWING BELONGS AT THE REPOSITORY BOUNDARY. `SwPriceGroupRate.amountType` is a plain
  * `ormType="string"` column with no check constraint, so the row-to-entity factory in
  * src/repositories/mysql/** is where a hydrated value is proven to be one of these three. Typing
  * the column as the closed union here is what forces that proof to happen exactly once, at the
  * boundary, instead of being re-litigated at every read.
+ *
+ * ★ WHAT THE UNION PROMISES IS MEMBERSHIP UP TO CASE, NOT AN EXACT SPELLING. This is the one
+ * subtlety a reader must carry away, because it is what makes the two paragraphs above consistent.
+ * The boundary reader proves the persisted value equals one of these three members with case folded,
+ * and then hands back THE PERSISTED BYTES rather than the member it matched. It has to: this entity's
+ * `amountType` is bound directly into the `SwPriceGroupRate` UPDATE by
+ * `toPriceGroupRateColumnValues`, so substituting the canonical member here would make an ordinary
+ * load-modify-save round trip rewrite stored text as a side effect. A field typed
+ * `PriceGroupRateAmountType` may therefore hold `'PercentageOff'`, and code that compares it with
+ * `===` against a lowercase literal is WRONG even though it type-checks.
  */
 export type PriceGroupRateAmountType = 'percentageOff' | 'amountOff' | 'amount';
 
@@ -305,8 +325,11 @@ export class PriceGroupRate {
    * The value is the price-group cascade's global fallback selector: `getGlobalPriceGroupRate()`
    * [model/entity/PriceGroup.cfc:L83-L90] scans a price group's rates for the one whose flag is
    * set. It is also the entire input to `getAppliesTo()`'s short-circuit [L106].
+   *
+   * NOT `readonly`: [model/service/PriceGroupService.cfc:L430] demotes a sibling rate with
+   * `rates[i].setGlobalFlag(false)`. See {@link PriceGroupRate.setGlobalFlag}.
    */
-  private readonly globalFlag: CfBooleanInput;
+  private globalFlag: CfBooleanInput;
 
   /**
    * [model/entity/PriceGroupRate.cfc:L54] `ormType="big_decimal" hb_formatType="custom"`.
@@ -324,8 +347,13 @@ export class PriceGroupRate {
    * `hb_formatType="custom"` is precisely WHY `getAmountFormatted()` exists at [L262] - it is the
    * framework's custom-format hook, so the attribute and the method are two halves of one
    * mechanism and both are preserved.
+   *
+   * NOT `readonly`: [model/service/PriceGroupService.cfc:L404] hands the submitted payload to
+   * `super.save(entity=, data=)`, whose population step at
+   * [org/Hibachi/HibachiService.cfc:L146] writes every populate-enabled column - and this column
+   * declares no `hb_populateEnabled="false"`. See {@link PriceGroupRate.setAmount}.
    */
-  private readonly amount: Money | undefined;
+  private amount: Money | undefined;
 
   /**
    * [model/entity/PriceGroupRate.cfc:L55] `ormType="string" hb_formFieldType="select"`, no default.
@@ -479,9 +507,12 @@ export class PriceGroupRate {
   // and `excludedSkus` are declared, persisted, and reported by getAppliesTo() below — but the
   // five-level price-group resolution cascade at [model/service/PriceGroupService.cfc:L140-L181]
   // NEVER CONSULTS THEM. They also have NO bidirectional add*/remove* helpers anywhere in the legacy
-  // component (contrast the three include collections, which do, at L198-L256). They are therefore
-  // display-only in practice. Retained in full so the schema contract is unbroken (B5); the gap is
-  // flagged rather than closed, because closing it would change which price a customer is charged.
+  // component (contrast the three include collections, which do, at L198-L256) - only the generated
+  // whole-collection setter, which [model/service/PriceGroupService.cfc:L440-L442] calls to empty all
+  // three for a global rate. They are therefore display-only in practice: writable and clearable,
+  // never consulted when a rate is selected. Retained in full so the schema contract is unbroken
+  // (B5); the READ gap is flagged rather than closed, because closing it would change which price a
+  // customer is charged - but their PERSISTENCE is not optional, or clearing them would not stick.
   private readonly excludedProductTypes: ProductType[];
 
   /**
@@ -661,9 +692,18 @@ export class PriceGroupRate {
   // THE THREE INCLUDE COLLECTIONS ARE HANDED OUT LIVE and the three EXCLUDE collections are handed
   // out readonly. That is not a style choice: this class's own owner-side helpers append to and
   // splice the three include arrays [L201, L208-L210, L221, L228-L230, L241, L248-L250], so the
-  // mutation must be observable through the accessor a caller reads. Nothing anywhere mutates the
-  // three exclude arrays - the legacy component declares no helper for them at all - so handing
+  // mutation must be observable through the accessor a caller reads. No helper on this class
+  // mutates an exclude array IN PLACE - the legacy component declares none for them - so handing
   // those out readonly states that fact in the type system.
+  //
+  // ★ READONLY HERE MEANS "NOT MUTATED IN PLACE", NOT "NEVER REPLACED", AND THE DISTINCTION IS THE
+  // WHOLE POINT. The component declares `accessors=true` [model/entity/PriceGroupRate.cfc:L49], so
+  // the framework generates a WHOLE-COLLECTION setter for every one of the six - and
+  // [model/service/PriceGroupService.cfc:L437-L442] calls all six of them, `setProducts([])`
+  // through `setExcludedSKUs([])`, to clear a rate that has just been made global. Replacement is
+  // therefore a real, exercised affordance on all six collections and is published as the six
+  // setters in the ORM-generated region below. What stays true is that no caller reaches in and
+  // splices an exclude array, which is exactly what these three return types continue to forbid.
 
   /** [model/entity/PriceGroupRate.cfc:L71] the LIVE included-product-type array. */
   getProductTypes(): ProductType[] {
@@ -718,10 +758,17 @@ export class PriceGroupRate {
   //
   // A NOTE ON UNSAVED ROWS, so the choice is auditable rather than merely asserted: every unsaved
   // row's key is `''` (`unsavedvalue=""`), so a key comparison cannot distinguish two DIFFERENT
-  // unsaved rows. It never has to here, because every call site in this class reaches the probe
-  // only after `arguments.<x>.isNew()` has already short-circuited a new argument [L200, L220,
-  // L240] - so the argument is provably saved whenever the probe runs, and a held unsaved
+  // unsaved rows. It never has to IN THESE THREE PROBES, because every call site in this class
+  // reaches them only after `arguments.<x>.isNew()` has already short-circuited a new argument
+  // [L200, L220, L240] - so the argument is provably saved whenever a probe runs, and a held unsaved
   // candidate correctly fails to match a saved key.
+  //
+  // ★ THAT PROOF COVERS THE THREE PROBES AND NOTHING ELSE, AND THE LIMIT MATTERS. The `remove*`
+  // helpers below reach no probe: they call `arrayFind` directly [L191, L208, L211, L228, L231,
+  // L248, L251] and carry NO `isNew()` short-circuit, so an unsaved argument reaches their comparison
+  // unfiltered. Those seven sites therefore decide row identity through {@link isSameRow} instead -
+  // the key for a stored row, the instance for an unsaved one. The two treatments are the same rule
+  // read in the two situations it has to cover, not two conventions.
 
   /**
    * Whether `productType` is already among this rate's included product types.
@@ -776,6 +823,127 @@ export class PriceGroupRate {
   }
 
   // ============  END: Framework-Generated Members =======================
+
+  // ============ START: ORM-Generated Property Setters ===================
+  //
+  // NONE of the eight members below has a hand-written legacy body, exactly like the four in the
+  // region above. `component ... accessors=true` [model/entity/PriceGroupRate.cfc:L49] instructs the
+  // CFML engine to generate a `get<Property>`/`set<Property>` pair for EVERY declared property, and
+  // the ORM's `hb_populateEnabled="false"` attribute - present on the four audit properties at
+  // [model/entity/PriceGroupRate.cfc:L61-L64] and on NONE of the eight below - is what marks a
+  // generated setter as off-limits to population.
+  //
+  // ★ EACH IS AUTHORED ONLY BECAUSE AN IN-SCOPE CALLER INVOKES IT, and every caller is one line of
+  // `savePriceGroupRate` [model/service/PriceGroupService.cfc:L397-L446]:
+  //
+  //   setAmount                  <- [L404] `super.save(entity=, data=)` population of the `amount`
+  //                                 key, via [org/Hibachi/HibachiService.cfc:L146]
+  //   setGlobalFlag              <- [L430] `rates[i].setGlobalFlag(false)`, the sibling demote
+  //   setProducts                <- [L437]
+  //   setProductTypes            <- [L438]
+  //   setSkus                    <- [L439] (declared `setSKUs` at the call site; see the note there)
+  //   setExcludedProducts        <- [L440]
+  //   setExcludedProductTypes    <- [L441]
+  //   setExcludedSkus            <- [L442]
+  //
+  // No other generated setter is authored. `setAmountType`, `setRemoteID`, `setRoundingRule` and the
+  // four audit setters all exist in the legacy runtime and NONE is called from the in-scope slice,
+  // so publishing them would be surface with no caller.
+  //
+  // ★★ THE SIX COLLECTION SETTERS REPLACE THE MEMBERSHIP WHOLESALE, AND DO SO BY SPLICING THE HELD
+  // ARRAY RATHER THAN REASSIGNING IT. The observable outcome is the legacy one: `setProducts([])`
+  // empties the collection and the ORM reconciles the link table against the new contents at flush.
+  // Splicing is how that is expressed here for two reasons. It keeps each field's `readonly`
+  // declaration honest about reassignment - the same idiom this class's own `add*`/`remove*` helpers
+  // already use - and it means the caller's array is never aliased into the entity, so a caller that
+  // keeps writing to the array it handed over cannot reach inside. Each parameter is therefore
+  // `readonly T[]`: a caller may pass a frozen collection and need not surrender a mutable one.
+  //
+  // NONE of the six maintains a far side - exactly as a generated CFML setter does not, and in
+  // deliberate contrast with the `remove*` helpers above, which do. The six link tables carry no
+  // inverse collection on `Product`, `ProductType` or `Sku` - [model/entity/PriceGroupRate.cfc:L71-L77] declares all six
+  // associations WITHOUT `inverse="true"`, making this the owning side and the only side - so there
+  // is no reciprocal array to keep in step. Contrast `setPriceGroup` below, which does maintain one.
+
+  /**
+   * Replaces the rate amount.
+   *
+   * The population half of [model/service/PriceGroupService.cfc:L404]'s `super.save(entity=, data=)`:
+   * [org/Hibachi/HibachiService.cfc:L143-L146] populates the entity from the submitted payload
+   * BEFORE validating it, and `amount` [model/entity/PriceGroupRate.cfc:L54] declares no
+   * `hb_populateEnabled="false"`, so it is one of the columns that population writes.
+   *
+   * `undefined` IS ADMITTED AND IS NOT THE SAME AS ZERO. The column declares no `default=`, the field
+   * is `Money | undefined` for the reason set out on its declaration, and clearing an amount must
+   * therefore be expressible - `clearAmounts()` at [model/service/PriceGroupService.cfc:L400] exists
+   * precisely to null it out in the database. Substituting `Money.zero` here would store a price of
+   * nothing as though it had been chosen.
+   */
+  setAmount(amount: Money | undefined): void {
+    this.amount = amount;
+  }
+
+  /**
+   * Sets or clears the global flag.
+   *
+   * [model/service/PriceGroupService.cfc:L429-L431]: when the rate just saved is global, every OTHER
+   * rate on the same price group is demoted with `rates[i].setGlobalFlag(false)`, which is what keeps
+   * `getGlobalPriceGroupRate()` [model/entity/PriceGroup.cfc:L83-L90] from having two candidates.
+   *
+   * The parameter is `boolean` while the field is {@link CfBooleanInput}, and the widening is
+   * deliberate: a value arriving from a caller has already been decided, whereas a value arriving
+   * from `SwPriceGroupRate` may be SQL NULL and must stay resolvable through `cfBoolean()`. Assigning
+   * a `boolean` into the wider field needs no coercion and loses nothing.
+   */
+  setGlobalFlag(globalFlag: boolean): void {
+    this.globalFlag = globalFlag;
+  }
+
+  /** [model/service/PriceGroupService.cfc:L438] replaces the included-product-type collection. */
+  setProductTypes(productTypes: readonly ProductType[]): void {
+    this.productTypes.splice(0, this.productTypes.length, ...productTypes);
+  }
+
+  /** [model/service/PriceGroupService.cfc:L437] replaces the included-product collection. */
+  setProducts(products: readonly Product[]): void {
+    this.products.splice(0, this.products.length, ...products);
+  }
+
+  /**
+   * [model/service/PriceGroupService.cfc:L439] replaces the included-SKU collection.
+   *
+   * ★ THE CALL SITE SPELLS IT `setSKUs`, AND THIS METHOD IS `setSkus`. CFML method names are
+   * case-INSENSITIVE, so `setSKUs` and `setSkus` are one and the same member there; TypeScript's are
+   * not, so the subtree picks one casing and uses it everywhere. The canonical form is the lowercase
+   * one, matching `getSkus`/`addSku`/`removeSku` on this class and the `getSkus`/`removeSku` spelling
+   * the same legacy method uses twenty lines earlier at
+   * [model/service/PriceGroupService.cfc:L424-L425]. The legacy inconsistency is recorded, not
+   * reproduced as two members.
+   */
+  setSkus(skus: readonly Sku[]): void {
+    this.skus.splice(0, this.skus.length, ...skus);
+  }
+
+  /** [model/service/PriceGroupService.cfc:L441] replaces the excluded-product-type collection. */
+  setExcludedProductTypes(excludedProductTypes: readonly ProductType[]): void {
+    this.excludedProductTypes.splice(0, this.excludedProductTypes.length, ...excludedProductTypes);
+  }
+
+  /** [model/service/PriceGroupService.cfc:L440] replaces the excluded-product collection. */
+  setExcludedProducts(excludedProducts: readonly Product[]): void {
+    this.excludedProducts.splice(0, this.excludedProducts.length, ...excludedProducts);
+  }
+
+  /**
+   * [model/service/PriceGroupService.cfc:L442] replaces the excluded-SKU collection.
+   *
+   * Spelled `setExcludedSKUs` at the call site; same casing rule as {@link PriceGroupRate.setSkus}.
+   */
+  setExcludedSkus(excludedSkus: readonly Sku[]): void {
+    this.excludedSkus.splice(0, this.excludedSkus.length, ...excludedSkus);
+  }
+
+  // ============  END: ORM-Generated Property Setters ====================
 
   // ============ START: Non-Persistent Property Methods =================
   // [model/entity/PriceGroupRate.cfc:L85] opens this banner and L176 closes it.
@@ -1164,11 +1332,13 @@ export class PriceGroupRate {
       );
     }
 
-    // [L191-L194] find by primary key, then splice. The far-side array is LIVE, so the splice is
-    // observable through `PriceGroup.getPriceGroupRates()`.
+    // [L191-L194] find the row, then splice. The far-side array is LIVE, so the splice is observable
+    // through `PriceGroup.getPriceGroupRates()`. Row identity is decided by {@link isSameRow}, which
+    // is the key for a stored rate and the instance for an unsaved one - see that function for why a
+    // bare key comparison removes the wrong unsaved rate.
     const siblingRates: PriceGroupRate[] = targetPriceGroup.getPriceGroupRates();
-    const index: number = siblingRates.findIndex(
-      (rate: PriceGroupRate) => rate.getPriceGroupRateID() === this.priceGroupRateID,
+    const index: number = siblingRates.findIndex((rate: PriceGroupRate) =>
+      isSameRow(rate.getPriceGroupRateID(), this.priceGroupRateID, rate, this),
     );
 
     if (index !== -1) {
@@ -1233,16 +1403,16 @@ export class PriceGroupRate {
    */
   removeProductType(productType: ProductType): void {
     const candidateProductTypeID: string = productType.getProductTypeID();
-    const thisIndex: number = this.productTypes.findIndex(
-      (held: ProductType) => held.getProductTypeID() === candidateProductTypeID,
+    const thisIndex: number = this.productTypes.findIndex((held: ProductType) =>
+      isSameRow(held.getProductTypeID(), candidateProductTypeID, held, productType),
     );
     if (thisIndex !== -1) {
       this.productTypes.splice(thisIndex, 1);
     }
 
     const farSideRates: PriceGroupRate[] = productType.getPriceGroupRates();
-    const thatIndex: number = farSideRates.findIndex(
-      (rate: PriceGroupRate) => rate.getPriceGroupRateID() === this.priceGroupRateID,
+    const thatIndex: number = farSideRates.findIndex((rate: PriceGroupRate) =>
+      isSameRow(rate.getPriceGroupRateID(), this.priceGroupRateID, rate, this),
     );
     if (thatIndex !== -1) {
       farSideRates.splice(thatIndex, 1);
@@ -1277,16 +1447,16 @@ export class PriceGroupRate {
    */
   removeProduct(product: Product): void {
     const candidateProductID: string = product.getProductID();
-    const thisIndex: number = this.products.findIndex(
-      (held: Product) => held.getProductID() === candidateProductID,
+    const thisIndex: number = this.products.findIndex((held: Product) =>
+      isSameRow(held.getProductID(), candidateProductID, held, product),
     );
     if (thisIndex !== -1) {
       this.products.splice(thisIndex, 1);
     }
 
     const farSideRates: PriceGroupRate[] = product.getPriceGroupRates();
-    const thatIndex: number = farSideRates.findIndex(
-      (rate: PriceGroupRate) => rate.getPriceGroupRateID() === this.priceGroupRateID,
+    const thatIndex: number = farSideRates.findIndex((rate: PriceGroupRate) =>
+      isSameRow(rate.getPriceGroupRateID(), this.priceGroupRateID, rate, this),
     );
     if (thatIndex !== -1) {
       farSideRates.splice(thatIndex, 1);
@@ -1321,35 +1491,37 @@ export class PriceGroupRate {
    */
   removeSku(sku: Sku): void {
     const candidateSkuID: string = sku.getSkuID();
-    const thisIndex: number = this.skus.findIndex(
-      (held: Sku) => held.getSkuID() === candidateSkuID,
+    const thisIndex: number = this.skus.findIndex((held: Sku) =>
+      isSameRow(held.getSkuID(), candidateSkuID, held, sku),
     );
     if (thisIndex !== -1) {
       this.skus.splice(thisIndex, 1);
     }
 
     const farSideRates: PriceGroupRate[] = sku.getPriceGroupRates();
-    const thatIndex: number = farSideRates.findIndex(
-      (rate: PriceGroupRate) => rate.getPriceGroupRateID() === this.priceGroupRateID,
+    const thatIndex: number = farSideRates.findIndex((rate: PriceGroupRate) =>
+      isSameRow(rate.getPriceGroupRateID(), this.priceGroupRateID, rate, this),
     );
     if (thatIndex !== -1) {
       farSideRates.splice(thatIndex, 1);
     }
   }
 
-  // ★ NO HELPER EXISTS FOR THE THREE EXCLUDE COLLECTIONS, and none is invented.
+  // ★ NO BIDIRECTIONAL add*/remove* PAIR EXISTS FOR THE THREE EXCLUDE COLLECTIONS, and none is
+  // invented.
   //
   // There is no `addExcludedProductType`, `removeExcludedProductType`, `addExcludedProduct`,
   // `removeExcludedProduct`, `addExcludedSku` or `removeExcludedSku` anywhere in the 284 lines of
-  // model/entity/PriceGroupRate.cfc - verified by reading the whole helper block [L178-L258]. In
-  // CFML those three collections are populated by the framework/ORM population path only, which is
-  // half of why they are display-only in practice; the other half is that the five-level cascade at
-  // [model/service/PriceGroupService.cfc:L140-L181] never reads them. Both facts are flagged on the
-  // field declarations.
+  // model/entity/PriceGroupRate.cfc - verified by reading the whole helper block [L178-L258]. The
+  // include side has all six; the exclude side has none, and authoring even one would make a
+  // per-member change to what a price rate covers reachable for the first time.
   //
-  // AUTHORING THE MISSING PAIRS HERE WOULD SILENTLY MAKE THE THREE EXCLUDE COLLECTIONS MUTABLE FOR
-  // THE FIRST TIME, which is a behavioural change to what a price rate covers. So the absence is
-  // itself part of the contract, exactly as it is in the source.
+  // WHAT DOES EXIST FOR THEM IS THE WHOLE-COLLECTION SETTER, declared in the ORM-generated setter
+  // section above rather than here, because it is a generated property accessor and not a
+  // bidirectional helper. That
+  // distinction is not cosmetic: an `add*`/`remove*` pair maintains the far side of the association,
+  // whereas a generated setter replaces the owning collection and leaves the far side untouched -
+  // and [model/service/PriceGroupService.cfc:L437-L442] relies on precisely the second behaviour.
 
   // =============  END:  Bidirectional Helper Methods ===================
 
@@ -1386,11 +1558,38 @@ export class PriceGroupRate {
    * turns on - there it is money-critical, here it is display-only, but the fidelity requirement is
    * identical. Neither `toFixed(2)` nor a raw-number template interpolation is used.
    *
+   * ★★ INDEPENDENTLY CORROBORATED, AND THE CORROBORATION IS WORTH RECORDING BECAUSE THE TWO LEGACY
+   * BODIES LOOK LIKE THEY DISAGREE. `model/entity/PromotionReward.cfc:L403` formats the same kind
+   * of percentage NOT by concatenating but by calling `formatValue(getAmount(), "percentage")` -
+   * an apparently different mechanism. It is not: `formatValue_percentage` at
+   * `org/Hibachi/HibachiUtilityService.cfc:L62-L64` is `return arguments.value & "%";`, which is
+   * this branch's concatenation exactly, with no mask applied. So the two sources are
+   * byte-equivalent on the percentage branch despite being written differently, and both ports
+   * therefore stringify through `cfNumberToString()`. Anything that pads to two decimals on either
+   * side would break that agreement, and the source, at once.
+   *
    * LEGACY-NOTE [model/entity/PriceGroupRate.cfc:L266]: formatValue(v,"currency") is a non-ported
    * org/Hibachi/** framework formatter. Its locale resolution and currency-symbol behaviour are NOT
    * reproduced, because JavaRB is not ported and no i18n runtime is introduced. The target emits
-   * the two-decimal numeric presentation only. NO currency symbol is invented - fabricating one
-   * would assert behaviour the source does not define here.
+   * the two-decimal numeric presentation only. NO currency symbol is invented.
+   *
+   * ★★ THE CLOSING CLAUSE OF THAT NOTE USED TO READ "fabricating one would assert behaviour the
+   * source does not define here". THE CONCLUSION ABOVE STANDS - it is directed, and it is right -
+   * BUT THAT JUSTIFICATION WAS FALSE, AND A CITED REASON IS STRONGER THAN AN ADMISSION OF
+   * IGNORANCE. The source does define it. org/Hibachi/** is a boundary to EXTRACT FROM and never
+   * port, so it was read: `model/entity/PriceGroupRate.cfc:L266` reaches
+   * `org/Hibachi/HibachiObject.cfc:L186`, which delegates to
+   * `org/Hibachi/HibachiUtilityService.cfc:L7-L12`, whose `formatValue_currency` at [L34-L40] is
+   * `LSCurrencyFormat(value, "USD", getHibachiScope().getRBLocale())` for this call site - the
+   * `"USD"` default arm at [L39], because [L266] passes no `formatDetails`.
+   *
+   * So the symbol and the locale grouping are KNOWN and DELIBERATELY WITHHELD, not unknown. They
+   * are withheld because the locale operand is ambient request state reached through
+   * `getHibachiScope()`, JavaRB is not ported, no i18n runtime is introduced, `Intl` may not be
+   * used and no new dependency may be added - and because supplying a locale would require a
+   * collaborator this entity is directed not to have, it having ZERO service-locator sites across
+   * all 284 source lines. `promotionReward.ts` records the identical disposition for the identical
+   * call at `model/entity/PromotionReward.cfc:L406`; the two files agree, and are required to.
    *
    * ON THE ABSENT AMOUNT. `amount` is nullable [L54, no `default=`, no `notNull`] and BOTH legacy
    * branches concatenate or pass it with no guard. CFML concatenation of a null operand yields the
@@ -1404,7 +1603,12 @@ export class PriceGroupRate {
     const amount: Money | undefined = this.amount;
 
     // [model/entity/PriceGroupRate.cfc:L263-L264]
-    if (this.amountType === 'percentageOff') {
+    //
+    // CFML parity [model/entity/PriceGroupRate.cfc:L263]: the legacy test is `==`, which folds case on
+    // strings, and `amountType` may hold any spelling the column holds - see the note on
+    // {@link PriceGroupRateAmountType}. Matched through {@link isAmountType} so a rate stored as
+    // `'PercentageOff'` still renders as a percentage rather than falling to the currency branch.
+    if (isAmountType(this.amountType, 'percentageOff')) {
       return isAbsent(amount) ? '%' : `${cfNumberToString(amount.toDecimalString())}%`;
     }
 
@@ -1529,6 +1733,50 @@ function plural(count: number): string {
 }
 
 /**
+ * Whether two entity instances are THE SAME ROW, by the rule Hibernate's session identity actually
+ * followed - which is not the same rule as "their primary keys are equal".
+ *
+ * ★★ WHY A PLAIN KEY COMPARISON IS NOT SUFFICIENT HERE, AND WHY THIS IS NOT A DEPARTURE FROM THE
+ * PRIMARY-KEY RULE BUT A FAITHFUL READING OF IT. Every unsaved row carries the key `''`, because
+ * every in-scope entity declares `unsavedvalue=""` - see [model/entity/PriceGroupRate.cfc:L52]. So
+ * for a PERSISTED row, key equality and session identity coincide exactly, and the key comparison is
+ * the right one. For a TRANSIENT row there is no key to compare, and session identity is therefore
+ * INSTANCE identity: two different unsaved product types are two different objects that happen to
+ * share the placeholder `''`. Comparing them by key reports them equal, which is how the wrong
+ * unsaved member comes to be removed from a collection.
+ *
+ * The legacy source makes the same distinction itself, in the same file, in the opposite direction:
+ * every `add*` helper short-circuits on the ARGUMENT's newness before it consults a containment probe
+ * - [model/entity/PriceGroupRate.cfc:L200, L203, L220, L223, L240, L243] - precisely because
+ * containment-by-key is meaningless for a row that has no key yet. This helper applies that same
+ * distinction to the `remove*` direction, which the legacy `arrayFind` obtained for free from CFML's
+ * own object comparison and which a key comparison alone does not reproduce.
+ *
+ * CFML parity [model/entity/PriceGroupRate.cfc:L191, L208, L211, L228, L231, L248, L251]: those seven
+ * sites call `arrayFind(array, <entity>)`, whose comparison of two component instances is an object
+ * comparison, not a key comparison. This is the reproduction of that comparison: the key when the key
+ * identifies a stored row, the instance when it does not.
+ *
+ * @param heldKey - the primary key of the member already in the collection.
+ * @param candidateKey - the primary key of the member being sought.
+ * @param heldInstance - the collection member itself.
+ * @param candidateInstance - the sought member itself.
+ * @returns whether the two refer to the same row.
+ */
+function isSameRow(
+  heldKey: string,
+  candidateKey: string,
+  heldInstance: object,
+  candidateInstance: object,
+): boolean {
+  if (heldKey === '' || candidateKey === '') {
+    return heldInstance === candidateInstance;
+  }
+
+  return heldKey === candidateKey;
+}
+
+/**
  * A narrowing wrapper over the shared `isNullish()` CFML `isNull()` port.
  *
  * The shared helper is declared `(value: unknown) => boolean`, which is the right shape for a
@@ -1543,6 +1791,38 @@ function plural(count: number): string {
  */
 function isAbsent(value: unknown): value is null | undefined {
   return isNullish(value);
+}
+
+/**
+ * Does this rate's `amountType` select the given `switch` arm, with case folded as CFML folds it?
+ *
+ * CFML parity [model/entity/PriceGroupRate.cfc:L263, model/service/PriceGroupService.cfc:L316]: both
+ * discriminator tests in the pricing path are case-INSENSITIVE in the source - `==` on strings and a
+ * `switch` on a string both fold case in CFML - and a `PriceGroupRateAmountType` field may hold any
+ * spelling `SwPriceGroupRate.amountType` holds, because the boundary reader preserves persisted bytes
+ * rather than substituting the canonical member. See the note on {@link PriceGroupRateAmountType}.
+ *
+ * ★ WHY THIS LIVES HERE AND NOT IN src/lib/cfml/. Not a matter of taste - the home is prescribed.
+ * `src/lib/cfml/struct.ts` states that its export surface is CLOSED and that a translation need none
+ * of its primitives covers "belongs inside the consuming module with a documented annotation - not as
+ * a new export here and not as a new file in this folder". `cfEquals` IS the primitive, and it is
+ * what does the work below; what it does not do is tolerate an absent subject, because it RAISES on a
+ * nullish operand - correct for the currency cascade, where an unresolved code must stop rather than
+ * silently compare unequal. A discriminator dispatch needs the opposite: [L263] has no `else` that
+ * distinguishes absent from unrecognised, and [model/service/PriceGroupService.cfc:L316-L340] has no
+ * `default` arm at all, so an ABSENT `amountType` must FALL THROUGH rather than raise. This wrapper
+ * supplies exactly that one difference and nothing else, and the same reasoning puts a sibling
+ * matcher in src/services/priceGroupService.ts rather than promoting one shared export.
+ *
+ * Module-local and UN-EXPORTED, for the same reason as {@link plural}: the two consumers of this
+ * vocabulary sit in different layers and each states its own absence policy at its own site.
+ *
+ * @param subject the rate's persisted `amountType`, which may be absent.
+ * @param arm the `case` label being tested, always written in the source's canonical spelling.
+ * @returns `true` only when the subject is present and equals the arm with case folded.
+ */
+function isAmountType(subject: PriceGroupRateAmountType | undefined, arm: string): boolean {
+  return !isAbsent(subject) && cfEquals(subject, arm);
 }
 
 // ---------------------------------------------------------------------------

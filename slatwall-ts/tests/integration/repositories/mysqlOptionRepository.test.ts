@@ -126,11 +126,21 @@ interface RecordedStatement {
 
   /** The bound parameters, in the positional order they were supplied. */
   readonly params: readonly unknown[];
+  /**
+   * Whether this statement was issued inside `transaction`.
+   *
+   * Captured per statement so a suite can PROVE atomicity instead of assuming it.
+   * A multi-statement write that must not half-apply is asserted by requiring
+   * every one of its statements to carry `true` - a statement that escaped the
+   * transaction (by reaching past the `tx` executor to the outer one) records
+   * `false` and fails the assertion at the point the mistake is made.
+   */
+  readonly inTransaction: boolean;
 }
 
 // JUDGMENT CALL: the double is HAND-WRITTEN AND INLINE rather than produced by a
 // mocking utility or shared from a helper module. Three reasons, all of which
-// outrank the duplication it costs. The subject's collaborator is a two-method
+// outrank the duplication it costs. The subject's collaborator is a three-method
 // interface, so implementing it outright is both shorter and stricter than
 // configuring a mock - `implements PreparedStatementExecutor` makes the compiler
 // check the shape on every build, which no runtime mock can do. A mocking library
@@ -187,7 +197,7 @@ class RecordingExecutor implements PreparedStatementExecutor {
    * let a later mutation rewrite history that has already been asserted on.
    */
   execute(sql: string, params: readonly unknown[] = []): Promise<readonly SqlRow[]> {
-    this.calls.push({ sql, params: [...params] });
+    this.calls.push({ sql, params: [...params], inTransaction: this.transactionDepth > 0 });
 
     return Promise.resolve(this.cannedRows);
   }
@@ -201,11 +211,75 @@ class RecordingExecutor implements PreparedStatementExecutor {
    * its inferred return type is `never` and no `async` keyword is needed.
    */
   executeMutation(sql: string, params: readonly unknown[] = []): Promise<SqlMutationResult> {
-    this.mutationCalls.push({ sql, params: [...params] });
+    this.mutationCalls.push({
+      sql,
+      params: [...params],
+      inTransaction: this.transactionDepth > 0,
+    });
 
     throw new Error(
       'RecordingExecutor.executeMutation was called, but both ported OptionDAO functions are ' +
         'reads. This adapter must never issue a data-modifying or schema-changing statement.',
+    );
+  }
+
+  /**
+   * How many times `transaction` was entered. Expected to stay ZERO forever, and named
+   * to match the recorder in the five sibling repository suites.
+   *
+   * A write that must be atomic opens EXACTLY ONE unit of work, so a non-zero value in
+   * those suites is the atomicity assertion. Here it is a CANARY instead: both ported
+   * `OptionDAO` functions are `<cfquery>` reads, so any value above zero means a write
+   * path has grown on an adapter that has none.
+   */
+  transactionCount = 0;
+
+  /**
+   * Nesting depth, read by the `inTransaction` flag on every recorded statement.
+   *
+   * ★ IT IS PINNED AT ZERO BY CONSTRUCTION, not by accident: `transaction` below
+   * refuses rather than opening a unit, so the depth is never incremented and every
+   * statement this recorder captures reports `inTransaction: false`. That is the
+   * correct answer for a read-only adapter, and it is worth stating rather than
+   * leaving a reader to wonder whether the flag is simply unwired.
+   */
+  private transactionDepth = 0;
+
+  /**
+   * How many times a transaction was attempted. Expected to stay ZERO forever.
+   */
+  transactionAttempts = 0;
+
+  /**
+   * Refuse a transaction, for the same reason `executeMutation` refuses.
+   *
+   * Both ported `OptionDAO` functions are `<cfquery>` reads. A transaction is only ever
+   * opened around a write, so one appearing here would mean a write path had grown.
+   * Refusing turns that into a failing test at the moment it appears rather than a
+   * silently accepted no-op.
+   *
+   * ★ THE ALTERNATIVE WAS A WORKING NO-OP, and it is worth saying why it lost. A double
+   * that ran the work inline - `transactionCount += 1`, `await work(this)` - is what the
+   * five sibling suites use, and it is right there because those adapters DO write: the
+   * double has to let the statements through so their sequence can be asserted. This
+   * adapter writes nothing, so an inline implementation would accept a call that should
+   * never happen and record it as ordinary. Both counters above are still incremented
+   * before the refusal, so a case that wants to see the attempt rather than the throw
+   * can read either name.
+   *
+   * The refusal is NOT a divergence from the shipped executor. `createConnectionExecutor`
+   * in `src/repositories/mysql/connection.ts` joins a nested call and opens a real unit
+   * for an outermost one; this double refuses BOTH, because the claim being pinned is
+   * about this adapter having no write path at all, not about transaction semantics.
+   */
+  transaction<T>(_work: (transactional: PreparedStatementExecutor) => Promise<T>): Promise<T> {
+    this.transactionCount += 1;
+    this.transactionAttempts += 1;
+
+    throw new Error(
+      'RecordingExecutor.transaction was called, but this adapter is read-only. A transaction is ' +
+        'only ever opened around a write, so this indicates a write path that the legacy ' +
+        'component does not have.',
     );
   }
 }

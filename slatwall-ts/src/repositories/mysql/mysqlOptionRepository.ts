@@ -588,7 +588,7 @@ export class MysqlOptionRepository implements OptionRepository {
    * JUDGMENT CALL: the executor is a CONSTRUCTOR PARAMETER and never a module
    * singleton, and this is a mandatory design constraint rather than a convenience.
    * It is what makes the emitted statement text and the bound parameter array
-   * assertable WITH NO LIVE DATABASE - a suite can implement the two-method interface
+   * assertable WITH NO LIVE DATABASE - a suite can implement the three-method interface
    * outright, record each `sql` string and each `params` array and return canned rows,
    * which is how `tests/integration/repositories` (planned) verifies statement shape
    * and binding. It also keeps the one sanctioned module-scope pool in

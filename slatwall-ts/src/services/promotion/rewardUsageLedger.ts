@@ -326,6 +326,48 @@ function resolveUseLimit(configuredLimit: number | undefined): number {
 }
 
 /**
+ * Store `value` on `target` under `key` as an OWN, enumerable data property.
+ *
+ * ★ WHY THIS EXISTS INSTEAD OF `target[key] = value`, AND WHY IT IS A MONEY
+ * CONCERN. The key is a persisted `SwPromoReward.promotionRewardID` value, so it
+ * is EXTERNALLY SOURCED. A plain object inherits `Object.prototype`, whose legacy
+ * `__proto__` accessor intercepts `target['__proto__'] = value`, so the seeded
+ * entry is silently DISCARDED. The consequence is not cosmetic: this ledger is
+ * where `usedInOrder` accumulates, so a reward whose identifier is `__proto__`
+ * would be RESEEDED on every {@link RewardUsageLedger.ensureRewardEntry} call,
+ * its running usage would reset to zero each time, and its per-order use limit
+ * would never be reached - the reward would apply without bound. Use-limit
+ * enforcement is one of the three must-preserve behaviours of this migration, so
+ * losing ledger state is a direct financial-integrity failure.
+ * `Object.defineProperty` declares an own, enumerable, writable, configurable
+ * data property, so the write cannot be intercepted.
+ *
+ * CFML parity [model/service/PromotionService.cfc:L173-L178]: a CFML struct has
+ * no prototype chain and no reserved keys, so `promotionRewardUsageDetails[
+ * '__proto__' ]` accumulated usage exactly like any other reward. The plain
+ * assignment this replaces was the divergence, and it is the ONLY thing changing
+ * here - no limit, no comparison, no arithmetic and no ordering is touched.
+ *
+ * The identical mechanism, for the identical reason, is used by
+ * `src/lib/logger.ts` `redactPlainObject`, `src/domain/entities/sku.ts`,
+ * `src/domain/entities/product.ts`,
+ * `src/repositories/mysql/mysqlSkuRepository.ts`,
+ * `src/services/priceGroupService.ts` and `src/services/productService.ts`.
+ *
+ * @param target the ledger being seeded. Mutated in place.
+ * @param key the reward identifier. Used verbatim, never normalised.
+ * @param value the seeded usage record.
+ */
+function putOwnStructKey<TValue>(target: Record<string, TValue>, key: string, value: TValue): void {
+  Object.defineProperty(target, key, {
+    value,
+    writable: true,
+    enumerable: true,
+    configurable: true,
+  });
+}
+
+/**
  * The promotion engine's reward-usage ledger for ONE order: `var
  * promotionRewardUsageDetails = {};` [model/service/PromotionService.cfc:L139],
  * together with the five fragments that seed, ratchet, increment, divide and
@@ -500,7 +542,11 @@ export class RewardUsageLedger {
       orderItemsUsage: [],
     };
 
-    this.ledger[promotionRewardID] = seededUsage;
+    // `putOwnStructKey`, not `this.ledger[promotionRewardID] = seededUsage`: the key is a
+    // persisted reward identifier, and a plain assignment for `__proto__` would store
+    // nothing - reseeding the entry on every call and resetting `usedInOrder` to zero, so
+    // the reward's per-order limit could never be reached.
+    putOwnStructKey(this.ledger, promotionRewardID, seededUsage);
 
     return seededUsage;
   }

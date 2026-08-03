@@ -1,151 +1,88 @@
 // ---------------------------------------------------------------------------
 // slatwall-ts - structured logging
 //
-// PURPOSE
-//   One JSON object per line, written to stdout. That is the entire transport:
-//   the AWS Lambda `nodejs20.x` runtime captures stdout natively, so there is
-//   nothing here to connect, append to or flush.
+// One JSON object per line, written to stdout. That is the entire transport, and it is what the
+// plan prescribes: "No logging library: the logger writes structured JSON to stdout, which Lambda
+// captures natively." The `nodejs20.x` runtime does the capturing, so there is nothing here to
+// connect, append to or flush, and no import of any kind: no third-party module, no Node built-in,
+// no sibling.
 //
-// TWO GUARANTEES THIS MODULE MAKES ABOUT ITSELF
-//   1. EMISSION NEVER THROWS, AND NEITHER DOES THE STREAM BEHIND IT. Every path
-//      from `debug`/`info`/`warn`/`error` through to the write is total.
-//      Serialization is guarded, and so is the sink invocation itself: a
-//      caller-supplied sink that throws, or a `process.stdout.write` that fails
-//      SYNCHRONOUSLY, is absorbed and reported through a fallback that writes to
-//      the stream DIRECTLY and can neither re-enter the failing sink nor throw.
-//      This is not a nicety. Call sites log and then return - the error mapper
-//      logs and returns a mapped API response - and a throw escaping from a log
-//      call would displace that return with an unhandled failure, converting a
-//      handled error into an unhandled one.
+// GUARANTEE 1 - EMISSION NEVER THROWS, AND NEITHER DOES THE STREAM BEHIND IT. Every path from
+// `debug`/`info`/`warn`/`error` to the write is total: serialization is guarded, and so is the sink
+// invocation, so a caller-supplied sink that throws or a `process.stdout.write` that fails
+// SYNCHRONOUSLY is absorbed and reported through a fallback that writes to the stream DIRECTLY and
+// can neither re-enter the failing sink nor throw. Call sites log and then return, so a throw
+// escaping a log call would displace that return and turn a handled error into an unhandled one.
 //
-//      A GUARD AROUND THE WRITE IS NOT SUFFICIENT ON ITS OWN, and an earlier
-//      revision of this module claimed it was. When `process.stdout` is backed by
-//      a PIPE - which is what it is under the Lambda runtime, and what it is
-//      whenever a local command is piped into `head` or `grep -m1` - Node does
-//      not report a broken pipe by throwing from `write()`. It reports it
-//      ASYNCHRONOUSLY, as an `'error'` event on the underlying socket, long after
-//      the `try` block around the dispatching call has exited. `EventEmitter`
-//      rethrows an unhandled `'error'` event as an uncaught exception, so the
-//      outcome was the exact opposite of this guarantee: the process died with
-//      status 1 and printed a stack trace publishing the application's absolute
-//      file path - the same disclosure class this module scrubs out of every line
-//      it emits. A synchronous guard cannot intercept an asynchronous event, so
-//      the event is answered where it is actually delivered, by
-//      `absorbAsynchronousStdoutFailure` registered once at module load. The
-//      write itself stays deliberately unguarded, because synchronous failures
-//      SHOULD keep reaching `emitThroughSink`, which reports them.
-//   2. NOTHING IS EMITTED THAT WAS NOT SANITIZED. Redaction by key NAME is
-//      necessary but structurally insufficient, because the things worth
-//      protecting arrive as string CONTENT: a driver error's statement text and
-//      the values bound into it, a credential inside a connection URI, a bearer
-//      token, an absolute deployment path in a stack frame. Both the message and
-//      every string reachable in the context therefore go through content
-//      sanitization, and an `Error` is never emitted as its raw
-//      `name`/`message`/`stack` triple - it is reduced to a closed safe summary.
+// A synchronous guard is not sufficient on its own. When `process.stdout` is backed by a PIPE - as
+// it is under the Lambda runtime - Node reports a broken pipe (`EPIPE`) ASYNCHRONOUSLY, as an
+// `'error'` event on the underlying socket long after the `try` around the dispatching call has
+// exited, and `EventEmitter` rethrows an unhandled `'error'` event as an uncaught exception: the
+// process dies printing a stack trace that publishes the application's absolute file path, the
+// disclosure class this module scrubs. So the event is answered where it is delivered, by
+// `absorbAsynchronousStdoutFailure` registered once at module load, while the write itself stays
+// unguarded so synchronous failures still reach `emitThroughSink`.
 //
-// WHY THERE IS NO LOGGING LIBRARY
-//   A deliberate rejection recorded in the plan, quoted verbatim:
+// GUARANTEE 2 - NOTHING IS EMITTED THAT WAS NOT SANITIZED. Redaction by key NAME is necessary but
+// structurally insufficient: THE KEY-NAME POLICY CANNOT SEE INSIDE A STRING, and the things worth
+// protecting arrive as string CONTENT assembled at throw time - a driver error's statement text and
+// the values bound into it, a credential inside a connection URI, a bearer token, an absolute
+// deployment path in a stack frame, a host or account name. THAT SENTENCE IS THE REASON FOR EVERY
+// CONTENT RULE BELOW AND IS NOT RESTATED AT EACH ONE. So the message and every string reachable in
+// the context go through content sanitization, and an `Error` is never emitted as its raw
+// `name`/`message`/`stack` triple but reduced to a closed safe summary.
 //
-//     "No logging library: the logger writes structured JSON to stdout, which
-//      Lambda captures natively."
+// THREE BOUNDS - depth, breadth and serialized size - keep the traversal and the emitted line
+// finite on a path whose whole purpose is to be safe to call from a `catch` arm. Each bounds the
+// work; none is a tuning knob and none encodes a target of any kind. Stated once here for all
+// three.
 //
-//   The dependency set is closed at the thirteen exactly-pinned packages
-//   `package.json` declares - 3 runtime and 10 development - and this module
-//   imports none of them. It has zero imports of any kind - no
-//   third-party module, no Node built-in, and no sibling module. `src/lib/` is
-//   the base of the domain-inward dependency flow that the ESLint
-//   `no-restricted-imports` boundary enforces, so it reaches into no other
-//   folder.
+// THREE DELIBERATELY EMPTY BLOCKS, AND NO MORE: the body of `absorbAsynchronousStdoutFailure`, the
+// guard in `absorbAsynchronousStdoutFailures`, and the `catch` in `writeLineDirectly`. Each is
+// empty because the output channel is already gone and a throw could only propagate into the
+// caller's request handling, or because the code runs at module load before any caller exists - and
+// each says so at the point where it is empty.
 //
-// LEGACY PROVENANCE
-//   The CFML application had no logger module. It called the engine built-in
-//   `writeLog()` directly, with unstructured plain text, into a CF log file
-//   named "Slatwall". Every call site, all four of them:
+// LEGACY PROVENANCE. The CFML application had no logger module. It called the engine built-in
+// `writeLog()` directly, with unstructured plain text, into a CF log file named "Slatwall". All
+// four call sites:
 //
 //     Application.cfc:L93   "General Log - Default Data Has Been Confirmed"
 //     Application.cfc:L97   "General Log - Setting Cache has been cleared"
 //     Application.cfc:L101  "General Log - Update Service Scripts Have been Run"
 //     Application.cfc:L107  "General Log - Integrations have been updated"
 //
-//   Those four lines carry no severity, no timestamp field and no structured
-//   payload, so this module replaces a framework facility rather than porting a
-//   component. The legacy `file="Slatwall"` log-NAME concept is dropped
-//   outright: under Lambda there is no log file, only one stdout stream per
-//   invocation, so no `logFile` or `logName` option is offered here. Naming is
-//   idiomatic TypeScript for the same reason - nothing in this module is called
-//   `writeLog`, because a line-for-line transliteration of a CFML idiom would
-//   violate the minimal-change directive rather than satisfy it: that directive
-//   scopes the functional surface, never the code style.
-//
-// WHAT THIS MODULE WILL NOT EMIT
-//   A never-log policy enforced in code rather than described in prose, with no
-//   option to switch it off. It has two halves, because one alone is not enough:
-//
-//     * a KEY-based half - the value under any forbidden key name is replaced
-//       with a fixed marker before serialization, matched exactly on a
-//       normalized key so `apiKey`, `API-KEY` and `api_key` cannot diverge;
-//     * a CONTENT-based half - an error is summarized to a shape-validated class
-//       name and machine code, and its `message` and `stack` are replaced with
-//       that same marker. Both are free text composed at throw time, so the
-//       key-based half structurally cannot inspect them, and both routinely
-//       carry the very data the first half exists to withhold.
-//
-//   Neither half is configurable, and no diagnostic mode reinstates either.
-//
-// NO USER RULES WERE PROVIDED
-//   The project rules document says exactly that, and the plan states it
-//   outright. No rule is invented to fill the gap, and the absence is not
-//   treated as license to lower the bar - the enterprise substitute standard
-//   applies at full strength: maximal strictness, no `any` and no suppression
-//   comment, one exported unit per file, no barrel, environment-driven
-//   configuration with no credential of any kind, and every judgment call
-//   annotated at the point where it was made.
-//
-// TEST COVERAGE IS NET-NEW
-//   No legacy test touches logging - `writeLog()` was an engine built-in, and
-//   the only legacy suites extended anywhere in this port are
-//   meta/tests/unit/entity/BrandTest.cfc and
-//   meta/tests/unit/entity/ProductTest.cfc. Coverage for this module is
-//   therefore net-new, and must never be presented as parity. The test tier is
-//   authored separately; the seams it needs are `withSink()` and `withLevel()`
-//   on the exported logger, both of which make every branch drivable without
-//   monkey-patching a global or mutating the process environment.
+// None carries a severity, a timestamp field or a structured payload, so this module replaces a
+// framework facility rather than porting a component. The `file="Slatwall"` log-NAME concept is
+// dropped: under Lambda there is one stdout stream per invocation and no log file, so no `logFile`
+// or `logName` option is offered.
 // ---------------------------------------------------------------------------
 
 /**
- * Severity of a single entry.
- *
- * The set is closed at four values, matching the accepted values documented for
- * `LOG_LEVEL` in `.env.example`, which records that this level is the only
- * logging control that exists.
+ * Severity of a single entry. Closed at four values, matching the accepted values documented for
+ * `LOG_LEVEL` in `.env.example`, which records that this level is the only logging control there
+ * is.
  */
 export type LogLevel = 'debug' | 'info' | 'warn' | 'error';
 
 /**
- * Structured payload accompanying an entry.
- *
- * Values are `unknown` rather than a loose `any`: the serializer narrows each
- * one explicitly, and a value JSON cannot represent is described rather than
- * silently dropped.
+ * Structured payload accompanying an entry. Values are `unknown` rather than a loose `any`: the
+ * serializer narrows each one explicitly, and a value JSON cannot represent is described rather
+ * than silently dropped.
  */
 export type LogContext = Readonly<Record<string, unknown>>;
 
 /**
- * Destination for one already-serialized entry.
- *
- * The line arrives WITHOUT a trailing newline - terminating it belongs to the
- * sink. That split is what lets a test collect entries as clean, parseable
- * strings while the default sink still emits exactly one newline-terminated
- * line per entry.
+ * Destination for one already-serialized entry. The line arrives WITHOUT a trailing newline -
+ * terminating it belongs to the sink. That split lets a test collect entries as clean parseable
+ * strings while the default sink still emits exactly one newline-terminated line per entry.
  */
 export type LogSink = (line: string) => void;
 
 /**
- * The emitting surface.
- *
- * Level method names are idiomatic TypeScript because helpers inside `src/lib/`
- * are internal; the verbatim legacy CFML method names are the acceptance
- * contract for the service and entity layers, not for this one.
+ * The emitting surface. Level method names are idiomatic TypeScript because helpers inside
+ * `src/lib/` are internal; the verbatim legacy CFML method names are the acceptance contract for
+ * the service and entity layers, not for this one.
  */
 export interface Logger {
   /** Diagnostic detail. Suppressed unless the resolved threshold is `debug`. */
@@ -157,20 +94,20 @@ export interface Logger {
   /** A failure. Emitted on stdout like every other level. */
   error(message: string, context?: LogContext): void;
   /**
-   * A sibling logger with the threshold pinned, bypassing `LOG_LEVEL` entirely.
-   * Exists so every filtering branch is deterministically drivable.
+   * A sibling logger with the threshold pinned, bypassing `LOG_LEVEL`. Exists so every filtering
+   * branch is deterministically drivable.
    */
   withLevel(level: LogLevel): Logger;
   /**
-   * A sibling logger writing to `sink` instead of stdout. Exists so emission is
-   * interceptable without patching a global stream.
+   * A sibling logger writing to `sink` instead of stdout. Exists so emission is interceptable
+   * without patching a global stream.
    */
   withSink(sink: LogSink): Logger;
 }
 
 /**
- * One of the two environment variables this module reads. It reads no other, and
- * in particular it reads nothing about a datasource.
+ * One of the two environment variables this module reads. It reads no other, and in particular it
+ * reads nothing about a datasource.
  */
 const LOG_LEVEL_ENV_VAR = 'LOG_LEVEL';
 
@@ -178,9 +115,8 @@ const LOG_LEVEL_ENV_VAR = 'LOG_LEVEL';
 const DEFAULT_LOG_LEVEL: LogLevel = 'info';
 
 /**
- * Ordered severity, so filtering is a single comparison rather than a chain of
- * conditionals. The keys are the closed union, so an index into this map never
- * widens to `undefined` under `noUncheckedIndexedAccess`.
+ * Ordered severity, so filtering is one comparison rather than a chain of conditionals. The keys
+ * are the closed union, so an index into this map never widens under `noUncheckedIndexedAccess`.
  */
 const LEVEL_SEVERITY: Readonly<Record<LogLevel, number>> = Object.freeze({
   debug: 0,
@@ -195,79 +131,72 @@ const REDACTED = '[REDACTED]';
 // ---------------------------------------------------------------------------
 // The never-log policy
 //
-// Enforced in code, not merely documented: the value held under any key the
-// policy matches is replaced with `REDACTED` before serialization, and there is
-// deliberately NO option to switch that off.
+// The value held under any key the policy matches is replaced with `REDACTED` before serialization,
+// and there is deliberately NO option to switch that off and no diagnostic mode that reinstates any
+// of it. Every entry below is written in NORMALIZED form - lowercase, letters and digits only -
+// because that is the form `normalizeKey` produces and therefore the only form that can match.
+// Matching ignores case and the separators `_`, `-` and whitespace, because CFML struct keys are
+// case-insensitive and this code base carries that forward.
 //
-// Every entry is written in NORMALIZED form - lowercase, letters and digits
-// only - because that is the form `normalizeKey` produces and therefore the
-// only form that can ever match.
+// THE POLICY FAILS CLOSED: the default outcome for a key nobody enumerated is REDACTION. Matching
+// only the exact normalized key decided that the wrong way round: runtime testing found forty-six
+// unlisted spellings going out in cleartext. Four rules now apply in a fixed order:
 //
-// THE POLICY FAILS CLOSED, AND IT DID NOT ALWAYS.
-// An earlier revision matched ONLY the exact normalized key. That decided the
-// question the wrong way round: the outcome for a key nobody had thought to
-// enumerate was EMISSION. Runtime testing found forty-six such spellings going
-// out in cleartext - `dbPass`, `dbSecret`, `secretKey`, `signingKey`,
-// `jwtSecret`, `mysqlUser`, `awsSecretAccessKey`, `passwordHash` and the rest -
-// and the list was internally inconsistent in a way no reader could have
-// predicted: `dbpassword` was listed but `dbpass` was not, `clientsecret` was
-// listed but `secretkey` was not, `bearertoken` was listed but `bearer` was
-// not. A caller who reached for a near-miss name got no warning of any kind,
-// and the disclosure was invisible in review because the surrounding code is
-// scrupulous about non-disclosure. So the default outcome for an unrecognized
-// key is now REDACTION, reached through four rules applied in a fixed order:
+// THE FOUR NEVER-LOG RULES ARE THE FLOOR, NOT THE WHOLE POLICY, and the
+// distinction is the single most important thing to understand about this file.
+// The rules below say which names are FORBIDDEN. They are matched against two
+// different surfaces that want opposite defaults, and only one of the two is
+// decided by them alone:
 //
-//   1. ALLOW-LIST, and it wins. An explicitly enumerated business identifier -
-//      `orderID`, `skuID`, `promotionRewardID` - stays legible no matter what
-//      any later rule would say about it. This is what keeps the ported engines
-//      traceable, and it is a CLOSED list, so widening it is a deliberate edit
-//      rather than an accident of spelling.
-//   2. EXACT match on the normalized key. The fast path, and still the primary
-//      statement of intent: `order` names a whole aggregate and is redacted,
-//      while `orderID` from rule 1 names an opaque identifier and is not. The
-//      promotion and price-group engines address the out-of-scope order
-//      aggregate through opaque `orderID` / `orderItemID` /
-//      `orderFulfillmentID` values and never through the aggregate itself, and
-//      that distinction is preserved exactly.
-//   3. FRAGMENT match anywhere in the normalized key. This is what closes the
-//      near-miss hole: any key CONTAINING `password`, `secret`, `token`,
-//      `apikey`, `privatekey`, `signingkey`, `credential` and their siblings is
-//      redacted regardless of what surrounds it. The fragment set is
-//      deliberately restricted to compounds that are unambiguous in English -
-//      see the register of fragments NOT included, and why, below the set.
-//   4. SEGMENT match against one word of the key. `dbPass` splits into
-//      `db` + `pass` and is redacted; `bypass` is one segment and is not. This
-//      catches the short bare credential words that rule 3 cannot use as
-//      substrings without redacting ordinary vocabulary.
+//   * A CONTEXT KEY - a member of the caller's context object - is decided by
+//     `redactMember`, which FAILS CLOSED: after the four rules have had their
+//     say, a scalar is emitted only if an allow-list authorized its name or its
+//     shape cannot carry a payload. See `isLegibleContextKey`,
+//     `isSelfPolicingContextValue` and the ★ note on `redactMember`.
+//   * A `word=value` PAIR INSIDE A STRING - a log call's own message, or a
+//     thrown error's text - is decided by `redactSensitiveAssignments`, which
+//     stays PERMISSIVE by default. It has to: inverting the default there would
+//     redact `status: active` and half the ordinary prose in every line. The
+//     four rules are the entire policy on that surface, which is why their
+//     narrowness is asserted against messages rather than against context.
 //
-// Matching is insensitive to case and to `_`, `-` and whitespace, because
-// CFML struct keys are case-insensitive and the ported code base carries that
-// habit forward. `apiKey`, `API-KEY` and `api_key` must not be three different
-// keys, or the list would be defeated by nothing more than a shift key.
+// Both surfaces have been widened once already, in the same direction and for
+// the same reason.
 //
-// A FIFTH SET, WITH DIFFERENT SEMANTICS: OPAQUE CONTAINERS
-// `headers`, `env`, `config`, `body`, `payload` and their siblings name a
-// CONTAINER rather than a value. Redacting such a key outright would throw away
-// the legitimate diagnostics inside it, and passing it through would publish
-// whatever it happens to hold. Neither is right, so the rule is decided by the
-// SHAPE of the value: a plain object or an array is RECURSED, and each child is
-// policed on its own name by the four rules above; a SCALAR is redacted,
-// because a header map, an environment dump or a request body flattened into one
-// string is an opaque blob that no key-name rule can see into. See
-// `OPAQUE_CONTAINER_KEYS` and `redactPlainObject`.
+// FIRST, THE RULES THEMSELVES DID NOT ALWAYS REACH A NEAR MISS.
+// An earlier revision matched ONLY the exact normalized key. Runtime testing
+// found forty-six spellings going out in cleartext - `dbPass`, `dbSecret`,
+// `secretKey`, `signingKey`, `jwtSecret`, `mysqlUser`, `awsSecretAccessKey`,
+// `passwordHash` and the rest - and the list was internally inconsistent in a
+// way no reader could have predicted: `dbpassword` was listed but `dbpass` was
+// not, `clientsecret` was listed but `secretkey` was not, `bearertoken` was
+// listed but `bearer` was not. A caller who reached for a near-miss name got no
+// warning of any kind, and the disclosure was invisible in review because the
+// surrounding code is scrupulous about non-disclosure. Rules 3 and 4 were added
+// to close that, and they claim MORE than the exact name:
 //
-// THE ONE STRUCTURAL LIMIT OF A KEY-BASED POLICY, AND HOW IT IS CLOSED
-// Matching on key names cannot see inside a string, so any value that is itself
-// FREE TEXT sits outside the reach of the sets above. Exactly one kind of free
-// text arrives here routinely and unavoidably: the `message` and `stack` of a
-// thrown error, which are assembled at throw time out of whatever data was in
-// hand - a server error text carrying a SQL fragment, a rejected input value, a
-// host name, an account name. Listing a key cannot help, because the exposure is
-// in the content rather than in the name.
-// That gap is closed structurally instead: an error is never traversed and never
-// copied wholesale. It is SUMMARIZED down to a shape-validated class name and a
-// shape-validated machine code, and its message and stack are replaced with the
-// marker below. See `normalizeError`. Like the sets above, it has no off switch.
+// A FIFTH SET, WITH DIFFERENT SEMANTICS: OPAQUE CONTAINERS. `headers`, `env`, `config`, `body`,
+// `payload` and their siblings name a CONTAINER, so the rule follows the SHAPE of the value: a
+// plain object or array is RECURSED and each child policed on its own name, while a SCALAR is
+// redacted because a header map, an environment dump or a body flattened into one string is an
+// opaque blob no key-name rule can see into. See `redactPlainObject`.
+//
+// The structural limit of any key-based policy is stated in guarantee 2 of the module header, and
+// one kind of free text arrives here routinely: a thrown error's `message` and `stack`. That gap is
+// closed structurally - an error is SUMMARIZED, never traversed. See `normalizeError`.
+//
+// SECOND, AN UNENUMERATED CONTEXT KEY WAS STILL EMITTED, and that is what the
+// fail-closed context rule fixed. Rules 1 to 4 answer "is this name known to be
+// sensitive", so their own default is EMISSION - correct for message prose, and
+// wrong for a named value. Runtime testing found `x-forwarded-for`, `x-real-ip`,
+// `mnemonic` and `recoveryPhrase` published beside an `authorization` that was
+// correctly redacted: a client address and an account-recovery secret, emitted
+// because nobody had listed those particular spellings. Enumerating them was
+// necessary - they are now exact entries above - but it could not be sufficient,
+// because the next name nobody listed would have gone out the same way. So
+// `redactMember` inverts the default for context keys, and the two allow-lists
+// (`LEGIBLE_IDENTIFIER_KEYS`, `LEGIBLE_DIAGNOSTIC_KEYS`) became the statement of
+// what MAY be published rather than a set of exceptions to what may not.
 // ---------------------------------------------------------------------------
 
 /** Anything that authenticates or authorizes a caller. */
@@ -277,6 +206,17 @@ const CREDENTIAL_KEYS: readonly string[] = [
   'pass',
   'pwd',
   'passphrase',
+  // ACCOUNT-RECOVERY SECRETS. A recovery phrase is a credential in the strongest
+  // sense available - it reconstructs an account outright, without needing the
+  // password it replaces - yet none of these spellings reads like a password to a
+  // reader enumerating password spellings, which is exactly why runtime testing
+  // found `mnemonic` and `recoveryPhrase` going out in cleartext.
+  'mnemonic',
+  'seedphrase',
+  'recoveryphrase',
+  'backupphrase',
+  'recoverycode',
+  'recoverykey',
   'currentpassword',
   'newpassword',
   'oldpassword',
@@ -302,20 +242,15 @@ const CREDENTIAL_KEYS: readonly string[] = [
   'cookie',
   'setcookie',
   'sessionid',
-  // An OAuth client identifier. Semi-public by design, and listed here anyway:
-  // it is one half of a client-credentials pair, it identifies the integration
-  // rather than any business object in this port, and nothing in the ported
-  // slice has a diagnostic reason to publish it.
+  // An OAuth client identifier. Semi-public by design, and listed anyway: it is one half of a
+  // client-credentials pair and identifies the integration rather than any business object here.
   'clientid',
 ];
 
 /**
- * Anything describing how to reach the database.
- *
- * The first four names mirror the values the legacy application published at
- * Application.cfc:L78-L87 - the datasource name, its connecting account and
- * that account's credential. Their NAMES are listed here so their VALUES can
- * never be emitted; no value of any of them appears anywhere in this file.
+ * Anything describing how to reach the database. The first four names mirror the values the legacy
+ * application published at Application.cfc:L78-L87 - the datasource name, its connecting account
+ * and that account's credential. Their NAMES are listed here so their VALUES can never be emitted.
  */
 const CONNECTION_KEYS: readonly string[] = [
   'datasource',
@@ -354,19 +289,10 @@ const PAYMENT_CARD_KEYS: readonly string[] = [
 /**
  * Personally identifiable fields carried by account and customer records.
  *
- * THE POSTURE, STATED EXPLICITLY because the alternative is for a reader to
- * infer it from the list: a natural person's NAME, POSTAL ADDRESS and NETWORK
- * ADDRESS are personal data in exactly the way an email address is, and none of
- * them is a diagnostic this port needs. The promotion engine's address-zone
- * qualifier is the one place an address is even in play, and it decides
- * membership from a zone - so `addressID` and `addressZoneID` remain legible
- * through the allow-list while the address itself does not. Nothing here is
- * configurable, and there is no diagnostic mode that reinstates any of it.
- *
- * `name` alone is deliberately NOT listed: `brandName`, `productName` and
- * `optionGroupName` are catalog labels rather than personal data, and redacting
- * them would blind the catalog paths for no gain. The person-specific spellings
- * are enumerated instead.
+ * THE POSTURE, STATED EXPLICITLY: a natural person's NAME, POSTAL ADDRESS and NETWORK ADDRESS are
+ * personal data in exactly the way an email address is, and none is a diagnostic this port needs.
+ * `name` alone is deliberately NOT listed: `brandName` and `productName` are catalog labels, so the
+ * person-specific spellings are enumerated instead.
  */
 const PERSONAL_DATA_KEYS: readonly string[] = [
   'email',
@@ -400,13 +326,37 @@ const PERSONAL_DATA_KEYS: readonly string[] = [
   'remoteaddress',
   'clientip',
   'useragent',
+  // THE PROXY AND CDN SPELLINGS OF A CLIENT ADDRESS, which are the ones that
+  // actually reach a log line behind API Gateway. The five names above are what
+  // application code invents for itself; these are what the infrastructure puts
+  // in a forwarded header map, and only these appear when a caller logs one.
+  // Runtime testing found `x-forwarded-for` and `x-real-ip` emitted in cleartext
+  // for precisely that reason - the concept was listed, the wire spelling was not.
+  'xforwardedfor',
+  'xforwarded',
+  'xoriginalforwardedfor',
+  'forwardedfor',
+  'forwarded',
+  'xrealip',
+  'xclientip',
+  'trueclientip',
+  'cfconnectingip',
+  'fastlyclientip',
+  'sourceip',
+  // A PRODUCT REVIEW'S AUTHOR IS A CUSTOMER'S NAME. Reviews are out of scope for
+  // the ported slice - `processProduct_addProductReview` is a pass-through to a
+  // stub port - so no in-scope path logs this today. Naming it anyway states that
+  // the redaction is BECAUSE IT IS A PERSON, rather than leaving it to the
+  // fail-closed default, where a later allow-list edit could reverse it without
+  // anyone noticing that a person's name was what got authorized.
+  'author',
+  'authorname',
 ];
 
 /**
- * Whole aggregates. A full order, customer or account payload is never
- * emitted, so the aggregate-shaped key itself is redacted while the opaque
- * identifier beside it - `orderID`, `accountID` - survives exact matching and
- * remains legible.
+ * Whole aggregates. A full order, customer or account payload is never emitted, so the
+ * aggregate-shaped key itself is redacted while the opaque identifier beside it - `orderID`,
+ * `accountID` - survives exact matching and stays legible.
  */
 const AGGREGATE_PAYLOAD_KEYS: readonly string[] = [
   'order',
@@ -425,15 +375,11 @@ const AGGREGATE_PAYLOAD_KEYS: readonly string[] = [
 /**
  * Statement text and bound parameter values.
  *
- * A driver hangs the failing statement, and often the values bound into it, off
- * the error object it throws - `mysql2` populates `sql`, `sqlMessage`,
- * `sqlState`, `code` and `errno`. A statement is the one payload that can carry
- * a credential, a card number and a whole aggregate at once, in a single string
- * that no key-name policy can see into, so the name is listed here and the
- * value never leaves this module.
- *
- * These names are also the explicit suppression list applied to a thrown
- * `Error`'s own fields; see `normalizeError`.
+ * A driver hangs the failing statement, and often the values bound into it, off the error object it
+ * throws - `mysql2` populates `sql`, `sqlMessage`, `sqlState`, `code` and `errno`. A statement is
+ * the one payload that can carry a credential, a card number and a whole aggregate at once, in a
+ * single string no key-name policy can see into. These names are also the explicit suppression list
+ * applied to a thrown `Error`'s own fields; see `normalizeError`.
  */
 const SQL_AND_BINDING_KEYS: readonly string[] = [
   'sql',
@@ -453,14 +399,10 @@ const SQL_AND_BINDING_KEYS: readonly string[] = [
   'queryparameters',
   'queryvalues',
   'parametervalues',
-  // The two bare spellings, listed for the same reason as their qualified
-  // siblings above. In this port a `params` or `values` member alongside a
-  // statement IS the bound parameter list - that is the shape `mysql2` takes and
-  // the shape `getPreparedStatementExecutor` passes - and a bound parameter list
-  // is the one payload that can carry a credential, a card number and a whole
-  // aggregate at once. They are NOT treated as opaque containers, because
-  // recursing into them would publish exactly those values one element at a
-  // time.
+  // The two bare spellings, listed for the same reason as their qualified siblings above: in this
+  // port a `params` or `values` member alongside a statement IS the bound parameter list, the shape
+  // `mysql2` takes and `getPreparedStatementExecutor` passes. They are NOT treated as opaque
+  // containers, because recursing would publish exactly those values one element at a time.
   'params',
   'values',
 ];
@@ -478,19 +420,11 @@ const FORBIDDEN_KEYS: ReadonlySet<string> = new Set([
 /**
  * The keys that stay legible, whatever any later rule would say about them.
  *
- * Rule 1 of the policy, and the reason a fail-closed default is affordable at
- * all. Every entry is an OPAQUE IDENTIFIER: a 32-character UUID-backed primary
- * key, or a correlation identifier minted by the platform. None of them
- * discloses anything on its own, and all of them are how the ported services are
- * traced - the promotion and price-group engines address the out-of-scope order
- * aggregate exclusively through `orderID` / `orderItemID` /
- * `orderFulfillmentID`, so redacting those would make the engines untraceable
- * while protecting nothing.
- *
- * The list is CLOSED and enumerated rather than derived from a suffix rule such
- * as "anything ending in ID". A derived rule would silently admit the next
- * `apiKeyID`-shaped name someone invents; an enumerated list makes every
- * exemption a deliberate edit to this file.
+ * Rule 1 of the policy, and the reason a fail-closed default is affordable at all. Every entry is
+ * an OPAQUE IDENTIFIER: a 32-character UUID-backed primary key, or a correlation identifier minted
+ * by the platform. The list is CLOSED and enumerated rather than derived from a suffix rule such as
+ * "anything ending in ID": a derived rule would silently admit the next `apiKeyID`-shaped name
+ * someone invents.
  */
 const LEGIBLE_IDENTIFIER_KEYS: ReadonlySet<string> = new Set([
   // Catalog
@@ -523,6 +457,10 @@ const LEGIBLE_IDENTIFIER_KEYS: ReadonlySet<string> = new Set([
   'addresszoneid',
   'shippingmethodid',
   'shippingmethodoptionid',
+  // An end-user identifier, which is an opaque handle exactly like `accountID`
+  // beside it. The `user` fragment is deliberately absent from rule 3 for this
+  // name's sake; listing it here says so in the one place that decides.
+  'userid',
   // Platform correlation
   'requestid',
   'correlationid',
@@ -532,7 +470,104 @@ const LEGIBLE_IDENTIFIER_KEYS: ReadonlySet<string> = new Set([
 ]);
 
 /**
- * Rule 3: fragments that make a key sensitive wherever they appear inside it.
+ * The keys authorized to carry a NON-SENSITIVE DIAGNOSTIC in a context object.
+ *
+ * The second allow-list, and the one that makes a fail-closed context surface
+ * affordable. `LEGIBLE_IDENTIFIER_KEYS` above answers "which opaque handles stay
+ * legible"; this set answers "which named scalars a caller may state in the
+ * clear". Every entry is a name whose VALUE cannot be customer data by nature: a
+ * response category, a status code, a row count, a currency code, a duration.
+ *
+ * TWO PROPERTIES DISTINGUISH IT FROM THE IDENTIFIER LIST, and both are
+ * deliberate:
+ *
+ *   * IT DOES NOT OVERRIDE THE NEVER-LOG POLICY. `isLegibleContextKey` is
+ *     consulted only after `isForbiddenKey` has declined the key, so a name that
+ *     appeared in both sets would be REDACTED. The identifier list is rule 1 and
+ *     wins outright; this one is a weaker authorization, because its entries are
+ *     ordinary vocabulary rather than 32-character primary keys, and a weaker
+ *     authorization must lose to an explicit denial rather than beat it.
+ *   * IT IS CLOSED, AND SHORT ON PURPOSE. Every entry is a name this service
+ *     emits today or a header/environment name it may legitimately forward, and
+ *     each group below records which. A name that appears only in a test is NOT
+ *     added: widening a security allow-list to keep a demonstration green is how
+ *     an allow-list stops meaning anything.
+ *
+ * The register of names DELIBERATELY NOT HERE, because the question comes up:
+ * `port` is refused because `src/repositories/mysql/connection.ts` documents a
+ * database name and port together as reconnaissance rather than diagnostics, and
+ * declines to log them itself; `bypassFlag`, `cacheKey`, `keyCount` and
+ * `compassHeading` are refused because they are near-miss NAMES used to show that
+ * rules 3 and 4 stay narrow, and that property is asserted where it still
+ * applies - against message CONTENT, where the default remains permissive - not
+ * by authorizing them here.
+ */
+const LEGIBLE_DIAGNOSTIC_KEYS: ReadonlySet<string> = new Set([
+  // Published by `src/handlers/errorMapper.ts` on every mapped failure. Redacting
+  // any of these would blind the one surface that reports a request went wrong.
+  'category',
+  'statuscode',
+  'route',
+  'fieldpaths',
+  'invalidrequestreason',
+  'missingmethodname',
+  'classname',
+  'thrownshape',
+  'errorcode',
+  'publishedissuecount',
+  'issuecount',
+  // The ported engines' own diagnostics. A discount amount is a formatted string
+  // and a quantity is a count: both are order-shaped rather than customer-shaped,
+  // and the out-of-scope aggregate they belong to is addressed only through the
+  // opaque identifiers in the set above.
+  'skucode',
+  'currencycode',
+  'amounttype',
+  'discountamount',
+  'quantity',
+  'passedqualification',
+  // Catalog labels, which are storefront-public by definition. `name` is
+  // deliberately not a fragment for exactly these three.
+  'brandname',
+  'productname',
+  'optiongroupname',
+  // Operational timing and volume. A timestamp, a duration, an attempt count and
+  // a row count describe THIS INVOCATION rather than anything in it.
+  'occurredat',
+  'startedat',
+  'completedat',
+  'durationms',
+  'elapsedms',
+  'attemptcount',
+  'retrycount',
+  'rows',
+  'rowcount',
+  'affectedrows',
+  'resultcount',
+  // HEADER NAMES AUTHORIZED INSIDE AN OPAQUE CONTAINER. A `headers` map is
+  // recursed rather than redacted, so its children need dispositions of their own;
+  // these are the content-negotiation names, which describe the request's format
+  // and nothing about who sent it. Every client-address spelling is refused - it
+  // is an exact entry in `PERSONAL_DATA_KEYS` instead - and so is `user-agent`.
+  'accept',
+  'acceptlanguage',
+  'acceptencoding',
+  'contenttype',
+  'contentlength',
+  // ENVIRONMENT NAMES AUTHORIZED INSIDE AN OPAQUE CONTAINER, on the same footing:
+  // the deployment coordinates an operator reading the line already knows, which
+  // identify no customer and unlock nothing.
+  'awsregion',
+  'awslambdafunctionname',
+  'awslambdafunctionversion',
+  'nodeenv',
+  'loglevel',
+]);
+
+/**
+ * Rule 3: fragments that make a key sensitive wherever they appear inside it. Each entry is a
+ * compound with no innocent meaning in English or in this domain, so a plain substring test is
+ * safe.
  *
  * Each entry is a compound that has no innocent meaning in English or in this
  * domain, so a plain substring test is safe: `dbSecret`, `secretKey` and
@@ -543,10 +578,14 @@ const LEGIBLE_IDENTIFIER_KEYS: ReadonlySet<string> = new Set([
  * disqualifies it. These stay EXACT-match entries in the groups above instead,
  * and the omission is a decision rather than an oversight:
  *
- *   `auth`  - `author` / `authorName`. Product reviews carry an author, so a
- *             bare `auth` fragment would redact a catalog field. The qualified
- *             forms `authorization`, `authtoken`, `authkey`, `authsecret`,
- *             `oauth` and `xauth` are listed instead.
+ *   `auth`  - `authoredDate`, `authorityLevel`, `authoritativeFlag`. A bare
+ *             `auth` fragment would redact ordinary vocabulary that merely opens
+ *             with those four letters. The qualified forms `authorization`,
+ *             `authtoken`, `authkey`, `authsecret`, `oauth` and `xauth` are
+ *             listed instead. `author` and `authorName` were once the reason
+ *             given for this omission; they are now EXACT entries in
+ *             `PERSONAL_DATA_KEYS`, because a product review's author is a
+ *             customer's name, so they no longer argue for anything here.
  *   `key`   - `cacheKey`, `keyCount`, `optionGroupIDKey`. Only the qualified
  *             compounds (`apikey`, `privatekey`, `accesskey`, `signingkey`,
  *             `encryptionkey`, `sessionkey`, `clientkey`, `sharedkey`,
@@ -572,6 +611,11 @@ const SENSITIVE_KEY_FRAGMENTS: readonly string[] = [
   'pwd',
   'secret',
   'credential',
+  // Account-recovery compounds. Unambiguous in English and in this domain, so a
+  // substring test is safe and reaches `walletMnemonic`-shaped names as well.
+  'mnemonic',
+  'seedphrase',
+  'recoveryphrase',
   // Key material, qualified so `cacheKey` survives
   'apikey',
   'apitoken',
@@ -615,15 +659,10 @@ const SENSITIVE_KEY_FRAGMENTS: readonly string[] = [
 ];
 
 /**
- * Rule 4: short words that are sensitive only when they are a WHOLE WORD of the
- * key.
- *
- * These cannot be used as substrings without redacting ordinary vocabulary, so
- * they are matched against the key's own word boundaries instead - the
- * camelCase transitions, the digits and the `_` / `-` / `.` / space separators
- * that `splitKeyWords` reads. `dbPass` is `db` + `pass` and is redacted;
- * `bypass` is one word and is not; `passedQualification` yields `passed`, which
- * is a different word, and is not.
+ * Rule 4: short words that are sensitive only as a WHOLE WORD of the key. These cannot be
+ * substrings without redacting ordinary vocabulary, so they are matched against the key's own word
+ * boundaries - the camelCase transitions, the digits and the separators `splitKeyWords` reads.
+ * `dbPass` is `db` + `pass` and is redacted; `bypass` is one word and is not.
  */
 const SENSITIVE_KEY_WORDS: ReadonlySet<string> = new Set([
   'pass',
@@ -639,15 +678,11 @@ const SENSITIVE_KEY_WORDS: ReadonlySet<string> = new Set([
 ]);
 
 /**
- * The fifth set: keys that name a CONTAINER rather than a value.
- *
- * A plain object or array under one of these names is recursed, so each child is
- * policed on its own name; a SCALAR under one of these names is redacted,
- * because a header map, an environment dump, a settings blob or a request body
- * flattened into a single string is opaque to every key-name rule there is.
- *
- * This is the shape a caller reaches for when handing over "everything I have",
- * which is exactly when the never-log policy has to be at its strongest.
+ * The fifth set: keys that name a CONTAINER rather than a value. A plain object or array under one
+ * of these names is recursed so each child is policed on its own name; a SCALAR is redacted,
+ * because a header map, an environment dump or a request body flattened into a single string is
+ * opaque to every key-name rule there is. This is the shape a caller reaches for when handing over
+ * "everything I have", which is exactly when the policy has to be at its strongest.
  */
 const OPAQUE_CONTAINER_KEYS: ReadonlySet<string> = new Set([
   'env',
@@ -664,77 +699,53 @@ const OPAQUE_CONTAINER_KEYS: ReadonlySet<string> = new Set([
   'responsebody',
   'payload',
   'requestcontext',
-  // The legacy FW/1 request context, which arrived as `rc` at every controller
-  // entry point - `integrationServices/google/controllers/feed.cfc:L58` takes
-  // `required struct rc`. A caller porting one of those call sites is likely to
-  // keep the name.
+  // The legacy FW/1 request context, which arrived as `rc` at every controller entry point -
+  // `integrationServices/google/controllers/feed.cfc:L58` takes `required struct rc`. A caller
+  // porting one of those call sites is likely to keep the name.
   'rc',
 ]);
 
 /**
- * Depth beyond which a nested structure is described rather than traversed.
- *
- * A bound on how far this module walks a caller's object graph, so that a
- * deeply nested or self-referential structure cannot drive unbounded
- * recursion. It bounds the work; it is not a tuning knob and encodes no target
- * of any kind.
+ * Depth beyond which a nested structure is described rather than traversed, so that a deeply nested
+ * or self-referential structure cannot drive unbounded recursion.
  */
 const MAX_REDACTION_DEPTH = 4;
 
 /**
- * How many array elements or object keys are traversed at any one level.
- *
- * The companion to `MAX_REDACTION_DEPTH`, and it exists because depth alone does
- * not bound the work. A context object four levels deep is cheap; an array of a
- * hundred thousand elements is not, and it is FLAT - so every depth check passes
- * and the traversal walks the whole thing, allocating a redacted copy of it, on a
- * path whose entire purpose is to be safe to call from a `catch` arm. Breadth is
- * the second dimension of the same bound.
- *
- * Like the depth bound, this bounds the work. It is not a tuning knob and encodes
- * no target of any kind.
+ * How many array elements or object keys are traversed at any one level. The companion to
+ * `MAX_REDACTION_DEPTH`, because depth alone does not bound the work: a context object four levels
+ * deep is cheap, while an array of a hundred thousand elements is FLAT - every depth check passes
+ * and the traversal walks the whole thing, allocating a redacted copy.
  */
 const MAX_REDACTION_BREADTH = 64;
 
 /**
- * How long a serialized entry may be before it is replaced by a bounded summary.
- *
- * The third dimension, and the one the other two cannot cover. Depth and breadth
- * bound the SHAPE of a structure, but neither bounds the SIZE of a leaf: a single
- * string property holding a multi-megabyte payload sits at depth one and breadth
- * one, passes both checks untouched, and becomes a multi-megabyte log line. This
- * is checked on the finished document, after redaction, which is the only place
- * the true emitted size is known.
- *
- * Bounds the work; not a tuning knob, and no target of any kind.
+ * How long a serialized entry may be before it is replaced by a bounded summary. The third
+ * dimension, and the one the other two cannot cover: depth and breadth bound the SHAPE of a
+ * structure, but neither bounds the SIZE of a leaf, so a single string property holding a
+ * multi-megabyte payload sits at depth one and breadth one. Checked on the finished document, where
+ * the true size is known.
  */
 const MAX_SERIALIZED_ENTRY_CHARACTERS = 16384;
 
 /**
- * Lowercase, then drop everything that is not a letter or a digit, so that
- * `apiKey`, `API-KEY`, `api_key` and `Api Key` all collapse onto the single
- * entry `apikey`.
+ * Lowercase, then drop everything that is not a letter or a digit, so `apiKey`, `API-KEY`,
+ * `api_key` and `Api Key` all collapse onto the single entry `apikey`.
  */
 function normalizeKey(key: string): string {
   return key.toLowerCase().replace(/[^a-z0-9]/g, '');
 }
 
 /**
- * Where one word of a key ends and the next begins.
- *
- * Three boundaries, which together cover every spelling convention this port
- * meets: an explicit separator (`_`, `-`, `.`, whitespace and anything else that
- * is not a letter or a digit), a lower-to-upper camelCase transition (`dbPass`),
- * and the tail of an acronym run followed by a capitalized word
- * (`AWSSecretKey` -> `AWS` + `Secret` + `Key`).
+ * Where one word of a key ends and the next begins. Three boundaries covering every spelling
+ * convention this port meets: an explicit separator, a lower-to-upper camelCase transition
+ * (`dbPass`), and the tail of an acronym run followed by a capitalized word (`AWSSecretKey`).
  */
 const KEY_WORD_BOUNDARY_PATTERN = /[^A-Za-z0-9]+|(?<=[a-z0-9])(?=[A-Z])|(?<=[A-Z])(?=[A-Z][a-z])/;
 
 /**
- * Split a key into its lowercase words for rule 4.
- *
- * Empty fragments are dropped, so a leading, trailing or doubled separator
- * cannot produce an empty word that would then match nothing and cost a lookup.
+ * Split a key into its lowercase words for rule 4. Empty fragments are dropped, so a leading,
+ * trailing or doubled separator cannot produce an empty word that would match nothing.
  */
 function splitKeyWords(key: string): readonly string[] {
   return key
@@ -746,29 +757,33 @@ function splitKeyWords(key: string): readonly string[] {
 /**
  * The never-log decision, in the fixed order the policy documents.
  *
- * The default is REDACTION: an unrecognized key reaches the end of this function
- * only if none of the four rules claims it, and every rule that could claim it is
- * written to claim MORE than the exact name. That is the whole point - the
- * failure mode of the earlier exact-match-only version was that an unenumerated
- * credential name was emitted in cleartext with no signal of any kind.
+ * Answers ONE question - "is this name known to be sensitive" - so its own answer
+ * for an unrecognized name is `false`, and that is not a claim that the name will
+ * be emitted. Every rule that can claim a key is written to claim MORE than the
+ * exact name, because the failure mode of the earlier exact-match-only version was
+ * that an unenumerated credential name was emitted with no signal of any kind.
+ *
+ * WHERE THE FAIL-CLOSED DEFAULT LIVES, AND WHY NOT HERE. For a CONTEXT KEY it
+ * lives in `redactMember`, which redacts anything this function declines unless an
+ * allow-list or the value's own shape authorizes it. It cannot live here, because
+ * this function is also called by `redactSensitiveAssignments` on string CONTENT,
+ * where a permissive default is required: a message reading `status: active` must
+ * survive intact, and inverting the default here would redact the value in every
+ * `word=value` pair in every message. Two surfaces, two defaults, one matcher.
  *
  * Total by construction: every operation is a string test or a set lookup, so
  * there is no throwing path. It runs inside the emission path that must never
- * throw, and it is also called by `redactSensitiveAssignments` on string
- * CONTENT, which is why the allow-list keeps `productID=abc123` legible inside a
- * message as well as inside a context object.
+ * throw, and rule 1 is what keeps `productID=abc123` legible inside a message as
+ * well as inside a context object.
  */
 function isForbiddenKey(key: string): boolean {
   const normalized = normalizeKey(key);
   if (normalized.length === 0) {
-    // A key made entirely of separators normalizes to nothing. There is no name
-    // to police, so there is nothing to match; the VALUE still goes through
-    // `redactValue` like any other.
+    // A key made entirely of separators normalizes to nothing: no name to police, so nothing to
+    // match. The VALUE still goes through `redactValue` like any other.
     return false;
   }
-  // Rule 1. The allow-list wins outright, before any rule that could claim the
-  // key, so an enumerated opaque identifier can never be captured by a fragment
-  // or a word rule.
+  // Rule 1. The allow-list wins outright, before any rule that could claim the key.
   if (LEGIBLE_IDENTIFIER_KEYS.has(normalized)) {
     return false;
   }
@@ -792,33 +807,52 @@ function isForbiddenKey(key: string): boolean {
 }
 
 /**
- * Whether a key names a container whose treatment depends on the shape of its
- * value.
- *
- * Consulted only after `isForbiddenKey` has declined the key, so a name that is
- * both - `requestBody` is a container, `bindParams` is forbidden outright - is
- * decided by the stricter rule.
+ * Whether a key names a container whose treatment depends on the shape of its value. Consulted only
+ * after `isForbiddenKey` has declined the key, so a name that is both - `requestBody` is a
+ * container, `bindParams` is forbidden outright - is decided by the stricter rule.
  */
 function isOpaqueContainerKey(key: string): boolean {
   return OPAQUE_CONTAINER_KEYS.has(normalizeKey(key));
 }
 
+/**
+ * Whether a CONTEXT key is authorized to carry a value in the clear.
+ *
+ * The positive half of the fail-closed context rule, and the reason it is a
+ * separate function rather than an extra arm of `isForbiddenKey`: that function is
+ * ALSO applied to string CONTENT by `redactSensitiveAssignments`, where the
+ * default must stay permissive so that ordinary prose - `status: active`,
+ * `productID=abc123` - survives inside a message. Inverting the default there
+ * would redact half of every log line's own text. The two surfaces genuinely want
+ * opposite defaults, so they get two functions, and `redactMember` is the only
+ * caller of this one.
+ *
+ * Both allow-lists are consulted, because both authorize the same thing at
+ * different strengths: an enumerated opaque identifier, or an enumerated
+ * non-sensitive diagnostic. A container name is authorized too - its children are
+ * each decided by this same rule, so admitting the parent concedes nothing.
+ *
+ * Total: three set lookups on a normalized string, no throwing path.
+ */
+function isLegibleContextKey(key: string): boolean {
+  const normalized = normalizeKey(key);
+  return (
+    LEGIBLE_IDENTIFIER_KEYS.has(normalized) ||
+    LEGIBLE_DIAGNOSTIC_KEYS.has(normalized) ||
+    OPAQUE_CONTAINER_KEYS.has(normalized)
+  );
+}
+
 // ---------------------------------------------------------------------------
 // String-content sanitization
 //
-// A key-name policy can only protect a value that arrived under a name. It
-// cannot protect anything embedded INSIDE a string, and the two highest-volume
-// string channels in this service - a log call's own `message` and a thrown
-// error's `message` and `stack` - carry no key at all. `errorMapper.ts` reaches
-// this module with `error: <the raw thrown value>` on its unrecognized arm, so a
-// driver error's statement text, the values bound into it, the credential in a
-// connection URI and the absolute path of every stack frame all arrive as string
-// CONTENT rather than as named fields.
+// A key-name policy can only protect a value that arrived under a name - guarantee 2 of the module
+// header. The two highest-volume string channels in this service carry no key at all: a log call's
+// own `message`, and a thrown error's `message` and `stack`. `errorMapper.ts` reaches this module
+// with `error: <the raw thrown value>` on its unrecognized arm.
 //
-// Every rule below is therefore applied to string content, not to key names, and
-// each is deliberately narrow enough to state what it does and does not catch.
-// Sanitization is total: `sanitizeText` has no throwing path, because it runs
-// inside the emission path that must never throw.
+// Every rule below is therefore applied to string content, not key names, and each is deliberately
+// narrow enough to state what it does and does not catch.
 // ---------------------------------------------------------------------------
 
 /** Substituted for a statement, because a statement cannot be partly scrubbed. */
@@ -831,49 +865,27 @@ const PATH_REDACTED = '[PATH REDACTED]';
 const TRUNCATION_MARKER = '...[truncated]';
 
 /**
- * Length beyond which a string is cut.
- *
- * A bound on how much text this module will emit from any single string, so that
- * a whole statement, a whole document or a whole stack cannot arrive as one
- * value. It bounds the output; it is not a tuning knob and encodes no target of
- * any kind.
+ * Length beyond which a string is cut, bounding how much text this module will emit from any single
+ * string so that a whole statement, document or stack cannot arrive as one value.
  */
 const MAX_LOGGED_TEXT_LENGTH = 512;
 
 /**
  * Statement shapes, matched case-insensitively - the arms that need no help.
  *
- * WHY TWO ANCHORS ARE NOT ENOUGH, AND WHAT REPLACED THEM. An earlier revision
- * required only two keywords in sequence: `select` followed anywhere by `from`,
- * `update` followed anywhere by `set`. Two keywords sounds specific and is not.
- * It replaced ordinary sentences wholesale - "user chose to select a sku from the
- * catalog list" and "update the pricing set for this price group" both became
- * `[SQL REDACTED]`, which is a total loss of the message. This rule SHORT-CIRCUITS
- * and replaces the ENTIRE string, so a false positive here is the most expensive
- * one in the module, and the bar for it is correspondingly high.
- *
- * Every arm below therefore requires a STATEMENT SHAPE rather than a keyword
- * sequence: the object being acted on, and the syntax that must follow it.
- *
- *   * `insert into <object>` must be followed by a column list, `values`, `set`
- *     or a sub-`select` - "insert into the feed document" is followed by a second
- *     ordinary word and matches nothing.
- *   * `update <object> [alias] set <column> =` requires the assignment. This is
- *     what rejects "update the pricing set for this price group": the word after
- *     `set` is not being assigned to.
- *   * `delete from <object>` must be followed by end-of-statement or a clause -
- *     "delete from the cart" is followed by a second ordinary word.
- *   * A DDL verb must name both an object type and an object.
- *   * `union [all] select` is left as a bare keyword pair on purpose. It is the
- *     canonical injection signature, it does not occur in English, and this is
- *     the one place where a false positive is the acceptable direction of error.
- *
- * The object matcher below accepts an optional backtick, double quote or bracket,
- * because that is how each supported quoting style introduces an identifier, and
- * an optional `schema.object` or `alias.column` qualifier, because both forms are
- * ordinary in a real statement - `INSERT INTO Slatwall.SwSku`, `UPDATE SwSku s SET
- * s.price =`. It accepts ONE reference only: a second bare word cannot be absorbed
- * into it, which is what keeps "the cart" and "the pricing" out.
+ * Every arm requires a STATEMENT SHAPE rather than a keyword sequence: the object being acted on,
+ * and the syntax that must follow it. Two keywords in sequence sounds specific and is not - it
+ * replaced ordinary sentences wholesale, and this rule SHORT-CIRCUITS and replaces the ENTIRE
+ * string, so a false positive here is the most expensive one in the module. `insert into <object>`
+ * must be followed by a column list, `values`, `set` or a sub-`select`;
+ *   `update <object> [alias] set <column> =`
+ * requires the assignment, which rejects "update the pricing set for this price group";
+ *   `delete from <object>`
+ * must be followed by end-of-statement or a clause; a DDL verb must name both an object type and an
+ * object. `union [all] select` stays a bare keyword pair on purpose: it is the canonical injection
+ * signature, does not occur in English, and is the one place a false positive is the acceptable
+ * direction of error. The object matcher accepts an optional quote or bracket and an optional
+ * `schema.object` qualifier, and exactly ONE reference, which is what keeps "the cart" out.
  */
 const SQL_OBJECT_REFERENCE =
   '[`"[]?[A-Za-z_][\\w$]{0,63}[`"\\]]?(?:\\s*\\.\\s*[`"[]?[A-Za-z_][\\w$]{0,63}[`"\\]]?)?';
@@ -882,12 +894,11 @@ const SQL_OBJECT_REFERENCE =
 const SQL_OPTIONAL_ALIAS = '(?:\\s+(?:as\\s+)?[A-Za-z_]\\w{0,31})?';
 
 /**
- * A determiner may not stand where a table name is expected.
- *
- * The one test that separates `FROM SwSku` from "from the catalog": no table in
- * the `Sw*` schema is named `the`, `a`, `this` or `each`, and English puts one of
- * these words after "from" almost without exception. Shared by every arm that has
- * to read a `FROM` target, so the list lives in one place and each arm cites it.
+ * A determiner may not stand where a table name is expected - the one test that separates
+ *   `FROM SwSku`
+ * from "from the catalog": no table in the `Sw*` schema is named `the`, `a`, `this` or `each`, and
+ * English puts one of these words after "from" almost without exception. Shared by every arm that
+ * reads a `FROM` target.
  */
 const SQL_TABLE_DETERMINER_VETO =
   '(?!(?:the|a|an|this|that|these|those|each|every|all|any|some|my|your|his|her|its|our|their|it|them|us|which|what|here|there|both|either|neither|no|none|other|another|being|one|two)\\b)';
@@ -902,14 +913,12 @@ const SQL_STATEMENT_PATTERNS: readonly RegExp[] = [
     'i',
   ),
   // Two optional alias slots, because both the multi-table form
-  // (`DELETE t1 FROM SwSku t1 JOIN ...`) and a plain aliased target are ordinary.
-  // Prose is kept out by the determiner veto on the target rather than by the
-  // clause requirement, which an aliased sentence could otherwise satisfy:
-  // "delete rows from the table where needed" reads as a statement to every test
-  // except that one. ACCEPTED CONSEQUENCE: "delete records from catalog" with
-  // nothing after it is genuinely indistinguishable from `DELETE FROM catalog` and
-  // is redacted. A `DELETE` with no clause carries no value, so the cost is a
-  // short sentence, and erring toward withholding is the right direction here.
+  //   (`DELETE t1 FROM SwSku t1 JOIN ...`)
+  // and a plain aliased target are ordinary. Prose is kept out by the determiner veto on the target
+  // rather than by the clause requirement, which an aliased sentence could otherwise satisfy.
+  // ACCEPTED CONSEQUENCE: "delete records from catalog" with nothing after it is indistinguishable
+  // from `DELETE FROM catalog` and is redacted. A `DELETE` with no clause carries no value, so the
+  // cost is a short sentence, and erring toward withholding is the right direction here.
   new RegExp(
     `\\bdelete\\s+(?:${SQL_OBJECT_REFERENCE}\\s+)?from\\s+${SQL_TABLE_DETERMINER_VETO}${SQL_OBJECT_REFERENCE}${SQL_OPTIONAL_ALIAS}\\s*(?:;|$|\\bwhere\\b|\\bjoin\\b|\\busing\\b|\\border\\s+by\\b|\\blimit\\b)`,
     'i',
@@ -924,20 +933,13 @@ const SQL_STATEMENT_PATTERNS: readonly RegExp[] = [
 /**
  * `SELECT ... FROM <target>`, where the statement starts where a statement can.
  *
- * A projection list cannot be told apart from two English words by shape alone,
- * because `SELECT column alias FROM t` is legal SQL and "select a sku from t" has
- * exactly that shape. POSITION is what separates them: a statement begins at the
- * start of a string, or after a statement separator, an opening quote or bracket,
- * a comma, an assignment or a colon - which is also how a driver embeds one in a
- * message ("...syntax near 'SELECT ...'") and how a caller labels one
- * ("query: SELECT ..."). A `select` sitting mid-sentence after an ordinary word
- * is prose, and this pattern does not reach it.
- *
- * The `FROM` target carries the shared determiner veto. Because the engine
- * backtracks, a string carrying BOTH a real statement and a prose "from the" still
- * matches on the real one - the veto is scoped to the window that matched, not to
- * the whole string, which is the difference between narrowing this rule and
- * weakening it.
+ * A projection list cannot be told apart from two English words by shape alone, because
+ *   `SELECT column alias FROM t`
+ * is legal SQL and "select a sku from t" has exactly that shape. POSITION is what separates them: a
+ * statement begins at the start of a string, or after a statement separator, an opening quote or
+ * bracket, a comma, an assignment or a colon - which is also how a driver embeds one in a message
+ * and how a caller labels one. A `select` sitting mid-sentence after an ordinary word is prose, and
+ * this pattern does not reach it.
  */
 const SQL_SELECT_STATEMENT_PATTERN = new RegExp(
   `(?:^|[\\n\\r\\t;('"\`,=:[])\\s*select\\b[\\s\\S]{0,4000}?\\bfrom\\s+${SQL_TABLE_DETERMINER_VETO}`,
@@ -945,28 +947,21 @@ const SQL_SELECT_STATEMENT_PATTERN = new RegExp(
 );
 
 /**
- * Syntax that a statement carries and a sentence does not.
+ * Syntax that a statement carries and a sentence does not. Required IN ADDITION to the two
+ * conditions above, as a third independent test.
  *
- * Required IN ADDITION to the two conditions above, as a third independent test,
- * so that a sentence which happens to open with "select" and name a non-determiner
- * after "from" still has to look like syntax to be redacted.
- *
- * ACCEPTED CONSEQUENCE, STATED PLAINLY: a bare two-identifier projection with no
- * operator, literal, placeholder, punctuation or clause - `SELECT skuCode FROM
- * SwSku` - carries no signal and is therefore NOT redacted. It also carries no
- * data: both tokens are schema identifiers, and this port publishes its schema
- * identifiers in `src/repositories/mysql/sql/**` as source. Every statement that
- * can carry a VALUE - a literal, a bound placeholder, a predicate, an insert list -
- * brings a signal with it.
+ * ACCEPTED CONSEQUENCE, STATED PLAINLY: a bare two-identifier projection with no operator, literal,
+ * placeholder, punctuation or clause - `SELECT skuCode FROM SwSku` - carries no signal and is NOT
+ * redacted. It also carries no data: both tokens are schema identifiers, which this port publishes
+ * in `src/repositories/mysql/sql/**` as source.
  */
 const SQL_SHAPE_SIGNAL_PATTERN =
   /[*(),;?='"`]|\b\w+\.\w+|\b(?:where|join|group\s+by|order\s+by|having|limit|offset|union|values|distinct)\b/i;
 
 /**
- * Whether a string contains something that has to be treated as a statement.
- *
- * The `SELECT` arm is a conjunction of three independent tests rather than one
- * pattern, which is why it is expressed here and not in the array above.
+ * Whether a string contains something that has to be treated as a statement. The `SELECT` arm is a
+ * conjunction of three independent tests rather than one pattern, which is why it is expressed
+ * here.
  */
 function containsSqlStatement(text: string): boolean {
   for (const pattern of SQL_STATEMENT_PATTERNS) {
@@ -978,69 +973,42 @@ function containsSqlStatement(text: string): boolean {
 }
 
 /**
- * `<identifier><separator><value>`, where the value may be quoted.
- *
- * The identifier capture deliberately excludes spaces and dots, so it can only
- * match the single token immediately left of the separator. Allowing spaces
- * would let the match start further left - `identified by password=x` would
- * capture `identified by password`, which normalizes to a name that is not on
+ * `<identifier><separator><value>`, where the value may be quoted. The identifier capture
+ * deliberately excludes spaces and dots, so it can only match the single token immediately left of
+ * the separator: allowing spaces would let `identified by password=x` capture a name that is not on
  * the policy list, and the redaction would silently not happen.
  */
 const SENSITIVE_ASSIGNMENT_PATTERN =
   /([A-Za-z][A-Za-z0-9_-]{0,63})(\s*(?:=>|=|:)\s*)(?:"[^"\n]{0,512}"|'[^'\n]{0,512}'|[^\s,;)\]}]{1,512})/g;
 
 /**
- * `scheme://user:secret@host` - the credential half of a connection URI.
- *
- * The CREDENTIAL half, and deliberately no more: the authority that follows it
- * survives, so `mysql://user:pw@db.internal:3306/Slatwall` becomes
- * `mysql://[REDACTED]@db.internal:3306/Slatwall`. That is the authored scope of
- * this rule. The host was already outside its reach before the path rules below
- * were narrowed, so nothing about the host changed with them; what did change is
- * that the trailing database name is no longer swept up incidentally by a path
- * rule that was never meant to be reading URIs. Config-derived connection details
- * never travel this way in the first place - `connection.ts` logs its pool line
- * with no context at all, precisely so they cannot.
+ * `scheme://user:secret@host` - the credential half of a connection URI, and deliberately no more:
+ * the authority that follows survives, so `mysql://user:pw@db.internal:3306/Slatwall` becomes
+ * `mysql://[REDACTED]@db.internal:3306/Slatwall`. Config-derived connection details never travel
+ * this way in the first place - `connection.ts` logs its pool line with no context at all.
  */
 const URI_CREDENTIAL_PATTERN = /:\/\/[^\s/:@]{1,128}(?::[^\s/@]{0,128})?@/g;
 
 // ---------------------------------------------------------------------------
 // Absolute paths
 //
-// This is what removes the private paths that every stack frame carries, and it
-// is why the stack summary below can keep function names: the frame's shape
-// survives, only the location is replaced.
+// This is what removes the private paths every stack frame carries, and it is why the stack summary
+// below can keep function names: the frame's shape survives, only the location is replaced.
 //
-// WHY THIS IS THREE ANCHORED RULES AND NOT ONE. An earlier revision used a single
-// pattern - a drive letter or ANY slash, followed by two or more non-space
-// characters. In a language whose messages routinely contain a slash that is not a
-// path, that matches far more than it was aimed at, and every hit destroys the
-// text from the slash to the next space. Measured against ordinary diagnostics it
-// mangled `and/or`, `verify-ca/verify-identity`, `TLSv1.2/1.3`, `50/50`,
-// `10/second`, `GET /catalog/products?...`, `config/configORM.cfm:L9-L15` and -
-// through the drive-letter arm reading a URL scheme as a drive - turned
-// `https://host/docs` into `http[PATH REDACTED]`. It also reached inside this
-// service's own context: `errorMapper.ts` publishes `route` and `fieldPaths`, so
-// `POST /skus/resolve` and `body/selectedOptions` were being redacted on every
-// mapped error, which is the diagnostic these lines exist to provide.
+// EACH RULE REQUIRES A PATH ANCHOR, NOT MERELY A SLASH. A single pattern accepting a drive letter
+// or ANY slash matches far more than it is aimed at in a language whose messages routinely contain
+// a slash that is not a path, and every hit destroys the text from the slash to the next space -
+// measured against ordinary diagnostics it mangled `and/or`, `verify-ca/verify-identity`,
+// `TLSv1.2/1.3`, `GET /catalog/products?...` and `config/configORM.cfm:L9-L15`. So: a drive letter
+// that is genuinely a drive letter; a rooted POSIX path whose first segment is a REAL filesystem
+// root, so a slash beginning an HTTP route fails while `/var/task/...` does not; and a POSIX path
+// of two or more segments ending in a dotted filename, catching a frame under an unenumerated root
+// without accepting an extension-less route.
 //
-// Each rule below therefore requires a path ANCHOR, not merely a slash:
-//
-//   1. A drive letter that is genuinely a drive letter. The negative lookbehind
-//      is the whole point - without it the `s` of `https:` is a drive.
-//   2. A rooted POSIX path whose first segment is a REAL filesystem root. A slash
-//      that begins an HTTP route or separates two words fails on the root, so a
-//      route stays legible while `/var/task/...` does not.
-//   3. A POSIX path of two or more segments ending in a dotted filename, which
-//      catches a stack frame or a key file under a root the list above does not
-//      enumerate (`/workspaces/repo/src/lib/logger.ts`) without accepting an
-//      extension-less route.
-//
-// In all three the leading slash must begin a TOKEN: the lookbehind rejects a
-// slash preceded by a letter, digit, underscore, dot, backslash, colon or dash, so
-// an infix slash is never a path. A slash preceded by a slash IS accepted, which
-// is what lets `file:///var/task/index.js` be caught while `https://host/docs`
-// still fails on the root test.
+// In all three the leading slash must begin a TOKEN: the lookbehind rejects a slash preceded by a
+// letter, digit, underscore, dot, backslash, colon or dash, so an infix slash is never a path, and
+// without it the `s` of `https:` is a drive. A slash preceded by a slash IS accepted, so
+// `file:///var/task/index.js` is caught while `https://host/docs` still fails the root test.
 // ---------------------------------------------------------------------------
 
 /** Everything that may not precede the leading slash of a path. */
@@ -1056,12 +1024,10 @@ const WINDOWS_ABSOLUTE_PATH_PATTERN = new RegExp(
 );
 
 /**
- * Segments that are filesystem roots rather than the first segment of a route.
- *
- * The Linux FHS roots, the macOS ones, and `node_modules` - which is not a root
- * but appears at the head of a bundled frame often enough to belong here. No
- * application-specific segment is included: an application root is reached by the
- * dotted-filename rule instead, which needs no enumeration to keep current.
+ * Segments that are filesystem roots rather than the first segment of a route: the Linux FHS roots,
+ * the macOS ones, and `node_modules` - not a root, but at the head of a bundled frame often enough
+ * to belong here. No application-specific segment is included; an application root is reached by
+ * the dotted-filename rule instead, which needs no enumeration to keep current.
  */
 const FILESYSTEM_ROOT_SEGMENTS =
   'tmp|var|home|usr|opt|etc|proc|sys|dev|run|root|srv|mnt|media|bin|sbin|lib|lib64|boot|private|snap|node_modules|Users|Volumes|System|Library|Applications';
@@ -1089,10 +1055,8 @@ const ABSOLUTE_PATH_PATTERNS: readonly RegExp[] = [
 const AUTH_SCHEME_PATTERN = /\b(bearer|basic|digest)\s+[A-Za-z0-9._~+/=-]{8,}/gi;
 
 /**
- * Replace the value in every `sensitiveKey <sep> value` pair, and nothing else.
- *
- * A pair whose key is not on the policy list is returned byte-for-byte, so an
- * ordinary `orderID=4f3c...` or `status: active` stays legible.
+ * Replace the value in every `sensitiveKey <sep> value` pair, and nothing else. A pair whose key is
+ * not on the policy list is returned byte-for-byte, so `orderID=4f3c...` stays legible.
  */
 function redactSensitiveAssignments(text: string): string {
   return text.replace(
@@ -1112,26 +1076,16 @@ function truncateText(text: string): string {
 /**
  * Make one string safe to emit.
  *
- * Order matters. The statement test runs FIRST and short-circuits, because a
- * statement is replaced whole: its bound values sit inside the statement text,
- * where no `key=value` rule can reach them, so partial scrubbing would leave the
- * interesting half behind. Everything that survives that test is then scrubbed
- * rule by rule and finally bounded.
+ * Order matters. The statement test runs FIRST and short-circuits, because a statement is replaced
+ * whole: its bound values sit inside the statement text, where no `key=value` rule can reach them,
+ * so partial scrubbing would leave the interesting half behind. Everything that survives is then
+ * scrubbed rule by rule and finally bounded.
  *
- * WHAT THIS DELIBERATELY DOES NOT DO: it does not redact long opaque runs of
- * alphanumerics. Slatwall primary keys are 32-character UUID-backed strings, and
- * this module's policy is explicitly that an opaque identifier stays legible
- * while the aggregate beside it does not. A length-based rule would redact every
- * `orderID` and `skuID` in the service and destroy the diagnostic value of the
- * log stream to catch material that the assignment, URI and auth-scheme rules
- * already name precisely.
- *
- * AND IT DOES NOT PAY FOR PRECISION WITH BREADTH. Every rule here is anchored to a
- * shape it can name, because the cost of a false positive is a destroyed
- * diagnostic and the cost of enough of them is a log stream nobody can read - at
- * which point the module has failed at its actual job while appearing to do it
- * thoroughly. Withholding a credential and publishing a legible message are not in
- * tension; treating "contains a slash" as "is a path" was.
+ * WHAT THIS DELIBERATELY DOES NOT DO: it does not redact long opaque runs of alphanumerics.
+ * Slatwall primary keys are 32-character UUID-backed strings, and the policy is explicitly that an
+ * opaque identifier stays legible while the aggregate beside it does not. A length-based rule would
+ * redact every `orderID` and `skuID` in the service to catch material the assignment, URI and
+ * auth-scheme rules already name precisely.
  */
 function sanitizeText(text: string): string {
   if (containsSqlStatement(text)) {
@@ -1152,15 +1106,10 @@ function sanitizeText(text: string): string {
 /**
  * Raised when the traversal meets a container that contains itself.
  *
- * A distinct TYPE rather than a generic `Error` carrying a distinguishing
- * message, so that the fallback reporter can recognize this case by
- * `instanceof` and never has to read a message off a thrown value to find out
- * what happened. That is what allows the reporter to be content-blind: the
- * information is in the type, where a caller cannot forge or influence it, and
- * the message never has to be published to convey it.
- *
- * Module-private. It is a signal between two functions in this file and is not
- * part of any contract outside it.
+ * A distinct TYPE rather than a generic `Error` carrying a distinguishing message, so the fallback
+ * reporter can recognize this case by `instanceof` and never has to read a message off a thrown
+ * value. That is what allows the reporter to be content-blind: the information is in the type,
+ * where a caller cannot forge it. Module-private, and not part of any contract outside this file.
  */
 class LogContextCycleError extends Error {
   constructor() {
@@ -1170,35 +1119,26 @@ class LogContextCycleError extends Error {
 }
 
 /**
- * The key under which an object's breadth truncation is recorded.
- *
- * Bracketed, so it is not a valid JavaScript identifier and cannot be confused
- * with - or silently overwrite - a property the caller actually supplied. It
- * matches the bracketed style of `[Function]`, `[Symbol]` and `[depth limit]`
- * already used for the other in-band descriptions in this module.
+ * The key under which an object's breadth truncation is recorded. Bracketed, so it is not a valid
+ * JavaScript identifier and cannot be confused with - or silently overwrite - a property the caller
+ * supplied, matching the bracketed style of `[Function]`, `[Symbol]` and `[depth limit]`.
  */
 const BREADTH_LIMIT_KEY = '[breadth limit]';
 
 /**
- * Describe what a breadth bound left out, in counts only.
- *
- * Deliberately carries NO content from the omitted elements - not a sample, not a
- * first value, not a key name. The counts are what a reader needs in order to
- * know the line is incomplete, and anything more would reintroduce the
- * caller-controlled data this bound exists to keep out of the stream.
+ * Describe what a breadth bound left out, in counts only. Deliberately carries NO content from the
+ * omitted elements - not a sample, not a first value, not a key name. The counts are what a reader
+ * needs in order to know the line is incomplete; anything more reintroduces caller-controlled data.
  */
 function describeBreadthLimit(omitted: number, total: number, unit: string): string {
   return `[breadth limit: ${String(omitted)} of ${String(total)} ${unit} omitted]`;
 }
 
 /**
- * True only for an object literal or a null-prototype object.
- *
- * A class instance, `Map`, `Set`, `RegExp` or buffer is NOT plain and is
- * deliberately not traversed. This module cannot know whether such an object's
- * internals hold a credential or a whole aggregate, and walking an entity graph
- * would defeat the never-log policy from the inside. Describing the object
- * instead keeps the policy intact and the work bounded.
+ * True only for an object literal or a null-prototype object. A class instance, `Map`, `Set`,
+ * `RegExp` or buffer is NOT plain and is deliberately not traversed: this module cannot know
+ * whether such an object's internals hold a credential or a whole aggregate, and walking an entity
+ * graph would defeat the never-log policy from the inside.
  */
 function isPlainObject(value: object): boolean {
   const prototype = Object.getPrototypeOf(value) as object | null;
@@ -1215,36 +1155,29 @@ function describeOpaqueObject(value: object): string {
 /**
  * A class-name shape: what an `Error.name` legitimately is, and nothing else.
  *
- * A JavaScript `name` is an ordinary writable property, so any value at all can
- * end up there - including a whole sentence, a stringified payload, or a
- * credential. Only a value shaped like a class identifier is emitted; anything
- * else is replaced, because the point of the name field is to say WHICH failure
- * occurred, never to carry free text. Dots are admitted so a namespaced class
- * name survives intact; nothing else beyond letters, digits, `_` and `$` is.
- *
- * There is no `g` flag on this pattern or on the error-code pattern below: both
- * are reused across invocations, and a global regex would carry `lastIndex`
- * between them.
+ * A JavaScript `name` is an ordinary writable property, so any value at all can end up there -
+ * including a whole sentence, a stringified payload, or a credential. Only a value shaped like a
+ * class identifier is emitted, because the point of the field is to say WHICH failure occurred,
+ * never to carry free text. Dots are admitted so a namespaced class name survives. No `g` flag on
+ * this pattern or on the error-code pattern below: both are reused, and a global regex would carry
+ * `lastIndex`.
  */
 const SAFE_ERROR_NAME_PATTERN = /^[A-Za-z_$][A-Za-z0-9_$.]{0,63}$/;
 
 /**
- * An error's `name` is a class name, so it is emitted only when it looks like
- * one. A subclass free to assign anything to `name` cannot use it as a channel.
+ * An error's `name` is a class name, so it is emitted only when it looks like one. A subclass free
+ * to assign anything to `name` cannot use it as a channel.
  */
 function safeErrorName(name: unknown): string {
   return typeof name === 'string' && SAFE_ERROR_NAME_PATTERN.test(name) ? name : '[Error]';
 }
 
 /**
- * The shape an error CODE may take before it is emitted.
- *
- * Sized to the machine tokens the pinned dependency set and the Node runtime
- * actually produce - a Node `ERR_*` / `ECONNREFUSED` code, or a MySQL driver
- * `ER_*` code - and capped at the same 64 characters for the same reason.
- * Whitespace, quotes, parentheses and every other punctuation mark are excluded,
- * which is what makes it structurally impossible for a SQL fragment, a
- * connection string or a sentence to pass as a code.
+ * The shape an error CODE may take before it is emitted. Sized to the machine tokens the pinned
+ * dependency set and the Node runtime actually produce - a Node `ERR_*` / `ECONNREFUSED` code, or a
+ * MySQL driver `ER_*` code. Whitespace, quotes, parentheses and every other punctuation mark are
+ * excluded, which makes it structurally impossible for a SQL fragment or a sentence to pass as a
+ * code.
  */
 const SAFE_ERROR_CODE_PATTERN = /^[A-Za-z0-9_.-]{1,64}$/;
 
@@ -1252,11 +1185,9 @@ const SAFE_ERROR_CODE_PATTERN = /^[A-Za-z0-9_.-]{1,64}$/;
 const UNSAFE_ERROR_NAME = '[unsafe name]';
 
 /**
- * Read a machine code off an error, or decline.
- *
- * Reached through `in`-operator narrowing so nothing widens and no cast is
- * needed. Declining is the default: a code is emitted only when it is a string
- * AND has the machine-token shape above.
+ * Read a machine code off an error, or decline. Reached through `in`-operator narrowing so nothing
+ * widens and no cast is needed. Declining is the default: a code is emitted only when it is a
+ * string AND has the machine-token shape above.
  */
 function readSafeErrorCode(error: Error): string | undefined {
   if (!('code' in error)) {
@@ -1272,138 +1203,92 @@ function readSafeErrorCode(error: Error): string | undefined {
 /**
  * Reduce an error to the metadata that is safe to publish.
  *
- * `JSON.stringify(new Error('x'))` yields `{}`, because an Error's own fields
- * are not enumerable. Converting explicitly is the only way an error survives
- * into the emitted line at all - but WHAT survives is deliberately narrow.
+ * `JSON.stringify(new Error('x'))` yields `{}`, because an Error's own fields are not enumerable.
+ * Converting explicitly is the only way an error survives into the emitted line at all - but WHAT
+ * survives is deliberately narrow.
  *
- * `message` AND `stack` ARE NEVER EMITTED. Both are free text, and the never-log
- * policy above is KEY-based: it inspects key names, so it can never inspect the
- * inside of a string. An exception's message is routinely built out of data the
- * policy exists to keep out of the stream - the MySQL driver composes its
- * message from the server's own error text and hangs the failing statement off
- * the error object, so a syntax or constraint failure embeds the failing SQL
- * fragment and its bound values directly in `message`. A validation failure
- * quotes the rejected input. A connection failure names the host and the
- * account. A stack can carry the same content in its header line, and `stack`
- * is itself writable, so its contents are not even structurally guaranteed.
- * Emitting either would let a credential, a token, a connection detail or
- * personally identifiable data past a policy that cannot see inside it.
- *
- * Both keys are therefore RETAINED carrying the redaction marker rather than
- * dropped. That keeps the emitted object recognizably an error rather than the
- * empty `{}` plain serialization produces, and - exactly as for a forbidden key -
- * it puts the omission ON THE RECORD instead of leaving a reader to wonder
- * whether the field was absent or withheld.
- *
- * What remains is enough to classify a failure without describing it: the error
- * class name, and a machine code when the error carries one. The narrative
- * belongs to the caller's own `message` argument, which is authored in this code
- * base rather than assembled from data, and to the correlation identifier the
- * call site supplies alongside it.
- *
- * There is deliberately NO option, environment variable or override that turns
- * any of this off, for the same reason the forbidden-key list has none.
- *
- * Copying only these fields also drops everything else the error carries -
- * `cause`, an aggregate's nested `errors`, and the driver-attached statement and
- * parameter fields - none of which reaches a log line from here.
+ * `message` AND `stack` ARE NEVER EMITTED, for the reason guarantee 2 of the module header gives; a
+ * stack can carry the same content in its header line, and `stack` is itself writable, so its
+ * contents are not even structurally guaranteed. Both keys are RETAINED carrying the redaction
+ * marker rather than dropped: that keeps the emitted object recognizably an error rather than the
+ * empty `{}` plain serialization produces, and puts the omission ON THE RECORD. What remains is
+ * enough to classify a failure without describing it: the error class name, and a machine code when
+ * the error carries one.
  */
 function normalizeError(error: Error): Record<string, unknown> {
   const name = SAFE_ERROR_NAME_PATTERN.test(error.name) ? error.name : UNSAFE_ERROR_NAME;
   const code = readSafeErrorCode(error);
   const summary: Record<string, unknown> = { name, message: REDACTED, stack: REDACTED };
-  // Omitted rather than set to `undefined`, so an error without a usable code
-  // simply has no `code` member instead of a null-shaped one.
+  // Omitted rather than set to `undefined`, so an error without a usable code simply has no `code`.
   if (code !== undefined) {
     summary['code'] = code;
   }
-  // DRIVER FIELDS ARE NOT NAMED HERE EITHER. An earlier form of this function
-  // listed the statement- and binding-bearing keys it had declined to copy, so
-  // that the suppression was visible on the record. The shape is CLOSED instead:
-  // `sql`, `sqlMessage` and `values` are never read, and no key derived from the
-  // error's own property names reaches the line - not even as a name. That is
-  // strictly less disclosing, and it keeps the emitted shape fixed, which is what
-  // lets a reader tell a driver error from a plain one by its `code` rather than
-  // by a field list. Those same keys remain in the key-based half of the policy
-  // (`SQL_AND_BINDING_KEYS`), which still redacts them wherever a CONTEXT object
-  // carries them under a key.
+  // DRIVER FIELDS ARE NOT NAMED HERE EITHER. The shape is CLOSED: `sql`, `sqlMessage` and `values`
+  // are never read, and no key derived from the error's own property names reaches the line - not
+  // even as a name. That is strictly less disclosing than listing the declined keys, and it keeps
+  // the emitted shape fixed, which lets a reader tell a driver error from a plain one by its
+  // `code`. Those keys remain in the key-based half of the policy, which still redacts them in a
+  // CONTEXT object.
   return summary;
 }
 
 /**
- * Apply the never-log policy and reshape whatever is left into something JSON
- * can represent. Runs before `JSON.stringify` so the policy reaches nested
- * structures, not just the top level of the context object.
+ * Apply the never-log policy and reshape whatever is left into something JSON can represent. Runs
+ * before `JSON.stringify` so the policy reaches nested structures, not just the top level.
  *
- * `ancestors` holds the containers currently being traversed - the chain from
- * the context object down to `value`, and nothing else. Tracking ancestors
- * rather than every object already seen matches `JSON.stringify` exactly: a
- * value referenced twice from different branches is a shared reference and is
- * rendered twice, while a value that contains itself is a cycle and is
- * reported. The chain is bounded by `MAX_REDACTION_DEPTH`, so the set never
- * holds more entries than that.
+ * `ancestors` holds the containers currently being traversed - the chain from the context object
+ * down to `value`, and nothing else. Tracking ancestors rather than every object already seen
+ * matches `JSON.stringify` exactly: a value referenced twice from different branches is a shared
+ * reference and is rendered twice, while a value that contains itself is a cycle and is reported.
  */
 function redactValue(value: unknown, depth: number, ancestors: ReadonlySet<object>): unknown {
-  // JSON has no bigint and `JSON.stringify` throws when it meets one. The exact
-  // decimal digits are preserved as a string: no rounding and no arithmetic, so
-  // the rule that all money arithmetic passes through the domain's single
-  // arithmetic surface is untouched by this module. A monetary value reaching a
-  // log line is already a formatted string, and nothing here reformats it.
+  // JSON has no bigint and `JSON.stringify` throws when it meets one. The exact decimal digits are
+  // preserved as a string: no rounding and no arithmetic, so the rule that all money arithmetic
+  // passes through the domain's single arithmetic surface is untouched here.
   if (typeof value === 'bigint') {
     return value.toString();
   }
-  // Neither survives `JSON.stringify` - a function-valued or symbol-valued
-  // property is silently omitted. Describing it keeps the key visible instead
-  // of quietly losing it.
+  // Neither survives `JSON.stringify` - a function- or symbol-valued property is silently omitted.
+  // Describing it keeps the key visible instead of quietly losing it.
   if (typeof value === 'function') {
     return '[Function]';
   }
   if (typeof value === 'symbol') {
     return '[Symbol]';
   }
-  // A string is the one primitive that can carry a payload the key-name policy
-  // cannot see - a statement, a connection URI, a bearer token, an absolute
-  // path - so it is the one primitive that is NOT passed through untouched.
-  // Sanitizing here rather than only at the top level is what makes the policy
-  // reach a string nested inside the caller's context object.
+  // A string is the one primitive that can carry a payload the key-name policy cannot see, so it is
+  // the one primitive NOT passed through untouched. Sanitizing here is what makes the policy reach
+  // a string nested inside the caller's context object.
   if (typeof value === 'string') {
     return sanitizeText(value);
   }
-  // Everything remaining that is not an object is a number, boolean or
-  // undefined: representable as-is, and passed through untouched.
+  // Everything remaining that is not an object is a number, boolean or undefined: passed through.
   if (typeof value !== 'object') {
     return value;
   }
   if (value === null) {
     return null;
   }
-  // An error is SUMMARIZED, never traversed. It is reduced to its class name and
-  // a machine code, with its message and stack replaced by the redaction marker -
-  // see `normalizeError` for why both are free text the key-based policy cannot
-  // inspect. This arm therefore does not weaken the policy; it is the one place
-  // that closes the hole a key-based policy would otherwise leave open.
+  // An error is SUMMARIZED, never traversed: reduced to its class name and a machine code, with its
+  // message and stack replaced by the redaction marker. See `normalizeError`. This arm is the one
+  // place that closes the hole a key-based policy would otherwise leave open.
   if (value instanceof Error) {
     return normalizeError(value);
   }
-  // UTC, explicitly: `toISOString()` always renders in UTC with the `Z`
-  // designator, so a date in a context object cannot pick up an ambient
-  // timezone the way the legacy engine's date handling did.
+  // UTC, explicitly: `toISOString()` always renders in UTC with the `Z` designator, so a date in a
+  // context object cannot pick up an ambient timezone the way the legacy engine's handling did.
   if (value instanceof Date) {
     return value.toISOString();
   }
-  // A container that contains itself. Reported rather than quietly truncated:
-  // a cycle means the caller handed the logger a live object graph - an entity,
-  // or the order aggregate - instead of a flat context, and a half-walked
-  // rendering of such a graph would be presented as if it were the caller's
-  // data while risking exactly the nested payload the policy above forbids.
-  // The throw is caught by the total guard in `serializeEntry`, which emits the
-  // fallback line, so this never escapes the logger.
+  // A container that contains itself. Reported rather than quietly truncated: a cycle means the
+  // caller handed the logger a live object graph - an entity, or the order aggregate - instead of a
+  // flat context, and a half-walked rendering would be presented as if it were the caller's data.
+  // The throw is caught by the total guard in `serializeEntry`, so it never escapes the logger.
   if (ancestors.has(value)) {
     throw new LogContextCycleError();
   }
-  // A cycle longer than the depth bound is truncated here instead, because
-  // traversal stops before the repetition becomes reachable. The emitted line
-  // stays well-formed, finite and redacted either way.
+  // A cycle longer than the depth bound is truncated here instead, because traversal stops before
+  // the repetition becomes reachable. The emitted line stays well-formed, finite and redacted.
   if (depth >= MAX_REDACTION_DEPTH) {
     return '[depth limit]';
   }
@@ -1418,15 +1303,10 @@ function redactValue(value: unknown, depth: number, ancestors: ReadonlySet<objec
 }
 
 /**
- * Rebuild an array, bounded in width, recording anything it left out.
- *
- * The elements beyond the bound are DESCRIBED rather than dropped, and the
- * distinction matters more than it looks. A silently shortened array is
- * indistinguishable from an array that was genuinely that short, so a reader
- * diagnosing an incident would draw a conclusion about the caller's data from an
- * artefact of this module. The trailing marker says plainly that a bound was
- * reached and how much is missing, which keeps the line honest while still
- * bounding the work.
+ * Rebuild an array, bounded in width, recording anything it left out. The elements beyond the bound
+ * are DESCRIBED rather than dropped: a silently shortened array is indistinguishable from one that
+ * was genuinely that short, so a reader diagnosing an incident would draw a conclusion about the
+ * caller's data from an artefact of this module.
  */
 function redactArray(
   source: readonly unknown[],
@@ -1450,27 +1330,44 @@ function redactArray(
  * Decide what one member of a caller's object becomes, from its key and the
  * shape of its value.
  *
- * Three outcomes, in order:
+ * ★ THIS IS WHERE THE CONTEXT SURFACE FAILS CLOSED, and it did not always. An
+ * earlier revision ran the first two rules below and then emitted anything they
+ * did not claim, which decided the question the wrong way round for a key nobody
+ * had thought to enumerate. Runtime testing found `x-forwarded-for`, `x-real-ip`,
+ * `mnemonic` and `recoveryPhrase` going out in cleartext beside an `authorization`
+ * that was correctly redacted - the enumerated names were caught and the
+ * unenumerated ones were not, which is the definition of a fail-open default. The
+ * never-log sets are now the floor rather than the whole policy: a scalar reaches
+ * a log line only if a name authorized it.
+ *
+ * Five outcomes, in order:
  *
  *   1. A key the never-log policy claims is replaced with the marker outright.
  *      The value is not traversed, not measured and not described - a description
- *      of a credential is still a statement about a credential.
- *   2. A key that names an OPAQUE CONTAINER is decided by the shape of its value.
- *      TEXT is redacted: a header map, an environment dump or a request body
- *      flattened into one string can hold anything, and content sanitization is
- *      not a sufficient answer because it catches credential-SHAPED text while a
- *      bare opaque secret - a raw token with no scheme prefix - has no shape to
- *      catch. Everything else falls through to rule 3, where a plain object or an
- *      array is recursed and each child is policed on its own name
- *      (`headers.authorization`, `env.DB_PASSWORD`), a number, boolean or null
- *      is emitted because it can hide no payload, and a class instance is
- *      described by name only.
- *   3. Anything else is redacted value-first by `redactValue`, which still
- *      sanitizes strings, summarizes errors and enforces the depth and breadth
- *      bounds.
+ *      of a credential is still a statement about a credential. An explicit
+ *      DENIAL beats every authorization below it.
+ *   2. A key that names an OPAQUE CONTAINER, holding TEXT, is redacted: a header
+ *      map, an environment dump or a request body flattened into one string can
+ *      hold anything, and content sanitization is not a sufficient answer because
+ *      it catches credential-SHAPED text while a bare opaque secret - a raw token
+ *      with no scheme prefix - has no shape to catch.
+ *   3. A key on either allow-list is emitted, value-first through `redactValue`,
+ *      which still sanitizes strings, summarizes errors and enforces the depth and
+ *      breadth bounds. Authorization is of the NAME; it is not a promise about
+ *      what a caller put under it, and rule 1 already outranks it.
+ *   4. A value that POLICES ITSELF is emitted whatever its key is - see
+ *      `isSelfPolicingContextValue` for the whole argument. A plain object is the
+ *      important case: it holds no data of its own, and every child of it returns
+ *      to rule 1 under its own name, so `attempt: { failure: <Error> }` stays
+ *      readable without `attempt` being authorized anywhere.
+ *   5. ANYTHING ELSE IS REDACTED. This is the fail-closed arm, and it is reached
+ *      by exactly one thing: a scalar - a string, a number, a bigint, a date -
+ *      under a name no allow-list carries. The KEY is still emitted beside the
+ *      marker, so the line records that the caller supplied something and stays a
+ *      truthful audit record rather than a silently shortened one.
  *
  * Total, like everything else on this path: the only operations are set lookups,
- * a `typeof` test and a recursive call that is itself total.
+ * `typeof` tests and recursive calls that are themselves total and bounded.
  */
 function redactMember(
   key: string,
@@ -1484,28 +1381,99 @@ function redactMember(
   if (isOpaqueContainerKey(key) && isOpaqueTextPayload(value)) {
     return REDACTED;
   }
-  return redactValue(value, depth + 1, ancestors);
+  if (isLegibleContextKey(key) || isSelfPolicingContextValue(value, MAX_REDACTION_DEPTH)) {
+    return redactValue(value, depth + 1, ancestors);
+  }
+  return REDACTED;
 }
 
 /**
- * Whether a value is free text, and therefore capable of hiding an entire
- * payload inside one member.
- *
- * A `bigint` counts because it is emitted as its decimal string, and a long
- * digit run is still text this module cannot see into. Numbers, booleans, `null`
- * and `undefined` do not count: whatever a caller meant by `settings: 42`, it
- * cannot be a credential dump.
+ * Whether a value is free text, and therefore capable of hiding an entire payload inside one
+ * member. A `bigint` counts because it is emitted as its decimal string. Numbers, booleans, `null`
+ * and `undefined` do not: whatever a caller meant by `settings: 42`, it cannot be a credential
+ * dump.
  */
 function isOpaqueTextPayload(value: unknown): boolean {
   return typeof value === 'string' || typeof value === 'bigint';
 }
 
 /**
+ * Whether a value can be emitted under an UNAUTHORIZED key without disclosing
+ * anything the key name has not already disclosed.
+ *
+ * The structural half of the fail-closed rule, and what keeps it from being
+ * useless. A name-based allow-list can only authorize what someone enumerated, so
+ * a policy built on names alone would redact every nested diagnostic a caller
+ * assembles under a wrapper of its own choosing. That is not necessary, because
+ * whether a value can LEAK is a property of its shape, not of its name:
+ *
+ *   * A PLAIN OBJECT carries no data itself. Each of its children returns to
+ *     `redactMember` under its own name and is decided by these same rules, all
+ *     the way down, so traversing it concedes nothing - `{ x: { ssn } }` still
+ *     redacts `ssn`. This is the arm that keeps a caller's own nesting readable.
+ *   * AN ERROR is reduced by `normalizeError` to a shape-validated class name and
+ *     a shape-validated machine code, with message and stack replaced. The
+ *     reduction is unconditional, so no key could make it unsafe.
+ *   * ANY OTHER OBJECT is not traversed at all: `describeOpaqueObject` renders the
+ *     constructor's name, which is an identifier from this codebase rather than
+ *     anything the caller supplied.
+ *   * A FUNCTION OR SYMBOL renders as the module's own `[Function]` / `[Symbol]`
+ *     constant. The value is discarded, not described.
+ *   * A BOOLEAN, `null` OR `undefined` cannot hold a payload. This is the line,
+ *     and it is drawn where it is because whatever a caller meant by
+ *     `settings: true`, it cannot be a credential - the same reasoning
+ *     `isOpaqueTextPayload` already uses one function above.
+ *
+ * REFUSED, and each for a reason worth stating: a STRING is the canonical hiding
+ * place, a NUMBER can be a card number or an account number in numeric form, a
+ * BIGINT is emitted as its decimal digits and so is text by another route, and a
+ * DATE renders as caller data - a date of birth is a date. Each needs a name.
+ *
+ * AN ARRAY IS THE ONE RECURSIVE CASE, and it is refused unless every member is
+ * itself self-policing. `redactArray` calls `redactValue` directly, because an
+ * array member HAS NO NAME to police - so a scalar inside an array would reach the
+ * line with no rule having authorized it, and nesting the array would not change
+ * that. An array of errors or of plain objects is admitted; an array containing
+ * one string is not. The recursion is bounded by `budget` and answers NOT
+ * self-policing when it runs out, so the fail-closed direction is also the
+ * cheap one. The breadth bound matches `redactArray`, so a member this function
+ * never examined is a member that would never have been emitted.
+ *
+ * Total: `typeof` tests, two `instanceof` tests and a bounded recursion.
+ */
+function isSelfPolicingContextValue(value: unknown, budget: number): boolean {
+  if (value === null || value === undefined) {
+    return true;
+  }
+  if (typeof value === 'boolean' || typeof value === 'function' || typeof value === 'symbol') {
+    return true;
+  }
+  if (typeof value !== 'object') {
+    // string, number and bigint - every one of them a leaf that needs a name.
+    return false;
+  }
+  if (value instanceof Date) {
+    return false;
+  }
+  if (value instanceof Error) {
+    return true;
+  }
+  if (Array.isArray(value)) {
+    if (budget <= 0) {
+      return false;
+    }
+    return value
+      .slice(0, MAX_REDACTION_BREADTH)
+      .every((item: unknown) => isSelfPolicingContextValue(item, budget - 1));
+  }
+  // A plain object, whose children are re-decided by name; or any other object,
+  // which `describeOpaqueObject` reduces to a constructor name.
+  return true;
+}
+
+/**
  * Rebuild a plain object, applying the never-log policy key by key and recursing
  * into what survives, bounded in the number of keys it will walk.
- *
- * The truncation marker is added under a key that is not a valid identifier, so
- * it cannot collide with a real property the caller supplied.
  */
 function redactPlainObject(
   source: object,
@@ -1514,34 +1482,21 @@ function redactPlainObject(
 ): Record<string, unknown> {
   const entries: ReadonlyArray<readonly [string, unknown]> = Object.entries(source);
 
-  // THE RECORD IS BUILT ON A NULL PROTOTYPE, AND CALLER KEYS ARE WRITTEN WITH
-  // `defineProperty` RATHER THAN `[key] =`. Both halves are required, and the
-  // reason is a defect rather than defensiveness:
-  //
-  //   * `{}` inherits `Object.prototype`, which still exposes the legacy
-  //     `__proto__` accessor. `redacted['__proto__'] = value` therefore CALLS THE
-  //     SETTER instead of creating a property, so a context key literally named
-  //     `__proto__` was silently discarded while every key around it was
-  //     recorded. An audit record that drops one specific, nameable key is worse
-  //     than one that never had it, because the entry still looks complete. Worse,
-  //     when the value was an object the setter reassigned the prototype of the
-  //     record being built.
-  //   * `Object.create(null)` removes the accessor, so `__proto__` becomes an
-  //     ordinary key with no special meaning; `defineProperty` then states the
-  //     intent explicitly - an own, enumerable data property - so the write cannot
-  //     be intercepted at all.
-  //
-  // The keys reaching here are not this port's to choose: a context object can be
-  // assembled from a request body, a header map, or the fields of a `JSON.parse`
-  // result, and `JSON.parse` produces `__proto__` as an ordinary own property - so
-  // a caller can put that key in front of this loop without the port's
-  // cooperation. `JSON.stringify` serializes a null-prototype object exactly as it
-  // serializes `{}`, so the emitted line is unchanged for every ordinary key.
+  // THE RECORD IS BUILT ON A NULL PROTOTYPE, AND CALLER KEYS ARE WRITTEN WITH `defineProperty`
+  // RATHER THAN `[key] =`. Both halves are required, and the reason is a defect rather than
+  // defensiveness. `{}` inherits `Object.prototype`, which still exposes the legacy `__proto__`
+  // accessor, so `redacted['__proto__'] = value` CALLS THE SETTER instead of creating a property: a
+  // context key literally named `__proto__` was silently discarded while every key around it was
+  // recorded, and when the value was an object the setter reassigned the prototype of the record
+  // being built. `Object.create(null)` removes the accessor so `__proto__` becomes an ordinary key,
+  // and `defineProperty` states the intent explicitly - an own, enumerable data property - so the
+  // write cannot be intercepted at all. The keys reaching here are not this port's to choose: a
+  // context can be assembled from a `JSON.parse` result, which produces `__proto__` as an ordinary
+  // own property.
   const redacted = Object.create(null) as Record<string, unknown>;
 
-  // The breadth bound stays on the iteration. The null prototype governs HOW each
-  // surviving key is written; it says nothing about how many are walked, so the
-  // two controls are independent and both apply.
+  // The breadth bound stays on the iteration. The null prototype governs HOW each surviving key is
+  // written; it says nothing about how many are walked, so both controls apply independently.
   for (const [key, nested] of entries.slice(0, MAX_REDACTION_BREADTH)) {
     Object.defineProperty(redacted, key, {
       value: redactMember(key, nested, depth, ancestors),
@@ -1552,11 +1507,10 @@ function redactPlainObject(
   }
 
   if (entries.length > MAX_REDACTION_BREADTH) {
-    // `BREADTH_LIMIT_KEY` is authored by this module rather than supplied by a
-    // caller, and it is deliberately not a valid identifier, so it can collide
-    // with neither a real property nor `__proto__`. It is still written through
-    // `defineProperty` so that every write into this record goes through one
-    // mechanism - there is no second, weaker path for a future edit to reach for.
+    // `BREADTH_LIMIT_KEY` is authored by this module rather than supplied by a caller, and is
+    // deliberately not a valid identifier, so it can collide with neither a real property nor
+    // `__proto__`. It is still written through `defineProperty` so every write into this record
+    // goes through one mechanism, leaving no second, weaker path for a future edit to reach for.
     Object.defineProperty(redacted, BREADTH_LIMIT_KEY, {
       value: describeBreadthLimit(entries.length - MAX_REDACTION_BREADTH, entries.length, 'keys'),
       enumerable: true,
@@ -1570,34 +1524,24 @@ function redactPlainObject(
 // ---------------------------------------------------------------------------
 // Threshold resolution
 //
-// THIS MODULE IMPORTS NOTHING, AND THAT INCLUDES ITS SIBLING `./config.ts`.
+// THIS MODULE IMPORTS NOTHING, AND THAT INCLUDES ITS SIBLING `./config.ts`. `config.ts` must fail
+// hard at startup when the database dialect is unset or unrecognized, reproducing the conditional
+// chain at config/configORM.cfm:L4-L7 that has no `<cfelse>` and whose failure path ends in an
+// outright abort. A logger that depended on configuration could not report a configuration failure,
+// so keeping the two mutually independent leaves `config.ts` free to log its own fatal error. The
+// asymmetry therefore runs the other way here, deliberately: an unset or unrecognized `LOG_LEVEL`
+// MUST NOT throw but falls back to `info`, because logging must never be the thing that breaks a
+// cold start.
 //
-// `config.ts` is required to fail hard at startup when the database dialect is
-// unset or unrecognized, reproducing config/configORM.cfm:L4-L7 - a conditional
-// chain with no `<cfelse>` whose failure path ends in an outright abort. A
-// logger that depended on configuration could not report a configuration
-// failure. Keeping the two modules mutually independent is what leaves
-// `config.ts` free to log its own fatal error, and what guarantees a missing or
-// invalid configuration can never silence logging.
-//
-// The asymmetry therefore runs the other way here, deliberately: an unset or
-// unrecognized `LOG_LEVEL` MUST NOT throw. It falls back to `info`, because
-// logging must never be the thing that breaks a cold start.
-//
-// The threshold is resolved lazily, on every call, and is NOT cached at module
-// scope. A module-scope cache would be captured once per container and then
-// frozen for the whole life of that container, and it would make a test suite
-// order-dependent on whichever suite imported this module first. `withLevel()`
-// is the explicit override, so a test pins the threshold directly rather than
-// mutating the process environment and hoping the cache agrees.
+// The threshold is resolved lazily on every call and is NOT cached at module scope: a cache would
+// be captured once per container and frozen for its whole life, and would make a test suite
+// order-dependent on whichever suite imported this module first. `withLevel()` is the explicit
+// override, so a test pins the threshold rather than mutating the process environment.
 // ---------------------------------------------------------------------------
 
 /**
- * Parse a raw environment value into a level, case-insensitively.
- *
- * Returns `undefined` for anything unrecognized - including the empty string -
- * so the caller applies the default. Every arm returns a literal from the
- * closed union, so no type assertion is needed to prove the narrowing.
+ * Parse a raw environment value into a level, case-insensitively. Returns `undefined` for anything
+ * unrecognized - including the empty string - so the caller applies the default.
  */
 function parseLogLevel(raw: string | undefined): LogLevel | undefined {
   if (raw === undefined) {
@@ -1618,12 +1562,10 @@ function parseLogLevel(raw: string | undefined): LogLevel | undefined {
 }
 
 /**
- * The threshold in force for one emission: the pinned override if there is one,
- * otherwise `LOG_LEVEL`, otherwise the default.
- *
- * `process.env` is an index signature, so the read is `string | undefined` under
- * `noUncheckedIndexedAccess`. Both cases are handled explicitly - there is no
- * non-null assertion anywhere in this module.
+ * The threshold in force for one emission: the pinned override if there is one, otherwise
+ * `LOG_LEVEL`, otherwise the default. `process.env` is an index signature, so the read is
+ *   `string | undefined`
+ * under `noUncheckedIndexedAccess`; both cases are handled explicitly.
  */
 function resolveThreshold(pinnedLevel: LogLevel | undefined): LogLevel {
   if (pinnedLevel !== undefined) {
@@ -1633,12 +1575,8 @@ function resolveThreshold(pinnedLevel: LogLevel | undefined): LogLevel {
 }
 
 /**
- * One emitted record.
- *
- * `context` is optional in the exact sense that `exactOptionalPropertyTypes`
- * requires: an entry without a context OMITS the key rather than setting it to
- * `undefined`, which is why it is built by a conditional expression below and
- * never mutated into place.
+ * One emitted record. `context` is optional in the exact sense `exactOptionalPropertyTypes`
+ * requires: an entry without a context OMITS the key rather than setting it to `undefined`.
  */
 interface LogEntry {
   readonly timestamp: string;
@@ -1650,37 +1588,18 @@ interface LogEntry {
 /**
  * Name the reason serialization failed, carrying none of its content.
  *
- * ★ CONTENT-BLIND, AND THAT IS THE WHOLE POINT OF THE FUNCTION. It previously
- * interpolated `thrown.message`, which made the fallback line the one path in
- * this module that published unstructured text having bypassed redaction
- * entirely - the redaction pass is what threw, so nothing it would have scrubbed
- * had been scrubbed yet. Two of the three failures it reports are raised while
- * READING the caller's own object, so that message could be caller-authored: an
- * accessor that throws `new Error(connectionString)` had its argument copied
- * straight onto the log stream.
+ * CONTENT-BLIND, AND THAT IS THE WHOLE POINT OF THE FUNCTION. Interpolating `thrown.message` would
+ * make this the one path in the module that publishes unstructured text having bypassed redaction
+ * entirely - the redaction pass is what threw, so nothing it would have scrubbed had been scrubbed
+ * yet. Two of the three failures reported here are raised while READING the caller's own object, so
+ * that message can be caller-authored: an accessor throwing `new Error(connectionString)` would
+ * have its argument copied straight onto the log stream.
  *
- * The return value is now one of exactly two fixed sentences chosen by TYPE, so
- * no span of any thrown value reaches the output. Distinguishing the cycle case
- * is still worth doing, because that one is this module's own controlled signal
- * rather than anything the caller produced, and it tells an operator something
- * actionable: a live object graph was handed to the logger instead of a flat
- * context.
- *
- * Total by construction - two returns, no property reads on `thrown` beyond an
- * `instanceof` test - which is what lets the caller treat it as unable to throw
- * while it is reporting a throw.
- *
- * THE STRONGER-LOOKING ALTERNATIVE IS NOT TO BIND THE THROWN VALUE AT ALL - a
- * bare `catch {}` in the caller, with a single fixed sentence here - on the
- * argument that a binding invites a later edit to put content back on the record.
- * That is a real hazard and it is answered rather than dismissed: the binding is
- * reachable by exactly one operation, an `instanceof` test against a class this
- * module defines and raises itself, and the two return values are literals with
- * no interpolation anywhere in the function. Non-disclosure is therefore a
- * property of the function body, which a reviewer can read in six lines, rather
- * than of the caller's `catch` clause. What the binding buys is the cycle
- * distinction above, which is actionable and cannot be recovered once the value
- * is discarded.
+ * The return value is therefore one of exactly two fixed sentences chosen by TYPE. Distinguishing
+ * the cycle case tells an operator something actionable - a live object graph was handed to the
+ * logger instead of a flat context - and is the whole reason the thrown value is bound at all
+ * rather than discarded by a bare `catch {}`: the binding is reachable by exactly one operation, an
+ * `instanceof` test against a class this module raises itself.
  */
 function describeSerializationFailure(thrown: unknown): string {
   if (thrown instanceof LogContextCycleError) {
@@ -1692,39 +1611,17 @@ function describeSerializationFailure(thrown: unknown): string {
 /**
  * Build and serialize one entry, and never throw while doing it.
  *
- * A logger that throws while reporting a failure is worse than no logger, so
- * this guard is deliberately TOTAL, and that is why redaction happens inside
- * the `try` rather than before it. Three failures land here:
- *
- *   * a circular reference, reported by the traversal above;
- *   * an accessor on the caller's context that throws when it is read, which
- *     `Object.entries` would otherwise let escape into the caller;
- *   * anything `JSON.stringify` itself refuses.
- *
- * In every case the entry is replaced by a minimal, well-formed line that keeps
- * the timestamp, level and message and names the failure, so the emission is
- * never silently lost and the reason is on the record. The name is all it gets:
- * see `describeSerializationFailure` for why the reason is chosen by type and
- * carries no content from the thrown value.
- *
- * A FOURTH outcome is not a failure at all and so does not go through the `catch`:
- * a serialized entry over `MAX_SERIALIZED_ENTRY_CHARACTERS` is replaced by the
- * same minimal shape, reporting the measured size. It is checked after
- * stringification because that is the only point where the true emitted size is
- * known - depth and breadth bound a structure's shape, and neither can see the
- * length of a single leaf string.
- *
- * Neither replacement needs a guard of its own. Every field of both is a string
- * or a number already in hand, so the second call cannot fail in turn - which is
- * precisely what makes the guarantee absolute rather than merely likely.
- *
- * The message is sanitized on BOTH paths, and it is sanitized here rather than
- * at the four call sites. A caller composes a message by interpolation - the
- * driver's own text, a connection URI, a resolved filesystem path - so the
- * message is string content that the key-name policy structurally cannot see.
- * Doing it once, at the single point where an entry is built, is what makes the
- * guarantee hold for every level and every caller rather than for the callers
- * that remembered.
+ * A logger that throws while reporting a failure is worse than no logger, so this guard is
+ * deliberately TOTAL, and that is why redaction happens inside the `try` rather than before it.
+ * Three failures land here: a circular reference reported by the traversal above; an accessor on
+ * the caller's context that throws when it is read, which `Object.entries` would otherwise let
+ * escape; and anything `JSON.stringify` itself refuses. In every case the entry is replaced by a
+ * minimal well-formed line keeping the timestamp, level and message and naming the failure. A
+ * FOURTH outcome is not a failure and skips the `catch`: an entry over
+ * `MAX_SERIALIZED_ENTRY_CHARACTERS` is replaced by the same minimal shape reporting the measured
+ * size. The message is sanitized on BOTH paths, and here rather than at the four call sites: a
+ * caller composes a message by interpolation, so doing it once where an entry is built makes the
+ * guarantee hold for every caller rather than for the callers that remembered.
  */
 function serializeEntry(
   timestamp: string,
@@ -1745,18 +1642,12 @@ function serializeEntry(
           };
     const line = JSON.stringify(entry);
 
-    // The size bound is applied to the FINISHED document, because that is the
-    // only point at which the emitted size is actually known: depth and breadth
-    // bound the shape, and neither can see how long a single leaf string is.
-    //
-    // An over-long entry is replaced rather than sliced. Slicing a JSON document
-    // yields a truncated one that no longer parses, which would break every
-    // downstream structured consumer for exactly the entries most likely to
-    // matter. The replacement keeps the three fields that are known-bounded and
-    // known-safe - they are this module's own arguments, not caller context - and
-    // reports the measured size in place of the context, so the entry stays valid
-    // JSON, stays parseable, and still says on the record that something oversized
-    // was dropped and how large it was.
+    // The size bound is applied to the FINISHED document, the only point at which the emitted size
+    // is known. An over-long entry is replaced rather than sliced: slicing a JSON document yields
+    // one that no longer parses, breaking every downstream structured consumer for exactly the
+    // entries most likely to matter. The replacement keeps the three known-bounded fields - this
+    // module's own arguments, not caller context - and reports the measured size in place of the
+    // context.
     if (line.length > MAX_SERIALIZED_ENTRY_CHARACTERS) {
       return JSON.stringify({
         timestamp,
@@ -1777,99 +1668,60 @@ function serializeEntry(
 }
 
 /**
- * The default sink: one entry, one newline-terminated line, straight to stdout,
- * which the Lambda runtime captures natively.
+ * The default sink: one entry, one newline-terminated line, straight to stdout, which the Lambda
+ * runtime captures natively.
  *
- * Writing to the stream directly rather than through `console` keeps the
- * emitted line byte-for-byte the JSON document, with no runtime-added
- * decoration wrapped around it.
+ * Writing to the stream directly rather than through `console` keeps the emitted line byte-for-byte
+ * the JSON document. Emission is synchronous and per call, and nothing is buffered across
+ * invocations: a warm container freezes between invocations, so anything left in a buffer would be
+ * lost. Every level shares this one stream, `warn` and `error` included - splitting `error` onto
+ * stderr would interleave two streams a consumer then has to reassemble.
  *
- * Emission is synchronous and per call, and nothing is buffered across
- * invocations. A warm container freezes between invocations, so anything left
- * sitting in a buffer would simply be lost. That is an argument about not
- * losing data, and nothing beyond that is claimed by it.
- *
- * Every level shares this one stream, `warn` and `error` included. Splitting
- * `error` onto stderr would interleave two streams that a downstream consumer
- * then has to reassemble, which complicates structured parsing for no gain.
- *
- * This function is deliberately UNGUARDED, and it stays that way. It is a sink
- * like any other, and a sink that swallows its own failure hides that failure
- * from the guard around the call. `process.stdout.write` can fail
- * SYNCHRONOUSLY - a destroyed stream, a closed file descriptor - and when it does
- * the failure is caught one level up, by `emitThroughSink`, which reports it and
- * then makes exactly one direct attempt of its own.
- *
- * WHAT THIS GUARD CANNOT REACH, AND WHERE THAT IS HANDLED INSTEAD. On a
- * pipe-backed stream a broken pipe is not a synchronous failure at all: the write
- * is dispatched successfully and the `EPIPE` arrives later as an `'error'` event
- * on the socket. No `try` around this call can intercept that, and an unhandled
- * `'error'` event is rethrown by `EventEmitter` as an uncaught exception. That
- * case is answered by `absorbAsynchronousStdoutFailure`, registered once below.
- * The two mechanisms are complementary rather than alternative, and both are
- * required: this call stays bare so synchronous failures are still REPORTED,
- * while the listener stops asynchronous ones from killing the process.
+ * This function is deliberately UNGUARDED: a sink that swallows its own failure hides that failure
+ * from the guard around the call. `process.stdout.write` can fail SYNCHRONOUSLY, and when it does
+ * the failure is caught one level up by `emitThroughSink`, which reports it and then makes exactly
+ * one direct attempt of its own. What that guard cannot reach is the asynchronous pipe failure
+ * described in guarantee 1 of the module header, answered by `absorbAsynchronousStdoutFailure`
+ * below.
  */
 function writeLineToStdout(line: string): void {
   process.stdout.write(`${line}\n`);
 }
 
 /**
- * Answer an asynchronous failure of the stdout stream, and deliberately do
- * nothing else.
+ * Answer an asynchronous failure of the stdout stream, and deliberately do nothing else.
  *
- * The body is empty on purpose, and the reason is not indifference: on the only
- * path that reaches here, THE OUTPUT CHANNEL IS THE THING THAT FAILED. There is
- * no second channel to escalate to. Writing the failure back to `process.stdout`
- * would attempt the very write that just failed, and would keep failing for the
- * rest of the process's life on a pipe whose reader is gone. Writing it to
- * stderr would break a documented property of this module - every level shares
- * one stream, and stderr carries nothing during normal operation - and it would
- * do so at the moment a consumer is least able to make use of a second stream.
- * Rethrowing, or letting the event go unhandled, is what the defect was.
- *
- * So the event is consumed and the process continues. Registering ONE listener is
- * what turns a fatal unhandled `'error'` event into a handled one; that is the
- * entire mechanism, and it is the whole of what this function has to accomplish.
- *
- * The parameter list is empty although the event carries an `Error`: reading it
- * would only invite the temptation to publish it, and a stream error's message
- * carries the same free text every other error message does.
+ * The body is empty on purpose. On the only path that reaches here THE OUTPUT CHANNEL IS THE THING
+ * THAT FAILED: writing the failure back to `process.stdout` would attempt the very write that just
+ * failed and would keep failing for the rest of the process's life on a pipe whose reader is gone,
+ * and writing it to stderr would break the documented property that every level shares one stream,
+ * at the moment a consumer is least able to use a second one. Rethrowing, or letting the event go
+ * unhandled, is what the defect was. So the event is consumed and the process continues:
+ * registering ONE listener is what turns a fatal unhandled `'error'` event into a handled one, and
+ * that is the entire mechanism. The parameter list is empty although the event carries an `Error`,
+ * because reading it would only invite the temptation to publish it.
  */
 function absorbAsynchronousStdoutFailure(): void {
-  // Intentionally empty. See the reasoning above. Exactly three blocks in this
-  // module are deliberately empty and no more: this body, the guard in
-  // `absorbAsynchronousStdoutFailures` immediately below, and the `catch` in
-  // `writeLineDirectly`. Each is empty for the same reason - either the output
-  // channel is already gone, or the code runs before any caller exists to report
-  // to - and each says so at the point where it is empty.
+  // Intentionally empty. See the reasoning above, and the three-empty-blocks note in the module
+  // header: this body, the guard in `absorbAsynchronousStdoutFailures` immediately below, and the
+  // `catch` in `writeLineDirectly`, and no more.
 }
 
 /**
- * Register the absorber on `process.stdout`, once, at module load.
+ * Register the absorber on `process.stdout`, once, at module load. Three properties, each
+ * load-bearing.
  *
- * THREE PROPERTIES, EACH LOAD-BEARING:
+ * IDEMPOTENT. Registration is skipped when the absorber is already among the stream's `'error'`
+ * listeners, so a module instance somehow evaluated more than once cannot accumulate listeners.
  *
- *   * IDEMPOTENT. Registration is skipped when the absorber is already among the
- *     stream's `'error'` listeners, so a module instance that is somehow
- *     evaluated more than once - or a future caller that invokes this directly -
- *     cannot accumulate listeners. Identity of the named function is the test,
- *     which needs no marker property on the stream and no state outside it. Two
- *     genuinely separate module instances in one process (a bundled copy beside a
- *     source copy, say) each hold their own function identity and would therefore
- *     each register once; that is harmless by construction, because both are
- *     no-ops and one handled listener is all `EventEmitter` needs.
- *   * TOTAL. The whole body sits inside a guard. Registration reads and mutates a
- *     stream this module does not own, and on an exotic or already-torn-down
- *     stream either step can fail. A module whose IMPORT can throw would be
- *     unusable in exactly the situation it exists for - `config.ts` logging its
- *     own fatal startup error - so a failure to register is absorbed and the
- *     module loads anyway.
- *   * NARROW. This adds a listener for ONE event on ONE stream. It installs no
- *     `process` signal handler and no `exit` / `beforeExit` /
- *     `uncaughtException` / `unhandledRejection` hook: shutdown stays entirely
- *     caller-driven, which is the same judgment `connection.ts` records for the
- *     connection pool.
+ * TOTAL. The whole body sits inside a guard, because registration reads and mutates a stream this
+ * module does not own and either step can fail on an exotic or already-torn-down stream. A module
+ * whose IMPORT can throw would be unusable in exactly the situation it exists for - `config.ts`
+ * logging its own fatal startup error.
+ *
+ * NARROW. One listener for ONE event on ONE stream. It installs no `process` signal handler and no
+ * `exit` / `beforeExit` / `uncaughtException` / `unhandledRejection` hook: shutdown stays
+ * caller-driven, the same judgment `connection.ts` records for the connection pool.
  */
 function absorbAsynchronousStdoutFailures(): void {
   try {
@@ -1878,9 +1730,8 @@ function absorbAsynchronousStdoutFailures(): void {
       stream.on('error', absorbAsynchronousStdoutFailure);
     }
   } catch {
-    // Absorbing the absorber's own installation failure. There is nothing to
-    // report it through - this runs at module load, before any caller exists -
-    // and a throw from here would make importing the logger fatal.
+    // Absorbing the absorber's own installation failure: this runs at module load, before any
+    // caller exists to report it to, and a throw from here would make importing the logger fatal.
   }
 }
 
@@ -1889,25 +1740,19 @@ absorbAsynchronousStdoutFailures();
 /**
  * The last word: write one line to stdout and, if even that fails, stop.
  *
- * This carries the only deliberately empty `catch` on the EMISSION path - the
- * module's other one guards listener registration at load time, before any caller
- * exists - and it is empty because there is genuinely nothing left to report
- * through on this path. It is
- * reached only after a sink has already failed, and it writes to the stream
- * DIRECTLY rather than through the sink reference - that is the whole point.
- * Routing the fallback back through `sink` would re-enter the code that just
- * threw, and a sink that throws every time would then throw again from inside the
- * handler for its own failure. This function is what makes the fallback
- * non-recursive by construction rather than by convention.
+ * Reached only after a sink has already failed, and it writes to the stream DIRECTLY rather than
+ * through the sink reference: routing the fallback back through `sink` would re-enter the code that
+ * just threw, and a sink that throws every time would then throw again from inside the handler for
+ * its own failure. That is what makes the fallback non-recursive by construction.
  */
 function writeLineDirectly(line: string): void {
   try {
     process.stdout.write(`${line}\n`);
   } catch {
-    // Intentionally empty, and intentionally last. The output channel is gone;
-    // there is no second channel to escalate to and nothing a throw from here
-    // could accomplish except to propagate into the caller's request handling,
-    // which is precisely the failure this whole path exists to prevent.
+    // Intentionally empty, and intentionally last. The output channel is gone; there is no second
+    // channel to escalate to and nothing a throw from here could accomplish except to propagate
+    // into the caller's request handling, which is precisely the failure this path exists to
+    // prevent.
   }
 }
 
@@ -1915,23 +1760,17 @@ function writeLineDirectly(line: string): void {
 const SINK_FAILURE_MESSAGE = 'log sink failed; entry emitted through the direct fallback';
 
 /**
- * Pre-built, structurally valid line for the case where even DESCRIBING the sink
- * failure fails.
- *
- * A frozen constant rather than something composed on demand: it is the floor of
- * the fallback chain, so it must involve no work that could itself fail.
+ * Pre-built, structurally valid line for the case where even DESCRIBING the sink failure fails. A
+ * frozen constant rather than something composed on demand: it is the floor of the fallback chain,
+ * so it must involve no work that could itself fail.
  */
 const SINK_FAILURE_FLOOR_LINE = '{"level":"error","message":"log sink failed"}';
 
 /**
- * Describe a sink failure without letting the description throw in turn, and
- * without describing its contents.
- *
- * The class NAME only, held to the same shape test every other emitted name is.
- * A sink is caller-supplied, so its failure message is caller-derived free text
- * and carries exactly the exposure of any other message - and this line is
- * written on the fallback path, where the redaction pass has already been
- * bypassed. Naming the failure is what an operator needs; the text is not.
+ * Describe a sink failure without letting the description throw in turn, and without describing its
+ * contents. The class NAME only, held to the same shape test every other emitted name is: a sink is
+ * caller-supplied, so its failure message is caller-derived free text, and this line is written on
+ * the fallback path where the redaction pass has already been bypassed.
  */
 function describeSinkFailure(thrown: unknown): string {
   if (thrown instanceof Error) {
@@ -1943,14 +1782,11 @@ function describeSinkFailure(thrown: unknown): string {
 /**
  * Report a sink failure and carry the entry it dropped, without throwing.
  *
- * The dropped entry travels verbatim in `droppedEntry`. It is safe to carry
- * because it has already been through `serializeEntry`, so its message is
- * sanitized and its context is redacted - nothing here re-exposes what that pass
- * removed, and the record of what would otherwise have been lost is kept.
- *
- * The composition sits inside its own guard because `describeSinkFailure` reads
- * `name` and `message` off a value the caller controls, and an accessor on a
- * hostile or merely broken `Error` subclass can throw when it is read.
+ * The dropped entry travels verbatim in `droppedEntry`, which is safe because it has already been
+ * through `serializeEntry` - so the record of what would otherwise have been lost is kept without
+ * re-exposing anything that pass removed. The composition sits inside its own guard because
+ * `describeSinkFailure` reads `name` off a value the caller controls, and an accessor on a hostile
+ * or merely broken `Error` subclass can throw.
  */
 function writeSinkFailureLine(droppedEntry: string, thrown: unknown): void {
   let line: string;
@@ -1969,19 +1805,10 @@ function writeSinkFailureLine(droppedEntry: string, thrown: unknown): void {
 }
 
 /**
- * Hand one serialized line to the sink, and absorb the sink's failure if it has
- * one.
- *
- * This is the guarantee the module makes about itself: a logger that throws while
- * reporting a failure is worse than no logger, because the throw displaces
- * whatever the caller was doing. A sink is caller-supplied through `withSink`,
- * and the default sink writes to a stream that can break, so "the sink does not
- * throw" is not a property this module is in a position to assume - it has to
- * enforce it.
- *
- * `serializeEntry` is already total, so the line handed in here is always a
- * well-formed string. Everything that remains is the sink itself, and it is
- * wrapped. The fallback path never re-enters `sink`, and cannot throw.
+ * Hand one serialized line to the sink, and absorb the sink's failure if it has one - guarantee 1
+ * of the module header, enforced rather than assumed. A sink is caller-supplied through `withSink`,
+ * and the default sink writes to a stream that can break. The fallback never re-enters `sink`, and
+ * cannot throw.
  */
 function emitThroughSink(sink: LogSink, line: string): void {
   try {
@@ -1992,11 +1819,9 @@ function emitThroughSink(sink: LogSink, line: string): void {
 }
 
 /**
- * Build a logger over a pinned threshold and a sink.
- *
- * Module-private on purpose. The exported unit is a ready-to-use logger, and
- * the two `with*` methods return siblings through this same function, so there
- * is exactly one construction path and no second exported entry point.
+ * Build a logger over a pinned threshold and a sink. Module-private on purpose: the exported unit
+ * is a ready-to-use logger, and the two `with*` methods return siblings through this same function,
+ * so there is exactly one construction path.
  */
 function createLogger(pinnedLevel: LogLevel | undefined, sink: LogSink): Logger {
   const emit = (level: LogLevel, message: string, context: LogContext | undefined): void => {
@@ -2005,19 +1830,15 @@ function createLogger(pinnedLevel: LogLevel | undefined, sink: LogSink): Logger 
       return;
     }
 
-    // `toISOString()` is UTC by definition and always carries the `Z`
-    // designator. That is how the explicit UTC policy is met with no timezone
-    // handling at all: the legacy engine's date handling followed whatever
-    // timezone the server was set to, and none of that is carried forward.
+    // `toISOString()` is UTC by definition and always carries the `Z` designator. That is how the
+    // explicit UTC policy is met with no timezone handling at all: the legacy engine followed
+    // whatever timezone the server was set to, and none of that is carried forward.
     const timestamp = new Date().toISOString();
 
-    // Serialization is total and the sink invocation is guarded, so `emit` has
-    // no throwing path of its own, and the stream's asynchronous failures are
-    // absorbed where they are delivered rather than left to surface as an
-    // uncaught exception after this line has returned. That matters at the call
-    // sites: the error mapper logs and then returns a response, and either kind
-    // of failure escaping from this line would replace that response with an
-    // unhandled one.
+    // Serialization is total and the sink invocation is guarded, so `emit` has no throwing path of
+    // its own, and the stream's asynchronous failures are absorbed where they are delivered. That
+    // matters at the call sites: the error mapper logs and then returns a response, and either kind
+    // of failure escaping from this line would replace that response with an unhandled one.
     emitThroughSink(sink, serializeEntry(timestamp, level, message, context));
   };
 
@@ -2041,11 +1862,8 @@ function createLogger(pinnedLevel: LogLevel | undefined, sink: LogSink): Logger 
 }
 
 /**
- * The single exported unit of this module: a ready-to-use logger whose
- * threshold comes from `LOG_LEVEL` on every call and whose lines go to stdout.
- *
- * Import it narrowly and by name - `import { logger } from '../lib/logger.js'`.
- * There is no default export and no barrel file anywhere in this subtree, which
- * is what keeps each regenerated file's diff small.
+ * The single exported unit of this module: a ready-to-use logger whose threshold comes from
+ * `LOG_LEVEL` on every call and whose lines go to stdout. There is no default export and no barrel
+ * file in this subtree.
  */
 export const logger: Logger = createLogger(undefined, writeLineToStdout);

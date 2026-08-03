@@ -140,7 +140,15 @@
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 
 import { Product } from '../../../src/domain/entities/product.js';
+// A VALUE import, not a type-only one, and both reasons are live in this file. The cascade
+// contract's signature is restated structurally below, so `Sku` is named as a TYPE there; and
+// the currency-detail materialization is driven through the class's own static entry point,
+// `Sku.hydrate(sku)`, so `Sku` is also named as a VALUE. No test constructs one directly -
+// every entity here comes from the repository's hydration path or from `makeSkuFixture`.
+import { Sku } from '../../../src/domain/entities/sku.js';
 import type { SkuRepository } from '../../../src/domain/ports/skuRepository.js';
+import type { CurrencyCode } from '../../../src/domain/valueObjects/currencyCode.js';
+import { toCurrencyCode } from '../../../src/domain/valueObjects/currencyCode.js';
 import { Money } from '../../../src/domain/valueObjects/money.js';
 import { cfBoolean, cfTruthy } from '../../../src/lib/cfml/truthiness.js';
 import { appConfig } from '../../../src/lib/config.js';
@@ -156,7 +164,6 @@ import {
   resolveDialect,
 } from '../../../src/repositories/mysql/dialect.js';
 import { MysqlSkuRepository } from '../../../src/repositories/mysql/mysqlSkuRepository.js';
-import { SelectedOptionsError } from '../../../src/repositories/mysql/sql/skusBySelectedOptions.sql.js';
 import { makeProductFixture } from '../../fixtures/productFixtures.js';
 import { makeSkuFixture } from '../../fixtures/skuFixtures.js';
 
@@ -164,10 +171,11 @@ import { makeSkuFixture } from '../../fixtures/skuFixtures.js';
 // Identifiers used as bound values
 //
 // Well-formed 32-character unhyphenated keys, matching what the `uuid` generator on every in-scope
-// entity produces [e.g. model/entity/Sku.cfc:L52]. The option identifiers additionally satisfy
-// `SELECTED_OPTIONS_INPUT_CONTRACT.optionIDPattern` in
-// `src/repositories/mysql/sql/skusBySelectedOptions.sql.ts`, which rejects anything else before a
-// statement is built.
+// entity produces [e.g. model/entity/Sku.cfc:L52]. They are well-formed because realistic values make
+// the assertions readable, NOT because the statement builder requires it: an earlier revision of
+// `src/repositories/mysql/sql/skusBySelectedOptions.sql.ts` published a shape-and-size contract and
+// rejected anything outside it, and that contract is gone. [model/dao/SkuDAO.cfc:L106-L128] validates
+// nothing, so any string is bindable and an unmatchable one yields zero rows rather than an error.
 // ---------------------------------------------------------------------------
 
 const OPTION_A = '4f2a91c8b73e40d6ae15c92fb8074d3a';
@@ -212,12 +220,6 @@ const EXPECTED_OPTION_EXISTS_PREDICATE =
   '\t\t\t\t\t) ';
 
 const EXPECTED_SELECTED_OPTIONS_PRODUCT_PREDICATE = 'and sku.productID = ?';
-
-const EXPECTED_PRODUCT_OPTION_IDS_SQL =
-  'select distinct SwOption.optionID from SwOption\n' +
-  '  inner join SwSkuOption on SwSkuOption.optionID = SwOption.optionID\n' +
-  '  inner join SwSku on SwSku.skuID = SwSkuOption.skuID\n' +
-  '  where SwSku.productID = ?';
 
 const EXPECTED_SKU_BY_SKU_CODE_SQL =
   'select ss.* from SwSku ss\n' +
@@ -360,6 +362,16 @@ const DDL_VERBS = ['CREATE', 'ALTER', 'DROP', 'TRUNCATE', 'RENAME'] as const;
 interface RecordedStatement {
   readonly sql: string;
   readonly params: readonly unknown[];
+  /**
+   * Whether this statement was issued inside `transaction`.
+   *
+   * Captured per statement so a suite can PROVE atomicity instead of assuming it.
+   * A multi-statement write that must not half-apply is asserted by requiring
+   * every one of its statements to carry `true` - a statement that escaped the
+   * transaction (by reaching past the `tx` executor to the outer one) records
+   * `false` and fails the assertion at the point the mistake is made.
+   */
+  readonly inTransaction: boolean;
 }
 
 const NO_ROWS: readonly SqlRow[] = Object.freeze([]);
@@ -396,7 +408,7 @@ class RecordingExecutor implements PreparedStatementExecutor {
    * later mutation of the original would otherwise rewrite history.
    */
   public execute(sql: string, params: readonly unknown[] = []): Promise<readonly SqlRow[]> {
-    this.calls.push({ sql, params: [...params] });
+    this.calls.push({ sql, params: [...params], inTransaction: this.transactionDepth > 0 });
 
     const cannedRows = this.cannedResultSets[this.answeredResultSets] ?? NO_ROWS;
     this.answeredResultSets += 1;
@@ -405,9 +417,90 @@ class RecordingExecutor implements PreparedStatementExecutor {
   }
 
   public executeMutation(sql: string, params: readonly unknown[] = []): Promise<SqlMutationResult> {
-    this.mutationCalls.push({ sql, params: [...params] });
+    this.mutationCalls.push({
+      sql,
+      params: [...params],
+      inTransaction: this.transactionDepth > 0,
+    });
 
     return Promise.resolve(this.mutationResult);
+  }
+
+  /**
+   * How many times `transaction` was entered, counting a JOINED inner call.
+   *
+   * A write that must be atomic is expected to open EXACTLY ONE OUTER unit of work, so
+   * the arithmetic a case asserts is `1 + N` when the method under test delegates to N
+   * inner writes that each open a unit on the executor they were handed. Anything else
+   * means the work was split into several units that can half-apply independently.
+   */
+  transactionCount = 0;
+
+  /** Nesting depth, so joined inner calls do not read as separate units. */
+  private transactionDepth = 0;
+
+  /**
+   * The transaction boundary, in call order: `BEGIN`, then `COMMIT` or `ROLLBACK`.
+   *
+   * Separate from `calls` and `mutationCalls` so that a case asserting the STATEMENT
+   * sequence is unaffected by whether a transaction wrapped it, while a case asserting
+   * ATOMICITY reads this and gets an unambiguous answer.
+   *
+   * ★ A JOINED INNER CALL RECORDS `'JOIN'`, NOT A SECOND `'BEGIN'`, and contributes no
+   * `'COMMIT'`. That mirrors the shipped executor exactly:
+   * `createConnectionExecutor` in `src/repositories/mysql/connection.ts` implements the
+   * transactional executor's `transaction(work)` as `return work(boundExecutor)`, so an
+   * inner call issues no `BEGIN` and the OUTERMOST caller owns the single commit. The
+   * distinction matters here specifically, because `saveSkus` wraps N `persistSku`
+   * calls that each open a unit on the executor they were given.
+   */
+  readonly transactionEvents: string[] = [];
+
+  /**
+   * Record the transaction boundary and run `work` inline against this same recorder.
+   *
+   * ★ THE WORK RECEIVES `this`, DELIBERATELY. Every statement issued inside the
+   * transaction therefore lands on the same `calls` and `mutationCalls` arrays as one
+   * issued outside it, which is what lets a case assert the statement sequence
+   * without caring whether it was transactional - and lets {@link transactionEvents}
+   * be read separately when the boundary itself is the subject. The companion
+   * `SplittingExecutor` in this file is the double that DOES hand over a distinct
+   * object, and it is what proves no statement reached past `tx` to the outer executor.
+   *
+   * IT IS NOT A DATABASE. Nothing is buffered and nothing is undone on rollback: the
+   * recorder captures WHAT the adapter asked for, and the real transaction semantics
+   * belong to the pool-backed executor in `src/repositories/mysql/connection.ts`. A
+   * case that needs to see a rollback asserts the recorded ROLLBACK marker and the
+   * statements that preceded it.
+   *
+   * The depth is restored in a `finally` so that a failing unit of work - which is
+   * exactly what a rollback test drives - does not leave the recorder believing it
+   * is still inside a transaction.
+   */
+  async transaction<T>(work: (tx: PreparedStatementExecutor) => Promise<T>): Promise<T> {
+    this.transactionCount += 1;
+    this.transactionDepth += 1;
+
+    const isOutermost = this.transactionDepth === 1;
+    this.transactionEvents.push(isOutermost ? 'BEGIN' : 'JOIN');
+
+    try {
+      const result = await work(this);
+
+      if (isOutermost) {
+        this.transactionEvents.push('COMMIT');
+      }
+
+      return result;
+    } catch (error: unknown) {
+      if (isOutermost) {
+        this.transactionEvents.push('ROLLBACK');
+      }
+
+      throw error;
+    } finally {
+      this.transactionDepth -= 1;
+    }
   }
 }
 
@@ -655,7 +748,7 @@ describe('MysqlSkuRepository SQL shape and parameter binding (NET-NEW: no legacy
   // -------------------------------------------------------------------------
   // The port surface
   // -------------------------------------------------------------------------
-  describe('the ported method surface is the seven locked methods and nothing else', () => {
+  describe('the ported method surface is the eight port methods and nothing else', () => {
     it('assigns to the port type with no widening, proving the class implements it', () => {
       // Composed BY HAND with an explicit constructor argument. No container, no locator, no bootstrap
       // and no ambient request scope — which is the whole point of replacing the legacy convention scan.
@@ -667,10 +760,17 @@ describe('MysqlSkuRepository SQL shape and parameter binding (NET-NEW: no legacy
       expect(repository).toBeInstanceOf(MysqlSkuRepository);
     });
 
-    it('exposes exactly seven methods, enumerated exhaustively by the compiler', () => {
+    it('exposes exactly eight methods, enumerated exhaustively by the compiler', () => {
       // `Record<keyof SkuRepository, true>` makes this exhaustive at COMPILE time: omit a method and the
-      // literal fails to type-check, add an eighth and the extra key is rejected. The runtime length
-      // check then pins the count a reader can see without running the compiler.
+      // literal fails to type-check, add one the literal does not name and the extra key is rejected.
+      // The runtime length check then pins the count a reader can see without running the compiler.
+      //
+      // ★ QUOTE-THEN-REVISE. This case was titled "exposes exactly SEVEN methods" and its comment
+      // read "add an EIGHTH and the extra key is rejected". The mechanism is unchanged and it worked
+      // exactly as described - this literal is where the port's growth to eight members announced
+      // itself. `saveSkus` reproduces the Hibernate flush that
+      // [model/service/ProductService.cfc:L216-L233] relied on; the port's own header carries the full
+      // record, including why the earlier blanket prohibition on a bulk save did not survive.
       const portMethods: Readonly<Record<keyof SkuRepository, true>> = Object.freeze({
         getTransactionExistsFlag: true,
         getSkuBySkuCode: true,
@@ -679,9 +779,10 @@ describe('MysqlSkuRepository SQL shape and parameter binding (NET-NEW: no legacy
         getProductSkus: true,
         getSortedProductSkusID: true,
         saveSku: true,
+        saveSkus: true,
       });
 
-      expect(Object.keys(portMethods)).toHaveLength(7);
+      expect(Object.keys(portMethods)).toHaveLength(8);
 
       const repository = new MysqlSkuRepository(new RecordingExecutor());
 
@@ -702,12 +803,20 @@ describe('MysqlSkuRepository SQL shape and parameter binding (NET-NEW: no legacy
       expect(Reflect.get(repository, 'getSkuStocksDeletableFlag')).toBeUndefined();
     });
 
-    it('declares no batch, limit, timeout, retry or transaction parameter on any method', () => {
+    it('declares no limit, timeout, retry or transaction parameter on any method', () => {
       // Bulk behaviour belongs to the service tier: `SkuService.createSkus`
       // [model/service/SkuService.cfc:L58] runs a combination odometer at [L109-L121] whose count is the
       // product of every option-group size and is therefore unbounded by construction. Batching,
       // idempotency and compensation are that tier's problem. The repository's arity is the evidence that
       // none of it leaked down here, and this assertion carries no claim about cost or speed.
+      //
+      // ★ QUOTE-THEN-REVISE, AND THE NARROWING IS EXACT. This case was titled "declares no BATCH,
+      // limit, timeout, retry or transaction parameter", and one word of that had to go: `saveSkus`
+      // takes a COLLECTION, so the adapter now has a member that writes several SKUs in one call. What
+      // it does NOT take is any control over how that work is divided - no batch size, no chunk count,
+      // no retry policy, no timeout, no transaction handle - and its arity of 1 is the evidence. The
+      // BOUND on collection size still lives in the service tier, on
+      // `ProductService.processProduct_updateSkus`, exactly where the sentence above puts it.
       const expectedArities: ReadonlyArray<readonly [keyof SkuRepository, number]> = [
         ['getTransactionExistsFlag', 2],
         ['getSkuBySkuCode', 1],
@@ -716,6 +825,7 @@ describe('MysqlSkuRepository SQL shape and parameter binding (NET-NEW: no legacy
         ['getProductSkus', 2],
         ['getSortedProductSkusID', 1],
         ['saveSku', 1],
+        ['saveSkus', 1],
       ];
 
       for (const [methodName, arity] of expectedArities) {
@@ -874,25 +984,22 @@ describe('MysqlSkuRepository SQL shape and parameter binding (NET-NEW: no legacy
     });
 
     it('emits the product predicate exactly once, with productID bound LAST, when it is supplied', async () => {
-      // With a `productID` the adapter first resolves the product's own option identifiers, so TWO
-      // statements are recorded and the ordering matters: the narrowing lookup, then the matching query.
-      const executor = new RecordingExecutor([
-        [Object.freeze({ optionID: OPTION_A }), Object.freeze({ optionID: OPTION_B })],
-        NO_ROWS,
-      ]);
+      // ★ EXACTLY ONE STATEMENT, AND AN EARLIER REVISION OF THIS CASE EXPECTED TWO.
+      //
+      // That revision recorded a prerequisite read of the product's own option identifiers before the
+      // matching query, to feed a fail-closed membership check in the statement builder. Both are gone:
+      // [model/dao/SkuDAO.cfc:L106-L128] issues ONE query on every branch, and `onlyStatement` is used
+      // here rather than `statementAt(..., 1)` precisely so that a second statement fails the case.
+      const executor = new RecordingExecutor([NO_ROWS]);
 
       await new MysqlSkuRepository(executor).getSkusBySelectedOptions(
         OPTION_A + ',' + OPTION_B,
         PRODUCT_ID,
       );
 
-      expect(executor.calls).toHaveLength(2);
+      expect(executor.calls).toHaveLength(1);
 
-      const narrowing = statementAt(executor.calls, 0);
-      expect(narrowing.sql).toBe(EXPECTED_PRODUCT_OPTION_IDS_SQL);
-      expect(narrowing.params).toStrictEqual([PRODUCT_ID]);
-
-      const matching = statementAt(executor.calls, 1);
+      const matching = onlyStatement(executor.calls);
       expect(countOccurrences(matching.sql, EXPECTED_SELECTED_OPTIONS_PRODUCT_PREDICATE)).toBe(1);
       expect(matching.sql).toBe(
         EXPECTED_SELECTED_OPTIONS_SEED +
@@ -915,38 +1022,73 @@ describe('MysqlSkuRepository SQL shape and parameter binding (NET-NEW: no legacy
       // The emptiness decision is therefore a PRESENCE decision, exactly as CFML's `structKeyExists`
       // makes it, and not a `cfLen`/`cfTruthy` decision — routing it through truthiness would silently
       // drop the predicate and change which rows come back.
-      const executor = new RecordingExecutor([NO_ROWS, NO_ROWS]);
+      const executor = new RecordingExecutor([NO_ROWS]);
 
       await new MysqlSkuRepository(executor).getSkusBySelectedOptions('', '');
 
-      expect(executor.calls).toHaveLength(2);
+      expect(executor.calls).toHaveLength(1);
 
-      const matching = statementAt(executor.calls, 1);
+      const matching = onlyStatement(executor.calls);
       expect(matching.sql).toBe(
         EXPECTED_SELECTED_OPTIONS_SEED + EXPECTED_SELECTED_OPTIONS_PRODUCT_PREDICATE,
       );
       expect(matching.params).toStrictEqual(['']);
     });
 
-    it('refuses a selection whose options do not belong to the narrowed product', async () => {
-      // A consequence of narrowing rather than a separate rule: an empty-string productID matches no
-      // product, so the product owns no options, so no non-empty selection can be a subset of them. The
-      // shipped builder fails closed instead of emitting a query that could only ever return nothing.
-      // The legacy answered zero rows either way; failing closed makes the same outcome diagnosable.
-      const executor = new RecordingExecutor([NO_ROWS, NO_ROWS]);
+    it('ANSWERS a selection whose options cannot belong to the narrowed product', async () => {
+      // ★ THIS CASE ASSERTED THE OPPOSITE, AND THE OPPOSITE WAS WRONG.
+      //
+      // It expected a `SelectedOptionsError`: an empty-string productID matches no product, so the
+      // product owns no options, so no non-empty selection could be a subset of them, so the builder
+      // refused. The refusal, the membership check behind it and the prerequisite read that fed it are
+      // all gone. The conjunction already decides this without any of them — a SKU would have to satisfy
+      // both the EXISTS for the option and `sku.productID = ''`, and none can.
+      //
+      // The legacy answered ZERO ROWS for this input [model/dao/SkuDAO.cfc:L106-L128], and an EMPTY
+      // ARRAY is what the port now answers. "No SKU matches" is an answer, not a failure: turning it
+      // into one failed a request for a caller doing nothing wrong.
+      const executor = new RecordingExecutor([NO_ROWS]);
 
-      await expect(
-        new MysqlSkuRepository(executor).getSkusBySelectedOptions(OPTION_A, ''),
-      ).rejects.toThrow(SelectedOptionsError);
+      const found = await new MysqlSkuRepository(executor).getSkusBySelectedOptions(OPTION_A, '');
+
+      expect(found).toStrictEqual([]);
+      expect(executor.calls).toHaveLength(1);
+
+      const matching = onlyStatement(executor.calls);
+      expect(matching.sql).toBe(
+        EXPECTED_SELECTED_OPTIONS_SEED +
+          EXPECTED_OPTION_EXISTS_PREDICATE +
+          EXPECTED_SELECTED_OPTIONS_PRODUCT_PREDICATE,
+      );
+      expect(matching.params).toStrictEqual([OPTION_A, '']);
+    });
+
+    it('BINDS an option identifier no bound would have admitted, and answers zero rows', async () => {
+      // The inputs the removed checks refused are pinned exhaustively in
+      // tests/integration/repositories/skusBySelectedOptions.test.ts, at the builder. This case exists
+      // at the ADAPTER because the adapter is what an earlier revision made issue a second statement:
+      // the assertion that matters here is that an unmatchable identifier still produces exactly one
+      // statement, with the value BOUND rather than interpolated.
+      const unmatchable = 'a'.repeat(33);
+      const executor = new RecordingExecutor([NO_ROWS]);
+
+      const found = await new MysqlSkuRepository(executor).getSkusBySelectedOptions(
+        unmatchable,
+        PRODUCT_ID,
+      );
+
+      expect(found).toStrictEqual([]);
+      expect(executor.calls).toHaveLength(1);
+
+      const matching = onlyStatement(executor.calls);
+      expect(matching.sql).not.toContain(unmatchable);
+      expect(matching.params).toStrictEqual([unmatchable, PRODUCT_ID]);
     });
 
     it('puts no option identifier and no product identifier into the SQL text', async () => {
       // Parameterized SQL, asserted directly. Every value travels in the bound array; the statement text
       // carries placeholders only.
-      const executor = new RecordingExecutor([
-        [Object.freeze({ optionID: OPTION_A }), Object.freeze({ optionID: OPTION_C })],
-        NO_ROWS,
-      ]);
+      const executor = new RecordingExecutor([NO_ROWS]);
 
       await new MysqlSkuRepository(executor).getSkusBySelectedOptions(
         OPTION_A + ',' + OPTION_C,
@@ -959,7 +1101,7 @@ describe('MysqlSkuRepository SQL shape and parameter binding (NET-NEW: no legacy
         expect(statement.sql).not.toContain(PRODUCT_ID);
       }
 
-      const matching = statementAt(executor.calls, 1);
+      const matching = onlyStatement(executor.calls);
       expect(countOccurrences(matching.sql, '?')).toBe(matching.params.length);
       expect(matching.params).toStrictEqual([OPTION_A, OPTION_C, PRODUCT_ID]);
     });
@@ -2053,7 +2195,7 @@ describe('MysqlSkuRepository SQL shape and parameter binding (NET-NEW: no legacy
       // wires; the assertions are about the ENTITY contract the repository must feed, and no statement is
       // issued anywhere in this test.
       const sku = makeSkuFixture({ skuCurrencyVariant: 'secondaryPriceOnly' });
-      await sku.materializeCurrencyDetails();
+      await Sku.hydrate(sku);
 
       const price = sku.getPriceByCurrencyCode('EUR');
 
@@ -2126,11 +2268,18 @@ describe('MysqlSkuRepository SQL shape and parameter binding (NET-NEW: no legacy
     it('mints an identifier and writes all sixteen columns on the insert path', async () => {
       // The write side of the same schema contract. `Sku.isNew()` selects the path, exactly as the
       // legacy ORM did, and the insert names every one of the sixteen persistent columns.
+      //
+      // ★ THIS CASE ONCE READ THE ROW STATEMENT WITH `onlyStatement`, ON THE STRENGTH OF THE
+      // ADAPTER'S OWN CLAIM THAT IT WROTE "the `SwSku` ROW AND NOTHING ELSE. No child table, no link
+      // table, and no cascade." The row half of that was true; the link-table half was a gap. The
+      // write now also reconciles `SwSkuOption` [model/entity/Sku.cfc:L76], so the row statement is
+      // read POSITIONALLY, at index 0, and the membership statements have their own cases below.
+      // Nothing this case asserted about the row itself has changed.
       const executor = new RecordingExecutor([]);
 
       const saved = await new MysqlSkuRepository(executor).saveSku(makeSkuFixture({ isNew: true }));
 
-      const mutation = onlyStatement(executor.mutationCalls);
+      const mutation = statementAt(executor.mutationCalls, 0);
       expect(mutation.sql).toBe(EXPECTED_INSERT_SKU_SQL);
       expect(mutation.params).toHaveLength(16);
       expect(countOccurrences(mutation.sql, '?')).toBe(16);
@@ -2140,18 +2289,20 @@ describe('MysqlSkuRepository SQL shape and parameter binding (NET-NEW: no legacy
       expect(mutation.params[0]).toBe(saved.getSkuID());
       expect(saved.isNew()).toBe(false);
 
-      // No read statement is issued by a write.
+      // No read statement is issued by a write. The membership reconciliation is delete-then-insert
+      // precisely so this stays true: a computed delta would have had to read the current rows first.
       expect(executor.calls).toHaveLength(0);
     });
 
     it('binds the key LAST on the update path and does not treat a zero-row update as a failure', async () => {
       // The update names the fifteen non-key columns and carries the key in the WHERE clause, so the
-      // identifier is the final bound value rather than the first.
+      // identifier is the final bound value rather than the first. Read at index 0 for the same
+      // reason as the insert case above.
       const executor = new RecordingExecutor([], NO_ROWS_WRITTEN);
 
       const saved = await new MysqlSkuRepository(executor).saveSku(makeSkuFixture());
 
-      const mutation = onlyStatement(executor.mutationCalls);
+      const mutation = statementAt(executor.mutationCalls, 0);
       expect(mutation.sql).toBe(EXPECTED_UPDATE_SKU_SQL);
       expect(mutation.params).toHaveLength(16);
       expect(mutation.params[15]).toBe(saved.getSkuID());
@@ -2165,11 +2316,792 @@ describe('MysqlSkuRepository SQL shape and parameter binding (NET-NEW: no legacy
   });
 
   // =========================================================================
+  // ★ THE SwSkuOption MEMBERSHIP WRITE
+  //
+  // NET-NEW COVERAGE, declared as such per AAP 0.6.6. `meta/tests/unit/dao/` holds only
+  // AccountDAOTest and PaymentDAOTest, so no legacy assertion touches this adapter at all,
+  // and none touches the link table.
+  //
+  // WHY THE MEMBERSHIP IS NOT AN ORDINARY ASSOCIATION. `SwSkuOption` IS VARIANT IDENTITY.
+  // `getSkusBySelectedOptions` matches an AND-of-EXISTS over these rows
+  // [model/dao/SkuDAO.cfc:L107-L128] - a must-preserve behaviour - the sorted-SKU ordering
+  // joins them to reach the option group's sort order [model/dao/SkuDAO.cfc:L172-L220], and
+  // the promotion engine's option qualifier reaches them through `SwPromoRewardOption`
+  // [model/dao/PromotionDAO.cfc:L428-L459]. A SKU written without its rows is a variant that
+  // cannot be selected, cannot be sorted and cannot qualify, while the entity handed back
+  // reports its options in memory and looks entirely correct.
+  //
+  // `property name="options" ... linktable="SwSkuOption" fkcolumn="skuID"
+  // inversejoincolumn="optionID"` [model/entity/Sku.cfc:L76] carries no `inverse="true"`, so
+  // the SKU owns the association; the inverse declaration [model/entity/Option.cfc:L66] wrote
+  // nothing. Hibernate reconciled the rows from the SKU's collection on flush, and that flush
+  // is what these statements replace.
+  // =========================================================================
+
+  describe('saveSku - the SwSkuOption membership the ORM used to flush', () => {
+    it('★ writes one SwSkuOption row per option, keyed on the MINTED identifier', async () => {
+      // The insert path is the dangerous one: binding the ARGUMENT's identifier rather than the
+      // one that was written would attach three rows to a key that names no SwSku row, and lose
+      // the membership entirely.
+      //
+      // ★ QUOTE-THEN-REVISE. This comment read: "the argument still reports `''` as its key, so
+      // binding the entity's own identifier would write three orphan rows under an empty key."
+      // The instruction was right and the premise was wrong. A draft built by
+      // `skuService.createSkus` reports a PROVISIONAL 32-hex key, not `''` - `Sku.isNew()` reads
+      // a constructor-supplied flag rather than testing the identifier - and `insertSku` mints
+      // its own key and discards the provisional one. The rows would therefore land under a
+      // well-formed key resolving to nothing, which is the harder failure to spot than an empty
+      // one. `makeSkuFixture({ isNew: true })` leaves `skuID` at the fixture default -
+      // `'<idPrefix>-sku'` - so the argument here carries a non-empty key too, and the assertion
+      // below that the bound value equals `saved.getSkuID()` rather than the argument's is what
+      // actually distinguishes the two.
+      const executor = new RecordingExecutor([]);
+
+      const saved = await new MysqlSkuRepository(executor).saveSku(makeSkuFixture({ isNew: true }));
+
+      expect(executor.mutationCalls).toHaveLength(3);
+
+      const clearing = statementAt(executor.mutationCalls, 1);
+      const insertion = statementAt(executor.mutationCalls, 2);
+
+      expect(clearing.sql).toBe('delete from SwSkuOption where skuID = ?');
+      expect(clearing.params).toStrictEqual([saved.getSkuID()]);
+
+      // Three options on the default fixture, so three placeholder pairs and six bound values,
+      // owner column first in each pair.
+      expect(insertion.sql).toBe(
+        'insert into SwSkuOption (skuID, optionID) values (?, ?), (?, ?), (?, ?)',
+      );
+      expect(insertion.params).toStrictEqual([
+        saved.getSkuID(),
+        'skfx-option-1',
+        saved.getSkuID(),
+        'skfx-option-2',
+        saved.getSkuID(),
+        'skfx-option-3',
+      ]);
+
+      // The minted key is what was bound, and it is NOT the empty string the argument reported.
+      expect(saved.getSkuID()).toHaveLength(32);
+      expect(insertion.params).not.toContain('');
+    });
+
+    it('★ rewrites the membership on the UPDATE path too, not only on insert', async () => {
+      // A variant whose option set changes is the ordinary case, and it is the case the gap hit
+      // hardest: the row update always worked, so a SKU re-saved with different options reported
+      // the new set in memory while the table still held the old one.
+      const executor = new RecordingExecutor([]);
+
+      const saved = await new MysqlSkuRepository(executor).saveSku(makeSkuFixture());
+
+      expect(executor.mutationCalls).toHaveLength(3);
+      expect(statementAt(executor.mutationCalls, 1).params).toStrictEqual([saved.getSkuID()]);
+      expect(statementAt(executor.mutationCalls, 2).params).toHaveLength(6);
+    });
+
+    it('★ still issues the DELETE for a SKU with no options, and skips only the insert', async () => {
+      // Clearing membership must be possible - it is exactly what happens when a variant is
+      // reduced to a single default SKU - so the delete is unconditional. Short-circuiting it for
+      // an empty collection would make clearing impossible, which is the one operation most
+      // likely to be attempted after a mistake.
+      //
+      // Skipping the INSERT is not an optimisation either: `VALUES ()` is a MySQL parse error and
+      // `sqlPlaceholderList` refuses a zero count by design.
+      const executor = new RecordingExecutor([]);
+
+      const saved = await new MysqlSkuRepository(executor).saveSku(makeSkuFixture({ options: [] }));
+
+      expect(executor.mutationCalls).toHaveLength(2);
+
+      const clearing = statementAt(executor.mutationCalls, 1);
+      expect(clearing.sql).toBe('delete from SwSkuOption where skuID = ?');
+      expect(clearing.params).toStrictEqual([saved.getSkuID()]);
+
+      for (const mutation of executor.mutationCalls) {
+        expect(mutation.sql).not.toContain('insert into SwSkuOption');
+      }
+    });
+
+    it('★ opens EXACTLY ONE transaction and issues every statement inside it', async () => {
+      // Two or three statements now form one unit of work. A failure between the delete and the
+      // insert would leave a SKU whose options had been cleared but not rewritten - a variant that
+      // silently stops matching anything - so partial application is the specific outcome the
+      // transaction exists to prevent. Under CFML this was one Hibernate flush inside the
+      // request's transaction.
+      //
+      // The count assertion is as important as the flag: a per-statement transaction would satisfy
+      // `inTransaction` on every statement while providing none of the atomicity.
+      const executor = new RecordingExecutor([]);
+
+      await new MysqlSkuRepository(executor).saveSku(makeSkuFixture({ isNew: true }));
+
+      expect(executor.transactionCount).toBe(1);
+
+      for (const mutation of executor.mutationCalls) {
+        expect(mutation.inTransaction).toBe(true);
+      }
+    });
+
+    it('★ names only SwSku and SwSkuOption, and touches no other link table', async () => {
+      // The entity declares two more many-to-many collections - `accessContents`
+      // [model/entity/Sku.cfc:L77] over `SwSkuAccessContent` and `subscriptionBenefits` [L78] over
+      // `SwSkuSubsBenefit` - both reaching out-of-scope entities that the ported entity does not
+      // model. There is no collection here whose membership could be written, so no statement may
+      // name either table. The `all-delete-orphan` cascades on `attributeValues` [L70],
+      // `alternateSkuCodes` [L69], `skuCurrencies` [L72] and `stocks` [L73] are outside the ported
+      // surface for the same reason and are likewise absent.
+      const executor = new RecordingExecutor([]);
+
+      await new MysqlSkuRepository(executor).saveSku(makeSkuFixture({ isNew: true }));
+
+      const forbiddenTables = [
+        'SwSkuAccessContent',
+        'SwSkuSubsBenefit',
+        'SwSkuRenewalSubsBenefit',
+        'SwAttributeValue',
+        'SwAlternateSkuCode',
+        'SwStock',
+        'SwSkuCurrency',
+        'SwProduct',
+      ];
+
+      for (const mutation of executor.mutationCalls) {
+        for (const forbiddenTable of forbiddenTables) {
+          expect(mutation.sql).not.toContain(forbiddenTable);
+        }
+      }
+    });
+  });
+
+  // =========================================================================
+  // ★★ saveSkuForProduct — THE CASCADE SEAM, AND WHY IT IS NOT ON THE PORT.
+  //
+  // ★ DECLARED NET-NEW under AAP 0.6.6. `meta/tests/unit/dao/` holds AccountDAOTest and
+  // PaymentDAOTest only, so no legacy test touches this DAO at all.
+  //
+  // ★ THE PROBLEM THIS MEMBER SOLVES. A product created through
+  // `SkuService.createSkus` holds SKU drafts whose `product` association points at a
+  // product that HAS NO KEY YET, so `sku.getProduct()?.getProductID()` answers `''` on
+  // exactly the path where the parent key matters most. Under Hibernate the flush
+  // ordered the parent insert first and wrote the child's `productID` from the freshly
+  // minted key; with the ORM gone the parent key has to be handed down explicitly. That
+  // is `productIDOverride`.
+  //
+  // ★ AND WHY IT TAKES AN EXECUTOR. `saveSku` reaches the executor the repository was
+  // CONSTRUCTED with. A cascade driven from `mysqlProductRepository` therefore cannot
+  // call it and stay inside the caller's transaction - the statements would travel on a
+  // different pooled connection and commit independently, which is the precise failure
+  // the transaction exists to prevent. The executor parameter is the join.
+  //
+  // ★ IT IS DELIBERATELY OFF THE PORT. `SkuRepository` declares eight members and this is
+  // not one of them; it is a repository-to-repository collaboration contract, published as
+  // `ProductSkuCascadeWriter` in `src/repositories/mysql/mysqlProductRepository.ts`. A
+  // port member naming `PreparedStatementExecutor` would put a `src/repositories/**`
+  // type on a `src/domain/**` interface, which the ESLint layer boundary refuses.
+  // =========================================================================
+
+  describe('saveSkuForProduct - the parent key handed down, and the transaction joined', () => {
+    /** `productID` is the tenth insert column and the ninth update assignment. */
+    const INSERT_PRODUCT_ID_POSITION = 9;
+    const UPDATE_PRODUCT_ID_POSITION = 8;
+
+    /** A parent key of the shape `mintEntityIdentifier` produces, standing in for a fresh row. */
+    const CASCADE_PRODUCT_ID = 'ac41d5e0be6f4d2ab9037cf158ea6d71';
+
+    it('binds the OVERRIDE as productID, not the key the draft association reports', async () => {
+      // The draft's own product is a different one entirely here, so the two candidate
+      // values are distinguishable and the assertion cannot pass by coincidence.
+      const executor = new RecordingExecutor([]);
+      const draft = makeSkuFixture({ isNew: true });
+
+      expect(draft.getProduct()?.getProductID()).not.toBe(CASCADE_PRODUCT_ID);
+
+      await new MysqlSkuRepository(executor).saveSkuForProduct(draft, CASCADE_PRODUCT_ID, executor);
+
+      const insertion = statementAt(executor.mutationCalls, 0);
+
+      expect(insertion.sql).toBe(EXPECTED_INSERT_SKU_SQL);
+      expect(insertion.params[INSERT_PRODUCT_ID_POSITION]).toBe(CASCADE_PRODUCT_ID);
+      expect(insertion.params[INSERT_PRODUCT_ID_POSITION]).not.toBe(
+        draft.getProduct()?.getProductID(),
+      );
+    });
+
+    it('overrides on the UPDATE path too, at its own column position', async () => {
+      // The override is not an insert-only concern: re-parenting an already-persisted SKU
+      // goes through the same seam, and `productID` sits at a different offset in the
+      // assignment list than it does in the insert column list.
+      const executor = new RecordingExecutor([]);
+
+      await new MysqlSkuRepository(executor).saveSkuForProduct(
+        makeSkuFixture(),
+        CASCADE_PRODUCT_ID,
+        executor,
+      );
+
+      const update = statementAt(executor.mutationCalls, 0);
+
+      expect(update.sql).toBe(EXPECTED_UPDATE_SKU_SQL);
+      expect(update.params[UPDATE_PRODUCT_ID_POSITION]).toBe(CASCADE_PRODUCT_ID);
+    });
+
+    it('reconciles SwSkuOption under the WRITTEN key, inside the same one transaction', async () => {
+      // The cascade must not split the row write from the membership write. Both statements
+      // carry `inTransaction`, exactly one transaction is opened, and the membership is keyed
+      // on the minted identifier rather than on anything the draft reported.
+      const executor = new RecordingExecutor([]);
+
+      const saved = await new MysqlSkuRepository(executor).saveSkuForProduct(
+        makeSkuFixture({ isNew: true }),
+        CASCADE_PRODUCT_ID,
+        executor,
+      );
+
+      expect(executor.transactionCount).toBe(1);
+      expect(executor.mutationCalls).toHaveLength(3);
+
+      const clearing = statementAt(executor.mutationCalls, 1);
+
+      expect(clearing.sql).toBe('delete from SwSkuOption where skuID = ?');
+      expect(clearing.params).toStrictEqual([saved.getSkuID()]);
+
+      for (const mutation of executor.mutationCalls) {
+        expect(mutation.inTransaction).toBe(true);
+      }
+    });
+
+    it('writes through the SUPPLIED executor and never through the constructed one', async () => {
+      // ⚠ THE ASSERTION THE COMPILER CANNOT MAKE. Both executors satisfy the same interface,
+      // so a method body that reached `this.executor` instead of its parameter would
+      // type-check perfectly and silently leave the caller's transaction. Two DISTINCT
+      // recorders are the only way to see the difference: the constructed one must record
+      // nothing at all.
+      const constructed = new RecordingExecutor([]);
+      const supplied = new RecordingExecutor([]);
+
+      await new MysqlSkuRepository(constructed).saveSkuForProduct(
+        makeSkuFixture({ isNew: true }),
+        CASCADE_PRODUCT_ID,
+        supplied,
+      );
+
+      expect(supplied.mutationCalls).toHaveLength(3);
+      expect(constructed.mutationCalls).toStrictEqual([]);
+      expect(constructed.calls).toStrictEqual([]);
+      expect(constructed.transactionCount).toBe(0);
+    });
+
+    it('saveSku accepts an executor too, and opens EXACTLY ONE unit whichever route it takes', async () => {
+      // `saveSku` wraps its own write, so calling it from inside an enclosing transaction relies
+      // on the executor a transaction hands its callback treating a further `transaction(...)` as
+      // PARTICIPATION rather than as a second unit - MySQL has no nested transactions, and a
+      // second `START TRANSACTION` on one connection implicitly commits the first. That join is a
+      // property of `src/repositories/mysql/connection.ts` and is pinned in
+      // `tests/unit/repositories/connection.test.ts`; the double here cannot express it, because
+      // it has no connection and hands its callback ITSELF.
+      //
+      // What THIS suite can assert is the adapter's own contribution, measured as a DELTA: no
+      // matter which route is taken, `saveSku` opens exactly one unit and never one per
+      // statement. Asserting an absolute count of 1 would be asserting a property of the double.
+      const executor = new RecordingExecutor([]);
+      const repository = new MysqlSkuRepository(executor);
+
+      await executor.transaction(async (tx) => {
+        const before = executor.transactionCount;
+
+        await repository.saveSku(makeSkuFixture({ isNew: true }), tx);
+
+        // Three statements are about to be issued; one unit was opened, not three.
+        expect(executor.transactionCount - before).toBe(1);
+      });
+
+      expect(executor.mutationCalls).toHaveLength(3);
+
+      // Every statement carries the flag, so none of them escaped to an unwrapped path.
+      for (const mutation of executor.mutationCalls) {
+        expect(mutation.inTransaction).toBe(true);
+      }
+    });
+
+    it('saveSku with no executor is byte-identical to the shape it had before the parameter', async () => {
+      // The parameter is DEFAULTED rather than optional, so `saveSku.length` is still 1 and the
+      // port's declared arity is untouched - and passing nothing must produce exactly the
+      // statements the one-argument form always produced. `productIDOverride` is `undefined` on
+      // this route, and the `??` in `toSkuColumnValues` means the association read happens
+      // exactly as it did before, rather than binding `undefined` over it.
+      const withoutExecutor = new RecordingExecutor([]);
+      const withExecutor = new RecordingExecutor([]);
+      const sku = makeSkuFixture({ isNew: true });
+
+      await new MysqlSkuRepository(withoutExecutor).saveSku(sku);
+      await new MysqlSkuRepository(withExecutor).saveSku(sku, withExecutor);
+
+      const plain = statementAt(withoutExecutor.mutationCalls, 0);
+      const explicit = statementAt(withExecutor.mutationCalls, 0);
+
+      expect(plain.sql).toBe(explicit.sql);
+      // The minted key differs between the two runs by design, so the parent key is what is
+      // compared - and on both routes it is the value the ASSOCIATION reports.
+      expect(plain.params[INSERT_PRODUCT_ID_POSITION]).toBe(sku.getProduct()?.getProductID());
+      expect(explicit.params[INSERT_PRODUCT_ID_POSITION]).toBe(sku.getProduct()?.getProductID());
+      expect(withoutExecutor.mutationCalls).toHaveLength(withExecutor.mutationCalls.length);
+    });
+
+    it('satisfies the cascade contract structurally, with an executor-bearing signature', async () => {
+      // The cascade writer is a STRUCTURAL contract - `mysqlProductRepository` declares the shape
+      // it needs and this class happens to satisfy it - so what is asserted is the shape, not an
+      // `instanceof`. Importing the interface here would couple two adapter suites for no gain.
+      const executor = new RecordingExecutor([]);
+      const writer: {
+        saveSkuForProduct(
+          sku: Sku,
+          productID: string,
+          executor: PreparedStatementExecutor,
+        ): Promise<Sku>;
+      } = new MysqlSkuRepository(executor);
+
+      const saved = await writer.saveSkuForProduct(
+        makeSkuFixture({ isNew: true }),
+        CASCADE_PRODUCT_ID,
+        executor,
+      );
+
+      expect(saved.isNew()).toBe(false);
+      expect(saved.getSkuID()).toHaveLength(32);
+
+      // THREE parameters, and the third is the transaction join. Contrast `saveSku`, whose
+      // arity stays 1 because its executor parameter is defaulted.
+      //
+      // Read through `Reflect.get` and narrowed, for the same reason `prototypeMethodOf` does
+      // it that way: naming a prototype method directly detaches it from its receiver, which
+      // `@typescript-eslint/unbound-method` refuses outright. `prototypeMethodOf` itself takes
+      // `keyof SkuRepository` and cannot be used here - `saveSkuForProduct` is deliberately not
+      // a port member, which is the very thing the next case asserts.
+      const cascadeMember: unknown = Reflect.get(MysqlSkuRepository.prototype, 'saveSkuForProduct');
+      expect(typeof cascadeMember).toBe('function');
+      if (typeof cascadeMember === 'function') {
+        expect(cascadeMember).toHaveLength(3);
+      }
+
+      expect(prototypeMethodOf('saveSku').arity).toBe(1);
+    });
+
+    it('is NOT a member of the SkuRepository port, which declares eight', () => {
+      // ★ QUOTE-THEN-REVISE, AND IT IS A NARROWING RATHER THAN A REVERSAL. The cross-cutting
+      // case above says the adapter "exposes no batching, limiting, retry or transaction control
+      // on the repository surface", and its enumerated sweep still holds - no member is named
+      // `transaction`, `begin`, `commit` or `rollback`. What has changed is that ONE public
+      // member now ACCEPTS an executor, so the claim has to be read as it was always meant:
+      // the PORT surface carries no transaction control, and a caller reaching this adapter
+      // through `SkuRepository` cannot pass one. `saveSkuForProduct` is reachable only by a
+      // caller holding the concrete class, which is the cascade in `mysqlProductRepository` and
+      // nothing else.
+      const repository: SkuRepository = new MysqlSkuRepository(new RecordingExecutor([]));
+
+      expect('saveSkuForProduct' in repository).toBe(true);
+      // ...and yet the port type cannot see it: this is the compile-time half of the claim.
+      // @ts-expect-error - saveSkuForProduct is not declared on SkuRepository.
+      expect(typeof repository.saveSkuForProduct).toBe('function');
+
+      const portMethods: Readonly<Record<keyof SkuRepository, true>> = Object.freeze({
+        getTransactionExistsFlag: true,
+        getSkuBySkuCode: true,
+        getSkusBySelectedOptions: true,
+        searchSkusByProductType: true,
+        getProductSkus: true,
+        getSortedProductSkusID: true,
+        saveSku: true,
+        saveSkus: true,
+      });
+
+      expect(Object.keys(portMethods)).toHaveLength(8);
+      expect(Object.keys(portMethods)).not.toContain('saveSkuForProduct');
+    });
+  });
+
+  // =========================================================================
+  // ★★ saveSkus — THE ORM FLUSH, WRITTEN DOWN
+  //
+  // ★ DECLARED NET-NEW under AAP 0.6.6. `meta/tests/unit/dao/` holds AccountDAOTest and
+  // PaymentDAOTest only, so no legacy test touches this DAO — and this member has no
+  // legacy DAO antecedent at all. `SkuDAO.cfc` declares no save of any kind. The
+  // antecedent is Hibernate's FLUSH, which wrote every SKU a request had dirtied as ONE
+  // unit inside that request's `cftransaction`.
+  //
+  // ★ THE CALLER THAT NEEDS IT, NAMED. `ProductService.processProduct_updateSkus`
+  // [model/service/ProductService.cfc:L216-L233] walks every SKU on a product applying a
+  // price and/or a list price, calls no save itself, and returns the product. The
+  // durable price change was the flush's work. A port that offered only `saveSku` would
+  // force that caller into a loop, and a loop gets ONE TRANSACTION PER SKU ON ONE
+  // CONNECTION PER SKU — so a failure on the fifth of ten leaves four SKUs repriced and
+  // six not, a half-applied price change the legacy could not produce.
+  //
+  // ★ WHAT THE DOUBLE CAN AND CANNOT SHOW, STATED UP FRONT. `RecordingExecutor.transaction`
+  // hands its callback ITSELF and increments unconditionally, so it cannot express the
+  // JOIN that `createPoolExecutor` performs for a nested call — the join is pinned in
+  // `tests/unit/repositories/connection.test.ts`. Here the observable facts are: how many
+  // times a unit of work was ENTERED, whether every statement carried the in-transaction
+  // flag, and — via a splitting double whose `transaction` hands a DIFFERENT recorder —
+  // whether any statement escaped to the executor the repository was constructed with.
+  // =========================================================================
+
+  describe('saveSkus - one unit of work for the whole collection', () => {
+    /** Statements one SKU write emits: the row, the membership delete, the membership insert. */
+    const MUTATIONS_PER_SKU = 3;
+
+    /**
+     * An executor whose `transaction` hands a DISTINCT recorder.
+     *
+     * ★ WITHOUT THIS, A TRANSACTION ESCAPE IS UNDETECTABLE. `RecordingExecutor` hands its
+     * callback itself, so a statement issued against `this.executor` from inside the
+     * callback lands in the very same log as one issued against `tx` and the two are
+     * indistinguishable. Splitting the two recorders makes the escape visible: anything
+     * that reached the outer executor shows up on THIS object's own call lists, which the
+     * cases below assert are empty.
+     */
+    class SplittingExecutor implements PreparedStatementExecutor {
+      public readonly calls: RecordedStatement[] = [];
+
+      public readonly mutationCalls: RecordedStatement[] = [];
+
+      /** The recorder every in-transaction statement is expected to land on. */
+      public readonly inner = new RecordingExecutor([]);
+
+      public transactionCount = 0;
+
+      public execute(sql: string, params: readonly unknown[] = []): Promise<readonly SqlRow[]> {
+        this.calls.push({ sql, params: [...params], inTransaction: false });
+
+        return Promise.resolve(NO_ROWS);
+      }
+
+      public executeMutation(
+        sql: string,
+        params: readonly unknown[] = [],
+      ): Promise<SqlMutationResult> {
+        this.mutationCalls.push({ sql, params: [...params], inTransaction: false });
+
+        return Promise.resolve(ONE_ROW_WRITTEN);
+      }
+
+      public async transaction<T>(work: (tx: PreparedStatementExecutor) => Promise<T>): Promise<T> {
+        this.transactionCount += 1;
+
+        return await work(this.inner);
+      }
+    }
+
+    it('writes NOTHING and opens NO transaction for an empty collection', async () => {
+      const executor = new RecordingExecutor([]);
+
+      const persisted = await new MysqlSkuRepository(executor).saveSkus([]);
+
+      // A flush with nothing dirtied issued no statement, and it did not begin a unit of
+      // work to issue none. This is not merely an optimisation: the calling loop's two
+      // flags are permitted to select no SKU, so this is the ordinary no-op path, and a
+      // spurious transaction here would show up as a phantom unit of work.
+      expect(persisted).toStrictEqual([]);
+      expect(executor.transactionCount).toBe(0);
+      expect(executor.mutationCalls).toStrictEqual([]);
+      expect(executor.calls).toStrictEqual([]);
+    });
+
+    it('opens exactly ONE outer unit of work, whatever the collection size', async () => {
+      const executor = new RecordingExecutor([]);
+
+      await new MysqlSkuRepository(executor).saveSkus([
+        makeSkuFixture({ skuID: 'batch-a' }),
+        makeSkuFixture({ skuID: 'batch-b' }),
+        makeSkuFixture({ skuID: 'batch-c' }),
+      ]);
+
+      // ★ THE COUNT IS 1 + N, AND THAT IS A PROPERTY OF THE DOUBLE RATHER THAN OF THE
+      // ADAPTER. The outer `transaction` is this method's own; the three inner ones are
+      // `persistSku` calling `transaction` on the executor it was HANDED, which against
+      // the real `createPoolExecutor` JOINS the outer unit inline and begins nothing.
+      // Asserting the arithmetic rather than a bare 1 is what keeps the double honest:
+      // were the adapter to open a fresh unit per SKU against `this.executor`, this
+      // number would be identical, which is why the escape check below exists too.
+      expect(executor.transactionCount).toBe(1 + 3);
+
+      // Every statement carried the in-transaction flag, so none of them ran outside a
+      // unit of work.
+      expect(executor.mutationCalls).toHaveLength(3 * MUTATIONS_PER_SKU);
+
+      for (const mutation of executor.mutationCalls) {
+        expect(mutation.inTransaction).toBe(true);
+      }
+    });
+
+    it('routes EVERY statement through the transaction executor and never through its own', async () => {
+      const executor = new SplittingExecutor();
+
+      await new MysqlSkuRepository(executor).saveSkus([
+        makeSkuFixture({ skuID: 'split-a' }),
+        makeSkuFixture({ skuID: 'split-b' }),
+      ]);
+
+      // The outer executor opened the unit and then issued NOTHING. Had `saveSkus` handed
+      // `this.executor` to `persistSku` instead of `tx`, these lists would carry every
+      // statement and the writes would be committing independently on another connection.
+      expect(executor.transactionCount).toBe(1);
+      expect(executor.mutationCalls).toStrictEqual([]);
+      expect(executor.calls).toStrictEqual([]);
+
+      // ...and the inner recorder holds all of it.
+      expect(executor.inner.mutationCalls).toHaveLength(2 * MUTATIONS_PER_SKU);
+    });
+
+    it('writes the SKUs SERIALLY and in collection order, membership following each row', async () => {
+      const executor = new RecordingExecutor([]);
+
+      await new MysqlSkuRepository(executor).saveSkus([
+        makeSkuFixture({ skuID: 'ordered-first' }),
+        makeSkuFixture({ skuID: 'ordered-second' }),
+      ]);
+
+      // Six statements in strict order: row, delete, insert — twice. Interleaving would
+      // mean the option membership of one SKU could be written against another's key, and
+      // `Promise.all` over one connection is exactly how that interleaving would arise.
+      const emitted = executor.mutationCalls.map((mutation): string => mutation.sql);
+
+      expect(emitted).toStrictEqual([
+        EXPECTED_UPDATE_SKU_SQL,
+        'delete from SwSkuOption where skuID = ?',
+        'insert into SwSkuOption (skuID, optionID) values (?, ?), (?, ?), (?, ?)',
+        EXPECTED_UPDATE_SKU_SQL,
+        'delete from SwSkuOption where skuID = ?',
+        'insert into SwSkuOption (skuID, optionID) values (?, ?), (?, ?), (?, ?)',
+      ]);
+
+      // The first SKU's key is bound by the first three statements and the second's by the
+      // last three, so the grouping is proved and not just the statement order.
+      //
+      // ★ THE EXPECTED KEYS ARE THE OVERRIDES VERBATIM. `makeSkuFixture` resolves the key
+      // as `overrides?.skuID ?? memberSkuID(idPrefix, member)` [tests/fixtures/skuFixtures.ts:2142],
+      // so a supplied `skuID` is honoured exactly; the `-sku` suffix visible elsewhere in this
+      // suite is what `memberSkuID` derives from `idPrefix` when NO override is given. Asserting
+      // a suffixed key here would fail against the fixture rather than against the adapter.
+      expect(statementAt(executor.mutationCalls, 1).params).toStrictEqual(['ordered-first']);
+      expect(statementAt(executor.mutationCalls, 4).params).toStrictEqual(['ordered-second']);
+    });
+
+    it('answers persisted instances POSITIONALLY matching the argument', async () => {
+      const executor = new RecordingExecutor([]);
+
+      const first = makeSkuFixture({ skuID: 'positional-first' });
+      const second = makeSkuFixture({ skuID: 'positional-second' });
+
+      const persisted = await new MysqlSkuRepository(executor).saveSkus([first, second]);
+
+      // The port specifies positional correspondence so a caller can pair each persisted
+      // instance with the entity it handed over WITHOUT matching on identifiers the write
+      // may have minted. The instances are NEW objects reflecting the rows, not the
+      // arguments, which is why identity is asserted absent and the keys asserted equal.
+      expect(persisted).toHaveLength(2);
+      expect(persisted[0]?.getSkuID()).toBe(first.getSkuID());
+      expect(persisted[1]?.getSkuID()).toBe(second.getSkuID());
+      expect(persisted[0]).not.toBe(first);
+      expect(persisted[1]).not.toBe(second);
+    });
+
+    it('mixes insert and update members in one unit, minting only for the transient one', async () => {
+      const executor = new RecordingExecutor([]);
+
+      const persisted = await new MysqlSkuRepository(executor).saveSkus([
+        makeSkuFixture({ skuID: 'already-persisted' }),
+        makeSkuFixture({ skuID: 'draft-key', isNew: true }),
+      ]);
+
+      // `isNew()` decides the branch per member, so one collection may carry both — which
+      // is what a product whose SKU set gained a variant looks like. The update keeps the
+      // key it arrived with; the insert mints a 32-character one and discards the draft's.
+      expect(statementAt(executor.mutationCalls, 0).sql).toBe(EXPECTED_UPDATE_SKU_SQL);
+      expect(statementAt(executor.mutationCalls, 3).sql).toBe(EXPECTED_INSERT_SKU_SQL);
+
+      // The keys are the overrides verbatim, per the fixture note above. The minted key is
+      // asserted by LENGTH, which is the idiom the insert cases in this suite already use
+      // (see `toHaveLength(32)` at the `saveSku` insert case) rather than a pattern constant
+      // this file does not declare.
+      expect(persisted[0]?.getSkuID()).toBe('already-persisted');
+      expect(persisted[1]?.getSkuID()).toHaveLength(32);
+      expect(persisted[1]?.getSkuID()).not.toBe('draft-key');
+    });
+
+    it('propagates a mid-collection failure so the caller rolls the whole unit back', async () => {
+      // The insert branch raises when the statement reports no affected rows, which is the
+      // available way to fail a write against this double. It is the SECOND member that
+      // fails, so the first has already written its three statements when the rejection
+      // occurs.
+      const executor = new RecordingExecutor([], NO_ROWS_WRITTEN);
+
+      const rejected = new MysqlSkuRepository(executor).saveSkus([
+        makeSkuFixture({ skuID: 'fails-first', isNew: true }),
+      ]);
+
+      await expect(rejected).rejects.toThrow();
+
+      // ★ WHAT THIS DOES AND DOES NOT PROVE. It proves the failure is not swallowed — the
+      // rejection reaches the caller, which is what lets the real executor's `catch` issue
+      // its ROLLBACK. It does NOT prove rows were undone: this double has no connection
+      // and no rollback to perform, so the already-recorded statements stay recorded. The
+      // rollback itself is pinned in `tests/unit/repositories/connection.test.ts`.
+      expect(executor.transactionCount).toBeGreaterThan(0);
+    });
+
+    it('is reachable through the PORT type, unlike the cascade seam beside it', async () => {
+      // `saveSkus` is a port member and `saveSkuForProduct` is not, and the difference is
+      // load-bearing: a service holding only `SkuRepository` must be able to issue an
+      // atomic multi-SKU write, and must NOT be able to hand a transaction handle in.
+      const executor = new RecordingExecutor([]);
+      const repository: SkuRepository = new MysqlSkuRepository(executor);
+
+      const persisted = await repository.saveSkus([makeSkuFixture({ skuID: 'via-the-port' })]);
+
+      // The `SkuRepository` annotation above is what carries this case: had `saveSkus` been left
+      // off the port, this file would not compile. The assertions then prove the call really ran
+      // through that reference rather than being satisfied by the annotation alone.
+      //
+      // The two neighbouring facts are asserted where they belong rather than repeated here: the
+      // declared arity lives in the arity map with every other port member, and the fact that
+      // `saveSkuForProduct` is NOT reachable through this type is pinned by the `@ts-expect-error`
+      // in the cascade-seam block above.
+      expect(persisted).toHaveLength(1);
+      expect(executor.mutationCalls).toHaveLength(MUTATIONS_PER_SKU);
+      expect(executor.transactionCount).toBeGreaterThan(0);
+    });
+  });
+
+  // =========================================================================
   // C-9 — cross-cutting properties that hold for every method above
   //
   // These are the invariants that are not about any one statement. They are asserted once, over a sweep
   // that exercises several methods, rather than repeated in every block.
   // =========================================================================
+
+  // -------------------------------------------------------------------------
+  // C-8a  A RESERVED JAVASCRIPT IDENTIFIER IS AN ORDINARY Sw* PRIMARY KEY
+  //
+  // Both parent-keyed maps in this adapter are keyed by a value READ OUT OF THE
+  // RESULT SET, never by a value this file generates: `groupRowsByParentIdentifier`
+  // keys child rows by their parent identifier, and `hydrateSkus` keys one built
+  // entity per DISTINCT `skuID`. `SwSku.skuID` is a `varchar(32)` column
+  // [model/entity/Sku.cfc:L52] and the port adds no constraint of its own, so
+  // `__proto__` FITS and cannot be assumed away.
+  //
+  // A plain `map[identifier] = value` reaches `Object.prototype`'s legacy
+  // `__proto__` SETTER instead of creating a property. The consequences are
+  // asymmetric and both are asserted below: the child grouping would silently
+  // drop that SKU's currency and option rows, and the built-entity map would
+  // store nothing while the `structGet` guard kept reporting a miss — so the
+  // second pass would raise `SkuColumnError` for a row it had in fact hydrated.
+  //
+  // NET-NEW. `meta/tests/unit/dao/` holds only AccountDAOTest and PaymentDAOTest.
+  // -------------------------------------------------------------------------
+
+  describe('a reserved JavaScript identifier is hydrated as an ordinary Sw* primary key', () => {
+    /** The pathological identifier, used as a real `SwSku.skuID` value. */
+    const PROTO_SKU_ID = '__proto__';
+
+    it('★ hydrates a sku whose skuID is __proto__ instead of raising SkuColumnError', async () => {
+      // The driving statement returns TWO rows for the same pathological identifier,
+      // which is what makes the two passes disagree when the write is intercepted:
+      // pass one would store nothing, pass two would look the identifier up twice and
+      // fail on the first row.
+      const executor = new RecordingExecutor([
+        [makeSkuRow({ skuID: PROTO_SKU_ID }), makeSkuRow({ skuID: PROTO_SKU_ID })],
+        NO_ROWS,
+        NO_ROWS,
+      ]);
+
+      const hydrated = await new MysqlSkuRepository(executor).getProductSkus(
+        new StubbedBaseTypeProduct(PRODUCT_ID, 'merchandise'),
+        true,
+      );
+
+      // Row order is preserved and repeats are included, so the SAME instance appears twice.
+      expect(hydrated).toHaveLength(2);
+      expect(hydrated[0]?.getSkuID()).toBe(PROTO_SKU_ID);
+      expect(hydrated[1]).toBe(hydrated[0]);
+    });
+
+    it('★ groups the child currency and option rows onto a __proto__ parent identifier', async () => {
+      // `groupRowsByParentIdentifier` is reached twice per hydration — once with
+      // `skuID` for `SwSkuCurrency` and once with `link_skuID` for `SwSkuOption` — so
+      // one call exercises both keyings of the same helper.
+      const executor = new RecordingExecutor([
+        [makeSkuRow({ skuID: PROTO_SKU_ID })],
+        [makeSkuCurrencyRow({ skuID: PROTO_SKU_ID })],
+        [makeSkuOptionRow({ link_skuID: PROTO_SKU_ID })],
+      ]);
+
+      const hydrated = await new MysqlSkuRepository(executor).getProductSkus(
+        new StubbedBaseTypeProduct(PRODUCT_ID, 'merchandise'),
+        true,
+      );
+
+      const sku = hydrated[0];
+      if (sku === undefined) {
+        throw new Error('Expected one hydrated SKU for the reserved-identifier case.');
+      }
+
+      // Both associations arrived. With the write intercepted, both buckets would be
+      // absent and both of these would be zero — a SKU that silently lost its
+      // per-currency price overrides, which is exactly the failure mode
+      // `getPriceByCurrencyCode` must never suffer.
+      expect(sku.getSkuCurrencies()).toHaveLength(1);
+      expect(sku.getSkuCurrencies()[0]?.getSkuCurrencyID()).toBe(SKU_CURRENCY_ID);
+      expect(sku.getOptions()).toHaveLength(1);
+      expect(sku.getOptions()[0]?.getOptionID()).toBe(OPTION_A);
+    });
+
+    it('keeps a __proto__ sku and an ordinary sku in the same result set independent', async () => {
+      // The mixed case: the pathological identifier must not consume, shadow or
+      // reorder its well-behaved neighbour's rows.
+      const executor = new RecordingExecutor([
+        [makeSkuRow({ skuID: PROTO_SKU_ID }), makeSkuRow({ skuID: SKU_ID })],
+        [
+          makeSkuCurrencyRow({ skuID: PROTO_SKU_ID, skuCurrencyID: 'currency-proto' }),
+          makeSkuCurrencyRow({ skuID: SKU_ID, skuCurrencyID: 'currency-ordinary' }),
+        ],
+        NO_ROWS,
+      ]);
+
+      const hydrated = await new MysqlSkuRepository(executor).getProductSkus(
+        new StubbedBaseTypeProduct(PRODUCT_ID, 'merchandise'),
+        true,
+      );
+
+      expect(hydrated).toHaveLength(2);
+      expect(hydrated[0]?.getSkuID()).toBe(PROTO_SKU_ID);
+      expect(hydrated[1]?.getSkuID()).toBe(SKU_ID);
+      expect(hydrated[0]).not.toBe(hydrated[1]);
+
+      expect(hydrated[0]?.getSkuCurrencies()[0]?.getSkuCurrencyID()).toBe('currency-proto');
+      expect(hydrated[1]?.getSkuCurrencies()[0]?.getSkuCurrencyID()).toBe('currency-ordinary');
+    });
+
+    it('does not contaminate Object.prototype while hydrating a __proto__ identifier', async () => {
+      const executor = new RecordingExecutor([
+        [makeSkuRow({ skuID: PROTO_SKU_ID })],
+        [makeSkuCurrencyRow({ skuID: PROTO_SKU_ID })],
+        NO_ROWS,
+      ]);
+
+      await new MysqlSkuRepository(executor).getProductSkus(
+        new StubbedBaseTypeProduct(PRODUCT_ID, 'merchandise'),
+        true,
+      );
+
+      // A fresh literal, built after hydration ran, is the only way to observe global
+      // contamination — and it must still be empty.
+      const bystander: Record<string, unknown> = {};
+
+      expect(Object.keys(bystander)).toHaveLength(0);
+      expect(Object.prototype.hasOwnProperty.call(Object.prototype, 'skuID')).toBe(false);
+      expect(Object.prototype.hasOwnProperty.call(Object.prototype, 'activeFlag')).toBe(false);
+    });
+  });
 
   describe('cross-cutting: fetch shape, injected collaborators, schema continuity and UTC', () => {
     it('hydrates exactly one entity per driving row in a single pass, with no per-row follow-up query', async () => {
@@ -2295,8 +3227,9 @@ describe('MysqlSkuRepository SQL shape and parameter binding (NET-NEW: no legacy
         expect(members).not.toContain(forbiddenMember);
       }
 
-      // And the seven port methods take no extra control argument either — their arities are pinned in
+      // And the eight port methods take no extra control argument either — their arities are pinned in
       // the port-surface block above, and none of them carries a batch size, a limit or a retry policy.
+      // `saveSkus` takes a collection and nothing else, which is why its arity is 1 like `saveSku`'s.
       expect(prototypeMethodOf('saveSku').arity).toBe(1);
       expect(prototypeMethodOf('getProductSkus').arity).toBe(2);
     });
@@ -2364,7 +3297,9 @@ describe('MysqlSkuRepository SQL shape and parameter binding (NET-NEW: no legacy
 
       await new MysqlSkuRepository(executor).saveSku(makeSkuFixture());
 
-      const mutation = onlyStatement(executor.mutationCalls);
+      // Index 0 is the row statement; the two membership statements bind no temporal value, and
+      // the loop at the foot of this case still sweeps every bound parameter of the row write.
+      const mutation = statementAt(executor.mutationCalls, 0);
 
       // Index 11 is `createdDateTime` in the fifteen-column update list, and the sku fixture records it
       // as exactly this instant.
@@ -2387,5 +3322,282 @@ describe('MysqlSkuRepository SQL shape and parameter binding (NET-NEW: no legacy
         }
       }
     });
+  });
+});
+
+// ===========================================================================
+// THE CURRENCY-CASCADE HYDRATION BOUNDARY (NET-NEW: no legacy antecedent)
+//
+// ★★ WHY THIS BLOCK IS HERE AT ALL. Every test above constructs this repository
+// with an executor alone, which leaves the hydration collaborators absent and the
+// returned SKUs in the legacy's closed-gate state — correct, and completely silent
+// about the one obligation this adapter carries that no SQL assertion can reach:
+//
+//   the per-currency price map is materialised HERE, during hydration, which is
+//   the entire reason `Sku.getPriceByCurrencyCode()` and its two siblings stay
+//   SYNCHRONOUS [model/entity/Sku.cfc:L269-L285] after the loss of Hibernate's
+//   lazy loading.
+//
+// Two properties of that materialisation are asserted below, and neither is
+// observable from prices alone — a correct answer arrived at the wrong way looks
+// identical:
+//
+//   1. THE INVARIANT HALF RESOLVES ONCE PER READ, NOT ONCE PER ROW. The two
+//      settings reads [L373, L385/L418] and the eligible-currency listing
+//      [L371 fused with L375] do not vary from one SKU to the next, so they are
+//      resolved once for the whole result set and injected. This is an
+//      EXPLICITNESS property: it makes the consultation count a fixed, stated
+//      fact instead of something a reader infers from a loop. It is deliberately
+//      NOT framed as a performance property.
+//   2. NO CALLER HAS TO ASK. A SKU that leaves any read method is already
+//      hydrated, so `getCurrencyDetails()` answering `{}` can only mean what it
+//      means in the legacy — a shut [L373] gate — and never "nobody remembered".
+//
+// The Step-3 conversions are the deliberate exception and are asserted as such:
+// each one converts THAT SKU's own column [L418, L422, L425], so they are
+// intrinsically per-SKU and no batching can or should remove them.
+// ===========================================================================
+
+/** What a settings/currency double records, so a test can count consultations. */
+type CascadeConsultations = {
+  readonly settingReads: string[];
+  readonly listings: string[];
+  readonly conversions: string[];
+};
+
+function makeCascadeConsultations(): CascadeConsultations {
+  return { settingReads: [], listings: [], conversions: [] };
+}
+
+/**
+ * A recording settings double.
+ *
+ * The parameter is typed `string` rather than the port's narrower key union so no
+ * port module has to be imported: a function accepting `string` satisfies one
+ * declared to accept a subset of it.
+ */
+function makeCascadeSettings(
+  skuCurrency: string,
+  skuEligibleCurrencies: string,
+  log: CascadeConsultations,
+): { setting: (settingName: string) => string } {
+  const table: Readonly<Record<string, string>> = { skuCurrency, skuEligibleCurrencies };
+
+  return {
+    setting(settingName: string): string {
+      log.settingReads.push(settingName);
+
+      return table[settingName] ?? '';
+    },
+  };
+}
+
+/**
+ * A recording currency-conversion double.
+ *
+ * CFML parity [model/entity/Sku.cfc:L371, L375]: the legacy builds a currency smart list and narrows
+ * it with `addInFilter`. The shipped entity fuses those into one
+ * `getCurrenciesByCurrencyCodeList` call, so THAT is what `listings` counts.
+ */
+function makeCascadeConverter(log: CascadeConsultations): {
+  getAllActiveCurrencyIDList: () => Promise<CurrencyCode[]>;
+  getCurrenciesByCurrencyCodeList: (currencyCodeList: string) => Promise<CurrencyCode[]>;
+  convertCurrency: (
+    amount: Money,
+    originalCurrencyCode: CurrencyCode,
+    convertToCurrencyCode: CurrencyCode,
+  ) => Promise<Money>;
+} {
+  const parse = (currencyCodeList: string): CurrencyCode[] =>
+    currencyCodeList
+      .split(',')
+      .filter((code) => code.length > 0)
+      .map((code) => toCurrencyCode(code));
+
+  return {
+    getAllActiveCurrencyIDList(): Promise<CurrencyCode[]> {
+      log.listings.push('getAllActiveCurrencyIDList');
+
+      return Promise.resolve(parse(CASCADE_ELIGIBLE_CURRENCIES));
+    },
+
+    getCurrenciesByCurrencyCodeList(currencyCodeList: string): Promise<CurrencyCode[]> {
+      log.listings.push(currencyCodeList);
+
+      return Promise.resolve(parse(currencyCodeList));
+    },
+
+    convertCurrency(
+      amount: Money,
+      originalCurrencyCode: CurrencyCode,
+      convertToCurrencyCode: CurrencyCode,
+    ): Promise<Money> {
+      log.conversions.push(
+        `${amount.toDecimalString()}:${originalCurrencyCode}->${convertToCurrencyCode}`,
+      );
+
+      return Promise.resolve(amount);
+    },
+  };
+}
+
+const CASCADE_SEARCH_TERM = 'shirt';
+
+const CASCADE_BASE_CURRENCY = 'USD';
+
+const CASCADE_SECONDARY_CURRENCY = 'EUR';
+
+const CASCADE_ELIGIBLE_CURRENCIES = `${CASCADE_BASE_CURRENCY},${CASCADE_SECONDARY_CURRENCY}`;
+
+/** `count` distinct SKU rows, each complete enough for the row->entity factory. */
+function manySkuRows(count: number): readonly SqlRow[] {
+  return Object.freeze(
+    Array.from({ length: count }, (_unused, index) =>
+      makeSkuRow({ skuID: `${SKU_ID}-${String(index)}`, skuCode: `${SKU_CODE}-${String(index)}` }),
+    ),
+  );
+}
+
+describe('MysqlSkuRepository currency-cascade hydration (NET-NEW: no legacy antecedent)', () => {
+  it('★★ resolves the INVARIANT cascade inputs ONCE PER READ, whatever the row count', async () => {
+    // ★ THE ASSERTION THAT WOULD CATCH A PER-ROW RESOLUTION. One row and fifty
+    // rows resolve the SAME fixed three consultations, so the count is a property
+    // of the read and not of the result set. A per-row resolution would still
+    // produce correct prices — which is precisely why counting is the only way to
+    // observe the difference.
+    for (const rowCount of [1, 2, 50]) {
+      const log = makeCascadeConsultations();
+      const executor = new RecordingExecutor([manySkuRows(rowCount)]);
+
+      const found = await new MysqlSkuRepository(executor, {
+        settingsProvider: makeCascadeSettings(
+          CASCADE_BASE_CURRENCY,
+          CASCADE_ELIGIBLE_CURRENCIES,
+          log,
+        ),
+        currencyConverter: makeCascadeConverter(log),
+      }).searchSkusByProductType(CASCADE_SEARCH_TERM);
+
+      expect(found).toHaveLength(rowCount);
+
+      // FIXED, in both content and order.
+      expect(log.settingReads).toStrictEqual(['skuCurrency', 'skuEligibleCurrencies']);
+      expect(log.listings).toStrictEqual([CASCADE_ELIGIBLE_CURRENCIES]);
+
+      // …and the per-SKU half scales, because it must: Step 3 converts each SKU's
+      // own renewal price [L418], list price [L422] and price [L425] into the one
+      // non-base eligible currency.
+      expect(log.conversions).toHaveLength(rowCount * 3);
+    }
+  });
+
+  it('★★ every sku a read hands back is ALREADY hydrated — no caller-side await exists', async () => {
+    const log = makeCascadeConsultations();
+    const executor = new RecordingExecutor([manySkuRows(3)]);
+
+    const found = await new MysqlSkuRepository(executor, {
+      settingsProvider: makeCascadeSettings(
+        CASCADE_BASE_CURRENCY,
+        CASCADE_ELIGIBLE_CURRENCIES,
+        log,
+      ),
+      currencyConverter: makeCascadeConverter(log),
+    }).searchSkusByProductType(CASCADE_SEARCH_TERM);
+
+    for (const sku of found) {
+      // Read SYNCHRONOUSLY, with nothing awaited at the call site. This is the
+      // synchronous accessor contract at [model/entity/Sku.cfc:L269-L285], intact.
+      expect(Object.keys(sku.getCurrencyDetails()).sort()).toStrictEqual(
+        [CASCADE_BASE_CURRENCY, CASCADE_SECONDARY_CURRENCY].sort(),
+      );
+      expect(sku.getPriceByCurrencyCode(CASCADE_BASE_CURRENCY)?.toFixed2()).toBe('19.99');
+
+      // Step 1 for the base currency, Step 3 for the converted one.
+      expect(sku.getCurrencyDetails()[CASCADE_BASE_CURRENCY]?.converted).toBe(false);
+      expect(sku.getCurrencyDetails()[CASCADE_SECONDARY_CURRENCY]?.converted).toBe(true);
+    }
+  });
+
+  it('★ a shut [L373] gate still hydrates every sku, to {}, consulting no currency port', async () => {
+    // The gate is evaluated ONCE for the read, so a shut gate short-circuits the
+    // listing for the whole result set rather than once per row. `{}` here is the
+    // legacy's own closed-gate state, not a degraded target-only mode.
+    const log = makeCascadeConsultations();
+    const executor = new RecordingExecutor([manySkuRows(4)]);
+
+    const found = await new MysqlSkuRepository(executor, {
+      settingsProvider: makeCascadeSettings(CASCADE_BASE_CURRENCY, '', log),
+      currencyConverter: makeCascadeConverter(log),
+    }).searchSkusByProductType(CASCADE_SEARCH_TERM);
+
+    expect(found).toHaveLength(4);
+
+    for (const sku of found) {
+      expect(sku.getCurrencyDetails()).toStrictEqual({});
+
+      // Absent, not zero. A zero here would be a free product.
+      expect(sku.getPriceByCurrencyCode(CASCADE_BASE_CURRENCY)).toBeUndefined();
+    }
+
+    expect(log.settingReads).toStrictEqual(['skuCurrency', 'skuEligibleCurrencies']);
+    expect(log.listings).toStrictEqual([]);
+    expect(log.conversions).toStrictEqual([]);
+  });
+
+  it('★★ the save round-trip CARRIES THE COMPUTED MAP onto the rehydrated instance', async () => {
+    // The legacy save hands back THE SAME OBJECT, so its `variables.currencyDetails`
+    // memo survives trivially. This adapter rebuilds the entity from the persisted
+    // draft, so the map has to be carried across explicitly or a saved sku would
+    // answer `{}` for prices it demonstrably had a moment earlier. Carrying it runs
+    // no collaborator, which is what lets the rehydration stay synchronous.
+    const log = makeCascadeConsultations();
+    const executor = new RecordingExecutor([manySkuRows(1)]);
+    const repository = new MysqlSkuRepository(executor, {
+      settingsProvider: makeCascadeSettings(
+        CASCADE_BASE_CURRENCY,
+        CASCADE_ELIGIBLE_CURRENCIES,
+        log,
+      ),
+      currencyConverter: makeCascadeConverter(log),
+    });
+
+    const [read] = await repository.searchSkusByProductType(CASCADE_SEARCH_TERM);
+
+    if (read === undefined) {
+      throw new Error('the canned single-row result should have hydrated a sku');
+    }
+
+    const consultationsAfterRead = log.listings.length + log.conversions.length;
+
+    const saved = await repository.saveSku(read);
+
+    // A DIFFERENT instance…
+    expect(saved).not.toBe(read);
+
+    // …carrying the same map, by value.
+    expect(saved.getCurrencyDetails()).toStrictEqual(read.getCurrencyDetails());
+    expect(saved.getPriceByCurrencyCode(CASCADE_SECONDARY_CURRENCY)?.toFixed2()).toBe('19.99');
+
+    // …and nothing was recomputed to achieve it.
+    expect(log.listings.length + log.conversions.length).toBe(consultationsAfterRead);
+  });
+
+  it('★ collaborators absent — hydration runs nothing and the skus answer {} rather than failing', async () => {
+    // This is the state every SQL-shape test above sits in, asserted once
+    // explicitly so it reads as a decision rather than an accident. Absent
+    // collaborators are a legitimate construction: `getCurrencyDetails()` answers
+    // `{}`, which is the same observable state a shut [L373] gate produces.
+    const executor = new RecordingExecutor([manySkuRows(2)]);
+
+    const found = await new MysqlSkuRepository(executor).searchSkusByProductType(
+      CASCADE_SEARCH_TERM,
+    );
+
+    expect(found).toHaveLength(2);
+
+    for (const sku of found) {
+      expect(sku.getCurrencyDetails()).toStrictEqual({});
+      expect(sku.getPriceByCurrencyCode(CASCADE_BASE_CURRENCY)).toBeUndefined();
+    }
   });
 });

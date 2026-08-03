@@ -1544,8 +1544,8 @@ interface PromotionFixtureGraph {
    * The reward's label provider, with a call log.
    *
    * A hand-written recording double: no mocking library is installed, the legacy
-   * suite had none either, and the dependency set is frozen at fourteen exact
-   * pins. Deterministic and offline - it composes its answers from its input and
+   * suite had none either, and the dependency set is frozen at the thirteen exact
+   * pins `package.json` declares. Deterministic and offline - it composes its answers from its input and
    * touches nothing.
    */
   readonly rewardLabelProvider: RecordingLabelProvider;
@@ -2271,8 +2271,11 @@ const QUALIFIER_GATE_NULL_DEFAULTS: readonly QualifierGateNullDefault[] = Object
  * ⭐ ROW `nowAtEndDateTime` IS THE DIVERGENCE: at the exact `endDateTime`
  * instant `isCurrent()` says NOT current and `getCurrentFlag()` says current.
  * Two predicates on one entity answering the same question differently is a
- * defect, and it is newly catalogued - the plan's twenty-defect register does
- * not carry it.
+ * defect, and it is newly catalogued: the plan's published twenty do not carry it,
+ * and it is DELIBERATELY LEFT UNNUMBERED in the port's thirty-entry register - that
+ * set is closed at thirty, and this is an observation about fixture-facing behaviour
+ * rather than a legacy defect the port must reproduce. See the number-to-locator index
+ * in `tests/unit/domain/entities/promotionReward.test.ts`.
  *
  * `satisfiesNeedsEndAfterStart` answers a DIFFERENT question - whether
  * `model/validation/PromotionPeriod.json`'s named condition ACCEPTS the shape.
@@ -2439,8 +2442,10 @@ const PERIOD_PREDICATE_CONTRAST: PeriodPredicateContrast = Object.freeze({
  * `"promotionCodes": [{"contexts":"delete","method":"getPromotionCodesDeletableFlag"}]`,
  * so the defective accessor IS the delete-validation gate. The returned VALUE is
  * correct - the loop computes the right answer each time - but the cost is real
- * and paid on every delete validation. Not in the plan's twenty-defect register;
- * structurally the same shape as its defect 19, but three-way rather than
+ * and paid on every delete validation. Not among the plan's published twenty, and
+ * deliberately left unnumbered in the port's thirty-entry register for the same reason
+ * as the `nowAtEndDateTime` row above; structurally the same shape as numbered entry 19
+ * [model/entity/Product.cfc:L524-L532], but three-way rather than
  * two-way.
  *
  * The target normalises the spelling as a documented deliberate divergence: the
@@ -2880,7 +2885,8 @@ function makeExcludedProductType(idPrefix: string): ProductType {
  * The reward's label-provider double, recording every reward-type label request.
  *
  * A hand-written recording double rather than a library mock: no mocking library
- * is installed, the frozen dependency set is exactly fourteen exact pins, and the
+ * is installed, the frozen dependency set is exactly the thirteen pins
+ * `package.json` declares, and the
  * legacy suite had no mocking library either. Deterministic and entirely offline -
  * it composes its answers from its own input and touches nothing.
  *

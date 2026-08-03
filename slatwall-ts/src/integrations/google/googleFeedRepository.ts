@@ -169,6 +169,11 @@ import type { PreparedStatementExecutor, SqlRow } from '../../repositories/mysql
 import { Money } from '../../domain/valueObjects/money.js';
 import { cfBoolean } from '../../lib/cfml/truthiness.js';
 import type { CfBooleanInput } from '../../lib/cfml/truthiness.js';
+import type {
+  PromotionRepository,
+  SalePricePromotionRewardRow,
+} from '../../domain/ports/promotionRepository.js';
+import type { RoundingRuleService } from '../../services/roundingRuleService.js';
 
 // Two importable dependencies are deliberately unused, and both omissions are
 // recorded here so a reviewer sees they were decided rather than forgotten.
@@ -195,14 +200,18 @@ import type { CfBooleanInput } from '../../lib/cfml/truthiness.js';
 /**
  * The legacy setting values this feed needs, ALREADY RESOLVED, handed in once.
  *
- * JUDGMENT CALL: four values that the legacy read through `setting()` and
+ * JUDGMENT CALL: three values that the legacy read through `setting()` and
  * `getBaseImageURL()` arrive as plain resolved strings on this interface rather
  * than being read here. Every other route was closed, and each closure is a
  * deliberate constraint of this migration rather than an inconvenience:
  *
- *   * `src/domain/ports/settingsProvider.ts` is LOCKED to seven keys, and
- *     neither shipping-weight key is among them. Adding an eighth is a scope
- *     violation, and so is extending a sibling's locked contract from here.
+ *   * `src/domain/ports/settingsProvider.ts` is LOCKED to FOUR keys -
+ *     `globalURLKeyProduct` [model/service/SettingService.cfc:L178],
+ *     `globalURLKeyProductType` [model/service/SettingService.cfc:L179],
+ *     `skuCurrency` [model/service/SettingService.cfc:L221] and
+ *     `skuEligibleCurrencies` [model/service/SettingService.cfc:L222] - and
+ *     neither missing-image key is among them. Adding a fifth is a scope violation,
+ *     and so is extending a sibling's locked contract from here.
  *   * The port set is LOCKED at thirteen, so a fourteenth port for feed
  *     presentation values is equally out of the question.
  *   * This file reads no environment variable at all - no `process.env`, no
@@ -210,15 +219,31 @@ import type { CfBooleanInput } from '../../lib/cfml/truthiness.js';
  *     configuration into a repository, which is exactly what the
  *     no-hardcoded-configuration standard forbids. The legacy defaults are
  *     merely evidence of shape, never values to inline:
- *     `globalURLKeyProduct` defaults to `"sp"` [model/service/SettingService.cfc:L178],
- *     `skuShippingWeight` to `1` [model/service/SettingService.cfc:L232] and
- *     `skuShippingWeightUnitCode` to `"lb"` [model/service/SettingService.cfc:L233].
+ *     `globalURLKeyProduct` defaults to `"sp"`
+ *     [model/service/SettingService.cfc:L178].
  *
  *   What remains is the honest boundary: the composition root at
  *   `src/handlers/bootstrap.ts` (planned) already owns settings resolution, so it
- *   resolves these four once and passes them in. The projection then carries
+ *   resolves these three once and passes them in. The projection then carries
  *   fully-resolved values, which is what lets the renderer emit them without ever
  *   reaching for a setting itself.
+ *
+ * ★★ THIS INTERFACE ONCE DECLARED "four values" AND CARRIED `skuShippingWeight` AND
+ * `skuShippingWeightUnitCode` AS TWO OF THEM.
+ *   The removed clause read "`src/domain/ports/settingsProvider.ts` is LOCKED to
+ *   seven keys, and neither shipping-weight key is among them" - and the key count
+ *   was wrong twice over. The union has exactly FOUR members, and the two
+ *   shipping-weight keys never belonged on a per-REPOSITORY interface at all: the
+ *   legacy resolves them PER SKU, inside the row loop
+ *   [integrationServices/google/views/feed/product.cfm:L58]. Carrying one pair here
+ *   and copying it onto every row silently asserted that every SKU in the catalog
+ *   ships at the same weight.
+ *
+ *   They now arrive through {@link SkuFeedSettingResolver}, which is asked once for
+ *   every selected SKU and answers per SKU. The rest of the argument above survives
+ *   intact and is the reason that resolver is a COLLABORATOR rather than a settings
+ *   read: this file still reads no setting, no environment variable and no
+ *   configuration, and it still hardcodes none.
  *
  * JUDGMENT CALL: this interface cannot widen the four-filter invariant, and that
  * is why it is admissible at all. Not one member of it reaches the WHERE clause,
@@ -255,21 +280,185 @@ export interface ResolvedFeedSettingValues {
   readonly baseImageURL: string;
 
   /**
-   * The resolved value of `sku.setting('skuShippingWeight')`.
+   * The EFFECTIVE missing-image path, already chosen from the legacy's three
+   * candidates.
    *
-   * A STRING, deliberately - not a number and not `Money`. The legacy emits it as
-   * raw text into the feed at
-   * [integrationServices/google/views/feed/product.cfm:L58], and its declaration
-   * at [model/service/SettingService.cfc:L232] is `fieldType="text"`.
+   * CFML parity [model/service/ImageService.cfc:L82-L89]: when the stored image
+   * cannot be found the legacy substitutes, in this order, the caller-supplied
+   * `missingImagePath` - which for a SKU is `setting('imageMissingImagePath')`
+   * [model/entity/Sku.cfc:L198-L200] and for a product image is the same setting
+   * [model/entity/Image.cfc:L126-L128] - then
+   * `setting('globalMissingImagePath')` [model/service/ImageService.cfc:L85-L86],
+   * then the literal `"#getApplicationValue('baseURL')#/assets/images/missingimage.jpg"`
+   * [model/service/ImageService.cfc:L88].
+   *
+   * THAT PRECEDENCE IS RESOLVED BY THE COMPOSITION ROOT, NOT HERE, and this member
+   * is its single answer. Two reasons, and the first is decisive:
+   *   * Each legacy candidate is chosen by `fileExists(expandPath(...))` - a
+   *     FILESYSTEM PROBE. A Lambda has no such filesystem: the assets live behind an
+   *     asset host, `fileExists` has no equivalent, and inventing one would be
+   *     inventing behaviour. What the composition root CAN do is resolve which of the
+   *     three candidates is configured and reachable in the deployed environment, once
+   *     per invocation, and hand that in.
+   *   * Neither `imageMissingImagePath` nor `globalMissingImagePath` is one of the
+   *     four keys `src/domain/ports/settingsProvider.ts` admits, and the legacy
+   *     literal embeds an application value. Resolving any of them here would put
+   *     configuration inside a repository.
+   *
+   * REQUIRED, NOT OPTIONAL, because the legacy substitution has no fourth outcome:
+   * the final `else` branch is unconditional, so a missing image ALWAYS resolved to
+   * some path. An optional member here would let a caller reintroduce the absent
+   * path this member exists to eliminate.
    */
-  readonly skuShippingWeight: string;
+  readonly missingImagePath: string;
+}
+
+/**
+ * The identifiers one selected SKU contributes to a per-SKU setting lookup.
+ *
+ * CFML parity [model/service/SettingService.cfc:L102-L106, L516-L604]: `setting()`
+ * on a persistent object first looks for a value bound to the object itself
+ * [model/service/SettingService.cfc:L517-L519] and then walks the lookup order
+ * declared for its class. For a SKU that order is
+ * `["product.productID", "product.productType.productTypeIDPath&product.brand.brandID", "product.productType.productTypeIDPath"]`
+ * [model/service/SettingService.cfc:L104], so the identifiers that can participate
+ * are the SKU's own, its product's, its product type's and its brand's - which is
+ * exactly the four members below and nothing else.
+ *
+ * THE PRODUCT TYPE IS THE LEAF IDENTIFIER, NOT THE PATH. The legacy resolves
+ * `product.productType.productTypeIDPath` and then walks that comma list from its
+ * last element towards its first [model/service/SettingService.cfc:L550-L558]. That
+ * expansion belongs to whoever owns setting resolution - the path is a materialized
+ * column of `SwProductType` [model/entity/ProductType.cfc:L53] and its freshness is
+ * that owner's concern - so the leaf identifier is handed over and the resolver
+ * expands it. Selecting the path here would mean joining `SwProductType` into the
+ * locked three-join selection, which is precisely what I-14 forbids.
+ */
+export interface SkuFeedSettingSubject {
+  /** `SwSku.skuID` - the object-level lookup [model/service/SettingService.cfc:L519]. */
+  readonly skuID: string;
+
+  /** `SwSku.productID` - the first lookup step [model/service/SettingService.cfc:L104]. */
+  readonly productID: string;
 
   /**
-   * The resolved value of `sku.setting('skuShippingWeightUnitCode')`, emitted
-   * space-separated after the weight at
-   * [integrationServices/google/views/feed/product.cfm:L58].
+   * `SwProduct.productTypeID`, the leaf of the product-type path used by the second
+   * and third lookup steps. Absent when the product has no product type.
    */
+  readonly productTypeID: string | undefined;
+
+  /**
+   * `SwProduct.brandID`, the `&brand.brandID` conjunct of the second lookup step.
+   * Absent when the product has no brand.
+   */
+  readonly brandID: string | undefined;
+}
+
+/**
+ * The two shipping-weight setting values, resolved for ONE SKU.
+ *
+ * Both are STRINGS, deliberately - not numbers and not `Money`. The legacy emits them
+ * as raw text [integrationServices/google/views/feed/product.cfm:L58], and their
+ * declarations are `fieldType="text"` with a default of `1`
+ * [model/service/SettingService.cfc:L232] and `fieldType="select"` with a default of
+ * `"lb"` [model/service/SettingService.cfc:L233]. Those defaults are cited as
+ * evidence of SHAPE; neither is inlined anywhere in this file.
+ */
+export interface ResolvedSkuShippingWeightSetting {
+  /** The resolved value of `sku.setting('skuShippingWeight')`. */
+  readonly skuShippingWeight: string;
+
+  /** The resolved value of `sku.setting('skuShippingWeightUnitCode')`. */
   readonly skuShippingWeightUnitCode: string;
+}
+
+/**
+ * Resolves the shipping-weight settings of every selected SKU, per SKU.
+ *
+ * WHY THIS EXISTS AS A COLLABORATOR rather than as two more resolved values. The
+ * legacy call is `local.sku.setting('skuShippingWeight')`
+ * [integrationServices/google/views/feed/product.cfm:L58] - `setting()` ON THE SKU,
+ * inside the row loop. Two SKUs of the same product can answer differently, because
+ * the very first lookup step is a value bound to the SKU's own identifier
+ * [model/service/SettingService.cfc:L519]. One pair of strings resolved once and
+ * copied onto every row cannot express that, whatever the pair's provenance.
+ *
+ * ONE CALL FOR THE WHOLE SELECTION, and the shape says so: it takes every subject at
+ * once and answers a map. That is the same batching the two SQL lookups in this file
+ * use, and it is deliberate - a per-row call would issue one lookup per SKU, which is
+ * the N+1 shape the repository boundary exists to make impossible. The resolver is
+ * free to answer from one query, from a warmed table or from declared defaults; this
+ * file neither knows nor cares.
+ *
+ * WHAT IT MUST NOT BE. It is not a settings provider and must not be mistaken for
+ * one: it admits no arbitrary key, answers no other setting, and its result cannot
+ * reach a `WHERE` clause. `src/domain/ports/settingsProvider.ts` stays at its four
+ * keys, untouched.
+ */
+export interface SkuFeedSettingResolver {
+  /**
+   * @param subjects one entry per selected SKU, in selection order, distinct by
+   *   `skuID`.
+   * @returns a resolved pair for EVERY subject, keyed by `skuID`. Answering fewer is
+   *   a contract violation rather than an absence: `setting()` always produced a
+   *   value, falling back to the declared default
+   *   [model/service/SettingService.cfc:L232-L233], so there is no such thing as a
+   *   SKU with no shipping weight.
+   */
+  resolveSkuShippingWeightSettings(
+    subjects: readonly SkuFeedSettingSubject[],
+  ): Promise<ReadonlyMap<string, ResolvedSkuShippingWeightSetting>>;
+}
+
+/**
+ * The winning sale-price rewards, narrowed to the ONE capability this feed consumes.
+ *
+ * `Pick` rather than a hand-written one-method interface, so the signature is the
+ * port's own and a change to it is a compile error here rather than a silent
+ * divergence. It is the same idiom `./googleFeedService.js` uses to narrow this
+ * repository down to `fetchProductFeedRows`.
+ *
+ * CALLED WITH NO ARGUMENT, ONCE PER FEED. The port's `productID` parameter is
+ * optional and omitting it genuinely means every product
+ * [model/dao/PromotionDAO.cfc:L359, L390, L423, L456, L497, L538 - each branch tests
+ * its PRESENCE], which is exactly what a whole-catalog feed needs. The legacy reached
+ * this query once per PRODUCT, through a per-product memo
+ * [model/entity/Product.cfc:L517-L522] that a feed of n products consulted n times;
+ * one unnarrowed call answers the same question for the whole selection in one
+ * statement, which is the same N+1 removal the two lookups above perform.
+ */
+export type GoogleFeedSalePriceSource = Pick<
+  PromotionRepository,
+  'getSalePricePromotionRewardsQuery'
+>;
+
+/**
+ * The rounding-rule application, narrowed to the ONE capability this feed consumes.
+ *
+ * CFML parity [model/service/PromotionService.cfc:L1024-L1028]: rounding is applied
+ * by the SERVICE tier, after the query, and only to rows whose `roundingRuleID` is
+ * non-empty. That step is reproduced rather than skipped, because a rounded sale price
+ * is a different price - and it is reached through the existing
+ * `roundValueByRoundingRuleID` [model/service/RoundingRuleService.cfc:L79] rather than
+ * reimplemented, since the rounding algorithm is a decimal-string manipulation with
+ * nine characterised outcomes and no second implementation of it may exist.
+ */
+export type GoogleFeedValueRounder = Pick<RoundingRuleService, 'roundValueByRoundingRuleID'>;
+
+/**
+ * One SKU's resolved sale-price pair, ready for the projection.
+ *
+ * Both members come from the SAME reward row, which is what keeps the pair coherent -
+ * the view emits `g:sale_price` and `g:sale_price_effective_date` inside one
+ * conditional [integrationServices/google/views/feed/product.cfm:L28-L31], so they
+ * must never be resolved from different rows.
+ */
+interface ResolvedSalePriceDetail {
+  /** The winning sale price, rounded when the winning reward names a rounding rule. */
+  readonly salePrice: Money;
+
+  /** The winning reward's expiration, `undefined` when the row carries none. */
+  readonly salePriceExpirationDateTime: Date | undefined;
 }
 
 /**
@@ -367,6 +556,15 @@ export interface GoogleProductFeedRow {
    * `SwProductType.productTypeDescription`, 4000 characters
    * [model/entity/ProductType.cfc:L58]. Absent when the product has no product
    * type, or when the type records no description.
+   *
+   * READ BY THE PRODUCT-TYPE STATEMENT, NOT BY THE SELECTION, because the
+   * selection's join inventory is locked to the legacy controller's three joins and
+   * `SwProductType` is not one of them. The legacy reached this column by lazily
+   * traversing `getProductType()` per row
+   * [integrationServices/google/views/feed/product.cfm:L19], which is a graph walk
+   * after the selection rather than part of it; the ported walk is
+   * {@link PRODUCT_TYPE_ANCESTRY_SQL_HEAD}, keyed on the identifiers the selection
+   * produced. The full argument is above {@link FEED_SELECTION_SQL}.
    */
   readonly productTypeDescription: string | undefined;
 
@@ -408,20 +606,48 @@ export interface GoogleProductFeedRow {
    * whose middle segment is a literal of the legacy source rather than
    * configuration.
    *
-   * WHAT IS DELIBERATELY NOT REPRODUCED. The view calls
-   * `getResizedImagePath()`, which additionally reads
-   * `setting('imageMissingImagePath')` and delegates to the image service
-   * [model/entity/Sku.cfc:L192-L200]. That service is out of scope and inventing
-   * a resizing implementation is forbidden, `src/domain/ports/imageStore.ts`
-   * offers only `saveImageFile` and `deleteImageFile` so it cannot resolve a
-   * path, and `imageMissingImagePath` is deliberately not among the seven keys
-   * the settings contract admits. What is carried is therefore the STORED image
-   * path - precisely the `imagePath` argument the legacy resizer receives - and
-   * the missing-image substitution is not performed. Absent when
-   * `SwSku.imageFile` is SQL `NULL`, because there is then no stored path to
-   * name and no sanctioned fallback to name instead.
+   * ALWAYS PRESENT, because the legacy always had a path to emit. The view calls
+   * `getResizedImagePath()` [integrationServices/google/views/feed/product.cfm:L23],
+   * which hands the stored path and `setting('imageMissingImagePath')` to the image
+   * service [model/entity/Sku.cfc:L195-L200]; that service substitutes a
+   * missing-image path whenever the stored one names no file, and its final `else`
+   * branch is unconditional [model/service/ImageService.cfc:L82-L89]. With no width
+   * or height supplied - and the view supplies neither - the result is returned
+   * unresized [model/service/ImageService.cfc:L93-L95]. So the legacy emitted the
+   * stored path or a missing-image path, and never nothing.
+   *
+   * THE OBSERVABLE TRIGGER IS A NULL COLUMN, NOT A FILESYSTEM PROBE, and that is the
+   * one place this port cannot follow the legacy exactly. The legacy substitutes when
+   * `fileExists(expandPath(imagePath))` is false, which a Lambda cannot evaluate
+   * against an asset host. What it CAN detect is the case that made the probe fail in
+   * the first place: a SKU whose `SwSku.imageFile` is SQL `NULL` interpolates to
+   * `#baseImageURL#/product/default/` [model/entity/Sku.cfc:L145-L147], a path naming
+   * no file, so the legacy substitution fired for exactly that row. Those rows now
+   * carry {@link ResolvedFeedSettingValues.missingImagePath}. A row whose column IS
+   * set carries its stored path unprobed - the faithful subset, stated rather than
+   * papered over.
+   *
+   * NO RESIZING IS PERFORMED and none is invented: the view passes no dimensions, so
+   * the legacy performed none either.
+   *
+   * ★★ THIS MEMBER WAS ONCE `string | undefined`, DOCUMENTED AS "the missing-image
+   * substitution is not performed. Absent when `SwSku.imageFile` is SQL `NULL`".
+   *   Two of that block's premises were sound - the image service is out of scope and
+   *   `src/domain/ports/imageStore.ts` cannot resolve a path - and one was wrong: it
+   *   said `imageMissingImagePath` "is deliberately not among the seven keys the
+   *   settings contract admits", where the union holds four. But the conclusion did
+   *   not follow from any of them. A repository that cannot RESOLVE a fallback can
+   *   still be HANDED one, which is what
+   *   {@link ResolvedFeedSettingValues.missingImagePath} now is.
+   *
+   *   The absence mattered because of what the renderer then did with it: it
+   *   interpolated `${feedOrigin}${row.imageLinkPath ?? ''}` and emitted a BARE
+   *   ORIGIN as the image link - a URL pointing at the storefront root rather than at
+   *   an image. Google Merchant Center would reject the item on it. Making this member
+   *   required removes that state from the type, so the renderer cannot reintroduce
+   *   it.
    */
-  readonly imageLinkPath: string | undefined;
+  readonly imageLinkPath: string;
 
   /**
    * The 0..n path segments of `g:additional_image_link`
@@ -436,6 +662,16 @@ export interface GoogleProductFeedRow {
    * legacy loop emitted whatever order the ORM returned; imposing an order here
    * would be a repair rather than a port. An empty array means the product has no
    * additional images, which is an ordinary state and not a failure.
+   *
+   * ONE ENTRY PER IMAGE ROW, ALWAYS. The legacy loop emits one
+   * `g:additional_image_link` per member of the association and routes each through
+   * `Image.getResizedImagePath()` [model/entity/Image.cfc:L120-L128], which performs
+   * the same missing-image substitution as the SKU path. An image row whose
+   * `directory` or `imageFile` column is SQL `NULL` therefore produced an ELEMENT
+   * CARRYING THE FALLBACK PATH, not a skipped element, so a row missing a component
+   * contributes {@link ResolvedFeedSettingValues.missingImagePath} here rather than
+   * contributing nothing. The array's length is the number of image rows the product
+   * has.
    */
   readonly additionalImageLinkPaths: readonly string[];
 
@@ -474,35 +710,78 @@ export interface GoogleProductFeedRow {
    * `g:sale_price` at
    * [integrationServices/google/views/feed/product.cfm:L29].
    *
-   * ALWAYS ABSENT FROM THIS REPOSITORY, and the reasoning is the most important
-   * boundary statement in this file.
-   *
-   * There is no column to read. `Sku.salePrice` and
+   * RESOLVED, NOT READ, because there is no column to read. `Sku.salePrice` and
    * `Sku.salePriceExpirationDateTime` are both `persistent="false"`
    * [model/entity/Sku.cfc:L115, L118]. The legacy resolves them through
    * `getSalePriceDetails()` [model/entity/Sku.cfc:L539-L544] to
-   * `Product.getSkuSalePriceDetails(skuID)` [model/entity/Product.cfc:L182-L187]
-   * to `getSalePriceDetailsForSkus()` [model/entity/Product.cfc:L517-L522] and
-   * finally to `promotionService.getSalePriceDetailsForProductSkus()`
+   * `getSalePriceDetailsForSkus()` [model/entity/Product.cfc:L517-L522] and finally
+   * to `promotionService.getSalePriceDetailsForProductSkus()`
    * [model/service/PromotionService.cfc:L1022-L1030], which is the promotion
-   * sale-price reward query plus a rounding rule. That is a different bounded
-   * capability, owned by modules under `src/services/**` and
-   * `src/repositories/mysql/sql/**` that this file may not import and must not
-   * duplicate.
+   * sale-price reward query plus a rounding rule. Both halves of that already exist
+   * in this subtree, so both are reached through
+   * {@link GoogleFeedSalePriceSource} and {@link GoogleFeedValueRounder} rather than
+   * being reimplemented here.
    *
-   * THE ONE NEARBY COLUMN IS NOT A SUBSTITUTE. `SwProduct.calculatedSalePrice`
-   * [model/entity/Product.cfc:L62] exists, but
+   * ABSENT MEANS NO SALE, and absent is the common case: the reward query returns a
+   * row only for a SKU a sale-price reward actually wins
+   * [model/dao/PromotionDAO.cfc:L298-L591]. `Sku.getSalePrice()` makes the same
+   * statement differently - with no detail it returns `getPrice()`
+   * [model/entity/Sku.cfc:L546-L551], which fails the view's own
+   * `getPrice() gt getSalePrice()` gate
+   * [integrationServices/google/views/feed/product.cfm:L28]. Carrying `undefined`
+   * and letting the renderer's gate reject it is the same outcome reached the same
+   * way, and ZERO IS NEVER SUBSTITUTED: a zero sale price would advertise the
+   * product as free.
+   *
+   * THE ONE NEARBY COLUMN IS STILL NOT A SUBSTITUTE, and the argument is unchanged.
+   * `SwProduct.calculatedSalePrice` [model/entity/Product.cfc:L62] exists, but
    * [org/Hibachi/HibachiEntity.cfc:L31-L48] writes it from
    * `Product.getSalePrice()`, which delegates to the DEFAULT SKU
-   * [model/entity/Product.cfc:L594-L601]. For any row whose SKU is not the
-   * default it therefore describes a different SKU, and reading it here would
-   * advertise a sale the SKU does not have.
+   * [model/entity/Product.cfc:L594-L601]. For any row whose SKU is not the default
+   * it describes a different SKU, so it is not read here.
    *
-   * AND THE DECIDING POINT: no persisted expiration date exists at all, for any
-   * SKU. The view emits the price and the effective-date range together inside
-   * one conditional [integrationServices/google/views/feed/product.cfm:L28-L31],
-   * so resolving the price alone could only ever produce a half-formed sale
-   * block. Absent together is the coherent answer, and it is the honest one.
+   * ★★ THIS MEMBER WAS ONCE DOCUMENTED "ALWAYS ABSENT FROM THIS REPOSITORY, and the
+   * reasoning is the most important boundary statement in this file."
+   *   The removed block's facts were all correct - no column, a `persistent="false"`
+   *   pair, and a resolution path that belongs to the promotion capability. Its
+   *   CONCLUSION was not. "Owned by modules under `src/services/**` and
+   *   `src/repositories/mysql/sql/**` that this file may not import" was the load
+   *   bearing claim, and it is false: the ESLint boundary rule restricts
+   *   `src/domain/**`, not `src/integrations/**`, so this file may name a service and
+   *   a repository port, and asking a collaborator for a value is the opposite of
+   *   duplicating it.
+   *
+   *   The removed block also argued "no persisted expiration date exists at all, for
+   *   any SKU ... so resolving the price alone could only ever produce a half-formed
+   *   sale block. Absent together is the coherent answer." Both operands are resolved
+   *   together now, from the same row of the same query
+   *   [model/dao/PromotionDAO.cfc:L298-L591], so the pairing that reasoning protected
+   *   is preserved by construction rather than by omitting both.
+   *
+   *   The cost of the old reading was that the feed advertised NO SALES AT ALL: the
+   *   renderer's `g:sale_price` and `g:sale_price_effective_date` were unreachable in
+   *   every row, so a merchant running a promotion published full prices to Google.
+   *
+   * ★ WHAT THIS MEMBER HOLDS WHEN NO REWARD WINS: THE SKU'S OWN PRICE, NOT NOTHING.
+   * `Sku.getSalePrice()` is three statements and the third is `return getPrice()`
+   * [model/entity/Sku.cfc:L546-L551], so the accessor the view calls never answers with
+   * an absence for a SKU that has a price. Reproducing the fallback rather than
+   * projecting `undefined` is what keeps the view's gate meaningful:
+   * `local.sku.getPrice() gt local.sku.getSalePrice()`
+   * [integrationServices/google/views/feed/product.cfm:L28] compares EQUAL for a SKU
+   * with no sale and emits neither element, which is a comparison the legacy actually
+   * performed rather than a presence test it did not.
+   *
+   * ⚠ THE PAIRING SURVIVES THAT, WHICH IS WHY THE FALLBACK IS SAFE. It applies to the
+   * price alone, because {@link salePriceExpirationDateTime} has no fallback in the
+   * source either - it answers with an EMPTY STRING [model/entity/Sku.cfc:L560-L565],
+   * which is not a renderable instant. The two therefore diverge exactly where the
+   * source diverges, and a half-formed sale block is still impossible: an equal
+   * comparison suppresses both elements together.
+   *
+   * ⚠ AND ABSENT STILL MEANS ABSENT, NEVER ZERO. `SwSku.price` is nullable, so a SKU
+   * whose price column is SQL `NULL` carries no sale price either. A zero substituted
+   * for either would advertise a free product.
    */
   readonly skuSalePrice: Money | undefined;
 
@@ -510,24 +789,62 @@ export interface GoogleProductFeedRow {
    * The end of the `g:sale_price_effective_date` range
    * [integrationServices/google/views/feed/product.cfm:L30].
    *
-   * ALWAYS ABSENT FROM THIS REPOSITORY, for the reason given in full at
-   * {@link skuSalePrice}: it is `persistent="false"`
-   * [model/entity/Sku.cfc:L118], the promotion sale-price path that computes it
-   * is another module's, and no `Sw*` column carries it. The view's own
-   * range-start is `now()`, a rendering concern that never belonged to a
-   * repository.
+   * RESOLVED ALONGSIDE {@link skuSalePrice}, from the same reward row, for the reason
+   * given there in full. `Sku.getSalePriceExpirationDateTime()` reads it out of the
+   * same detail struct [model/entity/Sku.cfc:L560-L565], so a SKU with a sale price
+   * and no expiration is representable - the legacy then formatted an empty string
+   * into the range, and this port declines to emit a half-formed interval instead;
+   * that gate is the renderer's and is documented there.
+   *
+   * The range's START is not carried here. The view takes it from `now()`
+   * [integrationServices/google/views/feed/product.cfm:L30], a rendering concern that
+   * never belonged to a repository.
    */
   readonly salePriceExpirationDateTime: Date | undefined;
 
   /**
-   * `g:brand` [integrationServices/google/views/feed/product.cfm:L32].
+   * WHETHER THE PRODUCT HAS A BRAND AT ALL - the gate for `g:brand`
+   * [integrationServices/google/views/feed/product.cfm:L32].
+   *
+   * `SwBrand.brandID` AS THE LEFT JOIN RESOLVED IT - not `SwProduct.brandID`, the
+   * foreign-key column of the `brand` many-to-one [model/entity/Product.cfc:L68].
+   * Present exactly when a brand ROW answers to the product's key, absent exactly when
+   * none does, and NOT a second name field.
+   *
+   * ★ THE DISTINCTION IS THE WHOLE POINT AND IS EASY TO LOSE. The legacy gate tests
+   * the RESOLVED ASSOCIATION, so a product carrying a `brandID` that no surviving
+   * `SwBrand` row answers to has a foreign key and no brand. Gating on the foreign key
+   * would emit `<g:brand></g:brand>` for that product, filling the element from a
+   * `brandName` the join never supplied; gating on the joined key omits the element,
+   * which is what a product with no resolvable brand produced. See
+   * {@link FeedSelectionColumns.joinedBrandID}, which carries it, and note that the
+   * selection ALSO carries the raw foreign key under its own name because the
+   * setting-lookup path `product.brand.brandID` needs the column rather than the join.
+   *
+   * WHY THE PROJECTION CARRIES A KEY IT NEVER EMITS. The legacy gate is
+   * `not isNull(local.sku.getProduct().getBrand())` - it tests the ASSOCIATION, and
+   * only then reads the name inside the element. {@link brandName} cannot answer
+   * that question, because it is absent both when there is no brand and when a brand
+   * records no name [model/entity/Brand.cfc:L56], and those two states produce
+   * DIFFERENT legacy output: no brand emits nothing at all, while a brand with a
+   * null name emits `<g:brand></g:brand>`. Carrying the presence separately is what
+   * makes both reachable, and it costs no extra join - `SwBrand` is already joined for
+   * the name.
+   *
+   * It is a KEY and it is never rendered. Nothing downstream interpolates it, and no
+   * element in the feed carries a brand identifier
+   * [integrationServices/google/views/feed/product.cfm:L32].
+   */
+  readonly brandID: string | undefined;
+
+  /**
+   * The BODY of `g:brand` [integrationServices/google/views/feed/product.cfm:L32].
    *
    * OPTIONAL BY CONSTRUCTION, matching the LEFT join at
-   * [integrationServices/google/controllers/feed.cfc:L66]. That join is what
-   * makes the view's `not isNull(product.getBrand())` guard meaningful: a product
-   * with no brand still appears in the feed, without a `g:brand` element.
-   * `SwBrand.brandName` [model/entity/Brand.cfc:L56] is itself nullable, so this
-   * is also absent for a brand that records no name.
+   * [integrationServices/google/controllers/feed.cfc:L66]: a product with no brand
+   * still appears in the feed. `SwBrand.brandName` [model/entity/Brand.cfc:L56] is
+   * itself nullable, so this is ALSO absent for a brand that records no name - which
+   * is why it must not be used as the emission gate. {@link brandID} is that gate.
    */
   readonly brandName: string | undefined;
 
@@ -543,17 +860,18 @@ export interface GoogleProductFeedRow {
    * The numeric half of `g:shipping_weight`
    * [integrationServices/google/views/feed/product.cfm:L58], carried as a STRING.
    *
-   * A resolved setting value rather than a column - see
-   * {@link ResolvedFeedSettingValues.skuShippingWeight} for why it arrives that
-   * way and why it is not a number and not `Money`.
+   * A resolved setting value rather than a column, and resolved FOR THIS SKU - see
+   * {@link ResolvedSkuShippingWeightSetting.skuShippingWeight} for why it is a string
+   * rather than a number or `Money`, and {@link SkuFeedSettingResolver} for why it is
+   * per SKU rather than per feed.
    */
   readonly skuShippingWeight: string;
 
   /**
    * The unit half of `g:shipping_weight`, emitted after a single space
-   * [integrationServices/google/views/feed/product.cfm:L58].
+   * [integrationServices/google/views/feed/product.cfm:L58], resolved for THIS SKU.
    *
-   * See {@link ResolvedFeedSettingValues.skuShippingWeightUnitCode}.
+   * See {@link ResolvedSkuShippingWeightSetting.skuShippingWeightUnitCode}.
    */
   readonly skuShippingWeightUnitCode: string;
 
@@ -663,13 +981,46 @@ export interface GoogleProductFeedRow {
  *   three product-column predicates in the WHERE clause reject every
  *   null-extended row; `INNER` states that outcome directly, and it is also what
  *   the dead DAO wrote [integrationServices/google/model/dao/FeedDAO.cfc:L62].
- *   For the other three it matters enormously and they MUST stay LEFT: nothing in
- *   the WHERE clause constrains them, so a product with no default SKU, no brand
- *   or no product type still yields a feed row - which is exactly what makes
+ *   For the other two it matters enormously and they MUST stay LEFT: nothing in
+ *   the WHERE clause constrains them, so a product with no default SKU and no
+ *   brand still yields a feed row - which is exactly what makes
  *   {@link GoogleProductFeedRow.productPrice} and
- *   {@link GoogleProductFeedRow.brandName} legitimately absent rather than
+ *   {@link GoogleProductFeedRow.brandID} legitimately absent rather than
  *   impossible. This is a fidelity argument about which rows survive, and nothing
  *   about how the server executes it.
+ *
+ * ★★ THIS BLOCK ONCE READ "`SwProduct` IS JOINED INNER WHILE THE OTHER THREE ARE
+ * LEFT", AND IT NAMED A FOURTH JOIN THIS STATEMENT NO LONGER HAS.
+ *   The removed sentence continued "For the other three it matters enormously and
+ *   they MUST stay LEFT: ... a product with no default SKU, no brand or no product
+ *   type still yields a feed row", and the statement below carried
+ *   `LEFT JOIN SwProductType` to make that true. The join-semantics reasoning above
+ *   was and remains correct; what was wrong was inferring a LICENCE TO ADD A JOIN
+ *   from it.
+ *
+ *   THE LOCKED SELECTION HAS EXACTLY THREE JOINS, and they are enumerated in the
+ *   source: `joinRelatedProperty("SlatwallSku", "product")`
+ *   [integrationServices/google/controllers/feed.cfc:L64],
+ *   `joinRelatedProperty("SlatwallProduct", "defaultSku")`
+ *   [integrationServices/google/controllers/feed.cfc:L65] and
+ *   `joinRelatedProperty("SlatwallProduct", "brand", "left")`
+ *   [integrationServices/google/controllers/feed.cfc:L66]. `SwProductType` is not
+ *   among them, and the `fetch="join"` attribute on `productType`
+ *   [model/entity/Product.cfc:L69] does not put it there: that attribute governs
+ *   how the ORM materialises the association WHEN SOMETHING TRAVERSES IT, not what
+ *   the smart list selects. The view traverses it twice - for the fallback
+ *   description [integrationServices/google/views/feed/product.cfm:L19] and for the
+ *   breadcrumb [integrationServices/google/views/feed/product.cfm:L21] - and both
+ *   traversals happen AFTER the selection has returned, per row, through the
+ *   entity. They are lazy graph walks, not a fourth join.
+ *
+ *   SO THE DESCRIPTION MOVED RATHER THAN BEING DROPPED. It is now read by the
+ *   product-type statement below, which already exists, already reads
+ *   `SwProductType`, and is already keyed on exactly the product-type identifiers
+ *   this selection produced - which is the same place the breadcrumb comes from and
+ *   the same walk the legacy performed. Both product-type values therefore reach
+ *   the projection from one statement, and the selection's join inventory is the
+ *   locked three.
  *
  * JUDGMENT CALL: no `ORDER BY`. The legacy chain calls `addOrder` nowhere
  * [integrationServices/google/controllers/feed.cfc:L58-L73], so feed item order
@@ -704,9 +1055,10 @@ const FEED_SELECTION_SQL = `
     SwProduct.publishedFlag              AS productPublishedFlag,
     SwProduct.calculatedQATS             AS productCalculatedQATS,
     SwProduct.productTypeID              AS productTypeID,
+    SwProduct.brandID                    AS brandID,
     defaultSku.price                     AS productPrice,
-    SwBrand.brandName                    AS brandName,
-    SwProductType.productTypeDescription AS productTypeDescription
+    SwBrand.brandID                      AS joinedBrandID,
+    SwBrand.brandName                    AS brandName
   FROM SwSku
   INNER JOIN SwProduct
     ON SwProduct.productID = SwSku.productID
@@ -714,8 +1066,6 @@ const FEED_SELECTION_SQL = `
     ON defaultSku.skuID = SwProduct.defaultSkuID
   LEFT JOIN SwBrand
     ON SwBrand.brandID = SwProduct.brandID
-  LEFT JOIN SwProductType
-    ON SwProductType.productTypeID = SwProduct.productTypeID
   WHERE SwSku.activeFlag = 1
     AND SwProduct.activeFlag = 1
     AND SwProduct.publishedFlag = 1
@@ -729,7 +1079,30 @@ const FEED_SELECTION_SQL = `
  * WHAT IT COMPUTES. Every ancestor name of each requested product type, with the
  * number of steps from that type up to the ancestor, so that the breadcrumb at
  * {@link GoogleProductFeedRow.productTypeSimpleRepresentation} can be assembled
- * root-first.
+ * root-first - and, carried alongside, the requested type's OWN
+ * `productTypeDescription`, which
+ * {@link GoogleProductFeedRow.productTypeDescription} needs.
+ *
+ * WHY THE DESCRIPTION TRAVELS WITH THE ANCESTRY rather than being selected by the
+ * feed selection above. The selection's join inventory is locked to the three joins
+ * the legacy controller declares, and `SwProductType` is not one of them - the full
+ * argument is in the JUDGMENT CALL block above {@link FEED_SELECTION_SQL}. This
+ * statement, by contrast, already reads `SwProductType`, is already keyed on exactly
+ * the product-type identifiers the selection produced, and is already the target of
+ * the same lazy traversal the view performed
+ * [integrationServices/google/views/feed/product.cfm:L19, L21]. Reading both
+ * product-type values from one statement is therefore strictly fewer statements than
+ * reading them from two, and it keeps every `SwProductType` read in one place.
+ *
+ * The anchor member reads the description from the requested type itself, and the
+ * recursive member CARRIES THE ANCHOR'S VALUE THROUGH UNCHANGED - exactly as it does
+ * for `leafProductTypeID` - rather than reading each ancestor's description. An
+ * ancestor's description is not what the view asked for: `getProductType()` answers
+ * the product's own type [model/entity/Product.cfc:L69], and
+ * `getProductTypeDescription()` on it is a plain column read
+ * [model/entity/ProductType.cfc:L58] with no inheritance of any kind. Carrying the
+ * anchor's value also fixes the recursive column's type from the anchor, so no
+ * width is widened mid-recursion.
  *
  * JUDGMENT CALL: a recursive common table expression, rather than the
  * `productTypeIDPath` column or a fixed chain of self-joins.
@@ -751,10 +1124,11 @@ const FEED_SELECTION_SQL = `
 const PRODUCT_TYPE_ANCESTRY_SQL_HEAD = `
   WITH RECURSIVE productTypeAncestry AS (
     SELECT
-      leaf.productTypeID       AS leafProductTypeID,
-      leaf.parentProductTypeID AS parentProductTypeID,
-      leaf.productTypeName     AS productTypeName,
-      0                        AS ancestorDistance
+      leaf.productTypeID          AS leafProductTypeID,
+      leaf.parentProductTypeID    AS parentProductTypeID,
+      leaf.productTypeName        AS productTypeName,
+      leaf.productTypeDescription AS productTypeDescription,
+      0                           AS ancestorDistance
     FROM SwProductType AS leaf
     WHERE leaf.productTypeID IN`;
 
@@ -763,8 +1137,9 @@ const PRODUCT_TYPE_ANCESTRY_SQL_HEAD = `
  * one link up the parent chain, and the projection the adapter reads.
  *
  * The recursive member selects its name and its next parent from `SwProductType`
- * while carrying the originating leaf's identifier through unchanged, which is
- * what lets one statement serve every requested type at once.
+ * while carrying the originating leaf's identifier AND the originating leaf's
+ * description through unchanged, which is what lets one statement serve every
+ * requested type at once and answer both product-type values in one pass.
  */
 const PRODUCT_TYPE_ANCESTRY_SQL_TAIL = `
     UNION ALL
@@ -772,6 +1147,7 @@ const PRODUCT_TYPE_ANCESTRY_SQL_TAIL = `
       descendant.leafProductTypeID,
       ancestor.parentProductTypeID,
       ancestor.productTypeName,
+      descendant.productTypeDescription,
       descendant.ancestorDistance + 1
     FROM productTypeAncestry AS descendant
     INNER JOIN SwProductType AS ancestor
@@ -780,6 +1156,7 @@ const PRODUCT_TYPE_ANCESTRY_SQL_TAIL = `
   SELECT
     leafProductTypeID,
     productTypeName,
+    productTypeDescription,
     ancestorDistance
   FROM productTypeAncestry
 `;
@@ -944,6 +1321,47 @@ class GoogleFeedColumnTypeError extends Error {
     this.columnName = columnName;
     this.statementLabel = statementLabel;
     this.receivedType = receivedType;
+  }
+}
+
+/**
+ * Raised when {@link SkuFeedSettingResolver} answers for fewer SKUs than it was asked
+ * about.
+ *
+ * NOT A DEFAULT, DELIBERATELY. `setting()` could not fail to answer: after the object
+ * lookup and the whole lookup order came the declared default
+ * [model/service/SettingService.cfc:L232-L233], so every SKU had a shipping weight.
+ * A resolver that omits a SKU is therefore broken, and the two ways of absorbing that
+ * quietly are both worse than failing:
+ *   * Substituting a literal here would hardcode configuration into a repository and
+ *     would publish a weight the merchant never configured.
+ *   * Emitting an empty `g:shipping_weight` body would publish a malformed element,
+ *     and this file's standing rule is that nothing is caught and nothing is
+ *     defaulted.
+ *
+ * The message names the count and one example identifier, never the resolver's own
+ * output, so a log line cannot leak configured values.
+ */
+class GoogleFeedSkuSettingMissingError extends Error {
+  /** How many requested SKUs the resolver did not answer for. */
+  readonly missingCount: number;
+
+  /** The first unanswered SKU identifier, in selection order. */
+  readonly firstMissingSkuID: string;
+
+  constructor(missingCount: number, firstMissingSkuID: string) {
+    super(
+      [
+        `The SKU setting resolver answered for ${missingCount} fewer SKU(s) than requested;`,
+        `the first unanswered identifier is "${firstMissingSkuID}".`,
+        'Every selected SKU must receive a shipping-weight pair, because the legacy setting',
+        'lookup fell back to a declared default and so could not fail to answer',
+        '[model/service/SettingService.cfc:L232-L233]. No value is substituted here.',
+      ].join(' '),
+    );
+    this.name = 'GoogleFeedSkuSettingMissingError';
+    this.missingCount = missingCount;
+    this.firstMissingSkuID = firstMissingSkuID;
   }
 }
 
@@ -1229,9 +1647,28 @@ interface FeedSelectionColumns {
   readonly productPublishedFlag: boolean;
   readonly productCalculatedQATS: number;
   readonly productTypeID: string | undefined;
+  readonly brandID: string | undefined;
   readonly productPrice: Money | undefined;
+
+  /**
+   * `SwBrand.brandID`, i.e. the brand key AS THE LEFT JOIN RESOLVED IT, which is a
+   * different fact from the `brandID` above.
+   *
+   * ★ THE TWO ARE NOT INTERCHANGEABLE AND EACH HAS EXACTLY ONE JOB. `brandID` is
+   * `SwProduct.brandID`, the FOREIGN KEY, and it is what the setting-lookup path
+   * `product.brand.brandID` [model/service/SettingService.cfc:L519] needs - the key as
+   * the product records it, whether or not a brand row answers to it. This one is
+   * non-`undefined` only when the `LEFT JOIN SwBrand` MATCHED, and it is what the
+   * `g:brand` emission gate needs, because the legacy gate is
+   * `not isNull(local.sku.getProduct().getBrand())`
+   * [integrationServices/google/views/feed/product.cfm:L32] - a test on the resolved
+   * ASSOCIATION, not on the column. A product whose `brandID` points at no surviving
+   * row has a foreign key and no brand, and only the joined key tells them apart.
+   * Using the foreign key as the gate would emit `<g:brand></g:brand>` for it, with
+   * the body drawn from a `brandName` the join never supplied.
+   */
+  readonly joinedBrandID: string | undefined;
   readonly brandName: string | undefined;
-  readonly productTypeDescription: string | undefined;
 }
 
 /**
@@ -1242,11 +1679,35 @@ interface FeedSelectionColumns {
  * so ordering DESCENDING by it yields the root-first sequence
  * `getSimpleRepresentation()` builds [model/entity/ProductType.cfc:L273-L278].
  * `productTypeName` is nullable because the column is.
+ *
+ * `productTypeDescription` belongs to the LEAF, not to the ancestor this row names:
+ * every row of one leaf's group repeats the same value, because the recursive member
+ * carries the anchor's column through unchanged. The adapter therefore reads it from
+ * the `ancestorDistance === 0` row - the leaf's own row - rather than from an
+ * arbitrary member of the group, so the value's provenance is visible at the point
+ * of use. It is nullable because the column is [model/entity/ProductType.cfc:L58].
  */
 interface ProductTypeAncestrySegment {
   readonly leafProductTypeID: string;
   readonly productTypeName: string | undefined;
+  readonly productTypeDescription: string | undefined;
   readonly ancestorDistance: number;
+}
+
+/**
+ * Both product-type values one leaf product type contributes to a feed row.
+ *
+ * Returned as one record per product type so the ancestry statement is read once and
+ * the two values cannot drift apart: they come from the same rows, resolved in the
+ * same pass. A product type with no ancestry rows has no record at all, and the
+ * projection then carries `undefined` for both.
+ */
+interface ResolvedProductTypeDetail {
+  /** The root-first breadcrumb, or `undefined` when the group yielded none. */
+  readonly simpleRepresentation: string | undefined;
+
+  /** The leaf's own description column, `undefined` when it is SQL `NULL`. */
+  readonly productTypeDescription: string | undefined;
 }
 
 /**
@@ -1279,9 +1740,10 @@ function narrowFeedSelectionRow(row: SqlRow): FeedSelectionColumns {
     productPublishedFlag: readFlag(row, 'productPublishedFlag', FEED_SELECTION_LABEL),
     productCalculatedQATS: readInteger(row, 'productCalculatedQATS', FEED_SELECTION_LABEL),
     productTypeID: readOptionalString(row, 'productTypeID', FEED_SELECTION_LABEL),
+    brandID: readOptionalString(row, 'brandID', FEED_SELECTION_LABEL),
     productPrice: readOptionalMoney(row, 'productPrice', FEED_SELECTION_LABEL),
+    joinedBrandID: readOptionalString(row, 'joinedBrandID', FEED_SELECTION_LABEL),
     brandName: readOptionalString(row, 'brandName', FEED_SELECTION_LABEL),
-    productTypeDescription: readOptionalString(row, 'productTypeDescription', FEED_SELECTION_LABEL),
   };
 }
 
@@ -1290,6 +1752,11 @@ function narrowAncestrySegment(row: SqlRow): ProductTypeAncestrySegment {
   return {
     leafProductTypeID: readIdentifier(row, 'leafProductTypeID', PRODUCT_TYPE_ANCESTRY_LABEL),
     productTypeName: readOptionalString(row, 'productTypeName', PRODUCT_TYPE_ANCESTRY_LABEL),
+    productTypeDescription: readOptionalString(
+      row,
+      'productTypeDescription',
+      PRODUCT_TYPE_ANCESTRY_LABEL,
+    ),
     ancestorDistance: readInteger(row, 'ancestorDistance', PRODUCT_TYPE_ANCESTRY_LABEL),
   };
 }
@@ -1348,16 +1815,19 @@ function buildProductUrlPath(
  * middle segment is a literal of the legacy source, which is why it is
  * {@link SKU_IMAGE_PATH_SEGMENT} here and not configuration.
  *
- * @returns the stored path, or `undefined` when `SwSku.imageFile` is SQL `NULL`.
- *   The legacy resizer's missing-image substitution is NOT performed - see
- *   {@link GoogleProductFeedRow.imageLinkPath} for why in full.
+ * @returns the stored path when `SwSku.imageFile` is set, and `missingImagePath`
+ *   when it is SQL `NULL` - reproducing the legacy resizer's substitution
+ *   [model/service/ImageService.cfc:L82-L89] at the one trigger this port can
+ *   observe. Never `undefined`; see {@link GoogleProductFeedRow.imageLinkPath} for
+ *   the full argument, including why a filesystem probe has no equivalent here.
  */
 function buildSkuImagePath(
   baseImageURL: string,
   skuImageFile: string | undefined,
-): string | undefined {
+  missingImagePath: string,
+): string {
   if (skuImageFile === undefined) {
-    return undefined;
+    return missingImagePath;
   }
 
   return `${baseImageURL}/${SKU_IMAGE_PATH_SEGMENT}/${skuImageFile}`;
@@ -1368,15 +1838,21 @@ function buildSkuImagePath(
  *
  * CFML parity [model/entity/Image.cfc:L79-L81]:
  * `"#baseImageURL#/#getDirectory()#/#getImageFile()#"`. Unlike the SKU path, the
- * middle segment is the image row's OWN `directory` column, so an image is skipped
- * only when a component it needs is SQL `NULL`.
+ * middle segment is the image row's OWN `directory` column.
+ *
+ * @returns the stored path when both components are set, and `missingImagePath` when
+ *   either is SQL `NULL`. The legacy loop routes every image through
+ *   `Image.getResizedImagePath()` [model/entity/Image.cfc:L120-L128], which performs
+ *   the same substitution as the SKU path, so an image row with a null component
+ *   produced an element carrying the fallback rather than no element at all.
  */
 function buildProductImagePath(
   baseImageURL: string,
   image: ProductImageColumns,
-): string | undefined {
+  missingImagePath: string,
+): string {
   if (image.imageDirectory === undefined || image.imageFile === undefined) {
-    return undefined;
+    return missingImagePath;
   }
 
   return `${baseImageURL}/${image.imageDirectory}/${image.imageFile}`;
@@ -1448,17 +1924,24 @@ function distinctDefinedKeys(keys: readonly (string | undefined)[]): readonly st
  * the resolved settings, and the two documented absences.
  *
  * @param columns - the narrowed selection row.
- * @param settingValues - the four resolved legacy setting values.
- * @param productTypeBreadcrumb - the assembled `g:product_type` value, or
- *   `undefined` when the product has no product type.
+ * @param settingValues - the three resolved legacy setting values.
+ * @param productTypeDetail - both product-type values, or `undefined` when the
+ *   product has no product type or the type produced no ancestry rows.
  * @param additionalImageLinkPaths - the product's additional image paths, shared
  *   between every SKU of that product and never mutated.
+ * @param shippingWeight - this SKU's own resolved shipping-weight pair.
+ * @param salePriceDetail - this SKU's winning sale-price pair, or `undefined` when no
+ *   sale-price reward wins for it, which is the ordinary case. The price half then falls
+ *   back to the SKU's own price, exactly as `Sku.getSalePrice()` does
+ *   [model/entity/Sku.cfc:L546-L551]; the expiration half does not fall back.
  */
 function hydrateFeedRow(
   columns: FeedSelectionColumns,
   settingValues: ResolvedFeedSettingValues,
-  productTypeBreadcrumb: string | undefined,
+  productTypeDetail: ResolvedProductTypeDetail | undefined,
   additionalImageLinkPaths: readonly string[],
+  shippingWeight: ResolvedSkuShippingWeightSetting,
+  salePriceDetail: ResolvedSalePriceDetail | undefined,
 ): GoogleProductFeedRow {
   return {
     skuID: columns.skuID,
@@ -1466,31 +1949,58 @@ function hydrateFeedRow(
     skuCode: columns.skuCode,
     calculatedTitle: columns.calculatedTitle,
     productDescription: columns.productDescription,
-    productTypeDescription: columns.productTypeDescription,
-    productTypeSimpleRepresentation: productTypeBreadcrumb,
+    productTypeDescription: productTypeDetail?.productTypeDescription,
+    productTypeSimpleRepresentation: productTypeDetail?.simpleRepresentation,
     productUrlPath: buildProductUrlPath(columns.productUrlTitle, settingValues.globalURLKeyProduct),
-    imageLinkPath: buildSkuImagePath(settingValues.baseImageURL, columns.skuImageFile),
+    imageLinkPath: buildSkuImagePath(
+      settingValues.baseImageURL,
+      columns.skuImageFile,
+      settingValues.missingImagePath,
+    ),
     additionalImageLinkPaths,
     productPrice: columns.productPrice,
     skuPrice: columns.skuPrice,
 
-    // BOTH ABSENT, ALWAYS, AND BOTH DELIBERATE. Neither has a persisted column:
-    // `Sku.salePrice` and `Sku.salePriceExpirationDateTime` are both
-    // `persistent="false"` [model/entity/Sku.cfc:L115, L118] and the legacy resolves
-    // them through the promotion sale-price path, which is another module's
-    // capability. They are assigned explicitly rather than omitted because
-    // `exactOptionalPropertyTypes` distinguishes an absent key from a present
-    // `undefined`, and the contract declares them present-and-possibly-absent so a
-    // consumer sees the field and its documented emptiness rather than nothing at
-    // all. The full reasoning is on
-    // {@link GoogleProductFeedRow.skuSalePrice}.
-    skuSalePrice: undefined,
-    salePriceExpirationDateTime: undefined,
+    // BOTH FROM ONE REWARD ROW, AND THEIR NO-REWARD ANSWERS DIFFER. They are assigned
+    // explicitly rather than conditionally spread because `exactOptionalPropertyTypes`
+    // distinguishes an absent key from a present `undefined`, and the contract declares
+    // them present-and-possibly-absent so a consumer sees the field and its emptiness
+    // rather than nothing at all. The full reasoning, including why resolving them
+    // together is load-bearing, is on {@link GoogleProductFeedRow.skuSalePrice}.
+    //
+    // ★ THE ASYMMETRY IS THE LEGACY'S OWN, AND REPRODUCING IT IS THE WHOLE POINT OF
+    // THESE TWO LINES. `Sku.getSalePrice()` does NOT answer with nothing when no reward
+    // wins - its final statement is `return getPrice()`
+    // [model/entity/Sku.cfc:L546-L551] - whereas `getSalePriceExpirationDateTime()`
+    // answers with an EMPTY STRING [model/entity/Sku.cfc:L560-L565], which is not a
+    // renderable instant and becomes an absence here. So the price falls back to the
+    // SKU's own price and the expiration does not fall back at all.
+    //
+    // ⚠ THAT ASYMMETRY IS WHAT KEEPS THE SALE BLOCK COHERENT rather than being a
+    // curiosity. The view's gate is `local.sku.getPrice() gt local.sku.getSalePrice()`
+    // [integrationServices/google/views/feed/product.cfm:L28]; with the fallback, a SKU
+    // with no sale compares EQUAL and emits neither element, which is exactly what the
+    // legacy did. Carrying nothing instead would have made the gate depend on a
+    // presence test the source never performed.
+    //
+    // ⚠ AND IT IS NEVER ZERO IN EITHER CASE. The fallback is the SKU price, itself
+    // `Money | undefined` because `SwSku.price` is nullable, so a SKU with a NULL price
+    // column carries no sale price either - absent, not zero, because a zero sale price
+    // would advertise a free product.
+    skuSalePrice: salePriceDetail?.salePrice ?? columns.skuPrice,
+    salePriceExpirationDateTime: salePriceDetail?.salePriceExpirationDateTime,
 
+    // THE JOINED KEY, NOT THE FOREIGN KEY. `columns.joinedBrandID` is non-`undefined`
+    // only when `LEFT JOIN SwBrand` matched, which is what
+    // `not isNull(...getBrand())` [.../product.cfm:L32] tests; `columns.brandID` is
+    // the raw `SwProduct.brandID` and exists to key the setting lookup. See
+    // {@link FeedSelectionColumns.joinedBrandID} for why substituting one for the
+    // other changes the document.
+    brandID: columns.joinedBrandID,
     brandName: columns.brandName,
     productCode: columns.productCode,
-    skuShippingWeight: settingValues.skuShippingWeight,
-    skuShippingWeightUnitCode: settingValues.skuShippingWeightUnitCode,
+    skuShippingWeight: shippingWeight.skuShippingWeight,
+    skuShippingWeightUnitCode: shippingWeight.skuShippingWeightUnitCode,
     skuActiveFlag: columns.skuActiveFlag,
     productActiveFlag: columns.productActiveFlag,
     productPublishedFlag: columns.productPublishedFlag,
@@ -1534,27 +2044,47 @@ function hydrateFeedRow(
  * the executor's `executeMutation` is never called, and the existing schema is read
  * completely unchanged.
  *
- * JUDGMENT CALL: both collaborators are CONSTRUCTOR-INJECTED, which is what
+ * JUDGMENT CALL: EVERY collaborator is CONSTRUCTOR-INJECTED, which is what
  * replaces DI/1's convention scan of `property name="xService";` declarations with
  * wiring the compiler checks. The legacy controller received `productService` and
  * `skuService` by that scan [integrationServices/google/controllers/feed.cfc:L51-L52]
  * and resolved them at runtime; here the composition root at
- * `src/handlers/bootstrap.ts` (planned) constructs this class once with an executor
- * and the four resolved setting values, and a missing or mistyped collaborator is a
- * compile error rather than a runtime lookup failure. It is hand-wiring on purpose:
- * no container is built, because removing the container is the point. The same
- * choice is what makes this class testable without a database - a suite implements
- * the two-method executor interface directly, captures each statement and each
- * bound array, and returns canned rows.
+ * `src/handlers/bootstrap.ts` (planned) constructs this class once with an executor,
+ * the resolved setting values and the three collaborators below, and a missing or
+ * mistyped one is a compile error rather than a runtime lookup failure. It is
+ * hand-wiring on purpose: no container is built, because removing the container is the
+ * point. The same choice is what makes this class testable without a database - a
+ * suite implements the two-method executor interface directly, captures each statement
+ * and each bound array, and returns canned rows.
+ *
+ *   Each of the three is narrowed to ONE capability, and none of them can widen the
+ *   four-filter invariant: {@link SkuFeedSettingResolver} answers a per-SKU setting
+ *   pair, {@link GoogleFeedSalePriceSource} answers the winning sale-price rewards,
+ *   and {@link GoogleFeedValueRounder} applies a rounding rule. Not one of their
+ *   answers reaches a `WHERE` clause - every one is read during hydration, after the
+ *   rows have been chosen.
+ *
+ * ★ THIS BLOCK ONCE SAID "both collaborators", WHEN THERE WERE TWO.
+ *   There are now five constructor arguments, and the count grew for a reason recorded
+ *   at each addition: two of the values this class used to receive as one pair for the
+ *   whole feed are resolved PER SKU by the legacy (I-17), and the sale-price pair the
+ *   projection used to declare permanently absent is reachable through capabilities
+ *   that already exist (I-01). Neither could be expressed by a wider value bag; both
+ *   needed something to ask.
  *
  * @example
  * ```ts
- * const repository = new GoogleFeedRepository(executor, {
- *   globalURLKeyProduct: resolvedProductUrlKey,
- *   baseImageURL: resolvedBaseImageURL,
- *   skuShippingWeight: resolvedShippingWeight,
- *   skuShippingWeightUnitCode: resolvedShippingWeightUnit,
- * });
+ * const repository = new GoogleFeedRepository(
+ *   executor,
+ *   {
+ *     globalURLKeyProduct: resolvedProductUrlKey,
+ *     baseImageURL: resolvedBaseImageURL,
+ *     missingImagePath: resolvedMissingImagePath,
+ *   },
+ *   skuFeedSettingResolver,
+ *   promotionRepository,
+ *   roundingRuleService,
+ * );
  * const rows = await repository.fetchProductFeedRows();
  * ```
  */
@@ -1569,16 +2099,49 @@ export class GoogleFeedRepository {
   private readonly executor: PreparedStatementExecutor;
 
   /**
-   * The four legacy setting values, already resolved by the composition root.
+   * The three legacy setting values, already resolved by the composition root.
    *
    * Not one of them reaches a `WHERE` clause, which is precisely why accepting them
    * cannot widen the four-filter invariant.
    */
   private readonly settingValues: ResolvedFeedSettingValues;
 
-  constructor(executor: PreparedStatementExecutor, settingValues: ResolvedFeedSettingValues) {
+  /**
+   * Answers the shipping-weight pair of every selected SKU, per SKU.
+   *
+   * Consulted once per feed, after the selection has named its SKUs. Nothing about it
+   * reaches a `WHERE` clause: its answers are read only during hydration.
+   */
+  private readonly skuSettingResolver: SkuFeedSettingResolver;
+
+  /**
+   * The winning sale-price rewards for the whole catalog.
+   *
+   * Typed to the single port method consumed, so no other promotion capability -
+   * qualification, use limits, applied promotions - is reachable from here.
+   */
+  private readonly salePriceSource: GoogleFeedSalePriceSource;
+
+  /**
+   * Applies a winning reward's rounding rule to its sale price.
+   *
+   * Typed to the single service method consumed. The rounding algorithm itself is not
+   * reimplemented anywhere in this file.
+   */
+  private readonly valueRounder: GoogleFeedValueRounder;
+
+  constructor(
+    executor: PreparedStatementExecutor,
+    settingValues: ResolvedFeedSettingValues,
+    skuSettingResolver: SkuFeedSettingResolver,
+    salePriceSource: GoogleFeedSalePriceSource,
+    valueRounder: GoogleFeedValueRounder,
+  ) {
     this.executor = executor;
     this.settingValues = settingValues;
+    this.skuSettingResolver = skuSettingResolver;
+    this.salePriceSource = salePriceSource;
+    this.valueRounder = valueRounder;
   }
 
   /**
@@ -1610,6 +2173,16 @@ export class GoogleFeedRepository {
    * emitted rows in whatever order the ORM returned; no `ORDER BY` appears in any of
    * the three statements, because imposing one would be a repair.
    *
+   * TWO COLLABORATOR CALLS, ALSO BATCHED, AND FOR THE SAME REASON. The shipping-weight
+   * pair and the sale-price pair are both PER SKU in the legacy - the first through
+   * `sku.setting(...)` inside the row loop
+   * [integrationServices/google/views/feed/product.cfm:L58], the second through a
+   * per-product memo consulted once per row
+   * [model/entity/Product.cfc:L517-L522] - and both are asked for once here, for the
+   * whole selection. A per-row call would reproduce the legacy's own N+1 rather than
+   * its result, and the repository boundary exists to make that shape impossible.
+   * Both short-circuit on an empty selection.
+   *
    * @returns one entry per qualifying SKU. Empty when nothing qualifies, which is an
    *   ordinary state - the legacy rendered a feed with no items.
    * @throws `GoogleFeedColumnMissingError` or `GoogleFeedColumnTypeError` when a row
@@ -1624,48 +2197,187 @@ export class GoogleFeedRepository {
     // Both lookups short-circuit on an empty key list, so an empty selection costs
     // no further statement and `sqlPlaceholderList` is never asked for zero
     // placeholders - MySQL cannot parse `IN ()`.
-    const breadcrumbsByProductTypeID = await this.fetchProductTypeBreadcrumbs(
+    const productTypeDetails = await this.fetchProductTypeDetails(
       distinctDefinedKeys(selections.map((selection) => selection.productTypeID)),
     );
     const imagePathsByProductID = await this.fetchAdditionalImagePaths(
       distinctDefinedKeys(selections.map((selection) => selection.productID)),
     );
 
+    // Both per-SKU resolutions are batched for the whole selection, for the same
+    // reason the two statements above are: one round trip per feed rather than one
+    // per row. Each short-circuits on an empty selection, so a feed with no
+    // qualifying SKU consults neither collaborator.
+    const shippingWeightsBySkuID = await this.resolveShippingWeights(selections);
+    const salePriceDetailsBySkuID = await this.resolveSalePriceDetails(selections);
+
     return selections.map((selection) =>
       hydrateFeedRow(
         selection,
         this.settingValues,
         // A product with no product type has no entry, and `undefined` is exactly
-        // what the projection carries for that.
+        // what the projection carries for both product-type values.
         selection.productTypeID === undefined
           ? undefined
-          : breadcrumbsByProductTypeID.get(selection.productTypeID),
+          : productTypeDetails.get(selection.productTypeID),
         imagePathsByProductID.get(selection.productID) ?? NO_IMAGE_PATHS,
+        // Present for every selection, enforced in `resolveShippingWeights` rather
+        // than defaulted here.
+        this.requireShippingWeight(shippingWeightsBySkuID, selection.skuID),
+        salePriceDetailsBySkuID.get(selection.skuID),
       ),
     );
   }
 
   /**
-   * Resolves the `g:product_type` breadcrumb for each requested product type.
+   * Asks the resolver for every selected SKU's shipping-weight pair, once.
+   *
+   * The subject list is built from the selection in selection order and is distinct by
+   * `skuID` - the selection returns one row per SKU, so it is already distinct, and
+   * building the list by mapping preserves that without a second pass.
+   *
+   * @param selections the narrowed selection rows.
+   * @returns the resolver's map, unmodified. Verification that it covers every subject
+   *   happens per row in {@link requireShippingWeight}, so a resolver that omits one
+   *   SKU names that SKU in the failure rather than the whole batch.
+   */
+  private async resolveShippingWeights(
+    selections: readonly FeedSelectionColumns[],
+  ): Promise<ReadonlyMap<string, ResolvedSkuShippingWeightSetting>> {
+    if (selections.length === 0) {
+      return new Map<string, ResolvedSkuShippingWeightSetting>();
+    }
+
+    const subjects: SkuFeedSettingSubject[] = selections.map((selection) => ({
+      skuID: selection.skuID,
+      productID: selection.productID,
+      productTypeID: selection.productTypeID,
+      brandID: selection.brandID,
+    }));
+
+    return await this.skuSettingResolver.resolveSkuShippingWeightSettings(subjects);
+  }
+
+  /**
+   * Reads one SKU's resolved shipping-weight pair, refusing to invent one.
+   *
+   * @throws `GoogleFeedSkuSettingMissingError` when the resolver did not answer for
+   *   this SKU. The count reported is 1 because the failure is raised at the first
+   *   unanswered identifier, which is the one a reader needs.
+   */
+  private requireShippingWeight(
+    resolved: ReadonlyMap<string, ResolvedSkuShippingWeightSetting>,
+    skuID: string,
+  ): ResolvedSkuShippingWeightSetting {
+    const shippingWeight = resolved.get(skuID);
+
+    if (shippingWeight === undefined) {
+      throw new GoogleFeedSkuSettingMissingError(1, skuID);
+    }
+
+    return shippingWeight;
+  }
+
+  /**
+   * Resolves the winning sale price of every SKU that has one.
+   *
+   * CFML parity [model/service/PromotionService.cfc:L1022-L1030]: the legacy runs the
+   * sale-price reward query, keys the result by `skuID`, and then rounds each surviving
+   * entry whose `roundingRuleID` is non-empty. All three steps are reproduced here, in
+   * that order, and the order matters - rounding after keying means only the SURVIVING
+   * row of a tie is ever rounded.
+   *
+   * LAST ROW WINS FOR A DUPLICATE SKU, which is not a choice made here but a property
+   * of the legacy's keying step. `queryToStructOfStructures` assigns
+   * `theStructure[ query[primaryKey][row] ] = row` while walking rows in order
+   * [model/service/HibachiUtilityService.cfc:L545-L551], so a later row silently
+   * overwrites an earlier one with the same key. The port declares that ties are not
+   * disambiguated and that one SKU can appear more than once
+   * [model/dao/PromotionDAO.cfc:L298-L591], so this reproduces the legacy's arbitrary
+   * winner rather than imposing a minimum, a sort or a preference of its own.
+   *
+   * ROUNDING IS APPLIED ONLY WHEN A RULE IS NAMED, and the emptiness test is the
+   * legacy's own: `if(priceDetails[key].roundingRuleID != "")`
+   * [model/service/PromotionService.cfc:L1025]. An absent identifier and an empty one
+   * are therefore both "no rounding" - CFML could not distinguish them, and treating a
+   * present empty string as a rule would send `''` to a repository lookup that has no
+   * such row.
+   *
+   * @param selections the narrowed selection rows, used only to decide whether any SKU
+   *   qualifies at all and to discard rewards for SKUs outside this feed.
+   * @returns a detail per SKU that a sale-price reward wins. A SKU absent from the map
+   *   has no sale, which is the ordinary case.
+   */
+  private async resolveSalePriceDetails(
+    selections: readonly FeedSelectionColumns[],
+  ): Promise<ReadonlyMap<string, ResolvedSalePriceDetail>> {
+    const details = new Map<string, ResolvedSalePriceDetail>();
+
+    if (selections.length === 0) {
+      return details;
+    }
+
+    // No product identifier: one call answers for the whole catalog, which is what a
+    // whole-catalog feed needs. See `GoogleFeedSalePriceSource`.
+    const rewardRows = await this.salePriceSource.getSalePricePromotionRewardsQuery();
+
+    const selectedSkuIDs = new Set(selections.map((selection) => selection.skuID));
+
+    // Keyed in row order, so a duplicate SKU resolves to the LAST row exactly as the
+    // legacy's struct assignment did. Rewards for SKUs this feed did not select are
+    // dropped: the legacy asked per product and never saw them.
+    const winningRowBySkuID = new Map<string, SalePricePromotionRewardRow>();
+
+    for (const rewardRow of rewardRows) {
+      if (selectedSkuIDs.has(rewardRow.skuID)) {
+        winningRowBySkuID.set(rewardRow.skuID, rewardRow);
+      }
+    }
+
+    for (const [skuID, rewardRow] of winningRowBySkuID) {
+      const roundingRuleID = rewardRow.roundingRuleID;
+
+      const salePrice =
+        roundingRuleID === undefined || roundingRuleID === ''
+          ? rewardRow.salePrice
+          : await this.valueRounder.roundValueByRoundingRuleID(rewardRow.salePrice, roundingRuleID);
+
+      details.set(skuID, {
+        salePrice,
+        salePriceExpirationDateTime: rewardRow.salePriceExpirationDateTime,
+      });
+    }
+
+    return details;
+  }
+
+  /**
+   * Resolves BOTH product-type values - the `g:product_type` breadcrumb and the
+   * fallback `description` - for each requested product type.
    *
    * One recursive statement serves every requested type at once because the
-   * recursive member carries the originating leaf's identifier through unchanged.
-   * The rows come back flat and unordered; grouping and root-first ordering happen
-   * in {@link buildProductTypeBreadcrumb}, which is where the CFML recursion's shape
-   * is reproduced.
+   * recursive member carries the originating leaf's identifier and description through
+   * unchanged. The rows come back flat and unordered; grouping and root-first ordering
+   * happen in {@link buildProductTypeBreadcrumb}, which is where the CFML recursion's
+   * shape is reproduced.
+   *
+   * The description is taken from the `ancestorDistance === 0` row - the requested
+   * type's own row - rather than from an arbitrary member of the group, so that the
+   * value's provenance is visible here rather than resting on the invariant that every
+   * row of a group repeats it.
    *
    * @param productTypeIDs - distinct, present product-type identifiers.
-   * @returns a breadcrumb per identifier that produced ancestry rows. An identifier
-   *   absent from the map means the statement found no such type, and the projection
-   *   then carries `undefined` rather than an empty breadcrumb.
+   * @returns a record per identifier that produced ancestry rows. An identifier absent
+   *   from the map means the statement found no such type, and the projection then
+   *   carries `undefined` for both values.
    */
-  private async fetchProductTypeBreadcrumbs(
+  private async fetchProductTypeDetails(
     productTypeIDs: readonly string[],
-  ): Promise<ReadonlyMap<string, string>> {
-    const breadcrumbs = new Map<string, string>();
+  ): Promise<ReadonlyMap<string, ResolvedProductTypeDetail>> {
+    const details = new Map<string, ResolvedProductTypeDetail>();
 
     if (productTypeIDs.length === 0) {
-      return breadcrumbs;
+      return details;
     }
 
     const sql = `${PRODUCT_TYPE_ANCESTRY_SQL_HEAD} (${sqlPlaceholderList(
@@ -1688,14 +2400,15 @@ export class GoogleFeedRepository {
     }
 
     for (const [leafProductTypeID, segments] of segmentsByLeaf) {
-      const breadcrumb = buildProductTypeBreadcrumb(segments);
+      const leafSegment = segments.find((segment) => segment.ancestorDistance === 0);
 
-      if (breadcrumb !== undefined) {
-        breadcrumbs.set(leafProductTypeID, breadcrumb);
-      }
+      details.set(leafProductTypeID, {
+        simpleRepresentation: buildProductTypeBreadcrumb(segments),
+        productTypeDescription: leafSegment?.productTypeDescription,
+      });
     }
 
-    return breadcrumbs;
+    return details;
   }
 
   /**
@@ -1706,15 +2419,22 @@ export class GoogleFeedRepository {
    * which is also why {@link buildProductTypeBreadcrumb} and this method never sort
    * or mutate an array a caller already holds.
    *
-   * An image row missing a path component contributes nothing, and a product whose
-   * every image is unusable ends up with no entry at all rather than an entry
-   * holding an empty array; the projection resolves both to
-   * {@link NO_IMAGE_PATHS}, so the two are indistinguishable downstream, which
-   * matches a legacy loop that simply had no rows to emit.
+   * EVERY IMAGE ROW CONTRIBUTES ONE PATH, and a row missing a component contributes
+   * the resolved missing-image path rather than nothing - the legacy routed each image
+   * through `Image.getResizedImagePath()` [model/entity/Image.cfc:L120-L128], whose
+   * substitution has no failing branch, so the loop emitted one element per row
+   * unconditionally [integrationServices/google/views/feed/product.cfm:L24]. A product
+   * with no image rows ends up with no entry at all, and the projection resolves that
+   * to {@link NO_IMAGE_PATHS}, matching a legacy loop that had no rows to emit.
+   *
+   * ★ THIS METHOD ONCE DOCUMENTED "An image row missing a path component contributes
+   * nothing, and a product whose every image is unusable ends up with no entry at all".
+   * Those two states were treated as one and they are not: no rows meant no elements,
+   * while a row with a null `directory` meant an element carrying the fallback. The
+   * first is reproduced; the second now is too.
    *
    * @param productIDs - distinct product identifiers from the selection.
-   * @returns the image paths per product, for products that have at least one usable
-   *   image.
+   * @returns one path per image row, per product that has at least one image row.
    */
   private async fetchAdditionalImagePaths(
     productIDs: readonly string[],
@@ -1733,11 +2453,11 @@ export class GoogleFeedRepository {
 
     for (const row of imageRows) {
       const image = narrowProductImageRow(row);
-      const path = buildProductImagePath(this.settingValues.baseImageURL, image);
-
-      if (path === undefined) {
-        continue;
-      }
+      const path = buildProductImagePath(
+        this.settingValues.baseImageURL,
+        image,
+        this.settingValues.missingImagePath,
+      );
 
       const existing = collected.get(image.productID);
 

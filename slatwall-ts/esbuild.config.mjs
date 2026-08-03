@@ -93,6 +93,33 @@ const result = await build({
   outExtension: { '.js': '.cjs' },
   bundle: true,
   platform: 'node',
+  // SECURITY REVIEW DISPOSITION - RAISED AS S-09, DECLINED ON A CITED MANDATE.
+  //
+  // Finding S-09 (MAJOR, CWE-1104, Use of Unmaintained Third-Party Components)
+  // records that Node 20 reached end of life on 2026-04-30, that v20.20.2 is marked
+  // out of maintenance, and that AWS deprecated the `nodejs20.x` Lambda runtime on
+  // the same date - blocking new functions from 2027-02-01 and updates from
+  // 2027-03-03. The assessment is accepted as accurate; it is a platform-lifecycle
+  // exposure rather than an allegation about any package in this tree, and
+  // `npm audit` is clean.
+  //
+  // THE UPGRADE IS DECLINED HERE BECAUSE IT IS NOT THIS AGENT'S TO MAKE. The runtime
+  // is fixed by the frozen plan in three independent places: AAP 0.1.1 states the
+  // objective as re-expressing the slice "on the AWS Lambda `nodejs20.x` runtime";
+  // AAP 0.5.1 pins Node 20.20.2, npm 10.8.2, `@types/node` 20.19.43 and eleven more
+  // packages to exact verified versions, and records that the 20.20.2 floor is
+  // itself forced by eslint's `^20.19.0` engine requirement; AAP 0.9.1 makes
+  // "Node `20.x`" a pass condition of the runtime-and-toolchain-pinning gate. The
+  // AAP is the agreed, frozen source of truth and is to be aligned to, never
+  // edited - so changing the target would put this file, `package.json`,
+  // `package-lock.json`, `.nvmrc`, `@types/node` and the verified bundle recipe out
+  // of agreement with the plan, and would invalidate the packaging constraint AAP
+  // 0.5.2 established by experiment rather than by assumption.
+  //
+  // It is therefore recorded for the plan owner as a platform decision with a dated
+  // deadline (new functions blocked 2027-02-01), not resolved by unilateral drift in
+  // a code-remediation pass. The four artifacts that would have to move together are
+  // named above so the change is a single deliberate edit when it is authorized.
   target: 'node20',
   format: 'cjs',
   sourcemap: true,

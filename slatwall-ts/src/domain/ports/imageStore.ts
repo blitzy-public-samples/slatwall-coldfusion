@@ -104,7 +104,11 @@
  *   subsystems, which are out of scope, so neither capability is declared here. Existence
  *   checking is likewise absent: the legacy entity called the engine's `fileExists` builtin
  *   directly [model/entity/Sku.cfc:L221-L227]. Nothing reachable from an in-scope path needs a
- *   read, serve, URL-resolution, list, move or copy member, so this interface has exactly two.
+ *   read, serve, URL-resolution, list, move or copy member, so this interface declares none of
+ *   those. (This sentence once concluded "so this interface has exactly two". It has three; the
+ *   third is a NAME COMPOSER and not a store operation, which is why the list of absent store
+ *   operations above is unchanged by it. The paragraph immediately below is where that third
+ *   member was already anticipated.)
  *
  *   Image-related SETTINGS are not this port's concern either, and they are not
  *   `settingsProvider`'s concern. `productImageDefaultExtension` (default `jpg`)
@@ -117,6 +121,13 @@
  *   image concern and therefore belongs behind THIS port; it does not become a settings concern
  *   by being spelled with a `setting()` call in the legacy source. No key appears here, no key
  *   appears on the settings port, and no fifth settings key may be added to make either compile.
+ *
+ *   ★ THAT REASONING IS NOW ACTED ON RATHER THAN ONLY RECORDED. "Image-file-name composition
+ *   ... belongs behind THIS port" was written before any member expressed it, and in the
+ *   meantime the service that needed it shipped as a no-op. `generateSkuImageFileName` is that
+ *   member. Note what has NOT changed as a result: no key is declared here, the settings port
+ *   still publishes four, and the two values stay with the implementation exactly as this
+ *   paragraph requires.
  *
  * SCHEMA CONTINUITY
  *   This port touches no table at all. It moves and removes files; it reads and writes no row,
@@ -137,10 +148,36 @@
  *     ProductService.processProduct_uploadDefaultImage    [model/service/ProductService.cfc:L235]
  *
  *   The last of those is explicitly OUT OF SCOPE and is ported as a pass-through only - it is
- *   never made to work. The third needs no port member at all: its legacy body
+ *   never made to work.
+ *
+ *   ★ THE THIRD ONE NOW NEEDS A MEMBER, AND THIS PARAGRAPH ONCE SAID IT DID NOT. It read:
+ *   "The third needs no port member at all: its legacy body
  *   [model/service/ProductService.cfc:L208-L214] loops the product's SKUs and assigns
  *   `sku.setImageFile( sku.generateImageFileName() )`, reaching the image service nowhere.
- *   Default-image file NAMING is derived on the entity, so it is not a store concern.
+ *   Default-image file NAMING is derived on the entity, so it is not a store concern."
+ *
+ *   Every factual clause in that is true of the LEGACY. The conclusion drawn from it was
+ *   false of the TARGET, and the difference is one entity method. Naming is indeed derived
+ *   on the legacy entity - and `src/domain/entities/sku.ts` deliberately does NOT publish
+ *   `generateImageFileName()`, because [model/entity/Sku.cfc:L135] and [L138] read
+ *   `productImageOptionCodeDelimiter` [model/service/SettingService.cfc:L192] and
+ *   `productImageDefaultExtension` [L191], and neither key is in the closed `SettingKey`
+ *   union. So the composition has no home in the domain layer at all.
+ *
+ *   With no entity member and no settings key, "not a store concern" left the behaviour with
+ *   nowhere to live, and `processProduct_updateDefaultImageFileNames` was consequently
+ *   shipped as a method that accepted a product and answered it unchanged. That is the gap a
+ *   third member closes. It is added because a legacy BEHAVIOUR is otherwise unreachable -
+ *   not because a legacy call site asks for it - and the distinction is stated plainly at the
+ *   member itself.
+ *
+ *   Adding it here rather than anywhere else follows from where the two settings belong: they
+ *   are image-subsystem configuration, and this port is the image subsystem's only seam. The
+ *   alternative placements were each worse. Widening `SettingsProvider` past the four keys the
+ *   in-scope slice proves would import out-of-scope configuration into the domain layer.
+ *   Adding parameters to an entity method would spend a signature reshaping the project has
+ *   fully allocated. And leaving the no-op in place would mean shipping a method whose name
+ *   promises a write it never performs.
  *
  *   The chosen stub behaviour is deliberately NOT decided here. Whether an implementation
  *   reports failure, refuses outright, or does something else is an implementation decision;
@@ -270,13 +307,59 @@ export interface ImageUploadResultProjection {
 }
 
 /**
+ * Everything needed to compose one SKU's default-image file name.
+ *
+ * Carries RAW, UNSANITISED values exactly as the entities hold them, because
+ * [model/entity/Sku.cfc:L135] and [L138] sanitise INSIDE the composition and the sanitisation
+ * is therefore part of what {@link ImageStore.generateSkuImageFileName} owns. A caller that
+ * pre-cleaned these fields would be performing half of the composition itself and could
+ * silently disagree with the other half.
+ *
+ * Both fields admit `undefined` because the columns behind them do:
+ * `property name="productCode" ormtype="string"` [model/entity/Product.cfc:L56] and
+ * `property name="optionCode" ormtype="string"` [model/entity/Option.cfc:L53] are both
+ * nullable, and the ported entities publish them as `string | undefined` rather than papering
+ * over that with an empty string. The member's contract says exactly what an absent value
+ * contributes, so no implementation has to guess.
+ */
+export interface SkuImageFileNameDescriptor {
+  /**
+   * The owning product's code, raw.
+   *
+   * `getProduct().getProductCode()` [model/entity/Sku.cfc:L138].
+   */
+  readonly productCode: string | undefined;
+
+  /**
+   * The option codes that participate in the name, raw, IN THE ORDER THE SKU HOLDS ITS
+   * OPTIONS.
+   *
+   * The caller has already applied the one filter [model/entity/Sku.cfc:L134] applies -
+   * `if(option.getOptionGroup().getImageGroupFlag())` - because that test reads an
+   * association the descriptor does not carry. Order is significant and is not re-sorted by
+   * the implementation: [model/entity/Sku.cfc:L133] iterates `getOptions()` and appends in
+   * traversal order, so two SKUs differing only in option ORDER produced two different file
+   * names, and that remains true here.
+   */
+  readonly imageGroupOptionCodes: readonly (string | undefined)[];
+}
+
+/**
  * The image persistence port.
  *
- * Two members, and two is the maximum. `saveImageFile` is carried over from the one fully
- * verified legacy collaborator signature; `deleteImageFile` exists so that the out-of-scope
- * deletion branch has a seam to delegate to. Nothing else in the in-scope slice reaches an
- * image store, so nothing else is declared - adding a third member would grow the surface
- * past what the legacy call sites prove is needed.
+ * ★ THREE MEMBERS. THIS PARAGRAPH ONCE SAID "Two members, and two is the maximum", and
+ * continued: "`saveImageFile` is carried over from the one fully verified legacy collaborator
+ * signature; `deleteImageFile` exists so that the out-of-scope deletion branch has a seam to
+ * delegate to. Nothing else in the in-scope slice reaches an image store, so nothing else is
+ * declared - adding a third member would grow the surface past what the legacy call sites
+ * prove is needed."
+ *
+ * The test it applied - "what the legacy call sites prove is needed" - is the right test for a
+ * COLLABORATOR CALL, and both of those members pass it. It is the wrong test for a legacy
+ * behaviour whose own home was deleted in translation. `generateSkuImageFileName` is that
+ * case, and the surface grows by exactly one member, with the reasoning recorded in the file
+ * header and again at the member. Three is now the maximum, on the same principle: nothing
+ * else in the in-scope slice reaches an image store or has lost its home.
  *
  * The implementation wired in at `src/handlers/bootstrap.ts` (planned) is a documented stub. That does
  * not make this interface provisional: it is the real contract, and a later decision to back
@@ -315,7 +398,9 @@ export interface ImageStore {
    *   so passing a `Sku` inward would invert the dependency this port exists to straighten.
    * @param filePath - The destination path, resolved by the caller as described above. The
    *   port neither composes nor rewrites it, and it holds no notion of a root, a prefix or a
-   *   provider: all of that belongs to the implementation.
+   *   provider: all of that belongs to the implementation - AND SO, THEREFORE, DOES ROOT
+   *   CONTAINMENT. See the containment obligation stated once, for both members, below the
+   *   interface.
    * @param allowedExtensions - The permitted extensions, as a CFML COMMA-DELIMITED LIST
    *   STRING. It stays a `string` rather than becoming an array, for signature parity with the
    *   legacy call; an implementation parses it with the sanctioned helpers in
@@ -364,7 +449,117 @@ export interface ImageStore {
    *   does return a boolean because its legacy caller genuinely branches on the result.
    *
    * @param filePath - The path of the file to remove, resolved by the caller from the entity
-   *   in the same way as for `saveImageFile`.
+   *   in the same way as for `saveImageFile`. It is a RELATIVE path under the implementation's
+   *   own root and must be treated as untrusted: see the containment obligation below.
    */
   deleteImageFile(filePath: string): Promise<void>;
+
+  /**
+   * Compose the default-image file name for one SKU.
+   *
+   * NO LEGACY COLLABORATOR CALL BEHIND THIS MEMBER, and that is stated first because it is the
+   * one thing that distinguishes it from the two above. The legacy composed this name on the
+   * entity, at `public string function generateImageFileName()`
+   * [model/entity/Sku.cfc:L131-L139], and reached no image service to do it. This member exists
+   * because the ported entity cannot host that method - see the file header - so the behaviour
+   * moves to the seam that already owns the image subsystem's configuration rather than
+   * disappearing.
+   *
+   * ★ SYNCHRONOUS, DELIBERATELY, AND THE ONLY SYNCHRONOUS MEMBER ON THIS PORT. It performs no
+   * I/O: it neither reads the filesystem, nor probes for existence, nor touches the store at
+   * all. `saveImageFile` and `deleteImageFile` return promises because a real store must; this
+   * composes a string from values the caller already holds. Making it `async` for symmetry
+   * would put an `await` inside the caller's per-SKU loop
+   * [model/service/ProductService.cfc:L209-L211] that has nothing to wait for, and would imply
+   * a round trip that does not happen.
+   *
+   * THE COMPOSITION IS SPECIFIED HERE, NOT LEFT TO THE IMPLEMENTATION. Only the two setting
+   * VALUES are the implementation's own - which is exactly where the legacy kept them, as
+   * per-installation settings. Everything else is fixed, because the result lands in
+   * `SwSku.imageFile` [model/entity/Sku.cfc:L58] and two implementations disagreeing about the
+   * convention would resolve the same SKU to two different images. Reproducing
+   * [model/entity/Sku.cfc:L131-L139] means all five of the following:
+   *
+   *   1. SANITISE by removing every character outside `[^a-z0-9\-\_]`, CASE-INSENSITIVELY.
+   *      [L135] and [L138] both use `reReplaceNoCase`, and the `NoCase` is load-bearing rather
+   *      than decorative: with case-insensitive matching, the negated class does not match
+   *      `A-Z` either, so CAPITAL LETTERS SURVIVE. In TypeScript that is
+   *      `.replace(/[^a-z0-9\-_]/gi, '')` - dropping the `i` flag would strip every capital
+   *      letter out of every product code and change the file name of every affected SKU.
+   *   2. Sanitise the product code and EACH option code SEPARATELY, never the joined result.
+   *      The delimiter would not survive its own sanitisation if the order were reversed: `-`
+   *      is inside the permitted class, but a delimiter setting of anything else would not be.
+   *   3. Prefix EVERY option code with the `productImageOptionCodeDelimiter` setting
+   *      [model/service/SettingService.cfc:L192], default `"-"`, whose legacy option list is
+   *      exactly `['-','_']` [model/service/SettingService.cfc:L346-L347]. [L135] concatenates
+   *      the delimiter BEFORE each code, so the name carries a leading delimiter on its first
+   *      option segment and none at the end.
+   *   4. Append `"." + productImageDefaultExtension` [model/service/SettingService.cfc:L191],
+   *      default `"jpg"`, as [L138] does. The dot is part of the composition, not part of the
+   *      setting.
+   *   5. Treat an ABSENT productCode or option code as contributing nothing, i.e. as the empty
+   *      string. A descriptor with no product code and no option codes therefore composes to
+   *      `".jpg"`. That is not an invented fallback: the value is what it is, and refusing here
+   *      would make a nullable column fatal at a point where the legacy merely produced a short
+   *      name.
+   *
+   * WHAT IT MUST NOT DO. It must not write, must not probe the filesystem, must not consult a
+   * directory, and must not verify that the composed name exists. Naming and storage stay
+   * separate, and `getImageExistsFlag` remains an explicit refusal on the entity.
+   *
+   * @param descriptor - The raw product code and the raw participating option codes, in
+   *   traversal order.
+   * @returns The composed file name, extension included. Never a path, never a URL: the
+   *   `product/default/` prefix that `saveImageFile` and `deleteImageFile` take is applied by
+   *   their callers, and mixing it in here would make the value wrong for the column it is
+   *   assigned to.
+   */
+  generateSkuImageFileName(descriptor: SkuImageFileNameDescriptor): string;
 }
+
+// ---------------------------------------------------------------------------
+// ★★★ THE ROOT-CONTAINMENT OBLIGATION ON EVERY IMPLEMENTATION OF THIS PORT
+//
+// CWE-22 (PATH TRAVERSAL). Both members take a `filePath: string`, and a string is
+// not a proof of anything. This obligation is stated here, once, because it binds
+// implementations rather than callers, and because a reviewer checking a new adapter
+// needs to find it at the contract rather than in a service.
+//
+// WHY IT IS PROSE AND NOT A TYPE, stated plainly rather than left as an apparent
+// oversight. A branded key type would let the compiler carry the guarantee, and it was
+// considered and rejected for one structural reason: a brand needs a validating
+// factory, and this folder is interfaces only with zero implementation - so the factory
+// would have to live outside the port while the type lived inside it, splitting one
+// contract across two layers to express a rule that the implementation has to enforce
+// at the filesystem anyway. The obligation is therefore where the obligation is
+// discharged.
+//
+// EVERY IMPLEMENTATION MUST:
+//
+//   1. RESOLVE `filePath` AGAINST ITS OWN ROOT AND VERIFY CONTAINMENT AFTER
+//      NORMALISATION. Normalise first, then confirm the result is still inside the
+//      root - and confirm it on the FULLY RESOLVED path, following symbolic links,
+//      because a link inside the root can point outside it. A prefix comparison on the
+//      unresolved string is not containment. A path that escapes must be refused, never
+//      clamped back inside: clamping turns an attack into a silent write or delete
+//      somewhere the caller did not name.
+//   2. TREAT AN ABSOLUTE `filePath` AS A REFUSAL, not as an override of the root. Both
+//      callers in this slice pass a relative path, so an absolute one is by definition
+//      not something a caller composed.
+//   3. REFUSE RATHER THAN REPORT FALSE. `saveImageFile` returns a boolean about
+//      PERSISTENCE, and reusing it to mean "rejected as unsafe" would make a security
+//      refusal indistinguishable from a store being full. `deleteImageFile` returns
+//      nothing at all, so it has no channel to report one - which is exactly why the
+//      refusal has to be a throw.
+//   4. NOT ASSUME THE CALLER VALIDATED. `ProductService.processProduct_deleteDefaultImage`
+//      does validate its own segment before composing a path, and that guard is real
+//      protection at the boundary where the untrusted value enters. It is still not this
+//      port's guarantee: the check lives in one service, this contract is open to any
+//      caller, and defence that depends on every future caller remembering is not
+//      defence.
+//
+// THE STUB WIRED IN AT `src/handlers/bootstrap.ts` TOUCHES NO FILESYSTEM, so it cannot
+// traverse one and there is nothing for it to contain. That is a property of the stub,
+// not a discharge of this obligation, and it is recorded here so that whoever replaces
+// the stub does not read its safety as the contract's.
+// ---------------------------------------------------------------------------

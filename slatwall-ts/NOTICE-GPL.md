@@ -11,17 +11,6 @@ is built to read and write the same `Sw*` MySQL tables. Because it reproduces th
 that application rather than merely calling it, the code in this subtree is a work derived from
 Slatwall and is subject to the GNU General Public License.
 
-> **Milestone status.** This subtree is authored in boundaries. At this checkpoint it carries the
-> toolchain and licence files, the CFML semantic-parity helpers, the value objects, the thirteen
-> domain ports, an initial set of domain entities, the MySQL connection pool and dialect resolver,
-> two extracted SQL modules, the Google integration contract and adapter, one service, and the
-> foundation test suites. The Lambda handler entrypoints, the MySQL repository adapters and the
-> product-feed renderer are **planned** targets that are **not present yet**, so no database row is
-> read or written and no feed document is produced at this checkpoint. Nothing about the licence
-> analysis in this notice depends on that: the derivation from Slatwall — and therefore the GPL
-> obligation and the attribution below — already applies in full to every file that exists here, and
-> applies identically to every file still to be added.
-
 The upstream license text carried forward here is the License section of the repository-root
 `readme.md` and, identically, the repository-root `license.txt`.
 
@@ -115,12 +104,11 @@ result under terms of your choice.
 Recorded for completeness: the exception's second guideline forbids altering the default display of
 the Slatwall name or logo from any part of the application.
 
-`slatwall-ts/` renders no user interface. It is specified as a headless backend service — Lambda
-handlers plus one machine-readable product-feed renderer, both of which are planned targets not yet
-present at this checkpoint. The presentation subsystems `admin/`, `frontend/`, `public/`, and
-`assets/` are outside the scope of this port and are untouched by it. There is accordingly no name or
-logo display inside this subtree for it to alter — today, when no renderer exists, and equally once
-one does — and it alters no display elsewhere in the application.
+`slatwall-ts/` is a headless backend; the RSS renderer emits machine-readable XML rather than a user
+interface. Presentation subsystems remain out of scope. The presentation subsystems `admin/`,
+`frontend/`, `public/`, and `assets/` are outside the scope of this port and are untouched by it.
+There is accordingly no name or logo display inside this subtree for it to alter, and it alters no
+display elsewhere in the application.
 
 ### Redistribution
 
@@ -153,7 +141,7 @@ Recorded so that the attribution is auditable.
 | Entities under `model/entity/`                                                  |    18 | 5,002 |
 | Services under `model/service/`                                                 |     7 | 2,694 |
 | Data-access components under `model/dao/`                                       |     6 | 1,554 |
-| Declarative validation schemas under `model/validation/`                        |    12 |     — |
+| Declarative validation schemas under `model/validation/`                        |    15 |     — |
 | Process objects under `model/process/`                                          |     3 |     — |
 | Google adapter under `integrationServices/google/`                              |     6 |     — |
 | Contracts `integrationServices/IntegrationInterface.cfc`, `BaseIntegration.cfc` |     2 |     — |

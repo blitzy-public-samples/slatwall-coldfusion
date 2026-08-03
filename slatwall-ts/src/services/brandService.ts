@@ -100,15 +100,15 @@
 //     (default `"sb"`) is deliberately out of scope. The settingsProvider port's
 //     key union is fixed and does not include it; brand URL construction is not
 //     part of this slice. If a brand URL prefix ever seems necessary here, that
-//     is the signal to stop - not to add an eighth key and not to hardcode "sb".
+//     is the signal to stop - not to add a fifth key and not to hardcode "sb".
 //   * NO VALIDATION SCHEMA. `model/validation/Brand.json` exists and is enforced
 //     by the framework validation service, which is not ported. Adding a schema
 //     here would introduce a constraint the legacy save path never applied on
 //     this side of `super.save`, so none is declared. Schema continuity also
 //     forbids inventing a default or a required field the legacy lacks.
 //   * NO LAYER VIOLATION. Nothing is imported from src/repositories/**,
-//     src/handlers/** or src/integrations/**, and BOTH collaborators are PORT
-//     INTERFACES rather than concrete adapters - `ProductRepository` names no
+//     src/handlers/** or src/integrations/**, and the one collaborator is a PORT
+//     INTERFACE rather than a concrete adapter - `UrlTitleGenerator` names no
 //     driver, connection, statement or table. Note precisely how that is
 //     guaranteed: the ESLint `no-restricted-imports` layer boundary is scoped to
 //     `src/domain/**/*.ts`, so for a file under `src/services/**` the boundary is
@@ -193,7 +193,6 @@
 // ---------------------------------------------------------------------------
 
 import type { Brand } from '../domain/entities/brand.js';
-import type { ProductRepository } from '../domain/ports/productRepository.js';
 import type { UrlTitleGenerator } from '../domain/ports/urlTitleGenerator.js';
 import { structFindKey, structGet, structKeyExists } from '../lib/cfml/struct.js';
 import { cfLen, cfTruthy, isNullish } from '../lib/cfml/truthiness.js';
@@ -210,6 +209,18 @@ import { cfLen, cfTruthy, isNullish } from '../lib/cfml/truthiness.js';
  * default is supplied and no constraint is imposed: `model/validation/Brand.json`
  * is enforced by the framework validation service, which is not ported, and
  * schema continuity forbids adding a rule the legacy lacks.
+ *
+ * ★ MINIMAL IS NOT LOSSY, AND THE DISTINCTION MATTERS. Declaring two keys does
+ * not DISCARD the others: TypeScript types erase at run time, this method mutates
+ * the caller's object in place rather than copying it, and it answers without
+ * rebuilding it - so a payload that arrived carrying `activeFlag`,
+ * `publishedFlag`, `brandWebsite` or `remoteID` still carries all of them
+ * afterwards, alongside whatever `urlTitle` the guard chain resolved. That is
+ * precisely what the legacy `super.save(brand, data)` needed, because it POPULATED
+ * the entity from the whole struct; the composition root that performs the flush
+ * therefore receives the complete column set and not a two-key subset. Widening
+ * this interface to enumerate those columns would add a contract the legacy save
+ * path never had while changing nothing about what survives.
  *
  * ABSENT, PRESENT-BUT-EMPTY AND PRESENT-BUT-UNDEFINED ARE THREE DIFFERENT INPUTS
  * THAT THE GUARD CHAIN TREATS IDENTICALLY, and every one of them must work. Both
@@ -340,8 +351,9 @@ function writeResolvedUrlTitle(data: BrandSaveInput, urlTitle: string): void {
  * file header for why the absence of `getBrand`, `deleteBrand` and the smart-list
  * accessors is faithful rather than incomplete.
  *
- * TWO COLLABORATORS, injected. Instances hold no mutable state of any kind, so a
- * single instance is safe to construct once in the composition root and reuse.
+ * ONE COLLABORATOR, injected - the leanest service in the slice. Instances hold no
+ * mutable state of any kind, so a single instance is safe to construct once in the
+ * composition root and reuse.
  */
 export class BrandService {
   /**
@@ -354,10 +366,7 @@ export class BrandService {
    *   interface rather than a concrete adapter, so a test supplies a stub without
    *   a database. Wired once, explicitly, in `src/handlers/bootstrap.ts` (planned).
    */
-  constructor(
-    private readonly urlTitleGenerator: UrlTitleGenerator,
-    private readonly productRepository: ProductRepository,
-  ) {}
+  constructor(private readonly urlTitleGenerator: UrlTitleGenerator) {}
 
   /**
    * Ported 1:1 from `public any function saveBrand(required any brand, required
@@ -369,10 +378,12 @@ export class BrandService {
    * method-level interface parity is this migration's acceptance contract.
    *
    * ASYNC BECAUSE THE LEGACY BODY REACHES THE DATA STORE. A method is made async
-   * in this port if and only if that is true, and here it is twice over: the
-   * generator runs a uniqueness read per candidate slug, and `super.save`
-   * persists. Nothing else about the shape changes - the parameter list, its
-   * order and the returned entity all stand as they were.
+   * in this port if and only if that is true, and it is true here: the generator
+   * runs a uniqueness read per candidate slug against `SwBrand.urlTitle`. The
+   * legacy body reached persistence a second time through `super.save`, whose
+   * durable half is left to the composition root for the reasons recorded at the
+   * closing statement. Nothing else about the shape changes - the parameter list,
+   * its order and the returned entity all stand as they were.
    *
    * SIX INPUT SHAPES, ALL REACHABLE, ALL PRESERVED:
    *   1. entity already has a non-empty `urlTitle`  -> no generation
@@ -453,14 +464,14 @@ export class BrandService {
         // `saveProduct` takes at [model/service/ProductService.cfc:L269] is
         // genuinely unavailable here, and this component did not take it anyway.
         // (2) The declared return is `Promise<Brand>` for interface parity, so the
-        // return value cannot carry the payload. (3) The payload is what the save
-        // populates FROM - the repository's brand save takes `(brand, data)`
-        // precisely because the legacy `super.save(brand, data)` did - so the
-        // object handed to the save has to be the one this branch wrote to. A copy
-        // made here and discarded would leave the save populating from a payload
-        // that still holds the empty `urlTitle` the guard chain had just decided to
-        // replace, quietly breaking the one contract that must hold: the value
-        // ultimately persisted carries the generated `urlTitle` under exactly these
+        // return value cannot carry the payload. (3) The payload is what a save
+        // populates FROM - the legacy `super.save(brand, data)` copied the struct
+        // onto the entity before flushing - so the object the caller goes on to
+        // flush has to be the one this branch wrote to. A copy made here and
+        // discarded would leave that flush populating from a payload that still
+        // holds the empty `urlTitle` the guard chain had just decided to replace,
+        // quietly breaking the one contract that must hold: the value ultimately
+        // persisted carries the generated `urlTitle` under exactly these
         // conditions, and carries none when neither inner branch fires. Mutating
         // in place also matches what the caller observes under CFML, where the
         // struct is passed by reference and the caller sees the resolved title
@@ -516,31 +527,38 @@ export class BrandService {
       // framework validation service's business, and that service is not ported.
     }
 
-    // CFML parity [model/service/BrandService.cfc:L76]: `return super.save(...)`.
-    // This is the one statement that made the legacy method DURABLE, and it is
-    // reproduced as a real awaited persistence call rather than deferred.
+    // LEGACY-NOTE [model/service/BrandService.cfc:L76]: super.save is framework-inherited generic CRUD.
+    // No brand repository exists in the 13-port set; the persistence half is left to the composition root.
     //
-    // ★ THE SAVE IS AWAITED AND ITS RESULT IS RETURNED - BOTH HALVES MATTER. The
-    // legacy `return` hands back whatever `super.save` produced, and `super.save`
-    // is where a new brand acquires its generated identifier
-    // [model/entity/Brand.cfc:L52, `generator="uuid" unsavedvalue=""`]. Returning
-    // the INPUT instance instead would answer a brand whose `brandID` is still the
-    // empty string, so a caller that saved a new brand could not then reference
-    // it. `Brand` is immutable here, which makes this the only channel available:
-    // the identifier cannot be back-filled into the argument.
+    // ★ WHY THE DURABLE HALF IS NOT PERFORMED HERE, STATED AT THE STATEMENT THAT
+    // WOULD HAVE PERFORMED IT. An earlier revision of this file awaited a
+    // seventh member on `ProductRepository`, `saveBrand(brand, data)`, and
+    // returned its result. That member has been removed: the port's member set is
+    // LOCKED AT SIX and the port inventory is LOCKED AT THIRTEEN (AAP 0.4.1),
+    // there is no `BrandDAO.cfc` anywhere in the legacy repository for a brand
+    // repository to port, and `super.save` is generic Hibachi CRUD, which AAP
+    // 0.5.3 lists among the dependencies deliberately not carried forward. A
+    // partial brand write - one that persisted `urlTitle` and `brandName` while
+    // silently dropping `activeFlag`, `publishedFlag` and `brandWebsite`, and
+    // enforcing none of `model/validation/Brand.json` because the framework
+    // validation service is not ported - would durably store a WRONG ROW and be
+    // strictly worse than no write at all.
+    // `src/domain/ports/productRepository.ts` records the removal in full.
     //
-    // ★ THE GENERATED `urlTitle` REACHES PERSISTENCE THROUGH THE PAYLOAD, NOT
-    // THROUGH THE ENTITY, and that split is the legacy's own. In CFML,
-    // `super.save(brand, data)` POPULATED the entity from the struct before
-    // flushing, so writing `data.urlTitle` above and passing `data` to the save
-    // are two halves of ONE operation - which is why both arguments are forwarded
-    // here rather than only the entity. `Brand` publishes no mutator and its
-    // `urlTitle` field is private and readonly, so there is no second route: had
-    // the payload been dropped at this boundary, the title resolved above would
-    // reach nothing and this method would durably persist the wrong row. The
-    // port's brand save documents the same asymmetry against `saveProduct`, which
-    // needs no payload because `ProductService` resolves its title into the
-    // product entity itself [model/service/ProductService.cfc:L269].
+    // ★ WHAT THE CALLER OBSERVES, AND WHY IT IS STILL THE LEGACY CONTRACT. The
+    // resolved `urlTitle` sits in the payload this method was handed, exactly
+    // where the legacy `super.save(brand, data)` read it from: in CFML the save
+    // POPULATED the entity from that struct before flushing, so `data` IS the
+    // route to the column and `Brand`, being immutable and publishing no mutator,
+    // offers no other. The composition root therefore receives both halves - the
+    // brand it passed in and the payload carrying the generated title - and owns
+    // the flush. The identifier a new brand would acquire during that flush
+    // [model/entity/Brand.cfc:L52, `generator="uuid" unsavedvalue=""`] is minted
+    // by whatever performs it, not here; this method answers the same instance it
+    // was given, which is why the declared return stays `Promise<Brand>` and
+    // interface parity with
+    // `public any function saveBrand(required any brand, required struct data)`
+    // holds unchanged.
     //
     // CFML parity [model/service/BrandService.cfc:L76]: the legacy call is
     // POSITIONAL - `super.save(arguments.brand, arguments.data)` - where
@@ -553,10 +571,16 @@ export class BrandService {
     // framework validation service before flushing. That service is not ported
     // (AAP 0.5.3), `model/validation/Brand.json` is enforced by it, and inventing
     // a validation step here would add a rule the extracted component never had.
-    // The no-name path documented above therefore still reaches the save without a
-    // `urlTitle`, and the database's `unique="true"` constraint
-    // [model/entity/Brand.cfc:L55] is what answers - the same outcome as the
-    // legacy once its validator is absent.
-    return await this.productRepository.saveBrand(brand, data);
+    // The no-name path documented above therefore leaves `urlTitle` unresolved,
+    // and the database's `unique="true"` constraint [model/entity/Brand.cfc:L55]
+    // is what answers whenever the flush happens - the same outcome as the legacy
+    // once its validator is absent.
+    //
+    // `RoundingRuleService.saveRoundingRule` carries the identical note against
+    // the identical construct, for the identical reason: the thirteen-port set
+    // publishes no rounding-rule persistence member either. The two are the
+    // slice's only `super.save`-only services, so the treatment is consistent
+    // rather than special-cased.
+    return brand;
   }
 }

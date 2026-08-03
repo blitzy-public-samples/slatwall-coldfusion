@@ -155,6 +155,10 @@ import { PriceGroup } from '../../../../src/domain/entities/priceGroup.js';
 import { PriceGroupRate } from '../../../../src/domain/entities/priceGroupRate.js';
 import type { Product } from '../../../../src/domain/entities/product.js';
 import { makeProductFixture } from '../../../fixtures/productFixtures.js';
+// VALUE imports: block B10 constructs both owners so it can assert that each delegating helper
+// really reaches the owning side's array, rather than asserting only that the call returns.
+import { PromotionReward } from '../../../../src/domain/entities/promotionReward.js';
+import { PromotionQualifier } from '../../../../src/domain/entities/promotionQualifier.js';
 
 // ---------------------------------------------------------------------------
 // Local test vocabulary
@@ -264,13 +268,19 @@ function makeProductTypeRepositoryDouble(
 /**
  * Wire an ACYCLIC, SHALLOW ancestor chain and hand back its nodes root-first.
  *
- * CFML parity [model/entity/ProductType.cfc:L250-L255] and
- * [src/domain/valueObjects/materializedIdPath.ts]: the production walk carries NO cycle guard
- * and NO depth limit, deliberately - a looping parent chain climbs forever there exactly as it
- * does in the legacy, because inventing a guard would invent a requirement the source does not
- * state and would mask a data defect the legacy surfaces loudly. The guard therefore lives in
- * the TEST DATA: this helper only ever links each node to the one before it, so every
- * hierarchy it produces is a short, strictly-ascending line. No test below asks for a cycle.
+ * ACYCLIC BY CONSTRUCTION, and that is a property of this helper rather than a limitation of
+ * the subject. It only ever links each node to the one before it, so every hierarchy it
+ * produces is a short, strictly-ascending line - which keeps the path, base-product-type and
+ * rate-cascade blocks below focused on ordering and contents without any of them having to
+ * establish acyclicity first.
+ *
+ * CYCLES ARE ASSERTED ON DIRECTLY, in their own block near the end of this file, and NOT built
+ * with this helper. The production code no longer follows a cyclic parent chain forever:
+ * `setParentProductType` REFUSES an assignment that would make a node reachable from itself, and
+ * `buildIdPathList` in src/domain/valueObjects/materializedIdPath.ts refuses to produce a path
+ * from one - the single documented divergence from
+ * [org/Hibachi/HibachiEntity.cfc:L314-L321], reasoned in full there. So a cycle is now a
+ * testable outcome rather than something that would hang this suite, and it is tested.
  *
  * Wiring goes through the shipped `setParentProductType`, not through the constructor, so the
  * bidirectional bookkeeping under test is the bookkeeping the chains are built with.
@@ -1912,6 +1922,50 @@ describe('ProductType - the declarative validation contract (B8)', () => {
       expect(subject.getProductTypeName()).toBeUndefined();
       expect(subject.getUrlTitle()).toBeUndefined();
     });
+
+    it('★ publishes setUrlTitle, so the resolved title is on the column BEFORE the save context reads it', () => {
+      // ★★ THE SETTER EXISTS BECAUSE THE SAVE ORDER REQUIRES IT, NOT FOR SYMMETRY WITH THE GETTER.
+      // `model/validation/ProductType.json` declares `urlTitle` `{"contexts":"save","required":true,
+      // "unique":true}`, and `super.save(productType, data)`
+      // [model/service/ProductService.cfc:L303] runs populate FIRST
+      // [org/Hibachi/HibachiService.cfc:L145], validate SECOND [L150] and persists only on a clean
+      // entity [L153-L155]. So the title `saveProductType` resolves at [L297]/[L299] has to reach
+      // this column before validation looks - and with no setter the resolved value had nowhere to
+      // land, which made the required rule unsatisfiable for every product type whose title was
+      // generated rather than submitted.
+      //
+      // §0.6 budgets this file at ZERO widenings, reshapings and divergences, and none is spent
+      // here: §2 and §6.3 positively MANDATE authoring the ORM-implicit members the ported slice
+      // concretely reaches, exactly as `setProductTypeIDPath` and `addProduct` already are.
+      const subject = new ProductType({ productTypeID: 'pt-1' });
+
+      expect(PRODUCT_TYPE_PROTOTYPE_MEMBERS).toContain('setUrlTitle');
+      expect(subject.getUrlTitle()).toBeUndefined();
+
+      subject.setUrlTitle('branded-apparel');
+
+      expect(subject.getUrlTitle()).toBe('branded-apparel');
+
+      // It overwrites rather than merging or first-winning: the service tier decides whether to
+      // write at all, and this member just carries the decision.
+      subject.setUrlTitle('branded-apparel-2');
+
+      expect(subject.getUrlTitle()).toBe('branded-apparel-2');
+
+      // ⚠ AND IT PERFORMS NO UNIQUENESS PROBE, because the source performs none either. `unique`
+      // [model/entity/ProductType.cfc:L56] is a database guarantee, and the de-duplicating work
+      // belonged to `createUniqueURLTitle` behind the URL-title generator port at the service tier.
+      // Two instances may therefore hold the same title in memory, and asserting that here keeps a
+      // later revision from quietly adding an in-entity probe the legacy never had.
+      const other = new ProductType({ productTypeID: 'pt-2' });
+      other.setUrlTitle('branded-apparel-2');
+
+      expect(other.getUrlTitle()).toBe(subject.getUrlTitle());
+
+      // LEGACY-NOTE parity: the source spells the accessor `setURLTitle`. The house spelling is
+      // published and the legacy casing deliberately is not, so both facts are pinned.
+      expect(PRODUCT_TYPE_PROTOTYPE_MEMBERS).not.toContain('setURLTitle');
+    });
   });
 
   describe('the delete context', () => {
@@ -2303,6 +2357,134 @@ describe('ProductType - structural facts and documented omissions (B9)', () => {
     });
   });
 
+  // ★ THE EXCLUSION PAIR - THE ONE HELPER PAIR IN THIS ENTITY THAT MAINTAINS ITS OWN SIDE
+  //
+  //   215: 	public void function addPriceGroupRateExclusion(required any priceGroupRate) {
+  //   216: 		arguments.priceGroupRate.addExcludedProductType( this );
+  //   217: 	}
+  //   218: 	public void function removePriceGroupRateExclusion(required any priceGroupRate) {
+  //   219: 		arguments.priceGroupRate.removeExcludedProductType( this );
+  //   220: 	}
+  //
+  // CFML parity [model/entity/ProductType.cfc:L215-L220, model/entity/PriceGroupRate.cfc:L75]: the
+  // legacy bodies delegate to `addExcludedProductType` / `removeExcludedProductType`, and
+  // model/entity/PriceGroupRate.cfc hand-writes helpers for its three INCLUDED collections ONLY -
+  // `addProductType` / `removeProductType` at L199 / L207 among them - and NONE for its three
+  // `excluded*` collections. So both legacy calls resolve to the ORM-GENERATED accessors for
+  // `excludedProductTypes singularname="excludedProductType"` [model/entity/PriceGroupRate.cfc:L75],
+  // which is `inverse="true"`, and a generated accessor on an inverse collection mutates only the
+  // in-memory array on the side it was called against. The port therefore maintains THIS entity's
+  // own `priceGroupRateExclusions` array and invents no member on `PriceGroupRate`, whose ported
+  // surface exposes `getExcludedProductTypes()` as a readonly view with no adder.
+  //
+  // This pair is the CONTRAST to the include pair asserted above: `addPriceGroupRate` [L207-L209]
+  // and `removePriceGroupRate` [L210-L212] delegate to a real far-side helper that maintains BOTH
+  // sides, while these two maintain one. Both are faithful; the difference is a property of the
+  // legacy far side, not a choice made here.
+  //
+  // NO `LEGACY-DEFECT` MARKER IS WARRANTED. Neither body is inverted - L216 calls an `add*` and L219
+  // calls a `remove*` - so the inversion cross-check verdict for this pair is CLEAN, unlike
+  // [model/entity/Option.cfc:L129-L131], whose `removePromotionRewardExclusion` calls
+  // `addExcludedOption`. The canonical register (see the index in
+  // `tests/unit/domain/entities/promotionReward.test.ts`) carries no entry against either helper.
+  describe('the price-group-rate exclusion helpers', () => {
+    it('adds the first exclusion onto this entity own array, leaving the include side empty', () => {
+      const rate: PriceGroupRate = new PriceGroupRate({ priceGroupRateID: 'pgr-excluded' });
+      const subject = new ProductType({ productTypeID: 'pt-1' });
+
+      subject.addPriceGroupRateExclusion(rate);
+
+      // The near side gains the reference; the include collection [L74] is untouched, because
+      // conflating the two link tables would invert an exclusion into an inclusion and change
+      // which rate applies - it would change price.
+      expect(subject.getPriceGroupRateExclusions()).toStrictEqual([rate]);
+      expect(subject.getPriceGroupRates()).toStrictEqual([]);
+    });
+
+    it('is set-semantic, so adding the same reference twice yields one entry', () => {
+      const rate: PriceGroupRate = new PriceGroupRate({ priceGroupRateID: 'pgr-excluded' });
+      const subject = new ProductType({ productTypeID: 'pt-1' });
+
+      subject.addPriceGroupRateExclusion(rate);
+      subject.addPriceGroupRateExclusion(rate);
+
+      // Append-if-absent, matching every other ORM-generated adder in the target. An unconditional
+      // push would double-count one `SwPriceGrpRateExclProductType` row.
+      expect(subject.getPriceGroupRateExclusions()).toHaveLength(1);
+      expect(subject.getPriceGroupRateExclusions()[0]).toBe(rate);
+    });
+
+    it('never reaches the far side, because PriceGroupRate ships no excluded-side adder', () => {
+      const rate: PriceGroupRate = new PriceGroupRate({ priceGroupRateID: 'pgr-excluded' });
+      const subject = new ProductType({ productTypeID: 'pt-1' });
+
+      subject.addPriceGroupRateExclusion(rate);
+
+      // The anti-contract, asserted rather than assumed: `addExcludedProductType` and
+      // `removeExcludedProductType` are ABSENT from the ported `PriceGroupRate` surface, and its
+      // excluded-product-type view stays empty. Reproducing the legacy delegation literally would
+      // have required inventing those two members on a sibling entity - which is why the
+      // maintenance sits here instead.
+      const rateMembers: readonly string[] = Object.getOwnPropertyNames(
+        Object.getPrototypeOf(rate) as object,
+      );
+      expect(rateMembers).not.toContain('addExcludedProductType');
+      expect(rateMembers).not.toContain('removeExcludedProductType');
+      expect(rate.getExcludedProductTypes()).toStrictEqual([]);
+    });
+
+    it('removes an exclusion that is present, and keeps the other members', () => {
+      const removed: PriceGroupRate = new PriceGroupRate({ priceGroupRateID: 'pgr-removed' });
+      const retained: PriceGroupRate = new PriceGroupRate({ priceGroupRateID: 'pgr-retained' });
+      const subject = new ProductType({
+        productTypeID: 'pt-1',
+        priceGroupRateExclusions: [removed, retained],
+      });
+
+      subject.removePriceGroupRateExclusion(removed);
+
+      // `indexOf` then `splice`, so exactly one member leaves and the survivor keeps its position.
+      expect(subject.getPriceGroupRateExclusions()).toStrictEqual([retained]);
+    });
+
+    it('treats the removal of an absent reference as a no-op rather than a failure', () => {
+      const held: PriceGroupRate = new PriceGroupRate({ priceGroupRateID: 'pgr-held' });
+      const stranger: PriceGroupRate = new PriceGroupRate({ priceGroupRateID: 'pgr-stranger' });
+      const subject = new ProductType({ productTypeID: 'pt-1', priceGroupRateExclusions: [held] });
+
+      subject.removePriceGroupRateExclusion(stranger);
+
+      // The guard is `!== -1`, NOT the `> 0` the legacy `arrayFind` convention would suggest:
+      // `arrayFind` is 1-based and answers 0 for "not found", while `indexOf` is 0-based and
+      // answers -1, so carrying `> 0` across would silently skip element 0 - the first exclusion on
+      // the entity. Removing an unheld rate changes nothing and raises nothing, exactly as the
+      // legacy no-op did.
+      expect(subject.getPriceGroupRateExclusions()).toStrictEqual([held]);
+      expect(() => subject.removePriceGroupRateExclusion(stranger)).not.toThrow();
+    });
+
+    it('matches by reference on both helpers, so a second hydration of one row is a distinct member', () => {
+      const first: PriceGroupRate = new PriceGroupRate({ priceGroupRateID: 'pgr-same' });
+      const second: PriceGroupRate = new PriceGroupRate({ priceGroupRateID: 'pgr-same' });
+      const subject = new ProductType({ productTypeID: 'pt-1' });
+
+      // JUDGMENT CALL: this pins the SHIPPED matching rule rather than the rule the sibling
+      // primary-key comparisons use. `addPriceGroupRateExclusion` guards with `includes` and
+      // `removePriceGroupRateExclusion` locates with `indexOf`, both reference comparisons, which is
+      // what the ORM-generated accessor on the far side did when handed the same object twice
+      // within one request. It is recorded as a `CFML parity` fact and NOT as a defect: no register
+      // entry exists for it, and manufacturing a marker where the port made a documented choice
+      // would corrupt the register the same way a stale count does.
+      expect(first).not.toBe(second);
+      subject.addPriceGroupRateExclusion(first);
+      subject.addPriceGroupRateExclusion(second);
+      expect(subject.getPriceGroupRateExclusions()).toHaveLength(2);
+
+      subject.removePriceGroupRateExclusion(second);
+      expect(subject.getPriceGroupRateExclusions()).toStrictEqual([first]);
+    });
+  });
+
   describe('the omissions, verified first-hand and documented as deliberate', () => {
     it('omits all three smart-list members', () => {
       const subject = new ProductType({ productTypeID: 'pt-1' });
@@ -2376,6 +2558,531 @@ describe('ProductType - structural facts and documented omissions (B9)', () => {
         expect(PRODUCT_TYPE_PROTOTYPE_MEMBERS).not.toContain(absent);
       }
       expect(Reflect.get(subject, 'writeDump')).toBeUndefined();
+    });
+  });
+});
+
+describe('ProductType - the bidirectional helpers and the unsaved-row identity fallback (B10)', () => {
+  // WHY THIS BLOCK EXISTS.
+  //
+  // The blocks above assert the materialized path, the base-type walk, the rate lookup, the
+  // attribute-set non-port, request scoping, the EAV branch, the representation, validation and
+  // the structural census. None of them calls a single one of the fourteen link-collection
+  // helpers [model/entity/ProductType.cfc:L157-L220], and none reaches the unsaved-row branch of
+  // {@link ProductType.isSameRowAs} that every containment probe on this class routes through.
+  //
+  // Both matter for behaviour rather than for tidiness:
+  //
+  //   1. THE UNSAVED-ROW FALLBACK IS THE SAME RULE `priceGroupRate.remove*` AND
+  //      `priceGroup.removeParentPriceGroup` CARRY. Two distinct unsaved product types both hold
+  //      `''` as their identifier, so a probe that keyed on the identifier alone would report the
+  //      second one as already present. Hibernate compared session identity and never made that
+  //      mistake. Asserting it here means all three entities are pinned to ONE rule rather than
+  //      each being spot-checked in isolation.
+  //
+  //   2. TEN OF THE TWELVE HELPERS DELEGATE TO THE OWNING SIDE, AND A DELEGATION CAN BE INVERTED
+  //      WITHOUT FAILING TO COMPILE. `addPromotionReward` must call `addProductType` and
+  //      `removePromotionReward` must call `removeProductType`; swapping them type-checks
+  //      perfectly and silently reverses the link. The source's own sibling
+  //      `PriceGroupRate.removePromotionRewardExclusion` is the cautionary case, and each helper
+  //      here carries a "Verified NOT inverted" note. A note is a claim; the assertions below are
+  //      the check.
+
+  it('falls back to reference identity when either side of a containment probe is unsaved', () => {
+    // `hasChildProductType` [L802] is one of the two members that route through
+    // `isSameRowAs`. With BOTH sides unsaved, key comparison would answer `true` for any
+    // unsaved candidate; reference identity answers the real question.
+    const held: ProductType = new ProductType({ productTypeID: '' });
+    const stranger: ProductType = new ProductType({ productTypeID: '' });
+    const parent: ProductType = new ProductType({
+      productTypeID: 'pt-parent',
+      childProductTypes: [held],
+    });
+
+    expect(held.getProductTypeID()).toBe('');
+    expect(stranger.getProductTypeID()).toBe('');
+
+    expect(parent.hasChildProductType(held)).toBe(true);
+    // ★ The assertion the branch exists for: an identical empty key is NOT the same row.
+    expect(parent.hasChildProductType(stranger)).toBe(false);
+  });
+
+  it('still answers a containment probe by primary key when both sides are saved', () => {
+    // The fallback is reached ONLY when a key is empty. A re-hydrated child - a different
+    // JavaScript object carrying the same `SwProductType` key - must still answer `true`.
+    const held: ProductType = new ProductType({ productTypeID: 'pt-child' });
+    const parent: ProductType = new ProductType({
+      productTypeID: 'pt-parent',
+      childProductTypes: [held],
+    });
+
+    expect(parent.hasChildProductType(new ProductType({ productTypeID: 'pt-child' }))).toBe(true);
+    expect(parent.hasChildProductType(new ProductType({ productTypeID: 'pt-other' }))).toBe(false);
+  });
+
+  it('links and unlinks a product with set semantics, and leaves the inverse column alone', () => {
+    // [model/entity/ProductType.cfc:L66] declares `products` with `singularname="product"`, and
+    // `Product.productType` is the owning side. So these helpers maintain THIS array only and
+    // must not write `product.productTypeID` - the inverse side owns that column.
+    const subject: ProductType = new ProductType({ productTypeID: 'pt-with-products' });
+    const product: Product = makeProductFixture({ productID: 'product-linked' });
+
+    subject.addProduct(product);
+    expect(subject.getProducts()).toStrictEqual([product]);
+
+    // Set semantics: a second add for the same row is a no-op.
+    subject.addProduct(product);
+    expect(subject.getProducts()).toHaveLength(1);
+
+    subject.removeProduct(product);
+    expect(subject.getProducts()).toStrictEqual([]);
+
+    // A remove for a row that was never linked is a no-op, not a splice at index -1 - which
+    // would silently remove the LAST element.
+    subject.addProduct(product);
+    subject.removeProduct(makeProductFixture({ productID: 'product-never-linked' }));
+    expect(subject.getProducts()).toStrictEqual([product]);
+  });
+
+  it('separates two UNSAVED products, because the product helpers carry the same fallback', () => {
+    // `addProduct` [L964-L970] and `removeProduct` [L987-L993] each inline the same
+    // empty-key reference fallback rather than delegating to `isSameRowAs`, which compares
+    // product types. The rule is the same and is asserted the same way.
+    const subject: ProductType = new ProductType({ productTypeID: 'pt-unsaved-products' });
+    const first: Product = makeProductFixture({ productID: '' });
+    const second: Product = makeProductFixture({ productID: '' });
+
+    subject.addProduct(first);
+    subject.addProduct(second);
+
+    expect(subject.getProducts()).toHaveLength(2);
+
+    // And a remove reaches exactly the row it was handed.
+    subject.removeProduct(first);
+    expect(subject.getProducts()).toStrictEqual([second]);
+  });
+
+  it('THROWS when removeParentProductType is called with no argument on a parentless type', () => {
+    // A PRESERVED null dereference, not a target invention.
+    // [model/entity/ProductType.cfc:L159] resolves the parent and then dereferences it with no
+    // guard, so a parentless product type is a CFML null-reference error there too. The port
+    // throws rather than answering as though it had detached something.
+    const orphan: ProductType = new ProductType({ productTypeID: 'pt-no-parent' });
+
+    expect(orphan.getParentProductType()).toBeUndefined();
+    expect(() => {
+      orphan.removeParentProductType();
+    }).toThrow(/no parent/);
+  });
+
+  it('detaches a child by delegating to the child, which owns the pointer', () => {
+    // `removeChildProductType` [L1346] calls `childProductType.removeParentProductType(this)`.
+    // The delegation is the whole implementation, so the assertion is that the CHILD's parent
+    // pointer clears - not merely that the call returned.
+    // Built through `makeAncestorChain` so the parent pointer is established the same way every
+    // other block in this file establishes it. `leafOf` is the suite's guarded last-element read;
+    // the parent is reached through the child rather than by indexing the chain, which keeps
+    // `noUncheckedIndexedAccess` satisfied without a non-null assertion.
+    const chain: readonly ProductType[] = makeAncestorChain(['pt-root', 'pt-leaf']);
+    const child: ProductType = leafOf(chain);
+    const parent: ProductType | undefined = child.getParentProductType();
+
+    if (parent === undefined) {
+      throw new Error('makeAncestorChain did not set the leaf-to-root parent pointer.');
+    }
+
+    expect(parent.getProductTypeID()).toBe('pt-root');
+    expect(parent.getChildProductTypes()).toContain(child);
+
+    parent.removeChildProductType(child);
+
+    expect(child.getParentProductType()).toBeUndefined();
+    expect(parent.getChildProductTypes()).not.toContain(child);
+  });
+
+  it('routes all four promotion-REWARD helpers to the owning reward, uninverted', () => {
+    // Each helper's one job is to reach the right method on the owner. An inverted pair would
+    // compile and would reverse the link, so include and exclude are asserted separately.
+    const subject: ProductType = new ProductType({ productTypeID: 'pt-reward-linked' });
+    const reward: PromotionReward = new PromotionReward({ promotionRewardID: 'reward-b10' });
+
+    subject.addPromotionReward(reward);
+    expect(reward.getProductTypes()).toContain(subject);
+    expect(reward.getExcludedProductTypes()).not.toContain(subject);
+
+    subject.addPromotionRewardExclusion(reward);
+    expect(reward.getExcludedProductTypes()).toContain(subject);
+
+    subject.removePromotionReward(reward);
+    expect(reward.getProductTypes()).not.toContain(subject);
+    // The exclude side is a DISTINCT link table [L71] and is untouched by the include-side remove.
+    expect(reward.getExcludedProductTypes()).toContain(subject);
+
+    subject.removePromotionRewardExclusion(reward);
+    expect(reward.getExcludedProductTypes()).not.toContain(subject);
+  });
+
+  it('routes all four promotion-QUALIFIER helpers to the owning qualifier, uninverted', () => {
+    const subject: ProductType = new ProductType({ productTypeID: 'pt-qualifier-linked' });
+    const qualifier: PromotionQualifier = new PromotionQualifier({
+      promotionQualifierID: 'qualifier-b10',
+    });
+
+    subject.addPromotionQualifier(qualifier);
+    expect(qualifier.getProductTypes()).toContain(subject);
+    expect(qualifier.getExcludedProductTypes()).not.toContain(subject);
+
+    subject.addPromotionQualifierExclusion(qualifier);
+    expect(qualifier.getExcludedProductTypes()).toContain(subject);
+
+    subject.removePromotionQualifier(qualifier);
+    expect(qualifier.getProductTypes()).not.toContain(subject);
+    expect(qualifier.getExcludedProductTypes()).toContain(subject);
+
+    subject.removePromotionQualifierExclusion(qualifier);
+    expect(qualifier.getExcludedProductTypes()).not.toContain(subject);
+  });
+
+  it('routes the INCLUDED price-group-rate helpers to the rate, which owns that link table', () => {
+    // [model/entity/ProductType.cfc:L207-L212] delegates both directions to `PriceGroupRate`,
+    // which writes `SwPriceGroupRateProductType` [L74].
+    const subject: ProductType = new ProductType({ productTypeID: 'pt-rate-linked' });
+    const rate: PriceGroupRate = new PriceGroupRate({ priceGroupRateID: 'pgr-b10' });
+
+    subject.addPriceGroupRate(rate);
+    expect(rate.getProductTypes()).toContain(subject);
+
+    subject.removePriceGroupRate(rate);
+    expect(rate.getProductTypes()).not.toContain(subject);
+  });
+
+  it('maintains the EXCLUDED price-group-rate link on THIS side, inventing no member on the rate', () => {
+    // The one asymmetry in the twelve. `PriceGroupRate`'s ported surface exposes
+    // `getExcludedProductTypes()` as a readonly view with NO adder, so
+    // [model/entity/ProductType.cfc:L215-L220] is honoured by maintaining this entity's own
+    // `priceGroupRateExclusions` array - which is what the legacy call achieved on the one side
+    // it touched - rather than by inventing `addExcludedProductType` on the rate.
+    const subject: ProductType = new ProductType({ productTypeID: 'pt-rate-excluded' });
+    const rate: PriceGroupRate = new PriceGroupRate({ priceGroupRateID: 'pgr-excl-b10' });
+
+    subject.addPriceGroupRateExclusion(rate);
+    expect(subject.getPriceGroupRateExclusions()).toStrictEqual([rate]);
+
+    // Set semantics, matching every other generated adder.
+    subject.addPriceGroupRateExclusion(rate);
+    expect(subject.getPriceGroupRateExclusions()).toHaveLength(1);
+
+    // The INCLUDED collection is a distinct link table [L74 versus L75] and stays empty.
+    expect(subject.getPriceGroupRates()).toStrictEqual([]);
+
+    subject.removePriceGroupRateExclusion(rate);
+    expect(subject.getPriceGroupRateExclusions()).toStrictEqual([]);
+
+    // Matching is by reference here, as the note on the helper states, so an equal-keyed but
+    // distinct rate is not removed.
+    subject.addPriceGroupRateExclusion(rate);
+    subject.removePriceGroupRateExclusion(new PriceGroupRate({ priceGroupRateID: 'pgr-excl-b10' }));
+    expect(subject.getPriceGroupRateExclusions()).toStrictEqual([rate]);
+  });
+});
+
+// ===========================================================================
+// B10 - CYCLIC PARENT CHAINS ARE REFUSED, NOT FOLLOWED
+//
+// NET-NEW coverage with no legacy antecedent, and it pins the port's single
+// documented divergence from the framework path builder rather than a legacy
+// behaviour. `meta/tests/` contains no ProductType test at all, so nothing here
+// extends existing coverage.
+//
+// THE TWO GUARDS AND THE DIVISION OF LABOUR BETWEEN THEM. The legacy walk at
+// [org/Hibachi/HibachiEntity.cfc:L314-L321] is a bare `do/while` with no visited
+// set and no bound, so a `parentProductType` chain that loops climbs forever. The
+// port refuses instead, at two boundaries doing two different jobs:
+//
+//   * `setParentProductType` refuses to CREATE the cycle. That is what protects
+//     the walks up this chain that never build a path - the price-group cascade's
+//     read-path ancestor climb [model/service/PriceGroupService.cfc:L68-L77] and
+//     `getSimpleRepresentation()`'s recursion [L273-L278].
+//   * `buildIdPathList` refuses to PRODUCE a path from a cyclic chain. That is
+//     what keeps `preInsert()` and `preUpdate()` from hanging before any SQL
+//     write, whatever graph they are handed.
+//
+// WHY THIS IS NOT A TIDY-UP. On a CFML request thread the non-termination
+// occupied one thread. On `nodejs20.x` it occupies the invocation's
+// single-threaded event loop until the platform timeout, and the platform then
+// RETRIES - so one malformed row denies the capability repeatedly for as long as
+// it is reachable. `parentProductType` is operator-writable.
+//
+// EVERY ASSERTION HERE IS ABOUT REFUSAL, NEVER TRUNCATION. A silently shortened
+// productTypeIDPath changes product-type membership, and product-type membership
+// decides which promotion rewards and which price-group rate apply. So no test
+// below accepts a shorter path as an acceptable answer, and the refusal is
+// asserted to leave both nodes untouched.
+// ===========================================================================
+
+describe('ProductType - cyclic parent chains are refused (B10)', () => {
+  /**
+   * Runs an operation expected to be refused and reports how.
+   *
+   * Throws if the operation SUCCEEDS, so a subject that quietly accepted a cyclic
+   * reparent - or answered a truncated path - can never be mistaken for a passing
+   * expectation. That is the whole point of this block.
+   */
+  const captureRefusal = (operation: () => unknown): { name: string; message: string } => {
+    try {
+      operation();
+    } catch (thrown) {
+      return thrown instanceof Error
+        ? { name: thrown.name, message: thrown.message }
+        : { name: 'NotAnError', message: 'a value that is not an Error was thrown' };
+    }
+
+    throw new Error(
+      'the operation was expected to be refused, but it completed. A cyclic parent chain must ' +
+        'never be created and must never yield a path - a truncated productTypeIDPath silently ' +
+        'changes product-type membership, and membership decides discounts and rates.',
+    );
+  };
+
+  describe('setParentProductType refuses an assignment that would close a cycle', () => {
+    it('refuses a product type as its own parent', () => {
+      const subject = new ProductType({ productTypeID: 'pt-self' });
+
+      const refusal = captureRefusal(() => {
+        subject.setParentProductType(subject);
+      });
+
+      expect(refusal.message).toContain(
+        "Product type 'pt-self' cannot take product type 'pt-self'",
+      );
+      expect(refusal.message).toContain('would make the parentProductType chain cyclic');
+    });
+
+    it('refuses its own direct child as its parent', () => {
+      const [parent, child] = makeAncestorChain(['pt-parent', 'pt-child']);
+
+      expect(parent).toBeDefined();
+      expect(child).toBeDefined();
+
+      if (parent === undefined || child === undefined) {
+        throw new Error('the chain builder must produce both nodes.');
+      }
+
+      const refusal = captureRefusal(() => {
+        parent.setParentProductType(child);
+      });
+
+      expect(refusal.message).toContain(
+        "Product type 'pt-parent' cannot take product type 'pt-child'",
+      );
+    });
+
+    it('refuses a distant descendant as its parent, not merely a direct child', () => {
+      // The ancestor test has to WALK, not just compare one level. A cycle closed
+      // four levels down is exactly as fatal as a self-parent and is much easier
+      // for an operator to create by accident.
+      const chain = makeAncestorChain(['pt-a', 'pt-b', 'pt-c', 'pt-d', 'pt-e']);
+      const root = chain[0];
+      const deepest = chain[4];
+
+      if (root === undefined || deepest === undefined) {
+        throw new Error('the chain builder must produce five nodes.');
+      }
+
+      const refusal = captureRefusal(() => {
+        root.setParentProductType(deepest);
+      });
+
+      expect(refusal.message).toContain("Product type 'pt-a' cannot take product type 'pt-e'");
+    });
+
+    it('changes NOTHING when it refuses - no half-linked graph is left behind', () => {
+      // The near-side assignment is unconditional in the legacy and in the port,
+      // so the guard has to run BEFORE it. If it ran after, a refused reparent
+      // would leave `parentProductType` pointing at the descendant while the
+      // far-side append never happened - strictly worse than either outcome.
+      const [parent, child] = makeAncestorChain(['pt-keep-parent', 'pt-keep-child']);
+
+      if (parent === undefined || child === undefined) {
+        throw new Error('the chain builder must produce both nodes.');
+      }
+
+      const childrenBefore = [...parent.getChildProductTypes()];
+
+      captureRefusal(() => {
+        parent.setParentProductType(child);
+      });
+
+      expect(parent.getParentProductType()).toBeUndefined();
+      expect(child.getParentProductType()).toBe(parent);
+      expect(parent.getChildProductTypes()).toStrictEqual(childrenBefore);
+      expect(child.getChildProductTypes()).toStrictEqual([]);
+
+      // And the path still builds, because the graph is still well-founded.
+      expect(child.getProductTypeIDPath()).toBe('pt-keep-parent,pt-keep-child');
+    });
+
+    it('refuses through addChildProductType too, since it delegates to the setter', () => {
+      // [model/entity/ProductType.cfc:L168] is a pure delegation, so the guard
+      // must be reachable from the far side as well. Asking a node to adopt its
+      // own ancestor is the same cycle approached from the other direction.
+      const [root, leaf] = makeAncestorChain(['pt-root', 'pt-leaf']);
+
+      if (root === undefined || leaf === undefined) {
+        throw new Error('the chain builder must produce both nodes.');
+      }
+
+      const refusal = captureRefusal(() => {
+        leaf.addChildProductType(root);
+      });
+
+      expect(refusal.message).toContain(
+        "Product type 'pt-root' cannot take product type 'pt-leaf'",
+      );
+    });
+
+    it('still allows every well-founded reparent, including moving a subtree', () => {
+      // The guard must not cost a legitimate move. A node is reparented sideways
+      // onto an unrelated branch, and then upward to a new root - neither makes it
+      // reachable from itself, so both are accepted and both rebuild a correct
+      // path.
+      const [oldRoot, movable] = makeAncestorChain(['pt-old-root', 'pt-movable']);
+      const [newRoot] = makeAncestorChain(['pt-new-root']);
+
+      if (oldRoot === undefined || movable === undefined || newRoot === undefined) {
+        throw new Error('the chain builders must produce their nodes.');
+      }
+
+      movable.setParentProductType(newRoot);
+
+      expect(movable.getParentProductType()).toBe(newRoot);
+      expect(newRoot.getChildProductTypes()).toStrictEqual([movable]);
+
+      // The stored path memo is what `preUpdate` refreshes; built directly here so
+      // the assertion is about the walk rather than about the memo.
+      const reparented = new ProductType({ productTypeID: 'pt-movable-probe' });
+      reparented.setParentProductType(newRoot);
+      expect(reparented.getProductTypeIDPath()).toBe('pt-new-root,pt-movable-probe');
+
+      // Reparenting the OLD root under the new one is also well-founded: the moved
+      // node is no longer beneath it.
+      oldRoot.setParentProductType(newRoot);
+      expect(oldRoot.getParentProductType()).toBe(newRoot);
+    });
+
+    it('allows two distinct product types that share an identifier', () => {
+      // The guard is identity-based, not identifier-based, and it has to be:
+      // identifiers are carried into the path verbatim and are not treated as
+      // unique keys anywhere in the walk. Two DISTINCT nodes with the same
+      // identifier are malformed data, but the chain still terminates, so the
+      // legacy answers a path and so does this port.
+      const first = new ProductType({ productTypeID: 'pt-duplicated' });
+      const second = new ProductType({ productTypeID: 'pt-duplicated' });
+
+      second.setParentProductType(first);
+
+      expect(second.getProductTypeIDPath()).toBe('pt-duplicated,pt-duplicated');
+    });
+  });
+
+  describe('the path build refuses a cyclic chain whatever graph it is handed', () => {
+    /**
+     * Force a cycle past the setter guard, so the SECOND guard can be tested.
+     *
+     * JUDGMENT CALL: the guarded setter is bypassed deliberately, and this is the
+     * only place in this file that does so. The two guards are independent
+     * defences and each has to be provable on its own - a graph could reach
+     * `preInsert()` from a caller that assembled it some other way, and "the
+     * setter would have stopped it" is not evidence about the path build. The
+     * bypass is a private-field write confined to this helper rather than a change
+     * to the subject.
+     */
+    const forceCycle = (lower: ProductType, upper: ProductType): void => {
+      Object.defineProperty(lower, 'parentProductType', {
+        value: upper,
+        writable: true,
+        enumerable: true,
+        configurable: true,
+      });
+    };
+
+    it('refuses to build a path for a self-parenting product type', () => {
+      const subject = new ProductType({ productTypeID: 'pt-forced-self' });
+      forceCycle(subject, subject);
+
+      const refusal = captureRefusal(() => subject.getProductTypeIDPath());
+
+      expect(refusal.name).toBe('CyclicIdPathError');
+      expect(refusal.message).toContain("revisited node 'pt-forced-self'");
+      expect(refusal.message).toContain('No path was produced');
+    });
+
+    it('refuses in preInsert, so no path is assigned and no SQL write can follow', () => {
+      // This is the guarantee that matters operationally: the hook that the
+      // repository calls immediately before its INSERT throws instead of
+      // returning, so the malformed row never reaches a bind.
+      const lower = new ProductType({ productTypeID: 'pt-ins-lower' });
+      const upper = new ProductType({ productTypeID: 'pt-ins-upper' });
+      forceCycle(upper, lower);
+      forceCycle(lower, upper);
+
+      const refusal = captureRefusal(() => {
+        lower.preInsert();
+      });
+
+      expect(refusal.name).toBe('CyclicIdPathError');
+      // Nothing was assigned: the field the hook exists to set is still absent.
+      expect(refusal.message).toContain('No path was produced');
+      // The REASON is asserted, not just the name. Both of the walk's refusals
+      // share one `name`, so a name-only assertion would still pass if the
+      // visited-identity test were removed and the depth backstop caught the walk
+      // 4096 levels later - a materially worse outcome this must not certify.
+      expect(refusal.message).toContain('contains a cycle');
+    });
+
+    it('refuses in preUpdate for the same reason', () => {
+      const lower = new ProductType({ productTypeID: 'pt-upd-lower' });
+      const upper = new ProductType({ productTypeID: 'pt-upd-upper' });
+      forceCycle(upper, lower);
+      forceCycle(lower, upper);
+
+      const refusal = captureRefusal(() => {
+        lower.preUpdate();
+      });
+
+      expect(refusal.name).toBe('CyclicIdPathError');
+      expect(refusal.message).toContain('contains a cycle');
+    });
+
+    it('refuses a well-founded leaf whose ancestry loops further up', () => {
+      // The realistic shape: the leaf is fine and the loop is above it. There is
+      // no root to reach, so no path exists to produce.
+      const loopLower = new ProductType({ productTypeID: 'pt-loop-lower' });
+      const loopUpper = new ProductType({ productTypeID: 'pt-loop-upper' });
+      forceCycle(loopLower, loopUpper);
+      forceCycle(loopUpper, loopLower);
+
+      const leaf = new ProductType({ productTypeID: 'pt-loop-leaf' });
+      forceCycle(leaf, loopLower);
+
+      const refusal = captureRefusal(() => leaf.getProductTypeIDPath());
+
+      expect(refusal.name).toBe('CyclicIdPathError');
+      expect(refusal.message).toContain("revisited node 'pt-loop-lower'");
+    });
+
+    it('leaves a stored path alone: a present column is returned without any walk', () => {
+      // The lazy getter only walks when the column is absent
+      // [model/entity/ProductType.cfc:L250-L255]. A row that was persisted before
+      // the cycle was introduced still reads its stored value, so the guard cannot
+      // make previously-readable data unreadable.
+      const subject = new ProductType({
+        productTypeID: 'pt-stored',
+        productTypeIDPath: 'pt-ancestor,pt-stored',
+      });
+      forceCycle(subject, subject);
+
+      expect(subject.getProductTypeIDPath()).toBe('pt-ancestor,pt-stored');
     });
   });
 });

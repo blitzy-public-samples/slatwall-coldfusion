@@ -160,10 +160,12 @@
 //   `LEGACY-DEFECT` - the two-line form ending "Preserved deliberately; do not
 //   fix without a product decision." - is reserved for defective behaviour that
 //   is being reproduced. THIS FILE CARRIES NO `LEGACY-DEFECT` MARKER, because
-//   it owns none of the port's twenty numbered defects: the four that touch
+//   it owns none of the port's thirty numbered defects: the six that touch
 //   price groups at all (the `local.i` reference, the `deletePriceGroup`
-//   snapshot loop, the parent-recursion asymmetry and the rounding-rule
-//   asymmetry) are every one of them in `model/service/PriceGroupService.cfc`
+//   snapshot loop, the parent-recursion asymmetry, the rounding-rule asymmetry,
+//   and the two calls on undeclared members - `getAmountRepresentation()` and
+//   `clearAmounts()`) are every one of them in
+//   `model/service/PriceGroupService.cfc`
 //   and belong to `src/services/priceGroupService.ts` (planned).
 //   `tsconfig.build.json` sets `removeComments: false` and Prettier does not
 //   reflow comments, so these annotations survive into the emitted output. They
@@ -172,14 +174,24 @@
 // BUDGET AUDIT FOR THIS FILE
 //   ZERO signature widenings - the single entity-layer widening in this folder
 //   is `PromotionPeriod.isCurrent(now: Date)`, and nothing here is widened.
-//   ZERO deliberate divergences - the port's three all sit in `sku.ts` and
-//   `product.ts`. ZERO signature reshapings. ZERO visibility widenings. ZERO
-//   numbered defects owned. No invented non-functional requirement appears in
-//   any line of code or comment: no SLA, no latency, throughput or uptime
-//   figure, and no reference to the legacy runtime lock timeouts, which are
-//   noted-and-not-implemented elsewhere and are irrelevant here. No cycle
+//   ZERO of the BUDGETED deliberate divergences - the port's three all sit in
+//   `sku.ts` and `product.ts`. ZERO signature reshapings. ZERO visibility
+//   widenings. ZERO numbered defects owned. No invented non-functional
+//   requirement appears in any line of code or comment: no SLA, no latency,
+//   throughput or uptime figure, and no reference to the legacy runtime lock
+//   timeouts, which are noted-and-not-implemented elsewhere and are irrelevant
+//   here.
+//
+//   ★ ONE NON-BUDGETED DIVERGENCE IS SPENT HERE, AND THIS AUDIT USED TO DENY IT.
+//   These lines read "ZERO deliberate divergences" and closed with "No cycle
 //   guard, depth limit or performance mitigation is added to the parent-chain
-//   walk.
+//   walk." The second sentence is now flatly false and the first was misleading:
+//   `setParentPriceGroup` REFUSES a reparent that would close a cycle, annotated
+//   as "★★★ DELIBERATE DIVERGENCE" at that method, and the MySQL adapter raises
+//   `PriceGroupCycleError` on the same condition. It is a FOURTH divergence
+//   rather than a spend against the budgeted three, which is why it carries its
+//   own justification at the method instead of citing the budget. No PERFORMANCE
+//   mitigation is added to the walk - that half of the old sentence stands.
 //
 // NO USER RULES WERE PROVIDED
 //   Stated explicitly rather than left implicit. (1) No user-specified rules
@@ -213,7 +225,11 @@
 //   method reads a clock, an environment variable or a database.
 // ---------------------------------------------------------------------------
 
-import { buildIdPathList, resolveIdPath } from '../valueObjects/materializedIdPath.js';
+import {
+  buildIdPathList,
+  resolveIdPath,
+  wouldCreateIdPathCycle,
+} from '../valueObjects/materializedIdPath.js';
 import { cfBoolean, cfLen, isNullish } from '../../lib/cfml/truthiness.js';
 import type { CfBooleanInput } from '../../lib/cfml/truthiness.js';
 import type { PriceGroupRate } from './priceGroupRate.js';
@@ -1321,8 +1337,67 @@ export class PriceGroup {
    * on the parent instance, which is why the collection is not `readonly`.
    *
    * `void` return, matching the legacy declaration. Synchronous.
+   *
+   * ★★★ DELIBERATE DIVERGENCE — A REPARENT THAT WOULD CLOSE A CYCLE IS REFUSED.
+   * The legacy setter assigns whatever it is handed, so choosing this node's own
+   * descendant as its parent is accepted and the malformed graph is created. That
+   * is not reproduced, and the reasoning is set out once, in full, on
+   * `buildIdPathList()` in src/domain/valueObjects/materializedIdPath.ts. In
+   * short: the resulting non-termination is an availability defect rather than a
+   * behaviour, it is not an entry in the project's closed defect register, no
+   * preserve-exactly mandate reaches it, and `org/Hibachi/**` is a boundary this
+   * migration REPLACES rather than reproduces.
+   *
+   * WHY THE GUARD IS HERE AND NOT ONLY ON THE PATH BUILD. The path build refuses
+   * to produce a path from a cyclic chain, which is what keeps a SAVE from
+   * hanging. It does nothing for the walks over this same chain that never build
+   * a path: the price-group cascade climbs it on the READ path while pricing an
+   * order [model/service/PriceGroupService.cfc:L68-L77], and
+   * `getSimpleRepresentation()` recurses up it
+   * [model/entity/ProductType.cfc:L273-L278]. Refusing the ASSIGNMENT means a
+   * cycle never enters a live graph, so every one of those walks is safe for one
+   * reason instead of needing a guard each.
+   *
+   * NOTHING IS MUTATED WHEN THE ASSIGNMENT IS REFUSED. The check runs before the
+   * near-side write, so a rejected reparent leaves both nodes exactly as they
+   * were rather than half-linked - which matters because the near side is assigned
+   * unconditionally and the far-side append is what the legacy guards.
+   *
+   * A WELL-FOUNDED REPARENT IS UNAFFECTED, including moving a subtree sideways or
+   * upward: the check answers `true` only when this node is reachable from the
+   * candidate, and a legitimate move never is. THE CONSTRUCTOR IS NOT GUARDED,
+   * deliberately - it is the hydration boundary, and a constructor that threw would
+   * duplicate a decision already taken, and taken more informatively, one layer out.
+   *
+   * ★ THIS PARAGRAPH ONCE ENDED "BOTH REPOSITORY ADAPTERS ALREADY TRUNCATE A CYCLIC
+   * ROW SET INTO AN ACYCLIC GRAPH ON PURPOSE, SO MAKING THE CONSTRUCTOR THROW WOULD
+   * UNDO A DECISION TAKEN ELSEWHERE." The conclusion still holds; the premise no longer
+   * describes the shipped adapters, so it is corrected here rather than left to mislead.
+   * The ancestry walk in `mysqlPriceGroupRepository.ts` does NOT truncate: it RAISES
+   * `PriceGroupCycleError`, naming the chain it followed. A shortened ancestry is a
+   * DIFFERENT `priceGroupIDPath`, and that path is what the five-level cascade climbs
+   * [model/service/PriceGroupService.cfc:L140-L181], so truncation would have been a
+   * different price arrived at silently.
+   *
+   * The reason the constructor needs no guard is therefore stronger than it was, not
+   * weaker: a cyclic ROW SET never reaches a constructor at all, and the only cyclic
+   * graph a constructor could be handed is one an operator built in memory - which is
+   * exactly what this setter refuses.
    */
   setParentPriceGroup(parentPriceGroup: PriceGroup): void {
+    if (
+      wouldCreateIdPathCycle<PriceGroup>(this, parentPriceGroup, (node) =>
+        node.getParentPriceGroup(),
+      )
+    ) {
+      throw new Error(
+        `Price group '${this.getPriceGroupID()}' cannot take price group ` +
+          `'${parentPriceGroup.getPriceGroupID()}' as its parent: the assignment would make the ` +
+          `parentPriceGroup chain cyclic, so priceGroupIDPath could never be built and every walk up ` +
+          `that chain would never terminate. Nothing has been changed.`,
+      );
+    }
+
     this.parentPriceGroup = parentPriceGroup;
 
     if (this.isNew() || !parentPriceGroup.hasChildPriceGroup(this)) {
@@ -1395,9 +1470,15 @@ export class PriceGroup {
       );
     }
 
+    // Row identity is decided by {@link isSameRow} - the key for a stored group, the instance for an
+    // unsaved one. `hasChildPriceGroup` above may compare keys alone because the legacy `isNew()`
+    // disjunct at [model/entity/PriceGroup.cfc:L112] short-circuits before it is ever consulted for a
+    // new entity; THIS site has no such short-circuit. [L120]'s `arrayFind(..., this)` is an object
+    // comparison, and every unsaved group's key is the same `''` placeholder [L52], so comparing keys
+    // alone here detaches whichever unsaved sibling happens to come first rather than this one.
     const siblingPriceGroups = targetParentPriceGroup.getChildPriceGroups();
-    const index = siblingPriceGroups.findIndex(
-      (child) => child.getPriceGroupID() === this.priceGroupID,
+    const index = siblingPriceGroups.findIndex((child) =>
+      isSameRow(child.getPriceGroupID(), this.priceGroupID, child, this),
     );
 
     if (index !== -1) {
@@ -1537,7 +1618,8 @@ export class PriceGroup {
   //
   // Neither route hand-rolls comma-delimited path walking. Both delegate to
   // `src/domain/valueObjects/materializedIdPath.js`, which owns the six properties of the legacy walk
-  // - root-first, self-last, comma-delimited, includes self, no cycle guard, never empty - and the
+  // - root-first, self-last, comma-delimited, includes self, never empty, and a cyclic or unbounded
+  // parent chain refused by a throw rather than followed forever - and the
   // `isNull` decision that Route A turns on.
 
   /**
@@ -1750,11 +1832,15 @@ export class PriceGroup {
    * exactly that accessor, and `getParentPriceGroup` is the association the legacy
    * string named.
    *
-   * NO CYCLE GUARD AND NO DEPTH LIMIT, matching the legacy walk at
-   * [org/Hibachi/HibachiEntity.cfc:L314-L321], which carries neither. Adding one
-   * would be an unrequested behavioural change to a value that decides which
-   * price-group rate wins, and a truncating guard would quietly shorten a path and
-   * change a price. The value object documents the same decision at its own walk.
+   * A CYCLIC OR UNBOUNDED PARENT CHAIN IS REFUSED, not followed - the single
+   * documented divergence from the legacy walk at
+   * [org/Hibachi/HibachiEntity.cfc:L314-L321], which carries neither a visited set
+   * nor a bound. The refusal is a THROW and never a truncation, for exactly the
+   * reason the earlier note here gave for wanting no guard at all: a shortened path
+   * would quietly change which price-group rate wins, and that is a price. Throwing
+   * produces no path, so nothing wrong is ever persisted or compared. The value
+   * object owns the guard and sets out the full reasoning at its own walk; this
+   * method only delegates.
    */
   private buildPriceGroupIDPathList(): string {
     return buildIdPathList<PriceGroup>(
@@ -1763,6 +1849,48 @@ export class PriceGroup {
       (node) => node.getParentPriceGroup(),
     );
   }
+}
+
+/**
+ * Whether two entity instances are THE SAME ROW, by the rule Hibernate's session identity actually
+ * followed - which is not the same rule as "their primary keys are equal".
+ *
+ * ★★ WHY A PLAIN KEY COMPARISON IS NOT SUFFICIENT, AND WHY THIS IS A FAITHFUL READING OF THE
+ * PRIMARY-KEY RULE RATHER THAN A DEPARTURE FROM IT. Every unsaved row carries the key `''`, because
+ * this entity declares `unsavedvalue=""` [model/entity/PriceGroup.cfc:L52]. For a PERSISTED row, key
+ * equality and session identity coincide exactly, so the key comparison is the correct one - and it
+ * is strictly better than a reference comparison, because two instances hydrated from the same row by
+ * two different repository calls answer correctly instead of answering `false`. For a TRANSIENT row
+ * there is no key to compare, and session identity is therefore INSTANCE identity: two different
+ * unsaved price groups are two different objects that merely share the placeholder. Comparing them by
+ * key reports them equal, which is how the wrong unsaved sibling comes to be detached.
+ *
+ * CFML parity [model/entity/PriceGroup.cfc:L120]: `arrayFind(array, this)` compares two component
+ * instances, which is an object comparison rather than a key comparison. This reproduces it: the key
+ * when the key identifies a stored row, the instance when it does not.
+ *
+ * The same helper, with the same reasoning, is declared module-locally in
+ * `src/domain/entities/priceGroupRate.ts`, which has seven such sites. It is deliberately NOT hoisted
+ * into a shared module: `src/lib/cfml/struct.ts` publishes a closed export surface, and neither file
+ * may add to it.
+ *
+ * @param heldKey - the primary key of the member already in the collection.
+ * @param candidateKey - the primary key of the member being sought.
+ * @param heldInstance - the collection member itself.
+ * @param candidateInstance - the sought member itself.
+ * @returns whether the two refer to the same row.
+ */
+function isSameRow(
+  heldKey: string,
+  candidateKey: string,
+  heldInstance: object,
+  candidateInstance: object,
+): boolean {
+  if (heldKey === '' || candidateKey === '') {
+    return heldInstance === candidateInstance;
+  }
+
+  return heldKey === candidateKey;
 }
 
 // ---------------------------------------------------------------------------

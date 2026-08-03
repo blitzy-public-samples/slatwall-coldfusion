@@ -110,6 +110,7 @@ import type { OrderItemView } from '../../domain/views/orderItemView.js';
 import type { OrderView } from '../../domain/views/orderView.js';
 import type { OrderItemMembership } from './orderItemMembership.js';
 import { listFindNoCase } from '../../lib/cfml/list.js';
+import { cfEquals } from '../../lib/cfml/struct.js';
 import { isNullish } from '../../lib/cfml/truthiness.js';
 
 // ---------------------------------------------------------------------------------------------
@@ -127,11 +128,16 @@ import { isNullish } from '../../lib/cfml/truthiness.js';
 //                                          `noUnusedLocals` would reject it.
 //   decimal.js                           - never imported directly anywhere in this subtree; all
 //                                          decimal arithmetic is `Money`'s. This folder needs none
-//                                          of the fourteen pinned packages directly.
+//                                          of the thirteen pinned packages directly.
 //   ../../lib/cfml/precision.js          - there is no `precisionEvaluate` site in L629-L750.
 //   ../../lib/cfml/numberFormat.js       - there is no `numberFormat` call in L629-L750, and the
 //                                          L743 division is plain integer arithmetic.
-//   ../../lib/cfml/struct.js             - no case-insensitive struct-key access in this range.
+// NOTE: `../../lib/cfml/struct.js` USED TO APPEAR IN THIS LEDGER, on the grounds that the range
+// performs no case-insensitive struct-key ACCESS. That is still true and was never the whole test:
+// the module also publishes `cfEquals`, the subtree's one definition of CFML string equality, and the
+// qualifier-type dispatch at [L638, L656] is a CFML string equality. It is now imported and used by
+// {@link matchesQualifierType}. Recorded rather than quietly deleted, because the entry was wrong for
+// a reason worth seeing: it tested for the wrong member of the module.
 //   ../../domain/valueObjects/
 //     materializedIdPath.js              - comma-list ID-path walking belongs to
 //                                          ./orderItemMembership.js, which this module delegates to.
@@ -180,55 +186,38 @@ import { isNullish } from '../../lib/cfml/truthiness.js';
 /**
  * One configured shipping address zone, as this module can address it.
  *
- * Extends the published {@link AddressZoneProjection} rather than redeclaring it, so the value is
- * accepted by the port without widening, shadowing or re-deriving the port's own contract.
+ * ALIASES the published {@link AddressZoneProjection} rather than extending or redeclaring it, and
+ * that is the whole point: the port's own contract now carries BOTH members this module needs, so
+ * there is nothing left to add. An earlier revision declared a module-private interface that added
+ * `addressZoneID` on top of the port shape, and it was the source of a real defect - the extra member
+ * was ERASED at the call boundary, because the parameter type `isAddressInZone` declares is
+ * `AddressZoneProjection`, so no conforming implementation could ever see the identifier. The
+ * identifier is now part of the port, and the alias exists only to keep this file's local vocabulary
+ * readable.
  *
- * `addressZoneLocations` keeps the published element type and is NOT narrowed to the empty tuple.
- * That distinction is behavioural, not cosmetic, and it is the single most important line in this
- * file's zone handling:
+ * `addressZoneLocations` is supplied EMPTY by this layer and is NOT narrowed to the empty tuple. That
+ * distinction is behavioural, not cosmetic:
  *
- *   * The port documents that "a zone with no matching location - INCLUDING A ZONE WITH NO LOCATIONS
- *     AT ALL - is not entered" [src/domain/ports/addressZoneEvaluator.ts, isAddressInZone]. So a zone
- *     whose location list is EMPTY is a zone that deterministically answers `false`.
- *   * Typing the member `readonly []` would therefore be this module ASSERTING, in the type system,
- *     that every configured zone fails - which is a substantive claim about zone membership, and a
- *     WRONG one. Legacy answers `true` for an address that matches a real zone location, and that
- *     answer is observable: it decides inclusion whenever the qualifier configures BOTH zones and
- *     shipping methods and the fulfillment's method is a member (the one branch that DEFECT 11 at
- *     L703 degrades to the new-address test alone rather than excluding outright).
- *   * Keeping the published element type instead says only what is true - this module carries
- *     whatever locations it is given, and it decides no membership itself.
+ *   * A zone that genuinely has no locations is not entered - the loop at
+ *     [model/service/AddressService.cfc:L60-L61] runs zero times. So typing the member `readonly []`
+ *     would be this module ASSERTING, in the type system, that every configured zone fails - a
+ *     substantive claim about zone membership, and a WRONG one. Legacy answers `true` for an address
+ *     that matches a real zone location, and that answer is observable: it decides inclusion whenever
+ *     the qualifier configures BOTH zones and shipping methods and the fulfillment's method is a
+ *     member (the one branch that DEFECT 11 at L703 degrades to the new-address test alone rather
+ *     than excluding outright).
+ *   * Keeping the published element type says only what is true - this module carries whatever
+ *     locations it is given, and it decides no membership itself.
  *
- * THE OBLIGATION THIS PLACES ON THE PORT IMPLEMENTATION, STATED SO IT CANNOT BE MISSED: the domain
- * layer deliberately does not materialize the zone association, so the value this module constructs
- * carries the zone's IDENTITY in `addressZoneID` and an EMPTY location list. The single concrete
- * `AddressZoneEvaluator` - wired in the composition root, which the port names as its only
- * implementation home - MUST resolve locations from `addressZoneID` and must NOT treat the empty list
- * as "this zone has no locations". This module makes no zone-membership decision of its own; it calls
- * the port once per configured zone, in the source's order, and honours the first `true`, which is
- * exactly the delegation the entity mandates: resolve zone semantics ONLY through the port
- * [src/domain/entities/promotionQualifier.ts, the far-side contract for this file].
- *
- * A throwing accessor on `addressZoneLocations` was considered as a way to make a naive
- * empty-list read fail loudly rather than silently answer `false`, and REJECTED: it would add a
- * failure mode neither the legacy nor the port contract has, and it would break a perfectly
- * legitimate implementation that reads locations in a future where they ARE materialized.
+ * THE OBLIGATION THIS PLACES ON THE PORT IMPLEMENTATION is now stated by the port itself, at
+ * {@link AddressZoneProjection}: an empty location list from a caller that publishes none means "not
+ * supplied", so the implementation resolves the zone from `addressZoneID` before answering, while a
+ * zone that genuinely has no locations is still not entered. This module makes no zone-membership
+ * decision of its own; it calls the port once per configured zone, in the source's order, and honours
+ * the first `true`, which is exactly the delegation the entity mandates: resolve zone semantics ONLY
+ * through the port [src/domain/entities/promotionQualifier.ts, the far-side contract for this file].
  */
-interface ConfiguredShippingAddressZone extends AddressZoneProjection {
-  /**
-   * The opaque `SwPromoQualShipAddressZone.addressZoneID` value, carried verbatim. This is the
-   * load-bearing field: it is the only per-zone datum the domain layer publishes, and it is what the
-   * port implementation must resolve against.
-   */
-  readonly addressZoneID: string;
-
-  /**
-   * The port's declared channel for a zone's locations, kept at the published element type. Supplied
-   * empty by this layer because the domain does not materialize the association; see the type's own
-   * note for the obligation that places on the implementation.
-   */
-  readonly addressZoneLocations: readonly AddressZoneLocationProjection[];
-}
+type ConfiguredShippingAddressZone = AddressZoneProjection;
 
 /**
  * Project the qualifier's configured shipping-address-zone IDs onto the shape the evaluator port
@@ -275,6 +264,39 @@ function toConfiguredShippingAddressZones(
  */
 function isPresent<TValue>(value: TValue | undefined): value is TValue {
   return !isNullish(value);
+}
+
+/**
+ * Does the qualifier's type select the given dispatch arm, with case folded as CFML folds it?
+ *
+ * CFML parity [model/service/PromotionService.cfc:L638, L656]: both equality arms of the legacy
+ * dispatch use `==`, which on strings is CASE-INSENSITIVE in CFML. A qualifier persisting
+ * `'Fulfillment'` therefore reaches the fulfillment arm there, and this predicate reproduces that
+ * under a lint profile that mandates `===`.
+ *
+ * THE SUBJECT IS ALREADY COERCED, WHICH IS WHY NO ABSENCE GUARD APPEARS HERE. The caller reads
+ * `qualifier.getQualifierType() ?? ''`, reproducing CFML's rendering of an unset string as the empty
+ * string, so the value reaching this function is always a `string` and never nullish. `cfEquals`
+ * RAISES on a nullish operand but treats `''` as an ordinary string, so an absent qualifier type
+ * compares unequal to every arm and reaches none - the same outcome as the missing default the caller
+ * documents, and the same outcome the empty-string coercion produced before.
+ *
+ * ★ WHY THIS IS DEFINED HERE AND NOT SHARED. The home is prescribed rather than chosen:
+ * `src/lib/cfml/struct.ts` declares its export surface CLOSED and directs that a translation need none
+ * of its primitives covers "belongs inside the consuming module with a documented annotation - not as a
+ * new export here and not as a new file in this folder". `cfEquals` IS the primitive and does the
+ * comparison; this wrapper adds only the dispatch-shaped signature that keeps the two call sites
+ * readable and states the coercion contract above in one place. Siblings with the same shape sit in
+ * ./promotionPeriodQualification.ts, ./discountAmount.ts, ../priceGroupService.ts and
+ * ../../domain/entities/priceGroupRate.ts; each documents its own absence policy, because they do not
+ * all share one.
+ *
+ * @param qualifierType - the qualifier's type, already coerced to `''` when absent.
+ * @param arm - the dispatch arm being tested, in the source's canonical spelling.
+ * @returns `true` when the two are equal with case folded.
+ */
+function matchesQualifierType(qualifierType: string, arm: string): boolean {
+  return cfEquals(qualifierType, arm);
 }
 
 /**
@@ -472,26 +494,34 @@ export class QualifierQualificationEvaluator {
     // FOR THE DISPATCH, MADE EXPLICIT RATHER THAN ASSUMED. CFML's `==` is case-insensitive on strings,
     // so all three of the source's tests tolerate any casing; the lint profile mandates strict
     // equality, which is exactly what forces this audit to happen at the site instead of disappearing
-    // into an operator. The two equality arms therefore compare case-SENSITIVELY while the third stays
-    // case-INSENSITIVE through `listFindNoCase`.
+    // into an operator. ALL THREE ARMS THEREFORE COMPARE CASE-INSENSITIVELY: the two equality arms
+    // through {@link matchesQualifierType}, and the third through `listFindNoCase`, which already was.
     //
-    // That is safe, and the reason is the data rather than the operator: `qualifierType` is a
-    // fixed-vocabulary `select` column [model/entity/PromotionQualifier.cfc:L53] whose five legal
-    // values are written by the admin as `order`, `fulfillment`, `contentAccess`, `merchandise` and
-    // `subscription`, and the two literals reached by strict equality here - `"order"` and
-    // `"fulfillment"` - are single all-lower-case words matched against exactly the tokens that
-    // column stores. `listFindNoCase` is kept for the third arm because the source chose it there
-    // deliberately: `listFind` IS case-sensitive in CFML, so the author's choice of the `NoCase`
-    // variant is a positive instruction, and the `contentAccess` token is the one value in the
-    // vocabulary whose casing is not uniform.
+    // ★ AN EARLIER REVISION OF THIS BLOCK REACHED THE OPPOSITE CONCLUSION, AND IT WAS WRONG.
     //
-    // No case-folding helper is introduced and `../../lib/cfml/struct.js` is deliberately not
-    // imported: nothing in this range performs a case-insensitive struct-key lookup, and adding a
-    // comparison helper for a fixed vocabulary would spend a dependency to restate what the column
-    // already guarantees.
+    // It argued that strict equality is safe "because the data rather than the operator" guarantees
+    // it - `qualifierType` being a fixed-vocabulary `select` column
+    // [model/entity/PromotionQualifier.cfc:L53] whose five legal values the admin writes as `order`,
+    // `fulfillment`, `contentAccess`, `merchandise` and `subscription`. The premise is false. That
+    // column is a plain string with NO check constraint; `select` describes the admin FORM, not the
+    // schema, so a data import, a direct SQL correction or an older admin build can leave a
+    // differently-cased token in it. And the cost of a miss here is not cosmetic: a qualifier whose
+    // type matched no arm returns `qualificationCount = 0`, its promotion period fails to qualify at
+    // [model/service/PromotionService.cfc:L593], and the customer is charged full price for a
+    // promotion that the legacy engine WOULD have applied. Silently.
+    //
+    // `listFindNoCase` is kept for the third arm for the reason it always was: the source chose it
+    // deliberately - `listFind` IS case-sensitive in CFML, so the `NoCase` variant is a positive
+    // instruction - and `contentAccess` is the one value in the vocabulary whose casing is not
+    // uniform. That arm needed no change; the other two did.
+    //
+    // The comparison helper is {@link matchesQualifierType}, module-local, wrapping the sanctioned
+    // `cfEquals` primitive from `../../lib/cfml/struct.js`. That import is now present and earns its
+    // keep: it is the subtree's ONE definition of CFML string equality, and this dispatch is a CFML
+    // string equality. Its placement is prescribed rather than chosen - see the helper's own note.
 
     // ORDER
-    if (qualifierType === 'order') {
+    if (matchesQualifierType(qualifierType, 'order')) {
       // CFML parity [model/service/PromotionService.cfc:L641, L652]: ASSIGN THEN REVOKE. The count is
       // set to 1 FIRST - the legacy comment reads "because that is the max for an order qualifier" -
       // and the four-clause disjunction then revokes it back to 0. The shape is the legacy control
@@ -537,7 +567,7 @@ export class QualifierQualificationEvaluator {
       }
 
       // FULFILLMENT
-    } else if (qualifierType === 'fulfillment') {
+    } else if (matchesQualifierType(qualifierType, 'fulfillment')) {
       this.evaluateFulfillmentArm(qualifier, order, qualifierDetails);
 
       // ORDER ITEM
@@ -671,14 +701,23 @@ export class QualifierQualificationEvaluator {
 
         // CFML parity [model/service/PromotionService.cfc:L678]: THE PRECONDITION IS COMPOUND AND
         // SHORT-CIRCUITING, and all four of its details matter. (a) The source uses the CFML word
-        // operator `eq`, which becomes strict `===`. (b) The literal is lower-case `"shipping"`.
-        // (c) `getNewFlag()` is NEGATED - a brand-new, unsaved address DISQUALIFIES. (d) If the
-        // precondition FAILS, the flag REMAINS `false` from L675 and the fulfillment is excluded at
-        // L693 without any zone ever being consulted. That silent-exclusion path is load-bearing: no
-        // `else` is added to rescue it, and it is the reason a non-shipping fulfillment can never
-        // satisfy a zone-bearing qualifier.
+        // operator `eq`, WHICH IS CASE-INSENSITIVE ON STRINGS - so the comparison folds case, through
+        // `cfEquals`. (b) The literal is lower-case `"shipping"`. (c) `getNewFlag()` is NEGATED - a
+        // brand-new, unsaved address DISQUALIFIES. (d) If the precondition FAILS, the flag REMAINS
+        // `false` from L675 and the fulfillment is excluded at L693 without any zone ever being
+        // consulted. That silent-exclusion path is load-bearing: no `else` is added to rescue it, and
+        // it is the reason a non-shipping fulfillment can never satisfy a zone-bearing qualifier.
+        //
+        // ★ DETAIL (a) PREVIOUSLY READ "which becomes strict `===`", AND THAT WAS WRONG. `eq` folds
+        // case; `===` does not. Combined with (d), an exact comparison made this the most damaging
+        // shape a C12 miss can take: a fulfillment whose method type is stored as `'Shipping'` failed
+        // the precondition, `addressZoneOk` stayed `false` from L675, and the fulfillment was excluded
+        // WITHOUT ANY ZONE BEING CONSULTED - so a correctly-configured zone qualifier silently matched
+        // nothing at all. `fulfillmentMethodType` reaches this module as a plain `string` on the
+        // read-only view, so `cfEquals` is called DIRECTLY here: the value is never nullish, there is
+        // no absence policy to state, and no wrapper is warranted.
         if (
-          orderFulfillment.fulfillmentMethod.fulfillmentMethodType === 'shipping' &&
+          cfEquals(orderFulfillment.fulfillmentMethod.fulfillmentMethodType, 'shipping') &&
           !dereferenceFulfillmentAddress(orderFulfillment, 'L678').isNew
         ) {
           // [L681-L688] Loop over each configured zone and check whether this address is in one.

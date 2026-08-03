@@ -62,12 +62,23 @@
 //      binding a module constant would model them as inputs. Positional
 //      binding therefore appears only in the two follow-up statements, and
 //      both halves of that are asserted separately below.
-//   3. THE SALE PAIR IS ALWAYS ABSENT. `skuSalePrice` and
-//      `salePriceExpirationDateTime` are declared on the projection and
-//      assigned nothing on every row, because neither has a persisted column
-//      [model/entity/Sku.cfc:L115, L118] and the legacy resolves both through
-//      the promotion sale-price path, which is another module's capability.
-//      The fields exist, and their emptiness is the contract.
+//   3. THE SALE PAIR IS RESOLVED, NOT EMPTY. An earlier reading of this file
+//      recorded that `skuSalePrice` and `salePriceExpirationDateTime` were
+//      "assigned nothing on every row" and that "their emptiness is the
+//      contract". Both halves of that were wrong, and the second half was the
+//      load-bearing one. It is true that neither field has a persisted column
+//      [model/entity/Sku.cfc:L115, L118]; it does NOT follow that neither is
+//      obtainable. The sale price is a CASE over persisted columns
+//      [model/dao/PromotionDAO.cfc:L338-L342] and the expiration IS a persisted
+//      column - `SwPromotionPeriod.endDateTime`, projected as
+//      `salePriceExpirationDateTime` [model/dao/PromotionDAO.cfc:L344] and
+//      carried through both query-of-queries stages [L552, L579]. The subject
+//      therefore populates both, resolving them through an injected
+//      sale-price-detail source once per DISTINCT PRODUCT, which is the
+//      granularity the legacy memo itself used [model/entity/Product.cfc:L517-L522].
+//      The cases below assert the population, the per-product resolution count,
+//      and the fallback that stands in for the legacy accessor's own
+//      `return getPrice()` [model/entity/Sku.cfc:L546-L551].
 //   4. FOUR FIELD NAMES DIFFER from the expectation: the product path is
 //      `productUrlPath`, the SKU image path is `imageLinkPath`, the image
 //      array is `additionalImageLinkPaths` and the breadcrumb is
@@ -125,10 +136,17 @@
 import { describe, expect, it } from 'vitest';
 
 import { GoogleFeedRepository } from '../../../../src/integrations/google/googleFeedRepository.js';
+import type { PreparedStatementExecutor } from '../../../../src/repositories/mysql/connection.js';
 import type {
+  GoogleFeedSalePriceSource,
+  GoogleFeedValueRounder,
   GoogleProductFeedRow,
   ResolvedFeedSettingValues,
+  ResolvedSkuShippingWeightSetting,
+  SkuFeedSettingResolver,
+  SkuFeedSettingSubject,
 } from '../../../../src/integrations/google/googleFeedRepository.js';
+import type { SalePricePromotionRewardRow } from '../../../../src/domain/ports/promotionRepository.js';
 import { Money } from '../../../../src/domain/valueObjects/money.js';
 
 // ---------------------------------------------------------------------------
@@ -184,7 +202,7 @@ interface StatementResponses {
  * The only collaborator any case here uses: a recording test double that
  * captures every statement and every bound array and answers with canned rows.
  *
- * It implements the subject's executor contract STRUCTURALLY - two methods,
+ * It implements the subject's executor contract STRUCTURALLY - three members,
  * matching signatures - so nothing from the connection module is imported and
  * no pool, connection or driver ever exists in this process. That the subject
  * accepts it at all is the compiler proving the collaborator is
@@ -225,7 +243,70 @@ class RecordingExecutor {
         'existing schema unchanged, with no migration, rename or column change',
     );
   }
+
+  /**
+   * Every entry into `transaction`, keyed by how many statements had been captured when
+   * it happened. Expected to stay EMPTY: the feed only reads.
+   */
+  readonly transactionEntries: number[] = [];
+
+  /** How many times a transaction was attempted. Expected to stay ZERO forever. */
+  transactionAttempts = 0;
+
+  /**
+   * Refuse a transaction, for the same reason `executeMutation` refuses.
+   *
+   * The feed path is one read. A transaction is only ever opened around a write, so one
+   * appearing here would mean a write path had grown, and refusing turns that into a
+   * failing test at the moment it appears.
+   *
+   * ★ THE ALTERNATIVE WAS A WORKING NO-OP - `transactionEntries.push(...)` followed by
+   * `return work(this)` - present so that this double stood in for the real executor
+   * STRUCTURALLY, on the reasoning that the contract now carries `transaction`. The
+   * contract is satisfied either way: refusing is still an implementation of it. What
+   * refusing adds is that a write path appearing on a read-only adapter fails LOUDLY
+   * instead of being recorded and passed over, and the recording it replaces was only
+   * ever going to be read by a case nobody had written. BOTH counters are still updated
+   * before the throw, so the two vocabularies the sibling suites use both resolve here.
+   *
+   * It is NOT a divergence from the shipped executor. `createConnectionExecutor` in
+   * `src/repositories/mysql/connection.ts` joins a nested call and opens a real unit for
+   * an outermost one; this double refuses BOTH, because the claim being pinned is that
+   * this adapter has no write path at all, not anything about transaction semantics.
+   */
+  transaction(): Promise<never> {
+    this.transactionEntries.push(this.captured.length);
+    this.transactionAttempts += 1;
+
+    throw new Error(
+      'the product-feed repository must never open a transaction: it performs one read and ' +
+        'issues no data-modifying statement for a transaction to protect',
+    );
+  }
 }
+
+/**
+ * ⚠ NO SECOND SALE-PRICE DOUBLE LIVES HERE, AND THIS RECORDS WHY.
+ *
+ * A `RecordingSalePriceSource` once stood at this position, primed per PRODUCT with
+ * `SalePriceDetail` values and answering `getSalePriceDetailsForProductSkus(productID)`
+ * - the shape of the service method the legacy view reaches lazily through the product
+ * memo [model/entity/Product.cfc:L517-L522]. It was correct about WHAT the feed needs
+ * and wrong about HOW MANY QUESTIONS it takes to get it: per-product resolution asks the
+ * same reduction once per product in the catalog, which is the N+1 the legacy memo hid
+ * behind lazy traversal and which a feed over the whole catalog cannot afford.
+ *
+ * The double that survived asks ONCE, for every product, and keys the winners per SKU -
+ * `RecordingSalePriceSource` further down this file, built on
+ * `SalePricePromotionRewardRow` and the `GoogleFeedSalePriceSource` port. It reproduces
+ * the same eight lines of service code [model/service/PromotionService.cfc:L1022-L1030]
+ * against the same statement, one call instead of N. Both doubles cannot coexist: they
+ * share a name and the subject takes exactly one of them.
+ *
+ * The two cases the earlier double asserted that its successor did not are ported to the
+ * successor's shape rather than dropped - a live sale with a NULL expiration, and two
+ * SKUs of one product where only one is on sale. Both are in the sale-price describe.
+ */
 
 // ---------------------------------------------------------------------------
 // Fixtures, declared inline
@@ -239,11 +320,16 @@ class RecordingExecutor {
 // ---------------------------------------------------------------------------
 
 /**
- * The four resolved setting values the subject's constructor takes.
+ * The three resolved setting values the subject's constructor takes.
  *
  * The image prefix is host-relative on purpose: the legacy view prepends the
  * scheme and host itself, so a repository that produced an absolute address
- * would be doing the renderer's job.
+ * would be doing the renderer's job. `missingImagePath` is host-relative for the
+ * same reason.
+ *
+ * ★ THIS FACTORY ONCE PRODUCED FOUR VALUES, TWO OF THEM SHIPPING WEIGHTS. They
+ * are resolved PER SKU now, through `makeShippingWeightResolver` below, because
+ * the legacy resolves them inside its row loop.
  */
 function makeSettingValues(
   overrides: Partial<ResolvedFeedSettingValues> = {},
@@ -251,8 +337,133 @@ function makeSettingValues(
   return {
     globalURLKeyProduct: overrides.globalURLKeyProduct ?? 'fake-url-key',
     baseImageURL: overrides.baseImageURL ?? '/fake-image-base',
-    skuShippingWeight: overrides.skuShippingWeight ?? '3.500',
-    skuShippingWeightUnitCode: overrides.skuShippingWeightUnitCode ?? 'fakeunit',
+    missingImagePath: overrides.missingImagePath ?? '/fake-missing-image.jpg',
+  };
+}
+
+/** The default shipping weight this suite's resolver answers with. */
+const FAKE_SHIPPING_WEIGHT = '3.500';
+
+/** The default shipping-weight unit this suite's resolver answers with. */
+const FAKE_SHIPPING_WEIGHT_UNIT = 'fakeunit';
+
+/**
+ * A shipping-weight resolver that records what it was asked and answers per SKU.
+ *
+ * `answers` maps a SKU identifier to the pair that SKU should receive; any SKU not
+ * named there receives the two defaults above. Passing an explicit `undefined`
+ * answer models a resolver that OMITS a SKU, which is the contract violation the
+ * subject refuses to paper over.
+ */
+class RecordingShippingWeightResolver implements SkuFeedSettingResolver {
+  /** Every subject list handed over, in call order. Length proves the batching. */
+  readonly calls: (readonly SkuFeedSettingSubject[])[] = [];
+
+  private readonly answers: ReadonlyMap<string, ResolvedSkuShippingWeightSetting | undefined>;
+
+  constructor(
+    answers: ReadonlyMap<string, ResolvedSkuShippingWeightSetting | undefined> = new Map(),
+  ) {
+    this.answers = answers;
+  }
+
+  async resolveSkuShippingWeightSettings(
+    subjects: readonly SkuFeedSettingSubject[],
+  ): Promise<ReadonlyMap<string, ResolvedSkuShippingWeightSetting>> {
+    this.calls.push(subjects);
+
+    const resolved = new Map<string, ResolvedSkuShippingWeightSetting>();
+
+    for (const subject of subjects) {
+      if (this.answers.has(subject.skuID)) {
+        const answer = this.answers.get(subject.skuID);
+
+        if (answer !== undefined) {
+          resolved.set(subject.skuID, answer);
+        }
+
+        continue;
+      }
+
+      resolved.set(subject.skuID, {
+        skuShippingWeight: FAKE_SHIPPING_WEIGHT,
+        skuShippingWeightUnitCode: FAKE_SHIPPING_WEIGHT_UNIT,
+      });
+    }
+
+    return await Promise.resolve(resolved);
+  }
+}
+
+/**
+ * A sale-price source that records its arguments and answers with canned rows.
+ *
+ * The recorded argument list is what proves the subject asks for the WHOLE catalog:
+ * the port's `productID` is optional, and omitting it means every product.
+ */
+class RecordingSalePriceSource implements GoogleFeedSalePriceSource {
+  /** One entry per call, holding the `productID` argument as received. */
+  readonly calls: (string | undefined)[] = [];
+
+  private readonly rows: readonly SalePricePromotionRewardRow[];
+
+  constructor(rows: readonly SalePricePromotionRewardRow[] = []) {
+    this.rows = rows;
+  }
+
+  async getSalePricePromotionRewardsQuery(
+    productID?: string,
+  ): Promise<SalePricePromotionRewardRow[]> {
+    this.calls.push(productID);
+
+    return await Promise.resolve([...this.rows]);
+  }
+}
+
+/**
+ * A rounder that records every rounding it was asked to perform.
+ *
+ * It answers with a fixed, obviously-different value so that a case can tell a
+ * ROUNDED price from an unrounded one without reimplementing the rounding
+ * algorithm - which has nine characterised outcomes of its own and is exercised by
+ * `tests/unit/services/roundingRuleService.test.ts`, not here.
+ */
+class RecordingValueRounder implements GoogleFeedValueRounder {
+  /** One entry per call: the value handed in and the rule identifier. */
+  readonly calls: { readonly value: string; readonly roundingRuleID: string }[] = [];
+
+  private readonly result: Money;
+
+  constructor(result: Money = Money.fromDecimalString('9.99')) {
+    this.result = result;
+  }
+
+  async roundValueByRoundingRuleID(value: Money, roundingRuleID: string): Promise<Money> {
+    this.calls.push({ value: value.toFixed2(), roundingRuleID });
+
+    return await Promise.resolve(this.result);
+  }
+}
+
+/** One winning sale-price reward row, carrying every member the subject reads. */
+function makeSalePriceRewardRow(
+  overrides: Partial<SalePricePromotionRewardRow> = {},
+): SalePricePromotionRewardRow {
+  return {
+    skuID: overrides.skuID ?? 'fake-sku-id-1',
+    discountLevel: overrides.discountLevel ?? 'sku',
+    salePriceDiscountType: overrides.salePriceDiscountType ?? 'amount',
+    salePrice: overrides.salePrice ?? Money.fromDecimalString('12.34'),
+    promotionID: overrides.promotionID ?? 'fake-promotion-id-1',
+    ...(Object.hasOwn(overrides, 'roundingRuleID')
+      ? { roundingRuleID: overrides.roundingRuleID }
+      : {}),
+    ...(Object.hasOwn(overrides, 'salePriceExpirationDateTime')
+      ? { salePriceExpirationDateTime: overrides.salePriceExpirationDateTime }
+      : {}),
+    ...(Object.hasOwn(overrides, 'originalPrice')
+      ? { originalPrice: overrides.originalPrice }
+      : {}),
   };
 }
 
@@ -283,17 +494,42 @@ function makeSelectionRow(overrides: DriverRow = {}): DriverRow {
     productCalculatedQATS: 7,
     productTypeID: 'fake-product-type-id-1',
     productPrice: '24.50',
+    // ★ THE BRAND ARRIVES AS THREE COLUMNS, AND EACH ANSWERS A DIFFERENT QUESTION.
+    // `brandID` is `SwProduct.brandID`, the FOREIGN KEY as the product row carries it,
+    // and it is what the setting-lookup path `product.brand.brandID`
+    // [model/service/SettingService.cfc:L519] needs. `joinedBrandID` is
+    // `SwBrand.brandID` AS THE LEFT JOIN RESOLVED IT, and it is the EMISSION GATE,
+    // because the legacy guards on `not isNull(...getBrand())`
+    // [integrationServices/google/views/feed/product.cfm:L32] - a test on the resolved
+    // ASSOCIATION, not on the column. `brandName` is the body.
+    //
+    // The default models a MATCHED left join
+    // [integrationServices/google/controllers/feed.cfc:L66], so all three are populated.
+    // `joinedBrandID: null` WITH a `brandID` is the dangling key - a product naming a
+    // brand row that no longer exists, which the legacy omitted the element for;
+    // `brandName: null` with both ids is the brand that records no name.
+    brandID: 'fake-brand-id-1',
+    joinedBrandID: 'fake-brand-id-1',
     brandName: 'Fake Brand',
-    productTypeDescription: 'Fake product type description.',
     ...overrides,
   };
 }
 
-/** One driver row for the recursive product-type ancestry statement. */
+/**
+ * One driver row for the recursive product-type ancestry statement.
+ *
+ * ★ IT CARRIES `productTypeDescription` NOW, AND THE SELECTION ROW NO LONGER DOES.
+ * The locked selection has exactly three joins
+ * [integrationServices/google/controllers/feed.cfc:L64-L66] and `SwProductType` is
+ * not one of them, so the description is read by this statement - the same walk the
+ * legacy performed lazily, per row
+ * [integrationServices/google/views/feed/product.cfm:L19].
+ */
 function makeAncestryRow(overrides: DriverRow = {}): DriverRow {
   return {
     leafProductTypeID: 'fake-product-type-id-1',
     productTypeName: 'Fake Leaf Type',
+    productTypeDescription: 'Fake product type description.',
     ancestorDistance: 0,
     ...overrides,
   };
@@ -447,19 +683,78 @@ function allStatements(recorder: RecordingExecutor): string {
   return recorder.captured.map((call) => call.sql).join('\n');
 }
 
-/** Runs the subject once against a double primed with the given responses. */
+/**
+ * The three non-executor collaborators a case may want to pre-build.
+ *
+ * Each is optional because most cases care about the statements the subject
+ * issues and not about the collaborators at all; those cases let {@link runFeed}
+ * build defaults and never look at them. A case that DOES care - one asserting
+ * the batching, the whole-catalog sale-price call, or the rounding gate - hands
+ * over a primed double and then reads its recording back out of the result.
+ */
+interface FeedCollaborators {
+  readonly shippingWeights?: RecordingShippingWeightResolver;
+  readonly salePrices?: RecordingSalePriceSource;
+  readonly rounder?: RecordingValueRounder;
+}
+
+/**
+ * Runs the subject once against a double primed with the given responses.
+ *
+ * ★ THIS HELPER ONCE CONSTRUCTED THE SUBJECT WITH TWO ARGUMENTS. The constructor
+ * takes FIVE now: the executor and the resolved setting values as before, plus a
+ * per-SKU shipping-weight resolver, a sale-price source and a value rounder. All
+ * three are handed back alongside the recorder so a case can assert on what the
+ * subject asked them, which is the only way to prove the batching and the
+ * whole-catalog sale-price call from outside.
+ */
 async function runFeed(
   responses: Partial<StatementResponses> = {},
   settingOverrides: Partial<ResolvedFeedSettingValues> = {},
+  collaborators: FeedCollaborators = {},
 ): Promise<{
   readonly recorder: RecordingExecutor;
   readonly rows: readonly GoogleProductFeedRow[];
+  readonly shippingWeights: RecordingShippingWeightResolver;
+  readonly salePrices: RecordingSalePriceSource;
+  readonly rounder: RecordingValueRounder;
 }> {
   const recorder = new RecordingExecutor(responses);
-  const repository = new GoogleFeedRepository(recorder, makeSettingValues(settingOverrides));
+  const shippingWeights = collaborators.shippingWeights ?? new RecordingShippingWeightResolver();
+  const salePrices = collaborators.salePrices ?? new RecordingSalePriceSource();
+  const rounder = collaborators.rounder ?? new RecordingValueRounder();
+  const repository = new GoogleFeedRepository(
+    recorder,
+    makeSettingValues(settingOverrides),
+    shippingWeights,
+    salePrices,
+    rounder,
+  );
   const rows = await repository.fetchProductFeedRows();
 
-  return { recorder, rows };
+  return { recorder, rows, shippingWeights, salePrices, rounder };
+}
+
+/**
+ * Constructs the subject with throwaway collaborators, for cases that ignore them.
+ *
+ * Every case that asserts on the STATEMENTS the subject issues needs the three
+ * non-executor collaborators present and needs nothing from them, so each would
+ * otherwise repeat the same three constructions. Cases that DO assert on a
+ * collaborator use {@link runFeed} and read the recording out of its result, or
+ * construct the subject in full themselves.
+ */
+function makeRepository(
+  executor: PreparedStatementExecutor,
+  settingOverrides: Partial<ResolvedFeedSettingValues> = {},
+): GoogleFeedRepository {
+  return new GoogleFeedRepository(
+    executor,
+    makeSettingValues(settingOverrides),
+    new RecordingShippingWeightResolver(),
+    new RecordingSalePriceSource(),
+    new RecordingValueRounder(),
+  );
 }
 
 // ---------------------------------------------------------------------------
@@ -520,12 +815,19 @@ describe('the dead legacy statement is not transcribed, and the live path is wha
     const { recorder } = await runFeed({ selection: [makeSelectionRow()] });
     const { sql } = statementOfKind(recorder, 'selection');
 
-    // Seventeen aliased columns in the select list, against the dead statement's
+    // Eighteen aliased columns in the select list, against the dead statement's
     // two. The list is bounded explicitly so the one table alias further down the
     // statement is not counted as a column.
+    //
+    // The count was seventeen and is eighteen: `SwBrand.brandID` was added so the
+    // brand element can be gated on the ASSOCIATION rather than on the name, which
+    // is what the legacy conditional tests
+    // [integrationServices/google/views/feed/product.cfm:L32]. The join it reads was
+    // already there [integrationServices/google/controllers/feed.cfc:L66] - only the
+    // projection widened, so no table was added and no predicate changed.
     const selectList = sql.slice(sql.indexOf('SELECT'), sql.indexOf('FROM SwSku'));
 
-    expect(countMatches(selectList, /\bAS\s+\w+/g)).toBe(17);
+    expect(countMatches(selectList, /\bAS\s+\w+/g)).toBe(18);
 
     // Both columns the dead statement did name are present, so nothing was lost
     // by declining to transcribe it.
@@ -547,9 +849,16 @@ describe('the dead legacy statement is not transcribed, and the live path is wha
 
     // The dead statement offered a code and a title. The projection offers the
     // whole feed vocabulary, which is the practical measure of the difference.
+    //
+    // ★ THIS COUNT WAS 22 AND IS 23 NOW. `brandID` joined the projection so the
+    // renderer can gate `<g:brand>` on brand PRESENCE rather than on the nullable
+    // name [integrationServices/google/views/feed/product.cfm:L32], and it costs no
+    // extra join: it is `SwBrand.brandID` as the LEFT join resolved it, and `SwBrand`
+    // was already joined for the name
+    // [integrationServices/google/controllers/feed.cfc:L66].
     expect(row.skuCode).toBe('FAKE-SKU-1');
     expect(row.calculatedTitle).toBe('Fake Product Title');
-    expect(Object.keys(row)).toHaveLength(22);
+    expect(Object.keys(row)).toHaveLength(23);
   });
 });
 
@@ -558,19 +867,39 @@ describe('the dead legacy statement is not transcribed, and the live path is wha
 // ---------------------------------------------------------------------------
 
 describe('the never-read legacy collaborator is flagged and no use is invented for it', () => {
-  it('takes exactly two collaborators, neither of them a product service', () => {
+  it('takes exactly five collaborators, none of them a product service', () => {
     // [integrationServices/google/controllers/feed.cfc:L51] declares a product
     // service alongside the SKU service at L52, and the body at L58-L73 reads
     // ONLY the SKU service, at L63. The declaration is dead. Interface parity
     // binds METHODS, not unused injections, so it is not carried forward - and no
     // purpose has been invented for it either.
-    expect(GoogleFeedRepository.length).toBe(2);
+    //
+    // ★ THIS CASE ONCE ASSERTED A CONSTRUCTOR ARITY OF TWO, AND NAMED TWO FIELDS.
+    // The arity is five now, and the three additions are not a product service and
+    // not a service locator: they are a per-SKU shipping-weight resolver, a
+    // sale-price source and a value rounder. Each exists because the legacy resolved
+    // that value INSIDE its row loop - the settings per SKU
+    // [integrationServices/google/views/feed/product.cfm:L58] and the sale price off
+    // a per-product memo [model/entity/Product.cfc:L517-L522] - so a constructor
+    // holding one pre-resolved value per feed could not answer them. The point this
+    // case has always made survives the growth intact: not one of the five is a
+    // catalog service, and the next case proves that by name.
+    expect(GoogleFeedRepository.length).toBe(5);
 
-    const repository = new GoogleFeedRepository(new RecordingExecutor(), makeSettingValues());
+    const repository = new GoogleFeedRepository(
+      new RecordingExecutor(),
+      makeSettingValues(),
+      new RecordingShippingWeightResolver(),
+      new RecordingSalePriceSource(),
+      new RecordingValueRounder(),
+    );
 
     expect(Object.getOwnPropertyNames(repository).sort()).toStrictEqual([
       'executor',
+      'salePriceSource',
       'settingValues',
+      'skuSettingResolver',
+      'valueRounder',
     ]);
   });
 
@@ -617,7 +946,7 @@ describe('no access control is invented, and the entrypoint answers with data ra
 
   it('answers with the rows themselves, taking no context to mutate and returning no view', async () => {
     const recorder = new RecordingExecutor({ selection: [makeSelectionRow()] });
-    const repository = new GoogleFeedRepository(recorder, makeSettingValues());
+    const repository = makeRepository(recorder);
     const rows = await repository.fetchProductFeedRows();
 
     // The legacy member's whole observable effect was an assignment onto the
@@ -647,7 +976,7 @@ describe('no access control is invented, and the entrypoint answers with data ra
 // ---------------------------------------------------------------------------
 
 describe("the three legacy joins are reproduced, with the framework's own join semantics", () => {
-  it('joins the product table inner, and the other three tables outer', async () => {
+  it('joins the product table inner, and the other two tables outer', async () => {
     const { recorder } = await runFeed({ selection: [makeSelectionRow()] });
     const { sql } = statementOfKind(recorder, 'selection');
 
@@ -657,8 +986,17 @@ describe("the three legacy joins are reproduced, with the framework's own join s
     // calls at [integrationServices/google/controllers/feed.cfc:L64-L66] were
     // outer joins. The product table is inner here only because the three product
     // predicates reject every null-extended row regardless.
+    //
+    // ★ THIS CASE ONCE EXPECTED THREE OUTER JOINS AND WAS TITLED "THE OTHER THREE
+    // TABLES". The third was a `SwProductType` join that the controller never asked
+    // for: the live entrypoint declares its joins one call at a time and makes
+    // exactly three [integrationServices/google/controllers/feed.cfc:L64-L66], so a
+    // fourth was this port's own addition. The selection has three joins now - one
+    // inner and two outer - and the product-type description travels on the recursive
+    // ancestry statement that already walked that table.
     expect(occurrencesOf(sql, 'INNER JOIN')).toBe(1);
-    expect(occurrencesOf(sql, 'LEFT JOIN')).toBe(3);
+    expect(occurrencesOf(sql, 'LEFT JOIN')).toBe(2);
+    expect(occurrencesOf(sql, 'JOIN')).toBe(3);
     expect(sql).toContain('INNER JOIN SwProduct');
   });
 
@@ -699,18 +1037,30 @@ describe("the three legacy joins are reproduced, with the framework's own join s
     expect(row.productTypeSimpleRepresentation).toBe('Fake Leaf Type');
   });
 
-  it('resolves the breadcrumb from its own statement rather than from the product-type join', async () => {
-    const { rows } = await runFeed({
+  it('resolves both product-type values from the ancestry statement, not from a fourth join', async () => {
+    const withoutAncestry = await runFeed({
       selection: [makeSelectionRow()],
       ancestry: [],
     });
-    const row = rowAt(rows, 0);
+    const { recorder, rows } = await runFeed({
+      selection: [makeSelectionRow()],
+      ancestry: [makeAncestryRow({ productTypeDescription: 'From the ancestry walk.' })],
+    });
 
-    // With the joined description present and the ancestry statement empty, the
-    // two values separate cleanly: the description comes from the join, and the
-    // breadcrumb does not.
-    expect(row.productTypeDescription).toBe('Fake product type description.');
-    expect(row.productTypeSimpleRepresentation).toBeUndefined();
+    // ★ THIS CASE ONCE READ "THE DESCRIPTION COMES FROM THE JOIN, AND THE BREADCRUMB
+    // DOES NOT", AND SEPARATED THE TWO VALUES ON THAT BASIS. The separation was real
+    // but the carrier was wrong: the description was arriving from a `SwProductType`
+    // join the controller never declared
+    // [integrationServices/google/controllers/feed.cfc:L64-L66]. Both values come
+    // from the recursive ancestry statement now, which already walks that table, so
+    // with the ancestry empty BOTH are absent and with it present BOTH arrive. The
+    // selection names the product type only as a foreign key.
+    expect(withoutAncestry.rows[0]?.productTypeDescription).toBeUndefined();
+    expect(withoutAncestry.rows[0]?.productTypeSimpleRepresentation).toBeUndefined();
+    expect(rowAt(rows, 0).productTypeDescription).toBe('From the ancestry walk.');
+    expect(rowAt(rows, 0).productTypeSimpleRepresentation).toBe('Fake Leaf Type');
+    expect(statementOfKind(recorder, 'selection').sql).not.toContain('SwProductType');
+    expect(statementOfKind(recorder, 'ancestry').sql).toContain('SwProductType');
   });
 });
 
@@ -779,8 +1129,15 @@ describe('exactly four predicates are reproduced, and no fifth is invented', () 
     // The legacy chain tested four things and nothing else. A brand condition, a
     // product-type condition, a date window or a code condition would each be a
     // fifth predicate the feed never had.
+    //
+    // ★ THE PRODUCT-TYPE HALF OF THIS IS NOW TRUE FOR A SECOND REASON. The table is
+    // no longer joined at all, so a qualified predicate on it is unwritable rather
+    // than merely absent; the selection names the product type only as the foreign
+    // key column it projects, which the third assertion pins so the case does not
+    // pass by having nothing to look at.
     expect(sql).not.toMatch(/WHERE[\s\S]*SwBrand\./);
     expect(sql).not.toMatch(/WHERE[\s\S]*SwProductType\./);
+    expect(sql).toContain('SwProduct.productTypeID');
     expect(sql).not.toMatch(/\bBETWEEN\b/);
     expect(sql).not.toMatch(/\bLIKE\b/);
     expect(sql).not.toMatch(/\bIS\s+NOT\s+NULL\b/);
@@ -826,7 +1183,7 @@ describe('exactly four predicates are reproduced, and no fifth is invented', () 
 describe('the four filters are hard-coded, and the query surface offers no way to widen them', () => {
   it('accepts no argument at all on the one public query method', async () => {
     const recorder = new RecordingExecutor({ selection: [makeSelectionRow()] });
-    const repository = new GoogleFeedRepository(recorder, makeSettingValues());
+    const repository = makeRepository(recorder);
 
     // The type-level half of the guarantee. Every option a caller might reach for
     // to widen the selection - an inactive-inclusive flag, an unpublished-inclusive
@@ -1066,10 +1423,10 @@ describe('every value is bound positionally, and no value is ever written into a
 
   it('reads only through the injected collaborator, and never through a shared connection', async () => {
     const recorder = new RecordingExecutor({ selection: [makeSelectionRow()] });
-    const repository = new GoogleFeedRepository(recorder, makeSettingValues());
+    const repository = makeRepository(recorder);
 
     // Constructor injection is the mechanism, and this suite is the proof: a
-    // hand-written double with exactly two methods satisfies the collaborator
+    // hand-written double with exactly three members satisfies the collaborator
     // contract outright, so nothing was reached for beyond it. The double exposes
     // no unprepared execution route, no connection handle and no pool handle - and
     // the subject works anyway, which makes the prepared-statement guarantee
@@ -1169,8 +1526,14 @@ describe('the existing tables are read exactly as they are, with nothing added o
     // position and pins the set exactly. An entity name reaching a join slot would
     // appear in this set and fail, which is a stricter test than searching the text
     // for one particular spelling.
+    //
+    // ★ THIS SET ONCE HELD `SwProductType` AS WELL. It was there because the
+    // selection carried a fourth join the controller never declared
+    // [integrationServices/google/controllers/feed.cfc:L64-L66]; the set is the
+    // three tables the three declared joins reach, and `SwSku` appears once for
+    // both of its roles because the self-join is aliased rather than renamed.
     expect(sql).toContain('FROM SwSku');
-    expect(tableReferences(sql)).toStrictEqual(['SwBrand', 'SwProduct', 'SwProductType', 'SwSku']);
+    expect(tableReferences(sql)).toStrictEqual(['SwBrand', 'SwProduct', 'SwSku']);
   });
 
   it('issues no statement that could change the schema or its contents', async () => {
@@ -1233,9 +1596,28 @@ function withoutColumn(row: DriverRow, columnName: string): DriverRow {
   return kept;
 }
 
-/** Every member the projection contract names, sorted for a stable comparison. */
+/**
+ * Every member the projection contract names, sorted for a stable comparison.
+ *
+ * ★ `brandID` JOINED THIS LIST, AND IT IS THE JOINED KEY RATHER THAN A BOOLEAN.
+ * The renderer gates `<g:brand>` on brand PRESENCE
+ * [integrationServices/google/views/feed/product.cfm:L32] and the name is only the
+ * body, so presence needs a carrier of its own. Two carriers were possible - a
+ * reduced `brandPresent` flag, or the brand key AS THE LEFT JOIN RESOLVED IT - and
+ * the key is what the projection carries, because it answers the same question
+ * without discarding information at the boundary. `SwBrand` is joined for the name
+ * already [integrationServices/google/controllers/feed.cfc:L66], so reading one more
+ * of its columns costs no join.
+ *
+ * ⚠ IT IS NOT `SwProduct.brandID`. The selection carries that column too, under its
+ * own label, for the setting-lookup path `product.brand.brandID`
+ * [model/service/SettingService.cfc:L519] - but the raw foreign key is present even
+ * when the brand row it names has been deleted, and gating on it would emit an empty
+ * `<g:brand>` for a product with no resolvable brand.
+ */
 const PROJECTION_MEMBERS: readonly string[] = [
   'additionalImageLinkPaths',
+  'brandID',
   'brandName',
   'calculatedTitle',
   'imageLinkPath',
@@ -1300,7 +1682,22 @@ describe('the projection carries exactly what the renderer needs, and no broader
     // any pair together would change which items advertise a sale.
     expect(moneyOf(row.productPrice, 'product price').toDecimalString()).toBe('24.5');
     expect(moneyOf(row.skuPrice, 'SKU price').toDecimalString()).toBe('19.99');
-    expect(row.skuSalePrice).toBeUndefined();
+
+    // This line previously asserted `skuSalePrice` was undefined, and it is inverted
+    // rather than deleted because the property under test is unchanged: the three
+    // quantities stay APART. With no qualifying promotion the sale price equals the
+    // SKU price, and that is the legacy accessor's own answer - `getSalePrice()` falls
+    // through to `return getPrice()` [model/entity/Sku.cfc:L546-L551]. It is a
+    // separate member holding an equal value, not the same member read twice, which
+    // is precisely why the gate at L28 then compares equal and emits nothing.
+    expect(moneyOf(row.skuSalePrice, 'SKU sale price').toDecimalString()).toBe('19.99');
+
+    // And with no promotion the two members hold the SAME value object, which is
+    // stated rather than worked around: the fallback hands the SKU price straight
+    // through, and `Money` is immutable, so nothing downstream can mutate one member
+    // by holding the other. What matters is that they are separate MEMBERS - a
+    // promotion populates one and leaves the other alone, as the case below shows.
+    expect(row.skuSalePrice).toBe(row.skuPrice);
 
     // Three separate members, so no consumer can mistake one for another.
     expect(PROJECTION_MEMBERS).toContain('productPrice');
@@ -1333,10 +1730,15 @@ describe('the projection carries exactly what the renderer needs, and no broader
   });
 
   it('carries both shipping-weight values as plain strings, because a weight is not money', async () => {
-    const { rows } = await runFeed(
-      { selection: [makeSelectionRow()] },
-      { skuShippingWeight: '12.750', skuShippingWeightUnitCode: 'fakeunit' },
+    // ★ THIS CASE ONCE PASSED BOTH VALUES AS SETTING OVERRIDES. They are resolved
+    // PER SKU now, so they arrive through the resolver double instead - the
+    // assertion about their carrier TYPE is unchanged and is what the case is for.
+    const shippingWeights = new RecordingShippingWeightResolver(
+      new Map([
+        ['fake-sku-id-1', { skuShippingWeight: '12.750', skuShippingWeightUnitCode: 'fakeunit' }],
+      ]),
     );
+    const { rows } = await runFeed({ selection: [makeSelectionRow()] }, {}, { shippingWeights });
     const row = rowAt(rows, 0);
 
     // [integrationServices/google/views/feed/product.cfm:L58] emits the two halves
@@ -1350,15 +1752,26 @@ describe('the projection carries exactly what the renderer needs, and no broader
   });
 
   it('takes the weight values from the resolved contract rather than from a column', async () => {
+    const shippingWeights = new RecordingShippingWeightResolver(
+      new Map([
+        ['fake-sku-id-1', { skuShippingWeight: '99.001', skuShippingWeightUnitCode: 'fakeother' }],
+      ]),
+    );
     const { recorder, rows } = await runFeed(
       { selection: [makeSelectionRow()] },
-      { skuShippingWeight: '99.001', skuShippingWeightUnitCode: 'fakeother' },
+      {},
+      { shippingWeights },
     );
 
-    // The settings port this migration ships is locked to a key union that excludes
-    // both weight keys, and the port set is closed, so the values arrive as
-    // projection data instead. Neither appears in a statement, which confirms they
-    // are presentation data and not selection input.
+    // ★ THIS CASE ONCE READ "THE SETTINGS PORT ... IS LOCKED TO A KEY UNION THAT
+    // EXCLUDES BOTH WEIGHT KEYS, AND THE PORT SET IS CLOSED, SO THE VALUES ARRIVE AS
+    // PROJECTION DATA INSTEAD." Both halves of that were true and the conclusion it
+    // drew - resolve them once, outside, and hand them in as constructor data - was
+    // not, because the legacy resolves them INSIDE its row loop and a SKU-level
+    // setting overrides its product's [model/service/SettingService.cfc:L517-L519].
+    // One value per feed cannot express that. They arrive per SKU now, through a
+    // dedicated resolver; the point this case makes is unchanged, and is the one
+    // below: whatever the carrier, neither value is ever selection input.
     expect(rowAt(rows, 0).skuShippingWeight).toBe('99.001');
     expect(allStatements(recorder)).not.toContain('99.001');
     expect(allStatements(recorder)).not.toContain('skuShippingWeight');
@@ -1461,8 +1874,12 @@ describe('an absent value stays absent, and is never defaulted to zero or to emp
           productUrlTitle: null,
           productTypeID: null,
           productPrice: null,
+          // Both brand columns, because they are two columns and only the joined one
+          // reaches `row.brandID`. Nulling the raw foreign key alone would leave the
+          // join resolved and the member populated.
+          brandID: null,
+          joinedBrandID: null,
           brandName: null,
-          productTypeDescription: null,
         }),
       ],
     });
@@ -1474,11 +1891,22 @@ describe('an absent value stays absent, and is never defaulted to zero or to emp
     expect(row.productTypeDescription).toBeUndefined();
     expect(row.productTypeSimpleRepresentation).toBeUndefined();
     expect(row.productUrlPath).toBeUndefined();
-    expect(row.imageLinkPath).toBeUndefined();
     expect(row.productPrice).toBeUndefined();
     expect(row.skuPrice).toBeUndefined();
+    expect(row.brandID).toBeUndefined();
     expect(row.brandName).toBeUndefined();
     expect(row.productCode).toBeUndefined();
+
+    // ★ THIS CASE ONCE ASSERTED `imageLinkPath` WAS UNDEFINED TOO, AND LISTED
+    // `productTypeDescription` AMONG THE NULLED SELECTION COLUMNS. Neither survives:
+    // the description is no longer a selection column at all - it travels with the
+    // ancestry statement, which this case leaves unanswered, so it is absent for that
+    // reason instead - and an absent image is NOT absence. The legacy image resolver's
+    // final branch is unconditional [model/service/ImageService.cfc:L88], so a SKU
+    // with no image file still rendered a path; leaving this undefined made the
+    // renderer emit a bare scheme and host. The fallback belongs here, and it is
+    // asserted rather than merely allowed.
+    expect(row.imageLinkPath).toBe('/fake-missing-image.jpg');
   });
 
   it('never substitutes zero for an absent price', async () => {
@@ -1498,8 +1926,13 @@ describe('an absent value stays absent, and is never defaulted to zero or to emp
   });
 
   it('never substitutes an empty string for an absent text column', async () => {
+    // ★ THE NULLED `productTypeDescription` OVERRIDE IS GONE FROM THIS CALL. It is
+    // not a selection column any more; the ancestry statement carries it, and this
+    // case answers that statement with nothing, so the value is absent for that
+    // reason. What is asserted about it is unchanged.
     const { rows } = await runFeed({
-      selection: [makeSelectionRow({ productDescription: null, productTypeDescription: null })],
+      selection: [makeSelectionRow({ productDescription: null })],
+      ancestry: [makeAncestryRow({ productTypeDescription: null })],
     });
     const row = rowAt(rows, 0);
 
@@ -1523,43 +1956,297 @@ describe('an absent value stays absent, and is never defaulted to zero or to emp
     expect(row.productUrlPath).toBe('/fake-url-key//');
   });
 
-  it('leaves the sale pair absent on every row, however complete the row is', async () => {
+  it('leaves the expiration absent, and the sale price equal to the price, when no promotion applies', async () => {
     const { rows } = await runFeed({
       selection: [makeSelectionRow(), makeSelectionRow({ skuID: 'fake-sku-id-2' })],
       ancestry: [makeAncestryRow()],
       images: [makeImageRow()],
     });
 
-    // Neither value has a persisted column [model/entity/Sku.cfc:L115, L118], and
-    // the legacy resolves both through the promotion sale-price path, which is
-    // another module's capability. The view emits the price and the effective-date
-    // range together inside one conditional
-    // [integrationServices/google/views/feed/product.cfm:L28-L31], so resolving one
-    // alone could only ever produce a half-formed sale block. Absent together is
-    // the coherent answer.
+    // This case previously asserted BOTH members were absent on every row, and gave
+    // as its reason that "the legacy resolves both through the promotion sale-price
+    // path, which is another module's capability". The premise about the persisted
+    // columns [model/entity/Sku.cfc:L115, L118] is true; the conclusion drawn from it
+    // was not. The subject now resolves the pair through an injected detail source,
+    // so the state under test is the NO-PROMOTION state rather than every state, and
+    // the two members answer it differently:
+    //
+    //   - the sale price falls back to the SKU price, because that is what the legacy
+    //     accessor itself returns [model/entity/Sku.cfc:L546-L551];
+    //   - the expiration stays absent, because the legacy accessor answers with an
+    //     EMPTY STRING [model/entity/Sku.cfc:L560-L565] and there is no interval.
+    //
+    // That asymmetry is exactly what keeps the block coherent: the gate at
+    // [integrationServices/google/views/feed/product.cfm:L28] compares equal, so
+    // neither element is emitted and the half-formed block is impossible.
     for (const row of rows) {
-      expect(row.skuSalePrice).toBeUndefined();
+      expect(moneyOf(row.skuSalePrice, 'SKU sale price').toDecimalString()).toBe('19.99');
+      expect(moneyOf(row.skuPrice, 'SKU price').toDecimalString()).toBe('19.99');
       expect(row.salePriceExpirationDateTime).toBeUndefined();
     }
 
     expect(rows).toHaveLength(2);
   });
 
-  it('declares the sale pair even though it never populates it', async () => {
+  it('declares both sale members on every row, populated or not', async () => {
     const { rows } = await runFeed({ selection: [makeSelectionRow()] });
     const row = rowAt(rows, 0);
 
-    // The members are present and empty rather than missing, so a consumer reads a
-    // documented emptiness instead of finding nothing at all.
+    // The members are present rather than missing whichever way they resolved, so a
+    // consumer reads a documented value or a documented absence instead of finding
+    // nothing at all.
     expect('skuSalePrice' in row).toBe(true);
     expect('salePriceExpirationDateTime' in row).toBe(true);
   });
 
-  it('reads no ambient clock for the absent expiration, and inlines no date', async () => {
+  it('reads no ambient clock for the expiration, and inlines no date', async () => {
     const { recorder, rows } = await runFeed({ selection: [makeSelectionRow()] });
 
+    // With no promotion primed the expiration is absent, and - the point of the case -
+    // the subject did not reach for a clock to decide that. The legacy's own currency
+    // test lives inside the sale-price query, which captures `now()` itself
+    // [model/dao/PromotionDAO.cfc:L306] and compares it against the period boundaries
+    // at L317-L319, so the instant belongs to the resolving statement rather than to
+    // this one. No date literal appears in any statement this subject issues.
     expect(rowAt(rows, 0).salePriceExpirationDateTime).toBeUndefined();
     expect(allStatements(recorder)).not.toMatch(/\d{4}-\d{2}-\d{2}/);
+  });
+});
+
+// ---------------------------------------------------------------------------
+// The sale pair, when a promotion does apply
+//
+// ★★ THIS SECTION ONCE RESOLVED THE PAIR PER PRODUCT, AND THE SUPERSESSION IS
+// RECORDED HERE RATHER THAN ERASED. Seven cases lived below, built on a
+// `SalePriceDetail` source asked once per DISTINCT product - a faithful copy of the
+// legacy granularity, because the legacy memoizes the reduction on the product
+// [model/entity/Product.cfc:L517-L522] and every SKU of that product reads the same
+// struct, its two accessors picking their own key out of it
+// [model/entity/Sku.cfc:L546-L551, L560-L565].
+//
+// The premise that survived is the important one: NEITHER HALF IS A PERSISTED COLUMN
+// ON THE SKU [model/entity/Sku.cfc:L115, L118], and both are still carryable - the
+// price is a CASE over persisted columns [model/dao/PromotionDAO.cfc:L338-L342] and
+// the expiration is `SwPromotionPeriod.endDateTime`, projected under exactly this
+// name at L344 and carried through both query-of-queries stages at L552 and L579.
+//
+// What changed is the number of questions. The memo made per-product resolution look
+// free; it is not, once the caller is a feed over the WHOLE catalog rather than one
+// product page - it is one reduction per product, which is the N+1 the lazy traversal
+// hid. The port therefore asks ONCE, without naming a product, and keys the winners
+// per SKU. That is strictly fewer round trips for the same answers, and it cannot
+// disagree with itself the way N separate resolutions can: the resolving statement
+// captures `now()` itself [model/dao/PromotionDAO.cfc:L306] and compares it against
+// the period boundaries at L317-L319, so two resolutions straddling a boundary
+// answered differently.
+//
+// The cases proving the whole-catalog call, the per-SKU keying, the rounding gate and
+// the duplicate-key rule live in the sale-price describe further down, against the
+// collaborator that survived. The two assertions the earlier block made that its
+// successor did not make are ported HERE, in the successor's shape, because each pins
+// a real state rather than a mechanism.
+// ---------------------------------------------------------------------------
+
+describe('the sale pair carries states the whole-catalog resolution must still answer', () => {
+  it('populates the price and leaves the expiration absent for a sale with no end date', async () => {
+    const salePrices = new RecordingSalePriceSource([
+      makeSalePriceRewardRow({
+        skuID: 'fake-sku-id-1',
+        salePrice: Money.fromDecimalString('12.34'),
+      }),
+    ]);
+    const { rows } = await runFeed(
+      { selection: [makeSelectionRow({ skuPrice: '19.99' })] },
+      {},
+      { salePrices },
+    );
+    const row = rowAt(rows, 0);
+
+    // ⚠ A LIVE SALE WITH NO END DATE IS A REAL STATE, NOT A DEFENSIVE BRANCH. A
+    // promotion period whose `endDateTime` is null still qualifies as current
+    // [model/dao/PromotionDAO.cfc:L319] and projects a null expiration at L344, so the
+    // price is populated and the interval is not. Substituting an end - or refusing the
+    // sale for want of one - would both be inventions.
+    expect(moneyOf(row.skuSalePrice, 'SKU sale price').toDecimalString()).toBe('12.34');
+    expect(row.salePriceExpirationDateTime).toBeUndefined();
+
+    // And the sale price wins over the column while the column itself survives
+    // untouched, which is the whole point of the accessor: `getSalePrice()` answers the
+    // reduction's value when there is one and falls through to `getPrice()` when there
+    // is not.
+    expect(moneyOf(row.skuPrice, 'SKU price').toDecimalString()).toBe('19.99');
+  });
+
+  it("keys the winners by SKU, so one product's SKUs can differ", async () => {
+    const salePrices = new RecordingSalePriceSource([
+      // Only the FIRST SKU is on sale, which is the ordinary case for a product whose
+      // promotion targets one variant.
+      makeSalePriceRewardRow({
+        skuID: 'fake-sku-id-1',
+        salePrice: Money.fromDecimalString('9.99'),
+      }),
+    ]);
+    const { rows } = await runFeed(
+      {
+        selection: [
+          makeSelectionRow({ skuID: 'fake-sku-id-1', productID: 'fake-shared', skuPrice: '19.99' }),
+          makeSelectionRow({ skuID: 'fake-sku-id-2', productID: 'fake-shared', skuPrice: '29.99' }),
+        ],
+      },
+      {},
+      { salePrices },
+    );
+
+    expect(moneyOf(rowAt(rows, 0).skuSalePrice, 'first sale price').toDecimalString()).toBe('9.99');
+
+    // The unmatched SKU falls through to its own price rather than borrowing its
+    // sibling's discount or losing its value entirely - and it is a SIBLING, so a
+    // resolution keyed on the shared product rather than on the SKU would have handed
+    // it the discount.
+    expect(moneyOf(rowAt(rows, 1).skuSalePrice, 'second sale price').toDecimalString()).toBe(
+      '29.99',
+    );
+  });
+
+  it('issues no statement of its own for the sale pair', async () => {
+    const salePrices = new RecordingSalePriceSource([makeSalePriceRewardRow()]);
+    const { recorder } = await runFeed({ selection: [makeSelectionRow()] }, {}, { salePrices });
+
+    // The resolution is DELEGATED, so this subject still owns exactly three
+    // statements. It reaches no promotion table itself, which is what keeps the
+    // sale-price statement's ownership where it already was.
+    expect(recorder.captured).toHaveLength(3);
+    expect(allStatements(recorder)).not.toMatch(/SwPromotion/i);
+  });
+});
+
+// ---------------------------------------------------------------------------
+// The brand, projected as two independent questions
+//
+// [integrationServices/google/views/feed/product.cfm:L32] guards on
+// `not isNull(local.sku.getProduct().getBrand())` and interpolates
+// `getBrandName()` into the body. An association test and a value read are two
+// questions, and the join that answers the first is LEFT
+// [integrationServices/google/controllers/feed.cfc:L66], so an unmatched row and
+// a matched row with a null name are genuinely different states.
+//
+// ★★ THE CARRIER FOR THE FIRST QUESTION WAS ONCE A BOOLEAN `brandPresent`, AND IT IS
+// THE JOINED KEY NOW. Three cases below read `row.brandPresent` and asserted `true`,
+// `true` and `false`; each is rewritten to read `row.brandID`, which is
+// `SwBrand.brandID` as the LEFT join resolved it. Nothing about the three STATES
+// changed - matched with a name, matched with no name, unmatched - and the reduction
+// to a boolean was the only thing lost, which cost information for no gain.
+//
+// ⚠ AND THE GATE IS THE JOINED KEY, NOT THE FOREIGN KEY. `SwProduct.brandID` is
+// selected too, under its own label, because the setting-lookup path
+// `product.brand.brandID` [model/service/SettingService.cfc:L519] needs the column.
+// A product whose `brandID` names a row that no longer exists has a foreign key and
+// NO BRAND: the legacy conditional tested the resolved association and emitted
+// nothing for it, so the third case below hands over exactly that row - a populated
+// `brandID` with an unmatched join - and asserts the element's carrier is absent.
+// ---------------------------------------------------------------------------
+
+describe('the brand association and the brand name are carried separately', () => {
+  it('reports the association present when the left join matched', async () => {
+    const { rows } = await runFeed({
+      selection: [
+        makeSelectionRow({
+          brandID: 'fake-brand-id-1',
+          joinedBrandID: 'fake-brand-id-1',
+          brandName: 'Fake Brand Name',
+        }),
+      ],
+    });
+    const row = rowAt(rows, 0);
+
+    expect(row.brandID).toBe('fake-brand-id-1');
+    expect(row.brandName).toBe('Fake Brand Name');
+  });
+
+  it('reports the association present even when the brand records no name', async () => {
+    const { rows } = await runFeed({
+      selection: [
+        makeSelectionRow({
+          brandID: 'fake-brand-id-1',
+          joinedBrandID: 'fake-brand-id-1',
+          brandName: null,
+        }),
+      ],
+    });
+    const row = rowAt(rows, 0);
+
+    // THE STATE THE FINDING WAS ABOUT. A brand row exists, so the legacy conditional
+    // was true and the element was emitted; its body was empty because CFML
+    // stringifies a null name to nothing. Reading the name alone cannot see this,
+    // which is why the key is carried separately.
+    expect(row.brandID).toBe('fake-brand-id-1');
+    expect(row.brandName).toBeUndefined();
+  });
+
+  it('reports the association absent when the join did not match, DESPITE a foreign key', async () => {
+    const { rows } = await runFeed({
+      selection: [
+        makeSelectionRow({
+          // The product still names a brand...
+          brandID: 'fake-brand-id-1',
+          // ...and no `SwBrand` row answers to it.
+          joinedBrandID: null,
+          brandName: null,
+        }),
+      ],
+    });
+    const row = rowAt(rows, 0);
+
+    // ⚠ THIS IS THE CASE THAT DISTINGUISHES THE TWO COLUMNS, AND IT IS THE REASON THE
+    // GATE IS NOT THE FOREIGN KEY. `not isNull(...getBrand())` asks the ORM to RESOLVE
+    // the association, and a dangling key resolves to nothing - so the legacy emitted
+    // no `<g:brand>` here. Gating on `SwProduct.brandID` would have emitted an empty
+    // one, filled from a name the join never supplied.
+    expect(row.brandID).toBeUndefined();
+    expect(row.brandName).toBeUndefined();
+
+    // And the row still appears: a product with no resolvable brand is in the feed,
+    // simply without that element.
+    expect(rows).toHaveLength(1);
+  });
+
+  it('selects the brand id from the join the live path already declared', async () => {
+    const { recorder } = await runFeed({ selection: [makeSelectionRow()] });
+    const { sql } = statementOfKind(recorder, 'selection');
+
+    // The projection widened; the FROM clause did not. The brand join was already
+    // there [integrationServices/google/controllers/feed.cfc:L66] and is still the
+    // only place the brand table is reached, so no row can be lost by reading one
+    // more of its columns.
+    expect(sql).toContain('SwBrand.brandID');
+    expect(sql).toContain('SwBrand.brandName');
+    expect(countMatches(sql, /SwBrand/g)).toBe(4);
+
+    // Both brand keys are projected, under DIFFERENT labels, which is what lets one
+    // gate the element and the other key the setting lookup.
+    expect(sql).toContain('SwProduct.brandID                    AS brandID');
+    expect(sql).toContain('SwBrand.brandID                      AS joinedBrandID');
+  });
+
+  it('carries the brand id as a key the renderer never emits', async () => {
+    const { rows } = await runFeed({ selection: [makeSelectionRow()] });
+    const row = rowAt(rows, 0);
+
+    // ★ THIS CASE ONCE ASSERTED `'brandID' in row` WAS FALSE, under the title 'never
+    // emits the brand id, which exists only to answer the gate', on the grounds that
+    // "the column is reduced to a boolean at the projection boundary rather than
+    // carried onward as an identifier a consumer might be tempted to use."
+    //
+    // THE PREMISE ABOUT THE RENDERER IS STILL EXACTLY RIGHT and the reduction is what
+    // went. There is no brand-id element in the view
+    // [integrationServices/google/views/feed/product.cfm], so nothing downstream may
+    // interpolate this - but withholding the value to enforce that is the projection
+    // policing its consumer, and the renderer's own suite asserts the absence of the
+    // element directly. What is asserted here is that the member IS the key, so a
+    // reader can tell the gate from a boolean at a glance.
+    expect(row.brandID).toBe('fake-brand-id-1');
+    expect(PROJECTION_MEMBERS).toContain('brandID');
+    expect(typeof row.brandID).toBe('string');
   });
 });
 
@@ -1609,15 +2296,40 @@ describe('the derived paths reproduce the legacy interpolations exactly', () => 
     );
   });
 
-  it('carries the stored image path and performs no missing-image substitution', async () => {
-    const { rows } = await runFeed({ selection: [makeSelectionRow({ skuImageFile: null })] });
+  it('falls back to the resolved missing-image path when the SKU stores no image file', async () => {
+    const { rows } = await runFeed(
+      { selection: [makeSelectionRow({ skuImageFile: null })] },
+      { baseImageURL: '/fake-assets', missingImagePath: '/fake-assets/fake-missing.jpg' },
+    );
 
-    // The legacy view calls the resizing accessor, which additionally reads a
-    // missing-image setting and delegates to an image service that is out of scope
-    // here. Inventing a resizing implementation is forbidden and the settings
-    // contract does not admit that key, so what is carried is the STORED path - and
-    // when there is none, there is no sanctioned fallback to name instead.
-    expect(rowAt(rows, 0).imageLinkPath).toBeUndefined();
+    // ★ THIS CASE ONCE ASSERTED `imageLinkPath` WAS UNDEFINED, UNDER THE TITLE
+    // "PERFORMS NO MISSING-IMAGE SUBSTITUTION", AND REASONED THAT "THERE IS NO
+    // SANCTIONED FALLBACK TO NAME INSTEAD". Two of its three premises hold: resizing
+    // is genuinely out of scope, and the settings port's key union genuinely excludes
+    // the missing-image key. The conclusion does not follow from them. The legacy
+    // resolver's chain ends in an UNCONDITIONAL else
+    // [model/service/ImageService.cfc:L82-L88], so every SKU rendered SOME path and
+    // none rendered nothing; the accessor the view calls even names the setting to
+    // use [model/entity/Sku.cfc:L199]. Carrying nothing made the renderer emit a bare
+    // scheme and host as the image address. The effective fallback is resolved once,
+    // outside, and handed in with the other setting values - which is how the port's
+    // key union stays closed and the behaviour is still reproduced.
+    expect(rowAt(rows, 0).imageLinkPath).toBe('/fake-assets/fake-missing.jpg');
+  });
+
+  it('does not route the fallback through the stored-path shape, because it is already a path', async () => {
+    const { rows } = await runFeed(
+      { selection: [makeSelectionRow({ skuImageFile: null })] },
+      { baseImageURL: '/fake-assets', missingImagePath: '/fake-missing.jpg' },
+    );
+
+    // The legacy fallback is a complete path in its own right
+    // [model/service/ImageService.cfc:L83-L88] and never has the product-default
+    // segments interpolated around it, so neither the base prefix nor the literal
+    // middle segment may appear.
+    expect(rowAt(rows, 0).imageLinkPath).toBe('/fake-missing.jpg');
+    expect(rowAt(rows, 0).imageLinkPath).not.toContain('/product/default/');
+    expect(rowAt(rows, 0).imageLinkPath).not.toContain('/fake-assets/fake-missing');
   });
 
   it('builds one additional path per image row, from that row own directory', async () => {
@@ -1641,7 +2353,7 @@ describe('the derived paths reproduce the legacy interpolations exactly', () => 
     ]);
   });
 
-  it('contributes nothing for an image row missing a path component', async () => {
+  it('contributes one fallback entry per image row missing a path component, dropping none', async () => {
     const { rows } = await runFeed(
       {
         selection: [makeSelectionRow()],
@@ -1651,24 +2363,46 @@ describe('the derived paths reproduce the legacy interpolations exactly', () => 
           makeImageRow({ imageDirectory: 'fake-dir', imageFile: 'fake-usable.jpg' }),
         ],
       },
-      { baseImageURL: '/fake-assets' },
+      { baseImageURL: '/fake-assets', missingImagePath: '/fake-missing.jpg' },
     );
     const { additionalImageLinkPaths } = rowAt(rows, 0);
 
-    expect(additionalImageLinkPaths).toHaveLength(1);
-    expect(imagePathAt(additionalImageLinkPaths, 0)).toBe('/fake-assets/fake-dir/fake-usable.jpg');
+    // ★ THIS CASE ONCE EXPECTED ONE PATH FROM THREE ROWS, TITLED "CONTRIBUTES
+    // NOTHING FOR AN IMAGE ROW MISSING A PATH COMPONENT". Skipping the row was the
+    // wrong reproduction: the legacy loop iterates the product's images and calls the
+    // resizing accessor once per image
+    // [integrationServices/google/views/feed/product.cfm:L24], and that accessor's
+    // fallback chain ends in an unconditional else
+    // [model/service/ImageService.cfc:L88], so a row with an unusable component still
+    // produced an element - the FALLBACK path, not nothing. One image row means one
+    // additional-image element, always, and the ORDER is the selection's.
+    expect(additionalImageLinkPaths).toStrictEqual([
+      '/fake-missing.jpg',
+      '/fake-missing.jpg',
+      '/fake-assets/fake-dir/fake-usable.jpg',
+    ]);
   });
 
-  it('answers an empty array for a product with no usable image, which is an ordinary state', async () => {
-    const { rows } = await runFeed({
-      selection: [makeSelectionRow()],
-      images: [makeImageRow({ imageDirectory: null, imageFile: null })],
-    });
+  it('answers an empty array for a product with no image row at all', async () => {
+    const withNoRows = await runFeed({ selection: [makeSelectionRow()], images: [] });
+    const withOneUnusableRow = await runFeed(
+      {
+        selection: [makeSelectionRow()],
+        images: [makeImageRow({ imageDirectory: null, imageFile: null })],
+      },
+      { missingImagePath: '/fake-missing.jpg' },
+    );
 
-    // A product with no usable image and a product with no image row at all are
-    // indistinguishable downstream, which matches a legacy loop that simply had no
-    // rows to emit.
-    expect(rowAt(rows, 0).additionalImageLinkPaths).toStrictEqual([]);
+    // ★ THIS CASE ONCE ASSERTED THAT A PRODUCT WITH ONE UNUSABLE IMAGE ROW AND A
+    // PRODUCT WITH NO IMAGE ROW AT ALL WERE "INDISTINGUISHABLE DOWNSTREAM, WHICH
+    // MATCHES A LEGACY LOOP THAT SIMPLY HAD NO ROWS TO EMIT." The second clause is
+    // the error: the legacy loop had a row and therefore emitted an element. The two
+    // states are distinguishable and the distinction is asserted, which is the honest
+    // reading of a loop over rows rather than over usable rows.
+    expect(rowAt(withNoRows.rows, 0).additionalImageLinkPaths).toStrictEqual([]);
+    expect(rowAt(withOneUnusableRow.rows, 0).additionalImageLinkPaths).toStrictEqual([
+      '/fake-missing.jpg',
+    ]);
   });
 
   it('shares one image array between every SKU of the same product', async () => {
@@ -1790,7 +2524,7 @@ describe('nothing is held between calls, between instances or at module scope', 
       ancestry: [makeAncestryRow()],
       images: [makeImageRow()],
     });
-    const repository = new GoogleFeedRepository(recorder, makeSettingValues());
+    const repository = makeRepository(recorder);
 
     const first = await repository.fetchProductFeedRows();
     const second = await repository.fetchProductFeedRows();
@@ -1829,7 +2563,7 @@ describe('nothing is held between calls, between instances or at module scope', 
 
   it('builds every returned row fresh, so no row is shared between calls', async () => {
     const recorder = new RecordingExecutor({ selection: [makeSelectionRow()] });
-    const repository = new GoogleFeedRepository(recorder, makeSettingValues());
+    const repository = makeRepository(recorder);
 
     const first = await repository.fetchProductFeedRows();
     const second = await repository.fetchProductFeedRows();
@@ -1845,12 +2579,489 @@ describe('nothing is held between calls, between instances or at module scope', 
     expect(rows).toStrictEqual([]);
   });
 
-  it('holds only the two collaborators it was constructed with', () => {
-    const repository = new GoogleFeedRepository(new RecordingExecutor(), makeSettingValues());
+  it('holds only the five collaborators it was constructed with', () => {
+    const repository = makeRepository(new RecordingExecutor());
 
     // No configuration field, no cache field, no connection field and no clock. The
     // whole of what the subject knows arrived through its constructor, which is what
     // makes it assertable without an environment of any kind.
-    expect(Object.getOwnPropertyNames(repository)).toHaveLength(2);
+    //
+    // ★ THIS COUNT WAS TWO AND IS FIVE. The three additions are collaborators, not
+    // state: a per-SKU shipping-weight resolver, a sale-price source and a value
+    // rounder. The property this case protects is unchanged - nothing is held that did
+    // not arrive through the constructor.
+    expect(Object.getOwnPropertyNames(repository)).toHaveLength(5);
+  });
+});
+
+// ---------------------------------------------------------------------------
+// The two product-type values, and where they now come from
+//
+// NET-NEW COVERAGE, declared as such per AAP 0.6.6. No legacy test touches the
+// Google subsystem at all: a case-insensitive search of meta/ for `google`
+// matches zero lines, so nothing below extends a legacy antecedent.
+//
+// The live entrypoint declares its joins one call at a time and makes EXACTLY
+// THREE [integrationServices/google/controllers/feed.cfc:L64-L66]. The view then
+// reads two product-type values by lazy traversal - the description as the
+// second description candidate [integrationServices/google/views/feed/product.cfm:L19]
+// and the breadcrumb [L21] - and a lazy traversal after the selection is not a
+// fourth join. Both values therefore travel on the recursive ancestry statement,
+// which already walks `SwProductType`.
+// ---------------------------------------------------------------------------
+
+describe('the selection keeps exactly three joins, and the product type is read separately', () => {
+  it('names SwProductType in no clause of the selection except the projected foreign key', async () => {
+    const { recorder } = await runFeed({ selection: [makeSelectionRow()] });
+    const { sql } = statementOfKind(recorder, 'selection');
+
+    expect(sql).not.toContain('SwProductType');
+    expect(sql).not.toContain('productTypeDescription');
+    expect(sql).toMatch(/SwProduct\.productTypeID\s+AS productTypeID/);
+  });
+
+  it('selects the description on the ancestry statement, from the anchor member', async () => {
+    const { recorder } = await runFeed({
+      selection: [makeSelectionRow()],
+      ancestry: [makeAncestryRow()],
+    });
+    const { sql } = statementOfKind(recorder, 'ancestry');
+
+    // The anchor is the requested type's own row, so its description is the requested
+    // type's own description and its provenance is visible in the statement.
+    expect(sql).toContain('leaf.productTypeDescription AS productTypeDescription');
+    expect(sql).toContain('FROM SwProductType AS leaf');
+  });
+
+  it("carries the anchor's description up the chain unchanged, never an ancestor's", async () => {
+    const { recorder } = await runFeed({
+      selection: [makeSelectionRow()],
+      ancestry: [makeAncestryRow()],
+    });
+    const { sql } = statementOfKind(recorder, 'ancestry');
+
+    // The recursive member takes the name from the ANCESTOR and the description from
+    // the DESCENDANT. Taking both from the ancestor would silently answer with the root
+    // type's description for every leaf.
+    expect(sql).toContain('ancestor.productTypeName');
+    expect(sql).toContain('descendant.productTypeDescription');
+    expect(sql).not.toContain('ancestor.productTypeDescription');
+  });
+
+  it('reads the description from the requested type own row and not from an ancestor row', async () => {
+    const { rows } = await runFeed({
+      selection: [makeSelectionRow()],
+      ancestry: [
+        makeAncestryRow({
+          ancestorDistance: 1,
+          productTypeName: 'Fake Root Type',
+          productTypeDescription: 'An ancestor row that repeats nothing useful.',
+        }),
+        makeAncestryRow({
+          ancestorDistance: 0,
+          productTypeName: 'Fake Leaf Type',
+          productTypeDescription: 'The leaf own description.',
+        }),
+      ],
+    });
+
+    // The rows come back flat and unordered, and only the distance-zero row is the
+    // requested type. Reading an arbitrary member of the group would be correct only
+    // while the recursion happens to repeat the value.
+    expect(rowAt(rows, 0).productTypeDescription).toBe('The leaf own description.');
+    expect(rowAt(rows, 0).productTypeSimpleRepresentation).toBe(
+      'Fake Root Type &raquo; Fake Leaf Type',
+    );
+  });
+});
+
+// ---------------------------------------------------------------------------
+// The per-SKU shipping weight
+//
+// NET-NEW COVERAGE, declared as such per AAP 0.6.6.
+//
+// [integrationServices/google/views/feed/product.cfm:L58] calls `setting()` on the
+// SKU, INSIDE the row loop, for both halves of the shipping weight. The lookup
+// order for a SKU begins with a setting bound to the SKU ITSELF and then walks
+// product, product-type path and brand [model/service/SettingService.cfc:L102-L106,
+// L517-L519], so two SKUs of one product can legitimately resolve to different
+// weights. One value per feed cannot express that, which is why the pair is
+// resolved per SKU - batched, so the legacy's own per-row lookup is not reproduced
+// as a per-row round trip.
+// ---------------------------------------------------------------------------
+
+/** The resolver's single recorded subject list, narrowed rather than asserted. */
+function soleSubjectList(
+  resolver: RecordingShippingWeightResolver,
+): readonly SkuFeedSettingSubject[] {
+  const first = resolver.calls[0];
+
+  if (first === undefined) {
+    throw new Error('the subject never consulted the shipping-weight resolver');
+  }
+
+  if (resolver.calls.length > 1) {
+    throw new Error(
+      `the subject consulted the shipping-weight resolver ${String(resolver.calls.length)} ` +
+        'times where exactly one batched call was expected',
+    );
+  }
+
+  return first;
+}
+
+/** One recorded subject at an ordinal, narrowed the same way. */
+function subjectAt(
+  subjects: readonly SkuFeedSettingSubject[],
+  index: number,
+): SkuFeedSettingSubject {
+  const subject = subjects[index];
+
+  if (subject === undefined) {
+    throw new Error(
+      `the resolver was handed ${String(subjects.length)} subjects, so there is none at ` +
+        `position ${String(index)}`,
+    );
+  }
+
+  return subject;
+}
+
+describe('the shipping weight is resolved per SKU, and asked for once', () => {
+  it('gives two SKUs of one product the weights the resolver answered for each', async () => {
+    const shippingWeights = new RecordingShippingWeightResolver(
+      new Map([
+        ['fake-sku-id-1', { skuShippingWeight: '0.250', skuShippingWeightUnitCode: 'fakeoz' }],
+        ['fake-sku-id-2', { skuShippingWeight: '44.000', skuShippingWeightUnitCode: 'fakekg' }],
+      ]),
+    );
+    const { rows } = await runFeed(
+      {
+        selection: [
+          makeSelectionRow({ skuID: 'fake-sku-id-1', productID: 'fake-shared-product' }),
+          makeSelectionRow({ skuID: 'fake-sku-id-2', productID: 'fake-shared-product' }),
+        ],
+      },
+      {},
+      { shippingWeights },
+    );
+
+    // This is the whole finding: the two SKUs share a product, and one value per feed
+    // would have copied one weight onto both.
+    expect(rowAt(rows, 0).skuShippingWeight).toBe('0.250');
+    expect(rowAt(rows, 0).skuShippingWeightUnitCode).toBe('fakeoz');
+    expect(rowAt(rows, 1).skuShippingWeight).toBe('44.000');
+    expect(rowAt(rows, 1).skuShippingWeightUnitCode).toBe('fakekg');
+  });
+
+  it('asks the resolver exactly once for the whole selection, never once per row', async () => {
+    const shippingWeights = new RecordingShippingWeightResolver();
+    await runFeed(
+      {
+        selection: [
+          makeSelectionRow({ skuID: 'fake-sku-id-1' }),
+          makeSelectionRow({ skuID: 'fake-sku-id-2' }),
+          makeSelectionRow({ skuID: 'fake-sku-id-3' }),
+        ],
+      },
+      {},
+      { shippingWeights },
+    );
+
+    // The legacy called `setting()` inside its row loop. Reproducing the RESULT is
+    // required; reproducing the N+1 is not, and the repository boundary is where that
+    // choice is made once.
+    expect(shippingWeights.calls).toHaveLength(1);
+    expect(soleSubjectList(shippingWeights).map((subject) => subject.skuID)).toStrictEqual([
+      'fake-sku-id-1',
+      'fake-sku-id-2',
+      'fake-sku-id-3',
+    ]);
+  });
+
+  it('hands over the product, product type and brand the lookup order walks', async () => {
+    const shippingWeights = new RecordingShippingWeightResolver();
+    await runFeed({ selection: [makeSelectionRow()] }, {}, { shippingWeights });
+
+    // [model/service/SettingService.cfc:L104] names three relationship paths for a SKU
+    // subject: the product, the product-type path combined with the brand, and the
+    // product-type path alone. Every identifier those paths start from is handed over,
+    // so expanding the path is the resolver's step and not a second selection here.
+    expect(subjectAt(soleSubjectList(shippingWeights), 0)).toStrictEqual({
+      skuID: 'fake-sku-id-1',
+      productID: 'fake-product-id-1',
+      productTypeID: 'fake-product-type-id-1',
+      brandID: 'fake-brand-id-1',
+    });
+  });
+
+  it('hands over an absent product type and an absent brand as absent', async () => {
+    const shippingWeights = new RecordingShippingWeightResolver();
+    await runFeed(
+      { selection: [makeSelectionRow({ productTypeID: null, brandID: null })] },
+      {},
+      { shippingWeights },
+    );
+
+    // Both columns are genuinely nullable - the brand is joined outer
+    // [integrationServices/google/controllers/feed.cfc:L66] - and neither is defaulted
+    // into a placeholder identifier that would resolve the wrong setting.
+    const subject = subjectAt(soleSubjectList(shippingWeights), 0);
+
+    expect(subject.productTypeID).toBeUndefined();
+    expect(subject.brandID).toBeUndefined();
+    expect(subject.skuID).toBe('fake-sku-id-1');
+  });
+
+  it('raises rather than substituting a weight when the resolver omits a SKU', async () => {
+    const shippingWeights = new RecordingShippingWeightResolver(
+      new Map([['fake-sku-id-2', undefined]]),
+    );
+
+    // `setting()` could not fail to answer: the declared default closed the lookup
+    // [model/service/SettingService.cfc:L232-L233]. A resolver that omits a SKU is
+    // broken, and publishing a weight the merchant never configured is worse than
+    // failing.
+    await expect(
+      runFeed(
+        {
+          selection: [
+            makeSelectionRow({ skuID: 'fake-sku-id-1' }),
+            makeSelectionRow({ skuID: 'fake-sku-id-2' }),
+          ],
+        },
+        {},
+        { shippingWeights },
+      ),
+    ).rejects.toThrow(/the first unanswered identifier is "fake-sku-id-2"/);
+  });
+
+  it('consults neither per-SKU collaborator when nothing qualifies', async () => {
+    const shippingWeights = new RecordingShippingWeightResolver();
+    const salePrices = new RecordingSalePriceSource([makeSalePriceRewardRow()]);
+    const { rows } = await runFeed({ selection: [] }, {}, { shippingWeights, salePrices });
+
+    // An empty feed is an ordinary state, and it costs no collaborator call at all.
+    expect(rows).toStrictEqual([]);
+    expect(shippingWeights.calls).toStrictEqual([]);
+    expect(salePrices.calls).toStrictEqual([]);
+  });
+});
+
+// ---------------------------------------------------------------------------
+// The sale price
+//
+// NET-NEW COVERAGE, declared as such per AAP 0.6.6.
+//
+// [integrationServices/google/views/feed/product.cfm:L28-L31] compares the SKU
+// price against its sale price and, when the sale price is lower, emits both the
+// sale price and an effective-date range whose far end is the expiration. Both
+// values come from a per-product memo the view reaches lazily
+// [model/entity/Sku.cfc:L539-L551, L560-L565; model/entity/Product.cfc:L517-L522],
+// and the reduction behind that memo is eight lines of service code
+// [model/service/PromotionService.cfc:L1022-L1030]. Those eight lines are what is
+// reproduced here, at the seam, through two narrow collaborators.
+// ---------------------------------------------------------------------------
+
+describe('the sale price is resolved for the whole catalog and keyed per SKU', () => {
+  it('carries the winning sale price and its expiration onto the row', async () => {
+    const expiration = new Date('2024-12-31T23:59:59.000Z');
+    const salePrices = new RecordingSalePriceSource([
+      makeSalePriceRewardRow({
+        skuID: 'fake-sku-id-1',
+        salePrice: Money.fromDecimalString('7.50'),
+        salePriceExpirationDateTime: expiration,
+      }),
+    ]);
+    const { rows } = await runFeed({ selection: [makeSelectionRow()] }, {}, { salePrices });
+    const row = rowAt(rows, 0);
+
+    expect(row.skuSalePrice).toBeInstanceOf(Money);
+    expect(moneyOf(row.skuSalePrice, 'sale price').toFixed2()).toBe('7.50');
+    expect(row.salePriceExpirationDateTime).toBe(expiration);
+  });
+
+  it('asks for the whole catalog, naming no product identifier', async () => {
+    const salePrices = new RecordingSalePriceSource();
+    await runFeed({ selection: [makeSelectionRow()] }, {}, { salePrices });
+
+    // The port's `productID` is optional and its PRESENCE is what each union branch
+    // tests, so omitting it genuinely means every product. One statement answers a
+    // whole-catalog feed; asking per product would be one statement per row.
+    expect(salePrices.calls).toStrictEqual([undefined]);
+  });
+
+  it('falls the price back to the SKU price and leaves the expiration absent when no reward wins', async () => {
+    const { rows } = await runFeed({ selection: [makeSelectionRow({ skuPrice: '19.99' })] });
+    const row = rowAt(rows, 0);
+
+    // ★ THIS CASE ONCE ASSERTED BOTH MEMBERS WERE ABSENT, titled 'leaves both sale
+    // members absent for a SKU no reward wins', reasoning that "absent means 'no sale'
+    // and never zero: a zero sale price would advertise a free product."
+    //
+    // THE ZERO HALF IS RIGHT AND STILL ASSERTED. The absence half is not: the accessor
+    // the view calls does not answer with an absence. `Sku.getSalePrice()` ends in
+    // `return getPrice()` [model/entity/Sku.cfc:L546-L551], so a SKU with no sale
+    // reports its own price - and that is what makes the view's gate
+    // `getPrice() gt getSalePrice()` [integrationServices/google/views/feed/product.cfm:L28]
+    // compare EQUAL and emit nothing. Projecting `undefined` would have made the
+    // renderer's suppression rest on a presence test the source never performed.
+    //
+    // The EXPIRATION genuinely has no fallback - it answers with an empty string
+    // [model/entity/Sku.cfc:L560-L565], which is no instant at all - so the asymmetry
+    // below is the source's own.
+    expect(moneyOf(row.skuSalePrice, 'SKU sale price').toDecimalString()).toBe('19.99');
+    expect(row.salePriceExpirationDateTime).toBeUndefined();
+
+    // Never zero, in either direction: a NULL price column carries no sale price
+    // either, rather than a free one.
+    expect(row.skuSalePrice).not.toBe(Money.zero);
+
+    const withNullPrice = await runFeed({ selection: [makeSelectionRow({ skuPrice: null })] });
+
+    expect(rowAt(withNullPrice.rows, 0).skuSalePrice).toBeUndefined();
+  });
+
+  it('rounds the sale price when the winning reward names a rounding rule', async () => {
+    const rounder = new RecordingValueRounder(Money.fromDecimalString('9.99'));
+    const salePrices = new RecordingSalePriceSource([
+      makeSalePriceRewardRow({
+        salePrice: Money.fromDecimalString('10.37'),
+        roundingRuleID: 'fake-rounding-rule-id-1',
+      }),
+    ]);
+    const { rows } = await runFeed(
+      { selection: [makeSelectionRow()] },
+      {},
+      { salePrices, rounder },
+    );
+
+    expect(rounder.calls).toStrictEqual([
+      { value: '10.37', roundingRuleID: 'fake-rounding-rule-id-1' },
+    ]);
+    expect(moneyOf(rowAt(rows, 0).skuSalePrice, 'sale price').toFixed2()).toBe('9.99');
+  });
+
+  it('applies no rounding when the reward names no rule at all', async () => {
+    const rounder = new RecordingValueRounder();
+    const salePrices = new RecordingSalePriceSource([
+      makeSalePriceRewardRow({ salePrice: Money.fromDecimalString('10.37') }),
+    ]);
+    const { rows } = await runFeed(
+      { selection: [makeSelectionRow()] },
+      {},
+      { salePrices, rounder },
+    );
+
+    expect(rounder.calls).toStrictEqual([]);
+    expect(moneyOf(rowAt(rows, 0).skuSalePrice, 'sale price').toFixed2()).toBe('10.37');
+  });
+
+  it('applies no rounding when the reward names an empty rule identifier', async () => {
+    const rounder = new RecordingValueRounder();
+    const salePrices = new RecordingSalePriceSource([
+      makeSalePriceRewardRow({ salePrice: Money.fromDecimalString('10.37'), roundingRuleID: '' }),
+    ]);
+    const { rows } = await runFeed(
+      { selection: [makeSelectionRow()] },
+      {},
+      { salePrices, rounder },
+    );
+
+    // The legacy gate is `roundingRuleID != ""`
+    // [model/service/PromotionService.cfc:L1025] - an emptiness test, because a query
+    // renders a null column that way. An absent identifier and an empty one are
+    // therefore both "no rounding", and sending `''` to a rule lookup would find no row.
+    expect(rounder.calls).toStrictEqual([]);
+    expect(moneyOf(rowAt(rows, 0).skuSalePrice, 'sale price').toFixed2()).toBe('10.37');
+  });
+
+  it('lets the last row win for a duplicate SKU, exactly as the legacy keying did', async () => {
+    const salePrices = new RecordingSalePriceSource([
+      makeSalePriceRewardRow({
+        skuID: 'fake-sku-id-1',
+        salePrice: Money.fromDecimalString('4.00'),
+      }),
+      makeSalePriceRewardRow({
+        skuID: 'fake-sku-id-1',
+        salePrice: Money.fromDecimalString('6.00'),
+      }),
+    ]);
+    const { rows } = await runFeed({ selection: [makeSelectionRow()] }, {}, { salePrices });
+
+    // Not a choice made here. `queryToStructOfStructures` assigns into the structure
+    // while walking rows in order [model/service/HibachiUtilityService.cfc:L545-L551],
+    // so a later row silently overwrites an earlier one - and the reward query
+    // deliberately does not disambiguate a tie. The HIGHER price winning is the point:
+    // a minimum, a sort or a recency preference would each be this port's invention.
+    expect(moneyOf(rowAt(rows, 0).skuSalePrice, 'sale price').toFixed2()).toBe('6.00');
+  });
+
+  it('rounds only the surviving row of a duplicate, because keying happens first', async () => {
+    const rounder = new RecordingValueRounder();
+    const salePrices = new RecordingSalePriceSource([
+      makeSalePriceRewardRow({
+        skuID: 'fake-sku-id-1',
+        salePrice: Money.fromDecimalString('4.00'),
+        roundingRuleID: 'fake-losing-rule',
+      }),
+      makeSalePriceRewardRow({
+        skuID: 'fake-sku-id-1',
+        salePrice: Money.fromDecimalString('6.00'),
+        roundingRuleID: 'fake-winning-rule',
+      }),
+    ]);
+    await runFeed({ selection: [makeSelectionRow()] }, {}, { salePrices, rounder });
+
+    // The legacy rounds by walking the ALREADY-KEYED structure
+    // [model/service/PromotionService.cfc:L1024-L1028], so the overwritten row is never
+    // rounded. Rounding before keying would issue a rule lookup per reward row.
+    expect(rounder.calls).toStrictEqual([{ value: '6.00', roundingRuleID: 'fake-winning-rule' }]);
+  });
+
+  it('drops a reward for a SKU this feed did not select', async () => {
+    const rounder = new RecordingValueRounder();
+    const salePrices = new RecordingSalePriceSource([
+      makeSalePriceRewardRow({
+        skuID: 'fake-sku-id-1',
+        salePrice: Money.fromDecimalString('7.50'),
+      }),
+      makeSalePriceRewardRow({
+        skuID: 'fake-unselected-sku',
+        salePrice: Money.fromDecimalString('1.00'),
+        roundingRuleID: 'fake-unselected-rule',
+      }),
+    ]);
+    const { rows } = await runFeed(
+      { selection: [makeSelectionRow()] },
+      {},
+      { salePrices, rounder },
+    );
+
+    // The legacy asked per product and so never saw a reward for a SKU outside it.
+    // Asking for the whole catalog in one statement is the shape a whole-catalog feed
+    // needs, and filtering to the selection is what keeps the RESULT the same.
+    //
+    // The unselected reward names a rounding rule, which is what makes the DROP
+    // observable rather than merely invisible: an unfiltered reduction would round it
+    // and so would issue a rule lookup for a SKU this feed never selected.
+    expect(rows).toHaveLength(1);
+    expect(moneyOf(rowAt(rows, 0).skuSalePrice, 'sale price').toFixed2()).toBe('7.50');
+    expect(rounder.calls).toStrictEqual([]);
+  });
+
+  it('issues no additional statement of its own to resolve a sale price', async () => {
+    const salePrices = new RecordingSalePriceSource([makeSalePriceRewardRow()]);
+    const { recorder } = await runFeed(
+      { selection: [makeSelectionRow()], ancestry: [makeAncestryRow()], images: [makeImageRow()] },
+      {},
+      { salePrices },
+    );
+
+    // Three statements, as before: the selection, the ancestry walk and the images. The
+    // sale-price reduction reaches its own repository through the collaborator, which is
+    // what keeps the six-branch union in the module that owns it.
+    expect(recorder.captured).toHaveLength(3);
+    expect(allStatements(recorder)).not.toContain('salePrice');
   });
 });

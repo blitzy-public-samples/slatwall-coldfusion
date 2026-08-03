@@ -1,74 +1,33 @@
 // ---------------------------------------------------------------------------
-// slatwall-ts - tests/unit/integrations/google/rssFeedRenderer.test.ts
+// Unit suite for the Google product-feed RSS renderer
 //
-// WHAT THIS SUITE PINS
-//   src/integrations/google/rssFeedRenderer.ts - the rendering half of the
-//   Google product-feed adapter, and the TypeScript port of
-//   [integrationServices/google/views/feed/product.cfm]. That module ships
-//   exactly ONE exported unit, `renderGoogleProductFeed`, and every assertion
-//   below goes through it.
+// SUBJECT: src/integrations/google/rssFeedRenderer.ts, the rendering half of the Google
+// product-feed adapter and the port of [integrationServices/google/views/feed/product.cfm]. It
+// exports exactly one unit, `renderGoogleProductFeed`, and every assertion goes through it. The
+// subject is a pure synchronous function - rows in, one RSS 2.0 document out - and reaches no
+// database, clock, environment variable, setting, file or network, so this suite needs no pool, no
+// application wiring and no mocking library.
 //
-//   The subject is a pure, synchronous, string-returning function: rows in, one
-//   RSS 2.0 document out. It reaches no database, no clock, no environment
-//   variable, no setting, no file and no network, so this suite needs no
-//   database, no pool, no server, no application wiring, no request scope and no
-//   mocking library. There is no subject to construct and no collaborator to
-//   double - the whole contract is three arguments and a string.
+// COVERAGE CLASSIFICATION: NET-NEW in its entirety, never to be presented as parity. Measured on
+// disk: a case-insensitive search of meta/ for `google` matches ZERO lines, and a search for `rss`,
+// `productFeed` or `feed` matches ZERO files. The integration surface names match only line 36 of
+// each legacy test file - the license special-exception clause, which covers nothing. Exactly two
+// suites in this migration extend legacy coverage, meta/tests/unit/entity/ProductTest.cfc and
+// meta/tests/unit/entity/BrandTest.cfc, and this file is NEITHER of them. A third legacy file,
+// meta/tests/functional/admin/entity/ProductTest.cfc, is an empty stub contributing nothing; it is
+// acknowledged rather than counted.
 //
-//   The document is machine-readable RSS 2.0 for Google Merchant Center. It is
-//   NOT a user interface: this migration renders no screen, there is no design
-//   system, no component library and no visual reference in the project, and
-//   `tsconfig.json` declares `lib: ["ES2022"]` with no "DOM" entry, so no
-//   browser type is even in scope. Nothing below asserts anything visual.
+// FOUR CONTRACT FACTS THAT SHAPE EVERY ASSERTION BELOW
 //
-// ***************************************************************************
-// ** COVERAGE HERE IS NET-NEW IN ITS ENTIRETY. IT HAS NO LEGACY ANTECEDENT, **
-// ** AND PRESENTING IT AS PARITY WITH A LEGACY TEST WOULD BE FALSE.         **
-// **                                                                       **
-// ** Re-verified on disk before this file was written rather than taken on  **
-// ** trust: a case-insensitive search of meta/ for `google` matches ZERO    **
-// ** lines, and a search for `rss`, `productFeed` or `feed` matches ZERO    **
-// ** files. A targeted search for the integration surface names matches     **
-// ** only line 36 of each legacy test file - the special-exception clause   **
-// ** inside the license header, which is not coverage of anything. The      **
-// ** legacy suite holds no controller test, no data-access test and no view **
-// ** test for this subsystem, so every assertion below owes its existence   **
-// ** to this migration.                                                    **
-// **                                                                       **
-// ** Exactly two suites in the whole migration extend legacy coverage -     **
-// **   meta/tests/unit/entity/ProductTest.cfc  the URL-format case, whose   **
-// **                                           nike-air-jorden fixture is   **
-// **                                           retained verbatim            **
-// **   meta/tests/unit/entity/BrandTest.cfc    an empty products array      **
-// ** - and this file is NEITHER of them. A third legacy file,               **
-// ** meta/tests/functional/admin/entity/ProductTest.cfc, is an empty stub   **
-// ** contributing nothing; it is acknowledged rather than counted.          **
-// ***************************************************************************
-//
-// WHAT WAS VERIFIED ON DISK BEFORE A SINGLE IMPORT WAS WRITTEN
-//   The symbol expectations that reached this suite were a strong expectation
-//   and not gospel, so all three depended-on modules were read end to end first,
-//   and every symbol named below is the symbol that actually shipped. FOUR
-//   findings differ from those expectations. Each one changed what is written
-//   here, the SUITE was adapted in every case, and NOT ONE LINE of any module
-//   under src/** was created, renamed, edited or deleted.
-//
-//   1. THE PROJECTION'S "OPTIONAL" FIELDS ARE NOT OPTIONAL PROPERTIES. Every one
-//      of them is a REQUIRED property whose TYPE admits absence - the shipped
-//      declaration is `readonly brandName: string | undefined`, not
-//      `brandName?: string`. The general guidance for
-//      `exactOptionalPropertyTypes` is to model absence by omitting the key, and
-//      against this contract that is a hard compile error, proven before the
-//      factory below was written:
-//        error TS2739: ... is missing the following properties from type
-//        'GoogleProductFeedRow': skuSalePrice, salePriceExpirationDateTime,
-//        brandName
-//      So absence is written HERE as an explicit `: undefined` on a key that is
-//      always present. The override parameter is typed
+//   1. THE PROJECTION'S "OPTIONAL" FIELDS ARE NOT OPTIONAL PROPERTIES. Each is a
+//      REQUIRED property whose TYPE admits absence: the shipped declaration is
+//      `readonly brandName: string | undefined`, not `brandName?: string`. Under
+//      `exactOptionalPropertyTypes`, omitting the key is a hard compile error
+//      (TS2739, missing `skuSalePrice`, `salePriceExpirationDateTime` and
+//      `brandName`), so absence is written as an explicit `: undefined` on a key
+//      that is always present. The override parameter is
 //      `Partial<GoogleProductFeedRow>`, where `?` genuinely is present, so
-//      `{ brandName: undefined }` is legal there and expresses "this row has no
-//      brand name" exactly. The rule the guidance protects still holds where it
-//      applies, and it is not applied where the contract forbids it.
+//      `{ brandName: undefined }` is legal and means "no brand name".
 //   2. THE SALE GATE TESTS FOUR PRESENCE CONDITIONS BEFORE IT COMPARES. The
 //      legacy gate at [integrationServices/google/views/feed/product.cfm:L28] is
 //      the price comparison alone; the shipped gate additionally requires both
@@ -84,11 +43,21 @@
 //      the five-entity escaping rules, the empty-body rules and the timestamp
 //      format are all asserted through the rendered DOCUMENT, which is the only
 //      observable the module offers.
-//   4. ELEMENT 14 GATES ON THE BRAND NAME, NOT ON BRAND PRESENCE. The shipped
-//      guard is `brandName !== undefined`, and the projection cannot distinguish
-//      "no brand" from "a brand that records no name". A row whose brandName is
-//      the EMPTY STRING therefore still emits `<g:brand></g:brand>`. All three
-//      states are pinned below so the narrowing is visible rather than implied.
+//   4. ELEMENT 14 GATES ON BRAND PRESENCE, AND CARRIES THE NAME AS ITS BODY.
+//      ★★ THIS FINDING ONCE READ "ELEMENT 14 GATES ON THE BRAND NAME, NOT ON
+//      BRAND PRESENCE. THE SHIPPED GUARD IS `brandName !== undefined`, AND THE
+//      PROJECTION CANNOT DISTINGUISH 'NO BRAND' FROM 'A BRAND THAT RECORDS NO
+//      NAME'." Both statements were accurate readings of what had shipped, and the
+//      second was the actual defect rather than a constraint to live with: the
+//      legacy guard tests the ASSOCIATION
+//      [integrationServices/google/views/feed/product.cfm:L32] and the name is only
+//      what goes between the tags, so a branded product whose name column is null
+//      emitted an empty element and this port omitted the element altogether. The
+//      projection now carries `brandID` beside `brandName` - the column is on
+//      `SwProduct` [model/entity/Product.cfc:L68], so it costs no join - and the
+//      shipped guard is `brandID !== undefined`. All FOUR states are pinned below:
+//      brand with a name, brand with an empty name, brand with a null name, and no
+//      brand at all.
 //
 // HOW THE TEST DATA IS BUILT, AND WHY NOTHING IS IMPORTED TO BUILD IT
 //   All data is declared inline in this file. The five sibling fixture modules
@@ -108,59 +77,21 @@
 //   locator, wrote to the database and flushed the session, so its "unit" test
 //   booted the whole application. None of that happens here.
 //
-//   One further detail of that helper is deliberately NOT reproduced: at
-//   [meta/tests/unit/Helper.cfc:L53] its `productData` struct is declared
-//   without `var` and therefore leaks out of the function. That is legacy test
-//   harness hygiene, not one of the preserved business-logic defects, so it is
-//   corrected by construction here - every binding below is a `const` and this
-//   file holds no mutable module-scope state at all. The legacy also wrote
-//   `price = 100` as a raw number; every monetary literal here is a decimal
-//   STRING handed to `Money.fromDecimalString`, because that is the only
-//   constructor the value object offers and floats never touch money in this
-//   port.
+// TEST DATA IS DECLARED INLINE. No sibling fixture produces a feed-row projection (the product
+// fixture returns a `Product` ENTITY), and `noUnusedLocals` rejects an unused import. The factory
+// follows meta/tests/unit/Helper.cfc as a PATTERN and rejects its MECHANISM: carried over is one
+// named local factory returning a ready subject from obviously-fake defaults with per-case
+// overrides - the legacy used `productName="Test Product"` and `productCode="TESTPRODUCTXXX"` -
+// while rejected is creating a live persistent object, reaching a service through the ambient
+// request-scope locator, writing to the database and flushing the session. At
+// [meta/tests/unit/Helper.cfc:L53] its `productData` struct is declared without `var` and leaks out
+// of the function; that is harness hygiene, not a preserved business-logic defect, so every binding
+// below is a `const`. The legacy wrote `price = 100` as a raw number; every monetary literal here
+// is a decimal STRING handed to `Money.fromDecimalString`.
 //
-// WHAT THIS FILE DELIBERATELY DOES NOT CONTAIN
-//   * NO SNAPSHOTS. Document structure is asserted against literal expected
-//     strings, so a reviewer reads the contract in the assertion instead of in a
-//     generated artifact that a careless update would silently rewrite.
-//   * NO LICENSE HEADER. License continuity for this subtree lives in
-//     `slatwall-ts/NOTICE-GPL.md` and nowhere else, and no license text is
-//     reproduced in a test file.
-//   * NO TICKET-NUMBERED REGRESSION TEST. That naming convention comes from
-//     meta/tests/unit/IssuesTest.cfc, and the Google adapter has no
-//     ticket-numbered defect, so the convention has nothing to name here.
-//   * NO MOCKING LIBRARY, no test double of the subject's collaborators (it has
-//     none), no filesystem access and no environment read. The suite passes with
-//     a completely empty environment.
-//
-// THE DEFECT MARKERS IN THIS FILE, COUNTED
-//   Exactly TWO preserved defects are pinned here, each carrying the two-line
-//   marker at its assertion: the empty `g:google_product_category` element
-//   [integrationServices/google/views/feed/product.cfm:L20] and the unguarded
-//   `g:shipping_weight` element
-//   [integrationServices/google/views/feed/product.cfm:L58]. Every other
-//   divergence from the legacy output is a CORRECTION and is annotated as a
-//   judgment call or a parity note instead, because the closing sentence of a
-//   defect marker asserts that behaviour was PRESERVED and must never appear
-//   over behaviour that was changed.
-//
-// THE BINDING STANDARD
-//   No user-specified rules were provided for this project. The rules document
-//   was read to its end twice - once unbounded and once over an explicit full
-//   range - and returned the same one-line sentinel both times, so the absence
-//   was VERIFIED rather than assumed. No rule has been invented to fill the gap
-//   and the absence is not licence to lower the bar. What binds instead: the
-//   legacy method surface is the acceptance contract and is reproduced rather
-//   than renamed; behaviour is preserved including its defects, with every
-//   divergence annotated in place; existing `Sw*` tables are untouched and
-//   nothing here goes near SQL; there is no infrastructure-as-code and no
-//   deployment claim; and no performance, service-level, capacity or timing
-//   requirement is asserted anywhere, because the legacy system published none
-//   and none may be invented. The `<cfsetting requesttimeout="360" />` directive
-//   at [integrationServices/google/views/feed/product.cfm:L9] is a platform fact
-//   about the legacy request model and nothing below asserts anything about it.
-//   Every decision here is justified by correctness and fidelity, never by
-//   speed.
+// TWO preserved defects are pinned, each carrying its marker at the assertion: the empty
+// `g:google_product_category` element [integrationServices/google/views/feed/product.cfm:L20] and
+// the unguarded `g:shipping_weight` element [.../product.cfm:L58].
 // ---------------------------------------------------------------------------
 
 import { afterEach, describe, expect, it, vi } from 'vitest';
@@ -171,55 +102,43 @@ import { Money } from '../../../../src/domain/valueObjects/money.js';
 
 // Four specifiers, and the list is exhaustive.
 //
-// `GoogleProductFeedRow` is imported TYPE-ONLY from the module that declares it.
-// It is never redeclared here: the repository module is the single owner of the
-// projection shape, and a structurally similar local copy would drift from it
-// silently. `Money` is imported for its VALUE because monetary test data has to
+// `GoogleProductFeedRow` is imported TYPE-ONLY from the repository module that declares it, never
+// redeclared here: that module owns the projection shape, and a structurally similar local copy
+// would drift from it silently. `Money` is imported for its VALUE because monetary test data has to
 // be constructed, and `Money.fromDecimalString` is the only way to construct it.
 //
-// What is NOT imported, each omission for a stated reason:
-//   * `src/domain/ports/settingsProvider.ts` - a hard ban, and the reasoning is
-//     with the shipping-weight assertions below. The subject reaches for no
-//     setting at all, so there is nothing to provide.
-//   * `src/lib/config.ts`, anything under `src/handlers/**`, the database driver
-//     package, and the connection module under `src/repositories/` - a pure
-//     function configures nothing, is entered through no handler, and opens no
-//     connection.
-//   * Anything under `tests/integration/**` or `tests/traceability/**`. The
-//     traceability map enforces a structural coverage floor across the subtree
-//     and is not a thing a unit suite may reach into.
-//   * Any sibling module in `tests/fixtures/**` - see the header; none produces a
-//     feed row, and an unused import would not compile.
-//   * Any XML, HTML, templating, feed or date package, and any other new
-//     dependency. The five-entity escaping and the ISO 8601 timestamps are
-//     asserted as literal strings, which needs nothing installed.
-//   * Any barrel or `index.js`. One exported unit per file, imported directly.
+// Nothing else is imported. A pure function configures nothing, is entered through no handler and
+// opens no connection, so no settings port, config module, handler, driver or connection module
+// appears; the escaping and the ISO 8601 timestamps are asserted as literal strings, needing no
+// XML, templating or date package; and there is no barrel, one exported unit per file being
+// imported directly.
 //
-// A note on enforcement, so the discipline is not mistaken for a guarantee: the
-// ESLint `no-restricted-imports` layer boundary is scoped to `src/domain/**`, so
-// it would not catch a bad import in a test file. The barrel ban does apply
-// here. Everything else on the list above is held by discipline and by the
-// forbidden-literal scan this suite was validated against.
+// A note on enforcement: the ESLint `no-restricted-imports` layer boundary is scoped to
+// `src/domain/**`, so it would not catch a bad import in a test file. The barrel ban does apply
+// here; the rest of the list is held by discipline.
 
 // ---------------------------------------------------------------------------
 // Test data
 //
-// Every literal below is obviously fake, and the two instants are explicit UTC
-// ISO 8601 string literals. Nothing here reads a clock: the subject takes the
-// range-start instant as an argument precisely so that its output is
-// deterministic, and a suite that passed the current time would assert against a
-// moving target. There is no no-argument `Date` construction and no current-time
-// read anywhere in this file.
+// Every literal below is obviously fake, and the two instants are explicit UTC ISO 8601 string
+// literals. Nothing reads a clock: the subject takes the range-start instant as an argument
+// precisely so its output is deterministic, and there is no no-argument `Date` construction
+// anywhere in this file.
 // ---------------------------------------------------------------------------
 
 /**
  * The feed host, passed purely as a STRING INPUT.
  *
- * `.invalid` is reserved by RFC 2606 and can never resolve, which is the point:
- * the subject writes this value into five element bodies and dereferences none
- * of them, so a non-routable placeholder proves the value is data rather than a
- * destination. No network operation happens anywhere in this suite, and one case
- * below asserts that directly.
+ * `.invalid` is reserved by RFC 2606 and can never resolve, which is the point: the subject writes
+ * this value into five element bodies and dereferences none of them. One case below asserts the
+ * absence of any network call directly.
+ *
+ * ★ THE FORM MATTERS AS WELL AS THE VALUE. This is a bare authority - no scheme, no
+ * userinfo, no path, no query, no fragment and no surrounding whitespace - because
+ * that is the only shape the composition boundary will hand over. Deriving and
+ * allow-listing a trusted authority is `toTrustedFeedHost`'s job in
+ * `src/integrations/google/googleFeedService.ts`, and every other shape is refused
+ * there rather than escaped here.
  */
 const FEED_HOST = 'feed.example.invalid';
 
@@ -227,11 +146,29 @@ const FEED_HOST = 'feed.example.invalid';
 const FEED_ORIGIN = `http://${FEED_HOST}`;
 
 /**
+ * The image path the data-access half substitutes when a SKU or product image row
+ * carries no usable file name.
+ *
+ * This is a real value rather than a placeholder, and it is spelled out here rather
+ * than imported because the producing constant is module-private to
+ * `src/integrations/google/googleFeedRepository.ts`. Restating the literal is the
+ * point: it pins the exact documented default of the legacy setting
+ * [model/service/SettingService.cfc:L184], which the substitution cascade at
+ * [model/service/ImageService.cfc:L82-L90] falls through to. A drift in either place
+ * fails a case in this suite.
+ *
+ * The renderer never produces this value and never inspects it; it interpolates
+ * whatever path it is handed. That is why the suite can name it without the subject
+ * knowing it exists.
+ */
+const MISSING_IMAGE_PATH = '/assets/images/missingimage.jpg';
+
+/**
  * The explicit range-start instant, standing in for the legacy's two `now()`
  * calls at [integrationServices/google/views/feed/product.cfm:L30].
  *
- * Deliberately in the past and deliberately carrying a sub-second component, so
- * that the second-precision truncation is observable rather than accidental.
+ * Deliberately in the past and carrying a sub-second component, so the second-precision truncation
+ * is observable rather than accidental.
  */
 const RANGE_START_INSTANT = new Date('2024-06-01T12:34:56.789Z');
 
@@ -256,19 +193,22 @@ const GOOGLE_NAMESPACE_URI = 'http://base.google.com/ns/1.0';
 /**
  * One feed row, with EVERY key present.
  *
- * Completeness is not a stylistic choice: the projection declares all twenty-two
+ * Completeness is not a stylistic choice: the projection declares all twenty-three
  * fields REQUIRED, several of them with a type that admits absence, so a factory
  * that omitted a key would not compile - see finding 1 in the header. Overrides
  * replace individual fields, and passing `undefined` for one of the
  * absence-admitting fields is how a case says "this row has no such value".
  *
- * The default row is deliberately ORDINARY rather than minimal: it has a
- * product price, a brand name, both description candidates, a URL path, an image
- * path, no additional images and no sale, which is the common shape a catalog
- * produces. The product-type representation carries ` &raquo; ` because
- * `ProductType` builds its breadcrumb with that literal HTML entity
- * [model/entity/ProductType.cfc:L273-L278], and carrying it here keeps the
- * escaping cases honest instead of contrived.
+ * ★ THE COUNT WAS TWENTY-TWO. `brandID` IS THE TWENTY-THIRD, AND `imageLinkPath`
+ * NO LONGER ADMITS ABSENCE. The brand element is gated on brand PRESENCE and carries
+ * the nullable name as its body [integrationServices/google/views/feed/product.cfm:L32],
+ * which needs two members rather than one; and the image path is always resolved
+ * upstream now, because the legacy image resolver's chain ends in an unconditional
+ * else [model/service/ImageService.cfc:L88] and therefore never produced nothing.
+ *
+ * The default row is deliberately ORDINARY rather than minimal. Its product-type representation
+ * carries ` &raquo; ` because `ProductType` builds its breadcrumb with that literal HTML entity
+ * [model/entity/ProductType.cfc:L273-L278].
  */
 function makeFeedRow(overrides: Partial<GoogleProductFeedRow> = {}): GoogleProductFeedRow {
   return {
@@ -286,6 +226,13 @@ function makeFeedRow(overrides: Partial<GoogleProductFeedRow> = {}): GoogleProdu
     skuPrice: Money.fromDecimalString('19.99'),
     skuSalePrice: undefined,
     salePriceExpirationDateTime: undefined,
+    // The default row HAS a brand, so the presence key is populated and the name is what
+    // goes in the element. The two are separate fields because the legacy guard tests
+    // the association [integrationServices/google/views/feed/product.cfm:L32] while
+    // the body interpolates the name, and a brand with a null name is a real state.
+    // `brandID` carries `SwBrand.brandID` as the LEFT join resolved it, which is the
+    // gate; `brandName` is only the body.
+    brandID: 'fake-brand-id-1',
     brandName: 'Fake Brand',
     productCode: 'FAKE-PRODUCT-1',
     skuShippingWeight: '1',
@@ -301,12 +248,10 @@ function makeFeedRow(overrides: Partial<GoogleProductFeedRow> = {}): GoogleProdu
 /**
  * One feed row that emits ALL SIXTEEN elements, which the default row does not.
  *
- * Three of the sixteen are conditional, so a row has to earn them: exactly ONE
- * additional image path (element 8 is the only repeatable element, and one
- * occurrence keeps the emitted sequence exactly sixteen entries long), a sale
- * price strictly below the SKU price together with an expiration instant
- * (elements 12 and 13, which share one gate), and a brand name (element 14,
- * independently gated).
+ * Three of the sixteen are conditional: exactly ONE additional image path (element 8 is the only
+ * repeatable element, and one occurrence keeps the emitted sequence exactly sixteen entries long),
+ * a sale price strictly below the SKU price together with an expiration instant (elements 12 and 13
+ * share one gate), and a brand name (element 14, independently gated).
  */
 function makeFullyPopulatedFeedRow(
   overrides: Partial<GoogleProductFeedRow> = {},
@@ -322,14 +267,10 @@ function makeFullyPopulatedFeedRow(
 // ---------------------------------------------------------------------------
 // Rendering and reading helpers
 //
-// Two invocation helpers so that the fixed host and the fixed instant are stated
-// once, and a small set of readers that pull structure back out of the returned
-// document. Every reader THROWS a diagnostic on a shape it cannot read rather
-// than returning a placeholder, and none of them uses a non-null assertion: an
-// indexed read answers `T | undefined` under `noUncheckedIndexedAccess` and is
-// narrowed explicitly. A case that fails because a reader threw fails with the
-// reason printed, which is worth more than a coerced `undefined` failing three
-// assertions later.
+// Two invocation helpers so the fixed host and instant are stated once, and readers that pull
+// structure back out of the returned document. Every reader THROWS a diagnostic on a shape it
+// cannot read, and none uses a non-null assertion: an indexed read answers `T | undefined` under
+// `noUncheckedIndexedAccess`.
 // ---------------------------------------------------------------------------
 
 /** Renders a whole document from the given rows, with the fixed host and instant. */
@@ -350,9 +291,9 @@ function documentLines(document: string): readonly string[] {
 /**
  * The children of the first `<item>`, each with its leading indentation removed.
  *
- * Trailing whitespace is left untouched on purpose. The lone separating space
- * inside an empty `g:shipping_weight` body is a preserved defect, and a reader
- * that trimmed both ends would erase the very thing one case exists to pin.
+ * Trailing whitespace is left untouched on purpose: the lone separating space inside an empty
+ * `g:shipping_weight` body is a preserved defect, and trimming both ends would erase what one case
+ * exists to pin.
  */
 function itemChildren(document: string): readonly string[] {
   const lines = documentLines(document);
@@ -372,8 +313,8 @@ function itemChildren(document: string): readonly string[] {
 /**
  * The element name of one emitted child, read from its opening tag.
  *
- * Safe against element bodies because every interpolated value is escaped before
- * it is emitted, so no raw `>` can appear inside one.
+ * Safe against element bodies because every interpolated value is escaped before emission, so no
+ * raw `>` can appear inside one.
  */
 function elementName(element: string): string {
   const closeAngleIndex = element.indexOf('>');
@@ -393,9 +334,9 @@ function itemElementNames(document: string): readonly string[] {
 /**
  * The body of one named element inside the first `<item>`.
  *
- * Matched on the exact opening and closing tags, which is what keeps
- * `g:shipping_weight` and the never-emitted `g:shipping` distinguishable, and
- * what keeps the item's own `link` distinct from the channel's.
+ * Matched on the exact opening and closing tags, which keeps `g:shipping_weight` and the
+ * never-emitted `g:shipping` distinguishable and keeps the item's own `link` distinct from the
+ * channel's.
  */
 function itemElementBody(document: string, name: string): string {
   const openTag = `<${name}>`;
@@ -424,19 +365,16 @@ function occurrenceCount(document: string, literal: string): number {
 /**
  * Every absolute URL the document contains.
  *
- * The pattern is built inside the function rather than hoisted to module scope: a
- * global regular expression carries a mutable `lastIndex`, and this file holds no
- * mutable module-scope state.
+ * The pattern is built inside the function rather than hoisted: a global regular expression carries
+ * a mutable `lastIndex`, and this file holds no mutable module-scope state.
  */
 function absoluteUrls(document: string): readonly string[] {
   return document.match(/https?:\/\/[^\s<"]+/g) ?? [];
 }
 
 afterEach(() => {
-  // Belt and braces. The runner already restores mocks between cases and the
-  // shared setup file restores them again, and the one spy this suite installs is
-  // still torn down explicitly here so that its lifetime is visible in the file
-  // that creates it.
+  // The runner and the shared setup file both restore mocks between cases; the one spy this suite
+  // installs is still torn down explicitly here so its lifetime is visible.
   vi.restoreAllMocks();
 });
 
@@ -448,12 +386,9 @@ describe('renderGoogleProductFeed - the document shell', () => {
   it('opens with a version-only XML declaration, with no encoding and no byte-order mark', () => {
     const document = renderOneRow();
 
-    // CFML parity [integrationServices/google/views/feed/product.cfm:L1]: the
-    // template declares the version and nothing else. No `encoding`
-    // pseudo-attribute, no `standalone` pseudo-attribute, and no byte-order mark
-    // ahead of it. A document with no encoding declaration is UTF-8 by the XML
-    // specification, which is what a consumer reads it as, so adding the
-    // attribute would be an addition rather than a clarification.
+    // CFML parity [integrationServices/google/views/feed/product.cfm:L1]: the template declares the
+    // version and nothing else - no `encoding` or `standalone` pseudo-attribute and no byte-order
+    // mark ahead of it. A document with no encoding declaration is UTF-8 by the XML specification.
     expect(documentLines(document)[0]).toBe('<?xml version="1.0"?>');
     expect(document.startsWith('<?xml version="1.0"?>')).toBe(true);
     expect(document.startsWith('\uFEFF')).toBe(false);
@@ -464,11 +399,10 @@ describe('renderGoogleProductFeed - the document shell', () => {
   it('binds the Google namespace to the g prefix over the http scheme', () => {
     const document = renderOneRow();
 
-    // CFML parity [integrationServices/google/views/feed/product.cfm:L11]: the
-    // namespace URI is an IDENTIFIER that binds a vocabulary, not an address this
-    // service ever dereferences, so it is reproduced character for character
-    // including its `http` scheme. Changing one character would bind a different
-    // namespace and invalidate every `g:`-qualified element in the document.
+    // CFML parity [integrationServices/google/views/feed/product.cfm:L11]: the namespace URI is an
+    // IDENTIFIER binding a vocabulary, not an address this service dereferences, so it is
+    // reproduced character for character including its `http` scheme. One changed character binds a
+    // different namespace and invalidates every `g:`-qualified element.
     expect(documentLines(document)[1]).toBe(
       '<rss version="2.0" xmlns:g="http://base.google.com/ns/1.0">',
     );
@@ -478,9 +412,9 @@ describe('renderGoogleProductFeed - the document shell', () => {
   it('emits the channel and its three children in the template order', () => {
     const document = renderOneRow();
 
-    // CFML parity [integrationServices/google/views/feed/product.cfm:L12-L15]:
-    // channel, then title, then link, then description - and the title is a
-    // hardcoded literal rather than a configurable or translated value.
+    // CFML parity [integrationServices/google/views/feed/product.cfm:L12-L15]: channel, title,
+    // link, description - and the title is a hardcoded literal rather than a configurable or
+    // translated value.
     expect(documentLines(document).slice(0, 6)).toEqual([
       '<?xml version="1.0"?>',
       '<rss version="2.0" xmlns:g="http://base.google.com/ns/1.0">',
@@ -494,9 +428,9 @@ describe('renderGoogleProductFeed - the document shell', () => {
   it('closes the channel and the root element, and ends at the root close tag', () => {
     const document = renderOneRow();
 
-    // CFML parity [integrationServices/google/views/feed/product.cfm:L64-L65].
-    // Trailing whitespace outside the root element is insignificant and is not
-    // emitted, so the returned string ends exactly at the closing tag.
+    // CFML parity [integrationServices/google/views/feed/product.cfm:L64-L65]: trailing whitespace
+    // outside the root element is insignificant, so the returned string ends exactly at the closing
+    // tag.
     expect(documentLines(document).slice(-2)).toEqual(['  </channel>', '</rss>']);
     expect(document.endsWith('</rss>')).toBe(true);
     expect(document).toBe(document.trimEnd());
@@ -510,10 +444,9 @@ describe('renderGoogleProductFeed - the document shell', () => {
       skuCode: undefined,
     });
 
-    // CFML parity [integrationServices/google/views/feed/product.cfm:L19-L20]: the
-    // template writes an open/close pair at every site, including the
-    // unconditionally empty one, so an absent value yields an empty BODY rather
-    // than a collapsed tag or an omitted element.
+    // CFML parity [integrationServices/google/views/feed/product.cfm:L19-L20]: the template writes
+    // an open/close pair at every site, including the unconditionally empty one, so an absent value
+    // yields an empty BODY, not a collapsed tag.
     expect(document).not.toContain('/>');
     expect(itemChildren(document)).toContain('<description></description>');
     expect(itemChildren(document)).toContain('<g:price></g:price>');
@@ -529,11 +462,10 @@ describe('renderGoogleProductFeed - a feed with no qualifying rows', () => {
   it('renders a complete, well-formed document with an empty channel body', () => {
     const document = renderDocument([]);
 
-    // CFML parity [integrationServices/google/views/feed/product.cfm:L16, L63]: a
-    // `<cfloop>` over an empty record set emits nothing between the channel's
-    // three children and its closing tag, and the surrounding template still
-    // runs. An empty selection is an ordinary outcome of the feed's four filters,
-    // not a failure, so the wrapper is never omitted and no error is raised.
+    // CFML parity [integrationServices/google/views/feed/product.cfm:L16, L63]: a `<cfloop>` over
+    // an empty record set emits nothing between the channel's three children and its closing tag.
+    // An empty selection is an ordinary outcome of the feed's four filters, so the wrapper is never
+    // omitted.
     expect(documentLines(document)).toEqual([
       '<?xml version="1.0"?>',
       '<rss version="2.0" xmlns:g="http://base.google.com/ns/1.0">',
@@ -563,9 +495,9 @@ describe('renderGoogleProductFeed - a feed with no qualifying rows', () => {
       makeFeedRow({ skuCode: 'FAKE-SKU-THIRD' }),
     ]);
 
-    // JUDGMENT CALL: row ORDER is the caller's, and this suite asserts that the
-    // renderer imposes none of its own. The legacy selection applies no ordering
-    // at all, so sorting here would add behaviour the legacy never had.
+    // JUDGMENT CALL: row ORDER is the caller's and the renderer imposes none of its own. The legacy
+    // selection applies no ordering at all, so sorting here would add behaviour the legacy never
+    // had.
     expect(occurrenceCount(document, '<item>')).toBe(3);
     expect(occurrenceCount(document, '</item>')).toBe(3);
     expect(document.indexOf('FAKE-SKU-FIRST')).toBeLessThan(document.indexOf('FAKE-SKU-SECOND'));
@@ -620,9 +552,8 @@ describe('renderGoogleProductFeed - the per-item element order', () => {
   it('emits all sixteen elements in exactly the template sequence', () => {
     const document = renderDocument([makeFullyPopulatedFeedRow()]);
 
-    // Element ORDER is contractual, so this is asserted as one exact sequence
-    // rather than as sixteen independent containment checks: a reordering that
-    // kept every element would pass the latter and fail this.
+    // Element ORDER is contractual, so this is one exact sequence rather than sixteen independent
+    // containment checks: a reordering that kept every element would pass the latter and fail this.
     expect(itemElementNames(document)).toEqual(ITEM_ELEMENT_ORDER);
   });
 
@@ -650,10 +581,9 @@ describe('renderGoogleProductFeed - the per-item element order', () => {
     const document = renderDocument([makeFeedRow()]);
     const lines = documentLines(document);
 
-    // JUDGMENT CALL: whitespace BETWEEN elements is insignificant to XML and is
-    // NOT part of the contract - the template indented with tabs and the port
-    // indents with two spaces per level. The nesting DEPTH is asserted anyway,
-    // because it is cheap to hold and it documents the structure for a reader.
+    // JUDGMENT CALL: whitespace BETWEEN elements is insignificant to XML and is NOT part of the
+    // contract - the template indented with tabs, the port indents with two spaces per level. The
+    // nesting DEPTH is asserted anyway because it is cheap to hold.
     expect(lines).toContain(ITEM_OPEN_LINE);
     expect(lines).toContain(ITEM_CLOSE_LINE);
     expect(lines).toContain('      <g:condition>new</g:condition>');
@@ -662,8 +592,8 @@ describe('renderGoogleProductFeed - the per-item element order', () => {
   it('omits element eight entirely when the product has no additional images', () => {
     const document = renderOneRow({ additionalImageLinkPaths: [] });
 
-    // The absent element leaves NO placeholder and NO empty element behind, and
-    // the fifteen elements that remain keep their relative order.
+    // The absent element leaves NO placeholder and NO empty element behind, and the fifteen that
+    // remain keep their relative order.
     expect(itemElementsNamed(document, 'g:additional_image_link')).toEqual([]);
     expect(document).not.toContain('g:additional_image_link');
     expect(itemElementNames(document)).toEqual([
@@ -699,15 +629,71 @@ describe('renderGoogleProductFeed - the per-item element order', () => {
     ]);
   });
 
-  it('leaves the origin in place when a path-bearing field is absent', () => {
-    const document = renderOneRow({ productUrlPath: undefined, imageLinkPath: undefined });
+  it('leaves the origin in place when the product path is absent', () => {
+    const document = renderOneRow({ productUrlPath: undefined });
 
-    // CFML parity [integrationServices/google/views/feed/product.cfm:L22-L23]: the
-    // host and the path are two interpolations inside ONE literal string, and CFML
+    // CFML parity [integrationServices/google/views/feed/product.cfm:L22]: the host
+    // and the path are two interpolations inside ONE literal string, and CFML
     // stringifies an absent path to nothing, so the element body collapses to the
     // origin rather than disappearing.
+    //
+    // ★ THIS CASE ONCE ABSENTED `imageLinkPath` ALONGSIDE THE PRODUCT PATH, AND
+    // ASSERTED THE IMAGE ELEMENT COLLAPSED TO A BARE ORIGIN TOO. The parity argument
+    // holds for the product path and only for it: `getProductURL()` genuinely
+    // interpolates an unset URL title [model/entity/Product.cfc:L207-L209], so an
+    // absent path there is a real legacy outcome. The image path was never absent -
+    // the resolver the view calls ends its chain in an unconditional else
+    // [model/service/ImageService.cfc:L88] - so a bare origin as an image address was
+    // this port's own invention. `imageLinkPath` is required now and the fallback is
+    // resolved upstream, which is why absenting it here would no longer compile.
     expect(itemElementBody(document, 'link')).toBe(FEED_ORIGIN);
-    expect(itemElementBody(document, 'g:image_link')).toBe(FEED_ORIGIN);
+  });
+
+  it('renders a fallback additional-image path as an ordinary element, skipping nothing', () => {
+    // The data-access half substitutes the missing-image path per unusable image ROW
+    // rather than dropping the row, because the legacy loop emitted one element per row
+    // [integrationServices/google/views/feed/product.cfm:L24]. The renderer must treat
+    // such a path as any other - it has no way to recognise it and no reason to.
+    const document = renderOneRow({
+      additionalImageLinkPaths: [
+        MISSING_IMAGE_PATH,
+        '/fake-image-base/product/fake-usable.jpg',
+        MISSING_IMAGE_PATH,
+      ],
+    });
+
+    expect(itemElementsNamed(document, 'g:additional_image_link')).toEqual([
+      `<g:additional_image_link>${FEED_ORIGIN}${MISSING_IMAGE_PATH}</g:additional_image_link>`,
+      `<g:additional_image_link>${FEED_ORIGIN}/fake-image-base/product/fake-usable.jpg</g:additional_image_link>`,
+      `<g:additional_image_link>${FEED_ORIGIN}${MISSING_IMAGE_PATH}</g:additional_image_link>`,
+    ]);
+  });
+
+  it('never emits a bare origin as an image address, because an image path always resolves', () => {
+    // This case previously asserted that `g:image_link` collapses to the origin when
+    // `imageLinkPath` is absent, and that assertion rested on a premise that is no
+    // longer true: the projection field is now `string` rather than `string |
+    // undefined`, because the legacy accessor it stands for is declared
+    // `returntype="string"` [model/entity/Sku.cfc:L192] and the missing-image
+    // substitution ends in an unconditional else [model/service/ImageService.cfc:L82-L88]
+    // rather than yielding nothing. The case is inverted rather than deleted.
+    const document = renderOneRow();
+
+    // The required member is the guarantee, and this pins the observable half of it:
+    // whatever the row carries, the image element has a path after the origin.
+    expect(itemElementBody(document, 'g:image_link')).not.toBe(FEED_ORIGIN);
+    expect(itemElementBody(document, 'g:image_link')).toBe(
+      `${FEED_ORIGIN}/fake-image-base/product/default/fake-sku-image.jpg`,
+    );
+  });
+
+  it('renders the missing-image fallback like any other path, never as a bare origin', () => {
+    // The absent-image ROW is still exercised - it is the case the earlier assertion was
+    // about - but the expectation now pins the fallback the source actually produced.
+    const document = renderOneRow({ imageLinkPath: MISSING_IMAGE_PATH });
+
+    expect(itemElementBody(document, 'g:image_link')).toBe(`${FEED_ORIGIN}${MISSING_IMAGE_PATH}`);
+    expect(itemElementBody(document, 'g:image_link')).not.toBe(FEED_ORIGIN);
   });
 });
 
@@ -722,10 +708,9 @@ describe('renderGoogleProductFeed - element 3, the description fallback', () => 
       productTypeDescription: 'Fake product type description.',
     });
 
-    // CFML parity [integrationServices/google/views/feed/product.cfm:L19]: the
-    // first branch is `len(product.getProductDescription())`, so the product's own
-    // description wins whenever it has characters, regardless of whether the
-    // product type also has one.
+    // CFML parity [integrationServices/google/views/feed/product.cfm:L19]: the first branch is
+    // `len(product.getProductDescription())`, so the product's own description wins whenever it has
+    // characters.
     expect(itemElementBody(document, 'description')).toBe('Fake product description.');
   });
 
@@ -735,8 +720,8 @@ describe('renderGoogleProductFeed - element 3, the description fallback', () => 
       productTypeDescription: 'Fake product type description.',
     });
 
-    // CFML parity [integrationServices/google/views/feed/product.cfm:L19]: the
-    // `<cfelseif>` branch is `len(productType.getProductTypeDescription())`.
+    // CFML parity [integrationServices/google/views/feed/product.cfm:L19]: the `<cfelseif>` branch
+    // is `len(productType.getProductTypeDescription())`.
     expect(itemElementBody(document, 'description')).toBe('Fake product type description.');
   });
 
@@ -746,10 +731,9 @@ describe('renderGoogleProductFeed - element 3, the description fallback', () => 
       productTypeDescription: 'Fake product type description.',
     });
 
-    // CFML parity [integrationServices/google/views/feed/product.cfm:L19]: both
-    // gates are `len()` truthiness, which counts characters. An empty string has
-    // none, so it fails the first gate exactly as an absent value does - the two
-    // are indistinguishable to `len()` and are treated identically here.
+    // CFML parity [integrationServices/google/views/feed/product.cfm:L19]: both gates are `len()`
+    // truthiness, which counts characters. An empty string has none, so it fails the first gate
+    // exactly as an absent value does.
     expect(itemElementBody(document, 'description')).toBe('Fake product type description.');
   });
 
@@ -760,11 +744,9 @@ describe('renderGoogleProductFeed - element 3, the description fallback', () => 
     });
 
     // CFML parity [integrationServices/google/views/feed/product.cfm:L19]: the
-    // `<cfif>`/`<cfelseif>` pair has NO final `<cfelse>`, and the element itself
-    // is emitted unconditionally OUTSIDE the conditional. The third outcome is
-    // therefore a PRESENT element with an EMPTY body - not an omitted element and
-    // not a substituted placeholder. This is the sharp edge of the chain and it is
-    // asserted directly rather than inferred from the two branches above.
+    // `<cfif>`/`<cfelseif>` pair has NO final `<cfelse>`, and the element itself is emitted
+    // unconditionally OUTSIDE the conditional. The third outcome is a PRESENT element with an EMPTY
+    // body.
     expect(itemElementBody(document, 'description')).toBe('');
     expect(itemChildren(document)).toContain('<description></description>');
     expect(itemElementNames(document)).toContain('description');
@@ -788,12 +770,10 @@ describe('renderGoogleProductFeed - elements 9 and 10, the hardcoded literals', 
       makeFullyPopulatedFeedRow({ skuCode: 'FAKE-SKU-SECOND', productCalculatedQATS: 999 }),
     ]);
 
-    // CFML parity [integrationServices/google/views/feed/product.cfm:L25-L26]: both
-    // element bodies are hardcoded literals with nothing behind them - no setting,
-    // no argument, no lookup, no enumeration, no per-item derivation and, for
-    // availability, NO STOCK CHECK of any kind. The legacy has none, so the port
-    // has none. They are preserved OUTPUT rather than configuration, which is why
-    // hardcoding them is correct here rather than a shortcut.
+    // CFML parity [integrationServices/google/views/feed/product.cfm:L25-L26]: both bodies are
+    // hardcoded literals with nothing behind them - no setting, no argument, no lookup, no per-item
+    // derivation and, for availability, NO STOCK CHECK of any kind. They are preserved OUTPUT
+    // rather than configuration.
     expect(occurrenceCount(document, '<g:condition>new</g:condition>')).toBe(2);
     expect(occurrenceCount(document, '<g:availability>in stock</g:availability>')).toBe(2);
   });
@@ -820,25 +800,19 @@ describe('renderGoogleProductFeed - element 4, the empty product category', () =
       makeFullyPopulatedFeedRow({ skuCode: 'FAKE-SKU-SECOND' }),
     ]);
 
-    // LEGACY-DEFECT [integrationServices/google/views/feed/product.cfm:L20]: g:google_product_category
-    // is emitted as an empty element - the template never supplies a value from any source.
+    // LEGACY-DEFECT [integrationServices/google/views/feed/product.cfm:L20]:
+    // g:google_product_category is emitted as an empty element - the template never supplies a
+    // value from any source.
+    //
     // Preserved deliberately; do not fix without a product decision.
     //
-    // The element stays EMPTY and stays flagged. There is no value source anywhere
-    // in the legacy path to fill it from: the adapter does declare a
-    // `productGoogleProductType` setting definition
-    // [integrationServices/google/Integration.cfc:L67-L71], but the template never
-    // reads it, the feed controller never resolves it and no column carries it.
-    // Populating the element would invent data the legacy feed never carried, so
-    // this case exists to make a future "helpful" fix fail loudly.
+    // Nothing in the legacy path can fill it: the adapter declares a `productGoogleProductType`
+    // setting definition [integrationServices/google/Integration.cfc:L67-L71], but the template
+    // never reads it, the controller never resolves it and no column carries it. Populating the
+    // element would invent data the legacy feed never carried.
     //
-    // MATERIAL CORRECTION, VERIFIED BY READING THE TEMPLATE IN FULL. There is NO
-    // literal TODO on L20 and none near it - the line is a bare empty element with
-    // no comment attached. The TODO that the shipped renderer carries beside this
-    // element is therefore PORT-AUTHORED, not carried forward from the source, and
-    // it says so itself. Describing it as a legacy TODO would misrepresent the
-    // source just as badly as silently populating the element would misrepresent
-    // the port, so neither is done here.
+    // There is NO literal TODO on L20 or near it. The TODO the shipped renderer carries beside this
+    // element is therefore PORT-AUTHORED rather than carried forward, and says so itself.
     expect(
       occurrenceCount(document, '<g:google_product_category></g:google_product_category>'),
     ).toBe(2);
@@ -864,9 +838,7 @@ describe('renderGoogleProductFeed - element 4, the empty product category', () =
 // ---------------------------------------------------------------------------
 
 describe('renderGoogleProductFeed - element 16, the unguarded shipping weight', () => {
-  // THE SIX-KEY SETTINGS FINDING, RECORDED HERE BECAUSE THIS IS THE ELEMENT IT
-  // BEARS ON. The feed's true settings dependency is SIX keys, not four, and each
-  // was read with its exact default:
+  // THE FEED'S TRUE SETTINGS DEPENDENCY IS SIX KEYS, each read with its exact default:
   //   globalURLKeyProduct        [model/service/SettingService.cfc:L178]  "sp"
   //   globalURLKeyProductType    [model/service/SettingService.cfc:L179]  "spt"
   //   skuCurrency                [model/service/SettingService.cfc:L221]  "USD"
@@ -876,9 +848,9 @@ describe('renderGoogleProductFeed - element 16, the unguarded shipping weight', 
   //   skuShippingWeightUnitCode  [model/service/SettingService.cfc:L233]  "lb"
   //
   // AND ITS BINDING RECONCILIATION. The settings contract at
-  // `src/domain/ports/settingsProvider.ts` is locked to a seven-key union that
+  // `src/domain/ports/settingsProvider.ts` is locked to a FOUR-key union that
   // EXCLUDES both shipping-weight keys, and the port set is locked at thirteen, so
-  // admitting an eighth key or adding a fourteenth port would be a scope
+  // admitting a fifth key or adding a fourteenth port would be a scope
   // violation. That contract is therefore NOT extended, NOT reshaped and NOT
   // imported by this suite - a hard ban. Both weight values instead arrive as
   // already-resolved STRING FIELDS on the read-only projection, which is the right
@@ -887,31 +859,28 @@ describe('renderGoogleProductFeed - element 16, the unguarded shipping weight', 
   // as an expected value here.
   //
   // Do not confuse `skuShippingWeightUnitCode` with `globalWeightUnitCode`
-  // [model/service/SettingService.cfc:L180]. They are distinct keys that happen to
-  // share the "lb" default, and only the first reaches this element.
+  // [model/service/SettingService.cfc:L180] - distinct keys sharing one default.
 
   it('emits the weight and its unit separated by one literal space - characterization A', () => {
-    // The default-path characterization. The legacy defaults stringify as `1` and
-    // `lb`, so the rendered body is `1 lb`.
+    // Default-path characterization: the legacy defaults stringify as `1` and `lb`, so the body is
+    // `1 lb`.
     const document = renderOneRow({ skuShippingWeight: '1', skuShippingWeightUnitCode: 'lb' });
 
     // LEGACY-DEFECT [integrationServices/google/views/feed/product.cfm:L58]: g:shipping_weight is
     // emitted with no guard and a hardcoded literal space between its two interpolations.
+    //
     // Preserved deliberately; do not fix without a product decision.
     //
-    // The weight and the unit are a NON-MONETARY measure. They stay plain strings
-    // here - never wrapped in the money value object, never parsed to a number and
-    // never arithmetically combined - because the legacy interpolated two setting
-    // values into a text body and nothing more.
+    // The weight and the unit are a NON-MONETARY measure, so they stay plain strings - never
+    // wrapped in the money value object, never parsed and never arithmetically combined.
     expect(itemElementBody(document, 'g:shipping_weight')).toBe('1 lb');
     expect(itemChildren(document)).toContain('<g:shipping_weight>1 lb</g:shipping_weight>');
   });
 
   it('still emits the element and the lone separating space when both values are empty', () => {
-    // Characterization B, and the sharp one. The element is UNGUARDED, so an empty
-    // weight and an empty unit do not suppress it: the hardcoded space between the
-    // two interpolations survives on its own and the body is a single space
-    // character. A consumer receives a weight element that states nothing.
+    // Characterization B, and the sharp one. The element is UNGUARDED, so an empty weight and an
+    // empty unit do not suppress it: the hardcoded space survives on its own and the body is a
+    // single space character.
     const document = renderOneRow({ skuShippingWeight: '', skuShippingWeightUnitCode: '' });
 
     expect(itemElementBody(document, 'g:shipping_weight')).toBe(' ');
@@ -940,9 +909,8 @@ describe('renderGoogleProductFeed - element 16, the unguarded shipping weight', 
       skuShippingWeightUnitCode: 'fakeunit',
     });
 
-    // A number would have rendered `3.5`. The projection carries a string and the
-    // renderer emits it unchanged, which is what keeps a non-money measure out of
-    // the money presentation path.
+    // A number would have rendered `3.5`. The projection carries a string and the renderer emits it
+    // unchanged, keeping a non-money measure out of the money path.
     expect(itemElementBody(document, 'g:shipping_weight')).toBe('3.500 fakeunit');
   });
 
@@ -957,34 +925,21 @@ describe('renderGoogleProductFeed - element 16, the unguarded shipping weight', 
 // ---------------------------------------------------------------------------
 // 8. The five-entity XML escaper
 //
-// WHAT THE LEGACY DID, MEASURED RATHER THAN ASSUMED. The template applies
-// `htmlEditFormat()` at exactly SIX SITES, seven calls in total: `g:id`
-// [integrationServices/google/views/feed/product.cfm:L17], `title` [L18], BOTH
-// branches of `description` [L19], `g:product_type` [L21], `g:brand` [L32] and
-// `g:item_group_id` [L39]. It applies it at NONE of eight others: the channel
-// link and description [L14-L15], the item link [L22], `g:image_link` [L23], each
-// `g:additional_image_link` [L24], `g:price` [L27], `g:sale_price` [L29],
-// `g:sale_price_effective_date` [L30] and `g:shipping_weight` [L58]. And
-// `htmlEditFormat` covers only FOUR entities - `&`, `<`, `>` and `"` - leaving
-// the apostrophe alone.
+// WHAT THE LEGACY DID, MEASURED RATHER THAN ASSUMED. The template applies `htmlEditFormat()` at
+// exactly SIX SITES, seven calls in total: `g:id`
+// [integrationServices/google/views/feed/product.cfm:L17], `title` [L18], BOTH branches of
+// `description` [L19], `g:product_type` [L21], `g:brand` [L32] and `g:item_group_id` [L39]. It
+// applies it at NONE of eight others: the channel link and description [L14-L15], the item link
+// [L22], `g:image_link` [L23], each `g:additional_image_link` [L24], `g:price` [L27],
+// `g:sale_price` [L29], `g:sale_price_effective_date` [L30] and `g:shipping_weight` [L58]. And
+// `htmlEditFormat` covers only FOUR entities - `&`, `<`, `>` and `"` - leaving the apostrophe
+// alone.
 //
-// JUDGMENT CALL: the port escapes ALL emitted text UNIFORMLY, through all five
-// predefined XML entities. That is a deliberate HARDENING and is recorded as a
-// correction rather than as parity at the eight sites the legacy left bare. The
-// gap it closes is reachable from ordinary catalog data - an ampersand in a title,
-// an unencoded `&` in an image path's query string, a `<` in a description - and a
-// feed that fails to parse is not partly useful, it is unconsumable. The strongest
-// evidence sits in the very value the legacy DID escape: the product-type
-// breadcrumb carries the literal HTML entity ` &raquo; ` by construction
-// [model/entity/ProductType.cfc:L273-L278], and `&raquo;` is not a predefined XML
-// entity, so its ampersand must be escaped for the document to parse at all.
-//
-// JUDGMENT CALL: this consumes NONE of the three deliberate-divergence budget
-// slots, and that is stated because a reviewer auditing the budget will look here.
-// All three belong to the service and domain layers - the un-`var`'d scope leak,
-// the `amountOff` precision gap and the entity memo bugs. This is a
-// rendering-correctness decision inside an adapter, so it is a judgment call and
-// not a fourth divergence.
+// JUDGMENT CALL: the port escapes ALL emitted text UNIFORMLY through all five predefined XML
+// entities - a HARDENING, recorded as a correction rather than as parity at the eight bare sites.
+// The strongest evidence sits in the one value the legacy DID escape: the product-type breadcrumb
+// carries the literal HTML entity ` &raquo; ` by construction
+// [model/entity/ProductType.cfc:L273-L278], and `&raquo;` is not a predefined XML entity.
 // ---------------------------------------------------------------------------
 
 describe('renderGoogleProductFeed - the five-entity XML escaper', () => {
@@ -999,10 +954,8 @@ describe('renderGoogleProductFeed - the five-entity XML escaper', () => {
   });
 
   it('escapes the ampersand FIRST, so no later replacement is escaped twice', () => {
-    // The order is the correctness argument. `&` is replaced before any
-    // replacement that introduces an entity of its own, so a bare `<` becomes
-    // `&lt;` and never `&amp;lt;`. Reversing the order would corrupt every escaped
-    // value in the feed, and this case is what would catch it.
+    // The order is the correctness argument. `&` is replaced before any replacement that introduces
+    // an entity of its own, so a bare `<` becomes `&lt;` and never `&amp;lt;`.
     const document = renderOneRow({ calculatedTitle: '<less' });
 
     expect(itemElementBody(document, 'title')).toBe('&lt;less');
@@ -1010,9 +963,8 @@ describe('renderGoogleProductFeed - the five-entity XML escaper', () => {
   });
 
   it('applies exactly one level of escaping to text that already looks escaped', () => {
-    // Input text that reads as an entity is treated as ordinary characters: its
-    // ampersand is escaped once and the remaining characters are untouched. A
-    // second pass would have produced `&amp;amp;lt;`.
+    // Input text that reads as an entity is treated as ordinary characters: its ampersand is
+    // escaped once and the rest untouched. A second pass would have produced `&amp;amp;lt;`.
     const document = renderOneRow({ calculatedTitle: '&lt;' });
 
     expect(itemElementBody(document, 'title')).toBe('&amp;lt;');
@@ -1046,9 +998,26 @@ describe('renderGoogleProductFeed - the five-entity XML escaper', () => {
           skuShippingWeightUnitCode: 'lb&oz',
         }),
       ],
-      'feed.example.invalid?tenant=a&locale=b',
+      FEED_HOST,
       RANGE_START_INSTANT,
     );
+
+    // ★★ THIS CASE ONCE SUPPLIED `'feed.example.invalid?tenant=a&locale=b'` AS THE
+    // HOST, AND ASSERTED THE RESULTING `&amp;` IN ALL FIVE HOST SITES. Escaping a
+    // query-bearing host is not the same thing as accepting one, and a suite that
+    // demonstrates the second while testing the first BLESSES an untrusted input: a
+    // host is an authority, it has no query component, and every absolute address in
+    // this document is composed from it. The host is a trusted, normalised authority
+    // now - refused unless it parses as one and appears on an allow-list, at
+    // `toTrustedFeedHost` in `src/integrations/google/googleFeedService.ts` - so the
+    // shape this case used to pass cannot reach the renderer through the sanctioned
+    // path at all, and the refusal itself is pinned by
+    // `tests/unit/integrations/google/googleFeedService.test.ts`.
+    //
+    // The ESCAPING this case exists for is unchanged and is now carried entirely by
+    // the ROW, which is where an ampersand genuinely originates: a SKU code, a title,
+    // a description, a breadcrumb, a brand name, a product code, a URL title, an image
+    // file name and a unit code are all free text out of the catalog.
 
     // The six sites the legacy escaped.
     expect(itemElementBody(document, 'g:id')).toBe('SKU&amp;1');
@@ -1059,34 +1028,43 @@ describe('renderGoogleProductFeed - the five-entity XML escaper', () => {
     expect(itemElementBody(document, 'g:item_group_id')).toBe('PRODUCT&amp;1');
 
     // The eight the legacy did not - hardened, and asserted so the hardening is
-    // pinned rather than incidental.
+    // pinned rather than incidental. The ampersands reaching these sites come from the
+    // PATH portions, which is where a real catalog carries them.
     expect(itemElementBody(document, 'link')).toBe(
-      'http://feed.example.invalid?tenant=a&amp;locale=b/fake-url-key/fake-title/?variant=a&amp;size=b',
+      `${FEED_ORIGIN}/fake-url-key/fake-title/?variant=a&amp;size=b`,
     );
     expect(itemElementBody(document, 'g:image_link')).toBe(
-      'http://feed.example.invalid?tenant=a&amp;locale=b/fake-image-base/fake.jpg?w=100&amp;h=200',
+      `${FEED_ORIGIN}/fake-image-base/fake.jpg?w=100&amp;h=200`,
     );
     expect(itemElementBody(document, 'g:additional_image_link')).toBe(
-      'http://feed.example.invalid?tenant=a&amp;locale=b/fake-image-base/fake-additional.jpg?w=50&amp;h=60',
+      `${FEED_ORIGIN}/fake-image-base/fake-additional.jpg?w=50&amp;h=60`,
     );
     expect(itemElementBody(document, 'g:shipping_weight')).toBe('1 lb&amp;oz');
-    expect(documentLines(document)[4]).toBe(
-      '    <link>http://feed.example.invalid?tenant=a&amp;locale=b</link>',
-    );
+
+    // THE TWO CHANNEL LINES CARRY NO AMPERSAND TO ESCAPE, AND CANNOT, and that is a
+    // consequence of the origin guard rather than a gap in this test. Their only
+    // variable content is the origin, and a shape-valid host is a bare host with an
+    // optional port - a vocabulary that contains no `&` at all - so after
+    // `assertFeedHostShape` there is nothing at either site for the escaper to act
+    // on. This assertion pins the composed value instead, which is the whole of what
+    // remains observable there. The escaper is still exercised at both sites by
+    // construction: they route through the same `textElement` funnel as every
+    // assertion above.
+    expect(documentLines(document)[4]).toBe(`    <link>${FEED_ORIGIN}</link>`);
     expect(documentLines(document)[5]).toBe(
-      '    <description>Google Product Feed for http://feed.example.invalid?tenant=a&amp;locale=b</description>',
+      `    <description>Google Product Feed for ${FEED_ORIGIN}</description>`,
     );
 
-    // No bare ampersand survives anywhere in the document, which is the property
-    // that makes it parseable at all.
+    // No bare ampersand survives anywhere, which is the property that makes the document parseable
+    // at all.
     expect(document.replaceAll('&amp;', '')).not.toContain('&');
   });
 
   it('never escapes the literal markup it emits', () => {
     const document = renderOneRow({ calculatedTitle: 'Fake & Title' });
 
-    // Element names, attribute names and the tags themselves are literals of this
-    // module and are never routed through the escaper. Only interpolated TEXT is.
+    // Element names, attribute names and the tags themselves are literals of this module and never
+    // routed through the escaper. Only interpolated TEXT is.
     expect(document).toContain('<g:id>');
     expect(document).toContain('</g:shipping_weight>');
     expect(document).toContain('<rss version="2.0" xmlns:g="http://base.google.com/ns/1.0">');
@@ -1100,6 +1078,355 @@ describe('renderGoogleProductFeed - the five-entity XML escaper', () => {
 // 9. The price-source asymmetry
 // ---------------------------------------------------------------------------
 
+// ---------------------------------------------------------------------------
+// 11b. Code points XML 1.0 forbids, elided before escaping
+//
+// ★★★ SECURITY BOUNDARY — CWE-116 (IMPROPER ENCODING), CWE-91 (XML INJECTION), and A
+// DELIBERATE DIVERGENCE FROM THE LEGACY, which is why the block carries this prose.
+//
+// THE DEFECT. The legacy template escaped six of its fourteen text sites with
+// `htmlEditFormat` [integrationServices/google/views/feed/product.cfm] and, like the
+// five-entity escaper this port replaced it with, neither pass touches CONTROL
+// CHARACTERS. Escaping answers "could this byte be read as markup"; it does not
+// answer "is this byte legal in an XML document at all", and those are different
+// questions. XML 1.0's `Char` production admits TAB, LF and CR and then NOTHING else
+// below #x20, so a single NUL, VT, FF or C0 control reaching any one of the fourteen
+// sites makes the WHOLE DOCUMENT unparseable - a standards-compliant parser rejects
+// it outright, which means one malformed column silently denies the entire catalog to
+// Merchant Center rather than degrading one product.
+//
+// WHY IT IS ELIDED AND NOT REFUSED, which is the opposite disposition to the origin
+// guard in block 13b, deliberately. A forbidden code point poisons ONE field of ONE
+// row, so removing it keeps every other product serving; refusing would relocate the
+// availability problem rather than solve it, because one bad row would still deny the
+// whole feed - exactly the outcome this fix exists to prevent. A bad ORIGIN, by
+// contrast, poisons every URL in the document at once, so there is no partial output
+// worth emitting and refusal is right there. The two dispositions in one module are
+// the design point, and each is asserted in its own block.
+//
+// WHY THIS IS NOT A PARITY BREAK WORTH PRESERVING. AAP 0.6.7 registers twenty legacy
+// defects to reproduce and this is not among them; AAP 0.8.1's must-preserve list
+// names promotion math, the resolution cascades and option-based SKU selection, none
+// of which touches rendering; and the port's own escaper already carries the governing
+// precedent in its docstring - hardening the eight sites the legacy left bare was "a
+// correction, not a repair of behaviour anyone relied on", because no consumer can
+// have depended on a document no parser would accept.
+//
+// WHAT IS DELIBERATELY KEPT. TAB, LF and CR are legal `Char`s and survive untouched.
+// The C1 range #x7F-#x9F is legal in XML 1.0 - it is only XML 1.1 that restricts it -
+// so it survives too, and that is a decision rather than an oversight: the document
+// declares `version="1.0"`, and eliding bytes the declared version permits would be
+// data loss with no correctness gain. A well-formed SURROGATE PAIR is legal and must
+// survive; a LONE surrogate encodes nothing and is elided.
+// ---------------------------------------------------------------------------
+
+/**
+ * Every code point of the document, verified against XML 1.0's `Char` production.
+ *
+ * ★ WHY THIS IS HAND-WRITTEN AND NOT A THIRD-PARTY PARSER. The pinned dependency set
+ * holds no XML library, deliberately - AAP 0.5.1 records the renderer's counterpart
+ * decision, that a dependency for one hand-rolled five-entity escaper is unjustified -
+ * so adding one for a test would add a runtime the shipped artifact does not have.
+ * What a compliant parser would reject the document FOR is this exact production
+ * [XML 1.0 §2.2]: `#x9 | #xA | #xD | [#x20-#xD7FF] | [#xE000-#xFFFD] |
+ * [#x10000-#x10FFFF]`. Checking the production directly is therefore the same
+ * assertion a parser would make, stated in the terms the specification uses, and it
+ * reports the offending code point and its index instead of a parser's line number.
+ *
+ * Iterating with `for...of` walks CODE POINTS rather than UTF-16 units, so a
+ * well-formed surrogate pair presents as one value above #xFFFF and is accepted,
+ * while a lone surrogate presents as a single value inside the forbidden gap and is
+ * rejected. That distinction is the whole reason the reader is written this way.
+ *
+ * @throws Error naming the first offending code point, its hex value and its index.
+ */
+function assertXmlCharProduction(document: string): void {
+  let index = 0;
+
+  for (const character of document) {
+    const codePoint = character.codePointAt(0);
+
+    if (codePoint === undefined) {
+      throw new Error(`unreadable code point at index ${String(index)}`);
+    }
+
+    const permitted =
+      codePoint === 0x9 ||
+      codePoint === 0xa ||
+      codePoint === 0xd ||
+      (codePoint >= 0x20 && codePoint <= 0xd7ff) ||
+      (codePoint >= 0xe000 && codePoint <= 0xfffd) ||
+      (codePoint >= 0x10000 && codePoint <= 0x10ffff);
+
+    if (!permitted) {
+      throw new Error(
+        `code point U+${codePoint.toString(16).toUpperCase().padStart(4, '0')} at index ` +
+          `${String(index)} is not permitted by the XML 1.0 Char production`,
+      );
+    }
+
+    index += character.length;
+  }
+}
+
+/**
+ * A minimal well-formedness walk: every start tag is closed, in order, once.
+ *
+ * Not a parser and not trying to be. It reads the tag stream the renderer emits and
+ * asserts that it nests, which together with {@link assertXmlCharProduction} covers
+ * the two ways a document becomes unparseable: an illegal character, or unbalanced
+ * markup. Text content is not inspected here - the escaper's own block covers that -
+ * so a stray `<` inside a body would surface as an unmatched tag, which is exactly the
+ * failure a reviewer wants to see reported.
+ *
+ * @throws Error on the first tag that does not nest, or if any tag is left open.
+ */
+function assertBalancedMarkup(document: string): void {
+  const open: string[] = [];
+  const tagPattern = /<(\/?)([A-Za-z_:][-A-Za-z0-9_:.]*)(?:\s[^>]*?)?(\/?)>/g;
+  let match: RegExpExecArray | null = tagPattern.exec(document);
+
+  while (match !== null) {
+    const [, closingSlash, name, selfClosingSlash] = match;
+
+    if (name === undefined) {
+      throw new Error('unreadable tag name');
+    }
+
+    if (selfClosingSlash === '/') {
+      // Self-closing needs no partner. This renderer emits none, which its own case
+      // in the shell block asserts, so reaching here would itself be news.
+      match = tagPattern.exec(document);
+      continue;
+    }
+
+    if (closingSlash === '/') {
+      const expected = open.pop();
+
+      if (expected !== name) {
+        throw new Error(`</${name}> closes ${expected ?? 'nothing'}`);
+      }
+    } else {
+      open.push(name);
+    }
+
+    match = tagPattern.exec(document);
+  }
+
+  if (open.length > 0) {
+    throw new Error(`unclosed: ${open.join(', ')}`);
+  }
+}
+
+describe('renderGoogleProductFeed - code points XML 1.0 forbids', () => {
+  /** The forbidden C0 controls, each named so a failure says which one escaped. */
+  const FORBIDDEN_C0: readonly (readonly [string, string])[] = [
+    ['NUL', '\u0000'],
+    ['SOH', '\u0001'],
+    ['BEL', '\u0007'],
+    ['BS', '\u0008'],
+    ['VT', '\u000B'],
+    ['FF', '\u000C'],
+    ['SO', '\u000E'],
+    ['ESC', '\u001B'],
+    ['US', '\u001F'],
+  ];
+
+  it('elides every forbidden C0 control, one at a time, naming each', () => {
+    for (const [name, character] of FORBIDDEN_C0) {
+      const document = renderOneRow({ calculatedTitle: `Fake${character}Title` });
+
+      // The surrounding text survives whole - this elides the offending code point
+      // and does not discard the field.
+      expect(itemElementBody(document, 'title'), name).toBe('FakeTitle');
+      expect(document, name).not.toContain(character);
+      assertXmlCharProduction(document);
+    }
+  });
+
+  it('elides the NUL that a standards-compliant parser would reject the document for', () => {
+    // The runtime evidence the finding was raised on, asserted directly: a NUL used
+    // to survive rendering, and the document was then unparseable.
+    const document = renderOneRow({ skuCode: 'FAKE\u0000SKU' });
+
+    expect(itemElementBody(document, 'g:id')).toBe('FAKESKU');
+    expect(document).not.toContain('\u0000');
+    assertXmlCharProduction(document);
+    assertBalancedMarkup(document);
+  });
+
+  it('keeps tab, line feed and carriage return, which the production permits', () => {
+    const document = renderOneRow({ calculatedTitle: 'a\tb\nc\rd' });
+
+    // ★ KEPT ON PURPOSE. All three are legal `Char`s, so eliding them would be data
+    // loss with no correctness gain. That the LF and CR also split the element across
+    // physical lines is a consequence of the legacy's own line-oriented template and
+    // is not this pass's concern: the document still parses, which is the property
+    // under test.
+    expect(document).toContain('a\tb\nc\rd');
+    assertXmlCharProduction(document);
+  });
+
+  it('keeps the C1 range, because XML 1.0 permits it and the document declares 1.0', () => {
+    const document = renderOneRow({ calculatedTitle: 'a\u007Fb\u0085c\u009Fd' });
+
+    // ★ A DECISION, NOT AN OVERSIGHT. Only XML 1.1 restricts #x7F-#x9F, and this
+    // document opens `<?xml version="1.0"?>` - asserted in the shell block - so these
+    // survive.
+    expect(itemElementBody(document, 'title')).toBe('a\u007Fb\u0085c\u009Fd');
+    expect(documentLines(document)[0]).toBe('<?xml version="1.0"?>');
+    assertXmlCharProduction(document);
+  });
+
+  it('elides the two permanently-unassigned code points at the end of the BMP', () => {
+    const document = renderOneRow({ calculatedTitle: 'a\uFFFEb\uFFFFc' });
+
+    // #xFFFE and #xFFFF fall outside `[#xE000-#xFFFD]` and are forbidden even though
+    // they are not controls.
+    expect(itemElementBody(document, 'title')).toBe('abc');
+    assertXmlCharProduction(document);
+  });
+
+  it('keeps a well-formed surrogate pair, which encodes a legal code point', () => {
+    const document = renderOneRow({ calculatedTitle: 'a\u{1F600}b' });
+
+    // U+1F600 is inside `[#x10000-#x10FFFF]`. Eliding the pair would corrupt every
+    // emoji, CJK extension and historic script a real catalog carries.
+    expect(itemElementBody(document, 'title')).toBe('a\u{1F600}b');
+    expect(document).toContain('\u{1F600}');
+    assertXmlCharProduction(document);
+  });
+
+  it('elides a lone high surrogate but keeps the pair that follows it', () => {
+    // A lone surrogate encodes nothing and sits in the forbidden #xD800-#xDFFF gap.
+    // It reaches here from any column written through a lossy conversion.
+    const document = renderOneRow({ calculatedTitle: `a\uD83Db\u{1F600}c` });
+
+    expect(itemElementBody(document, 'title')).toBe('ab\u{1F600}c');
+    assertXmlCharProduction(document);
+  });
+
+  it('elides a lone low surrogate, which needs the opposite lookaround to detect', () => {
+    const document = renderOneRow({ calculatedTitle: 'a\uDE00b' });
+
+    expect(itemElementBody(document, 'title')).toBe('ab');
+    assertXmlCharProduction(document);
+  });
+
+  it('elides a reversed pair, which is two lone surrogates and not a pair at all', () => {
+    // Low followed by high. Each half must be caught by a different rule, which is
+    // why the two cannot be folded into one character class.
+    const document = renderOneRow({ calculatedTitle: `a\uDE00\uD83Db` });
+
+    expect(itemElementBody(document, 'title')).toBe('ab');
+    assertXmlCharProduction(document);
+  });
+
+  it('elides before escaping, so no forbidden code point can hide inside an entity', () => {
+    // ORDER MATTERS, and this pins it. The elision runs FIRST; were it to run after
+    // the five replacements, a NUL adjacent to an ampersand would be carried into the
+    // `&amp;` it produced and land inside an entity reference, where it is even less
+    // recoverable.
+    const document = renderOneRow({ calculatedTitle: 'a&\u0000b' });
+
+    expect(itemElementBody(document, 'title')).toBe('a&amp;b');
+    expect(document).not.toContain('\u0000');
+    assertXmlCharProduction(document);
+  });
+
+  it('covers every externally sourced text field, not just the one it was found in', () => {
+    // ★ THE FUNNEL IS THE FIX. Every interpolated body routes through one escaper, so
+    // one elision pass covers all fourteen sites. This case supplies a NUL to every
+    // field a repository row carries and asserts the whole document is clean - which
+    // is a stronger statement than fourteen separate cases, because it would also
+    // catch a fifteenth site added later that bypassed the funnel.
+    const document = renderGoogleProductFeed(
+      [
+        makeFullyPopulatedFeedRow({
+          skuCode: 'SKU\u0000A',
+          calculatedTitle: 'Title\u0000A',
+          productDescription: 'Description\u0000A',
+          productTypeDescription: 'TypeDescription\u0000A',
+          productTypeSimpleRepresentation: 'Type\u0000A',
+          productUrlPath: '/url\u0000path/',
+          imageLinkPath: '/image\u0000path.jpg',
+          additionalImageLinkPaths: ['/additional\u0000one.jpg', '/additional\u0001two.jpg'],
+          brandName: 'Brand\u0000A',
+          productCode: 'PRODUCT\u0000A',
+          skuShippingWeight: '1\u0000',
+          skuShippingWeightUnitCode: 'lb\u0000',
+        }),
+      ],
+      FEED_HOST,
+      RANGE_START_INSTANT,
+    );
+
+    assertXmlCharProduction(document);
+    assertBalancedMarkup(document);
+
+    expect(itemElementBody(document, 'g:id')).toBe('SKUA');
+    expect(itemElementBody(document, 'title')).toBe('TitleA');
+    expect(itemElementBody(document, 'description')).toBe('DescriptionA');
+    expect(itemElementBody(document, 'g:product_type')).toBe('TypeA');
+    expect(itemElementBody(document, 'link')).toBe(`${FEED_ORIGIN}/urlpath/`);
+    expect(itemElementBody(document, 'g:image_link')).toBe(`${FEED_ORIGIN}/imagepath.jpg`);
+    expect(itemElementsNamed(document, 'g:additional_image_link')).toHaveLength(2);
+    expect(itemElementBody(document, 'g:brand')).toBe('BrandA');
+    expect(itemElementBody(document, 'g:item_group_id')).toBe('PRODUCTA');
+    expect(itemElementBody(document, 'g:shipping_weight')).toBe('1 lb');
+  });
+
+  it('covers the description fallback path, which reads a different column', () => {
+    // The description element has two candidate sources and the fallback is a
+    // separate read, so it is exercised separately.
+    const document = renderOneRow({
+      productDescription: '',
+      productTypeDescription: 'Type\u000Bdescription',
+    });
+
+    expect(itemElementBody(document, 'description')).toBe('Typedescription');
+    assertXmlCharProduction(document);
+  });
+
+  it('renders a parseable document for a row with every value it could carry', () => {
+    // The regression backstop for the block: the fully populated row, checked against
+    // both properties that make a document parseable at all.
+    const document = renderDocument([makeFullyPopulatedFeedRow(), makeFeedRow()]);
+
+    assertXmlCharProduction(document);
+    assertBalancedMarkup(document);
+    expect(document.endsWith('</rss>')).toBe(true);
+  });
+
+  it('verifies the verifier: the Char reader really does reject a forbidden byte', () => {
+    // ★ A CHECK ON THE CHECK. Every case above would pass vacuously if
+    // `assertXmlCharProduction` accepted everything, so it is shown to reject the
+    // document the finding described - and to accept the one the renderer now emits.
+    expect(() => {
+      assertXmlCharProduction('<title>Fake\u0000Title</title>');
+    }).toThrow(/U\+0000.*not permitted by the XML 1\.0 Char production/);
+
+    expect(() => {
+      assertXmlCharProduction('<title>Fake\uD83DTitle</title>');
+    }).toThrow(/U\+D83D/);
+
+    expect(() => {
+      assertBalancedMarkup('<channel><item></channel></item>');
+    }).toThrow(/closes/);
+
+    expect(() => {
+      assertBalancedMarkup('<channel>');
+    }).toThrow(/unclosed: channel/);
+
+    // And both accept the real thing.
+    const document = renderDocument([makeFullyPopulatedFeedRow()]);
+    expect(() => {
+      assertXmlCharProduction(document);
+      assertBalancedMarkup(document);
+    }).not.toThrow();
+  });
+});
+
 describe('renderGoogleProductFeed - element 11, the product price', () => {
   it('emits the PRODUCT price, not the SKU price', () => {
     const document = renderOneRow({
@@ -1107,18 +1434,13 @@ describe('renderGoogleProductFeed - element 11, the product price', () => {
       skuPrice: Money.fromDecimalString('19.99'),
     });
 
-    // CFML parity [integrationServices/google/views/feed/product.cfm:L27]: the body
-    // is `local.sku.getProduct().getPrice()` - the PRODUCT's price - while the sale
-    // gate on the next line reads the SKU's own price and the SKU's sale price.
-    // Those are three quantities on two objects, and the element that is emitted is
-    // not one of the two the gate examines.
+    // CFML parity [integrationServices/google/views/feed/product.cfm:L27]: the body is
+    // `local.sku.getProduct().getPrice()` - the PRODUCT's price - while the sale gate on the next
+    // line reads the SKU's own price and the SKU's sale price. Three quantities on two objects, and
+    // the element emitted is not one the gate examines.
     //
-    // JUDGMENT CALL: the asymmetry is REPRODUCED, NEVER RECONCILED. Substituting
-    // the SKU price here would change the advertised price of every SKU that is not
-    // its product's default, and substituting the product price into the gate would
-    // change which items advertise a sale at all. Either "helpful" collapse changes
-    // money. This is exactly why the projection carries three separate price fields
-    // and why no one of them is ever read in place of another.
+    // JUDGMENT CALL: the asymmetry is REPRODUCED, NEVER RECONCILED. Either collapse changes money,
+    // which is why the projection carries three price fields.
     expect(itemElementBody(document, 'g:price')).toBe('24.50');
     expect(itemElementBody(document, 'g:price')).not.toBe('19.99');
   });
@@ -1131,8 +1453,8 @@ describe('renderGoogleProductFeed - element 11, the product price', () => {
       salePriceExpirationDateTime: SALE_EXPIRATION_INSTANT,
     });
 
-    // The three fields are genuinely independent: the SKU pair moved far below the
-    // product price and opened a sale, and the advertised price did not move.
+    // The three fields are genuinely independent: the SKU pair moved far below the product price
+    // and opened a sale, and the advertised price did not move.
     expect(itemElementBody(document, 'g:price')).toBe('24.50');
     expect(itemElementBody(document, 'g:sale_price')).toBe('1.00');
   });
@@ -1142,16 +1464,11 @@ describe('renderGoogleProductFeed - element 11, the product price', () => {
     const oneDecimal = renderOneRow({ productPrice: Money.fromDecimalString('9.5') });
     const manyDecimals = renderOneRow({ productPrice: Money.fromDecimalString('1234.567') });
 
-    // JUDGMENT CALL: two-decimal presentation is a normalisation of the legacy
-    // output rather than a reproduction of it, so it is a correction and carries no
-    // defect marker. The template applies no mask at L27, so raw CFML numeric
-    // stringification rendered a stored `9.50` as `9.5`. All money in this port is
-    // presented through the value object's two-decimal rendering, which is the
-    // target equivalent of `numberFormat(v,"0.00")`.
-    //
-    // Every expectation here is a decimal STRING compared against the rendered
-    // string. No expectation performs arithmetic, and no float touches money
-    // anywhere in this file.
+    // JUDGMENT CALL: two-decimal presentation NORMALISES the legacy output rather than reproducing
+    // it, so it is a correction and carries no defect marker. The template applies no mask at L27,
+    // so raw CFML numeric stringification rendered a stored `9.50` as `9.5`. All money here is
+    // presented through the value object's two-decimal rendering, the target equivalent of
+    // `numberFormat(v,"0.00")`.
     expect(itemElementBody(wholeUnits, 'g:price')).toBe('9.00');
     expect(itemElementBody(oneDecimal, 'g:price')).toBe('9.50');
     expect(itemElementBody(manyDecimals, 'g:price')).toBe('1234.57');
@@ -1164,16 +1481,12 @@ describe('renderGoogleProductFeed - element 11, the product price', () => {
       skuPrice: Money.fromDecimalString('19.99'),
     });
 
-    // CFML parity [integrationServices/google/views/feed/product.cfm:L27]: an absent
-    // price stringifies to nothing, so the element is emitted with an EMPTY body.
-    // The absence is real and reachable - the product price is non-persistent and
-    // delegates to the default SKU, and the accessor falls off the end of its own
-    // function with no return when there is none.
+    // CFML parity [integrationServices/google/views/feed/product.cfm:L27]: an absent price
+    // stringifies to nothing, so the element is emitted with an EMPTY body. The absence is
+    // reachable - the product price is non-persistent and delegates to the default SKU, whose
+    // accessor falls off the end of its own function with no return when there is none.
     //
-    // ZERO IS NEVER SUBSTITUTED. A feed advertising a price of `0.00` offers the
-    // product for free; an empty element says "no price". The money value object's
-    // zero constant is not a fallback here or anywhere else in this port, and the
-    // SKU price sitting right next to it is not one either.
+    // ZERO IS NEVER SUBSTITUTED: a feed advertising `0.00` offers the product free.
     expect(itemElementBody(document, 'g:price')).toBe('');
     expect(itemElementBody(document, 'g:price')).not.toBe('0.00');
     expect(itemElementBody(document, 'g:price')).not.toBe('19.99');
@@ -1185,8 +1498,8 @@ describe('renderGoogleProductFeed - element 11, the product price', () => {
     const document = renderDocument([makeFullyPopulatedFeedRow()]);
 
     // The template's commented-out shipping block nests its own `g:price`
-    // [integrationServices/google/views/feed/product.cfm:L55], so the element name
-    // alone cannot prove that block stayed unimplemented. The COUNT can.
+    // [integrationServices/google/views/feed/product.cfm:L55], so the element name alone cannot
+    // prove it stayed unimplemented. The COUNT can.
     expect(itemElementsNamed(document, 'g:price')).toHaveLength(1);
   });
 });
@@ -1204,12 +1517,10 @@ describe('renderGoogleProductFeed - elements 12 and 13, the gated sale block', (
       salePriceExpirationDateTime: SALE_EXPIRATION_INSTANT,
     });
 
-    // CFML parity [integrationServices/google/views/feed/product.cfm:L28-L31]: both
-    // elements sit inside ONE conditional, so they are emitted together or not at
-    // all. The gate is `local.sku.getPrice() gt local.sku.getSalePrice()` - the SKU
-    // against itself - and the port evaluates it through the money value object's
-    // comparison surface rather than with a numeric operator, so no price is ever
-    // compared as a float.
+    // CFML parity [integrationServices/google/views/feed/product.cfm:L28-L31]: both elements sit
+    // inside ONE conditional, so they are emitted together or not at all. The gate is
+    // `local.sku.getPrice() gt local.sku.getSalePrice()` - the SKU against itself - evaluated here
+    // through the money value object, never as a float.
     expect(itemElementBody(document, 'g:sale_price')).toBe('9.50');
     expect(itemElementBody(document, 'g:sale_price_effective_date')).toBe(
       `${RANGE_START_RENDERED}/${SALE_EXPIRATION_RENDERED}`,
@@ -1228,23 +1539,17 @@ describe('renderGoogleProductFeed - elements 12 and 13, the gated sale block', (
     });
     const range = itemElementBody(document, 'g:sale_price_effective_date');
 
-    // JUDGMENT CALL: this is a CORRECTION of a malformed legacy formulation, so it
-    // carries no defect marker - the closing sentence of one asserts preservation
-    // and would be false here. The legacy body at
-    // [integrationServices/google/views/feed/product.cfm:L30] was
-    // `dateFormat(now(),"YYYY-MM-DD")` + `T` + `timeFormat(now(),"HH:mm:ss")` + a
-    // HARDCODED `-` + `getTimeZoneInfo().utcHourOffset`, twice, joined by `/`. It
-    // carried two independent faults: `utcHourOffset` is SIGNED, so a server east of
-    // UTC contributed its own sign after the hardcoded one and the offset read
-    // `--2`; and the offset was neither zero-padded nor given minutes, rendering
-    // `-5` where the standard requires `-05:00`. It also depended on the server's
-    // timezone through both `now()` and `getTimeZoneInfo()`, which is precisely what
-    // this project's explicit UTC policy replaces.
-    //
-    // What the target emits instead is a conforming UTC interval: two timestamps at
-    // second precision, each closed with the UTC designator, joined by the legacy's
-    // own `/`. Second precision is kept because the legacy mask kept it, so the
-    // sub-second component of the supplied instant is truncated rather than carried.
+    // JUDGMENT CALL: this is a CORRECTION of a malformed legacy formulation, so it carries no
+    // defect marker. The legacy body at [integrationServices/google/views/feed/product.cfm:L30] was
+    // `dateFormat(now(),"YYYY-MM-DD")` + `T` + `timeFormat(now(),"HH:mm:ss")` + a HARDCODED `-` +
+    // `getTimeZoneInfo().utcHourOffset`, twice, joined by `/`. Two independent faults:
+    // `utcHourOffset` is SIGNED, so a server east of UTC contributed its own sign after the
+    // hardcoded one and the offset read `--2`; and it was neither zero-padded nor given minutes,
+    // rendering `-5` where the standard requires `-05:00`. It also read the server timezone through
+    // `now()` and `getTimeZoneInfo()`, which the explicit UTC policy replaces. The target emits two
+    // timestamps at second precision, each closed with the UTC designator, joined by the legacy's
+    // own `/`. Second precision is kept because the legacy mask kept it, so a sub-second component
+    // is truncated.
     expect(range).toBe('2024-06-01T12:34:56Z/2024-12-31T23:59:59Z');
     expect(occurrenceCount(range, '/')).toBe(1);
     expect(range).not.toContain('--');
@@ -1261,9 +1566,8 @@ describe('renderGoogleProductFeed - elements 12 and 13, the gated sale block', (
     const earlier = renderGoogleProductFeed([row], FEED_HOST, new Date('2020-02-29T00:00:00.000Z'));
     const later = renderGoogleProductFeed([row], FEED_HOST, new Date('2031-11-15T06:07:08.000Z'));
 
-    // Two fixed instants, both far from the moment this suite runs, and each one
-    // reaches the output verbatim. A renderer that read the clock could not produce
-    // either. Nothing here is asserted about how long anything takes.
+    // Two fixed instants, both far from the moment this suite runs, each reaching the output
+    // verbatim.
     expect(itemElementBody(earlier, 'g:sale_price_effective_date')).toBe(
       `2020-02-29T00:00:00Z/${SALE_EXPIRATION_RENDERED}`,
     );
@@ -1279,9 +1583,9 @@ describe('renderGoogleProductFeed - elements 12 and 13, the gated sale block', (
       salePriceExpirationDateTime: SALE_EXPIRATION_INSTANT,
     });
 
-    // The legacy gate is STRICTLY GREATER THAN, so equal prices are not a sale. The
-    // two decimal spellings of the same quantity compare equal through the money
-    // value object, which is the behaviour a string comparison would have missed.
+    // The legacy gate is STRICTLY GREATER THAN, so equal prices are not a sale. The two decimal
+    // spellings of the same quantity compare equal through the money value object, which a string
+    // comparison would have missed.
     expect(document).not.toContain('g:sale_price');
     expect(itemElementNames(document)).not.toContain('g:sale_price');
     expect(itemElementNames(document)).not.toContain('g:sale_price_effective_date');
@@ -1297,20 +1601,25 @@ describe('renderGoogleProductFeed - elements 12 and 13, the gated sale block', (
     expect(document).not.toContain('g:sale_price');
   });
 
-  it('omits both elements when the sale price is absent - the live repository state', () => {
+  it('omits both elements when the sale price is absent', () => {
     const document = renderOneRow({
       skuPrice: Money.fromDecimalString('19.99'),
       skuSalePrice: undefined,
       salePriceExpirationDateTime: undefined,
     });
 
-    // This is the state EVERY row the live repository produces is in, and the
-    // reasoning belongs to that module: neither the SKU sale price nor its
-    // expiration is a persisted column, and the promotion sale-price path that
-    // resolves them is another bounded capability. The sale block is therefore
-    // unreachable through the real data path today, which is exactly why the block
-    // is exercised here with directly constructed rows - so it is already correct on
-    // the day a row does carry the pair.
+    // This case previously carried the claim that the absent pair is "the state EVERY
+    // row the live repository produces is in" and that "the sale block is therefore
+    // unreachable through the real data path today". Both statements are now false and
+    // are corrected here rather than left to mislead the next reader: the data-access
+    // half resolves the pair from the promotion sale-price detail, so an ordinary row
+    // carrying a live sale reaches this block through the real path.
+    //
+    // The state under test is still reachable, which is why the case survives. The
+    // sale price is absent exactly when there is no qualifying promotion AND the SKU's
+    // own price column is null, because the fallback the repository applies is the
+    // legacy accessor's own `return getPrice()` [model/entity/Sku.cfc:L546-L551] rather
+    // than a default. Absent-with-no-price is the narrower state this asserts.
     expect(document).not.toContain('g:sale_price');
     expect(itemElementNames(document)).toEqual([
       'g:id',
@@ -1341,11 +1650,9 @@ describe('renderGoogleProductFeed - elements 12 and 13, the gated sale block', (
       salePriceExpirationDateTime: SALE_EXPIRATION_INSTANT,
     });
 
-    // JUDGMENT CALL: the shipped gate requires both operands to be PRESENT before it
-    // compares, where the legacy tested the comparison alone. The faithful reading
-    // of an absent operand is that a sale price which is not there cannot be
-    // strictly below the price, so the block is skipped - and skipping is also what
-    // keeps a half-formed sale block out of the feed.
+    // JUDGMENT CALL: the shipped gate requires both operands to be PRESENT before it compares,
+    // where the legacy tested the comparison alone. A sale price which is not there cannot be
+    // strictly below the price, and skipping also keeps a half-formed sale block out of the feed.
     expect(noSkuPrice).not.toContain('g:sale_price');
     expect(noSalePrice).not.toContain('g:sale_price');
   });
@@ -1357,9 +1664,9 @@ describe('renderGoogleProductFeed - elements 12 and 13, the gated sale block', (
       salePriceExpirationDateTime: undefined,
     });
 
-    // An interval has two ends. With only one, the pair cannot be emitted
-    // truthfully, so neither element is emitted - and the price element is never
-    // emitted alone, because the legacy holds both inside one conditional.
+    // An interval has two ends; with only one the pair cannot be emitted truthfully, so neither
+    // element is emitted - and the price element is never emitted alone, because the legacy holds
+    // both inside one conditional.
     expect(document).not.toContain('g:sale_price');
   });
 
@@ -1376,10 +1683,9 @@ describe('renderGoogleProductFeed - elements 12 and 13, the gated sale block', (
       new Date(Number.NaN),
     );
 
-    // JUDGMENT CALL: an unrenderable instant fails CLOSED rather than raising or
-    // emitting a placeholder. A renderer that cannot state a sale window truthfully
-    // declines to advertise one, and the rest of the document is still complete and
-    // well-formed - which is what this case checks alongside the omission.
+    // JUDGMENT CALL: an unrenderable instant fails CLOSED rather than raising or emitting a
+    // placeholder. A renderer that cannot state a sale window truthfully declines to advertise one,
+    // and the document is still complete and well-formed.
     expect(document).not.toContain('g:sale_price');
     expect(document).not.toContain('NaN');
     expect(document).not.toContain('Invalid Date');
@@ -1405,20 +1711,42 @@ describe('renderGoogleProductFeed - elements 12 and 13, the gated sale block', (
 
 describe('renderGoogleProductFeed - element 14, the brand', () => {
   it('emits the brand element when the row carries a brand name', () => {
-    const document = renderOneRow({ brandName: 'Fake Brand' });
+    const document = renderOneRow({ brandID: 'fake-brand-id-1', brandName: 'Fake Brand' });
 
-    // CFML parity [integrationServices/google/views/feed/product.cfm:L32]: the guard
-    // is `not isNull(local.sku.getProduct().getBrand())`, and it is meaningful
-    // precisely because the brand is joined LEFT - a product with no brand still
-    // appears in the feed, just without this element.
+    // CFML parity [integrationServices/google/views/feed/product.cfm:L32]: the guard is
+    //   `not isNull(local.sku.getProduct().getBrand())`
+    // and it is meaningful because the brand is joined LEFT, so a product with no brand appears in
+    // the feed.
     expect(itemElementBody(document, 'g:brand')).toBe('Fake Brand');
   });
 
-  it('omits the brand element entirely when there is no brand name', () => {
-    const document = renderOneRow({ brandName: undefined });
+  it('emits an EMPTY brand element when the association is present but the name is absent', () => {
+    const document = renderOneRow({ brandID: 'fake-brand-id-1', brandName: undefined });
 
+    // This case previously asserted the OPPOSITE - that an absent name omits the
+    // element entirely - and it is inverted rather than deleted, because the state it
+    // exercises is the one the finding was about. The legacy guard tests the
+    // ASSOCIATION and then interpolates the name
+    // [integrationServices/google/views/feed/product.cfm:L32]; CFML stringifies a null
+    // name to nothing, so a brand row whose name column is null produced an OPEN AND
+    // CLOSE PAIR with nothing between them. Omitting the element instead is a
+    // different document, and "both convey absence" is not a reason to prefer it.
+    expect(itemElementBody(document, 'g:brand')).toBe('');
+    expect(itemChildren(document)).toContain('<g:brand></g:brand>');
+    expect(itemElementNames(document)).toContain('g:brand');
+  });
+
+  it('omits the brand element entirely when the product carries no brand', () => {
+    const document = renderOneRow({ brandID: undefined, brandName: undefined });
+
+    // ★ THIS CASE ONCE ABSENTED THE NAME ALONE, UNDER THE TITLE "WHEN THERE IS NO
+    // BRAND NAME". The name is the body and the association is the gate, so what makes
+    // the element disappear is the ABSENT BRAND - which the outer join
+    // [integrationServices/google/controllers/feed.cfc:L66] is what produces.
+    //
     // Omitted, not emptied, and the neighbouring elements close up around the gap
-    // while keeping their relative order.
+    // while keeping their relative order. This is the unmatched LEFT join
+    // [integrationServices/google/controllers/feed.cfc:L66].
     expect(document).not.toContain('g:brand');
     expect(itemElementNames(document)).not.toContain('g:brand');
     expect(itemElementNames(document).slice(-3)).toEqual([
@@ -1428,19 +1756,62 @@ describe('renderGoogleProductFeed - element 14, the brand', () => {
     ]);
   });
 
-  it('emits an empty brand element when the brand name is an empty string', () => {
-    const document = renderOneRow({ brandName: '' });
+  it('omits the brand element when the association is absent even though a name is carried', () => {
+    // The two fields are independent, so the contradictory combination is
+    // representable, and the gate is what decides. Asserting it here proves the
+    // subject reads the presence key rather than falling back on the name when that key
+    // says no - which is the failure mode the previous shape of this suite could not
+    // see.
+    const document = renderOneRow({ brandID: undefined, brandName: 'Fake Brand' });
 
-    // JUDGMENT CALL: the shipped gate tests the brand NAME, because that is the only
-    // brand information the projection carries - it cannot distinguish "no brand"
-    // from "a brand recording no name". An empty string is therefore PRESENT and the
-    // element is emitted with an empty body. The narrow consequence is stated rather
-    // than hidden: for a product whose brand exists but whose name column is null,
-    // the legacy emitted an empty element and this port omits it, because widening
-    // the projection to carry a separate brand-presence flag would mean reshaping a
-    // contract another module owns.
+    expect(document).not.toContain('g:brand');
+    expect(document).not.toContain('Fake Brand');
+  });
+
+  it('emits an empty brand element when the brand name is an empty string', () => {
+    const document = renderOneRow({ brandID: 'fake-brand-id-1', brandName: '' });
+
+    // An empty string and an absent name render identically, and that is correct rather
+    // than a coincidence: CFML stringifies both to nothing at the interpolation site, so
+    // the source could not tell them apart either. The gate is upstream of this
+    // distinction entirely.
+    //
+    // ★★ THIS CASE ONCE CARRIED A JUDGMENT CALL READING "THE SHIPPED GATE TESTS THE
+    // BRAND NAME, BECAUSE THAT IS THE ONLY BRAND INFORMATION THE PROJECTION CARRIES -
+    // IT CANNOT DISTINGUISH 'NO BRAND' FROM 'A BRAND RECORDING NO NAME'", AND
+    // CONCEDED: "FOR A PRODUCT WHOSE BRAND EXISTS BUT WHOSE NAME COLUMN IS NULL, THE
+    // LEGACY EMITTED AN EMPTY ELEMENT AND THIS PORT OMITS IT, BECAUSE WIDENING THE
+    // PROJECTION TO CARRY A SEPARATE BRAND-PRESENCE FLAG WOULD MEAN RESHAPING A
+    // CONTRACT ANOTHER MODULE OWNS." The concession named a real divergence and then
+    // declined to close it on ownership grounds - but the projection and this renderer
+    // are two thirds of ONE adapter and both are in scope, and the widening cost a
+    // single column on a table the selection already joins
+    // [model/entity/Product.cfc:L68]. The gate is brand presence now, and the empty
+    // body remains what an empty name renders.
     expect(itemElementBody(document, 'g:brand')).toBe('');
     expect(itemChildren(document)).toContain('<g:brand></g:brand>');
+  });
+
+  it('emits an empty brand element when the brand exists but records no name', () => {
+    const document = renderOneRow({ brandID: 'fake-brand-id-1', brandName: undefined });
+
+    // NET-NEW, and the case that proves the divergence above is closed. The legacy
+    // guard passes on the ASSOCIATION and then interpolates a null name, which CFML
+    // stringifies to nothing [integrationServices/google/views/feed/product.cfm:L32],
+    // so an empty element is exactly what the legacy produced for this row.
+    expect(itemElementNames(document)).toContain('g:brand');
+    expect(itemChildren(document)).toContain('<g:brand></g:brand>');
+  });
+
+  it('gates on the brand identifier rather than on the brand name', () => {
+    // NET-NEW. Holding the name fixed and moving only the identifier isolates the
+    // gate: the same name emits or does not emit purely on brand presence.
+    const branded = renderOneRow({ brandID: 'fake-brand-id-1', brandName: 'Fake Brand' });
+    const unbranded = renderOneRow({ brandID: undefined, brandName: 'Fake Brand' });
+
+    expect(itemElementNames(branded)).toContain('g:brand');
+    expect(itemElementNames(unbranded)).not.toContain('g:brand');
+    expect(unbranded).not.toContain('Fake Brand');
   });
 
   it('emits the brand element between the sale block and the item group id', () => {
@@ -1458,10 +1829,9 @@ describe('renderGoogleProductFeed - element 14, the brand', () => {
   it('never emits a brand website and never has one to fetch', () => {
     const document = renderOneRow({ brandName: 'Fake Brand' });
 
-    // `Brand.brandWebsite` [model/entity/Brand.cfc:L57] is a plain persisted string
-    // carrying a display-only format hint. It is ABSENT from the feed template, it
-    // is absent from the projection this subject consumes, and it is not a network
-    // target for anything: nothing here emits it and nothing here dereferences it.
+    // `Brand.brandWebsite` [model/entity/Brand.cfc:L57] is a plain persisted string carrying a
+    // display-only format hint. It is ABSENT from the feed template and from the projection this
+    // subject consumes, and it is not a network target.
     expect(document).not.toContain('brandWebsite');
     expect(document).not.toContain('g:link');
     expect(itemElementsNamed(document, 'g:brand')).toEqual(['<g:brand>Fake Brand</g:brand>']);
@@ -1475,13 +1845,11 @@ describe('renderGoogleProductFeed - element 14, the brand', () => {
 describe('renderGoogleProductFeed - the commented-out legacy elements', () => {
   /**
    * Every element name held inside one of the template's three comment blocks:
-   * [integrationServices/google/views/feed/product.cfm:L33-L38],
-   * [.../product.cfm:L40-L57] and [.../product.cfm:L59-L61].
+   * [integrationServices/google/views/feed/product.cfm:L33-L38], [.../product.cfm:L40-L57] and
+   * [.../product.cfm:L59-L61].
    *
-   * The legacy feed never carried one of them, so the port implements none. They
-   * are listed here to be asserted ABSENT, which is the only treatment they get -
-   * no implementation, no placeholder, and no commented-out block of TypeScript
-   * mirroring them, which would only add dead code for a reader to trip over.
+   * The legacy feed never carried one of them, so the port implements none - no placeholder and no
+   * commented-out TypeScript.
    */
   const NEVER_EMITTED_ELEMENT_NAMES: readonly string[] = [
     'g:gtin',
@@ -1514,10 +1882,8 @@ describe('renderGoogleProductFeed - the commented-out legacy elements', () => {
   it('distinguishes the never-emitted shipping group from the shipping weight', () => {
     const document = renderDocument([makeFullyPopulatedFeedRow()]);
 
-    // `g:shipping` is a PREFIX of `g:shipping_weight`, so a substring check on the
-    // bare name would be satisfied by the element that is legitimately emitted. The
-    // exact tags are what separate them, and the emitted one is asserted present in
-    // the same case that asserts the group absent.
+    // `g:shipping` is a PREFIX of `g:shipping_weight`, so a substring check on the bare name would
+    // be satisfied by the element legitimately emitted. The exact tags separate them.
     expect(document).not.toContain('<g:shipping>');
     expect(document).not.toContain('</g:shipping>');
     expect(document).toContain('<g:shipping_weight>');
@@ -1528,9 +1894,8 @@ describe('renderGoogleProductFeed - the commented-out legacy elements', () => {
   it('emits exactly sixteen element occurrences for a fully populated row', () => {
     const document = renderDocument([makeFullyPopulatedFeedRow()]);
 
-    // The count is the backstop: an added element would pass every absence check
-    // above and still fail this, and a nested group from one of the comment blocks
-    // would inflate it immediately.
+    // The count is the backstop: an added element would pass every absence check above and still
+    // fail this.
     expect(itemChildren(document)).toHaveLength(16);
   });
 });
@@ -1543,12 +1908,10 @@ describe('renderGoogleProductFeed - purity and the host argument', () => {
   it('writes the supplied host into all five sites the legacy interpolated', () => {
     const document = renderDocument([makeFullyPopulatedFeedRow()]);
 
-    // CFML parity [integrationServices/google/views/feed/product.cfm:L14-L15, L22-L24]:
-    // the legacy interpolated `CGI.HTTP_HOST` at five sites and prefixed each with a
-    // hardcoded `http://`. There is no request scope here, so the host arrives as an
-    // argument - and it is passed as a non-routable RFC 2606 `.invalid` placeholder,
-    // purely as a STRING. The value is data written into element bodies, never a
-    // destination, and nothing in this suite resolves or contacts it.
+    // CFML parity [integrationServices/google/views/feed/product.cfm:L14-L15, L22-L24]: the legacy
+    // interpolated `CGI.HTTP_HOST` at five sites, each prefixed with a hardcoded `http://`. There
+    // is no request scope here, so the host arrives as an argument - a non-routable RFC 2606
+    // `.invalid` placeholder, purely as a STRING written into element bodies, never a destination.
     expect(occurrenceCount(document, FEED_ORIGIN)).toBe(5);
     expect(documentLines(document)[4]).toBe(`    <link>${FEED_ORIGIN}</link>`);
     expect(documentLines(document)[5]).toBe(
@@ -1564,9 +1927,16 @@ describe('renderGoogleProductFeed - purity and the host argument', () => {
 
     // CFML parity [integrationServices/google/views/feed/product.cfm:L14-L15, L22-L24]:
     // the literal is `http://` at every one of the five sites and never `https`.
-    // Upgrading it would change what each of those five values resolves to, and the
-    // scheme a deployment ought to serve is a product decision rather than a
-    // transcription choice.
+    //
+    // ★ THE UPGRADE TO `https` IS DECLINED DELIBERATELY, and the decline is recorded
+    // here as well as on `HTTP_SCHEME_PREFIX` so a reviewer meets it from either side.
+    // AAP 0.1.1 states the objective as preserving "the Google product-feed
+    // integration contract exactly", and the scheme is part of that contract at all
+    // five sites: a Merchant Center account whose configured item URLs are `http`
+    // would see every one of them change at once. Which scheme a deployment ought to
+    // serve is a product decision, not a transcription choice, so this port keeps the
+    // legacy literal and fixes the half of the finding that IS a defect - that the
+    // origin was never validated at all - in `assertFeedHostShape` instead.
     expect(document).not.toContain('https');
     expect(occurrenceCount(document, 'http://')).toBe(6);
   });
@@ -1575,11 +1945,10 @@ describe('renderGoogleProductFeed - purity and the host argument', () => {
     const document = renderDocument([makeFullyPopulatedFeedRow()]);
     const urls = absoluteUrls(document);
 
-    // Every absolute address in the document is accounted for: five are the
-    // placeholder origin the caller supplied, and the sixth is the namespace URI in
-    // the root element's `xmlns:g` attribute, which is an identifier binding the
-    // Google feed vocabulary and part of the RSS contract rather than an endpoint.
-    // NO service endpoint of any kind appears, and none is contacted.
+    // Every absolute address is accounted for: five are the placeholder origin the caller supplied,
+    // and the sixth is the namespace URI in the root element's `xmlns:g` attribute, which is part
+    // of the RSS contract rather than an endpoint. NO service endpoint appears, and none is
+    // contacted.
     expect(urls).toHaveLength(6);
 
     for (const url of urls) {
@@ -1598,17 +1967,15 @@ describe('renderGoogleProductFeed - purity and the host argument', () => {
 
     renderDocument([makeFullyPopulatedFeedRow(), makeFeedRow()]);
 
-    // A direct proof that the host is an input rather than a destination. The spy is
-    // torn down by this file's own `afterEach`.
+    // A direct proof that the host is an input rather than a destination.
     expect(fetchSpy).not.toHaveBeenCalled();
   });
 
   it('returns an identical document for identical arguments', () => {
     const rows: readonly GoogleProductFeedRow[] = [makeFullyPopulatedFeedRow(), makeFeedRow()];
 
-    // Determinism is what makes the subject assertable with nothing mocked, and it
-    // follows from taking the host and the instant as arguments rather than reading
-    // them from ambient state. Two calls, one string.
+    // Determinism follows from taking the host and the instant as arguments rather than reading
+    // them from ambient state.
     expect(renderDocument(rows)).toBe(renderDocument(rows));
   });
 
@@ -1631,36 +1998,286 @@ describe('renderGoogleProductFeed - purity and the host argument', () => {
   it('renders from a frozen collection, so it appends to nothing it was handed', () => {
     const rows: readonly GoogleProductFeedRow[] = Object.freeze([makeFullyPopulatedFeedRow()]);
 
-    // A frozen array would raise on any attempt to write to it, so a clean render is
-    // evidence that the subject accumulates into its own local structures only.
+    // A frozen array raises on any write, so a clean render is evidence that the subject
+    // accumulates into its own local structures only.
     const document = renderDocument(rows);
 
     expect(document.endsWith('</rss>')).toBe(true);
     expect(occurrenceCount(document, '<item>')).toBe(1);
   });
 
-  it('accepts an empty host without failing, exactly as the legacy accepted one', () => {
-    const document = renderGoogleProductFeed([makeFeedRow()], '', RANGE_START_INSTANT);
-
-    // CFML parity: the legacy never validated `CGI.HTTP_HOST` - it emitted whatever
-    // the engine reported - so the port validates nothing either, and adding a guard
-    // would add behaviour the legacy never had. The scheme prefix survives on its
-    // own, which is precisely the shape a reviewer should be able to see.
-    expect(documentLines(document)[4]).toBe('    <link>http://</link>');
-    expect(itemElementBody(document, 'g:image_link')).toBe(
-      'http:///fake-image-base/product/default/fake-sku-image.jpg',
+  it('accepts a bare host, and a bare host with a port, unchanged', () => {
+    // ★★ THIS CASE HAS NOW BEEN WRITTEN THREE TIMES, AND THE TRAIL IS WORTH KEEPING.
+    //
+    // It first read "ACCEPTS AN EMPTY HOST WITHOUT FAILING, EXACTLY AS THE LEGACY
+    // ACCEPTED ONE", justified by: "THE LEGACY NEVER VALIDATED `CGI.HTTP_HOST` - IT
+    // EMITTED WHATEVER THE ENGINE REPORTED - SO THE PORT VALIDATES NOTHING EITHER, AND
+    // ADDING A GUARD WOULD ADD BEHAVIOUR THE LEGACY NEVER HAD."
+    //
+    // It then read "VALIDATES NOTHING ITSELF, BECAUSE THE HOST IT IS GIVEN HAS ALREADY
+    // BEEN VALIDATED", which kept the empty-host render and moved the justification: the
+    // refusal had been added at `toTrustedFeedHost` in
+    // `src/integrations/google/googleFeedService.ts`, so this function was described as
+    // pure, policy-free, and interpolating exactly what it was handed.
+    //
+    // Both statements ABOUT THE LEGACY are accurate
+    // [integrationServices/google/views/feed/product.cfm:L14, L15, L22, L23, L24]. The
+    // first conclusion applied the reproduce-rather-than-repair rule to a SECURITY
+    // boundary, which is where that rule stops: behind a fixed CFML virtual host the
+    // engine reported a value the deployment controlled, whereas an API Gateway `Host`
+    // header is chosen by the caller. The second conclusion was right about WHERE the
+    // policy lives and wrong that this function holds none of it.
+    //
+    // ★ THE SHIPPED RENDERER CHECKS THE ORIGIN ITSELF, AND THE DUPLICATION IS THE POINT.
+    // `renderGoogleProductFeed` opens with `assertFeedHostShape(feedHost)` before it
+    // composes anything, for two reasons neither of which the service's guard covers:
+    // the renderer is a DEFAULTED, SUBSTITUTABLE constructor parameter of
+    // `GoogleFeedService`, so a caller may supply a different one; and it is an exported
+    // pure function that anything may call directly, without a service in the picture at
+    // all. A precondition on the bytes this module interpolates therefore has to be
+    // enforced by this module. Section 13b asserts every refusal, including the empty
+    // host this case used to render.
+    //
+    // WHAT REMAINS TRUE, AND IS WHAT THIS CASE NOW PINS: an ACCEPTED host is
+    // interpolated EXACTLY as given - not trimmed, not lower-cased, not defaulted, and
+    // not re-encoded. The two shapes an operator actually configures are asserted here
+    // so the refusals in 13b cannot be mistaken for a guard that rejects everything.
+    const plain = renderGoogleProductFeed(
+      [makeFeedRow()],
+      'shop.example.invalid',
+      RANGE_START_INSTANT,
     );
-    expect(document.endsWith('</rss>')).toBe(true);
+    const ported = renderGoogleProductFeed(
+      [makeFeedRow()],
+      'shop.example.invalid:8443',
+      RANGE_START_INSTANT,
+    );
+
+    expect(documentLines(plain)[4]).toBe('    <link>http://shop.example.invalid</link>');
+    expect(documentLines(ported)[4]).toBe('    <link>http://shop.example.invalid:8443</link>');
+    expect(plain.endsWith('</rss>')).toBe(true);
+    expect(ported.endsWith('</rss>')).toBe(true);
+  });
+});
+
+// ---------------------------------------------------------------------------
+// 13b. The feed origin, refused rather than concatenated
+//
+// ★★★ SECURITY BOUNDARY — CWE-346 (ORIGIN VALIDATION ERROR), and A DELIBERATE
+// DIVERGENCE FROM THE LEGACY, which is why the block carries this much prose.
+//
+// The legacy template interpolated `CGI.HTTP_HOST` at five sites
+// [integrationServices/google/views/feed/product.cfm:L14-L15, L22-L24] and validated
+// it at none. `CGI.HTTP_HOST` is the REQUEST'S OWN `Host` HEADER: a client chooses it,
+// so the legacy feed's every item URL was, in principle, client-steerable. This port
+// already diverges by taking the host as an explicit parameter rather than reading an
+// ambient request scope - and that divergence buys nothing unless the value is also
+// checked, because a caller can hand over a header just as easily as a setting.
+//
+// WHY THIS IS NOT A PARITY BREAK WORTH PRESERVING. AAP 0.6.7 registers twenty legacy
+// defects to reproduce, and the absence of origin validation is not among them; there
+// is no preserve-exactly mandate over the feed template's host handling; and AAP
+// 0.8.1's must-preserve list names promotion math, the resolution cascades and
+// option-based SKU selection, none of which touches this. What the AAP does mandate
+// [0.1.1] is preserving the feed CONTRACT - the elements, their order and their values
+// - and a refused render emits no document at all rather than a differently-shaped
+// one, so no consumer can observe a changed contract.
+//
+// WHY IT THROWS while the forbidden-code-point pass elides. A bad code point poisons
+// one field of one row, so removing it keeps the rest of the catalog serving; a bad
+// origin poisons EVERY url in the document at once, so there is no partial output
+// worth emitting, and a feed that points Merchant Center at an attacker's host is
+// strictly worse than a feed that failed to build. The two opposite dispositions in
+// one module are the design point, and each is asserted here.
+// ---------------------------------------------------------------------------
+
+describe('renderGoogleProductFeed - feed origin validation', () => {
+  /** Renders with the supplied host and returns the raised error, or throws if none was. */
+  function captureOriginRefusal(feedHost: string): Error {
+    try {
+      renderGoogleProductFeed([makeFeedRow()], feedHost, RANGE_START_INSTANT);
+    } catch (error: unknown) {
+      if (error instanceof Error) {
+        return error;
+      }
+
+      throw new Error(`expected an Error, received ${typeof error}`);
+    }
+
+    // Reached only when the guard let the value through, which a truncated or
+    // partially-rendered document could otherwise disguise as a pass.
+    throw new Error(`expected a refusal for host ${JSON.stringify(feedHost)}, none was raised`);
+  }
+
+  it('refuses an empty host, which the legacy accepted and rendered as a bare scheme', () => {
+    const error = captureOriginRefusal('');
+
+    // The legacy emitted `http://` on its own at all five sites when the header was
+    // absent. That is not a usable feed, and it is the one refusal whose legacy
+    // behaviour is directly observable, so it is asserted first.
+    expect(error.message).toContain('it was empty');
+    expect(error.message).toContain('No feed was rendered');
+  });
+
+  it('refuses a host carrying a scheme, because this module owns the scheme', () => {
+    // `http://x` would compose `http://http://x`, and `https://x` would compose a
+    // document whose links carry two schemes.
+    expect(captureOriginRefusal('http://shop.example.invalid').message).toContain('no scheme');
+    expect(captureOriginRefusal('https://shop.example.invalid').message).toContain('no scheme');
+    expect(captureOriginRefusal('//shop.example.invalid').message).toContain('no scheme');
+  });
+
+  it('refuses a host carrying a path, which would silently reparent every url', () => {
+    expect(captureOriginRefusal('shop.example.invalid/checkout').message).toContain('no path');
+    expect(captureOriginRefusal('shop.example.invalid/').message).toContain('no path');
+  });
+
+  it('refuses embedded credentials, which move the real authority past the @', () => {
+    // `shop.example.invalid@evil.invalid` resolves to `evil.invalid`, with the part a
+    // human reads first demoted to a username. This is the highest-value single case
+    // in the block.
+    const error = captureOriginRefusal('shop.example.invalid@evil.invalid');
+
+    expect(error.message).toContain('no credentials');
+    expect(captureOriginRefusal('user:secret@evil.invalid').message).toContain('no credentials');
+  });
+
+  it('refuses a query or a fragment', () => {
+    expect(captureOriginRefusal('shop.example.invalid?tenant=a').message).toContain('no query');
+    expect(captureOriginRefusal('shop.example.invalid#frag').message).toContain('no fragment');
+  });
+
+  it('refuses whitespace anywhere, and never trims it away', () => {
+    // Trimming would ACCEPT a padded value and quietly change it, which is a worse
+    // outcome than refusing: the operator would never learn their configuration was
+    // malformed. All three positions are refused identically.
+    expect(captureOriginRefusal(' shop.example.invalid').message).toContain('no whitespace');
+    expect(captureOriginRefusal('shop.example.invalid ').message).toContain('no whitespace');
+    expect(captureOriginRefusal('shop example.invalid').message).toContain('no whitespace');
+    expect(captureOriginRefusal('   ').message).toContain('no whitespace');
+  });
+
+  it('refuses the CR and LF a header-splitting payload needs', () => {
+    // These would also survive `escapeXmlText`, which escapes markup and not layout,
+    // so refusing them here is the only place they are stopped.
+    expect(captureOriginRefusal('shop.example.invalid\r\nX-Injected: 1').message).toContain(
+      'no control characters',
+    );
+    expect(captureOriginRefusal('shop.example.invalid\n').message).toContain(
+      'no control characters',
+    );
+  });
+
+  it('refuses a NUL, which no host can contain', () => {
+    const error = captureOriginRefusal('shop.example.invalid\u0000evil.invalid');
+
+    expect(error.message).toContain('No feed was rendered');
+  });
+
+  it('refuses a malformed label - leading dot, trailing dot, leading hyphen', () => {
+    // One shape rule covers all three, which is why there is no rule per case in the
+    // implementation.
+    expect(captureOriginRefusal('.shop.example.invalid').message).toContain('bare host');
+    expect(captureOriginRefusal('shop.example.invalid.').message).toContain('bare host');
+    expect(captureOriginRefusal('-shop.example.invalid').message).toContain('bare host');
+    expect(captureOriginRefusal('shop..example.invalid').message).toContain('bare host');
+  });
+
+  it('refuses a host longer than a host can be, naming the limit and not the value', () => {
+    const overlong = `${'a'.repeat(300)}.invalid`;
+    const error = captureOriginRefusal(overlong);
+
+    expect(error.message).toContain('at most 259 characters');
+    expect(error.message).toContain('but it was 308');
+
+    // ★ THE MESSAGE NEVER ECHOES THE REJECTED ORIGIN. Reproducing it would write
+    // caller-controlled bytes into a log line, and the constraint is what an operator
+    // holding a legitimate host actually needs to read. Asserted for every refusal in
+    // this block, not just this one.
+    expect(error.message).not.toContain('aaaa');
+  });
+
+  it('names the constraint and never the value, for every refusal shape', () => {
+    const hosts: readonly string[] = [
+      'http://shop.example.invalid',
+      'shop.example.invalid/checkout',
+      'user:secret@evil.invalid',
+      'shop.example.invalid?tenant=a',
+      ' shop.example.invalid',
+    ];
+
+    for (const host of hosts) {
+      const error = captureOriginRefusal(host);
+
+      // No fragment of the rejected input reaches the message. `evil.invalid` and
+      // `secret` are the two a leak would be most damaging for.
+      expect(error.message).not.toContain('evil.invalid');
+      expect(error.message).not.toContain('secret');
+      expect(error.message).not.toContain('checkout');
+      expect(error.message).toContain('No feed was rendered');
+    }
+  });
+
+  it('refuses BEFORE emitting anything, so no partial document escapes', () => {
+    // The guard runs on the first line of the body, ahead of origin composition and
+    // ahead of every row. A caller therefore receives a document or an error and
+    // never a truncated feed - which for a five-site origin is the whole point.
+    let rendered: string | undefined;
+
+    try {
+      rendered = renderGoogleProductFeed(
+        [makeFullyPopulatedFeedRow(), makeFeedRow()],
+        'http://evil.invalid/x',
+        RANGE_START_INSTANT,
+      );
+    } catch {
+      rendered = undefined;
+    }
+
+    expect(rendered).toBeUndefined();
+  });
+
+  it('accepts an IPv6 literal in brackets, so an IPv6 deployment is not refused', () => {
+    const document = renderGoogleProductFeed([makeFeedRow()], '[2001:db8::1]', RANGE_START_INSTANT);
+
+    // RFC 3986 requires the brackets, which is also what keeps the colon-rich form
+    // from being read as a host-and-port. The unbracketed form is refused.
+    expect(documentLines(document)[4]).toBe('    <link>http://[2001:db8::1]</link>');
+    expect(captureOriginRefusal('2001:db8::1').message).toContain('bare host');
+  });
+
+  it('accepts the underscore some internal hostnames carry', () => {
+    // Not permitted by RFC 1123 for a public name, but common in internal DNS, and
+    // refusing it would break a legitimate deployment for no security gain: an
+    // underscore cannot change which authority a URL resolves to.
+    const document = renderGoogleProductFeed(
+      [makeFeedRow()],
+      'feed_internal.example.invalid',
+      RANGE_START_INSTANT,
+    );
+
+    expect(documentLines(document)[4]).toBe(
+      '    <link>http://feed_internal.example.invalid</link>',
+    );
+  });
+
+  it('refuses a shape-valid host only on shape, never on reputation', () => {
+    // ★ THE GUARD CHECKS SHAPE AND CANNOT CHECK PROVENANCE, and this test pins that
+    // limit so nobody mistakes the guard for more than it is. `evil.invalid` is a
+    // perfectly well-formed host and renders cleanly. Ensuring the value came from
+    // CONFIGURATION rather than from a request `Host` header is the composition
+    // root's obligation, stated on the parameter and enforced at the service seam.
+    const document = renderGoogleProductFeed([makeFeedRow()], 'evil.invalid', RANGE_START_INSTANT);
+
+    expect(documentLines(document)[4]).toBe('    <link>http://evil.invalid</link>');
   });
 });
 
 // ---------------------------------------------------------------------------
 // 14. The complete document, asserted as one literal string
 //
-// The single most direct statement of the contract in this file, and the reason
-// there is no snapshot anywhere: the expected document is written out in full, so
-// a reviewer reads what the subject must emit instead of trusting a generated
-// artifact that a careless update would silently rewrite.
+// The most direct statement of the contract in this file: the expected document is written out in
+// full, so a reviewer reads what the subject must emit.
 // ---------------------------------------------------------------------------
 
 describe('renderGoogleProductFeed - the complete rendered document', () => {
@@ -1708,12 +2325,24 @@ describe('renderGoogleProductFeed - the complete rendered document', () => {
         productTypeDescription: undefined,
         productTypeSimpleRepresentation: undefined,
         productUrlPath: undefined,
-        imageLinkPath: undefined,
+        // NOT `undefined`, and the difference is the point. Every other path-bearing
+        // field on this row is genuinely optional, but `imageLinkPath` is `string`:
+        // the data-access half always resolves one, substituting the missing-image
+        // path [model/service/ImageService.cfc:L82-L90] rather than yielding nothing.
+        // The leanest row the subject can be handed therefore still carries a real
+        // image path, and the golden document below reflects that rather than
+        // pretending the field can vanish.
+        imageLinkPath: MISSING_IMAGE_PATH,
         additionalImageLinkPaths: [],
         productPrice: undefined,
         skuPrice: undefined,
         skuSalePrice: undefined,
         salePriceExpirationDateTime: undefined,
+        // The brand ELEMENT is gated on the association, not on the name, so an absent
+        // name alone no longer suppresses element fourteen. Suppressing it takes an
+        // absent `brandID`, which is what an unmatched LEFT join produces
+        // [integrationServices/google/controllers/feed.cfc:L66].
+        brandID: undefined,
         brandName: undefined,
         productCode: undefined,
         skuShippingWeight: '',
@@ -1721,9 +2350,18 @@ describe('renderGoogleProductFeed - the complete rendered document', () => {
       }),
     ]);
 
-    // The two conditional groups drop out, every remaining body is empty, and the
-    // shipping weight keeps its lone separating space. This is the leanest document
-    // the subject can produce for one row, and it is still complete and well-formed.
+    // The two conditional groups drop out, every remaining body is empty, and the shipping weight
+    // keeps its lone separating space - the leanest document the subject can produce, still
+    // complete and well-formed.
+    //
+    // ★ TWO OF THESE OVERRIDES CHANGED. `imageLinkPath` was `undefined` and cannot be:
+    // it is a required string now, so the leanest value it can carry is the resolved
+    // fallback the legacy resolver's unconditional final branch always produced
+    // [model/service/ImageService.cfc:L88], and the image element therefore carries a
+    // path rather than collapsing to a bare origin. `brandID` joined the absences
+    // because the brand element is gated on brand PRESENCE
+    // [integrationServices/google/views/feed/product.cfm:L32], so absenting the name
+    // alone would now EMIT an empty element rather than omit one.
     expect(document).toBe(
       [
         '<?xml version="1.0"?>',
@@ -1739,7 +2377,7 @@ describe('renderGoogleProductFeed - the complete rendered document', () => {
         '      <g:google_product_category></g:google_product_category>',
         '      <g:product_type></g:product_type>',
         '      <link>http://feed.example.invalid</link>',
-        '      <g:image_link>http://feed.example.invalid</g:image_link>',
+        '      <g:image_link>http://feed.example.invalid/assets/images/missingimage.jpg</g:image_link>',
         '      <g:condition>new</g:condition>',
         '      <g:availability>in stock</g:availability>',
         '      <g:price></g:price>',

@@ -179,6 +179,7 @@ import {
 import type { DecimalString } from '../../../src/lib/cfml/numberFormat.js';
 import {
   absolute,
+  add,
   equals,
   isGreaterThan,
   isLessThan,
@@ -230,6 +231,9 @@ const PINNED_VALUE_QUANTIZED = toDecimalString('12.35');
 /** The three expressions the pinned rows use, and one that is a comma list. */
 const EXPRESSION_LEADING_DOT = '.99';
 const EXPRESSION_LEADING_ZERO = '0.99';
+
+/** The comparison floor for the secure-consumer invariant, as an exact decimal string. */
+const ZERO_DECIMAL = '0';
 const EXPRESSION_COMMA_LIST = '.95,.99';
 
 /** The three directions the entity publishes [model/entity/RoundingRule.cfc:L70-L76]. */
@@ -299,6 +303,20 @@ interface RecordedRoundingRuleLookup {
 class RecordingPromotionRepository implements PromotionRepository {
   readonly lookups: RecordedRoundingRuleLookup[] = [];
 
+  /**
+   * Every rule handed to `saveRoundingRule`, in call order.
+   *
+   * Recorded rather than raising, because the service now genuinely reaches this
+   * member: `saveRoundingRule` performs the `super.save(argumentcollection=arguments)`
+   * half of [model/service/RoundingRuleService.cfc:L63], which the target previously
+   * dropped. Recording it is what lets the cases below assert that the write happens,
+   * that it happens ONCE per save, and that it happens AFTER the eviction.
+   */
+  readonly saves: RoundingRule[] = [];
+
+  /** Set to make the next `saveRoundingRule` reject, for the failure-ordering case. */
+  saveFailure: Error | undefined = undefined;
+
   constructor(private readonly stub: (roundingRuleID: string) => RoundingRule | undefined) {}
 
   getRoundingRuleQuery(roundingRuleID: string): Promise<RoundingRule | undefined> {
@@ -307,9 +325,19 @@ class RecordingPromotionRepository implements PromotionRepository {
     return Promise.resolve(this.stub(roundingRuleID));
   }
 
+  saveRoundingRule(rule: RoundingRule): Promise<RoundingRule> {
+    this.saves.push(rule);
+
+    if (this.saveFailure !== undefined) {
+      return Promise.reject(this.saveFailure);
+    }
+
+    return Promise.resolve(rule);
+  }
+
   // The other six members of the port. Every one raises, which is the strongest
-  // available statement that this service touches exactly one repository
-  // operation - enforced at run time rather than asserted in prose.
+  // available statement that this service touches exactly the two repository
+  // operations above - enforced at run time rather than asserted in prose.
   readonly getActivePromotionRewards: PromotionRepository['getActivePromotionRewards'] = () =>
     unreachedRepositoryMember('getActivePromotionRewards');
 
@@ -1542,11 +1570,74 @@ describe('RoundingRuleService', () => {
       // The payload is handed on untouched - no key added, none rewritten.
       expect(data).toStrictEqual({ roundingRuleName: 'A renamed rule' });
 
-      // It reaches the repository for none of this. The persistence half of
-      // `super.save(...)` [L63] is not ported: the closed port set carries no
-      // save or delete for a rounding rule, so persistence stays with the
-      // composition root.
+      // No LOOKUP is issued: saving reads nothing back.
       expect(repository.lookups).toStrictEqual([]);
+
+      // ★★ But the WRITE does happen, once per call. This assertion previously read
+      // `expect(repository.lookups).toStrictEqual([])` and nothing more, on the
+      // reasoning that "the persistence half of `super.save(...)` [L63] is not
+      // ported: the closed port set carries no save or delete for a rounding rule".
+      // That reasoning confused the port COUNT with the method set - the contract
+      // that already owned this table's read now owns its write - and the effect was
+      // a save that evicted a cache entry and persisted nothing while still handing
+      // back a rule that looked saved.
+      expect(repository.saves).toStrictEqual([
+        graph.closestRoundingRule,
+        graph.closestRoundingRule,
+        graph.closestRoundingRule,
+      ]);
+    });
+
+    it('★★ persists the rule through the port exactly once', async () => {
+      // The regression this guards is silent: the method returned the caller's own
+      // object, so nothing about its return value could reveal that no row was
+      // written.
+      expect(repository.saves).toStrictEqual([]);
+
+      const saved = await service.saveRoundingRule(graph.closestRoundingRule);
+
+      expect(repository.saves).toStrictEqual([graph.closestRoundingRule]);
+      expect(saved).toBe(graph.closestRoundingRule);
+    });
+
+    it('★★ evicts BEFORE it writes, so a failed write leaves the record cold', async () => {
+      // Legacy ordering [model/service/RoundingRuleService.cfc:L57-L63]: eviction,
+      // then `super.save`. This is the safe order, and the failure path is what
+      // proves it was followed. Evicting AFTER a successful write would look
+      // identical on the happy path and differ only here.
+      const identifier = graph.closestRoundingRule.getRoundingRuleID();
+
+      await service.getRoundingRuleDetailsByID(identifier);
+
+      expect(repository.lookups).toHaveLength(1);
+
+      repository.saveFailure = new Error('the SwRoundingRule write failed');
+
+      await expect(service.saveRoundingRule(graph.closestRoundingRule)).rejects.toThrow(
+        'the SwRoundingRule write failed',
+      );
+
+      // The write was attempted, so the eviction cannot have been skipped as a
+      // consequence of the failure.
+      expect(repository.saves).toStrictEqual([graph.closestRoundingRule]);
+
+      // And the record is cold: the next resolution re-reads rather than serving a
+      // value that was never persisted.
+      repository.saveFailure = undefined;
+
+      await service.getRoundingRuleDetailsByID(identifier);
+
+      expect(repository.lookups).toHaveLength(2);
+    });
+
+    it('propagates a write failure rather than swallowing it into the returned rule', async () => {
+      // The legacy `super.save` signalled failure by RAISING, not by returning a
+      // flag, so a rejected write must not resolve to the rule.
+      repository.saveFailure = new Error('constraint violated');
+
+      await expect(service.saveRoundingRule(graph.closestRoundingRule)).rejects.toThrow(
+        'constraint violated',
+      );
     });
 
     it('evicts the recorded details for a saved rule, so the next resolution reaches the port', async () => {
@@ -1638,6 +1729,139 @@ describe('RoundingRuleService', () => {
       // And the rules the shared graph carries are all persisted, which is what
       // makes the eviction cases above exercise the other side of the gate.
       expect(graph.closestRoundingRule.isNew()).toBe(false);
+    });
+  });
+
+  // -------------------------------------------------------------------------
+  // S-13 / S-03: THE SECURE-CONSUMER INVARIANT
+  //
+  // Every case above characterizes what `roundValue` RETURNS. A security review
+  // observed that characterizing unsafe output is not the same as stating what a
+  // caller must do about it, and named this suite for having done the first
+  // without the second (finding S-13, CWE-693, Protection Mechanism Failure).
+  //
+  // The gap is real, and it cannot be closed inside the service. AAP 0.6.4
+  // measured this algorithm by executing it and published nine verified outputs
+  // as the parity contract; AAP 0.9.3 makes those nine a gate and states that a
+  // "corrected" implementation producing mathematically tidier answers FAILS it.
+  // So the service cannot establish a postcondition - a non-negativity guard here
+  // would break parity for every existing consumer at once.
+  //
+  // What CAN be done, and is done below, is to make the requirement executable:
+  // state the three properties `roundValue` does NOT have, prove each with a
+  // concrete input, and prove the clamp a safety-critical consumer is obliged to
+  // apply. A reader who needs a safe price now learns the obligation from a
+  // failing-if-removed test rather than from prose, and a future edit that
+  // accidentally makes the service safe will break the parity gate loudly instead
+  // of drifting.
+  // -------------------------------------------------------------------------
+
+  describe('the secure-consumer invariant', () => {
+    /**
+     * The clamp a consumer that must not inherit this behaviour has to apply.
+     *
+     * Deliberately defined in the TEST rather than exported from the service: it
+     * is the CALLER'S obligation, and putting it in `src/` would be the parity
+     * break AAP 0.9.3 forbids. Two properties, both of which the raw result can
+     * violate: a price is never negative, and a discount never exceeds the amount
+     * it discounts.
+     */
+    /**
+     * Lift a decimal string into the arbitrary-precision domain.
+     *
+     * `add(value, '0')` rather than a `Decimal` constructor, because
+     * `src/lib/cfml/precision.ts` is the only sanctioned door onto the decimal
+     * substrate in this project and it exposes no lift of its own - every export
+     * takes `PreciseInput`, which a string already satisfies. Adding zero is exact
+     * and preserves scale, so the lift changes nothing about the value.
+     */
+    function lift(value: string): PreciseValue {
+      return add(value, ZERO_DECIMAL);
+    }
+
+    function clampToChargeableRange(rounded: string, original: string): PreciseValue {
+      const roundedValue = lift(rounded);
+      const originalValue = lift(original);
+
+      if (isLessThan(roundedValue, ZERO_DECIMAL)) {
+        return lift(ZERO_DECIMAL);
+      }
+      return isGreaterThan(roundedValue, originalValue) ? originalValue : roundedValue;
+    }
+
+    it('does not guarantee a result at or below its input, and 7.42 by 9.99 proves it', () => {
+      // AAP 0.6.4 verified case 7. A price INCREASE of 2.57 - the opposite
+      // direction from the one the word "discount" implies, reached through the
+      // short-input collapse of Finding C where both candidates become the
+      // expression itself.
+      const original = toDecimalString('7.42');
+
+      const rounded = service.roundValue(original, '9.99', DIRECTION_CLOSEST);
+
+      expect(rounded).toBe('9.99');
+      expect(isGreaterThan(rounded, original)).toBe(true);
+      // A consumer that clamps gets the original back; one that does not overcharges.
+      expect(equals(clampToChargeableRange(rounded, original), original)).toBe(true);
+    });
+
+    it('does not guarantee a non-negative result, and 0.42 by .99 Down proves it', () => {
+      // AAP 0.6.4 Finding D: the lower intermediate is 0.42 - 1 = -0.58, and the
+      // candidate composed from it is the negative string. This is the exact input
+      // the security review used to demonstrate a negative net price, so it is
+      // pinned here at the source of the negativity rather than downstream.
+      const original = toDecimalString('0.42');
+
+      const rounded = service.roundValue(original, EXPRESSION_LEADING_DOT, DIRECTION_DOWN);
+
+      expect(isLessThan(rounded, ZERO_DECIMAL)).toBe(true);
+      // A consumer that clamps charges zero rather than paying the customer.
+      expect(equals(clampToChargeableRange(rounded, original), ZERO_DECIMAL)).toBe(true);
+    });
+
+    it('does not guarantee a bounded proportional move, and 2.30 by 0.99 proves it', () => {
+      // AAP 0.6.4 verified case 8: a 57% price cut from a rule that reads like a
+      // rounding nicety. Bounding the MAGNITUDE of the move is therefore also the
+      // consumer's problem, not just bounding the sign.
+      const original = toDecimalString('2.30');
+
+      const rounded = service.roundValue(original, EXPRESSION_LEADING_ZERO, DIRECTION_CLOSEST);
+
+      expect(rounded).toBe('0.99');
+      const moved = absolute(subtract(original, rounded));
+
+      expect(isGreaterThan(moved, '1.00')).toBe(true);
+    });
+
+    it('leaves a well-behaved result untouched, so the clamp is a floor and not a rewrite', () => {
+      // THE OTHER HALF OF THE OBLIGATION. A clamp that changed ordinary results
+      // would be its own defect, so the invariant is asserted in the passing
+      // direction too: AAP 0.6.4 verified case 1, which needs no correction.
+      const original = PINNED_VALUE;
+
+      const rounded = service.roundValue(original, EXPRESSION_LEADING_ZERO, DIRECTION_CLOSEST);
+
+      expect(rounded).toBe('10.99');
+      expect(equals(clampToChargeableRange(rounded, original), rounded)).toBe(true);
+    });
+
+    it('records that the port applies no such clamp at either shipped consumer', () => {
+      // THE HONEST STATEMENT OF WHERE THE PORT STANDS, asserted rather than
+      // described. `roundValueByRoundingRule` is what both shipped consumers reach -
+      // the promotion discount path through `discountAmount.ts` and the price-group
+      // path through `RoundingRule.roundValue` - and it returns the raw rounded
+      // value, unclamped. AAP 0.6.7 defect 14 and AAP 0.9.3 require exactly that, so
+      // this case pins the DECLINE as a deliberate, cited position: if a future edit
+      // adds a clamp inside the service, this fails and the author is sent to the
+      // AAP before the parity gate is broken silently.
+      const rule = buildRoundingRule({
+        roundingRuleID: 'negative-net-rule',
+        roundingRuleExpression: EXPRESSION_LEADING_DOT,
+        roundingRuleDirection: DIRECTION_DOWN,
+      });
+
+      const raw = service.roundValueByRoundingRule(Money.fromDecimalString('0.42'), rule);
+
+      expect(isLessThan(raw.toDecimalString(), ZERO_DECIMAL)).toBe(true);
     });
   });
 });

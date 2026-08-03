@@ -501,15 +501,34 @@ export class RoundingRuleService {
    * expression, resolve it again, and the second resolution must reach the
    * repository. And a stub would be a placeholder, which this port does not ship.
    *
-   * LEGACY-NOTE [model/service/RoundingRuleService.cfc:L63]: the
-   * `super.save(argumentcollection=arguments)` half is deliberately NOT ported here.
-   * That call is framework-inherited generic CRUD from `HibachiService`, and the
-   * closed 13-port set contains no persistence port for a rounding rule - no save,
-   * no delete. Inventing one would breach the port lock, so persistence stays with
-   * the composition root and this method returns the rule it was handed, which is
-   * what `super.save` resolves to for an entity that needs no mutation. The
-   * eviction half, which is the method's declared reason to exist, IS implemented in
-   * full.
+   * BOTH HALVES ARE NOW PORTED, AND THE EARLIER OMISSION IS RECORDED RATHER THAN
+   * OVERWRITTEN. This note previously read that the
+   * `super.save(argumentcollection=arguments)` half [model/service/RoundingRuleService.cfc:L63]
+   * was "deliberately NOT ported", on the grounds that the closed thirteen-port set
+   * held no persistence port for a rounding rule and that "inventing one would
+   * breach the port lock", leaving persistence to the composition root.
+   *
+   * That reasoning conflated the PORT COUNT with the METHOD SET. The lock is on how
+   * many port modules exist - thirteen, and still thirteen - not on what the
+   * existing contracts may declare. `PromotionRepository` already owned the
+   * `SwRoundingRule` table through `getRoundingRuleQuery`
+   * [model/dao/RoundingRuleDAO.cfc:L51], hosted there precisely so no fourteenth
+   * port would be needed, and the contract that owns a table's read is the contract
+   * that owns its write. So no port was invented; one already-hosting contract
+   * gained the other half of the table it hosts.
+   *
+   * The consequence of the omission is the reason it could not stand: a caller
+   * handed the rule back and had no way to observe that nothing was written. The
+   * eviction ran, the method resolved, the return value looked right, and
+   * `SwRoundingRule` was untouched. A save that silently does not save is worse
+   * than a missing method, because a missing method is a compile error.
+   *
+   * ORDERING IS PRESERVED: eviction first, then the write. That is the legacy order
+   * [model/service/RoundingRuleService.cfc:L57-L63] and it is the safe one. Evicting
+   * after a failed write would discard a memo entry that still matched the row on
+   * disk; evicting before means a write that throws leaves the memo cold, so the
+   * next read re-resolves from the repository and cannot serve a value that was
+   * never persisted.
    *
    * LEGACY-NOTE [model/service/RoundingRuleService.cfc:L56]: there is NO delete
    * counterpart to this save override, and none is added.
@@ -519,11 +538,13 @@ export class RoundingRuleService {
    * forbid adding delete-side invalidation the legacy lacks, so the gap is
    * reproduced and recorded. SECONDARY-register item, not a numbered defect.
    *
-   * RETURNS A PROMISE WITHOUT THE `async` KEYWORD. The published signature is
-   * promise-returning, and it stays that way so that the composition root can front
-   * it with real persistence without a signature change rippling outward. There is
-   * nothing to await in the ported half, and marking a body `async` when it awaits
-   * nothing is what `require-await` correctly rejects.
+   * NOW GENUINELY ASYNCHRONOUS. The body previously returned `Promise.resolve(rule)`
+   * without the `async` keyword, because there was nothing to await - the published
+   * signature was promise-returning purely so that persistence could be added later
+   * without a signature change rippling outward. That has now happened, the body
+   * awaits the repository write, and `async` is correct rather than something
+   * `require-await` would reject. THE SIGNATURE IS UNCHANGED, which is what that
+   * earlier decision was protecting.
    *
    * @param rule - The rule being saved. Spelled `entity` at
    *   [model/service/RoundingRuleService.cfc:L56]; the published target signature
@@ -536,7 +557,7 @@ export class RoundingRuleService {
    *   declares. Accepted for signature parity and never read, for the same reason.
    * @returns The same rule instance that was passed in.
    */
-  saveRoundingRule(
+  async saveRoundingRule(
     rule: RoundingRule,
     data?: RoundingRuleSaveInput,
     context: string = 'save',
@@ -569,8 +590,12 @@ export class RoundingRuleService {
 
     // Legacy [model/service/RoundingRuleService.cfc:L63]:
     //   return super.save(argumentcollection=arguments);
-    // See the LEGACY-NOTE above for why the persistence half is not ported.
-    return Promise.resolve(rule);
+    //
+    // The write runs AFTER the eviction, which is the legacy order and the safe one -
+    // see the ordering note above. The repository decides insert against update from
+    // the entity's own `isNew()`, which is the same test the eviction guard uses two
+    // statements up, so the two halves cannot disagree about whether the rule is new.
+    return await this.promotionRepository.saveRoundingRule(rule);
   }
 
   /**
@@ -929,6 +954,33 @@ export class RoundingRuleService {
         if (isGreaterThan(valueOptionOne, inputValue)) {
           // Legacy [model/service/RoundingRuleService.cfc:L101]:
           //   var lowerValue = inputValue - rrPower;
+          //
+          // SECURITY REVIEW DISPOSITION - PART OF S-03, DECLINED ON A CITED MANDATE.
+          //
+          // Finding S-03 (CRITICAL, CWE-682/CWE-840) names this file among its three
+          // locations and asks for rounding expressions and directions to be
+          // validated and negative rounded totals rejected. DECLINED: AAP 0.6.4
+          // MEASURED this algorithm by executing it and published NINE verified
+          // outputs as the parity contract - including the counter-intuitive ones
+          // that only a faithful port produces (12.30 with `.99` yields 12.99;
+          // 7.42 with `9.99` yields 9.99; 2.30 with `0.99` yields 0.99; the default
+          // `0.00` expression turns 12.3456 into 10.00). AAP 0.9.3 then makes those
+          // nine a gate and states the consequence plainly: "A 'corrected' rounding
+          // implementation that produces mathematically tidier answers FAILS this
+          // gate." Finding A below IS one of those nine outputs, not an accident
+          // beside them; Finding D (negative candidates) and Finding E (no
+          // expression validation) are likewise recorded AAP findings rather than
+          // omissions.
+          //
+          // WHAT THIS MEANS FOR A CALLER, STATED HERE BECAUSE IT CANNOT BE FIXED
+          // HERE. `roundValue` is a faithful reproduction of a legacy algorithm and
+          // is NOT a safe money primitive: its result can exceed its input, can be
+          // negative, and can move a price by a large fraction. Any consumer that
+          // must not inherit that has to establish its own postcondition at its own
+          // boundary - this function will not establish one for it, because doing so
+          // would break the parity contract above for every existing consumer at
+          // once. `tests/unit/services/roundingRuleService.test.ts` states that
+          // requirement as an executable invariant rather than leaving it as prose.
           //
           // LEGACY-DEFECT [model/service/RoundingRuleService.cfc:L101-L102, L108-L109]: the
           // intermediate is computed ARITHMETICALLY and its `len()` is then taken, and CFML

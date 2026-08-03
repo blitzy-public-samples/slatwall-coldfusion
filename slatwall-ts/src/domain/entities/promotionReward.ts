@@ -283,6 +283,15 @@
 //   9. `getAmountFormatted()` with `amountType === 'percentageOff'` takes the percentage
 //      branch; `'amountOff'` and `'amount'` take the currency branch; `'PercentageOff'` also
 //      takes the percentage branch. (Case-insensitivity.)
+//   9a. `getAmountFormatted()` on the PERCENTAGE branch drops trailing zeros: a stored 12.50
+//      yields "12.5%" and NOT "12.50%", because org/Hibachi/HibachiUtilityService.cfc:L62-L64 is
+//      `arguments.value & "%"` with no mask. This is the assertion that catches a regression back
+//      to `numberFormat(..., '0.00')` on that branch, and it is the mirror of the obligation
+//      priceGroupRate.ts records for model/entity/PriceGroupRate.cfc:L264.
+//   9b. `getAmountFormatted()` on the CURRENCY branch still emits the bare two-decimal form, so a
+//      stored 1234.5 yields "1234.50" with NO currency symbol and NO thousands separator. The
+//      reasons that presentation is withheld are enumerated at the method; this case exists so
+//      the withholding is a pinned decision rather than an accident.
 //  10. `getAmountFormatted()` with `amount` `undefined` does NOT render `0`.
 //  11. `getSimpleRepresentation()` renders the `'entity.promotionReward'` label, then `' - '`,
 //      then the rewardType projection.
@@ -314,7 +323,7 @@
 // meta/tests/unit/IssuesTest.cfc. Tests run non-interactively (`watch: false`).
 // ---------------------------------------------------------------------------
 
-import { numberFormat } from '../../lib/cfml/numberFormat.js';
+import { cfNumberToString, numberFormat } from '../../lib/cfml/numberFormat.js';
 import { isNullish } from '../../lib/cfml/truthiness.js';
 import type { Money } from '../valueObjects/money.js';
 import type { Brand } from './brand.js';
@@ -2217,29 +2226,116 @@ export class PromotionReward {
    * the convention priceGroupRate.ts applied at model/entity/PriceGroupRate.cfc:L263.
    *
    * ★★★ LEGACY-NOTE [model/entity/PromotionReward.cfc:L61, L401-L407]: `amount` is `big_decimal`
-   * with NO `default=` attribute, so `getAmount()` can be NULL in the legacy engine, and
-   * `formatValue(null, "currency")` has UNSPECIFIED behaviour in the non-ported framework method
-   * on org/Hibachi/HibachiEntity.cfc. Here the absent case is handled EXPLICITLY and returns the
-   * empty string. IT IS NOT COALESCED TO `0`: a zero would misrepresent an absent amount as a
-   * real zero discount on an admin screen, which is exactly the mistake absence-convention #1
-   * exists to prevent.
+   * with NO `default=` attribute, so `getAmount()` can be NULL in the legacy engine.
    *
-   * ★ THIS IS A DOCUMENTED DIVERGENCE FROM priceGroupRate.ts, whose `getAmountFormatted()`
-   * THROWS on an absent amount and delegates its currency branch to an injected
-   * `CurrencyValueFormatter`. This file's specification directs the empty-string return instead,
-   * and directs that presentation route through `Money`/`numberFormat` rather than through an
-   * injected formatter. The divergence is recorded rather than silently reconciled.
+   * ★ AN EARLIER REVISION OF THIS NOTE CALLED `formatValue(null, ...)` "UNSPECIFIED behaviour in
+   * the non-ported framework method on org/Hibachi/HibachiEntity.cfc". BOTH HALVES OF THAT WERE
+   * WRONG, and the correction matters because the whole absent-amount decision was resting on
+   * it. The method is not on `HibachiEntity.cfc` at all - the entity-side entry point is
+   * `org/Hibachi/HibachiObject.cfc:L186`, which delegates to
+   * `org/Hibachi/HibachiUtilityService.cfc:L7-L12` - and its behaviour is not unspecified: the
+   * parameter is declared `required string value` [HibachiUtilityService.cfc:L7], so a null
+   * operand fails CFML's required-argument check rather than formatting to anything.
    *
-   * ★ `formatValue(value, mask)` is an UNREAD framework collaborator on
-   * org/Hibachi/HibachiEntity.cfc, reached via `hb_formatType="custom"` [L61]. Both branches
-   * therefore delegate to `numberFormat(..., '0.00')` - the project's CFML
-   * `numberFormat(v,"0.00")` parity helper, which is also what
-   * model/service/PromotionService.cfc:L1017 and model/service/PriceGroupService.cfc:L337 use on
-   * the same money values. NO locale-aware or symbol-prefixing formatter is invented, NO `Intl`
-   * is used, and NO new dependency is introduced: the legacy mask implementations are unread, so
-   * fabricating a currency symbol or a thousands separator would be a silent behaviour change
-   * asserted on no evidence. The two branches differ only by the `%` suffix, which is the one
-   * distinction the source's two mask names unambiguously carry.
+   * The empty-string return is retained ANYWAY, and deliberately, because this file's
+   * specification directs it in terms that do not depend on the framework's behaviour: absent
+   * amount renders as "no amount", and `0` is NEVER substituted. A zero would misrepresent an
+   * absent amount as a real zero discount on an admin screen, which is exactly the mistake
+   * absence-convention #1 exists to prevent. Turning this into a throw would be an unbudgeted
+   * behaviour change on a display accessor, and the shipped coverage obligation #10 below pins
+   * the current contract.
+   *
+   * ★★ AN EARLIER REVISION CLAIMED THIS WAS "A DOCUMENTED DIVERGENCE FROM priceGroupRate.ts,
+   * whose `getAmountFormatted()` THROWS on an absent amount and delegates its currency branch to
+   * an injected `CurrencyValueFormatter`". NEITHER HALF IS TRUE, and the sibling was read to
+   * establish it. `priceGroupRate.getAmountFormatted()` does not throw - it returns a bare `'%'`
+   * on the percentage branch and `''` on the currency branch, and its own documentation states
+   * "SYNCHRONOUS and TOTAL: it never raises". Nor is there any `CurrencyValueFormatter`: its
+   * currency branch calls `numberFormat(amount.toDecimalString(), '0.00')`, and no formatter
+   * collaborator appears anywhere in that module's import ledger.
+   *
+   * SO THERE IS NO DIVERGENCE TO RECORD ON THE CURRENCY BRANCH - the two files agree, and are
+   * required to. The ONE genuine difference is on the ABSENT-amount path, and it traces to the
+   * two legacy bodies rather than to a porting choice: `PriceGroupRate.cfc:L264` CONCATENATES
+   * (`getAmount() & "%"`), and CFML concatenation of a null operand yields the empty string, so
+   * a bare `"%"` is the faithful render there; `PromotionReward.cfc:L403` instead PASSES the
+   * value to `formatValue`, whose parameter is `required`. The two sources genuinely differ, so
+   * the two ports differ with them.
+   *
+   * ★★★★ `formatValue(value, mask)` HAS NOW BEEN READ, AND THE TWO MASKS DO NOT BEHAVE ALIKE.
+   *
+   * An earlier revision called it "an UNREAD framework collaborator on
+   * org/Hibachi/HibachiEntity.cfc" and withheld both branches on the strength of that. But
+   * org/Hibachi/** is a boundary to EXTRACT FROM and never port, so reading it is the intended
+   * use, and "unread" was an admission rather than a constraint. Reached via
+   * `hb_formatType="custom"` [L61], the chain is:
+   *
+   *   org/Hibachi/HibachiObject.cfc:L186          formatValue(value, formatType, formatDetails={})
+   *                                                 -> hibachiUtilityService.formatValue(...)
+   *   org/Hibachi/HibachiUtilityService.cfc:L7-L12  dispatches on formatType via listFindNoCase
+   *                                                 over "currency,date,datetime,pixels,
+   *                                                 percentage,second,time,truefalse,url,weight,
+   *                                                 yesno"; an unrecognised mask returns
+   *                                                 arguments.value UNCHANGED [L11].
+   *   L62-L64   formatValue_percentage   return arguments.value & "%";
+   *   L34-L40   formatValue_currency     LSCurrencyFormat(value, formatDetails.currencyCode,
+   *                                        getHibachiScope().getRBLocale()) when the passed
+   *                                        currencyCode is 3 characters [L35-L37], ELSE
+   *                                        LSCurrencyFormat(value, "USD", ...) [L39].
+   *
+   * ★★ THE PERCENTAGE BRANCH IS THEREFORE RAW CFML STRINGIFICATION WITH A `%` SUFFIX AND NO MASK
+   * WHATSOEVER, and this method used to apply `numberFormat(..., '0.00')` to it. That is a real
+   * behaviour difference, not a cosmetic one: CFML drops trailing zeros when it stringifies a
+   * number, so a stored `12.50` renders `"12.5%"` in the legacy engine, where the two-decimal
+   * mask produced `"12.50%"`. It is now `cfNumberToString()`, which replicates CFML's
+   * trailing-zero-dropping stringification - and which is also, independently, the convention
+   * priceGroupRate.ts was directed to use on ITS percentage branch for
+   * model/entity/PriceGroupRate.cfc:L264. The two ported files previously disagreed here; they
+   * now agree, and they agree on the side the source is on.
+   *
+   * ★ ON WHAT `cfNumberToString` IS ACTUALLY CONTRIBUTING, stated precisely so a later reader does
+   * not over-credit it: `Money.toDecimalString()` ALREADY renders without trailing zeros, so on
+   * this composition the helper is idempotent - `12.50`, `12.5` and `12.500` all arrive as `12.5`
+   * before it is called. The defect being repaired was therefore the PADDING that
+   * `numberFormat(..., '0.00')` added, not a missing trim. The helper is retained regardless,
+   * because it states the requirement AT THE CALL SITE rather than resting on `Money`'s internal
+   * choice of stringification, and because it is the sibling's mandated spelling. If `Money` ever
+   * rendered a fixed scale, this branch would still be correct.
+   *
+   * ★★ THE CURRENCY BRANCH STILL EMITS THE TWO-DECIMAL PRESENTATION ONLY, AND THAT IS A CITED
+   * DECISION RATHER THAN AN ADMISSION OF IGNORANCE. `LSCurrencyFormat` adds a currency symbol and
+   * locale-driven grouping, and reproducing it is blocked on five independent grounds, every one
+   * of them a standing directive rather than a preference:
+   *
+   *   1. This file's specification directs the currency branch to match priceGroupRate.ts's
+   *      convention VERBATIM, and that convention is `numberFormat(amount, '0.00')`.
+   *   2. Inventing a locale-aware or symbol-prefixing formatter is expressly forbidden here.
+   *   3. `Intl` may not be used and no new dependency may be introduced; the package set is fixed.
+   *   4. The locale operand is `getHibachiScope().getRBLocale()` - ambient request state. JavaRB
+   *      is not ported and no i18n runtime is introduced, so there is no locale to read.
+   *   5. Supplying one would require a collaborator, and this entity has ZERO service-locator
+   *      sites and is directed to inject no port; the folder's signature-widening budget is 0.
+   *
+   * So the omission is now recorded as "known and deliberately withheld, for these reasons"
+   * instead of "unknown", which is the honest form and the auditable one. NO currency symbol and
+   * NO thousands separator is fabricated. `numberFormat(v,'0.00')` remains the project's CFML
+   * `numberFormat(v,"0.00")` parity helper, and is what model/service/PromotionService.cfc:L1017
+   * and model/service/PriceGroupService.cfc:L337 apply to these same money values.
+   *
+   * ★ WHICH `LSCurrencyFormat` ARM IS LIVE, since it changes what is being withheld: this call
+   * site passes NO `formatDetails`, so it reaches the `"USD"` default at [L39], never the
+   * caller-supplied-currency arm at [L35-L37]. A census of `formatValue(` across
+   * model/entity/*.cfc shows that arm IS reachable - model/entity/Sku.cfc:L419, L423 and L426
+   * pass `{currencyCode=...}` - but neither this method nor PriceGroupRate.cfc:L266 does.
+   *
+   * ★ A FRAMEWORK ODDITY RECORDED WITHOUT A CLAIM ABOUT ITS OUTCOME: `LSCurrencyFormat`'s second
+   * parameter is documented as a TYPE enumeration (none | local | international), yet [L36] and
+   * [L39] both pass a CURRENCY CODE there, and the framework's own comment at [L38] - "If no
+   * currency code was passed in then we can default to USD" - shows the author took the parameter
+   * to be a currency code. No CFML engine was executed here and readme.md [L6, L8] declares
+   * support for both ColdFusion 9.0.1+ and Railo 4.1+, so what that call actually returns on
+   * either engine is NOT asserted. It is noted because it bears on how much fidelity the
+   * withheld branch could ever have offered.
    *
    * ★ ALL MONEY PRESENTATION GOES THROUGH `Money`/`numberFormat` - never `String(amount)`, never
    * `toFixed` on a raw number, and never a template interpolation of a raw decimal.
@@ -2256,11 +2352,16 @@ export class PromotionReward {
     }
 
     // [L402-L404] the percentage branch, case-folded.
+    //
+    // `cfNumberToString`, NOT `numberFormat(..., '0.00')`: the legacy mask is
+    // org/Hibachi/HibachiUtilityService.cfc:L62-L64, which is `arguments.value & "%"` - plain CFML
+    // stringification with no mask at all - so a stored 12.50 must render "12.5%", not "12.50%".
     if ((this.amountType ?? '').toLowerCase() === 'percentageoff') {
-      return `${numberFormat(amount.toDecimalString(), '0.00')}%`;
+      return `${cfNumberToString(amount.toDecimalString())}%`;
     }
 
-    // [L406] the currency branch, reached by `amountOff` and `amount` alike.
+    // [L406] the currency branch, reached by `amountOff` and `amount` alike. The two-decimal
+    // presentation and nothing more; the withheld symbol and grouping are accounted for above.
     return numberFormat(amount.toDecimalString(), '0.00');
   }
 

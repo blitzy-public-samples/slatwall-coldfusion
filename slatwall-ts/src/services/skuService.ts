@@ -122,9 +122,19 @@
 //   `src/services/productService.ts` (planned), and together they count as ONE.
 //   Nothing else in this file is reshaped: no visibility is widened (the private
 //   merge helper stays private), no signature is widened (no method gains a
-//   parameter), no port member is invented (the port set stays at thirteen,
-//   `skuRepository` at seven members, `optionRepository` at two), and no finding is
-//   repaired - every one is reproduced.
+//   parameter), no port member is invented BY THIS FILE (the port set stays at
+//   thirteen, `skuRepository` at eight members, `optionRepository` at two), and no
+//   finding is repaired - every one is reproduced.
+//
+//   ★ THE FIGURE MOVED, AND THE CLAIM DID NOT. This read "`skuRepository` at seven
+//   members". The port has since gained an eighth, `saveSkus`, and this file is not
+//   where it came from: `saveSkus` is consumed only by
+//   `processProduct_updateSkus` in `src/services/productService.ts`, and it is
+//   referenced nowhere in this file except in prose. So the claim being made here -
+//   that THIS file invents no port member - is untouched; only the parenthetical
+//   census needed re-reading against the folder. See the quote-then-revise at
+//   `SkuQueryCriteria` for why the eighth member also leaves the required-keyword
+//   argument intact.
 //
 // CFML parity [model/service/SkuService.cfc:L49]: the component declares
 // `extends="HibachiService" persistent="false" accessors="true" output="false"`.
@@ -183,7 +193,7 @@ import type { Option } from '../domain/entities/option.js';
 import type { OptionGroup } from '../domain/entities/optionGroup.js';
 import type { Product } from '../domain/entities/product.js';
 import type { ProductType } from '../domain/entities/productType.js';
-import type { SkuHydrationInput } from '../domain/entities/sku.js';
+import type { SkuHydrationInput, SkuImageSettingValues } from '../domain/entities/sku.js';
 import type { ImageStore, ImageUploadResultProjection } from '../domain/ports/imageStore.js';
 import type { SkuRepository } from '../domain/ports/skuRepository.js';
 import type {
@@ -364,8 +374,10 @@ function canonicalPlainDecimalNumeral(value: string): string {
 /**
  * A CFML-shaped entity identifier, generated the way `createHibachiUUID()` is.
  *
- * [org/Hibachi/HibachiObject.cfc:L144] is `replace(lcase(createUUID()), '-', '',
- * 'all')` - thirty-two lowercase hexadecimal digits with no separators. This
+ * `createHibachiUUID()` [org/Hibachi/HibachiObject.cfc:L144-L146] is one statement,
+ * `return replace(lcase(createUUID()), '-', '', 'all');` [L145] - thirty-two lowercase
+ * hexadecimal digits with no separators. (The locator was previously given as [L144]
+ * alone, which is the `function` line rather than the expression.) This
  * reproduces that shape exactly, so an identifier minted here is indistinguishable
  * from one the CFML application would mint against the same `Sw*` column. That is
  * schema continuity, which the transformation plan makes a hard constraint.
@@ -377,11 +389,88 @@ function canonicalPlainDecimalNumeral(value: string): string {
  * counterpart of the key Hibachi assigned to a `newSku()` before flush.
  *
  * `node:crypto` is a RUNTIME BUILT-IN, not a third-party package, so importing it
- * spends nothing against E3's fourteen pinned dependencies. The same reasoning
+ * spends nothing against the thirteen pinned dependencies `package.json` declares
+ * (three runtime, ten development). The same reasoning
  * already governs `src/domain/entities/promotionCode.ts`.
  */
 function createHibachiShapedIdentifier(): string {
   return randomUUID().replaceAll('-', '');
+}
+
+/**
+ * Raised when the sorted-ID result cannot be filled densely from the supplied SKUs.
+ *
+ * MODULE-LOCAL AND NOT EXPORTED, following the pattern `src/repositories/mysql/dialect.ts`
+ * and `src/repositories/mysql/connection.ts` already establish: the class is local, it sets
+ * an explicit `name`, and a caller that needs to distinguish it identifies it by that name
+ * rather than by `instanceof`. Exporting it would add a second exported unit to a file whose
+ * one exported class is `SkuService`.
+ *
+ * ★★ WHY THIS EXISTS AT ALL, AND WHY IT IS NOT A GUARD BOLTED ON TO LEGACY BEHAVIOUR.
+ * `arrayResize` at [model/service/SkuService.cfc:L232] and [model/service/SkuService.cfc:L260]
+ * sizes the result to the QUERY's row count, which is independent of how many SKUs the caller
+ * supplied. When the query returns more rows than the SKU array covers, the CFML result carries
+ * genuine null slots. Those slots are not benign in CFML either - `<cfloop array="...">` over an
+ * array containing a null element raises, and so does any expression that dereferences one - so
+ * an input that produced a hole was ALREADY a failing input. What differed was only WHERE the
+ * failure surfaced: in the legacy at the caller's first touch of a hole, with a message naming
+ * neither the product nor the sort, and only if the caller happened to touch it.
+ *
+ * THE HONEST STATEMENT OF THE DIVERGENCE. This raises at the producer instead, deterministically,
+ * naming the product and both counts. That is not a success turned into a failure - the success
+ * set is unchanged, because a dense fill still returns exactly the array the legacy returned. It
+ * IS a divergence in one narrow case: a legacy caller that received a sparse array and never
+ * touched the hole observed no error, and such a caller now does. That case is accepted
+ * deliberately, for two reasons that both outrank it. The migration plan FREEZES the published
+ * return type of `getProductSkus` and `getSortedProductSkus` as `Promise<Sku[]>`, and an array
+ * that is typed `Sku[]` while containing `undefined` is not that type - every `map`, `filter` and
+ * `forEach` callback on it receives a statically guaranteed `Sku` that is not one. And the
+ * alternative resolutions are worse: widening the published type would break the frozen
+ * signature, and compacting or filtering the holes away would silently return a DIFFERENT array
+ * from the legacy's - reordered, and short - which is a wrong answer rather than a refused one.
+ *
+ * The two legacy raises inside the fill loop are untouched and still reproduce their own sites.
+ */
+class SkuSortOrderError extends Error {
+  /** The product whose SKUs were being sorted. */
+  readonly productID: string;
+
+  /** How many rows the sorted-ID query returned, i.e. the resized length. */
+  readonly sortedIdentifierCount: number;
+
+  /** How many SKUs the caller supplied to fill those rows. */
+  readonly suppliedSkuCount: number;
+
+  /** Which positions were left unfilled, zero-based, in ascending order. */
+  readonly unfilledPositions: readonly number[];
+
+  constructor(
+    productID: string,
+    sortedIdentifierCount: number,
+    suppliedSkuCount: number,
+    unfilledPositions: readonly number[],
+    siteLocator: string,
+  ) {
+    super(
+      [
+        `SkuService could not place a SKU at every position of the sorted-ID result for product`,
+        `'${productID}': the query returned ${String(sortedIdentifierCount)} row(s) but only`,
+        `${String(suppliedSkuCount)} SKU(s) were supplied, leaving position(s)`,
+        `${unfilledPositions.join(', ')} unfilled.`,
+        `[model/service/SkuService.cfc:${siteLocator}] sizes the result with arrayResize to the`,
+        'query row count, so those positions are CFML nulls - which raise on the first access, at',
+        'the caller rather than here. The published return type is Sku[], so the array is refused',
+        'at the boundary instead of being handed over with holes in it.',
+        'Load the product with every SKU the query can return, or narrow the query to the SKUs in',
+        'hand.',
+      ].join(' '),
+    );
+    this.name = 'SkuSortOrderError';
+    this.productID = productID;
+    this.sortedIdentifierCount = sortedIdentifierCount;
+    this.suppliedSkuCount = suppliedSkuCount;
+    this.unfilledPositions = unfilledPositions;
+  }
 }
 
 // ---------------------------------------------------------------------------
@@ -508,12 +597,21 @@ export type ImageUploadResult = ImageUploadResultProjection;
  * [model/service/SkuService.cfc:L309-L325].
  *
  * ★ `keyword` IS REQUIRED, AND THAT IS THE HONEST TYPING.
- * The seven-member `SkuRepository` has no member that lists SKUs without a search
- * term, and no member may be added. Making the keyword required renders the
+ * The eight-member `SkuRepository` has no member that lists SKUs without a search
+ * term, and none of its members is an unfiltered listing. Making the keyword required renders the
  * unfiltered listing UNREPRESENTABLE AT COMPILE TIME rather than letting it fail at
  * runtime, and the unfiltered listing is part of the open-ended dynamic filtering
  * surface this port deliberately does not reproduce. Saying so in the type is
  * better than discovering it in a stack trace.
+ *
+ * ★ QUOTE-THEN-REVISE, AND THE CONCLUSION IS UNAFFECTED. This read "The
+ * SEVEN-member `SkuRepository` has no member that lists SKUs without a search term,
+ * AND NO MEMBER MAY BE ADDED." The port has since grown an eighth member,
+ * `saveSkus`, so the blanket clause is gone - but it was never what carried this
+ * argument. `saveSkus` is a WRITE, and the reason an unfiltered listing is
+ * unrepresentable is that no READ member answers one. What would justify relaxing
+ * the required keyword is a member that lists SKUs without a term, and the port has
+ * gained no such thing.
  *
  * There is no filter bag, no arbitrary property path, no `data` struct passthrough
  * and no paging surface - `data={}` and `currentURL=""` were framework plumbing and
@@ -568,12 +666,18 @@ export interface SkuPage {
  * created. `src/domain/entities/sku.ts` PUBLISHES NONE OF THOSE FOUR MUTATORS - it
  * holds `subscriptionTermID`, `subscriptionBenefitIDs`,
  * `renewalSubscriptionBenefitIDs` and `accessContentIDs` as hydration-time inputs
- * with getters only. The entity layer is locked at eighteen files with one exported
- * class each, so no mutator was added to it. The persisted outcome is identical:
- * each of those legacy calls exists to write a link row keyed by the far-side ID,
- * and `mysqlSkuRepository` carries all four ID sets through to persistence. The
- * only thing that moves is WHEN the IDs are attached, and nothing observes a draft
- * between construction and save.
+ * with getters only.
+ *
+ * ★ NO MUTATOR WAS ADDED BECAUSE NONE IS NEEDED, NOT BECAUSE ONE IS FORBIDDEN, AND
+ * THE DISTINCTION MATTERS ELSEWHERE IN THIS FILE. Where an ORM-implicit member the
+ * ported slice CONCRETELY CALLS has no substitute, it IS authored - that is what
+ * `Product.setDefaultSku` is, and `src/domain/entities/product.ts` §0.6 instructs
+ * exactly that. Here a substitute exists and is exact: each of those four legacy
+ * calls exists to write a link row keyed by the far-side ID, and
+ * `mysqlSkuRepository` carries all four ID sets through to persistence. The only
+ * thing that moves is WHEN the IDs are attached, and nothing observes a draft
+ * between construction and save, so the persisted outcome is identical. Adding four
+ * mutators to reach the same rows would add surface without adding behaviour.
  *
  * Module-local and not exported: this module exports one runtime value.
  */
@@ -671,65 +775,88 @@ const UNEXPECTED_PRODUCT_CREATION_ERROR_MESSAGE =
 /**
  * The mutable per-invocation ledger `createSkus` threads through its three branches.
  *
- * ★ WHY THIS EXISTS AT ALL: TWO FRAMEWORK AFFORDANCES ARE ABSENT.
+ * ★ WHY THIS EXISTS AT ALL: ONE FRAMEWORK AFFORDANCE IS ABSENT. It carried TWO
+ * fields, and the first has been retired - see immediately below.
  *
- * LEGACY-NOTE [model/service/SkuService.cfc:L102, L134, L167, L189, L198]: all five
- * default-SKU sites call `arguments.product.setDefaultSku(...)`.
- * `src/domain/entities/product.ts` holds `defaultSku` as a PRIVATE READONLY
- * hydration-time field with a getter only [product.ts:L958, L1176-L1177] and
- * publishes no setter. The entity layer is locked at eighteen files with one
- * exported class each, so no setter was added to it. The designation is therefore
- * tracked here, which is enough to reproduce the behaviour that actually branches -
- * [L101]'s first-wins test - because that test reads the designation back.
+ * ★★ THE DEFAULT-SKU DESIGNATION USED TO LIVE HERE AND NO LONGER DOES, BECAUSE THE
+ * PREMISE THAT PUT IT HERE WAS FALSE. All five default-SKU sites
+ * [model/service/SkuService.cfc:L102, L134, L167, L189, L198] call
+ * `arguments.product.setDefaultSku(...)`, and an earlier revision diverted every
+ * one of them into a `designatedDefaultSku` field on this ledger, reasoning that
+ * `Product` held `defaultSku` as a private readonly hydration-time field with a
+ * getter only and that "the entity layer is locked at eighteen files with one
+ * exported class each, so no setter was added to it".
+ *
+ * The observation about the shipped class was accurate. The inference from it was
+ * not: the eighteen-file lock is a lock on the FOLDER, and the port budgets forbid
+ * a fourteenth PORT - neither says anything about a member on an existing class,
+ * and `src/domain/entities/product.ts` §0.6 positively instructs that the
+ * ORM-implicit members the ported slice CONCRETELY CALLS be generated as
+ * explicitly-typed methods annotated with the branch they replace. Five call sites
+ * in this one file are exactly that evidence. `Product.setDefaultSku` was therefore
+ * authored, all five sites now write where the legacy writes, and the designation
+ * reaches `SwProduct.defaultSkuID` through
+ * `src/repositories/mysql/mysqlProductRepository.ts`, which already binds that
+ * column from `getDefaultSku()`. The field is gone rather than left write-only.
+ *
+ * ★ AND THE COST OF THE OLD ARRANGEMENT WAS NOT "THE DESIGNATION LANDED SOMEWHERE
+ * ELSE" - IT LANDED NOWHERE. A ledger field is private to this module, `createSkus`
+ * returns a constant `true` [L207], and no caller could ever read it. So every
+ * product this service created reported `getDefaultSku() === undefined`, the
+ * `SwProduct.defaultSkuID` column was written NULL, and the eight accessors on
+ * `Product` that read through the default SKU all answered their absent-value
+ * fallback. That is the defect the retirement fixes, and it is recorded here rather
+ * than left to be inferred from the absence of a field.
+ *
+ * Two further consequences worth recording. [L101]'s first-wins test regained its
+ * ONE-CLAUSE shape, because a designation written onto the product is visible to the
+ * next iteration without a second bookkeeping clause. And the designation is no
+ * longer lost at the end of the invocation, which is what made it unobservable
+ * before.
  *
  * LEGACY-NOTE [model/service/SkuService.cfc:L143, L148, L152, L176, L180]: the
  * three `addError` calls and the two `hasErrors()` gates are `HibachiEntity` error
- * collection. `src/domain/entities/product.ts:L1432` records that framework error
+ * collection. `src/domain/entities/product.ts` records that framework error
  * collection is deliberately not reproduced there, and it publishes neither
- * `addError` nor `hasErrors`. The failures are therefore accumulated here.
+ * `addError` nor `hasErrors`. The failures are therefore accumulated here - and,
+ * unlike the designation, that IS the right home for them: they are request-scoped
+ * validation state rather than persisted entity state, and the caller recovers the
+ * gate's outcome from the product itself. See the field's own note.
  *
- * JUDGMENT CALL: A SERVICE-LOCAL LEDGER RATHER THAN AN ENTITY MEMBER. The two
- * alternatives were both worse. Adding `setDefaultSku` / `addError` / `hasErrors`
- * to `Product` would breach the locked entity layer and put request-scoped
- * validation state on a persistence entity. Widening `createSkus` to return the
- * ledger would spend a signature reshaping this file has no budget for, and would
- * contradict [L207]'s constant-`true` return. A per-invocation ledger keeps the
- * class free of instance state, so the service stays trivially testable and two
- * concurrent invocations cannot observe each other.
+ * JUDGMENT CALL: A SERVICE-LOCAL LEDGER FOR THE FAILURES, AND THE ENTITY FOR THE
+ * DESIGNATION. Putting request-scoped validation state on a persistence entity
+ * would be wrong for the reason it has always been wrong; putting a persisted
+ * association on a per-invocation ledger was wrong for the mirror-image reason.
+ * Widening `createSkus` to return the ledger remains unavailable - it would spend a
+ * signature reshaping this file has no budget for and would contradict [L207]'s
+ * constant-`true` return. A per-invocation ledger keeps the class free of instance
+ * state, so the service stays trivially testable and two concurrent invocations
+ * cannot observe each other.
  *
  * Module-local and NOT exported: this module exports one runtime value.
  */
 interface SkuCreationLedger {
   /**
-   * The SKU the invocation designated as the product's default, or `undefined`
-   * when no branch designated one.
-   *
-   * ★ THE DESIGNATION CANNOT BE PERSISTED FROM THIS FILE, AND THAT IS STATED
-   * RATHER THAN PAPERED OVER. Writing `SwProduct.defaultSkuID` needs a product
-   * repository, and no product repository is among this file's dependencies - the
-   * only repository it may reach is `SkuRepository`. The write therefore belongs to
-   * `src/services/productService.ts` and `src/handlers/bootstrap.ts` (both
-   * planned), which is also where the legacy's own cascade lived: `createSkus`
-   * never saved anything either, so the designation only ever reached the database
-   * when the CALLER saved the product.
-   *
-   * The designation is also recoverable without this field: in every branch it is
-   * the first SKU the invocation attached, subject to the merchandise-multi
-   * branch's deferral to an already-present default. A caller therefore does not
-   * depend on this type to reconstruct it.
-   */
-  designatedDefaultSku: Sku | undefined;
-
-  /**
    * The accumulated `addError` payloads, standing in for the product's error
    * collection and gating creation exactly as [L152] and [L180] gate it.
    *
-   * ★ THESE CANNOT BE SURFACED TO THE CALLER EITHER, FOR THE SAME REASON.
-   * The legacy surfaced them through `product.hasErrors()`, which the target's
-   * `Product` does not publish, and [L207] returns a constant `true` regardless. The
-   * OBSERVABLE outcome is nevertheless identical to the legacy's - zero SKUs
-   * created - because that is precisely what the [L152] and [L180] gates produce.
-   * The resource-bundle identifiers are carried verbatim so the surfacing layer can
+   * ★ THE LEGACY'S SECOND `hasErrors()` ASK IS OBSERVABLE WITHOUT THIS FIELD
+   * LEAVING THE INVOCATION, WHICH IS WHY IT DOES NOT NEED TO. `Product` publishes
+   * neither `addError` nor `hasErrors` - `src/domain/entities/product.ts:L1432`
+   * records that framework error collection is deliberately not reproduced there -
+   * and [L207] returns a constant `true` regardless, so the failures are
+   * accumulated here and gate creation here.
+   *
+   * The caller nevertheless recovers the signal exactly, and
+   * `src/services/productService.ts` does: every arm of `createSkus` that completes
+   * attaches AT LEAST ONE SKU, and every arm that records an error attaches NONE,
+   * so `product.isNew() && product.getSkus().length === 0` holds if and only if
+   * creation was refused. That equivalence is enumerated branch by branch at
+   * `saveProduct`, where it reproduces the legacy's `!product.hasErrors()` re-test
+   * at [model/service/ProductService.cfc:L286]. No cross-service error channel was
+   * invented, and none is needed.
+   *
+   * The resource-bundle identifiers are carried verbatim so a surfacing layer can
    * use them unchanged once an error-collection surface exists.
    */
   readonly validationFailures: SkuCreationValidationFailure[];
@@ -939,6 +1066,16 @@ export class SkuService {
    *   in-scope service layer - becomes the `imageStore` STUB port. That is T2 applied
    *   to its single service-tier site.
    *
+   * ★ THE SIXTH PARAMETER IS NOT A FOURTH PORT. `imageSettingValues` is a bag of
+   * ALREADY-RESOLVED ambient values, not a collaborator this service calls -
+   * `src/domain/entities/sku.ts` needs them to answer `generateImageFileName()`,
+   * and a draft this service constructs must carry them exactly as a repository-
+   * hydrated SKU does. That is the same resolved-settings injection
+   * `MysqlSkuRepository` takes through its `SkuHydrationCollaborators` bag and
+   * `Option` takes through `assetsImageBaseUrl`. It sits LAST because every
+   * parameter before it either is required or already carries a default, and
+   * inserting it earlier would silently re-bind existing positional call sites.
+   *
    * LEGACY-NOTE [model/service/SkuService.cfc:L54]: DI/1 declared `productService`
    * but no call site exists in the component; the injection is dead and is
    * deliberately not reproduced. `src/handlers/bootstrap.ts` must not wire it. This
@@ -946,7 +1083,7 @@ export class SkuService {
    * `OptionService.productService`, `ProductService.contentService` and
    * `ProductService.productTypeDAO`.
    *
-   * @param skuRepository The seven-member SKU data port. Every query this service
+   * @param skuRepository The eight-member SKU data port. Every query this service
    *   needs arrives through it, which is why no SQL appears in this file (E5).
    * @param imageStore The image stub port, reached only from `processImageUpload`.
    * @param subscriptionTermProvider The subscription stub port, reached only from
@@ -955,6 +1092,8 @@ export class SkuService {
    *   `createSkus` invocation will create. See `assertWithinCreationBound`.
    * @param refuseDuplicateSkuCodes Whether `createSkus` refuses to attach a SKU
    *   whose generated code a sibling already carries. See `assertSkuCodeAvailable`.
+   * @param imageSettingValues The already-resolved image-setting values every SKU
+   *   draft this service constructs carries forward. See `newSkuDraft`.
    */
   public constructor(
     private readonly skuRepository: SkuRepository,
@@ -962,6 +1101,7 @@ export class SkuService {
     private readonly subscriptionTermProvider: SubscriptionTermProvider,
     private readonly maximumSkuCreationBatchSize: number = DEFAULT_MAXIMUM_SKU_CREATION_BATCH_SIZE,
     private readonly refuseDuplicateSkuCodes: boolean = false,
+    private readonly imageSettingValues?: SkuImageSettingValues,
   ) {
     // The bound is meaningless unless it is a positive whole number, and a
     // misconfigured bound would either refuse every invocation or bound nothing at
@@ -1019,12 +1159,25 @@ export class SkuService {
    *
    * ★ THIS METHOD PERSISTS NOTHING, EXACTLY AS THE LEGACY PERSISTS NOTHING.
    * There is no `save` anywhere in [L58-L208]: the legacy relied on Hibernate
-   * cascading from the product save its CALLER performed. The target has no cascade,
-   * so the drafts this method builds and attaches are persisted by the caller
-   * through `SkuRepository.saveSku`. Adding a save here would hand the method a
-   * capability the legacy never had, and would leave the live `product.getSkus()`
-   * array holding drafts while the database held their persisted twins - the
-   * repository's `saveSku` answers a rehydrated instance, not the argument.
+   * cascading from the product save its CALLER performed - `cascade="all-delete-orphan"`
+   * on `Product.skus` [model/entity/Product.cfc:L73] - and on the ORM writing each
+   * child's `productID` once the parent's key existed. Adding a save here would hand
+   * the method a capability the legacy never had, and would leave the live
+   * `product.getSkus()` array holding drafts while the database held their persisted
+   * twins, because a repository save answers a rehydrated instance rather than the
+   * argument.
+   *
+   * ★ QUOTE-THEN-REVISE ON WHERE THE CALLER'S SAVE HAPPENS. This paragraph used to end
+   * "the drafts this method builds and attaches are persisted by the caller through
+   * `SkuRepository.saveSku`", which named the wrong seam. `SkuRepository.saveSku`
+   * persists ONE SKU whose product already has a key; it cannot be the cascade for a
+   * product that has no key yet, and it cannot order the `SwProduct.defaultSkuID`
+   * write that has to follow the SKU inserts. The cascade is therefore driven by
+   * `ProductRepository.saveProduct`, which is the ONE place that can hold the product
+   * row write, every transient SKU write and the deferred `defaultSkuID` write inside
+   * a single transaction - the same unit Hibernate's flush gave them. What this method
+   * owes that cascade is exactly what it already produces: every draft attached to
+   * `product.getSkus()`, and the designation on `product.getDefaultSku()`.
    *
    * @param product The product to attach the created SKUs to. Mutated in place: its
    *   SKU array is live, and both linking directions push into it.
@@ -1049,7 +1202,6 @@ export class SkuService {
     const baseProductType = await productType.getBaseProductType();
 
     const ledger: SkuCreationLedger = {
-      designatedDefaultSku: undefined,
       validationFailures: [],
     };
 
@@ -1249,11 +1401,20 @@ export class SkuService {
 
       // [L101-L103] STRATEGY 1 OF 5: first-wins, via a genuine null test on the
       // product's existing default. `isNull(...)` is a null test and is ported with
-      // the null-test helper - NOT as a `structKeyExists` probe and NOT as `!x`. The
-      // ledger conjunct is what makes it first-wins across iterations, standing in for
-      // the [L102] write the legacy performed on the entity.
-      if (isNullish(product.getDefaultSku()) && ledger.designatedDefaultSku === undefined) {
-        ledger.designatedDefaultSku = newSku;
+      // the null-test helper - NOT as a `structKeyExists` probe and NOT as `!x`.
+      //
+      // ★ THE GUARD IS ONE CLAUSE, WHICH IS THE SHAPE [L101] WRITES, AND FIRST-WINS
+      // FALLS OUT OF THE WRITE RATHER THAN NEEDING A SECOND CLAUSE. An earlier
+      // revision diverted the [L102] write into an invocation-local ledger and had to
+      // add `&& ledger.designatedDefaultSku === undefined` to keep later iterations
+      // from overwriting the first, because the entity never learned of the
+      // designation. Now that [L102] writes where the legacy writes it, the very next
+      // iteration's `product.getDefaultSku()` answers the SKU this one designated and
+      // the single clause is self-limiting - exactly as it is in CFML. The added
+      // conjunct is therefore removed, not merely made redundant.
+      if (isNullish(product.getDefaultSku())) {
+        // [L102]
+        product.setDefaultSku(newSku);
       }
 
       // [L106-L108] One option from each group, at that group's current index.
@@ -1393,8 +1554,9 @@ export class SkuService {
     this.assertSkuCodeAvailable(product, skuCode, 'L133');
     thisSku.setSkuCode(skuCode);
 
-    // [L134] STRATEGY 2 OF 5: unconditional. No `isNull` test, no loop-index test.
-    ledger.designatedDefaultSku = thisSku;
+    // [L134] STRATEGY 2 OF 5: unconditional. No `isNull` test, no loop-index test -
+    // this branch overwrites whatever default the product already carried.
+    product.setDefaultSku(thisSku);
   }
 
   // -------------------------------------------------------------------------
@@ -1429,9 +1591,11 @@ export class SkuService {
    * [L160-L165] add the benefits. `src/domain/entities/sku.ts` publishes NO
    * `setSubscriptionTerm`, `addSubscriptionBenefit` or `addRenewalSubscriptionBenefit`
    * - it accepts `subscriptionTermID`, `subscriptionBenefitIDs` and
-   * `renewalSubscriptionBenefitIDs` as hydration-time inputs with getters only - and
-   * the entity layer is locked, so the identifiers must be in hand before the draft
-   * exists. The SUCCESSFUL path is byte-identical, including the skuCode sequence.
+   * `renewalSubscriptionBenefitIDs` as hydration-time inputs with getters only, for
+   * the reason recorded at `SkuDraftAssociations`: the ID sets reach the same link
+   * rows, so a mutator would add surface without adding behaviour. The identifiers
+   * must therefore be in hand before the draft exists.
+   * The SUCCESSFUL path is byte-identical, including the skuCode sequence.
    * The only difference is on the failing path: where the legacy would already have
    * linked and code-stamped this iteration's SKU before raising at [L163], the target
    * raises with nothing attached for this iteration. That is strictly less partial
@@ -1568,7 +1732,8 @@ export class SkuService {
       // [L166-L168] STRATEGY 3 OF 5: a loop-index test, not a null test and not
       // unconditional. It overwrites any existing default, unlike [L101].
       if (i === 1) {
-        ledger.designatedDefaultSku = thisSku;
+        // [L167]
+        product.setDefaultSku(thisSku);
       }
     }
   }
@@ -1702,7 +1867,7 @@ export class SkuService {
       newSku.setProduct(product);
 
       // [L189] STRATEGY 4 OF 5: unconditional, like [L134] and unlike [L197].
-      ledger.designatedDefaultSku = newSku;
+      product.setDefaultSku(newSku);
     } else {
       // [L191-L200] ONE SKU PER CONTENT.
       const plannedSkuCount = listLen(accessContentsList);
@@ -1735,7 +1900,8 @@ export class SkuService {
         // [L197-L199] STRATEGY 5 OF 5: a loop-index test on `c`, mirroring [L166]'s
         // test on `i` but in a branch whose sibling [L189] is unconditional.
         if (c === 1) {
-          ledger.designatedDefaultSku = newSku;
+          // [L198]
+          product.setDefaultSku(newSku);
         }
       }
     }
@@ -1876,7 +2042,7 @@ export class SkuService {
 
       // [L225-L240] then [L243] - the legacy assigns the merged array back over `skus`
       // and returns that; returning it directly is identical.
-      return this.mergeIntoSortOrder(skus, sortedSkuIDs, 'L236-L237');
+      return this.mergeIntoSortOrder(skus, sortedSkuIDs, 'L236-L237', product.getProductID());
     }
 
     // [L243] The unsorted path answers the repository's array unchanged.
@@ -1920,7 +2086,7 @@ export class SkuService {
     const sortedSkuIDs = await this.skuRepository.getSortedProductSkusID(product.getProductID());
 
     // [L253-L268]
-    return this.mergeIntoSortOrder(skus, sortedSkuIDs, 'L264-L265');
+    return this.mergeIntoSortOrder(skus, sortedSkuIDs, 'L264-L265', product.getProductID());
   }
 
   /**
@@ -1950,26 +2116,50 @@ export class SkuService {
    * the raise is REPRODUCED with an explicit test. That is reproduction of a legacy
    * failure, not an added guard (B5).
    *
-   * ★ AND WHY THE HOLES ARE NOT FILLED IN. `arrayResize` sizes the result to the
-   * QUERY's row count, which is independent of how many SKUs the caller supplied - and
+   * ★★ AND WHAT HAPPENS TO THE HOLES. THIS PARAGRAPH ONCE ENDED IN AN UNSAFE CAST, AND
+   * THE ORIGINAL REASONING IS QUOTED RATHER THAN OVERWRITTEN. It read: "They are NOT
+   * compacted, filtered or flattened away. Internally the array is typed
+   * `(Sku | undefined)[]`, which is the honest shape; the published return stays
+   * `Sku[]` for interface parity, and the single narrowing assertion below is where
+   * that discrepancy lives. `noUncheckedIndexedAccess` means an indexed read of the
+   * published array is still `Sku | undefined`, so a caller indexing it cannot ignore
+   * the holes; a caller iterating it can, and that is the residual sharp edge the
+   * legacy also had."
+   *
+   * The first sentence still holds and is the important one: the holes are NOT
+   * compacted, filtered or flattened away, because doing so would return a DIFFERENT
+   * array from the legacy's - reordered and short - which is a wrong answer rather than
+   * a refused one. What was wrong was the conclusion drawn from `noUncheckedIndexedAccess`.
+   * That flag reaches an INDEXED READ and nothing else, so it does not reach
+   * `map`, `filter`, `forEach`, `for...of`, destructuring or a spread - every one of
+   * which hands the callback a value statically guaranteed to be a `Sku` while it may
+   * be `undefined` at run time. Calling that "the residual sharp edge the legacy also
+   * had" understated it: the legacy had no static guarantee to contradict, so a CFML
+   * caller met a null it could see coming, whereas an assertion here produces a type
+   * the compiler actively defends. That is a suppression, not a parity note.
+   *
+   * SO THE ARRAY IS FILLED DENSELY OR IT IS REFUSED. `arrayResize` sizes the result to
+   * the QUERY's row count, independent of how many SKUs the caller supplied - and
    * `sortedSkuIDQuery.recordCount` counting query rows rather than SKUs is precisely
-   * the mechanism. When the query returns more rows than the SKU array covers, the
-   * result carries genuine holes. They are NOT compacted, filtered or flattened away.
-   * Internally the array is typed `(Sku | undefined)[]`, which is the honest shape;
-   * the published return stays `Sku[]` for interface parity, and the single narrowing
-   * assertion below is where that discrepancy lives. `noUncheckedIndexedAccess` means
-   * an indexed read of the published array is still `Sku | undefined`, so a caller
-   * indexing it cannot ignore the holes; a caller iterating it can, and that is the
-   * residual sharp edge the legacy also had.
+   * the mechanism - so a query returning more rows than the SKU array covers still
+   * leaves positions unfilled. Those positions are now detected explicitly and reported
+   * through `SkuSortOrderError`, whose own comment records the exact scope of the
+   * divergence this introduces and why the two alternatives are worse. Every slot that
+   * IS filled is narrowed rather than asserted, so the published `Sku[]` is true of the
+   * value returned.
    *
    * @param skus The SKUs to place.
    * @param sortedSkuIDs The ordered identifiers, one per query row.
    * @param siteLocator Which of the two duplicated sites this call reproduces.
+   * @param productID The product being sorted, carried for the failure message only.
+   * @throws SkuSortOrderError When the sorted-ID result is longer than the SKUs can
+   *   fill, so a dense `Sku[]` cannot be produced.
    */
   private mergeIntoSortOrder(
     skus: readonly Sku[],
     sortedSkuIDs: readonly string[],
     siteLocator: string,
+    productID: string,
   ): Sku[] {
     // [L228-L230] / [L256-L258] The query's `skuID` column, walked positionally into a
     // flat array. The port already hands back that column as an ordered list, so the
@@ -2008,10 +2198,33 @@ export class SkuService {
       sortedArrayReturn[index - 1] = sku;
     }
 
-    // The single narrowing assertion, confined to this one line and explained above:
-    // the honest internal shape is `(Sku | undefined)[]`, the published shape is
-    // `Sku[]` for parity, and the holes are real.
-    return sortedArrayReturn as Sku[];
+    // The dense fill, built by NARROWING each slot rather than asserting the array. One
+    // pass produces both the result and the diagnosis, so a refusal can name exactly
+    // which positions were left behind instead of only that some were.
+    const densePlacement: Sku[] = [];
+    const unfilledPositions: number[] = [];
+
+    for (const [position, placed] of sortedArrayReturn.entries()) {
+      if (placed === undefined) {
+        unfilledPositions.push(position);
+
+        continue;
+      }
+
+      densePlacement.push(placed);
+    }
+
+    if (unfilledPositions.length !== 0) {
+      throw new SkuSortOrderError(
+        productID,
+        sortedArrayReturn.length,
+        skus.length,
+        unfilledPositions,
+        siteLocator,
+      );
+    }
+
+    return densePlacement;
   }
 
   // -------------------------------------------------------------------------
@@ -2058,7 +2271,7 @@ export class SkuService {
    * absent from `org/Hibachi/`, and cannot be dispatched because
    * `org/Hibachi/HibachiDAO.cfc` declares no `onMissingMethod`. The legacy method
    * raises unconditionally, every time it is called; the raise is reproduced and the
-   * member is deliberately absent from the seven-member `SkuRepository` port.
+   * member is deliberately absent from the eight-member `SkuRepository` port.
    * Preserved deliberately; do not fix without a product decision.
    *
    * The signature is kept for interface parity (B4): a reviewer diffing the two
@@ -2164,15 +2377,22 @@ export class SkuService {
    * are therefore carried as the reported criteria surface rather than as an
    * implemented match, and widening the match to all five is a repository-tier
    * obligation belonging to `src/repositories/mysql/mysqlSkuRepository.ts`. The port
-   * is locked at seven members and no member was invented to close the gap, so the
+   * is locked at eight members and no member was invented to close the gap, so the
    * gap is reported as DATA on the returned page instead of being hidden behind a
-   * claim in a comment.
+   * claim in a comment. The figure read "seven" until the port gained `saveSkus`,
+   * and re-reading it changes nothing here: `saveSkus` is a WRITE, so it widens no
+   * search and closes no part of this gap.
    *
    * LEGACY-NOTE [model/service/SkuService.cfc:L314-L316]: the three joins are
    * preserved as reported criteria, INCLUDING the `"left"` on `alternateSkuCodes`,
    * without inventing an `alternateSkuCodes` association on
-   * `src/domain/entities/sku.ts` - the entity layer is locked at eighteen files, and
-   * it carries `alternateSkuCodeIDs` only. `org/Hibachi/HibachiSmartList.cfc:L212`
+   * `src/domain/entities/sku.ts`, which carries `alternateSkuCodeIDs` only. This is
+   * a genuine boundary rather than the false one this file used to assert about
+   * entity members: a materialised association needs a FAR-SIDE ENTITY CLASS, and
+   * `AlternateSkuCode` is not among the eighteen the folder is locked at - so
+   * authoring it would add a nineteenth file, which prohibition #1 of the entity
+   * contract forbids outright. Adding a method to an existing class is not the same
+   * act and is not covered by that lock. `org/Hibachi/HibachiSmartList.cfc:L212`
    * declares `joinRelatedProperty`'s `joinType` default as the EMPTY STRING, not
    * `"inner"`, so the first two joins are recorded as `''` rather than being
    * normalised to a name the legacy never wrote.
@@ -2211,9 +2431,30 @@ export class SkuService {
    * LEGACY-NOTE [model/service/SkuService.cfc:L92, L127, L154, L182, L192]:
    * `this.newSku()` is `HibachiService`'s dynamic `new<Entity>()` factory, reached at
    * five sites. No such affordance exists in the target; SKUs are constructed
-   * explicitly. No port member and no fourteenth port was added to satisfy it, and no
-   * static factory was added to `src/domain/entities/sku.ts` - the entity layer is
-   * locked at eighteen files with one exported class each.
+   * explicitly through the entity's public constructor. No port member and no
+   * fourteenth port was added to satisfy it. `src/domain/entities/sku.ts` does
+   * publish a `Sku.hydrate` static, but it is the CASCADE-materialising factory the
+   * repositories use and it is deliberately not reached here: a draft has no
+   * persisted `SwSkuCurrency` rows to materialise, and routing an unsaved draft
+   * through the hydration path would resolve a currency cascade for a row that does
+   * not exist.
+   *
+   * ★ THE RESOLVED IMAGE SETTINGS ARE CARRIED ONTO EVERY DRAFT, AND THAT IS LOAD-
+   * BEARING RATHER THAN TIDY. `processProduct_updateDefaultImageFileNames`
+   * [model/service/ProductService.cfc:L208-L213] runs
+   * `sku.setImageFile( sku.generateImageFileName() )` over `product.getSkus()`, and
+   * `saveProduct` dispatches it at [model/service/ProductService.cfc:L282] for every
+   * new product - so the drafts this factory mints are precisely the SKUs that
+   * method walks. In CFML each of them reads `getProduct().setting(...)` and gets
+   * the configured value; a draft constructed without the resolved values would
+   * silently fall back to the metadata defaults
+   * [model/service/SettingService.cfc:L191-L192] and mint a file name an installation
+   * with a configured delimiter or extension does not use. Forwarding them keeps the
+   * generated name identical to the CFML application's for the same rows.
+   *
+   * The forward is a CONDITIONAL SPREAD because `exactOptionalPropertyTypes` is on:
+   * `{ imageSettingValues: undefined }` is not assignable to an optional member, and
+   * an absent bag is a real state the entity already handles per key.
    *
    * The provisional identifier has the same shape `org/Hibachi/HibachiObject.cfc:L144`
    * produced - `replace(lcase(createUUID()), '-', '', 'all')`, thirty-two lower-case
@@ -2236,6 +2477,9 @@ export class SkuService {
       skuID: createHibachiShapedIdentifier(),
       isNew: true,
       skuRepository: this.skuRepository,
+      ...(this.imageSettingValues === undefined
+        ? {}
+        : { imageSettingValues: this.imageSettingValues }),
       ...associations,
     });
   }

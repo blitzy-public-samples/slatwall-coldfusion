@@ -354,10 +354,22 @@ function makeCurrencyConverterLog(): CurrencyConverterLog {
  * shipped module fuses those two statements into one
  * `getCurrenciesByCurrencyCodeList` call, so THAT is what `listings` counts.
  *
- * CFML parity [model/entity/Sku.cfc:L425]: an equal from/to pair converts to
- * itself rather than being scaled, and an unsupplied rate is a hard failure
- * rather than a silent 1:1 — a silent identity would make a missing rate look
- * like a correct answer.
+ * CFML parity [model/service/CurrencyService.cfc:L100-L101]: AN UNSUPPLIED RATE
+ * IS A SILENT PASS-THROUGH, not a failure. The legacy returns the amount
+ * unconverted when either code is absent from the rate table, and the cascade
+ * still marks the currency `converted = true` at [model/entity/Sku.cfc:L427], so
+ * a par-priced currency is deliberately indistinguishable from a converted one.
+ * An earlier revision of this double rejected instead; that made one unlisted
+ * currency fail `getCurrencyDetails()` outright, which is strictly worse than
+ * the behaviour it was trying to expose.
+ *
+ * The equal-code identity below is a DOUBLE SIMPLIFICATION and is not claimed as
+ * parity: the legacy has no equal-code test, so it divides and multiplies by the
+ * same rate and rounds, answering the input rounded to cents. The cascade cannot
+ * reach that case — Step 1 writes the base currency's price unconditionally at
+ * [model/entity/Sku.cfc:L394], so Step 3's guard at [L416] excludes it — and
+ * `src/integrations/europeanCentralBankCurrencyConverter.ts` reproduces the real
+ * branch structure with its own suite.
  */
 function makeRecordingCurrencyConverter(
   rates: Readonly<Record<string, string>>,
@@ -403,9 +415,10 @@ function makeRecordingCurrencyConverter(
       const rate = rates[convertToCurrencyCode];
 
       if (rate === undefined) {
-        return Promise.reject(
-          new Error(`sku.test.ts: no conversion rate supplied for '${convertToCurrencyCode}'.`),
-        );
+        // CFML parity [model/service/CurrencyService.cfc:L100-L101]: unconverted,
+        // not rejected. The call is still recorded above, so a suite can prove the
+        // conversion WAS attempted and still answered at par.
+        return Promise.resolve(amount);
       }
 
       return Promise.resolve(amount.times(rate));
@@ -487,12 +500,19 @@ type SkuRepositoryCall = {
 };
 
 /**
- * A recording stand-in for the SEVEN-MEMBER sku repository port.
+ * A recording stand-in for the EIGHT-MEMBER sku repository port.
  *
- * ★ THE PORT LEDGER IS LOCKED AT THIRTEEN AND `skuRepository` IS LOCKED AT
- * SEVEN. Nothing is added here to make `getStocksDeletableFlag` [L569] work:
+ * ★ THE PORT LEDGER IS STILL THIRTEEN AND `skuRepository` NOW DECLARES EIGHT
+ * MEMBERS. Nothing is added here to make `getStocksDeletableFlag` [L569] work:
  * that member lives on `model/service/SkuService.cfc:L281`, not on the DAO, and
  * therefore does not exist on the port. See the D28/H4 block below.
+ *
+ * ★ QUOTE-THEN-REVISE. This block read "the SEVEN-MEMBER sku repository port"
+ * and "`skuRepository` IS LOCKED AT SEVEN". The port has since grown `saveSkus`,
+ * the collection form of `saveSku`, which reproduces the Hibernate flush that
+ * [model/service/ProductService.cfc:L216-L233] depended on. That is a WRITE
+ * member and it changes nothing about the absent read: the refusal asserted below
+ * is still a refusal, and no member was added to soften it.
  */
 function makeRecordingSkuRepository(
   selectedOptionsResult: readonly Sku[],
@@ -506,6 +526,7 @@ function makeRecordingSkuRepository(
   getProductSkus: (product: Product, fetchOptions: boolean) => Promise<Sku[]>;
   getSortedProductSkusID: (productID: string) => Promise<string[]>;
   saveSku: (sku: Sku) => Promise<Sku>;
+  saveSkus: (skus: readonly Sku[]) => Promise<Sku[]>;
 } {
   return {
     getTransactionExistsFlag(productID?: string, skuID?: string): Promise<boolean> {
@@ -541,6 +562,18 @@ function makeRecordingSkuRepository(
     saveSku(sku: Sku): Promise<Sku> {
       log.push({ member: 'saveSku', args: [sku.getSkuID()] });
       return Promise.resolve(sku);
+    },
+
+    saveSkus(skus: readonly Sku[]): Promise<Sku[]> {
+      // Recorded as one call carrying every identifier, so a suite can see both THAT
+      // the batch member was reached and WITH WHAT - which a per-SKU log entry would
+      // have obscured by looking identical to a loop over `saveSku`. No entity method
+      // reaches it; the entry exists so that if one ever does, the log says so.
+      log.push({
+        member: 'saveSkus',
+        args: skus.map((member: Sku): string => member.getSkuID()),
+      });
+      return Promise.resolve([...skus]);
     },
   };
 }
@@ -697,6 +730,17 @@ function requireOption(options: readonly Option[], index: number): Option {
   return option;
 }
 
+/** The `SwSkuCurrency` row at `index`, or a hard failure. Same rationale as {@link requireDetail}. */
+function requireSkuCurrency(skuCurrencies: readonly SkuCurrency[], index: number): SkuCurrency {
+  const skuCurrency = skuCurrencies[index];
+
+  if (skuCurrency === undefined) {
+    throw new Error(`sku.test.ts: no sku currency at index ${String(index)}.`);
+  }
+
+  return skuCurrency;
+}
+
 /** The option group of `option`, or a hard failure. */
 function requireOptionGroupOf(option: Option): OptionGroup {
   const optionGroup = option.getOptionGroup();
@@ -735,7 +779,7 @@ function arityOf(subject: object, name: string): number {
 describe('Sku currency accessors — undefined is never zero [model/entity/Sku.cfc:L269-L285]', () => {
   it('returns undefined from all three accessors for a currency absent from the details map', async () => {
     const sku = makeSkuFixture();
-    await sku.materializeCurrencyDetails();
+    await Sku.hydrate(sku);
 
     // CFML parity [model/entity/Sku.cfc:L269-L273]: no else branch and no
     // trailing return ⇒ CFML null ⇒ undefined. Returning 0 here would silently
@@ -755,7 +799,7 @@ describe('Sku currency accessors — undefined is never zero [model/entity/Sku.c
     // under a currency key that DOES exist. This is the case the double guard
     // exists for.
     const sku = makeSkuFixture({ skuCurrencyVariant: 'secondaryPriceOnly' });
-    const details = await sku.materializeCurrencyDetails();
+    const details = (await Sku.hydrate(sku)).getCurrencyDetails();
 
     expect(structKeyExists(details, SECONDARY_CURRENCY_CODE)).toBe(true);
 
@@ -776,7 +820,7 @@ describe('Sku currency accessors — undefined is never zero [model/entity/Sku.c
 
   it('returns a real Money from each accessor when its sub-key is present', async () => {
     const sku = makeSkuFixture();
-    await sku.materializeCurrencyDetails();
+    await Sku.hydrate(sku);
 
     // The base currency is filled by Step 1 [L385-L397] from the sku's own
     // columns. Expectations are decimal strings, never computed floats (P4).
@@ -803,7 +847,7 @@ describe('Sku currency accessors — undefined is never zero [model/entity/Sku.c
 
   it('matches the currency key CASE-INSENSITIVELY, as a CFML struct key does', async () => {
     const sku = makeSkuFixture();
-    await sku.materializeCurrencyDetails();
+    await Sku.hydrate(sku);
 
     // CFML parity [model/entity/Sku.cfc:L270]: CFML struct keys are
     // case-insensitive, so the lookup goes through `structKeyExists` /
@@ -819,7 +863,7 @@ describe('Sku currency accessors — undefined is never zero [model/entity/Sku.c
 
   it('★ answers undefined and NOT zero for missing data — validation gate 6', async () => {
     const sku = makeSkuFixture();
-    await sku.materializeCurrencyDetails();
+    await Sku.hydrate(sku);
 
     const price = sku.getPriceByCurrencyCode(INELIGIBLE_CURRENCY_CODE);
 
@@ -862,7 +906,7 @@ describe('Sku currency accessors — undefined is never zero [model/entity/Sku.c
         [TERTIARY_CURRENCY_CODE]: TERTIARY_CONVERSION_RATE,
       },
     });
-    const details = await sku.materializeCurrencyDetails();
+    const details = (await Sku.hydrate(sku)).getCurrencyDetails();
 
     for (const currencyCode of Object.keys(details)) {
       expect(structKeyExists(requireDetail(details, currencyCode), 'price')).toBe(true);
@@ -871,11 +915,17 @@ describe('Sku currency accessors — undefined is never zero [model/entity/Sku.c
   });
 
   it('★ D37 — pins the shipped resolution of the unguarded read: undefined, never a throw', () => {
-    // The details map cannot be injected — `materializeCurrencyDetails()` is the
-    // only writer — so the two-step read the accessor performs at [L270-L271] is
-    // pinned directly against the very helpers it uses. `structKeyExists`
-    // succeeds on the outer key, `structGet` returns the entry, and the `.price`
-    // read then yields undefined rather than raising.
+    // A priceless entry is UNREACHABLE THROUGH THE CASCADE — the test directly
+    // above proves it, because [L394], [L409] and [L425] between them set
+    // `.price` for every eligible currency, which is what makes D37 latent
+    // rather than live. So the entry has to arrive some other way, and it does:
+    // `SkuHydrationInput.currencyDetails` injects a completed map without
+    // running the cascade at all. That injection path is the reason this test
+    // can assert the ACCESSOR and not merely the helpers underneath it.
+    //
+    // Both levels are asserted below, in that order: the helpers first, because
+    // they are what the accessor's two-step read at [L270-L271] is built from,
+    // and then the accessor itself on a real entity.
     //
     // JUDGMENT CALL: this asserts the shipped reality rather than a prediction.
     // CFML would raise "element PRICE is undefined" here; the ported accessor
@@ -891,6 +941,23 @@ describe('Sku currency accessors — undefined is never zero [model/entity/Sku.c
 
     expect(entry).toBeDefined();
     expect(entry?.price).toBeUndefined();
+
+    // …and the same read through the published accessor, on an entity whose memo
+    // was injected rather than computed. No collaborator runs here and no
+    // hydration boundary is crossed: the constructor seeds the memo from the
+    // input, so the cascade never fires for this instance.
+    const injected = new Sku({ skuID: 'injected-priceless-sku', currencyDetails: priceless });
+
+    // The OUTER key is unambiguously present — this is not the "currency absent"
+    // state — and the accessor still answers nothing rather than raising.
+    expect(Object.keys(injected.getCurrencyDetails())).toStrictEqual([SETTING_SKU_CURRENCY]);
+    expect(injected.getPriceByCurrencyCode(SETTING_SKU_CURRENCY)).toBeUndefined();
+
+    // The other two accessors reach the same answer by a DIFFERENT route: their
+    // second `structKeyExists` at [L276-L277] and [L282-L283] short-circuits
+    // before any sub-key read happens. Same undefined, different mechanism.
+    expect(injected.getListPriceByCurrencyCode(SETTING_SKU_CURRENCY)).toBeUndefined();
+    expect(injected.getRenewalPriceByCurrencyCode(SETTING_SKU_CURRENCY)).toBeUndefined();
   });
 });
 
@@ -910,7 +977,7 @@ describe('Sku.getCurrencyDetails — the four-step cascade [model/entity/Sku.cfc
     // the memo {} and every currency accessor returns undefined — including for
     // the BASE currency, which is the counter-intuitive half.
     const sku = makeSkuFixture({ skuEligibleCurrencies: '', skuCurrencyVariant: 'none' });
-    const details = await sku.materializeCurrencyDetails();
+    const details = (await Sku.hydrate(sku)).getCurrencyDetails();
 
     expect(Object.keys(details)).toStrictEqual([]);
     expect(sku.getPriceByCurrencyCode(SETTING_SKU_CURRENCY)).toBeUndefined();
@@ -939,8 +1006,8 @@ describe('Sku.getCurrencyDetails — the four-step cascade [model/entity/Sku.cfc
       skuCurrencyVariant: 'none',
     });
 
-    const first = await sku.materializeCurrencyDetails();
-    const second = await sku.materializeCurrencyDetails();
+    const first = (await Sku.hydrate(sku)).getCurrencyDetails();
+    const second = (await Sku.hydrate(sku)).getCurrencyDetails();
 
     // The memo is established: the same object comes back and nothing recomputes.
     expect(second).toBe(first);
@@ -964,7 +1031,7 @@ describe('Sku.getCurrencyDetails — the four-step cascade [model/entity/Sku.cfc
       skuEligibleCurrencies: '',
     });
 
-    await expect(withoutSettings.materializeCurrencyDetails()).rejects.toThrow(
+    await expect(Sku.hydrate(withoutSettings)).rejects.toThrow(
       /settings provider .* \[model\/entity\/Sku\.cfc:L373\]/,
     );
 
@@ -974,7 +1041,7 @@ describe('Sku.getCurrencyDetails — the four-step cascade [model/entity/Sku.cfc
       skuCurrencyVariant: 'none',
     });
 
-    await expect(withoutConverter.materializeCurrencyDetails()).rejects.toThrow(
+    await expect(Sku.hydrate(withoutConverter)).rejects.toThrow(
       /currency converter .* \[model\/entity\/Sku\.cfc:L371\]/,
     );
   });
@@ -990,7 +1057,7 @@ describe('Sku.getCurrencyDetails — the four-step cascade [model/entity/Sku.cfc
       skuCurrencyVariant: 'none',
       conversionRates: { [SECONDARY_CURRENCY_CODE]: SECONDARY_CONVERSION_RATE },
     });
-    const details = await sku.materializeCurrencyDetails();
+    const details = (await Sku.hydrate(sku)).getCurrencyDetails();
 
     expect(Object.keys(details)).toStrictEqual([SETTING_SKU_CURRENCY, SECONDARY_CURRENCY_CODE]);
 
@@ -1009,7 +1076,7 @@ describe('Sku.getCurrencyDetails — the four-step cascade [model/entity/Sku.cfc
       skuEligibleCurrencies: SETTING_SKU_CURRENCY,
       skuCurrencyVariant: 'none',
     });
-    const details = await sku.materializeCurrencyDetails();
+    const details = (await Sku.hydrate(sku)).getCurrencyDetails();
     const detail = requireDetail(details, SETTING_SKU_CURRENCY);
 
     expect(detail.price?.toDecimalString()).toBe(FIXTURE_PRICE);
@@ -1037,7 +1104,10 @@ describe('Sku.getCurrencyDetails — the four-step cascade [model/entity/Sku.cfc
       skuEligibleCurrencies: SETTING_SKU_CURRENCY,
       skuCurrencyVariant: 'none',
     });
-    const detail = requireDetail(await sku.materializeCurrencyDetails(), SETTING_SKU_CURRENCY);
+    const detail = requireDetail(
+      (await Sku.hydrate(sku)).getCurrencyDetails(),
+      SETTING_SKU_CURRENCY,
+    );
 
     for (const subKey of [
       'price',
@@ -1060,7 +1130,7 @@ describe('Sku.getCurrencyDetails — the four-step cascade [model/entity/Sku.cfc
       skuEligibleCurrencies: SETTING_SKU_CURRENCY,
       skuCurrencyVariant: 'none',
     });
-    await sku.materializeCurrencyDetails();
+    await Sku.hydrate(sku);
 
     const zero = sku.getPriceByCurrencyCode(SETTING_SKU_CURRENCY);
 
@@ -1085,7 +1155,7 @@ describe('Sku.getCurrencyDetails — the four-step cascade [model/entity/Sku.cfc
       skuEligibleCurrencies: SETTING_SKU_CURRENCY.toLowerCase(),
       skuCurrencyVariant: 'none',
     });
-    const details = await sku.materializeCurrencyDetails();
+    const details = (await Sku.hydrate(sku)).getCurrencyDetails();
     const detail = requireDetail(details, SETTING_SKU_CURRENCY.toLowerCase());
 
     expect(detail.converted).toBe(false);
@@ -1101,7 +1171,7 @@ describe('Sku.getCurrencyDetails — the four-step cascade [model/entity/Sku.cfc
       skuEligibleCurrencies: SETTING_SKU_CURRENCY,
       skuCurrencyVariant: 'baseOverride',
     });
-    const details = await sku.materializeCurrencyDetails();
+    const details = (await Sku.hydrate(sku)).getCurrencyDetails();
     const detail = requireDetail(details, SETTING_SKU_CURRENCY);
 
     expect(detail.price?.toDecimalString()).toBe(BASE_OVERRIDE_PRICE);
@@ -1118,7 +1188,7 @@ describe('Sku.getCurrencyDetails — the four-step cascade [model/entity/Sku.cfc
       skuEligibleCurrencies: `${SETTING_SKU_CURRENCY},${SECONDARY_CURRENCY_CODE}`,
       skuCurrencyVariant: 'secondaryDuplicated',
     });
-    const details = await sku.materializeCurrencyDetails();
+    const details = (await Sku.hydrate(sku)).getCurrencyDetails();
     const detail = requireDetail(details, SECONDARY_CURRENCY_CODE);
 
     // The first row carries the superseded amount; the second must win.
@@ -1149,7 +1219,10 @@ describe('Sku.getCurrencyDetails — the four-step cascade [model/entity/Sku.cfc
       skuEligibleCurrencies: SETTING_SKU_CURRENCY,
       skuCurrencies: [baseOnlyPriceRow],
     });
-    const detail = requireDetail(await sku.materializeCurrencyDetails(), SETTING_SKU_CURRENCY);
+    const detail = requireDetail(
+      (await Sku.hydrate(sku)).getCurrencyDetails(),
+      SETTING_SKU_CURRENCY,
+    );
 
     expect(detail.price?.toDecimalString()).toBe(BASE_OVERRIDE_PRICE);
     expect(detail.listPrice?.toDecimalString()).toBe(FIXTURE_LIST_PRICE);
@@ -1173,7 +1246,7 @@ describe('Sku currency cascade — Step 3 and the memo [model/entity/Sku.cfc:L41
       skuCurrencyVariant: 'none',
       conversionRates: { [SECONDARY_CURRENCY_CODE]: SECONDARY_CONVERSION_RATE },
     });
-    const details = await sku.materializeCurrencyDetails();
+    const details = (await Sku.hydrate(sku)).getCurrencyDetails();
     const detail = requireDetail(details, SECONDARY_CURRENCY_CODE);
 
     expect(detail.converted).toBe(true);
@@ -1198,6 +1271,105 @@ describe('Sku currency cascade — Step 3 and the memo [model/entity/Sku.cfc:L41
     expect(detail.skuCurrencyID).toBe('');
   });
 
+  it('★★ STEP 3 — an eligible currency with NO rate is priced AT PAR and still flagged converted', async () => {
+    // CFML parity [model/service/CurrencyService.cfc:L100-L101]: when either
+    // currency code is missing from the rate table the conversion service returns
+    // the amount UNCONVERTED rather than raising. Step 3 does not inspect the
+    // answer, so [L427] still writes `converted = true`.
+    //
+    // ★ THIS IS THE HIGHEST-CONSEQUENCE BRANCH OF THE WHOLE CASCADE, and it is
+    // the one an implementation is most tempted to "improve". Two wrong answers
+    // are available and both are worse than par:
+    //   * REJECTING. Step 3 awaits each conversion INSIDE the body that builds
+    //     the price map, so one unlisted exotic currency would fail
+    //     `getCurrencyDetails()` outright and the sku would carry NO prices at
+    //     all — including the base-currency price at [L394] that never needed
+    //     converting. One missing rate would delist the product.
+    //   * SUBSTITUTING ZERO. That sells the product for free, which is the exact
+    //     hazard the `undefined`-not-`0` accessor contract at [L269-L285] exists
+    //     to prevent.
+    //
+    // So a par price is deliberately INDISTINGUISHABLE from a converted one here.
+    // The `converted` flag records that Step 3 ran, not that a rate was found,
+    // and no port member reports the difference because the legacy had none.
+    const sku = makeSkuFixture({
+      skuEligibleCurrencies: `${SETTING_SKU_CURRENCY},${SECONDARY_CURRENCY_CODE}`,
+      skuCurrencyVariant: 'none',
+      // The rate table is deliberately EMPTY for the secondary currency.
+      conversionRates: {},
+    });
+    // Driven through the class's own static entry point, which is the only public way in:
+    // `materializeCurrencyDetails` is PRIVATE on the shipped entity so that the async half of
+    // the cascade is not published on the instance, and `Sku.hydrate` is the seam a repository
+    // awaits. The detail map is then read back through the synchronous accessor - the same two
+    // steps every sibling case in this block takes.
+    const details = (await Sku.hydrate(sku)).getCurrencyDetails();
+
+    // Both currencies are still seeded — nothing was dropped.
+    expect(Object.keys(details)).toStrictEqual([SETTING_SKU_CURRENCY, SECONDARY_CURRENCY_CODE]);
+
+    const converted = requireDetail(details, SECONDARY_CURRENCY_CODE);
+
+    expect(converted.converted).toBe(true);
+    expect(converted.price?.toDecimalString()).toBe(FIXTURE_PRICE);
+    expect(converted.listPrice?.toDecimalString()).toBe(FIXTURE_LIST_PRICE);
+    expect(converted.renewalPrice?.toDecimalString()).toBe(FIXTURE_RENEWAL_PRICE);
+
+    // Every accessor answers, and none of them answers zero.
+    expect(sku.getPriceByCurrencyCode(SECONDARY_CURRENCY_CODE)?.toDecimalString()).toBe(
+      FIXTURE_PRICE,
+    );
+    expect(sku.getListPriceByCurrencyCode(SECONDARY_CURRENCY_CODE)?.toDecimalString()).toBe(
+      FIXTURE_LIST_PRICE,
+    );
+    expect(sku.getRenewalPriceByCurrencyCode(SECONDARY_CURRENCY_CODE)?.toDecimalString()).toBe(
+      FIXTURE_RENEWAL_PRICE,
+    );
+
+    // The BASE currency is untouched by the secondary currency's missing rate,
+    // which is the half a rejecting converter would have destroyed.
+    expect(sku.getPriceByCurrencyCode(SETTING_SKU_CURRENCY)?.toDecimalString()).toBe(FIXTURE_PRICE);
+    expect(requireDetail(details, SETTING_SKU_CURRENCY).converted).toBe(false);
+  });
+
+  it('★ STEP 3 — the conversion IS attempted for the unrated currency, three times, positionally', async () => {
+    // Proving the pass-through is the CONVERTER's answer and not a skipped call.
+    // [model/entity/Sku.cfc:L418, L422, L425] invoke conversion three times per
+    // Step-3 currency, each as (value, skuCurrency, thisCurrencyCode), and the
+    // recording double answers at par for all three.
+    const currencyLog = makeCurrencyConverterLog();
+
+    const sku = makeSkuFixture({
+      settingsProvider: makeRecordingSettingsProvider(
+        SETTING_SKU_CURRENCY,
+        `${SETTING_SKU_CURRENCY},${SECONDARY_CURRENCY_CODE}`,
+        [],
+      ),
+      currencyConverter: makeRecordingCurrencyConverter({}, currencyLog),
+      skuCurrencyVariant: 'none',
+    });
+
+    await Sku.hydrate(sku);
+
+    expect(currencyLog.conversions).toStrictEqual([
+      {
+        amount: FIXTURE_RENEWAL_PRICE,
+        originalCurrencyCode: SETTING_SKU_CURRENCY,
+        convertToCurrencyCode: SECONDARY_CURRENCY_CODE,
+      },
+      {
+        amount: FIXTURE_LIST_PRICE,
+        originalCurrencyCode: SETTING_SKU_CURRENCY,
+        convertToCurrencyCode: SECONDARY_CURRENCY_CODE,
+      },
+      {
+        amount: FIXTURE_PRICE,
+        originalCurrencyCode: SETTING_SKU_CURRENCY,
+        convertToCurrencyCode: SECONDARY_CURRENCY_CODE,
+      },
+    ]);
+  });
+
   it('★★ STEP 3 — is skipped ENTIRELY when a price exists, so list and renewal stay absent', async () => {
     // CFML parity [model/entity/Sku.cfc:L416]: the Step-3 guard tests only the
     // "price" sub-key, so a currency that already has a price never receives
@@ -1212,7 +1384,10 @@ describe('Sku currency cascade — Step 3 and the memo [model/entity/Sku.cfc:L41
         currencyLog,
       ),
     });
-    const detail = requireDetail(await sku.materializeCurrencyDetails(), SECONDARY_CURRENCY_CODE);
+    const detail = requireDetail(
+      (await Sku.hydrate(sku)).getCurrencyDetails(),
+      SECONDARY_CURRENCY_CODE,
+    );
 
     expect(detail.price?.toDecimalString()).toBe(SECONDARY_OVERRIDE_PRICE);
     expect(structKeyExists(detail, 'listPrice')).toBe(false);
@@ -1236,7 +1411,10 @@ describe('Sku currency cascade — Step 3 and the memo [model/entity/Sku.cfc:L41
       skuCurrencyVariant: 'secondaryPriceAbsent',
       conversionRates: { [SECONDARY_CURRENCY_CODE]: SECONDARY_CONVERSION_RATE },
     });
-    const detail = requireDetail(await sku.materializeCurrencyDetails(), SECONDARY_CURRENCY_CODE);
+    const detail = requireDetail(
+      (await Sku.hydrate(sku)).getCurrencyDetails(),
+      SECONDARY_CURRENCY_CODE,
+    );
 
     expect(detail.converted).toBe(true);
     expect(detail.skuCurrencyID).not.toBe('');
@@ -1256,7 +1434,7 @@ describe('Sku currency cascade — Step 3 and the memo [model/entity/Sku.cfc:L41
         [TERTIARY_CURRENCY_CODE]: TERTIARY_CONVERSION_RATE,
       },
     });
-    const details = await sku.materializeCurrencyDetails();
+    const details = (await Sku.hydrate(sku)).getCurrencyDetails();
 
     expect(requireDetail(details, SETTING_SKU_CURRENCY).converted).toBe(false);
     expect(requireDetail(details, SECONDARY_CURRENCY_CODE).converted).toBe(false);
@@ -1287,7 +1465,7 @@ describe('Sku currency cascade — Step 3 and the memo [model/entity/Sku.cfc:L41
       ),
       skuCurrencyVariant: 'none',
     });
-    await sku.materializeCurrencyDetails();
+    await Sku.hydrate(sku);
 
     // One fused listing call [L371 + L375], carrying the eligibility setting.
     expect(currencyLog.listings).toStrictEqual([
@@ -1330,7 +1508,7 @@ describe('Sku currency cascade — Step 3 and the memo [model/entity/Sku.cfc:L41
 
     expect(sku.getCurrencyCode()).toBe(TERTIARY_CURRENCY_CODE);
 
-    const details = await sku.materializeCurrencyDetails();
+    const details = (await Sku.hydrate(sku)).getCurrencyDetails();
 
     // Step 1 now targets the tertiary currency…
     expect(requireDetail(details, TERTIARY_CURRENCY_CODE).converted).toBe(false);
@@ -1353,7 +1531,7 @@ describe('Sku currency cascade — Step 3 and the memo [model/entity/Sku.cfc:L41
       skuCurrencyVariant: 'none',
       conversionRates: { [SECONDARY_CURRENCY_CODE]: SECONDARY_CONVERSION_RATE },
     });
-    const details = await sku.materializeCurrencyDetails();
+    const details = (await Sku.hydrate(sku)).getCurrencyDetails();
 
     expect(requireDetail(details, SETTING_SKU_CURRENCY).priceFormatted).toBe(
       numberFormat(FIXTURE_PRICE, '0.00'),
@@ -1388,12 +1566,271 @@ describe('Sku currency cascade — Step 3 and the memo [model/entity/Sku.cfc:L41
     expect(sku.getCurrencyDetails()).toStrictEqual({});
     expect(currencyLog.listings).toStrictEqual([]);
 
-    const first = await sku.materializeCurrencyDetails();
-    const second = await sku.materializeCurrencyDetails();
+    const first = (await Sku.hydrate(sku)).getCurrencyDetails();
+    const second = (await Sku.hydrate(sku)).getCurrencyDetails();
 
     expect(currencyLog.listings).toHaveLength(1);
     expect(second).toBe(first);
     expect(sku.getCurrencyDetails()).toBe(first);
+  });
+});
+
+// ===========================================================================
+// B2b — THE HYDRATION BOUNDARY ITSELF
+// `Sku.hydrate` and `Sku.resolveCurrencyCascadeContext`
+//
+// ★★ These two statics have NO legacy counterpart and are NOT a reshaping of
+// one. In CFML the cascade was an ordinary synchronous private read behind a
+// memo guard [model/entity/Sku.cfc:L368], because Hibernate resolved the
+// currency list lazily and `getService("currencyService")` was a synchronous
+// locator [L371]. Neither survives the port: the currency port is asynchronous.
+// So the ASYNC HALF of [L367-L433] moved off the published instance surface —
+// the cascade is PRIVATE, and these two statics are the only way to reach it.
+//
+// What that buys is stated as a testable claim rather than an intention:
+//   1. `getCurrencyDetails()` KEEPS its legacy name, parameter list and
+//      SYNCHRONOUS return, and so do the three accessors it feeds. No
+//      signature moved, so the interface-parity budget is untouched.
+//   2. The invariant half of the cascade — the two settings reads and the
+//      eligible-currency listing, none of which vary from one sku to the next —
+//      is resolvable ONCE for a whole result set and injectable per sku. This is
+//      an EXPLICITNESS property, not a performance claim: it makes the number of
+//      collaborator consultations a fixed, stated fact rather than something a
+//      reader has to infer from a loop.
+//   3. `{}` from `getCurrencyDetails()` can no longer mean "nobody remembered to
+//      call the materialiser". It means what it means in the legacy, and only
+//      that: the [L373] gate was shut, or hydration ran no cascade at all.
+// ===========================================================================
+
+describe('Sku.hydrate / Sku.resolveCurrencyCascadeContext — the hydration boundary', () => {
+  it('★★ resolves the invariant cascade inputs in EXACTLY THREE collaborator calls', async () => {
+    // Two settings reads [model/entity/Sku.cfc:L385/L418 and L373] and one
+    // currency listing [L371 fused with L375]. Nothing else in the cascade is
+    // sku-independent: every `convertCurrency` at [L418], [L422] and [L425]
+    // converts THAT sku's own price, so those are intrinsically per-sku and are
+    // deliberately not part of this context.
+    const settingsLog: SettingsCallLog = [];
+    const currencyLog = makeCurrencyConverterLog();
+
+    const context = await Sku.resolveCurrencyCascadeContext(
+      makeRecordingSettingsProvider(
+        SETTING_SKU_CURRENCY,
+        `${SETTING_SKU_CURRENCY},${SECONDARY_CURRENCY_CODE}`,
+        settingsLog,
+      ),
+      makeRecordingCurrencyConverter(
+        { [SECONDARY_CURRENCY_CODE]: SECONDARY_CONVERSION_RATE },
+        currencyLog,
+      ),
+    );
+
+    expect(settingsLog).toStrictEqual(['skuCurrency', 'skuEligibleCurrencies']);
+    expect(currencyLog.listings).toStrictEqual([
+      `${SETTING_SKU_CURRENCY},${SECONDARY_CURRENCY_CODE}`,
+    ]);
+    expect(currencyLog.conversions).toStrictEqual([]);
+
+    // The open arm carries the branded base code and the eligible list.
+    expect(context.eligibilityGateOpen).toBe(true);
+    if (!context.eligibilityGateOpen) {
+      throw new Error('the gate is open for a populated eligible-currency setting');
+    }
+    expect(context.baseCurrencyCode).toBe(SETTING_SKU_CURRENCY);
+    expect([...context.eligibleCurrencies]).toStrictEqual([
+      SETTING_SKU_CURRENCY,
+      SECONDARY_CURRENCY_CODE,
+    ]);
+  });
+
+  it('★ answers a CLOSED-GATE context without consulting the currency port at all', async () => {
+    // [model/entity/Sku.cfc:L373]: `if(len(setting('skuEligibleCurrencies')))`.
+    // The gate is evaluated HERE, once, so a shut gate short-circuits [L371]'s
+    // listing for the whole batch rather than once per sku.
+    const settingsLog: SettingsCallLog = [];
+    const currencyLog = makeCurrencyConverterLog();
+
+    const context = await Sku.resolveCurrencyCascadeContext(
+      makeRecordingSettingsProvider(SETTING_SKU_CURRENCY, '', settingsLog),
+      makeRecordingCurrencyConverter({}, currencyLog),
+    );
+
+    expect(context).toStrictEqual({ eligibilityGateOpen: false });
+    expect(settingsLog).toStrictEqual(['skuCurrency', 'skuEligibleCurrencies']);
+    expect(currencyLog.listings).toStrictEqual([]);
+
+    // …and a sku hydrated from it lands in the legacy's closed-gate state.
+    const sku = makeSkuFixture({ skuCurrencyVariant: 'none' });
+
+    await Sku.hydrate(sku, context);
+
+    expect(sku.getCurrencyDetails()).toStrictEqual({});
+    expect(sku.getPriceByCurrencyCode(SETTING_SKU_CURRENCY)).toBeUndefined();
+  });
+
+  it('★★ A SUPPLIED CONTEXT IS ACTUALLY USED — the sku\u2019s own settings and listing ports go untouched', async () => {
+    // ★ THIS IS THE TEST THAT WOULD CATCH THE CONTEXT BEING IGNORED. A batch
+    // context that is threaded through but then quietly re-resolved per sku would
+    // still produce correct prices, so correctness alone cannot detect it. What
+    // detects it is the sku's OWN collaborator log staying empty.
+    const ownSettingsLog: SettingsCallLog = [];
+    const ownCurrencyLog = makeCurrencyConverterLog();
+    const batchSettingsLog: SettingsCallLog = [];
+    const batchCurrencyLog = makeCurrencyConverterLog();
+
+    const eligible = `${SETTING_SKU_CURRENCY},${SECONDARY_CURRENCY_CODE}`;
+    const context = await Sku.resolveCurrencyCascadeContext(
+      makeRecordingSettingsProvider(SETTING_SKU_CURRENCY, eligible, batchSettingsLog),
+      makeRecordingCurrencyConverter(
+        { [SECONDARY_CURRENCY_CODE]: SECONDARY_CONVERSION_RATE },
+        batchCurrencyLog,
+      ),
+    );
+
+    // Two skus, one context. Their own ports are recorded separately.
+    const first = makeSkuFixture({
+      idPrefix: 'ctx-first',
+      skuCurrencyVariant: 'none',
+      settingsProvider: makeRecordingSettingsProvider(
+        SETTING_SKU_CURRENCY,
+        eligible,
+        ownSettingsLog,
+      ),
+      currencyConverter: makeRecordingCurrencyConverter(
+        { [SECONDARY_CURRENCY_CODE]: SECONDARY_CONVERSION_RATE },
+        ownCurrencyLog,
+      ),
+    });
+    const second = makeSkuFixture({
+      idPrefix: 'ctx-second',
+      skuCurrencyVariant: 'none',
+      settingsProvider: makeRecordingSettingsProvider(
+        SETTING_SKU_CURRENCY,
+        eligible,
+        ownSettingsLog,
+      ),
+      currencyConverter: makeRecordingCurrencyConverter(
+        { [SECONDARY_CURRENCY_CODE]: SECONDARY_CONVERSION_RATE },
+        ownCurrencyLog,
+      ),
+    });
+
+    await Sku.hydrate(first, context);
+    await Sku.hydrate(second, context);
+
+    // Both are fully hydrated — the cascade really ran for each of them.
+    expect(Object.keys(first.getCurrencyDetails()).sort()).toStrictEqual(
+      [SETTING_SKU_CURRENCY, SECONDARY_CURRENCY_CODE].sort(),
+    );
+    expect(Object.keys(second.getCurrencyDetails()).sort()).toStrictEqual(
+      [SETTING_SKU_CURRENCY, SECONDARY_CURRENCY_CODE].sort(),
+    );
+
+    // ★ AND NEITHER SKU CONSULTED ITS OWN SETTINGS OR LISTING PORT. The invariant
+    // half was resolved once, up front, and injected.
+    expect(ownSettingsLog).toStrictEqual([]);
+    expect(ownCurrencyLog.listings).toStrictEqual([]);
+
+    // The batch ports were consulted exactly once each, for BOTH skus together.
+    expect(batchSettingsLog).toStrictEqual(['skuCurrency', 'skuEligibleCurrencies']);
+    expect(batchCurrencyLog.listings).toHaveLength(1);
+
+    // The PER-SKU half is the exception, and it is per-sku on purpose: Step 3
+    // [model/entity/Sku.cfc:L416-L428] converts THAT sku's own renewal price
+    // [L418], list price [L422] and price [L425], so three conversions land on
+    // the context's converter for each sku's one non-base currency. Six in total,
+    // and no amount of batching can reduce them: each one reads a column that
+    // differs from one sku to the next.
+    expect(batchCurrencyLog.conversions).toHaveLength(6);
+  });
+
+  it('★ a supplied context makes the cascade reachable for a sku with NO collaborators of its own', async () => {
+    // The two collaborator-presence checks live in the FALLBACK branch only, which
+    // is the whole point of a batch context: the resolution has already happened,
+    // so this sku needs neither port. Compare correction C6 above, where no context
+    // is supplied and both checks fire.
+    const context = await Sku.resolveCurrencyCascadeContext(
+      makeRecordingSettingsProvider(SETTING_SKU_CURRENCY, SETTING_SKU_CURRENCY, []),
+      makeRecordingCurrencyConverter({}, makeCurrencyConverterLog()),
+    );
+
+    const orphan = makeSkuFixture({
+      settingsProvider: undefined,
+      currencyConverter: undefined,
+      skuCurrencyVariant: 'none',
+      price: Money.fromDecimalString('10.00'),
+    });
+
+    await Sku.hydrate(orphan, context);
+
+    expect(orphan.getPriceByCurrencyCode(SETTING_SKU_CURRENCY)?.toFixed2()).toBe('10.00');
+  });
+
+  it('★ hydrate returns THE SAME INSTANCE and is idempotent', async () => {
+    // It is a boundary, not a factory. Returning the argument is what lets a
+    // caller write `const sku = await Sku.hydrate(buildIt())` without losing the
+    // identity every already-wired reference depends on — the sku fixtures wire
+    // the instance into a shared product graph before hydration ever happens.
+    const currencyLog = makeCurrencyConverterLog();
+    const sku = makeSkuFixture({
+      skuCurrencyVariant: 'none',
+      currencyConverter: makeRecordingCurrencyConverter(
+        { [SECONDARY_CURRENCY_CODE]: SECONDARY_CONVERSION_RATE },
+        currencyLog,
+      ),
+    });
+
+    const returned = await Sku.hydrate(sku);
+
+    expect(returned).toBe(sku);
+
+    const memo = sku.getCurrencyDetails();
+
+    expect(await Sku.hydrate(sku)).toBe(sku);
+    expect(sku.getCurrencyDetails()).toBe(memo);
+    expect(currencyLog.listings).toHaveLength(1);
+  });
+
+  it('★★ an INJECTED map establishes the memo with no collaborator and no hydration call', async () => {
+    // `SkuHydrationInput.currencyDetails` is the second way the memo is
+    // established, and it runs nothing. It exists for the save round-trip: the
+    // legacy hands the SAME OBJECT back from a save, so its memo survives
+    // trivially, whereas a target that rebuilds the entity from the saved row
+    // would drop it. Injection is how the map crosses that gap.
+    const settingsLog: SettingsCallLog = [];
+    const currencyLog = makeCurrencyConverterLog();
+
+    const source = makeSkuFixture({
+      settingsProvider: makeRecordingSettingsProvider(
+        SETTING_SKU_CURRENCY,
+        SETTING_SKU_CURRENCY,
+        settingsLog,
+      ),
+      currencyConverter: makeRecordingCurrencyConverter({}, currencyLog),
+      skuCurrencyVariant: 'none',
+      price: Money.fromDecimalString('10.00'),
+    });
+
+    await Sku.hydrate(source);
+
+    const computed = source.getCurrencyDetails();
+
+    expect(Object.keys(computed)).toStrictEqual([SETTING_SKU_CURRENCY]);
+
+    // A brand-new entity, no ports at all, map handed to the constructor.
+    const carried = new Sku({ skuID: 'carried-sku', currencyDetails: computed });
+
+    expect(carried.getPriceByCurrencyCode(SETTING_SKU_CURRENCY)?.toFixed2()).toBe('10.00');
+
+    // COPIED, not adopted: the map is this instance's, so a later mutation of the
+    // caller's object cannot reach inside it.
+    expect(carried.getCurrencyDetails()).not.toBe(computed);
+    expect(carried.getCurrencyDetails()).toStrictEqual(computed);
+
+    // …and the injected memo satisfies the [L368] guard, so hydration is a no-op
+    // even though this sku has no collaborators that could have served one.
+    await Sku.hydrate(carried);
+
+    expect(carried.getPriceByCurrencyCode(SETTING_SKU_CURRENCY)?.toFixed2()).toBe('10.00');
   });
 });
 
@@ -1522,6 +1959,186 @@ describe('Sku option structs — the two authorized memo fixes [model/entity/Sku
 
     expect(other.getOptionsByOptionGroupIDStruct()).toStrictEqual({});
     expect(Object.keys(sku.getOptionsByOptionGroupIDStruct())).not.toHaveLength(0);
+  });
+});
+
+// ===========================================================================
+// B3a — THE THREE OPTION-GROUP-KEYED STRUCTS ACCEPT A RESERVED JAVASCRIPT KEY
+// [model/entity/Sku.cfc:L504, L516, L902]
+//
+// A CFML struct has no prototype chain and no reserved keys, so an option group
+// whose CODE, ID or NAME happens to read `__proto__`, `constructor` or
+// `toString` was an ordinary key holding an ordinary value. A TypeScript object
+// literal inherits `Object.prototype`, which still exposes the legacy
+// `__proto__` ACCESSOR, so the plain assignment these three accessors used to
+// perform was intercepted: the entry was silently discarded while every key
+// around it was recorded, and the record's own prototype was replaced.
+//
+// These cases are the parity proof for that repair. They are net-new — no
+// `meta/tests/**` file exercises a reserved key — and they assert the CFML
+// behaviour, not a hardening heuristic: the key is stored VERBATIM and is
+// readable back, exactly as any other option-group code would be.
+// ===========================================================================
+
+describe('Sku option-group structs — a reserved JS key is an ordinary CFML key [model/entity/Sku.cfc:L504, L516, L902]', () => {
+  /** Every key the JavaScript object model treats specially but CFML did not. */
+  const RESERVED_KEYS: readonly string[] = ['__proto__', 'constructor', 'toString'];
+
+  /**
+   * A sku carrying exactly one option, whose option group is identified, coded
+   * AND named by `reservedKey`.
+   *
+   * All three are set to the same string on purpose: the three accessors under
+   * test key by three DIFFERENT columns — code [L504], ID [L516] and name [L902]
+   * — so one fixture drives all three without three separate builds.
+   */
+  const makeSkuWithReservedOptionGroupKey = (reservedKey: string): Sku => {
+    const optionGroup = new OptionGroup({
+      optionGroupID: reservedKey,
+      optionGroupName: reservedKey,
+      optionGroupCode: reservedKey,
+      optionGroupImage: undefined,
+      optionGroupDescription: undefined,
+      imageGroupFlag: false,
+      sortOrder: 1,
+      remoteID: undefined,
+      createdDateTime: undefined,
+      createdByAccountID: undefined,
+      modifiedDateTime: undefined,
+      modifiedByAccountID: undefined,
+      options: [],
+      optionSortTieBreaker: undefined,
+    });
+
+    const option = new Option({
+      optionID: 'reserved-key-option',
+      optionCode: 'reserved-key-option-code',
+      optionName: 'Reserved Key Option',
+      optionDescription: undefined,
+      sortOrder: 1,
+      optionGroup,
+      defaultImageID: undefined,
+      remoteID: undefined,
+      createdDateTime: undefined,
+      createdByAccountID: undefined,
+      modifiedDateTime: undefined,
+      modifiedByAccountID: undefined,
+    });
+
+    return makeSkuFixture({ options: [option] });
+  };
+
+  it.each(RESERVED_KEYS)(
+    '★ records %s as a real own key in the CODE struct, and leaves the prototype alone',
+    (reservedKey) => {
+      // The whole hazard in one assertion pair: the key is PRESENT (a plain
+      // assignment to `__proto__` would have recorded nothing at all) and the
+      // record is still an ordinary object whose prototype was not swapped.
+      const struct =
+        makeSkuWithReservedOptionGroupKey(reservedKey).getOptionsByOptionGroupCodeStruct();
+
+      expect(Object.keys(struct)).toStrictEqual([reservedKey]);
+      expect(Object.prototype.hasOwnProperty.call(struct, reservedKey)).toBe(true);
+      expect(Object.getPrototypeOf(struct)).toBe(Object.prototype);
+      expect(structKeyExists(struct, reservedKey)).toBe(true);
+      expect(structGet(struct, reservedKey)?.getOptionID()).toBe('reserved-key-option');
+    },
+  );
+
+  it.each(RESERVED_KEYS)(
+    '★ records %s as a real own key in the ID struct, and leaves the prototype alone',
+    (reservedKey) => {
+      const struct =
+        makeSkuWithReservedOptionGroupKey(reservedKey).getOptionsByOptionGroupIDStruct();
+
+      expect(Object.keys(struct)).toStrictEqual([reservedKey]);
+      expect(Object.prototype.hasOwnProperty.call(struct, reservedKey)).toBe(true);
+      expect(Object.getPrototypeOf(struct)).toBe(Object.prototype);
+      expect(structGet(struct, reservedKey)?.getOptionID()).toBe('reserved-key-option');
+    },
+  );
+
+  it.each(RESERVED_KEYS)(
+    '★ records %s as a real own key in the deprecated VALUE struct [L902]',
+    (reservedKey) => {
+      // [L902] keys by the option group's NAME and stores the option's ID, and it
+      // has NO existence guard. Neither of those facts changes here; only the
+      // write mechanism did.
+      const struct = makeSkuWithReservedOptionGroupKey(reservedKey).getOptionsValueStruct();
+
+      expect(Object.keys(struct)).toStrictEqual([reservedKey]);
+      expect(Object.getPrototypeOf(struct)).toBe(Object.prototype);
+      expect(structGet(struct, reservedKey)).toBe('reserved-key-option');
+    },
+  );
+
+  it('★ does not leak the value onto Object.prototype, so no later object inherits it', () => {
+    // The consequence a plain `struct['__proto__'] = option` would have had.
+    // Asserted on a FRESH literal built after the accessors ran, which is the
+    // only way to observe global contamination.
+    const sku = makeSkuWithReservedOptionGroupKey('__proto__');
+
+    sku.getOptionsByOptionGroupCodeStruct();
+    sku.getOptionsByOptionGroupIDStruct();
+    sku.getOptionsValueStruct();
+
+    const bystander: Record<string, unknown> = {};
+
+    expect(Object.keys(bystander)).toHaveLength(0);
+    expect(bystander['optionGroupID']).toBeUndefined();
+    expect(Object.prototype.hasOwnProperty.call(Object.prototype, 'optionGroupID')).toBe(false);
+  });
+
+  it('keeps the CASE-INSENSITIVE first-wins guard, so a case variant does NOT add a second key', () => {
+    // CFML parity [model/entity/Sku.cfc:L504, L516]: struct keys are
+    // case-insensitive and the guard is `if (!exists)`, so the FIRST option per
+    // key wins. `putOwnStructKey` decides only HOW the surviving key is stored,
+    // never WHICH key is chosen — this case is the proof that the two concerns
+    // stayed separate.
+    const build = (suffix: string, code: string): Option => {
+      const group = new OptionGroup({
+        optionGroupID: code,
+        optionGroupName: code,
+        optionGroupCode: code,
+        optionGroupImage: undefined,
+        optionGroupDescription: undefined,
+        imageGroupFlag: false,
+        sortOrder: 1,
+        remoteID: undefined,
+        createdDateTime: undefined,
+        createdByAccountID: undefined,
+        modifiedDateTime: undefined,
+        modifiedByAccountID: undefined,
+        options: [],
+        optionSortTieBreaker: undefined,
+      });
+
+      return new Option({
+        optionID: `reserved-key-option-${suffix}`,
+        optionCode: `reserved-key-option-code-${suffix}`,
+        optionName: `Reserved Key Option ${suffix}`,
+        optionDescription: undefined,
+        sortOrder: 1,
+        optionGroup: group,
+        defaultImageID: undefined,
+        remoteID: undefined,
+        createdDateTime: undefined,
+        createdByAccountID: undefined,
+        modifiedDateTime: undefined,
+        modifiedByAccountID: undefined,
+      });
+    };
+
+    const sku = makeSkuFixture({
+      options: [build('first', '__proto__'), build('second', '__PROTO__')],
+    });
+
+    const codeStruct = sku.getOptionsByOptionGroupCodeStruct();
+
+    // ONE key, spelled the way the FIRST option spelled it, holding the FIRST option.
+    expect(Object.keys(codeStruct)).toStrictEqual(['__proto__']);
+    expect(structGet(codeStruct, '__PROTO__')?.getOptionID()).toBe('reserved-key-option-first');
+    expect(Object.getPrototypeOf(codeStruct)).toBe(Object.prototype);
   });
 });
 
@@ -2323,16 +2940,25 @@ describe('Sku.getStocksDeletableFlag — D28/H4 [model/entity/Sku.cfc:L567-L572]
 
   it('★ names the reason precisely: the member lives on the SERVICE, not the DAO', () => {
     // JUDGMENT CALL: NO port member was added to make this pass. The ledger stays
-    // at thirteen ports and `skuRepository` stays at seven members —
+    // at thirteen ports and `skuRepository` declares eight members —
     // getTransactionExistsFlag, getSkuBySkuCode, getSkusBySelectedOptions,
-    // searchSkusByProductType, getProductSkus, getSortedProductSkusID, saveSku.
-    // `getSkuStocksDeletableFlag` is a SkuService method, the stock subsystem is
-    // out of scope, and inventing an eighth member would import an out-of-scope
-    // aggregate through the back door.
+    // searchSkusByProductType, getProductSkus, getSortedProductSkusID, saveSku,
+    // saveSkus. `getSkuStocksDeletableFlag` is a SkuService method, the stock
+    // subsystem is out of scope, and inventing a member for it would import an
+    // out-of-scope aggregate through the back door.
+    //
+    // ★ QUOTE-THEN-REVISE, AND THE POINT SURVIVES INTACT. This said the port
+    // "stays at SEVEN members" and that "inventing an EIGHTH member would import an
+    // out-of-scope aggregate". The eighth member that arrived is `saveSkus`, the
+    // collection form of `saveSku`, which imports nothing: it takes `Sku` entities
+    // this slice already models and reproduces the ORM flush that
+    // [model/service/ProductService.cfc:L216-L233] relied on. What was forbidden was
+    // a member that would drag the STOCK subsystem in, and that is still forbidden
+    // and still absent — which is why this case's assertions are unchanged.
     const sku = makeSkuFixture();
 
     expect(() => sku.getStocksDeletableFlag()).toThrow(/getSkuStocksDeletableFlag/);
-    expect(() => sku.getStocksDeletableFlag()).toThrow(/seven-member SkuRepository port/);
+    expect(() => sku.getStocksDeletableFlag()).toThrow(/eight-member SkuRepository port/);
 
     // A hydrated repository changes nothing — the gap is in the CONTRACT, not the
     // wiring, which is exactly why a refusal rather than a stub is honest.
@@ -3046,7 +3672,7 @@ describe('Sku declarative validation contract [model/validation/Sku.json]', () =
     //
     // Five schemas carry the gate — Brand.json, Location.json, Product.json,
     // ProductType.json and Sku.json — and exactly one entity declares the
-    // property. It is NOT one of the twenty numbered defects, it is NOT one of the
+    // property. It is NOT one of the thirty numbered defects, it is NOT one of the
     // three authorized divergences, and it does NOT expand the six-file
     // validation-absence inventory. It is pinned in the same way as
     // `PriceGroupRate.json`'s orphaned `conditions.isNotGlobal`.
@@ -3220,8 +3846,8 @@ describe('Sku memo isolation — every memo is request-scoped (A2)', () => {
       skuCurrencyVariant: 'none',
     });
 
-    await first.materializeCurrencyDetails();
-    await second.materializeCurrencyDetails();
+    await Sku.hydrate(first);
+    await Sku.hydrate(second);
 
     // `toFixed2()` rather than `toDecimalString()`: the latter is FULL PRECISION
     // WITH NO SCALE, so `Money.fromDecimalString('10.00').toDecimalString()` is
@@ -3406,8 +4032,9 @@ describe('Sku memo isolation — every memo is request-scoped (A2)', () => {
     // invalidated these memos, because a CFML request was short-lived and the
     // entity died with it. A ported entity that outlives a single read must
     // invalidate, or `addOption` would silently leave three stale answers behind.
-    // The invalidation is scoped to the option memos only — the currency memos are
-    // invalidated by the money setters instead.
+    // The invalidation is scoped to the option memos only. The CASCADE memo is
+    // deliberately never invalidated by anything — see the test below — and the
+    // live-price memo is invalidated by the three money setters.
     const sku = makeSkuFixture();
     const beforeList = sku.getOptionsIDList();
     const strayGroup = makeOptionGroupDouble('stray-group', 'stray', 'Stray', 9);
@@ -3428,9 +4055,34 @@ describe('Sku memo isolation — every memo is request-scoped (A2)', () => {
     expect(Object.keys(sku.getOptionsByOptionGroupIDStruct())).toHaveLength(3);
   });
 
-  it('★ money setters invalidate the currency and live-price memos', async () => {
-    // [model/entity/Sku.cfc:L56] is read by the cascade at [L394] and by
-    // `getLivePrice` at [L485], so a price change has to invalidate both.
+  it('★★ money setters invalidate the live-price memo and DELIBERATELY LEAVE THE CASCADE MEMO ALONE', async () => {
+    // CFML parity [model/entity/Sku.cfc:L55-L57, L368]: `setPrice`,
+    // `setListPrice` and `setRenewalPrice` are ORM-GENERATED — [L49] declares
+    // `accessors=true` and the component writes none of the three by hand — so
+    // NOTHING in the legacy touches `variables.currencyDetails` when a price
+    // changes. The only writes to that struct in the whole component are inside
+    // the cascade body at [L369-L427], and there is no `structDelete` for it
+    // anywhere. The component demonstrably knows that idiom, too: it uses it at
+    // [L618] for `product` and [L636] for `subscriptionTerm`. Choosing not to use
+    // it for `currencyDetails` is a decision, not an omission.
+    //
+    // So a sku whose price is changed after the cascade has run keeps reporting
+    // the OLD per-currency prices — in the legacy, and here. That is what this
+    // test pins.
+    //
+    // ★ AND THE TARGET HAS A SECOND, INDEPENDENT REASON. With the cascade
+    // reachable only through `Sku.hydrate` (the memo guard at [L368] makes a
+    // repeat call a no-op), a cleared memo could never be refilled. A single
+    // `setPrice` would have turned a fully-priced sku into one whose three
+    // currency accessors answer nothing at all — the state a closed [L373] gate
+    // produces, arrived at by a completely different route. Not clearing is both
+    // the faithful behaviour and the only safe one.
+    //
+    // `livePriceMemo` is the asymmetric case and IS cleared. The legacy does not
+    // clear that one either ([L482-L498] has no `structDelete`), so the clear is a
+    // pre-existing target-only refinement; it is retained because `getLivePrice()`
+    // rebuilds on demand from data already on the instance, making a cleared live
+    // price RECOVERABLE where a cleared cascade memo is not.
     const converterLog = makeCurrencyConverterLog();
     const sku = makeSkuFixture({
       price: Money.fromDecimalString('10.00'),
@@ -3441,18 +4093,40 @@ describe('Sku memo isolation — every memo is request-scoped (A2)', () => {
       ),
     });
 
-    await sku.materializeCurrencyDetails();
+    await Sku.hydrate(sku);
 
     expect(sku.getPriceByCurrencyCode(SETTING_SKU_CURRENCY)?.toFixed2()).toBe('10.00');
     expect((await sku.getLivePrice()).toFixed2()).toBe('10.00');
 
+    const memoBefore = sku.getCurrencyDetails();
+
     sku.setPrice(Money.fromDecimalString('6.00'));
 
-    // The cascade memo is cleared, so the un-rematerialised entity is back to `{}`
-    // — the same state, and the same `undefined` answers, as a closed L373 gate.
-    expect(sku.getCurrencyDetails()).toEqual({});
-    expect(sku.getPriceByCurrencyCode(SETTING_SKU_CURRENCY)).toBeUndefined();
+    // ★ THE CASCADE MEMO SURVIVES, BY REFERENCE. Not merely equal — the very same
+    // object, which is the strongest available statement that nothing reset it.
+    expect(sku.getCurrencyDetails()).toBe(memoBefore);
+
+    // …and it still reports the PRE-CHANGE price, which is exactly the legacy's
+    // observable behaviour. A `6.00` here would mean the memo had been rebuilt; an
+    // `undefined` here would mean it had been cleared. It is neither.
+    expect(sku.getPriceByCurrencyCode(SETTING_SKU_CURRENCY)?.toFixed2()).toBe('10.00');
+
+    // The column itself DID change — the setter is not a no-op — which is what
+    // makes the stale memo a genuine observation rather than an artefact.
+    expect(sku.getPrice().toFixed2()).toBe('6.00');
+
+    // No collaborator ran on the setter path, so nothing re-entered the cascade.
+    expect(converterLog.listings).toHaveLength(1);
+
+    // The live-price memo, by contrast, WAS cleared and rebuilt on demand.
     expect((await sku.getLivePrice()).toFixed2()).toBe('6.00');
+
+    // And a further `Sku.hydrate` is still a no-op: the [L368] guard sees the memo
+    // and returns, so the stale entry is not quietly repaired behind the caller.
+    await Sku.hydrate(sku);
+
+    expect(sku.getCurrencyDetails()).toBe(memoBefore);
+    expect(sku.getPriceByCurrencyCode(SETTING_SKU_CURRENCY)?.toFixed2()).toBe('10.00');
   });
 });
 
@@ -3543,12 +4217,8 @@ describe('Sku collaborators — explicit ports only', () => {
 
     // The cascade resolves BOTH collaborators before the L373 gate, so either
     // absence is reported at its own locator.
-    await expect(noSettings.materializeCurrencyDetails()).rejects.toThrow(
-      /\[model\/entity\/Sku\.cfc:L373\]/,
-    );
-    await expect(noConverter.materializeCurrencyDetails()).rejects.toThrow(
-      /\[model\/entity\/Sku\.cfc:L371\]/,
-    );
+    await expect(Sku.hydrate(noSettings)).rejects.toThrow(/\[model\/entity\/Sku\.cfc:L373\]/);
+    await expect(Sku.hydrate(noConverter)).rejects.toThrow(/\[model\/entity\/Sku\.cfc:L371\]/);
   });
 
   it('prefers hand-written in-memory doubles over module mocking', () => {
@@ -3625,7 +4295,7 @@ describe('Sku async boundary audit', () => {
     expect(sku.getCurrentAccountPrice()).toBeInstanceOf(Promise);
     expect(sku.hasUniqueOptions()).toBeInstanceOf(Promise);
     expect(sku.getTransactionExistsFlag()).toBeInstanceOf(Promise);
-    expect(sku.materializeCurrencyDetails()).toBeInstanceOf(Promise);
+    expect(Sku.hydrate(sku)).toBeInstanceOf(Promise);
 
     // Awaited so nothing floats — the lint profile enforces no-floating-promises.
     await Promise.all([
@@ -3635,7 +4305,7 @@ describe('Sku async boundary audit', () => {
       sku.getCurrentAccountPrice(),
       sku.hasUniqueOptions(),
       sku.getTransactionExistsFlag(),
-      sku.materializeCurrencyDetails(),
+      Sku.hydrate(sku),
     ]);
   });
 
@@ -3971,5 +4641,786 @@ describe('Sku empty-collection semantics — five distinct answers, not one', ()
 
     expect(sku.getPriceGroupRates()).toEqual([]);
     expect(sku.getAppliedPriceGroupRateByPriceGroup(emptyPriceGroup)).toBeUndefined();
+  });
+});
+
+// ═══════════════════════════════════════════════════════════════════════════
+// THE IMAGE BLOCK  [model/entity/Sku.cfc:L131-L147, L149-L151, L192-L227]
+//
+// THE TWO PORTED BODIES, VERBATIM:
+//
+//   L131  public string function generateImageFileName() {
+//   L132    var optionString = "";
+//   L133    for(var option in getOptions()){
+//   L134      if(option.getOptionGroup().getImageGroupFlag()){
+//   L135        optionString &= getProduct().setting('productImageOptionCodeDelimiter')
+//                                & reReplaceNoCase(option.getOptionCode(), "[^a-z0-9\-\_]","","all");
+//             }
+//           }
+//   L138    return reReplaceNoCase(getProduct().getProductCode(), "[^a-z0-9\-\_]","","all")
+//              & optionString & ".#getProduct().setting('productImageDefaultExtension')#";
+//         }
+//
+//   L145  public string function getImagePath() {
+//   L146    return "#getHibachiScope().getBaseImageURL()#/product/default/#getImageFile()#";
+//         }
+//
+// ★★ WHY THESE TWO SHIP WHILE THE OTHER THREE REFUSE, AND WHY THEY TREAT AN ABSENT
+// SETTING SET DIFFERENTLY FROM EACH OTHER. Both read an ambient value the domain may
+// not resolve, so both take the resolved values through the constructor. But the
+// SOURCE could not fail in the same way in both places, and the port mirrors that
+// rather than applying one blanket policy:
+//
+//   - `generateImageFileName` reads two SETTINGS, and both carry a metadata
+//     `defaultValue` - `productImageDefaultExtension` `"jpg"` and
+//     `productImageOptionCodeDelimiter` `"-"`
+//     [model/service/SettingService.cfc:L191-L192] - which `setting()` falls back to
+//     at [L481-L482]. So `setting()` CANNOT FAIL for either key, and a port that
+//     raised on an unmaterialised set would refuse where the source answers. It
+//     MIRRORS the defaults instead.
+//   - `getImagePath` reads `getHibachiScope().getBaseImageURL()`, a framework SCOPE
+//     ACCESSOR with no metadata default and nothing to fall back to. It raises,
+//     because every candidate default would be a well-formed WRONG path.
+//
+// The distinction is load-bearing: `saveProduct` [model/service/ProductService.cfc:
+// L282] runs `updateDefaultImageFileNames` for EVERY new product, so a raising
+// `generateImageFileName` would make every product save fail.
+// ═══════════════════════════════════════════════════════════════════════════
+
+describe('Sku image members — the two that ship and the three that refuse', () => {
+  /** An `SwOptionGroup` row whose `imageGroupFlag` [model/entity/OptionGroup.cfc:L57] is SET. */
+  function makeImageBearingOptionGroup(optionGroupID: string, sortOrder: number): OptionGroup {
+    return new OptionGroup({
+      optionGroupID,
+      optionGroupName: `Group ${optionGroupID}`,
+      optionGroupCode: optionGroupID,
+      optionGroupImage: undefined,
+      optionGroupDescription: undefined,
+      // The one difference from `makeOptionGroupDouble`, which hardcodes `false`
+      // because the shared fixture mirrors the column default.
+      imageGroupFlag: true,
+      sortOrder,
+      remoteID: undefined,
+      createdDateTime: new Date(CREATED_DATE_TIME_UTC),
+      createdByAccountID: undefined,
+      modifiedDateTime: new Date(MODIFIED_DATE_TIME_UTC),
+      modifiedByAccountID: undefined,
+      options: [],
+      optionSortTieBreaker: () => 1,
+    });
+  }
+
+  const CONFIGURED_SETTINGS = {
+    baseImageURL: 'https://cdn.example/assets/images',
+    productImageOptionCodeDelimiter: '_',
+    productImageDefaultExtension: 'webp',
+  } as const;
+
+  it('★ mirrors the SETTING METADATA DEFAULTS when no image settings were materialised', () => {
+    // ★★ THE M10 BLOCKER, ASSERTED AS BEHAVIOUR. An earlier revision raised here,
+    // reasoning by analogy with `getImagePath`. That analogy was wrong: the two
+    // settings this member reads both declare a `defaultValue`
+    // [model/service/SettingService.cfc:L191-L192] and `setting()` applies it at
+    // [L481-L482], so CFML ALWAYS answers. `'-'` and `'jpg'` are those two declared
+    // values, mirrored at the read site because that is where CFML applies them.
+    const product = makeProductFixture();
+    const sku = new Sku({ skuID: 'sku-default-settings', product, options: [] });
+
+    // [L138]: sanitised product code, no option segments, literal `.`, extension.
+    // `TESTPRODUCTXXX` is [meta/tests/unit/Helper.cfc:L56] verbatim.
+    expect(sku.generateImageFileName()).toBe('TESTPRODUCTXXX.jpg');
+  });
+
+  it('★ prefers the CONFIGURED delimiter and extension when the set was materialised', () => {
+    // The mirrored defaults are a fallback, not a hardcoding - a materialised set
+    // wins, which is what makes the mirroring safe rather than a second source of
+    // truth. Both values differ from the metadata defaults so neither can pass by
+    // coincidence.
+    const product = makeProductFixture();
+    const sku = new Sku({
+      skuID: 'sku-configured-settings',
+      product,
+      options: [],
+      imageSettingValues: CONFIGURED_SETTINGS,
+    });
+
+    expect(sku.generateImageFileName()).toBe('TESTPRODUCTXXX.webp');
+  });
+
+  it('★ contributes a segment for image-bearing groups ONLY, in materialised option order', () => {
+    // [L134] gates the segment on `getOptionGroup().getImageGroupFlag()`. A
+    // non-image group contributes NOTHING - not an empty delimiter, not a placeholder
+    // - so the two halves are asserted against the same sku rather than separately.
+    const product = makeProductFixture();
+    const imageGroup = makeImageBearingOptionGroup('image-group', 1);
+    const plainGroup = makeOptionGroupDouble('plain-group', 'plain-group', 'Plain', 2);
+
+    const imageOption = makeOptionDouble('opt-image', 'RED', 'Red', imageGroup, 1);
+    const plainOption = makeOptionDouble('opt-plain', 'LARGE', 'Large', plainGroup, 1);
+
+    const sku = new Sku({
+      skuID: 'sku-mixed-groups',
+      product,
+      options: [imageOption, plainOption],
+    });
+
+    // `-RED` only. `LARGE` is dropped because its group's flag is clear.
+    expect(sku.generateImageFileName()).toBe('TESTPRODUCTXXX-RED.jpg');
+    expect(sku.generateImageFileName()).not.toContain('LARGE');
+
+    // [L133] iterates `getOptions()` in the order the array carries, so TWO image
+    // groups append in that order and the delimiter precedes EACH segment.
+    const secondImageGroup = makeImageBearingOptionGroup('image-group-2', 3);
+    const secondImageOption = makeOptionDouble(
+      'opt-image-2',
+      'XL',
+      'Extra Large',
+      secondImageGroup,
+      1,
+    );
+
+    const twoSegments = new Sku({
+      skuID: 'sku-two-image-groups',
+      product,
+      options: [imageOption, plainOption, secondImageOption],
+    });
+
+    expect(twoSegments.generateImageFileName()).toBe('TESTPRODUCTXXX-RED-XL.jpg');
+  });
+
+  it('★ sanitises with reReplaceNoCase semantics, so CAPITALS SURVIVE', () => {
+    // ★ THE `NoCase` IN `reReplaceNoCase` IS THE WHOLE POINT [L135, L138]. The CFML
+    // character class lists lower-case `a-z` only, but the case-insensitive variant
+    // folds case, so `A-Z` are NOT stripped. A port that used a case-sensitive regex
+    // would turn `ABC-1` into `-1` and rename every image file in the catalogue.
+    const product = makeProductFixture({ productCode: 'AB C/1*2' });
+    const imageGroup = makeImageBearingOptionGroup('image-group', 1);
+    const option = makeOptionDouble('opt-1', 'R E D!', 'Red', imageGroup, 1);
+
+    const sku = new Sku({ skuID: 'sku-dirty-codes', product, options: [option] });
+
+    // Space, slash, asterisk and exclamation mark are outside `[^a-z0-9\-\_]`;
+    // letters, digits, hyphen and underscore survive - in BOTH cases.
+    expect(sku.generateImageFileName()).toBe('ABC12-RED.jpg');
+  });
+
+  it('★ treats an absent product code as an empty segment rather than raising', () => {
+    // `reReplaceNoCase` over a null column yields the empty string in CFML, so a
+    // product with no code composes to just the extension. Reproduced, because the
+    // legacy emits exactly that name and a raise would emit none.
+    const product = makeProductFixture({ productCode: undefined });
+    const sku = new Sku({ skuID: 'sku-no-code', product, options: [] });
+
+    expect(sku.generateImageFileName()).toBe('.jpg');
+  });
+
+  it('★ RAISES for a sku with no product, naming the unguarded source dereference', () => {
+    // LEGACY-DEFECT parity: [L135] and [L138] dereference `getProduct()` three times
+    // with no guard against a nullable many-to-one, so a product-less sku raises in
+    // CFML too. Preserved rather than defaulted - fabricating a name would write a
+    // file the application could never find.
+    const orphan = new Sku({ skuID: 'sku-orphan', options: [] });
+
+    expect(() => orphan.generateImageFileName()).toThrow(
+      /generateImageFileName was called on a sku with no product/,
+    );
+    expect(() => orphan.generateImageFileName()).toThrow(/model\/entity\/Sku\.cfc:L135/);
+  });
+
+  it('★ RAISES for an option with no option group, naming the nullable association', () => {
+    // [L134] dereferences `option.getOptionGroup()` unconditionally, and
+    // [model/entity/Option.cfc:L59] declares that association NULLABLE. Skipping the
+    // option instead would emit a DIFFERENT file name than the CFML application
+    // emits for the same rows, which is why the raise is reproduced.
+    const product = makeProductFixture();
+    const groupless = new Option({
+      optionID: 'opt-groupless',
+      optionCode: 'RED',
+      optionName: 'Red',
+      optionDescription: undefined,
+      sortOrder: 1,
+      optionGroup: undefined,
+      defaultImageID: undefined,
+      remoteID: undefined,
+      createdDateTime: new Date(CREATED_DATE_TIME_UTC),
+      createdByAccountID: undefined,
+      modifiedDateTime: new Date(MODIFIED_DATE_TIME_UTC),
+      modifiedByAccountID: undefined,
+    });
+
+    const sku = new Sku({ skuID: 'sku-groupless-option', product, options: [groupless] });
+
+    expect(() => sku.generateImageFileName()).toThrow(/which has no option group/);
+    expect(() => sku.generateImageFileName()).toThrow(/model\/entity\/Option\.cfc:L59/);
+  });
+
+  it('★ setImageFile assigns the column that getImagePath and getImageFile read', () => {
+    // The mutator exists because `processProduct_updateDefaultImageFileNames`
+    // [model/service/ProductService.cfc:L208-L214] runs
+    // `sku.setImageFile( sku.generateImageFileName() )` over every sku of the
+    // product. Without it that write had nowhere to land and the method was a no-op
+    // reporting success.
+    const product = makeProductFixture();
+    const sku = new Sku({
+      skuID: 'sku-set-image-file',
+      product,
+      options: [],
+      imageSettingValues: CONFIGURED_SETTINGS,
+    });
+
+    expect(sku.getImageFile()).toBeUndefined();
+
+    sku.setImageFile(sku.generateImageFileName());
+
+    expect(sku.getImageFile()).toBe('TESTPRODUCTXXX.webp');
+    expect(sku.getImagePath()).toBe(
+      'https://cdn.example/assets/images/product/default/TESTPRODUCTXXX.webp',
+    );
+
+    // It overwrites rather than first-winning: the caller decides whether to write.
+    sku.setImageFile('manually-chosen.png');
+
+    expect(sku.getImageFile()).toBe('manually-chosen.png');
+  });
+
+  it('★ getImagePath interpolates an UNSET imageFile as the empty string, exactly as CFML does', () => {
+    // [L146] interpolates `#getImageFile()#` directly. A null column interpolates as
+    // empty, so the path is the directory with a trailing slash - a real legacy
+    // outcome, not an error case, and one the feed renderer's fallback depends on.
+    const sku = new Sku({
+      skuID: 'sku-no-image-file',
+      options: [],
+      imageSettingValues: CONFIGURED_SETTINGS,
+    });
+
+    expect(sku.getImagePath()).toBe('https://cdn.example/assets/images/product/default/');
+
+    // ⚠ AND IT NEEDS NO PRODUCT. Unlike `generateImageFileName`, [L146] never
+    // dereferences `getProduct()`, so a product-less sku answers rather than raising.
+    // The two members' preconditions differ and are asserted separately.
+    expect(sku.getProduct()).toBeUndefined();
+  });
+
+  it('★ getImagePath RAISES without materialised settings, and names ONLY the accessor that has no default', () => {
+    // ★★ THE REFUSAL IS NARROW, AND AN EARLIER REVISION'S WAS NOT. This member alone
+    // needs the materialised set, because `getBaseImageURL()` is a framework SCOPE
+    // accessor rather than a setting and so has nothing to fall back to. The message
+    // must therefore NOT claim the two settings raise as well - they demonstrably do
+    // not, three cases above - and it cites [L481-L482] precisely to record why the
+    // treatment differs.
+    const sku = new Sku({ skuID: 'sku-unmaterialised-settings', options: [] });
+
+    expect(() => sku.getImagePath()).toThrow(/getImagePath was called on a sku hydrated without/);
+    expect(() => sku.getImagePath()).toThrow(/getBaseImageURL/);
+    expect(() => sku.getImagePath()).toThrow(/SettingService\.cfc:L481-L482/);
+
+    // The same instance still composes a file name, which is the sharpest statement
+    // of the asymmetry: one member answers and the other refuses, on identical input.
+    const withProduct = new Sku({
+      skuID: 'sku-unmaterialised-settings-2',
+      product: makeProductFixture(),
+      options: [],
+    });
+
+    expect(withProduct.generateImageFileName()).toBe('TESTPRODUCTXXX.jpg');
+    expect(() => withProduct.getImagePath()).toThrow(/getBaseImageURL/);
+  });
+
+  it('★ the three unportable members refuse, and say that the other two are ported', () => {
+    // A materialised set does NOT unlock these. `getImage` [L149] and
+    // `getResizedImagePath` [L218] reach the un-ported `imageService`; and
+    // `getImageExistsFlag` [L221] performs a filesystem existence check this runtime
+    // has no filesystem for. Those are collaborator and platform obstacles, not
+    // settings obstacles, so the refusal deliberately does not cite the settings port
+    // - and it states positively that the two composition members DO ship, so a
+    // reader of one message cannot conclude the whole block was abandoned.
+    const sku = new Sku({
+      skuID: 'sku-unportable-image-members',
+      product: makeProductFixture(),
+      options: [],
+      imageSettingValues: CONFIGURED_SETTINGS,
+    });
+
+    for (const invoke of [
+      () => sku.getImage(),
+      () => sku.getResizedImagePath(),
+      () => sku.getImageExistsFlag(),
+    ]) {
+      expect(invoke).toThrow(/is not ported/);
+      expect(invoke).toThrow(
+        /Sku\.getImagePath and Sku\.generateImageFileName ARE ported - they are pure composition/,
+      );
+    }
+
+    // And the resize argument reaches the message, which proves the signature was
+    // retained for parity rather than reduced to a nullary stub.
+    expect(() => sku.getImage({ size: 'large' })).toThrow(/getImage\(large\)/);
+    expect(() => sku.getResizedImagePath({ size: 'small' })).toThrow(
+      /getResizedImagePath\(small\)/,
+    );
+  });
+});
+
+// ===========================================================================
+// B26 — THE THREE MUTATORS: setUserDefinedPriceFlag AND THE SkuCurrency PAIR
+//
+// Three converted public members whose behaviour is asserted here directly rather
+// than inferred from the paths that happen to pass through them.
+//
+//   [model/entity/Sku.cfc:L59]        `userDefinedPriceFlag ormtype="boolean" default="0"`
+//   [model/entity/Sku.cfc:L656-L658]  addSkuCurrency    -> arguments.skuCurrency.setSku( this )
+//   [model/entity/Sku.cfc:L659-L661]  removeSkuCurrency -> arguments.skuCurrency.removeSku( this )
+//
+// ★ WHY THE FLAG SETTER IS WORTH ITS OWN CASES. `userDefinedPriceFlag` is declared
+// at [L59] and read by NOTHING else in the component — verified by a whole-file
+// search of `model/entity/Sku.cfc`, which returns exactly that one line. It is one
+// of only TWO `ormtype="boolean"` columns on this entity, alongside `activeFlag`
+// [L53], so it is the entity's canonical persisted-flag boundary: the place where a
+// driver value of `1`, `'1'`, `'true'`, `true` or SQL NULL becomes a TypeScript
+// boolean. Getting that table wrong would not be a formatting slip; it would make
+// an off flag read as on for a whole class of hydrations. The whole decision table
+// is therefore pinned, including the ONE input that raises.
+//
+// ★ WHY THE CURRENCY PAIR IS WORTH ITS OWN CASES. `skuCurrencies` is
+// `inverse="true"` [model/entity/Sku.cfc:L72], so the FAR side owns the foreign key
+// and both helpers delegate rather than appending. The delegation is not
+// incidental: `SkuCurrency.setSku` [model/entity/SkuCurrency.cfc:L90-L93] assigns
+// its own field FIRST and then appends onto the array `Sku.getSkuCurrencies()` hands
+// back — the same live array Step 2 of the currency cascade iterates at
+// [model/entity/Sku.cfc:L399-L414]. Mutating that collection therefore changes
+// which prices the cascade produces, which is exactly why both ported helpers clear
+// the currency-details memo and why the round trip below re-materialises to prove
+// it. A memo that survived a collection mutation would answer a converted Step 3
+// price where a persisted Step 2 override exists, or the reverse — a money bug that
+// no accessor-level assertion would catch.
+//
+// NO DEFECT AND NO DIVERGENCE IS CLAIMED HERE. Both helpers are CLEAN under the
+// inversion cross-check — L657 calls `setSku` and L660 calls `removeSku`, neither is
+// an `add*` — and the canonical register (see the index in
+// `tests/unit/domain/entities/promotionReward.test.ts`) carries no entry against any
+// of the three members. The memo clearing is the request-scoped-state treatment
+// already justified at B21 and is recorded as such, never as an optimisation (C7).
+// ===========================================================================
+
+describe('Sku.setUserDefinedPriceFlag — the persisted-flag boundary [model/entity/Sku.cfc:L59]', () => {
+  it('starts false, because the column declares default="0" and not NULL', () => {
+    const bare = new Sku({ skuID: 'flag-default-sku' });
+
+    // The constructor resolves an omitted flag to `false` rather than leaving it
+    // absent, which is what `default="0"` [L59] means. `boolean`, never
+    // `boolean | undefined`: an unset flag has an answer, and the answer is off.
+    expect(bare.getUserDefinedPriceFlag()).toBe(false);
+    expect(typeof bare.getUserDefinedPriceFlag()).toBe('boolean');
+  });
+
+  it('accepts every value CFML accepts, and answers what CFML answered', () => {
+    // The full decision table, driven rather than sampled. Every row is a value a
+    // MySQL driver or an admin payload can legitimately deliver for
+    // `ormtype="boolean"`: a real boolean, `0`/`1`, the string forms of those, the
+    // four CFML boolean literals in mixed case and with surrounding whitespace, a
+    // numeric string that is neither `0` nor `1`, and the empty string — which is
+    // falsy in CFML per the currency-eligibility gate at [model/entity/Sku.cfc:L373]
+    // and is NOT an error.
+    const table: readonly {
+      readonly input: string | number | boolean;
+      readonly answer: boolean;
+    }[] = [
+      { input: true, answer: true },
+      { input: false, answer: false },
+      { input: 1, answer: true },
+      { input: 0, answer: false },
+      { input: 2, answer: true },
+      { input: '1', answer: true },
+      { input: '0', answer: false },
+      { input: 'true', answer: true },
+      { input: 'false', answer: false },
+      { input: 'yes', answer: true },
+      { input: 'no', answer: false },
+      { input: '  TRUE  ', answer: true },
+      { input: 'No', answer: false },
+      { input: '2', answer: true },
+      { input: '0.0', answer: false },
+      { input: '', answer: false },
+      { input: '   ', answer: false },
+    ];
+
+    for (const { input, answer } of table) {
+      const sku = new Sku({ skuID: 'flag-table-sku' });
+
+      sku.setUserDefinedPriceFlag(input);
+
+      expect(sku.getUserDefinedPriceFlag()).toBe(answer);
+    }
+  });
+
+  it('resolves SQL NULL to false, because an undefaulted flag column can hydrate as null', () => {
+    const fromNull = new Sku({ skuID: 'flag-null-sku' });
+    const fromUndefined = new Sku({ skuID: 'flag-undefined-sku' });
+
+    // The persisted-flag boundary, and the one behaviour the conversion helper adds
+    // over a general boolean context: nine `ormtype="boolean"` properties across five
+    // in-scope entities declare no default at all, so SQL NULL is an expected
+    // hydration rather than a data fault, and it reads as the same `false` the legacy
+    // engine gave a flag it had no value for. A general boolean context RAISES for
+    // null instead, and that asymmetry is deliberate — resolving it there would make
+    // an absent value indistinguishable from a deliberate off.
+    fromNull.setUserDefinedPriceFlag(null);
+    fromUndefined.setUserDefinedPriceFlag(undefined);
+
+    expect(fromNull.getUserDefinedPriceFlag()).toBe(false);
+    expect(fromUndefined.getUserDefinedPriceFlag()).toBe(false);
+  });
+
+  it('RAISES for a present value that carries no boolean meaning, rather than answering false', () => {
+    const sku = new Sku({ skuID: 'flag-raise-sku' });
+
+    // A column that hydrates as `'maybe'` is a schema surprise, not a false. CFML
+    // itself raises a conversion error for a non-empty string that is neither a
+    // boolean literal nor numeric, so answering `false` here would INVENT a behaviour
+    // the legacy platform never had and hand back a plausible-looking negative for
+    // input that means nothing. `'Y'`, `'on'` and a truncated `'tru'` would all have
+    // looked like a deliberate off.
+    expect(() => sku.setUserDefinedPriceFlag('maybe')).toThrow();
+    expect(() => sku.setUserDefinedPriceFlag('Y')).toThrow();
+
+    // The raise leaves the previous answer in place; no partial write happens.
+    expect(sku.getUserDefinedPriceFlag()).toBe(false);
+  });
+
+  it('keeps its legacy one-parameter shape and touches no memo', async () => {
+    const converterLog = makeCurrencyConverterLog();
+    const sku = makeSkuFixture({
+      skuCurrencyVariant: 'none',
+      currencyConverter: makeRecordingCurrencyConverter(
+        { [SECONDARY_CURRENCY_CODE]: SECONDARY_CONVERSION_RATE },
+        converterLog,
+      ),
+    });
+
+    // The cascade is reached through {@link Sku.hydrate} because the async half is not
+    // published on the instance: `materializeCurrencyDetails` is PRIVATE on the shipped
+    // entity, so an earlier draft's `await sku.materializeCurrencyDetails()` here did not
+    // compile against it. Same run, same memo, one documented seam.
+    await Sku.hydrate(sku);
+    expect(sku.getPriceByCurrencyCode(SETTING_SKU_CURRENCY)).toBeDefined();
+
+    sku.setUserDefinedPriceFlag(true);
+
+    // Interface parity (C4): one declared parameter, exactly as
+    // `setUserDefinedPriceFlag(required boolean userDefinedPriceFlag)` implies — no
+    // context, no clock and no options bag is added. And unlike the money setters at
+    // B21, this setter clears NOTHING: the cascade at [L367-L433] never reads the
+    // flag, so invalidating the currency memo here would discard a valid map for a
+    // column no derived value depends on.
+    expect(arityOf(sku, 'setUserDefinedPriceFlag')).toBe(1);
+    expect(sku.getUserDefinedPriceFlag()).toBe(true);
+    expect(sku.getPriceByCurrencyCode(SETTING_SKU_CURRENCY)).toBeDefined();
+    expect(Object.keys(sku.getCurrencyDetails())).not.toHaveLength(0);
+  });
+});
+
+describe('Sku.addSkuCurrency / removeSkuCurrency — the inverse pair [model/entity/Sku.cfc:L656-L661]', () => {
+  it('delegates to the far side, which sets its own sku and appends to the live array', () => {
+    const sku = makeSkuFixture({ skuCurrencyVariant: 'none' });
+    const row = makeSkuCurrencyDouble(
+      'skucurrency-added',
+      SECONDARY_CURRENCY_CODE,
+      Money.fromDecimalString(SECONDARY_OVERRIDE_PRICE),
+      Money.fromDecimalString(SECONDARY_OVERRIDE_LIST_PRICE),
+      Money.fromDecimalString(SECONDARY_OVERRIDE_RENEWAL_PRICE),
+    );
+
+    expect(sku.getSkuCurrencies()).toStrictEqual([]);
+    expect(row.getSku()).toBeUndefined();
+
+    sku.addSkuCurrency(row);
+
+    // [L657] is a single delegation, so BOTH sides of the association move and they
+    // move because `SkuCurrency.setSku` moved them — the near side owns no append of
+    // its own. The far side assigns its `sku` field BEFORE the guarded append
+    // [model/entity/SkuCurrency.cfc:L90-L93], so the field is already set by the time
+    // anything else can observe it.
+    expect(row.getSku()).toBe(sku);
+    expect(sku.getSkuCurrencies()).toStrictEqual([row]);
+    expect(sku.hasSkuCurrency(row)).toBe(true);
+  });
+
+  it('appends onto the SAME array the cascade iterates, not a copy of it', () => {
+    const sku = makeSkuFixture({ skuCurrencyVariant: 'none' });
+    const captured = sku.getSkuCurrencies();
+    const row = makeSkuCurrencyDouble(
+      'skucurrency-live',
+      SECONDARY_CURRENCY_CODE,
+      Money.fromDecimalString(SECONDARY_OVERRIDE_PRICE),
+      undefined,
+      undefined,
+    );
+
+    sku.addSkuCurrency(row);
+
+    // ★ LIVE ARRAY REFERENCE. `arrayAppend(arguments.sku.getSkuCurrencies(), this)`
+    // [model/entity/SkuCurrency.cfc:L92] mutated the very array the accessor returns,
+    // and Step 2 of the cascade iterates that array at [model/entity/Sku.cfc:L399-L414].
+    // A defensive copy here would leave the cascade permanently blind to every row
+    // added after hydration.
+    expect(sku.getSkuCurrencies()).toBe(captured);
+    expect(captured).toHaveLength(1);
+  });
+
+  it('is guarded by primary key for a SAVED row, so adding it twice yields one entry', () => {
+    const sku = makeSkuFixture({ skuCurrencyVariant: 'none' });
+    const row = makeSkuCurrencyDouble(
+      'skucurrency-saved',
+      SECONDARY_CURRENCY_CODE,
+      Money.fromDecimalString(SECONDARY_OVERRIDE_PRICE),
+      undefined,
+      undefined,
+    );
+
+    sku.addSkuCurrency(row);
+    sku.addSkuCurrency(row);
+
+    // `isNew() or !arguments.sku.hasSkuCurrency( this )`
+    // [model/entity/SkuCurrency.cfc:L91]: a saved row has a non-empty
+    // `skuCurrencyID`, so `isNew()` is false, the membership test DOES run and it
+    // compares by `skuCurrencyID`. One row, one entry.
+    expect(sku.getSkuCurrencies()).toHaveLength(1);
+  });
+
+  it('appends an UNSAVED row twice, because the isNew() short-circuit skips the guard', () => {
+    const sku = makeSkuFixture({ skuCurrencyVariant: 'none' });
+    const unsaved = makeSkuCurrencyDouble(
+      '',
+      SECONDARY_CURRENCY_CODE,
+      Money.fromDecimalString(SECONDARY_OVERRIDE_PRICE),
+      undefined,
+      undefined,
+    );
+
+    sku.addSkuCurrency(unsaved);
+    sku.addSkuCurrency(unsaved);
+
+    // CFML `or` SHORT-CIRCUITS, and `isNew()` is true for a row whose
+    // `skuCurrencyID` is the `unsavedvalue=""` empty string
+    // [model/entity/SkuCurrency.cfc:L52], so the membership test never runs and the
+    // append is unconditional. Reproduced faithfully rather than tidied: the source
+    // chose duplication over omission because a key-based test cannot tell two
+    // distinct new rows apart, and every unsaved row shares the same empty key. It is
+    // a `CFML parity` fact, not a register entry — the same treatment
+    // `option.test.ts` gives the identical short-circuit on `setOptionGroup`.
+    expect(sku.getSkuCurrencies()).toHaveLength(2);
+  });
+
+  it('completes the round trip, so an added row can be removed from both sides', () => {
+    const sku = makeSkuFixture({ skuCurrencyVariant: 'none' });
+    const row = makeSkuCurrencyDouble(
+      'skucurrency-roundtrip',
+      SECONDARY_CURRENCY_CODE,
+      Money.fromDecimalString(SECONDARY_OVERRIDE_PRICE),
+      undefined,
+      undefined,
+    );
+
+    sku.addSkuCurrency(row);
+    expect(sku.getSkuCurrencies()).toStrictEqual([row]);
+    expect(row.getSku()).toBe(sku);
+
+    sku.removeSkuCurrency(row);
+
+    // [L660] delegates to `SkuCurrency.removeSku`, which splices the far-side array
+    // when it finds the row [model/entity/SkuCurrency.cfc:L99-L102] and then clears
+    // its own `sku` field OUTSIDE that guard, at [L103]. Both effects are asserted
+    // against a link this case actually established, because the pair is only proven
+    // total if the same row can be seen to arrive and then leave.
+    expect(sku.getSkuCurrencies()).toStrictEqual([]);
+    expect(row.getSku()).toBeUndefined();
+    expect(sku.hasSkuCurrency(row)).toBe(false);
+  });
+
+  it('removes a hydrated row that never had its own sku assigned', () => {
+    const sku = makeSkuFixture({ skuCurrencyVariant: 'secondaryOverride' });
+    const held = requireSkuCurrency(sku.getSkuCurrencies(), 0);
+
+    // A row that arrived through hydration sits in the collection without its own
+    // `sku` field having been assigned — the shape every repository-built entity has,
+    // since the far side is populated only by `setSku`. Removal has to work from that
+    // state too, and the splice keys on the ROW, not on the row's back-reference.
+    expect(held.getSku()).toBeUndefined();
+
+    sku.removeSkuCurrency(held);
+
+    expect(sku.getSkuCurrencies()).toStrictEqual([]);
+    expect(sku.hasSkuCurrency(held)).toBe(false);
+  });
+
+  it('finds element ZERO, because the 1-based arrayFind guard was translated and not copied', () => {
+    const sku = makeSkuFixture({ skuCurrencyVariant: 'secondaryOverride' });
+    const first = requireSkuCurrency(sku.getSkuCurrencies(), 0);
+
+    sku.removeSkuCurrency(first);
+
+    // ★ THE OFF-BY-ONE THAT DID NOT HAPPEN. The far-side lookup is
+    // `findIndex(...) !== -1`, the 0-based translation of CFML's 1-based
+    // `arrayFind(...) > 0` [model/entity/SkuCurrency.cfc:L99-L100]. Carrying `> 0`
+    // across literally would have made index 0 fail the guard, silently refusing to
+    // remove the FIRST row — and on a single-row collection, which
+    // `'secondaryOverride'` is and which real data usually is, that means refusing
+    // every removal. The row removed here is at index 0 precisely so the case fails
+    // if that translation is ever regressed.
+    expect(sku.getSkuCurrencies()).toStrictEqual([]);
+  });
+
+  it('leaves a foreign collection alone, but still clears the row own sku unconditionally', () => {
+    const owner = makeSkuFixture({ skuID: 'owner-sku', skuCurrencyVariant: 'none' });
+    const other = makeSkuFixture({ skuID: 'other-sku', skuCurrencyVariant: 'none' });
+    const row = makeSkuCurrencyDouble(
+      'skucurrency-foreign',
+      TERTIARY_CURRENCY_CODE,
+      Money.fromDecimalString(BASE_OVERRIDE_PRICE),
+      undefined,
+      undefined,
+    );
+
+    owner.addSkuCurrency(row);
+
+    expect(() => other.removeSkuCurrency(row)).not.toThrow();
+
+    // ★ THE CLEAR SITS OUTSIDE THE GUARD, and this is the case that shows it. The
+    // splice at [model/entity/SkuCurrency.cfc:L99-L102] finds nothing in the OTHER
+    // sku's array, so that array is untouched — and `this.sku = javaCast("null","")`
+    // at [L103] runs anyway. The result is a row that has lost its back-reference
+    // while still sitting in its owner's collection: the two accessors now disagree.
+    // Reproduced rather than repaired, because the legacy clear is unconditional and a
+    // guarded clear would answer a live sku for a row a caller has explicitly removed.
+    expect(other.getSkuCurrencies()).toStrictEqual([]);
+    expect(owner.getSkuCurrencies()).toStrictEqual([row]);
+    expect(row.getSku()).toBeUndefined();
+  });
+
+  it('★ neither helper clears the currency-details memo — hydration decides the price', async () => {
+    const converterLog = makeCurrencyConverterLog();
+    const sku = makeSkuFixture({
+      skuCurrencyVariant: 'none',
+      currencyConverter: makeRecordingCurrencyConverter(
+        { [SECONDARY_CURRENCY_CODE]: SECONDARY_CONVERSION_RATE },
+        converterLog,
+      ),
+    });
+
+    // With no override rows, the secondary currency falls all the way through to
+    // Step 3 and is CONVERTED [model/entity/Sku.cfc:L416-L428].
+    const converted = requireDetail(
+      (await Sku.hydrate(sku)).getCurrencyDetails(),
+      SECONDARY_CURRENCY_CODE,
+    );
+    expect(converted.converted).toBe(true);
+    expect(converted.skuCurrencyID).toBe('');
+
+    const convertedPrice = converted.price?.toFixed2();
+    const conversionsAfterHydration = converterLog.conversions.length;
+    expect(convertedPrice).toBeDefined();
+    expect(conversionsAfterHydration).toBeGreaterThan(0);
+
+    const override = makeSkuCurrencyDouble(
+      'skucurrency-memo',
+      SECONDARY_CURRENCY_CODE,
+      Money.fromDecimalString(SECONDARY_OVERRIDE_PRICE),
+      Money.fromDecimalString(SECONDARY_OVERRIDE_LIST_PRICE),
+      Money.fromDecimalString(SECONDARY_OVERRIDE_RENEWAL_PRICE),
+    );
+
+    sku.addSkuCurrency(override);
+
+    // ★★ THIS CASE ASSERTS THE OPPOSITE OF WHAT AN EARLIER DRAFT OF IT ASSERTED, and the
+    // reversal is recorded here rather than performed as a silent rewrite. The earlier draft
+    // read '★ both helpers invalidate the currency-details memo, so the cascade re-runs
+    // honestly' and asserted `expect(sku.getCurrencyDetails()).toEqual({})` after each
+    // mutation. It was written against a revision of `sku.ts` in which `addSkuCurrency` and
+    // `removeSkuCurrency` each cleared `currencyDetailsMemo`. That clearing has since been
+    // removed from the entity, on the two grounds recorded there against
+    // [model/entity/Sku.cfc:L656-L661, L368]: neither legacy helper touches
+    // `variables.currencyDetails`, so clearing it INVENTED an invalidation the source does
+    // not have; and with the cascade reachable only through {@link Sku.hydrate}, whose [L368]
+    // memo guard makes a second run a no-op, a cleared memo could never be refilled — one
+    // `addSkuCurrency` would have turned a fully priced sku into one whose three currency
+    // accessors answer nothing at all. Every answer the earlier draft checked is still
+    // checked below; only the direction changes, and its Step 2 expectations move to a sku
+    // hydrated AFTER the mutation, which is the one order in which they are reachable.
+    expect(sku.getSkuCurrencies()).toStrictEqual([override]);
+
+    // The map is untouched, so the converted answer stands even though a persisted override
+    // now sits in the very collection Step 2 reads [L399-L414]. That is the legacy outcome
+    // rather than a target compromise: `variables.currencyDetails` outlives every mutation
+    // within a request there too.
+    const afterAdd = requireDetail(sku.getCurrencyDetails(), SECONDARY_CURRENCY_CODE);
+    expect(afterAdd.converted).toBe(true);
+    expect(afterAdd.skuCurrencyID).toBe('');
+    expect(sku.getPriceByCurrencyCode(SECONDARY_CURRENCY_CODE)?.toFixed2()).toBe(convertedPrice);
+    expect(sku.getPriceByCurrencyCode(SECONDARY_CURRENCY_CODE)?.toFixed2()).not.toBe(
+      Money.fromDecimalString(SECONDARY_OVERRIDE_PRICE).toFixed2(),
+    );
+
+    // Re-hydrating does not help either, because [L368]'s guard short-circuits on a populated
+    // memo. The converter is not consulted a second time, and that is what proves the cascade
+    // genuinely did not re-run rather than re-running to the same answer.
+    const rehydrated = requireDetail(
+      (await Sku.hydrate(sku)).getCurrencyDetails(),
+      SECONDARY_CURRENCY_CODE,
+    );
+    expect(rehydrated.converted).toBe(true);
+    expect(rehydrated.skuCurrencyID).toBe('');
+    expect(converterLog.conversions).toHaveLength(conversionsAfterHydration);
+
+    // Removing it is equally inert on the memo; the far-side collection is the only thing
+    // that moves.
+    sku.removeSkuCurrency(override);
+    expect(sku.getSkuCurrencies()).toStrictEqual([]);
+    expect(requireDetail(sku.getCurrencyDetails(), SECONDARY_CURRENCY_CODE).converted).toBe(true);
+    expect(sku.getPriceByCurrencyCode(SECONDARY_CURRENCY_CODE)?.toFixed2()).toBe(convertedPrice);
+
+    // ★ AND THE STEP 2 ANSWERS THE EARLIER DRAFT WAS AFTER, ASSERTED WHERE THEY ARE
+    // REACHABLE. A sku that receives the same override BEFORE its cascade runs takes Step 2
+    // for that currency [L399-L414]: `converted` is false, the winning row's identifier is
+    // recorded, and the override price beats the conversion. Add-then-hydrate answers the
+    // override; hydrate-then-add does not. The mutators move the collection, and the
+    // hydration boundary decides the price.
+    const hydratedAfterAdd = makeSkuFixture({
+      skuCurrencyVariant: 'none',
+      currencyConverter: makeRecordingCurrencyConverter(
+        { [SECONDARY_CURRENCY_CODE]: SECONDARY_CONVERSION_RATE },
+        makeCurrencyConverterLog(),
+      ),
+    });
+
+    hydratedAfterAdd.addSkuCurrency(
+      makeSkuCurrencyDouble(
+        'skucurrency-memo',
+        SECONDARY_CURRENCY_CODE,
+        Money.fromDecimalString(SECONDARY_OVERRIDE_PRICE),
+        Money.fromDecimalString(SECONDARY_OVERRIDE_LIST_PRICE),
+        Money.fromDecimalString(SECONDARY_OVERRIDE_RENEWAL_PRICE),
+      ),
+    );
+
+    const stepTwo = requireDetail(
+      (await Sku.hydrate(hydratedAfterAdd)).getCurrencyDetails(),
+      SECONDARY_CURRENCY_CODE,
+    );
+    expect(stepTwo.converted).toBe(false);
+    expect(stepTwo.skuCurrencyID).toBe('skucurrency-memo');
+    expect(stepTwo.price?.toFixed2()).toBe(
+      Money.fromDecimalString(SECONDARY_OVERRIDE_PRICE).toFixed2(),
+    );
+  });
+
+  it('keeps both legacy signatures at one parameter and adds no far-side member', () => {
+    const sku = makeSkuFixture({ skuCurrencyVariant: 'none' });
+
+    // Interface parity (C4): `addSkuCurrency(required any skuCurrency)` and
+    // `removeSkuCurrency(required any skuCurrency)` each declare exactly one
+    // parameter, and the port refines `any` to the concrete entity without widening
+    // either signature. `any` is refined, never widened — that is not a parity break.
+    expect(arityOf(sku, 'addSkuCurrency')).toBe(1);
+    expect(arityOf(sku, 'removeSkuCurrency')).toBe(1);
   });
 });

@@ -1,82 +1,23 @@
 // ---------------------------------------------------------------------------
 // slatwall-ts - PRICE-GROUP / PRICE-GROUP-RATE / ROUNDING-RULE TEST DATA
 //
-// WHAT THIS FILE IS
-// A single deterministic factory returning one fully-formed object graph of
-// `SwPriceGroup`, `SwPriceGroupRate` and `SwRoundingRule` entities, plus the
-// two verified data tables the rounding algorithm is pinned against. It is
-// consumed by explicit per-suite named imports from the price-group and
-// rounding-rule suites; nothing here asserts anything, and nothing here is
-// registered as a global.
+// One deterministic factory returning a fully-formed graph of `SwPriceGroup`, `SwPriceGroupRate`
+// and `SwRoundingRule` entities, plus the two verified data tables the rounding algorithm is pinned
+// against.
 //
-// IT IS THE ROOT OF THE FIXTURE DEPENDENCY GRAPH, and that is a hard
-// constraint rather than a preference. The rounding-rule and price-group
-// leaves are what the sku, product, promotion and order-view fixtures build
-// on, so this module imports NO sibling fixture. Doing so would close a cycle
-// in a graph that is acyclic by construction.
+// IT IS THE ROOT OF THE FIXTURE DEPENDENCY GRAPH, so it imports NO sibling fixture - that would
+// close a cycle in a graph acyclic by construction. A rate's three membership collections
+// [model/entity/PriceGroupRate.cfc:L71-L73] are typed through `import type` only and populated
+// solely through `overrides`, so a suite needing the cascade to match brings its own catalog
+// entities. Every collection defaults to `[]`, the state a repository that did not fetch the join
+// must present.
 //
-// WHY IT DOES NOT CONSTRUCT SKUS, PRODUCTS OR PRODUCT TYPES
-// The three membership collections a price-group rate carries - `skus`,
-// `products`, `productTypes` [model/entity/PriceGroupRate.cfc:L71-L73] - are
-// typed here through `import type` ONLY, and are populated exclusively through
-// the single `overrides` parameter. A suite that needs the cascade to match
-// brings its own catalog entities from the sibling fixtures and hands them in.
-// Every collection defaults to `[]`, which is the state a repository that did
-// not fetch the join must present.
+// [meta/tests/unit/Helper.cfc] is the legacy tree's only fixture-construction artefact; its build
+// -> save -> flush SHAPE is carried over and its ORM MECHANISM is not.
 //
-// THE LEGACY REFERENCE PATTERN, AND WHAT IS DELIBERATELY DROPPED
-// [meta/tests/unit/Helper.cfc] is the only fixture-construction artefact in
-// the legacy tree, 77 lines shaped as build -> save -> flush. Its SHAPE is
-// carried over: one named function, a small literal data bag with documented
-// defaults, one fully-formed subject returned, disposable by dropping the
-// reference. Its MECHANISM is dropped entirely, because there is no ORM here:
-// the framework entity-construction call, the session flush, the delete
-// helper, the null cast and the ambient request-scope service lookup all go
-// away. This factory touches no database, no connection pool, no network and
-// no filesystem, and there is deliberately no teardown export - a suite that
-// wants teardown symmetry uses the runner's own per-test hook.
-//
-// The harness at [meta/tests/unit/SlatwallUnitTestBase.cfc:L49-L79] is the
-// ANTI-PATTERN this file is the opposite of: it instantiates the real
-// application object (L52), injects a Helper component (L55), starts the ORM
-// and the dependency-injection container before every single test (L60),
-// elevates the current account to superuser (L62), and never tears any of it
-// down (L70, commented out). There is no application start-up here, no
-// container, no service locator, no ambient scope and no privilege elevation -
-// only plain constructed objects.
-//
-// CFML parity note [meta/tests/unit/Helper.cfc:L53]: the legacy helper assigns
-// `productData` with no `var`, leaking it into component `variables` scope.
-// That is a harness hygiene defect, not one of the preserved business-logic
-// defects; it is deliberately NOT reproduced here. Every local below is
-// `const`-scoped inside the factory.
-//
-// NO USER RULES GOVERN THIS FILE. The project's rules source reports that no
-// user rules were provided, so there is no rule-mandated content here and none
-// is invented. The standard applied in their place is enterprise best practice
-// as the transformation plan states it: maximal strictness, the layer
-// boundary, the fixed dependency set, `Money` as the sole arithmetic surface,
-// environment-driven configuration with no credential of any kind, one
-// exported unit per file with no barrel, and in-code annotation of every
-// judgment call and every preserved defect.
-//
-// ANNOTATION LEGEND, used verbatim throughout:
-//   `// LEGACY-DEFECT [<path>:<locator>]: ...` followed by
-//   `// Preserved deliberately; do not fix without a product decision.`
-//     - data that exists ONLY because a legacy defect is being preserved.
-//   `// CFML parity [<path>:<locator>]: ...`
-//     - a semantic-fidelity note about the source.
-//   `// JUDGMENT CALL: ...`
-//     - a design decision taken here, with its justification.
-//
-// WHAT THIS FILE NEVER CONTAINS
-// No suite declaration and no assertion of any kind - this folder holds data
-// factories and the assertions live in the unit and integration tiers. No
-// mocking library: the one collaborator double below is hand-written, exactly
-// as the legacy suite managed without one. No environment read, no credential,
-// no driver import, no query. No clock read: every timestamp is an explicit
-// UTC ISO-8601 literal, because the runner pins the process timezone to UTC
-// and a relative date would make an assertion depend on the day it ran.
+// CFML parity [meta/tests/unit/Helper.cfc:L53]: the helper assigns `productData` with no `var`,
+// leaking it into component `variables` scope. A harness hygiene defect, not a preserved
+// business-logic one, so deliberately not reproduced.
 // ---------------------------------------------------------------------------
 
 import { PriceGroup } from '../../src/domain/entities/priceGroup.js';
@@ -93,42 +34,30 @@ import type { RoundingRuleDirection } from '../../src/domain/entities/roundingRu
 import type { Sku } from '../../src/domain/entities/sku.js';
 import type { DecimalString } from '../../src/lib/cfml/numberFormat.js';
 
-// ---------------------------------------------------------------------------
-// Structurally derived types
+// --- Structurally derived types -------------------------------------------
 //
-// JUDGMENT CALL: two types this graph needs are declared in modules that are
-// NOT among this fixture's declared dependencies, so they are DERIVED from the
-// entity surfaces already in scope rather than imported. That keeps the import
-// set exactly the whitelist and still keeps the types exact - a change to
-// either upstream declaration breaks the compile here, which is the point.
-// ---------------------------------------------------------------------------
+// JUDGMENT CALL: two types this graph needs are declared in modules that are NOT among its
+// dependencies, so they are DERIVED from the entity surfaces already in scope, keeping the import
+// set exactly the whitelist.
 
 /** Element type of any array or readonly array. */
 type ElementOf<TArray> = TArray extends readonly (infer TElement)[] ? TElement : never;
 
 /**
- * The `activeFlag` operand `PriceGroup` accepts.
- *
- * Derived from the constructor rather than imported from the CFML truthiness
- * helper, which this fixture does not depend on. The column declares no
- * `default=` at all [model/entity/PriceGroup.cfc:L54], which is why the
- * accepted operand is deliberately wide.
+ * The `activeFlag` operand `PriceGroup` accepts, derived from the constructor rather than imported
+ * from the CFML truthiness helper. The column declares no `default=` at all
+ * [model/entity/PriceGroup.cfc:L54], which is why the operand is deliberately wide.
  */
 type PriceGroupActiveFlag = ConstructorParameters<typeof PriceGroup>[0]['activeFlag'];
 
 /**
- * The promotion-reward entity, as seen through `PriceGroup`.
- *
- * `promotionRewards` is the many-to-many through `SwPromoRewardEligiblePriceGrp`
- * [model/entity/PriceGroup.cfc:L70] - the ORM backing for the eligibility test
- * at [model/service/PromotionService.cfc:L241]. Its entity module is not a
- * dependency of this fixture, so the type is read off the accessor.
+ * The promotion-reward entity as seen through `PriceGroup`. `promotionRewards` is the many-to-many
+ * through `SwPromoRewardEligiblePriceGrp` [model/entity/PriceGroup.cfc:L70] - the ORM backing for
+ * the eligibility test at [model/service/PromotionService.cfc:L241].
  */
 type PromotionRewardRef = ElementOf<ReturnType<PriceGroup['getPromotionRewards']>>;
 
-// ---------------------------------------------------------------------------
-// The collaborator double
-// ---------------------------------------------------------------------------
+// --- The collaborator double ---------------------------------------------
 
 /** One recorded delegation from `RoundingRule.roundValue`. */
 type RecordedRoundValueCall = {
@@ -137,31 +66,16 @@ type RecordedRoundValueCall = {
 };
 
 /**
- * A hand-written in-memory stand-in for the collaborator every `RoundingRule`
- * delegates to.
+ * A hand-written in-memory stand-in for the collaborator every `RoundingRule` delegates to.
  *
- * CFML parity [model/entity/RoundingRule.cfc:L66-L68]: `roundValue` is an
- * ENTITY method whose whole body is a service-locator lookup -
- * `getService("roundingRuleService").roundValueByRoundingRule(value=...,
- * roundingRule=this)`. The port replaces that lookup with a constructor-injected
- * collaborator, so every `RoundingRule` this factory builds needs one supplied.
+ * CFML parity [model/entity/RoundingRule.cfc:L66-L68]: `roundValue` is an ENTITY method whose whole
+ * body is a service-locator lookup -
+ *   `getService("roundingRuleService").roundValueByRoundingRule(value=..., roundingRule=this)`
+ * and the port replaces it with a constructor-injected collaborator. The signature mirrors
+ * [model/service/RoundingRuleService.cfc:L84-L86] with `any` narrowed.
  *
- * The method signature mirrors [model/service/RoundingRuleService.cfc:L84-L86]
- * with `any value` narrowed to `Money` and `any roundingRule` narrowed to
- * `RoundingRule`, which is exactly the shape the entity module declares for its
- * second constructor parameter. That interface carries no `export` and says so
- * in terms, so this shape is reproduced here and structural typing does the
- * rest - nothing is re-exported and nothing is imported to get it.
- *
- * NO MOCKING LIBRARY, and none may be added: the dependency set is fixed, and a
- * double that answers a scripted value and records its arguments is the entire
- * requirement. Writing it by hand also keeps `calls` strongly typed, so a suite
- * reading a recorded `rule` is checked by the compiler.
- *
- * JUDGMENT CALL: the scripted answer is a value deliberately unrelated to any
- * input (see `roundValueAnswer` on the overrides). An identity double would be
- * indistinguishable from "no rounding applied", and telling those two apart is
- * precisely what the suites covering the rounding-rule asymmetry need.
+ * JUDGMENT CALL: the scripted answer is unrelated to any input, since an identity double would be
+ * indistinguishable from "no rounding applied".
  */
 interface RecordingValueRounder {
   roundValueByRoundingRule(value: Money, rule: RoundingRule): Money;
@@ -170,67 +84,50 @@ interface RecordingValueRounder {
   readonly calls: readonly RecordedRoundValueCall[];
 }
 
-// ---------------------------------------------------------------------------
-// The two verified data tables
-// ---------------------------------------------------------------------------
+// --- The two verified data tables ----------------------------------------
 
 /**
- * One row of the rounding-expression acceptance table.
+ * One row of the rounding-expression acceptance table, measuring
+ * [model/entity/RoundingRule.cfc:L78-L86] per comma-list element:
+ *   `(len(v) - find(".", v)) != 2 || !isNumeric(v)`
+ * rejects. CFML's `find` answers 0 when absent, which is the mechanism behind the accepting row
+ * that should not accept.
  *
- * The predicate under test is [model/entity/RoundingRule.cfc:L78-L86], applied
- * per comma-list element: `(len(v) - find(".", v)) != 2 || !isNumeric(v)`
- * rejects. CFML's `find` answers a 1-based position or 0 when the substring is
- * absent, and that absent-value 0 is the whole mechanism behind the accepting
- * row that should not accept.
- *
- * CFML parity [model/validation/RoundingRule.json:L4] - A PUBLISHED FINDING
- * CORRECTED: the transformation plan records "no expression validation" for
- * `roundingRuleExpression`. That premise is wrong, and the correction is
- * recorded here so the discrepancy is auditable rather than silently resolved.
- * The line reads
- * `[{"contexts":"save","required":true,"method":"hasExpressionWithListOfNumericValuesOnly"}]`,
- * so the expression IS validated on the `save` context by the entity's own
- * predicate. The plan's CONCLUSION nevertheless survives, by a different route:
- * the predicate has a hole, and the hole is the `'99'` row below.
+ * CFML parity [model/validation/RoundingRule.json:L4]: the plan records "no expression validation",
+ * and that premise is wrong - the line reads
+ *   `[{"contexts":"save","required":true,"method":"hasExpressionWithListOfNumericValuesOnly"}]`
+ * so the expression IS validated on `save`. The plan's CONCLUSION survives another way: the
+ * predicate has a hole.
  */
 type RoundingExpressionCase = {
   /** The raw `SwRoundingRule.roundingRuleExpression` column value. */
   readonly expression: string;
 
-  /**
-   * What `hasExpressionWithListOfNumericValuesOnly()` answers. Every value here
-   * was measured against the ported predicate, not reasoned about.
-   */
+  /** What `hasExpressionWithListOfNumericValuesOnly()` answers, measured not reasoned. */
   readonly accepted: boolean;
 
   /**
-   * `10 ^ (len(element) - 3)` for each comma-list element, as decimal numerals.
-   *
-   * This is the step increment the algorithm adds to or subtracts from the
-   * two-decimal input [model/service/RoundingRuleService.cfc:L95, L101, L108].
-   * A FRACTIONAL value here means the increment is smaller than one cent, which
-   * is the defect the accepting-but-fractional row exposes.
+   * `10 ^ (len(element) - 3)` per comma-list element, as decimal numerals - the step increment
+   * added to or subtracted from the two-decimal input [model/service/RoundingRuleService.cfc:L95,
+   * L101, L108]. A FRACTIONAL value means an increment smaller than one cent, the defect the
+   * accepting-but-fractional row exposes.
    */
   readonly derivedPowerPerElement: readonly DecimalString[];
 };
 
 /**
- * One measured `roundValue` outcome.
- *
- * Every field is a decimal STRING. That is not a stylistic choice: several rows
- * exist precisely because a trailing zero changes the answer, and a numeric
- * literal would destroy the property under test before the algorithm ever saw
- * it. The algorithm is decimal-STRING manipulation - it measures `len()` of an
- * intermediate and slices a prefix off it - not numeric rounding.
+ * One measured `roundValue` outcome. Every field is a decimal STRING, and not stylistically:
+ * several rows exist because a trailing zero changes the answer, and a numeric literal would
+ * destroy the property before the algorithm saw it - it measures `len()` of an intermediate and
+ * slices a prefix off it.
  */
 type RoundValueCase = {
   /** The value handed in, as the caller's own numeral. */
   readonly input: DecimalString;
 
   /**
-   * The rounding expression. A plain `string`, never a branded numeral: the
-   * comma-list form `'.95,.99'` is not a decimal numeral at all, and neither is
-   * the leading-dot form the legacy data uses.
+   * The rounding expression. A plain `string`, never a branded numeral: neither the comma-list form
+   * `'.95,.99'` nor the leading-dot form the legacy data uses is a decimal numeral.
    */
   readonly roundingExpression: string;
 
@@ -242,12 +139,9 @@ type RoundValueCase = {
 };
 
 /**
- * The migration's reference calculation, as decimal numerals.
- *
- * Reproduced here so a price-group suite can drive it off the same numbers the
- * arithmetic substrate is pinned against, with no floating-point step anywhere
- * in the chain. `quantity` is a COUNT and is deliberately a plain `number`;
- * everything else is a numeral destined for `Money`.
+ * The migration's reference calculation as decimal numerals, so a suite can drive it off the same
+ * numbers the arithmetic substrate is pinned against with no floating-point step. `quantity` is a
+ * COUNT and so a plain `number`; the rest are numerals destined for `Money`.
  */
 type ReferenceCalculation = {
   readonly unitPrice: DecimalString;
@@ -259,55 +153,38 @@ type ReferenceCalculation = {
   readonly presentedNetAmount: DecimalString;
 };
 
-// ---------------------------------------------------------------------------
-// The single optional parameter
-// ---------------------------------------------------------------------------
+// --- The single optional parameter ---------------------------------------
 
 /**
- * Every axis of variation this factory offers, and the only one.
+ * Every axis of variation this factory offers, and the only one. Each default is documented on its
+ * own member.
  *
- * There is no second exported builder, no exported mutable literal and no
- * setter: a suite that needs a different graph passes a different object here.
- * Every member is optional and every default is documented on the member.
- *
- * NOTE THE DELIBERATE ASYMMETRY WITH THE GRAPH TYPE BELOW. This is an options
- * bag, so its members are optional AND admit an explicit `undefined` - under
- * `exactOptionalPropertyTypes` those are different types, and a caller
- * spreading a partial object must be able to write either. The graph's own
- * nullable members are the opposite: they are REQUIRED slots typed
- * `T | undefined`, because "the repository looked and found nothing" is a state
- * that must be stated rather than omitted.
+ * NOTE THE DELIBERATE ASYMMETRY WITH THE GRAPH TYPE BELOW. This is an options bag, so members are
+ * optional AND admit an explicit `undefined`, which differ under `exactOptionalPropertyTypes`. The
+ * graph's nullable members are the opposite: REQUIRED slots typed `T | undefined`, because "found
+ * nothing" must be stated rather than omitted.
  */
 interface PriceGroupFixtureOverrides {
   /**
-   * Prefix for every generated primary key. Default `'pgfx'`.
-   *
-   * Identifiers are derived from this argument alone - there is no counter, no
-   * sequence and no registry anywhere in this module - so two calls with
-   * different prefixes yield two graphs with disjoint keys, and two calls with
-   * the same prefix yield the same keys on genuinely separate instances.
+   * Prefix for every generated primary key. Default `'pgfx'`. Identifiers derive from this argument
+   * alone - no counter, no sequence, no registry - so two calls with different prefixes yield
+   * disjoint keys and two with the same prefix yield the same keys on genuinely separate instances.
    */
   readonly idPrefix?: string | undefined;
 
   /**
    * `activeFlag` for every price group in the graph. Default `undefined`.
    *
-   * CFML parity [model/entity/PriceGroup.cfc:L54]: the column declares NO
-   * `default=`, so `undefined` is the honest unset state and `getActiveFlag()`
-   * resolves it to `false` - the same answer the legacy engine gave a flag it
-   * had no value for. `true` is deliberately NOT invented as a default. Nothing
-   * in the resolution cascade consults the flag; its only legacy consumer is the
-   * `pg.activeFlag = :activeFlag` filter at
-   * [model/dao/PriceGroupDAO.cfc:L93-L95], so a suite that needs an active group
-   * passes `true` here.
+   * CFML parity [model/entity/PriceGroup.cfc:L54]: the column declares NO `default=`, so
+   * `undefined` is the honest unset state and `getActiveFlag()` resolves it to `false`. Nothing in
+   * the cascade consults the flag; its only legacy consumer is
+   * [model/dao/PriceGroupDAO.cfc:L93-L95].
    */
   readonly activeFlag?: PriceGroupActiveFlag;
 
   /**
-   * Membership for BOTH sku-level rates on the child price group. Default `[]`.
-   *
-   * Both rates receive the same members on purpose - that is what makes
-   * last-match-wins observable.
+   * Membership for BOTH sku-level rates on the child price group. Default `[]`. Both receive the
+   * same members on purpose - that is what makes last-match-wins observable.
    */
   readonly skuLevelRateSkus?: readonly Sku[] | undefined;
 
@@ -318,19 +195,15 @@ interface PriceGroupFixtureOverrides {
   readonly productTypeLevelRateProductTypes?: readonly ProductType[] | undefined;
 
   /**
-   * Membership for the sku-level rate on the PARENT price group. Default `[]`.
-   *
-   * Separate from `skuLevelRateSkus` because the two must be set independently:
-   * proving that a parent's sku-level rate is never consulted requires the child
-   * to hold no matching sku rate while the parent does.
+   * Membership for the sku-level rate on the PARENT price group. Default `[]`. Separate from
+   * `skuLevelRateSkus` because proving a parent's sku-level rate is never consulted requires the
+   * child to hold no matching sku rate while the parent does.
    */
   readonly parentSkuLevelRateSkus?: readonly Sku[] | undefined;
 
   /**
-   * Membership for the product-level rate on the PARENT price group. Default `[]`.
-   *
-   * The contrast case for the one above: the parent's PRODUCT rate is the rate
-   * the recursion does reach.
+   * Membership for the product-level rate on the PARENT price group. Default `[]`. The contrast
+   * case: the parent's PRODUCT rate is the one the recursion does reach.
    */
   readonly parentProductLevelRateProducts?: readonly Product[] | undefined;
 
@@ -343,34 +216,19 @@ interface PriceGroupFixtureOverrides {
   /** Exclusions for the rates that carry them. Default `[]`. */
   readonly excludedProductTypes?: readonly ProductType[] | undefined;
 
-  /**
-   * Eligible-reward membership for the child price group. Default `[]`.
-   *
-   * The inverse side of the many-to-many at
-   * [model/entity/PriceGroup.cfc:L70].
-   */
+  /** Eligible rewards for the child group. Default `[]`; [model/entity/PriceGroup.cfc:L70]. */
   readonly promotionRewards?: readonly PromotionRewardRef[] | undefined;
 
   /**
-   * The numeral the collaborator double answers with. Default `'77.77'`.
-   *
-   * Deliberately unrelated to any input the double will be handed, so that "the
-   * rounding rule was applied" and "the rounding rule was skipped" are
-   * distinguishable outcomes rather than a coincidence.
+   * The numeral the collaborator double answers with. Default `'77.77'`, unrelated to any input it
+   * will be handed, so "applied" and "skipped" are distinguishable outcomes.
    */
   readonly roundValueAnswer?: string | undefined;
 }
 
-// ---------------------------------------------------------------------------
-// The returned graph
-// ---------------------------------------------------------------------------
-
 /**
- * One complete, independent price-group graph.
- *
- * Member names say which cascade level or which preserved defect each artefact
- * exercises, so a suite reads as a statement about behaviour rather than as a
- * lookup into anonymous data.
+ * One complete, independent price-group graph. Member names say which cascade level or which
+ * preserved defect each artefact exercises.
  */
 interface PriceGroupFixtureGraph {
   // --- The collaborator double ---------------------------------------------
@@ -404,10 +262,9 @@ interface PriceGroupFixtureGraph {
   /**
    * A rounding rule with a non-empty `priceGroupRates` collection.
    *
-   * CFML parity [model/validation/RoundingRule.json:L6]: `priceGroupRates`
-   * carries `{"contexts":"delete","maxCollection":0}`, so a rule with any rate
-   * attached cannot be deleted. This is the exhibit for that guard; every other
-   * rounding rule in the graph carries `[]`, which makes the guard vacuous.
+   * CFML parity [model/validation/RoundingRule.json:L6]: `priceGroupRates` carries
+   * `{"contexts":"delete","maxCollection":0}`, so a rule with any rate attached cannot be deleted.
+   * Every other rule here carries `[]`, making the guard vacuous.
    */
   readonly undeletableRoundingRule: RoundingRule;
 
@@ -421,11 +278,7 @@ interface PriceGroupFixtureGraph {
     RoundingRuleDirection,
   ];
 
-  /**
-   * The direction string carried by `outOfVocabularyDirectionRoundingRule`.
-   *
-   * Exposed as data so a suite can assert against it without restating it.
-   */
+  /** The direction string `outOfVocabularyDirectionRoundingRule` carries, exposed as data. */
   readonly outOfVocabularyRoundingRuleDirection: string;
 
   // --- The two verified data tables ----------------------------------------
@@ -499,10 +352,8 @@ interface PriceGroupFixtureGraph {
   readonly unrecognisedAmountTypeRate: PriceGroupRate;
 
   /**
-   * A raw out-of-vocabulary `SwPriceGroupRate.amountType` column value.
-   *
-   * Data, not an entity: see the marker on the unrecognised-amount-type rate for
-   * why the entity cannot hold this string and why the column can.
+   * A raw out-of-vocabulary `SwPriceGroupRate.amountType` column value. Data, not an entity: see
+   * the marker on the unrecognised-amount-type rate for why the column can hold it.
    */
   readonly unrecognisedAmountTypeColumnValue: string;
 
@@ -535,11 +386,8 @@ interface PriceGroupFixtureGraph {
   // --- Materialized paths ---------------------------------------------------
 
   /**
-   * The `priceGroupIDPath` values stored on the three chained groups, keyed by
-   * the member they belong to.
-   *
-   * Built by the domain's own path builder, so they are root-first,
-   * comma-delimited, self-last and never empty by construction.
+   * The `priceGroupIDPath` values stored on the three chained groups. Built by the domain's own
+   * path builder, so root-first, comma-delimited, self-last and never empty.
    */
   readonly priceGroupIDPaths: {
     readonly root: string;
@@ -549,16 +397,10 @@ interface PriceGroupFixtureGraph {
   };
 }
 
-// ---------------------------------------------------------------------------
-// Module-scope constants
+// --- Module-scope constants ------------------------------------------------
 //
-// EVERY ONE IS AN IMMUTABLE PRIMITIVE. There is no counter, no sequence, no
-// registry, no memo and no shared object or array anywhere at module scope, so
-// nothing here can carry state from one factory call to the next - which is the
-// same discipline the port applies to the four legacy component-level caches
-// that become request-scoped. Sharing a string or a number between graphs
-// cannot couple them; sharing an object could, so no object is shared.
-// ---------------------------------------------------------------------------
+// Every one an immutable primitive, so nothing carries state from one factory call to the next.
+// That is the discipline the port applies to the four legacy component-level caches.
 
 const DEFAULT_ID_PREFIX = 'pgfx';
 
@@ -569,14 +411,13 @@ const OUT_OF_VOCABULARY_ROUNDING_DIRECTION = 'Sideways';
 
 const UNRECOGNISED_AMOUNT_TYPE_COLUMN_VALUE = 'flatRate';
 
-// Explicit UTC instants. Never a clock read: `new Date()` with no argument or a
-// relative offset would make an assertion depend on the day it ran, and the
-// runner pins the process timezone to UTC precisely so dates are deterministic.
+// Explicit UTC instants, never a clock read: a relative offset would make an assertion depend on
+// the day it ran, and the runner pins the process timezone to UTC.
 const CREATED_DATE_TIME_UTC = '2024-06-01T00:00:00.000Z';
 const MODIFIED_DATE_TIME_UTC = '2024-06-15T12:30:00.000Z';
 
-// Rate amounts, as decimal numerals destined for `Money`. Each is distinct so
-// that "which rate won" is answerable from the amount alone.
+// Rate amounts, as decimal numerals destined for `Money`, each distinct so "which rate won" is
+// answerable from the amount alone.
 const PRODUCT_TYPE_LEVEL_RATE_AMOUNT = '30.00';
 const PRODUCT_LEVEL_RATE_AMOUNT = '20.00';
 const SKU_LEVEL_RATE_FIRST_MATCH_AMOUNT = '10.00';
@@ -602,10 +443,8 @@ const REFERENCE_NET_AMOUNT = '52.47375';
 const REFERENCE_PRESENTED_NET_AMOUNT = '52.47';
 
 // ---------------------------------------------------------------------------
-// Module-scope pure builders
-//
-// Functions, never data. Each returns a FRESHLY constructed value on every
-// call, so no array and no object is ever shared between two graphs.
+// Module-scope pure builders: functions, never data, each returning a FRESHLY constructed value on
+// every call, so no array and no object is ever shared between two graphs.
 // ---------------------------------------------------------------------------
 
 /** The audit columns every entity in one graph carries. */
@@ -627,10 +466,8 @@ function makeAuditTrail(idPrefix: string): AuditTrail {
 }
 
 /**
- * Builds the recording collaborator double.
- *
- * The recording array is created here, inside the call, so it belongs to exactly
- * one graph. Two graphs never observe each other's calls.
+ * Builds the recording collaborator double. The recording array is created inside the call, so two
+ * graphs never observe each other's calls.
  */
 function makeRecordingValueRounder(answer: Money): RecordingValueRounder {
   const calls: RecordedRoundValueCall[] = [];
@@ -646,17 +483,14 @@ function makeRecordingValueRounder(answer: Money): RecordingValueRounder {
 }
 
 /**
- * The nine acceptance rows, every verdict measured against the ported predicate.
+ * The nine acceptance rows, every verdict measured against the ported predicate
+ *   `(len(v) - find(".", v)) != 2 || !isNumeric(v)`
+ * [model/entity/RoundingRule.cfc:L81].
  *
- * The predicate is `(len(v) - find(".", v)) != 2 || !isNumeric(v)` per element
- * [model/entity/RoundingRule.cfc:L81], and CFML's `find` answers 0 when the
- * substring is absent.
- *
- * LEGACY-DEFECT [model/entity/RoundingRule.cfc:L78-L86]: the predicate accepts a
- *   bare `'99'`, because `find(".", "99")` is 0 and `len("99") - 0` is 2 - the
- *   same arithmetic a well-formed `'.99'` produces. The expression then yields a
- *   FRACTIONAL step of `10 ^ (2 - 3)`, so the algorithm walks the value in tenths
- *   of a cent instead of whole units, and no validation rejects it.
+ * LEGACY-DEFECT [model/entity/RoundingRule.cfc:L78-L86]: the predicate accepts a bare
+ *   `'99'`, because `find(".", "99")` is 0 and `len("99") - 0` is 2 - the arithmetic a
+ *   well-formed `'.99'` produces. The expression then yields a FRACTIONAL step of
+ *   `10 ^ (2 - 3)`, so the algorithm walks the value in tenths of a cent.
  * Preserved deliberately; do not fix without a product decision.
  */
 function makeRoundingExpressionCases(): RoundingExpressionCase[] {
@@ -685,41 +519,32 @@ function makeRoundingExpressionCases(): RoundingExpressionCase[] {
     // Rejected: three characters after the point.
     { expression: '0.999', accepted: false, derivedPowerPerElement: [toDecimalString('100')] },
 
-    // ⚠️ THE HOLE. Accepted, no decimal point, and a fractional derived step.
+    // THE HOLE: accepted, no decimal point, and a fractional derived step.
     { expression: '99', accepted: true, derivedPowerPerElement: [toDecimalString('0.1')] },
   ];
 }
 
 /**
- * The ten measured `roundValue` outcomes.
- *
- * Every one was produced by running the ported algorithm, not derived by
- * reasoning about what rounding ought to do. A "corrected" implementation that
- * returns mathematically tidier answers fails against this table, and that is
- * the point: [model/service/RoundingRuleService.cfc:L88-L175] is decimal-string
- * manipulation, and its observable behaviour is the contract.
+ * The ten measured `roundValue` outcomes, produced by running the ported algorithm. A "corrected"
+ * implementation returning tidier answers fails against this table, because
+ * [model/service/RoundingRuleService.cfc:L88-L175] is decimal-string manipulation.
  *
  * LEGACY-DEFECT [model/service/RoundingRuleService.cfc:L101-L102, L108-L109]: the
- *   intermediate is computed arithmetically and then `len()`-ed. CFML drops
- *   trailing zeros when stringifying a number, so any value whose cents end in
- *   zero takes a corrupted branch - `'12.30'` with `'.99'` yields `12.99` rather
- *   than the `11.99` the same expression yields for `'12.3456'`. This is why the
- *   `'12.30'` and `'2.30'` rows below are STRINGS: a numeric literal would drop
- *   the trailing zero before the algorithm ever measured it, and the row would
- *   silently stop testing anything.
+ *   intermediate is computed arithmetically and then `len()`-ed. CFML drops trailing zeros
+ *   when stringifying, so any value whose cents end in zero takes a corrupted branch -
+ *   `'12.30'` with `'.99'` yields `12.99` rather than the `11.99` the same expression yields
+ *   for `'12.3456'`. Hence the `'12.30'` and `'2.30'` rows are STRINGS.
  * Preserved deliberately; do not fix without a product decision.
  *
- * LEGACY-DEFECT [model/service/RoundingRuleService.cfc:L88]: `roundValue` declares
- *   `roundingExpression="0.00"` as its default, which reads as inert and is not -
- *   it turns `12.3456` into `10.00`. Any caller that omits the argument, and any
- *   rounding rule whose expression column is null, silently reshapes the price.
+ * LEGACY-DEFECT [model/service/RoundingRuleService.cfc:L88]: the declared
+ *   `roundingExpression="0.00"` default reads as inert and is not - it turns `12.3456` into
+ *   `10.00`.
  * Preserved deliberately; do not fix without a product decision.
  *
- * LEGACY-DEFECT [model/service/RoundingRuleService.cfc:L115-L118]: when the input
- *   is no longer than the expression, BOTH candidates are set to the expression
- *   itself, so `7.42` under `'9.99'` becomes `9.99` and `2.30` under `'0.99'`
- *   becomes `0.99`. The `0.42` row reaches a third branch, where the lower
- *   intermediate is negative and the candidate string is signed.
+ * LEGACY-DEFECT [model/service/RoundingRuleService.cfc:L115-L118]: when the input is no
+ *   longer than the expression, BOTH candidates become the expression itself, so `7.42` under
+ *   `'9.99'` becomes `9.99` and `2.30` under `'0.99'` becomes `0.99`. The `0.42` row reaches a
+ *   third branch, where the lower intermediate is negative.
  * Preserved deliberately; do not fix without a product decision.
  */
 function makeRoundValueCases(): RoundValueCase[] {
@@ -749,17 +574,15 @@ function makeRoundValueCases(): RoundValueCase[] {
       expected: toDecimalString('11.99'),
     },
     {
-      // Both accumulators survive across comma-list elements, so the best
-      // candidate across BOTH expressions wins rather than the best within the
-      // last one [model/service/RoundingRuleService.cfc:L90-L93].
+      // Both accumulators survive across comma-list elements, so the best candidate across BOTH
+      // expressions wins [model/service/RoundingRuleService.cfc:L90-L93].
       input: toDecimalString('12.3456'),
       roundingExpression: '.95,.99',
       roundingDirection: 'Closest',
       expected: toDecimalString('11.99'),
     },
     {
-      // The trailing-zero branch. Same expression as the second row, opposite
-      // outcome, and the difference is a character rather than a quantity.
+      // The trailing-zero branch: same expression as row two, opposite outcome.
       input: toDecimalString('12.30'),
       roundingExpression: '.99',
       roundingDirection: 'Closest',
@@ -787,8 +610,7 @@ function makeRoundValueCases(): RoundValueCase[] {
       expected: toDecimalString('0.99'),
     },
     {
-      // The signature default, written out. A 19 per cent reduction from a value
-      // no caller asked to round.
+      // The signature default written out: a 19 per cent reduction nobody asked for.
       input: toDecimalString('12.3456'),
       roundingExpression: '0.00',
       roundingDirection: 'Closest',
@@ -811,13 +633,9 @@ function makeReferenceCalculation(): ReferenceCalculation {
 }
 
 /**
- * Hydrates one `SwRoundingRule` row.
- *
- * `priceGroupRates` is the INVERSE side of the one-to-many at
- * [model/entity/RoundingRule.cfc:L64] and arrives already materialized - there is
- * no lazy loading to simulate, because associations are materialized at the
- * repository boundary. Every collection is copied on the way in, so a caller's
- * array can never become this entity's live collection.
+ * Hydrates one `SwRoundingRule` row. `priceGroupRates` is the INVERSE side of the one-to-many at
+ * [model/entity/RoundingRule.cfc:L64] and arrives already materialized, since associations are
+ * materialized at the repository boundary. Every collection is copied in.
  */
 function makeRoundingRule(
   init: {
@@ -851,32 +669,29 @@ type PriceGroupRateSpec = {
   readonly priceGroupRateID: string;
 
   /**
-   * CFML parity [model/entity/PriceGroupRate.cfc:L53]: the column declares
-   * `default="false"`, so unlike `PriceGroup.activeFlag` this one has a real
-   * default and every rate below states it explicitly.
+   * CFML parity [model/entity/PriceGroupRate.cfc:L53]: the column declares `default="false"`, so
+   * unlike `PriceGroup.activeFlag` this one has a real default and every rate states it.
    */
   readonly globalFlag: boolean;
 
   /**
-   * CFML parity [model/entity/PriceGroupRate.cfc:L54]: a `big_decimal` column with
-   * NO default, so the value is a decimal NUMERAL fed to `Money`. Never a
-   * `number`: there is no `Money` factory that takes one, deliberately.
+   * CFML parity [model/entity/PriceGroupRate.cfc:L54]: a `big_decimal` column with NO default, so
+   * the value is a decimal NUMERAL fed to `Money` - never a `number`, since no `Money` factory
+   * takes one, deliberately.
    */
   readonly amount: string;
 
   /**
-   * CFML parity [model/entity/PriceGroupRate.cfc:L55]: an unconstrained
-   * `ormType="string"` column, narrowed to the closed vocabulary at the repository
-   * boundary. `undefined` is the in-type inhabitant that reaches the dispatch's
-   * missing default branch - see the marker on the unrecognised-amount-type rate.
+   * CFML parity [model/entity/PriceGroupRate.cfc:L55]: an unconstrained `ormType="string"` column,
+   * narrowed to the closed vocabulary at the repository boundary. `undefined` is the in-type
+   * inhabitant reaching the dispatch's missing default branch.
    */
   readonly amountType: PriceGroupRateAmountType | undefined;
 
   /**
-   * CFML parity [model/entity/PriceGroupRate.cfc:L68]: a NULLABLE many-to-one,
-   * declared with `hb_optionsNullRBKey="define.none"`. Required slot, `undefined`
-   * permitted - never an optional key, because "no rounding rule" is a state to
-   * state rather than one to omit.
+   * CFML parity [model/entity/PriceGroupRate.cfc:L68]: a NULLABLE many-to-one declared with
+   * `hb_optionsNullRBKey="define.none"`. Required slot, `undefined` permitted - never an optional
+   * key, because "no rounding rule" is a state to state, not one to omit.
    */
   readonly roundingRule: RoundingRule | undefined;
 
@@ -886,13 +701,10 @@ type PriceGroupRateSpec = {
 
   /**
    * LEGACY-DEFECT [model/entity/PriceGroupRate.cfc:L75-L77]: `excludedProductTypes`,
-   *   `excludedProducts` and `excludedSkus` are persisted through three link tables
-   *   and the resolution cascade NEVER consults any of them - not at the sku level
-   *   [model/service/PriceGroupService.cfc:L146-L150], not at the product level
-   *   [model/service/PriceGroupService.cfc:L108-L112] and not at the product-type
-   *   level [model/service/PriceGroupService.cfc:L63-L78]. A sku listed as excluded
-   *   is still selected. The collections are retained so the schema contract is
-   *   unbroken and so a suite can prove the gap.
+   *   `excludedProducts` and `excludedSkus` are persisted through three link tables and the
+   *   cascade NEVER consults any of them - not at the sku level
+   *   [model/service/PriceGroupService.cfc:L146-L150], the product level [L108-L112] or the
+   *   product-type level [L63-L78]. A sku listed as excluded is still selected.
    * Preserved deliberately; do not fix without a product decision.
    */
   readonly excludedProductTypes: readonly ProductType[];
@@ -901,15 +713,11 @@ type PriceGroupRateSpec = {
 };
 
 /**
- * Hydrates one `SwPriceGroupRate` row.
- *
- * `priceGroup` is left `undefined` here and wired afterwards through the entity's
- * own bidirectional helper, which is what keeps both sides of the association in
- * agreement. Every collection is copied, so no caller array becomes a live
- * collection - the exact hazard CFML did not have, because
- * [model/service/PriceGroupService.cfc:L276] takes an array BY VALUE and then
- * appends to it at [model/service/PriceGroupService.cfc:L282] without touching the
- * account's own collection, whereas a shared reference here WOULD touch it.
+ * Hydrates one `SwPriceGroupRate` row, leaving `priceGroup` `undefined` and wiring it afterwards
+ * through the entity's bidirectional helper. Every collection is copied, so no caller array becomes
+ * a live collection - the hazard CFML did not have, because
+ * [model/service/PriceGroupService.cfc:L276] takes an array BY VALUE and appends at [L282] without
+ * touching the account's own collection.
  */
 function makePriceGroupRate(spec: PriceGroupRateSpec, audit: AuditTrail): PriceGroupRate {
   return new PriceGroupRate({
@@ -934,20 +742,13 @@ function makePriceGroupRate(spec: PriceGroupRateSpec, audit: AuditTrail): PriceG
 }
 
 /**
- * Hydrates one `SwPriceGroup` row.
+ * Hydrates one `SwPriceGroup` row. `childPriceGroups` and `priceGroupRates` start EMPTY and are
+ * filled through `addChildPriceGroup` and `addPriceGroupRate`, which maintain the far side so the
+ * two directions cannot disagree and append in call order - and collection ORDER decides which rate
+ * wins in two separate legacy loops.
  *
- * `childPriceGroups` and `priceGroupRates` start EMPTY and are filled afterwards
- * through `addChildPriceGroup` and `addPriceGroupRate`. Two reasons, both
- * substantive. First, those helpers are what maintain the far side - the child's
- * `parentPriceGroup` and the rate's `priceGroup` - so a graph built through them
- * cannot have the two directions disagree. Second, they append in call order, and
- * collection ORDER decides which rate wins in two separate legacy loops, so the
- * order a suite reads in the fixture is the order the algorithm sees.
- *
- * `parentPriceGroupOptionCandidates` is deliberately omitted: the accessor is
- * total and defaults to an empty option list, which is the same answer the legacy
- * framework smart list gave when it matched nothing
- * [model/entity/PriceGroup.cfc:L94-L103].
+ * `parentPriceGroupOptionCandidates` is omitted: the accessor is total and defaults to an empty
+ * option list [model/entity/PriceGroup.cfc:L94-L103].
  */
 function makePriceGroup(
   spec: {
@@ -981,16 +782,12 @@ function makePriceGroup(
 /**
  * One node of the identifier chain the materialized paths are built from.
  *
- * JUDGMENT CALL: the stored `priceGroupIDPath` column values are computed from a
- * plain `{ priceGroupID, parent }` chain rather than from the entities
- * themselves. The entity exposes no path setter - and correctly so, since a
- * public setter would let a caller write an arbitrary string into a column that
- * decides which rate wins - so a PERSISTED path has to exist before the
- * constructor runs, while the entity graph only exists after it. The chain below
- * carries the same identifiers in the same parent order, and it is handed to the
- * domain's OWN path builder, so the strings are the ones the entity would have
- * produced: root-first, comma-delimited, self-last, including self, never empty,
- * and with no cycle guard.
+ * JUDGMENT CALL: the stored `priceGroupIDPath` values are computed from a plain chain of
+ * `priceGroupID` and `parent` links rather than from the entities. The entity publishes no path
+ * setter, correctly, since one would let a caller write an arbitrary string into a column that
+ * decides which rate wins - so a PERSISTED path must exist before the constructor runs while the
+ * graph exists only after. The chain is handed to the domain's OWN path builder, so the strings are
+ * the ones the entity would have produced.
  */
 type IdPathNode = {
   readonly priceGroupID: string;
@@ -1005,61 +802,32 @@ function readIdPathNodeParent(node: IdPathNode): IdPathNode | undefined {
   return node.parent;
 }
 
-// ---------------------------------------------------------------------------
-// THE SINGLE EXPORT
-// ---------------------------------------------------------------------------
+// --- THE SINGLE EXPORT -----------------------------------------------------
 
 /**
- * Builds one complete, independent price-group / price-group-rate /
- * rounding-rule graph, together with the two verified data tables the rounding
- * algorithm is pinned against.
+ * Builds one complete, independent price-group / price-group-rate / rounding-rule graph, plus the
+ * two verified data tables the rounding algorithm is pinned against.
  *
- * A FRESH GRAPH ON EVERY CALL, with no exception. Every entity, every collection
- * and every `Date` below is constructed inside this call, so two calls hand back
- * two graphs that share no mutable object at all - not a rate, not a collection,
- * not a recorded call list. That is what lets a suite prove that a second
- * independent invocation does not observe the first invocation's memo, which is
- * the property the port needs because a warm container keeps module state alive
- * between unrelated requests.
+ * A FRESH GRAPH ON EVERY CALL. Every entity, collection and `Date` is constructed inside this call,
+ * so two calls share no mutable object - which lets a suite prove a second invocation does not
+ * observe the first invocation's memo, the property a warm container makes load-bearing. Every
+ * artefact carries its marker where it is built, including the five-level cascade
+ * [model/service/PriceGroupService.cfc:L140-L181] through a three-deep parent chain.
  *
- * WHAT THE GRAPH IS SHAPED TO EXPOSE. Every item is reachable from the returned
- * members and every one carries its marker at the point it is built:
- *
- *   * The five-level resolution cascade [model/service/PriceGroupService.cfc:L140-L181],
- *     through a three-deep parent chain plus a group that isolates the global level.
- *   * Last-match-wins in the sku loop and in the global loop, neither of which
- *     contains a `break`.
- *   * The two global-rate lookups with OPPOSITE tie-breaking.
- *   * The parent recursion that consults the product variant rather than the sku
- *     variant, so a parent's sku-level rate is unreachable.
- *   * The snapshot loop in `deletePriceGroup`, through a child collection with two
- *     members.
- *   * The amount-type dispatch in which only one branch rounds, plus a fourth
- *     amount type the dispatch does not recognise.
- *   * A rate with a rounding rule and a rate without one.
- *   * A total miss, which resolves to nothing rather than to a zero-amount rate.
- *   * Exclusion collections that are persisted and never consulted.
- *   * The rounding-direction vocabulary plus a direction outside it.
- *   * All nine expression-acceptance rows and all ten measured `roundValue` rows.
- *
- * @param overrides - the only axis of variation. Omit it entirely for the
- *   documented defaults; every membership collection then defaults to empty,
- *   which is the state a repository that did not fetch the join must present.
- * @returns one fully-formed graph, disposable by dropping the reference. There is
- *   deliberately no teardown counterpart: nothing was acquired.
+ * @param overrides - the only axis of variation; omit it for the documented defaults.
+ * @returns one fully-formed graph, disposable by dropping the reference. There is deliberately
+ *   no teardown counterpart: nothing was acquired.
  */
 export function makePriceGroupFixtures(
   overrides?: PriceGroupFixtureOverrides,
 ): PriceGroupFixtureGraph {
-  // --- Resolved inputs ------------------------------------------------------
-  //
-  // `??` and not `||`: an empty prefix and a `false` flag are legitimate values a
-  // caller may want, and truthiness would silently replace both.
+  // `??` and not `||`: an empty prefix and a `false` flag are legitimate values, and truthiness
+  // would silently replace both.
 
   const idPrefix = overrides?.idPrefix ?? DEFAULT_ID_PREFIX;
 
-  // No `??` here at all. An absent key and an explicit `undefined` both mean the
-  // undefaulted column, and an explicit `false` must survive as `false`.
+  // No `??` here. An absent key and an explicit `undefined` both mean the undefaulted column, and
+  // an explicit `false` must survive as `false`.
   const activeFlag: PriceGroupActiveFlag = overrides?.activeFlag;
 
   const skuLevelRateSkus = overrides?.skuLevelRateSkus ?? [];
@@ -1075,12 +843,9 @@ export function makePriceGroupFixtures(
 
   const audit = makeAuditTrail(idPrefix);
 
-  // --- Identifiers ----------------------------------------------------------
-  //
-  // Derived from this call's own argument and nothing else. Every one is a
-  // non-empty string, so `isNew()` reports `false` on every entity here and the
-  // bidirectional helpers take their duplicate-guarded branch rather than their
-  // unconditional-append branch.
+  // Identifiers derived from this call's own argument and nothing else. Every one is a non-empty
+  // string, so `isNew()` reports `false` and the bidirectional helpers take their duplicate-guarded
+  // branch rather than their unconditional-append branch.
 
   const rootPriceGroupID = `${idPrefix}-pricegroup-root`;
   const parentPriceGroupID = `${idPrefix}-pricegroup-parent`;
@@ -1090,12 +855,9 @@ export function makePriceGroupFixtures(
   const isolatedPriceGroupID = `${idPrefix}-pricegroup-isolated`;
   const unpathedPriceGroupID = `${idPrefix}-pricegroup-unpathed`;
 
-  // --- Materialized paths ---------------------------------------------------
-  //
-  // Produced by the domain's own builder over the identifier chain; see the
-  // judgment call recorded on `IdPathNode`. The three chained groups yield
-  // one, two and three elements respectively, which is what makes "root-first,
-  // self-last, includes self, never empty" checkable from the outside.
+  // Materialized paths produced by the domain's own builder over the identifier chain; see the
+  // judgment call on `IdPathNode`. The three chained groups yield one, two and three elements,
+  // which makes "root-first, self-last, includes self, never empty" checkable.
 
   const rootIdPathNode: IdPathNode = { priceGroupID: rootPriceGroupID, parent: undefined };
   const parentIdPathNode: IdPathNode = {
@@ -1155,11 +917,8 @@ export function makePriceGroupFixtures(
   const roundValueDoubleAnswer = Money.fromDecimalString(roundValueAnswer);
   const roundingRuleValueRounder = makeRecordingValueRounder(roundValueDoubleAnswer);
 
-  // --- Rounding rules -------------------------------------------------------
-  //
-  // CFML parity [model/entity/RoundingRule.cfc:L70-L76]: the direction vocabulary
-  // is published by the ENTITY as an advisory admin option list, and nothing
-  // narrows the column to it.
+  // CFML parity [model/entity/RoundingRule.cfc:L70-L76]: the direction vocabulary is published by
+  // the ENTITY as an advisory admin option list, and nothing narrows the column to it.
 
   const closestRoundingRule = makeRoundingRule(
     {
@@ -1198,11 +957,11 @@ export function makePriceGroupFixtures(
   );
 
   // LEGACY-DEFECT [model/entity/RoundingRule.cfc:L55 + model/validation/RoundingRule.json:L5]:
-  //   roundingRuleDirection is a required but UNCONSTRAINED string - no enumeration is
-  //   enforced by the column, by the form-field metadata or by the validation schema -
-  //   so an out-of-vocabulary direction reaches the rounding switch's missing default
-  //   branch [model/service/RoundingRuleService.cfc:L132-L166] and no candidate is ever
-  //   selected, leaving the two-decimal input to fall out of the tail at L173.
+  //   roundingRuleDirection is required but UNCONSTRAINED - no enumeration is enforced by the
+  //   column, the form metadata or the validation schema - so an out-of-vocabulary direction
+  //   reaches the switch's missing default branch
+  //   [model/service/RoundingRuleService.cfc:L132-L166], no candidate is selected, and the
+  //   input falls out of the tail at L173.
   // Preserved deliberately; do not fix without a product decision.
   const outOfVocabularyDirectionRoundingRule = makeRoundingRule(
     {
@@ -1216,10 +975,9 @@ export function makePriceGroupFixtures(
     audit,
   );
 
-  // LEGACY-DEFECT [model/service/RoundingRuleService.cfc:L88]: '0.00' is the declared
-  //   default for `roundingExpression` and reads as inert, but it reshapes the value -
-  //   12.3456 becomes 10.00. This rule states it explicitly; the next one omits the
-  //   column entirely so CFML's declared-default substitution is what supplies it.
+  // LEGACY-DEFECT [model/service/RoundingRuleService.cfc:L88]: '0.00' is the declared default
+  //   for `roundingExpression` and reads as inert, but 12.3456 becomes 10.00. This rule states
+  //   it; the next omits the column so CFML's declared default supplies it.
   // Preserved deliberately; do not fix without a product decision.
   const defaultExpressionRoundingRule = makeRoundingRule(
     {
@@ -1233,10 +991,9 @@ export function makePriceGroupFixtures(
     audit,
   );
 
-  // CFML parity [model/entity/RoundingRule.cfc:L54]: the accessor reports the column
-  // truthfully as absent rather than collapsing it to '', because collapsing it would
-  // SUPPRESS the declared default at [model/service/RoundingRuleService.cfc:L88] and
-  // silently change the arithmetic. The decision belongs to the service.
+  // CFML parity [model/entity/RoundingRule.cfc:L54]: the accessor reports the column truthfully as
+  // absent rather than collapsing it to '', because collapsing would SUPPRESS the declared default
+  // at [model/service/RoundingRuleService.cfc:L88]. The decision belongs to the service.
   const absentExpressionRoundingRule = makeRoundingRule(
     {
       roundingRuleID: `${idPrefix}-roundingrule-absentexpression`,
@@ -1249,11 +1006,9 @@ export function makePriceGroupFixtures(
     audit,
   );
 
-  // --- Rates on the child price group, in deliberate collection order -------
-  //
-  // Collection order is data, not presentation. The sku loop
-  // [model/service/PriceGroupService.cfc:L146-L150] walks the WHOLE collection, so
-  // the order these four are appended in is the order the algorithm sees.
+  // Rates on the child group, in deliberate collection order: the sku loop
+  // [model/service/PriceGroupService.cfc:L146-L150] walks the WHOLE collection, so the order these
+  // four are appended in is the order the algorithm sees.
 
   const productTypeLevelRate = makePriceGroupRate(
     {
@@ -1289,11 +1044,10 @@ export function makePriceGroupFixtures(
     audit,
   );
 
-  // LEGACY-DEFECT [model/service/PriceGroupService.cfc:L146-L150]: the sku-level loop
-  //   contains NO `break` and NO early return, so it keeps assigning `returnRate` for
-  //   every matching rate and the LAST match in collection order wins. The two rates
-  //   below share their membership and differ in `amount`, which is what makes the
-  //   winner observable - a single-rate collection cannot expose this at all.
+  // LEGACY-DEFECT [model/service/PriceGroupService.cfc:L146-L150]: the sku-level loop has NO
+  //   `break`, so it reassigns `returnRate` for every match and the LAST one in collection
+  //   order wins. The two rates below share membership and differ in `amount`, which makes the
+  //   winner observable.
   // Preserved deliberately; do not fix without a product decision.
   const skuLevelRateFirstMatch = makePriceGroupRate(
     {
@@ -1332,11 +1086,9 @@ export function makePriceGroupFixtures(
   // --- Rates on the parent price group --------------------------------------
 
   // LEGACY-DEFECT [model/service/PriceGroupService.cfc:L174]: the parent recursion calls
-  //   getRateForProductBasedOnPriceGroup - the PRODUCT variant - rather than the sku
-  //   variant, so a sku-level rate that sits on a PARENT price group is never consulted
-  //   no matter how precisely it matches. This rate exists to be skipped, and it carries
-  //   the graph's largest amount so that a suite reading the resolved rate can tell
-  //   instantly whether it leaked in.
+  //   getRateForProductBasedOnPriceGroup - the PRODUCT variant - so a sku-level rate on a
+  //   PARENT price group is never consulted however precisely it matches. This rate exists to
+  //   be skipped, and carries the graph's largest amount so a leak is obvious.
   // Preserved deliberately; do not fix without a product decision.
   const parentSkuLevelRate = makePriceGroupRate(
     {
@@ -1356,15 +1108,10 @@ export function makePriceGroupFixtures(
   );
 
   // CFML parity [model/service/PriceGroupService.cfc:L102-L137, L140-L181]: A STRUCTURAL
-  // REDUNDANCY WORTH STATING, discovered by reading the two variants side by side. Levels
-  // 3, 4 and 5 of the SKU cascade are unreachable in practice. Level 2 delegates to
-  // getRateForProductBasedOnPriceGroup, and THAT body already performs the identical
-  // product-type step [L116], the identical global loop [L120-L127] and the identical
-  // parent PRODUCT recursion [L130-L132] over the same price group - so if level 2 answers
-  // nothing, levels 3, 4 and 5 necessarily answer nothing either. This is a consequence of
-  // the L174 defect above rather than a separate one. Per-level data is still supplied, so
-  // the equivalent steps inside the product variant are exercised and the redundancy is
-  // provable rather than asserted.
+  // REDUNDANCY. Levels 3, 4 and 5 of the SKU cascade are unreachable: level 2 delegates to
+  // getRateForProductBasedOnPriceGroup, whose body already performs the identical product-type step
+  // [L116], global loop [L120-L127] and parent PRODUCT recursion [L130-L132]. A consequence of the
+  // L174 defect above.
   const parentProductLevelRate = makePriceGroupRate(
     {
       priceGroupRateID: `${idPrefix}-rate-parent-productlevel`,
@@ -1385,12 +1132,10 @@ export function makePriceGroupFixtures(
   // --- Rates on the global-rate price group ---------------------------------
 
   // LEGACY-DEFECT [model/entity/PriceGroup.cfc:L83-L90 versus
-  //   model/service/PriceGroupService.cfc:L165-L169]: THERE ARE TWO GLOBAL-RATE LOOKUPS
-  //   AND THEY BREAK TIES IN OPPOSITE DIRECTIONS. The entity accessor returns as soon as
-  //   it finds a rate whose global flag is set, so the FIRST one wins. The cascade's own
-  //   loop has no `break`, so it runs to the end of the collection and the LAST one wins.
-  //   Given the two rates below - both global, with different amounts - the two lookups
-  //   provably disagree, and which one a caller happened to use decides the price.
+  //   model/service/PriceGroupService.cfc:L165-L169]: TWO GLOBAL-RATE LOOKUPS BREAK TIES IN
+  //   OPPOSITE DIRECTIONS. The entity accessor returns on the first rate whose global flag is
+  //   set, so the FIRST wins; the cascade's loop has no `break` and the LAST wins. The two
+  //   global rates below have different amounts, so they provably disagree.
   // Preserved deliberately; do not fix without a product decision.
   const globalRateFirstMatch = makePriceGroupRate(
     {
@@ -1447,21 +1192,14 @@ export function makePriceGroupFixtures(
 
   // --- Amount-type exhibits -------------------------------------------------
   //
-  // LEGACY-DEFECT [model/service/PriceGroupService.cfc:L316-L340]: ONLY THE
-  //   `percentageOff` BRANCH APPLIES THE ROUNDING RULE. The switch at L321 has three
-  //   cases; the rounding rule is consulted at L326-L328 inside the first one and
-  //   nowhere else, so `amountOff` [L331-L332] and `amount` [L333-L335] silently ignore
-  //   a rounding rule that is attached and configured. All three rates below carry the
-  //   SAME rounding rule, which is what turns "two of these ignore it" into a checkable
-  //   claim rather than an absence.
-  //
-  //   Two locator corrections against the published plan, both verified first-hand: the
-  //   `precisionEvaluate` sites are at L323 and L331 (the plan publishes L322 and L328),
-  //   and `numberFormat` is at L339 (the plan publishes L337).
-  //
-  //   Note also that L326-L328 rounds through the ENTITY method
-  //   [model/entity/RoundingRule.cfc:L66-L68], not through the service, which is exactly
-  //   the service-locator-inside-an-entity path the injected double stands in for.
+  // LEGACY-DEFECT [model/service/PriceGroupService.cfc:L316-L340]: ONLY THE `percentageOff`
+  //   BRANCH APPLIES THE ROUNDING RULE. The switch at L321 has three cases; the rule is
+  //   consulted at L326-L328 inside the first and nowhere else, so `amountOff` [L331-L332] and
+  //   `amount` [L333-L335] ignore a rule that is attached. All three rates below carry the SAME
+  //   rule, making that checkable. Two locator corrections against the published plan, verified
+  //   first-hand: `precisionEvaluate` is at L323 and L331 (the plan publishes L322 and L328) and
+  //   `numberFormat` at L339 (the plan publishes L337). L326-L328 rounds through the ENTITY
+  //   method [model/entity/RoundingRule.cfc:L66-L68], not the service.
   // Preserved deliberately; do not fix without a product decision.
 
   const percentageOffRateWithRoundingRule = makePriceGroupRate(
@@ -1499,8 +1237,7 @@ export function makePriceGroupFixtures(
   );
 
   // CFML parity [model/entity/PriceGroupRate.cfc:L87-L93]: the third option is LABELLED
-  // `define.fixedAmount` and STORED as `amount`. The stored value is the contract, so it
-  // is the stored value that appears here; the label is admin display text.
+  // `define.fixedAmount` and STORED as `amount`. The stored value is the contract.
   const fixedAmountRateWithRoundingRule = makePriceGroupRate(
     {
       priceGroupRateID: `${idPrefix}-rate-fixedamount-withroundingrule`,
@@ -1518,10 +1255,10 @@ export function makePriceGroupFixtures(
     audit,
   );
 
-  // CFML parity [model/entity/PriceGroupRate.cfc:L68]: the far side of a NULLABLE
-  // many-to-one, absent. Paired with `percentageOffRateWithRoundingRule` - same amount
-  // type, same amount, rounding rule removed - so the rounding step is the only variable
-  // between the two and L326's `isNull` guard is exercised on both branches.
+  // CFML parity [model/entity/PriceGroupRate.cfc:L68]: the far side of a NULLABLE many-to-one,
+  // absent. Paired with `percentageOffRateWithRoundingRule`, which carries the same type and the
+  // same amount with the rule removed, so rounding is the only variable between the two and L326's
+  // `isNull` guard sees both branches.
   const percentageOffRateWithoutRoundingRule = makePriceGroupRate(
     {
       priceGroupRateID: `${idPrefix}-rate-percentageoff-withoutroundingrule`,
@@ -1539,21 +1276,15 @@ export function makePriceGroupFixtures(
     audit,
   );
 
-  // LEGACY-DEFECT [model/service/PriceGroupService.cfc:L321-L336]: the amount-type switch
-  //   has NO `default:` case, so an amount type it does not recognise selects no branch at
-  //   all and the seed assigned at L319 - `arguments.sku.getPrice()`, the UNDISCOUNTED
-  //   price - falls straight through to the L339 return. A rate can therefore be saved,
-  //   resolved by the cascade and applied to an order item while discounting nothing.
+  // LEGACY-DEFECT [model/service/PriceGroupService.cfc:L321-L336]: the amount-type switch has
+  //   NO `default:` case, so an unrecognised type selects no branch and the L319 seed -
+  //   `arguments.sku.getPrice()`, the UNDISCOUNTED price - falls through to the L339 return.
   // Preserved deliberately; do not fix without a product decision.
   //
-  // JUDGMENT CALL: the entity's `amountType` is a CLOSED union, because narrowing the raw
-  // column happens at the repository boundary by design. The unrecognised case is
-  // therefore modelled the only way it is representable in-type - as an ABSENT amount
-  // type, which reaches the same defaultless switch by the same route - and the raw
-  // out-of-vocabulary column string is published separately as
-  // `unrecognisedAmountTypeColumnValue` so a suite can drive the boundary narrowing with
-  // it. A cast would have been the alternative and is not available: `any` and assertions
-  // are both out, and rightly, since a cast would assert a state the type forbids.
+  // JUDGMENT CALL: `amountType` is a CLOSED union, since narrowing the raw column happens at the
+  // repository boundary. The unrecognised case is therefore modelled the only way it is
+  // representable - as an ABSENT amount type, reaching the same defaultless switch - and the raw
+  // column string is published as `unrecognisedAmountTypeColumnValue`.
   const unrecognisedAmountTypeRate = makePriceGroupRate(
     {
       priceGroupRateID: `${idPrefix}-rate-unrecognisedamounttype`,
@@ -1571,10 +1302,9 @@ export function makePriceGroupFixtures(
     audit,
   );
 
-  // The only rate in the graph carrying all SIX association collections at once, so
-  // `getAppliesTo()` [model/entity/PriceGroupRate.cfc:L95-L146] runs its including branch,
-  // its excluding branch and its first-comma-only replacement over populated data - and so
-  // the three exclusion collections that nothing ever consults are demonstrably persisted.
+  // The only rate carrying all SIX association collections at once, so `getAppliesTo()`
+  // [model/entity/PriceGroupRate.cfc:L95-L146] runs its including branch, its excluding branch and
+  // its first-comma-only replacement over populated data.
   const appliesToIncludingAndExcludingRate = makePriceGroupRate(
     {
       priceGroupRateID: `${idPrefix}-rate-appliesto`,
@@ -1592,15 +1322,11 @@ export function makePriceGroupFixtures(
     audit,
   );
 
-  // --- The delete-guard exhibit ---------------------------------------------
-  //
-  // JUDGMENT CALL: this pair is wired one way only, and it has to be. The rate's
-  // `roundingRule` and the rule's `priceGroupRates` are both constructor-only - the entity
-  // publishes no setter for either, correctly, since a public setter on a materialized
-  // association would let a caller put the two sides into disagreement. Only one of the
-  // two can therefore be built first. The INVERSE collection is the side the guard
-  // inspects [model/validation/RoundingRule.json:L6], so the rate is built first with no
-  // rounding rule of its own and the rule is built last holding it.
+  // JUDGMENT CALL: the delete-guard pair is wired one way only, and has to be. The rate's
+  // `roundingRule` and the rule's `priceGroupRates` are both constructor-only, so one must be built
+  // first, and the INVERSE collection is the side the guard inspects
+  // [model/validation/RoundingRule.json:L6] - so the rate is built first without a rule and the
+  // rule last holding it.
   const rateBlockingRoundingRuleDelete = makePriceGroupRate(
     {
       priceGroupRateID: `${idPrefix}-rate-blocksroundingruledelete`,
@@ -1630,14 +1356,10 @@ export function makePriceGroupFixtures(
     audit,
   );
 
-  // --- Price groups ---------------------------------------------------------
-  //
-  // Every group is constructed with `parentPriceGroup: undefined` and then attached
-  // through `addChildPriceGroup` below. That is one mechanism rather than two: passing a
-  // parent to the constructor would set the child's reference WITHOUT appending to the
-  // parent's collection - the constructor assigns, it does not wire - and the graph would
-  // hold two sources of truth that could disagree. Wiring through the entity's own helper
-  // sets both sides in one call, by construction.
+  // Every group is constructed with `parentPriceGroup: undefined` and attached through
+  // `addChildPriceGroup` below. Passing a parent to the constructor would set the child's reference
+  // WITHOUT appending to the parent's collection, leaving two sources of truth; the helper sets
+  // both sides in one call.
 
   const rootPriceGroup = makePriceGroup(
     {
@@ -1674,11 +1396,9 @@ export function makePriceGroupFixtures(
       parentPriceGroup: undefined,
 
       // CFML parity [model/entity/PriceGroup.cfc:L70]: the many-to-many through
-      // `SwPromoRewardEligiblePriceGrp` - the ORM backing for the promotion engine's
-      // `hasEligiblePriceGroup()` test [model/service/PromotionService.cfc:L241]. It sits
-      // on the primary cascade subject because that is the group an order item would carry
-      // as its applied price group. Empty unless a caller supplies rewards, which is the
-      // honest state when the repository did not fetch the join.
+      // `SwPromoRewardEligiblePriceGrp`, the ORM backing for the promotion engine's
+      // `hasEligiblePriceGroup()` test [model/service/PromotionService.cfc:L241]. It sits on the
+      // primary cascade subject and is empty unless a caller supplies rewards.
       promotionRewards,
     },
     activeFlag,
@@ -1711,14 +1431,12 @@ export function makePriceGroupFixtures(
     audit,
   );
 
-  // The total-miss subject. No rates at any level, no parent to recurse into, so the
-  // cascade runs every one of its five steps and answers NOTHING - the state
+  // The total-miss subject. No rates at any level and no parent to recurse into, so the cascade
+  // runs all five steps and answers NOTHING - the state
   // [model/service/PriceGroupService.cfc:L178-L181] produces by having no `else`.
   //
-  // JUDGMENT CALL: there is deliberately no zero-amount rate standing in for the miss.
-  // Substituting one would turn "no rate applies" into "a rate applies and takes nothing
-  // off", which is the same class of error as substituting 0 for a missing price - it
-  // reads as harmless and it changes what a customer is charged.
+  // JUDGMENT CALL: there is deliberately no zero-amount rate standing in for the miss, which would
+  // turn "no rate applies" into "a rate applies and takes nothing off".
   const isolatedPriceGroup = makePriceGroup(
     {
       priceGroupID: isolatedPriceGroupID,
@@ -1732,11 +1450,10 @@ export function makePriceGroupFixtures(
     audit,
   );
 
-  // CFML parity [model/entity/PriceGroup.cfc:L195-L200, L206-L214]: the stored column is
-  // absent, so the accessor rebuilds the path from the live parent chain and memoizes the
-  // result - the same work the `preInsert` and `preUpdate` ORM hooks did, now invoked
-  // explicitly. Attached below to `rootPriceGroup`, so the rebuilt value has more than one
-  // element and root-first / self-last ordering is observable rather than degenerate.
+  // CFML parity [model/entity/PriceGroup.cfc:L195-L200, L206-L214]: the stored column is absent, so
+  // the accessor rebuilds the path from the live parent chain and memoizes it - the work the
+  // `preInsert` and `preUpdate` hooks did, now invoked explicitly. Attached to `rootPriceGroup`
+  // below so the rebuilt value has more than one element.
   const unpathedPriceGroup = makePriceGroup(
     {
       priceGroupID: unpathedPriceGroupID,
@@ -1753,27 +1470,21 @@ export function makePriceGroupFixtures(
   // --- Wiring: parent and child edges ---------------------------------------
   //
   // LEGACY-DEFECT [model/service/PriceGroupService.cfc:L461-L470]: `deletePriceGroup` takes
-  //   `getChildPriceGroups()` into a local and loops `while(arrayLen(local) != 0)` while
-  //   calling `removeChildPriceGroup` - which mutates the ENTITY's collection, not the
-  //   local. CFML hands arrays over BY VALUE, so the local is a snapshot that never
-  //   shrinks: `arrayLen` stays constant, index 1 is removed forever and the loop cannot
-  //   terminate. TypeScript reference semantics would let the array shrink and would
-  //   therefore SILENTLY FIX the defect, which is why the port keeps a bounded-iteration
-  //   guard instead. `parentPriceGroup` below carries TWO children precisely so a suite can
-  //   make that guard trip; a childless group would leave the loop untested.
+  //   `getChildPriceGroups()` into a local and loops `while(arrayLen(local) != 0)` calling
+  //   `removeChildPriceGroup`, which mutates the ENTITY's collection and not the local. CFML
+  //   hands arrays over BY VALUE, so the local is a snapshot that never shrinks: `arrayLen`
+  //   stays constant and the loop cannot terminate. TypeScript reference semantics would let it
+  //   shrink and would SILENTLY FIX the defect, which is why the port keeps a bounded-iteration
+  //   guard. `parentPriceGroup` below carries TWO children so a suite can trip it.
   // Preserved deliberately; do not fix without a product decision.
   //
   // CFML parity [model/service/PriceGroupService.cfc:L466]: the legacy line reads
-  // `priceGroup.removeChildPriceGroup(...)` unscoped rather than `arguments.priceGroup`.
-  // CFML resolves it to the argument anyway, so it is a hygiene slip and not a behavioural
-  // defect; recorded so a reader of the two sources side by side is not left wondering.
+  // `priceGroup.removeChildPriceGroup(...)` unscoped rather than `arguments.priceGroup`. CFML
+  // resolves it to the argument anyway, so it is a hygiene slip.
   //
   // CFML parity [model/entity/PriceGroup.cfc:L63]: `childPriceGroups` declares
-  // `singularname="ChildPriceGroup"` CAPITALISED, where every sibling collection in the
-  // component uses a lower-case initial. The generated helper names are therefore
-  // `addChildPriceGroup` / `removeChildPriceGroup`, and the port keeps them exactly -
-  // normalising the casing would rename a public method, and interface parity is the
-  // acceptance contract.
+  // `singularname="ChildPriceGroup"` CAPITALISED where every sibling uses a lower-case initial, so
+  // the helpers are `addChildPriceGroup` / `removeChildPriceGroup` and the port keeps them exactly.
   rootPriceGroup.addChildPriceGroup(parentPriceGroup);
   rootPriceGroup.addChildPriceGroup(unpathedPriceGroup);
   parentPriceGroup.addChildPriceGroup(childPriceGroup);
@@ -1795,8 +1506,7 @@ export function makePriceGroupFixtures(
   globalRatePriceGroup.addPriceGroupRate(globalRateLastMatch);
 
   // The amount-type and `getAppliesTo` exhibits live on the sibling, which is not a cascade
-  // subject, so they cannot perturb resolution: every one of them is non-global with empty
-  // membership and therefore matches nothing at any level.
+  // subject: every one is non-global with empty membership and matches nothing at any level.
   siblingPriceGroup.addPriceGroupRate(percentageOffRateWithRoundingRule);
   siblingPriceGroup.addPriceGroupRate(amountOffRateWithRoundingRule);
   siblingPriceGroup.addPriceGroupRate(fixedAmountRateWithRoundingRule);
@@ -1807,9 +1517,8 @@ export function makePriceGroupFixtures(
 
   // --- Vocabularies, read from the entities that publish them ---------------
   //
-  // Read rather than restated, so the graph cannot drift out of agreement with the
-  // component that owns the list. Both accessors return fixed-length tuples, so indexing
-  // them is checked rather than asserted - no non-null assertion is needed or used.
+  // Read rather than restated, so the graph cannot drift from the component that owns the list.
+  // Both accessors return fixed-length tuples, so indexing them is checked rather than asserted.
 
   const directionOptions = closestRoundingRule.getRoundingRuleDirectionOptions();
   const roundingRuleDirectionVocabulary: readonly [
@@ -1825,14 +1534,9 @@ export function makePriceGroupFixtures(
     PriceGroupRateAmountType,
   ] = [amountTypeOptions[0].value, amountTypeOptions[1].value, amountTypeOptions[2].value];
 
-  // --- The graph -------------------------------------------------------------
-  //
-  // Every member below was constructed during THIS call. The two data tables and the
-  // reference calculation come from builders that allocate a new array or object each
-  // time, the two vocabularies are fresh tuples, `priceGroupIDPaths` is a fresh object of
-  // immutable strings, and each entity copied every collection handed to it on the way in.
-  // Nothing is shared with any other graph, so a suite can mutate whatever it reaches
-  // without reaching another suite.
+  // Every member below was constructed during THIS call: the two data tables and the reference
+  // calculation come from builders that allocate afresh, the vocabularies are fresh tuples, and
+  // each entity copied every collection handed to it on the way in.
 
   return {
     roundingRuleValueRounder,

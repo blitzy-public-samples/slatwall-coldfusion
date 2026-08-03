@@ -1693,6 +1693,21 @@ export class PromotionCode {
   //         NARROWER check than the framework's, and A GENUINELY GLOBAL UNIQUENESS ASSERTION REMAINS
   //         A REPOSITORY / SERVICE-TIER OBLIGATION that must be enforced there. Stated explicitly so
   //         the gap is auditable rather than hidden behind a method that merely looks authoritative.
+  //
+  //         ★★ AND THAT TIER DOES NOT HOLD IT TODAY, WHICH IS THE OTHER HALF OF BEING AUDITABLE.
+  //         Naming the obligation without saying whether anything discharges it reads as though
+  //         something does. Nothing does, and the reason is structural rather than an omission:
+  //         `src/domain/ports/promotionRepository.ts` publishes exactly EIGHT members - seven reads
+  //         and one write, `saveRoundingRule` - with no uniqueness probe among the reads and nothing
+  //         a promotion-code probe could attach to among them; the port inventory is
+  //         CLOSED AT THIRTEEN so no fourteenth may host one; and the legacy tier that would have
+  //         owned it - `HibachiService.save()` under `org/Hibachi/**` - is a designated boundary
+  //         that is deliberately not ported (`model/service/PromotionService.cfc` itself declares
+  //         twelve functions and not one is a write). SO THE PRACTICAL EFFECT IS THAT A CODE
+  //         COLLIDING WITH ONE UNDER A DIFFERENT PROMOTION IS NOT DETECTED. This method is not the
+  //         place to fix that - reaching the table from here would breach the layer boundary the
+  //         architecture is built on - and closing it means adding the write path, which is a scope
+  //         decision. Recorded here so the residual risk is visible at the method a reader lands on.
   //       * SELF IS EXCLUDED BY PRIMARY KEY, via `e.#entityIDproperty# != :entityID`. The PK
   //         exclusion below is not a guess; it is what the framework does.
   //       * THE COMPARISON IS CASE-INSENSITIVE. The generated SQL uses a plain `=` under MySQL's
@@ -1837,9 +1852,43 @@ export class PromotionCode {
   // the target, and none is emulated. What the framework base's own `preInsert` did - audit-timestamp
   // population and primary-key assignment - is a PERSISTENCE-TIER concern owned by
   // `src/repositories/mysql/**`, which is also why the audit fields on this class are `readonly` with
-  // no setters. The ordering guarantee is preserved structurally rather than by a `super` call: the
-  // repository invokes `preInsert()` BEFORE its own audit/PK handling, which is exactly the sequence
-  // L181-L184 produces.
+  // no setters. The ordering guarantee is expressed as a REQUIREMENT ON WHOEVER SAVES A PROMOTION
+  // CODE - `preInsert()` must run BEFORE that caller's own audit/PK handling, which is exactly the
+  // sequence L181-L184 produces - rather than as something this file can enforce, since a domain
+  // entity cannot reach a repository.
+  //
+  // ★★ AND THAT CALLER DOES NOT EXIST IN THIS PORT'S SCOPE, WHICH IS STATED HERE RATHER THAN LEFT
+  // FOR A READER TO DISCOVER. An earlier revision of this note asserted flatly that "the repository
+  // invokes `preInsert()`", and that assertion was not true of anything in the target. Verified,
+  // not assumed:
+  //
+  //   * `model/service/PromotionService.cfc` declares TWELVE functions and NOT ONE IS A WRITE
+  //     [model/service/PromotionService.cfc:L58,L549,L629,L752,L783,L852,L921,L987,L1022,L1032,
+  //     L1094,L1098]. A search of `model/service/` and `model/dao/` for `savePromotionCode`,
+  //     `savePromotion` and `deletePromotionCode` returns NOTHING. The legacy write path was the
+  //     framework's own `HibachiService.save()`, reached by inheritance.
+  //   * `org/Hibachi/**` is designated a boundary to extract from and NEVER port, and
+  //     `HibachiService` is named among the framework base classes deliberately not carried forward.
+  //     So the inherited writer has no target counterpart by direction, not by oversight.
+  //   * `src/domain/ports/promotionRepository.ts` publishes exactly EIGHT members, seven of them
+  //     reads and the eighth the rounding-rule write `saveRoundingRule`; the adapter
+  //     `src/repositories/mysql/mysqlPromotionRepository.ts` therefore DOES issue mutations, but
+  //     only against `SwRoundingRule`. The port inventory is CLOSED AT THIRTEEN, so neither a ninth
+  //     member on that port nor a fourteenth port may be added to host one.
+  //     ★ QUOTE-THEN-REVISE, AND THE EXISTENCE OF A WRITE DOES NOT RESCUE THE OBLIGATION. This read
+  //     "publishes exactly SEVEN members and every one of them is a read; ... issues no mutation at
+  //     all", and both halves are now false. The conclusion is unaffected, and the reason is worth
+  //     stating because a reader who knows a write now exists will ask: `saveRoundingRule` was
+  //     admitted ONLY because that contract already owned the `SwRoundingRule` table through
+  //     `getRoundingRuleQuery`, and the contract that owns a table's read owns its write. This port
+  //     owns no read of `SwPromotionCode` as an entity, so that reasoning yields nothing here. A
+  //     uniqueness probe would still be a new member on a closed port, and it is still absent.
+  //
+  // The consequence, stated plainly so it is auditable: this hook is authored, correct and callable,
+  // and NOTHING IN THE PORTED SURFACE CALLS IT, because the ported surface contains no promotion-code
+  // write path. Until one exists, a row inserted through some other route can carry an empty
+  // `promotionCode`. That is a GAP IN THE PORTED SCOPE, not a defect in this method, and closing it
+  // means adding the write path - which is a scope decision, not an edit to this file.
 
   // LEGACY-NOTE BUDGET CHECK, stated explicitly so no reviewer has to reconstruct it. The hook below
   // spends NOTHING from either the signature-reshaping or the signature-widening budget, and the
@@ -1847,11 +1896,21 @@ export class PromotionCode {
   // takes no arguments and returns nothing, exactly as [model/entity/PromotionCode.cfc:L179] does.
   // There is no rename to justify and no parameter to account for.
   //
-  // What DOES change is the INVOCATION MECHANISM - the ORM event dispatcher becomes an explicit
-  // repository call - and that is a directed transformation the AAP mandates for all four
+  // What DOES change is the INVOCATION MECHANISM - the ORM event dispatcher becomes an explicit call
+  // from the persistence tier - and that is a directed transformation the AAP mandates for all four
   // hook-bearing entities, not a discretionary choice made here. It changes who calls the method, not
   // what the method is. The transformation plan's sole entity-layer signature spend remains
   // `PromotionPeriod.isCurrent(now: Date)`, and this file does not add a second one.
+  //
+  // The mandate reaches the METHOD, which is why it is authored. It does not by itself supply the
+  // CALLER, and the caller is where the four hook-bearing entities part company. TWO of them have a
+  // save seam and their hooks are genuinely driven from it - `ProductType` through
+  // `productTypeRepository.saveProductType` and `PriceGroup` through
+  // `priceGroupRepository.savePriceGroup`. The other two, `Category` and `PromotionCode`, have no
+  // save seam at all: the complete `save*` inventory across all thirteen ports is `saveProduct`,
+  // `saveSku`, `saveProductType`, `savePriceGroup`, `savePriceGroupRate` and `saveImageFile`, and
+  // neither a category nor a promotion code appears in it. That asymmetry is recorded beside
+  // `super.preInsert()` below.
   //
   // Nothing else in this file spends anything either: zero widenings, zero reshapings, zero
   // visibility changes, zero deliberate divergences.
@@ -1859,7 +1918,9 @@ export class PromotionCode {
   /**
    * The ported `preInsert` hook. [model/entity/PromotionCode.cfc:L179-L185]
    *
-   * Invoked by the repository at save time, mirroring where the ORM event fired.
+   * TO BE INVOKED AT SAVE TIME BY WHATEVER SAVES A PROMOTION CODE, mirroring where the ORM event
+   * fired - and no such saver exists in this port's scope. See the note above `super.preInsert()`
+   * for the verified reason and for what closing that gap would require.
    *
    * ONE LIFECYCLE CONTRACT, SHARED BY EVERY HOOK-BEARING ENTITY IN THIS FOLDER. The pair is
    * `preInsert(): void` and `preUpdate(oldData?: Readonly<Record<string, unknown>>): void`, and it is

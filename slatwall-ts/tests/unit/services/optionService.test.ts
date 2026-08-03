@@ -128,7 +128,8 @@
 //     is either a count of recorded calls or an entity sort ordinal, and no
 //     arithmetic of any kind is performed on one. Stated so that nobody later
 //     introduces a raw numeric price here believing no rule applies.
-//   * NO MOCKING LIBRARY AND NO SPY. The project pins fourteen packages and this
+//   * NO MOCKING LIBRARY AND NO SPY. `package.json` pins thirteen packages - three
+//     runtime, ten development - and this
 //     suite adds none. `vi` ships inside the runner and would have been
 //     permitted, but hand-written doubles are the idiom here, so `vi` is not
 //     imported at all - which also means this suite owes no spy restoration

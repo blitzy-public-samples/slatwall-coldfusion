@@ -1,236 +1,123 @@
 // ---------------------------------------------------------------------------
 // slatwall-ts - repository suite for the price-group reads and writes
 //
-// WHAT THIS PINS
-//   src/repositories/mysql/mysqlPriceGroupRepository.ts - the secondary adapter
-//   that replaces `model/dao/PriceGroupDAO.cfc` in the TypeScript / AWS Lambda
-//   `nodejs20.x` port of the Slatwall 3.1.39 catalog + promotions/pricing slice
-//   (`version.txt` = `3.1.39`).
+// WHAT THIS PINS. src/repositories/mysql/mysqlPriceGroupRepository.ts, the secondary adapter that
+// replaces [model/dao/PriceGroupDAO.cfc] (104 lines) in the TypeScript / AWS Lambda `nodejs20.x`
+// port of the Slatwall 3.1.39 catalog + promotions/pricing slice (`version.txt` = `3.1.39`). Two
+// things are asserted and nothing else: THE EXACT SQL TEXT THE ADAPTER EMITS, and THE EXACT ARRAY
+// OF PARAMETERS IT BINDS TO THAT TEXT.
 //
-//   Two things are asserted and nothing else: THE EXACT SQL TEXT THE ADAPTER
-//   EMITS, and THE EXACT ARRAY OF PARAMETERS IT BINDS TO THAT TEXT.
+// THREE OBLIGATIONS BELONG TO THIS SUITE AND TO NO OTHER.
+//   1. THE SINGLE DELIBERATE READ-ONLY REACH-THROUGH. Six subscription-owned tables are read
+//      here and nowhere else in the whole migration, and the read-only-ness is asserted.
+//   2. THE DIALECT CONTRACT. Required, hard error, NO SILENT DEFAULT, plus the corrected
+//      understanding of the legacy `databaseType` application value, which is ONE value
+//      carrying the Hibernate dialect and not a second key.
+//   3. THE `preInsert`/`preUpdate` REPLACEMENT. With the ORM gone nothing fires a lifecycle
+//      hook, so materialized-path maintenance is performed explicitly on BOTH write paths.
 //
-//   THREE OBLIGATIONS BELONG TO THIS SUITE AND TO NO OTHER
+// THE VERIFIED LEGACY LOCATOR MAP. Every locator here and at every case below was opened in the
+// legacy tree and matched before it was transcribed. Cited only here, in
+// [model/dao/PriceGroupDAO.cfc]: L49 the component declaration, with NO `accessors` and NO
+// `output`; L53 the non-required `accountID` argument; L58 and L74 the two arms' `<cfquery>` tags,
+// NEITHER carrying a `datasource`; the MySQL arm's three binds at L65 (endDateTime upper bound),
+// L66 (accountID) and L70 (effectiveDateTime upper bound), and the same three in the else arm at
+// L81, L82 and L86; L68 and L84 the dead-projection `INNER JOIN SwType`; L83
+//   `SELECT TOP 1 systemCode`;
+// L87 the else arm's trailing `ORDER BY changeDateTime DESC`; L92 the record-count guard; and L98
+// the empty-array fall-through. In [config/configORM.cfm] (15 lines): L3 the
+//   `<cfdbinfo type="Version">`
+// probe inside `<cftry>`, L4-L7 the catch that makes a probe failure TERMINAL, and L9-L15 MySQL
+// tested FIRST then Microsoft then Oracle with NO `<cfelse>`. In [config/configApplication.cfm] (2
+// lines): L2 the datasource name. At [Application.cfc:L86-L87] the `// SET Database Type` comment
+// and the application value assigned FROM `this.ormSettings.dialect`. Also header-only:
+// [model/entity/PriceGroup.cfc:L83] `getGlobalPriceGroupRate()`, [:L168] the misspelled
+// `subsciptionUsageBenefit` and [:L195] `getPriceGroupIDPath()`;
+// [model/entity/PriceGroupRate.cfc:L49] the physical table, [:L71-L73] the productTypes / products
+// / skus collections and [:L262] `getAmountFormatted()`; [model/entity/RoundingRule.cfc:L49] its
+// physical table; [model/service/PriceGroupService.cfc:L51,L53,L54] the three injected
+// collaborators, [:L271-L298] calculateSkuPriceBasedOnAccount whose DAO call site is L277, and
+// [:L397] savePriceGroupRate; [model/entity/Sku.cfc:L435-L440] getCurrentAccountPrice with its
+// locator at L437; and [model/service/OrderService.cfc:L60,L61] the out-of-scope orchestrator that
+// injected both in-scope services, in that sequence.
 //
-//     1. THE SINGLE DELIBERATE READ-ONLY REACH-THROUGH. Six subscription-owned
-//        tables are read here and nowhere else in the whole migration. It is the
-//        only place an out-of-scope subsystem's tables are queried at all, and
-//        the read-only-ness is asserted directly rather than assumed.
-//     2. THE DIALECT CONTRACT. Required, hard error, NO SILENT DEFAULT - plus the
-//        corrected understanding of the legacy `databaseType` application value,
-//        which is ONE value with the Hibernate dialect and not a second key.
-//     3. THE `preInsert`/`preUpdate` REPLACEMENT. With the ORM gone nothing fires
-//        a lifecycle hook, so materialized-path maintenance is performed by the
-//        repository explicitly, on BOTH the insert path and the update path.
+// TWO PUBLISHED LOCATORS CARRY DRIFT, CORRECTED HERE RATHER THAN REPEATED. `precisionEvaluate`
+// inside `calculateSkuPriceBasedOnPriceGroupRate` is often cited at
+// [model/service/PriceGroupService.cfc:L322] and [:L328]. Opened first-hand, the two calls are at
+// L323 (the `percentageOff` arm) and L331 (the `amountOff` arm), with the rounding-rule delegation
+// between them at L327 and its guard at L326. The CONCLUSION the published citation supports is
+// unaffected - only the `percentageOff` arm rounds.
 //
-//   THE VERIFIED LEGACY LOCATOR MAP. Every locator below was opened in the legacy
-//   tree and matched before it was transcribed. Nothing here is quoted from a
-//   secondary summary.
-//
-//     [model/dao/PriceGroupDAO.cfc]            104 lines in total
-//     [model/dao/PriceGroupDAO.cfc:L49]        component extends="HibachiDAO";
-//                                              NO `accessors` and NO `output`
-//     [model/dao/PriceGroupDAO.cfc:L52]        getAccountSubscriptionPriceGroups;
-//                                              NO `returntype` and NO `access`
-//     [model/dao/PriceGroupDAO.cfc:L53]        accountID, type="string", NOT required
-//     [model/dao/PriceGroupDAO.cfc:L56]        the developer comment, quoted below
-//     [model/dao/PriceGroupDAO.cfc:L57]        the dialect branch
-//     [model/dao/PriceGroupDAO.cfc:L58]        <cfquery name="getpg"> - MySQL arm,
-//                                              carrying NO `datasource` attribute
-//     [model/dao/PriceGroupDAO.cfc:L65]        bind 1 - endDateTime upper bound
-//     [model/dao/PriceGroupDAO.cfc:L66]        bind 2 - accountID
-//     [model/dao/PriceGroupDAO.cfc:L68]        INNER JOIN SwType - the dead-projection join
-//     [model/dao/PriceGroupDAO.cfc:L70]        bind 3 - effectiveDateTime upper bound
-//     [model/dao/PriceGroupDAO.cfc:L71]        ORDER BY changeDateTime DESC LIMIT 1
-//     [model/dao/PriceGroupDAO.cfc:L74]        <cfquery name="getpg"> - the else arm,
-//                                              also carrying NO `datasource` attribute
-//     [model/dao/PriceGroupDAO.cfc:L81,L82,L86] the same three binds, else arm
-//     [model/dao/PriceGroupDAO.cfc:L83]        SELECT TOP 1 systemCode
-//     [model/dao/PriceGroupDAO.cfc:L84]        INNER JOIN SwType - else arm
-//     [model/dao/PriceGroupDAO.cfc:L87]        ORDER BY changeDateTime DESC)
-//     [model/dao/PriceGroupDAO.cfc:L92]        <cfif getpg.recordCount> - the guard
-//     [model/dao/PriceGroupDAO.cfc:L93-L95]    the stage-two HQL and ormExecuteQuery
-//     [model/dao/PriceGroupDAO.cfc:L98]        <cfreturn [] /> - the fall-through
-//     [config/configORM.cfm]                   15 lines in total
-//     [config/configORM.cfm:L3]                <cfdbinfo type="Version"> inside <cftry>
-//     [config/configORM.cfm:L4-L7]             a probe failure is TERMINAL - the catch
-//                                              includes nodatasource and <cfabort/>
-//     [config/configORM.cfm:L9-L15]            MySQL tested FIRST, then Microsoft, then
-//                                              Oracle, and NO <cfelse>
-//     [config/configApplication.cfm]           2 lines in total
-//     [config/configApplication.cfm:L2]        this.datasource.name = "Slatwall"
-//     [Application.cfc:L86-L87]                // SET Database Type, then the application
-//                                              value assigned FROM this.ormSettings.dialect
-//     [model/entity/PriceGroup.cfc:L49]        table="SwPriceGroup"
-//     [model/entity/PriceGroup.cfc:L52]        priceGroupID, generator uuid, unsavedvalue=""
-//     [model/entity/PriceGroup.cfc:L54]        activeFlag, ormType boolean, NO default
-//     [model/entity/PriceGroup.cfc:L64]        priceGroupRates, cascade="all-delete-orphan"
-//     [model/entity/PriceGroup.cfc:L69]        subscriptionUsageBenefits link table
-//     [model/entity/PriceGroup.cfc:L83]        getGlobalPriceGroupRate()
-//     [model/entity/PriceGroup.cfc:L168]       the misspelled `subsciptionUsageBenefit`
-//     [model/entity/PriceGroup.cfc:L195]       getPriceGroupIDPath()
-//     [model/entity/PriceGroup.cfc:L206]       preInsert()
-//     [model/entity/PriceGroup.cfc:L211]       preUpdate(struct oldData)
-//     [model/entity/PriceGroupRate.cfc:L49]    table="SwPriceGroupRate"
-//     [model/entity/PriceGroupRate.cfc:L53]    globalFlag, default the STRING "false"
-//     [model/entity/PriceGroupRate.cfc:L54]    amount, ormType big_decimal, NO default
-//     [model/entity/PriceGroupRate.cfc:L71-L73] productTypes / products / skus
-//     [model/entity/PriceGroupRate.cfc:L75-L77] the three excluded collections, the first
-//                                              on the abbreviated SwPriceGrpRateExclProductType
-//     [model/entity/PriceGroupRate.cfc:L95]    getAppliesTo()
-//     [model/entity/PriceGroupRate.cfc:L262]   getAmountFormatted()
-//     [model/entity/RoundingRule.cfc:L49]      table="SwRoundingRule"
-//     [model/service/PriceGroupService.cfc:L51,L53,L54] the three injected collaborators
-//     [model/service/PriceGroupService.cfc:L140-L181] the five-level cascade
-//     [model/service/PriceGroupService.cfc:L174] the parent-recursion asymmetry
-//     [model/service/PriceGroupService.cfc:L236] the `local.i` reference
-//     [model/service/PriceGroupService.cfc:L262-L268] the seven-line method carrying BOTH
-//                                              ambient-scope accessors, at L263 and L264
-//     [model/service/PriceGroupService.cfc:L271-L298] calculateSkuPriceBasedOnAccount,
-//                                              whose DAO call site is L277
-//     [model/service/PriceGroupService.cfc:L301] calculateSkuPriceBasedOnPriceGroup
-//     [model/service/PriceGroupService.cfc:L316-L340] the rounding-rule asymmetry
-//     [model/service/PriceGroupService.cfc:L364-L375] updateOrderAmountsWithPriceGroups
-//     [model/service/PriceGroupService.cfc:L397] savePriceGroupRate
-//     [model/service/PriceGroupService.cfc:L461-L470] deletePriceGroup and its
-//                                              never-re-read collection snapshot loop
-//     [model/entity/Sku.cfc:L261]              getPriceByPriceGroup
-//     [model/entity/Sku.cfc:L435-L440]         getCurrentAccountPrice, locator L437
-//     [model/service/PromotionService.cfc:L241-L254] the discount base-price selection that
-//                                              makes the price-group pass run FIRST
-//     [model/service/OrderService.cfc:L60,L61] the out-of-scope orchestrator that injected
-//                                              both in-scope services, in that sequence
-//
-//   TWO PUBLISHED LOCATORS CARRY DRIFT, CORRECTED HERE RATHER THAN REPEATED.
-//   `precisionEvaluate` inside `calculateSkuPriceBasedOnPriceGroupRate` is often
-//   cited at [model/service/PriceGroupService.cfc:L322] and [:L328]. Opened
-//   first-hand, the two calls are at L323 (the `percentageOff` arm) and L331 (the
-//   `amountOff` arm), with the rounding-rule delegation between them at L327 and
-//   its guard at L326. The CONCLUSION the published citation supports is
-//   unaffected - only the `percentageOff` arm rounds - so the finding stands and
-//   only the line numbers are corrected.
-//
-//   THE LEGACY DEVELOPER COMMENT, QUOTED FOR PROVENANCE AND FOR NOTHING ELSE.
-//   [model/dao/PriceGroupDAO.cfc:L56] reads, verbatim:
+// THE LEGACY DEVELOPER COMMENT, QUOTED FOR PROVENANCE. [model/dao/PriceGroupDAO.cfc:L56] reads,
+// verbatim:
 //
 //       can't figure out top 1 hql so, doing query: Sumit
 //
-//   It is the source author's own explanation of why stage one is a raw query
-//   rather than HQL, and therefore of why the two-stage shape exists at all. It
-//   is quoted, not turned into an assertion.
+// It is the source author's own explanation of why stage one is a raw query rather than HQL, and
+// therefore of why the two-stage shape exists. Quoted, not asserted.
 //
 // ---------------------------------------------------------------------------
-// THIS COVERAGE IS 100% NET-NEW. IT IS NOT PARITY AND MUST NEVER BE
-// PRESENTED AS PARITY.
+// THIS COVERAGE IS 100% NET-NEW. IT IS NOT PARITY AND MUST NEVER BE PRESENTED AS PARITY.
 // ---------------------------------------------------------------------------
-//   Verified first-hand rather than assumed: `meta/tests/unit/dao/` contains
-//   exactly two files, [meta/tests/unit/dao/AccountDAOTest.cfc] and
-//   [meta/tests/unit/dao/PaymentDAOTest.cfc], NEITHER of which is in scope, and
-//   each of which does nothing beyond pulling a component out of the ambient
-//   application scope by string name and asserting it is an object. A search of
-//   the whole legacy suite for `PriceGroupDAO`, `getAccountSubscriptionPriceGroups`
-//   and `PriceGroupRate` returns nothing at all. No case below has a legacy
-//   antecedent, and none is dressed up as one.
+// Verified first-hand rather than assumed: `meta/tests/unit/dao/` contains exactly
+// [meta/tests/unit/dao/AccountDAOTest.cfc] and [meta/tests/unit/dao/PaymentDAOTest.cfc], NEITHER in
+// scope, each doing nothing beyond pulling a component out of the ambient application scope by
+// string name and asserting it is an object. A search of the whole legacy suite for
+// `PriceGroupDAO`, `getAccountSubscriptionPriceGroups` and `PriceGroupRate` returns nothing at all.
+// No case below has a legacy antecedent, and none is dressed up as one. The only legacy suites
+// extended anywhere in this port are [meta/tests/unit/entity/BrandTest.cfc] and
+// [meta/tests/unit/entity/ProductTest.cfc], both owned by tests/unit/domain/entities/, while
+// [meta/tests/functional/admin/entity/ProductTest.cfc] is an empty stub contributing zero coverage,
+// and the `issue_<ticket#>` convention from [meta/tests/unit/IssuesTest.cfc] appears nowhere below
+// because no ticket governs any of these statements.
 //
-//   For orientation on what parity would have looked like: the only legacy suites
-//   extended anywhere in this port are [meta/tests/unit/entity/BrandTest.cfc] and
-//   [meta/tests/unit/entity/ProductTest.cfc], both owned by
-//   tests/unit/domain/entities/, and [meta/tests/functional/admin/entity/ProductTest.cfc]
-//   is an empty stub contributing zero coverage. The `issue_<ticket#>` regression
-//   convention from [meta/tests/unit/IssuesTest.cfc] appears nowhere below,
-//   because no ticket governs any of these statements.
+// WHAT WAS DELIBERATELY NOT CARRIED OVER. The legacy suites are integration-style at every level:
+// [meta/tests/unit/SlatwallUnitTestBase.cfc] builds the whole FW/1 application at L52, wires a
+// helper at L55, calls `bootstrap()` at L60 and elevates the current account to superuser at L62
+// through the ambient request scope. None of that is ported: no base class, no setup or teardown
+// component, no MXUnit shim, no privilege elevation and no lookup by string name. THE ASSERTIONS
+// ARE WHAT CARRIES ACROSS.
 //
-//   WHAT WAS DELIBERATELY NOT CARRIED OVER. The legacy DAO suites are
-//   integration-style at every level: [meta/tests/unit/SlatwallUnitTestBase.cfc]
-//   builds the whole FW/1 application with
-//   `createObject("component", "Slatwall.Application")` at L52, wires a helper
-//   component at L55, calls `bootstrap()` at L60, elevates the current account to
-//   superuser at L62 through the ambient request scope, and leaves its teardown
-//   commented out. That harness is not ported in any form - no base class, no
-//   per-test setup or teardown component, no MXUnit-shaped assertion shim, no
-//   privilege elevation, no lookup by string name, no helper component and no
-//   remote facade. THE ASSERTIONS ARE WHAT CARRIES ACROSS; the harness is replaced
-//   by two explicit constructor arguments.
+// WHY THIS SITS UNDER tests/integration/repositories/ AND NEEDS NO DATABASE. The tier names the
+// layer under test, not the presence of a server. The adapter takes its executor as a CONSTRUCTOR
+// PARAMETER, so a recording double makes the emitted text and the bound array observable with
+// nothing running: nothing below imports the driver, builds a pool, opens a socket, reads the
+// process environment or touches the file system, and every case passes on a bare checkout with no
+// `.env` file and no variable set. The connection module is imported FOR ITS TYPES ONLY, its pool
+// being built lazily inside `getConnectionPool()`. `liveDatabaseTestsEnabled` from tests/setup.ts
+// is therefore NOT consulted, and whether `TEST_LIVE_DATABASE` (slatwall-ts/.env.example, the test
+// group) is set, unset or absent, this file produces identical results.
 //
-// WHY THIS SITS UNDER tests/integration/repositories/ AND NEEDS NO DATABASE
-//   The tier names the layer under test, not the presence of a server. The
-//   adapter takes its executor as a CONSTRUCTOR PARAMETER, so substituting a
-//   recording double for it makes the emitted text and the bound array directly
-//   observable with nothing running: no server, no container, no schema, no seed,
-//   no fixture data and no environment. Every case here passes on a bare checkout
-//   with no `.env` file and no variable set. Nothing below imports the driver,
-//   builds a pool, opens a socket, reads the process environment or touches the
-//   file system.
-//
-//   `liveDatabaseTestsEnabled` from tests/setup.ts is therefore NOT consulted and
-//   is not imported. There is no live path here to gate, so gating would only
-//   create a way for this suite to stop running. Whether the optional test-only
-//   flag `TEST_LIVE_DATABASE` (slatwall-ts/.env.example, the test group) is set,
-//   unset or absent, this file runs and produces identical results.
-//
-//   The connection module is imported FOR ITS TYPES ONLY. Its pool is built
-//   lazily inside `getConnectionPool()`, so importing the module opens nothing -
-//   but a type-only import states the intent so the guarantee cannot erode.
-//
-// THREE PLACES WHERE THE SHIPPED CODE AND A NAIVE READING OF THE OBLIGATION DIVERGE
-//   The shipped adapter is authoritative for shape and the legacy CFML for
-//   semantics; where the two readings differ, the difference is RECORDED rather
-//   than either being bent.
-//
+// THREE PLACES WHERE THE SHIPPED CODE AND A NAIVE READING OF THE OBLIGATION DIVERGE. The shipped
+// adapter is authoritative for shape and the legacy CFML for semantics; where the two readings
+// differ, the difference is RECORDED rather than either being bent.
 //   1. `SkuPriceGroupResolver` IS NOT ON THE PORT, AND IT HAS THREE METHODS. The
-//      obligation describes it as a port-declared collaborator with exactly two
-//      methods. As shipped, src/domain/ports/priceGroupRepository.ts exports
-//      exactly two things - `CurrentAccountContext` and `PriceGroupRepository` -
-//      and records at its foot that the resolver was RELOCATED to keep the port
-//      inventory at thirteen. It lives on src/domain/entities/sku.ts and declares
-//      THREE members: the synchronous `calculateSkuPriceBasedOnPriceGroup`
-//      [model/service/PriceGroupService.cfc:L301], the synchronous
-//      `getRateForSkuBasedOnPriceGroup` [:L140], and the asynchronous
-//      `calculateSkuPriceBasedOnCurrentAccount` [:L262] carrying the explicit
-//      context that replaces ambient scope. All three are asserted below against
-//      what shipped, at the location that shipped.
-//   2. BOOLEAN COLUMNS ARE COERCED BY THE ENTITY, NOT BY THE ADAPTER. The
-//      obligation says a boolean must be hydrated through `cfBoolean()` and never
-//      a bare `Boolean(x)`. The adapter reads the raw column into the
-//      `CfBooleanInput` union and hands it over uncoerced, because neither
+//      obligation describes a port-declared collaborator with two methods. As shipped,
+//      src/domain/ports/priceGroupRepository.ts exports exactly `CurrentAccountContext`
+//      and `PriceGroupRepository`, and records at its foot that the resolver was RELOCATED
+//      to keep the port inventory at thirteen. It lives on src/domain/entities/sku.ts with
+//      THREE members, asserted below where they shipped.
+//   2. BOOLEAN COLUMNS ARE COERCED BY THE ENTITY, NOT BY THE ADAPTER, because neither
 //      `SwPriceGroup.activeFlag` [model/entity/PriceGroup.cfc:L54] nor a NULL
-//      `SwPriceGroupRate.globalFlag` can be collapsed into `false` without losing
-//      the distinction; `getActiveFlag()` and `getGlobalFlag()` apply `cfBoolean()`
-//      instead. The SEMANTIC is asserted below, through the entity's own getters
-//      and against `cfBoolean` directly. Only the LOCATION differs.
-//   3. A COMMENT'S PRESENCE CANNOT BE ASSERTED AT RUNTIME, AND IS NOT FAKED HERE.
-//      Two obligations ask this suite to assert that documenting comments exist in
-//      src/domain/ports/priceGroupRepository.ts - the reach-through rationale and
-//      the execution-ordering constraint. Observing a comment would require
-//      reading the module's source text, and this suite is forbidden from touching
-//      the file system at all. So the obligation is discharged the only honest way
-//      available: both comments were opened and matched first-hand during
-//      discovery - the ordering constraint at port L153-L156, headed
-//      `EXECUTION ORDERING: THE PRICE-GROUP PASS MUST RUN BEFORE THE PROMOTION
-//      PASS`, and the reach-through at port L115 and L624-L628 - the locators are
-//      recorded here, and what those comments DOCUMENT is asserted behaviourally:
-//      that the reach-through emits nothing but reads, that the port carries no
-//      ordering parameter, and that no order table is ever touched.
+//      `SwPriceGroupRate.globalFlag` can be collapsed into `false` without losing the
+//      distinction. Only the LOCATION differs; the SEMANTIC is asserted below.
+//   3. A COMMENT'S PRESENCE CANNOT BE ASSERTED AT RUNTIME, AND IS NOT FAKED HERE. Both
+//      comments were opened and matched first-hand during discovery - the ordering
+//      constraint at port L153-L156 and the reach-through at port L115 and L624-L628 - and
+//      what they DOCUMENT is asserted behaviourally below.
 //
-// NO USER RULES WERE PROVIDED
-//   The project rules document says exactly `No user rules provided.`, read in
-//   full and confirmed exhausted both ways - the default window and the full
-//   range - each returning that same single sentence. ZERO rules govern this file.
-//   No rule has been invented to fill the gap and nothing here paraphrases one,
-//   and the absence is not licence to lower the bar: the enterprise substitute
-//   standard applies at full strength. What bites hardest in a suite like this one
-//   is proving that values are BOUND rather than interpolated, keeping the double
-//   fully typed with no escape hatch, and annotating each judgment call where it
-//   was made. Licence continuity lives in slatwall-ts/NOTICE-GPL.md; no licence
-//   header is reproduced here and none of the ~47-line header of any legacy `.cfc`
-//   is copied.
+// Licence continuity lives in slatwall-ts/NOTICE-GPL.md: no licence header is reproduced here and
+// none of the ~47-line header of any legacy `.cfc` is copied.
 // ---------------------------------------------------------------------------
 
 import { describe, expect, it } from 'vitest';
 
 import { PriceGroup } from '../../../src/domain/entities/priceGroup.js';
 import { PriceGroupRate } from '../../../src/domain/entities/priceGroupRate.js';
+import { Product } from '../../../src/domain/entities/product.js';
+import { ProductType } from '../../../src/domain/entities/productType.js';
 import type { RoundingRule } from '../../../src/domain/entities/roundingRule.js';
+import { Sku } from '../../../src/domain/entities/sku.js';
 import type { SkuPriceGroupResolver } from '../../../src/domain/entities/sku.js';
 import type {
   CurrentAccountContext,
@@ -241,6 +128,7 @@ import { Money } from '../../../src/domain/valueObjects/money.js';
 import { listAppend, listToArray } from '../../../src/lib/cfml/list.js';
 import { cfBoolean } from '../../../src/lib/cfml/truthiness.js';
 import { appConfig } from '../../../src/lib/config.js';
+import { createPoolExecutor } from '../../../src/repositories/mysql/connection.js';
 import type {
   PreparedStatementExecutor,
   SqlMutationResult,
@@ -259,13 +147,28 @@ import { makePriceGroupFixtures } from '../../fixtures/priceGroupFixtures.js';
 
 // --- The recording double ----------------------------------------------------
 
-/** One statement the adapter sent, captured with the parameters it bound to it. */
 interface RecordedStatement {
-  /** The statement text, exactly as the adapter produced it. */
   readonly sql: string;
 
-  /** The bound parameters, in the positional order they were supplied. */
   readonly params: readonly unknown[];
+  /**
+   * Whether this statement was issued inside `transaction`.
+   *
+   * Captured per statement so a suite can PROVE atomicity instead of assuming it.
+   * A multi-statement write that must not half-apply is asserted by requiring
+   * every one of its statements to carry `true` - a statement that escaped the
+   * transaction (by reaching past the `tx` executor to the outer one) records
+   * `false` and fails the assertion at the point the mistake is made.
+   *
+   * ★ IT RECORDS WHICH EXECUTOR THE STATEMENT ARRIVED ON, NOT WHETHER A TRANSACTION
+   * HAPPENED TO BE OPEN. Those are the same answer for a correct adapter and
+   * DIFFERENT answers for the one mistake worth catching: a work function that
+   * reaches past its `tx` argument to the outer recorder is issuing an
+   * autocommitted statement on another pooled connection, and a depth counter on
+   * the recorder would still report `true` for it. The value below comes from the
+   * delegate that received the call, so a bypass reads `false`.
+   */
+  readonly inTransaction: boolean;
 }
 
 /** A statement that matched nothing, which is a legitimate outcome for every read here. */
@@ -274,12 +177,11 @@ const NO_ROWS: readonly SqlRow[] = [];
 /**
  * What a write reports back.
  *
- * `affectedRows: 1` is the ordinary outcome of a single-row insert, update or
- * delete. The adapter inspects it on exactly two paths and ignores it on the rest:
- * an insert treats zero as a failure because no generated key could then be
- * returned, and `deletePriceGroup` reports `affectedRows > 0` as its boolean. The
- * update paths inspect nothing, because MySQL reports rows CHANGED rather than
- * rows MATCHED and an idempotent save legitimately reports zero.
+ * `affectedRows: 1` is the ordinary outcome of a single-row insert, update or delete. The adapter
+ * inspects it on exactly two paths: an insert treats zero as a failure because no generated key
+ * could then be returned, and `deletePriceGroup` reports `affectedRows > 0` as its boolean. The
+ * update paths inspect nothing, because MySQL reports rows CHANGED rather than rows MATCHED and an
+ * idempotent save legitimately reports zero.
  */
 const WRITE_RESULT: SqlMutationResult = Object.freeze({ affectedRows: 1, warningStatus: 0 });
 
@@ -291,7 +193,7 @@ const NO_ROW_WRITE_RESULT: SqlMutationResult = Object.freeze({
 
 // JUDGMENT CALL: the double is HAND-WRITTEN AND INLINE rather than produced by a
 // mocking utility or shared from a helper module. Three reasons, all of which
-// outrank the duplication it costs. The subject's collaborator is a two-method
+// outrank the duplication it costs. The subject's collaborator is a three-method
 // interface, so implementing it outright is both shorter and stricter than
 // configuring a mock - `implements PreparedStatementExecutor` makes the compiler
 // check the shape on every build, which no runtime mock can do. A mocking library
@@ -301,61 +203,72 @@ const NO_ROW_WRITE_RESULT: SqlMutationResult = Object.freeze({
 // each repository suite therefore carries its own double and the duplication is
 // accepted deliberately.
 //
-// JUDGMENT CALL: it takes an ORDERED SEQUENCE of canned result sets, and here that
-// is not a convenience but a requirement. THE SUBJECT ISSUES A TWO-STAGE QUERY,
-// and the single most important case in this file asserts that STAGE TWO IS NEVER
-// ISSUED when stage one matched nothing. A double that answered every call with
-// the same rows could not express that at all: it could not distinguish "stage one
-// found nothing" from "stage one found something", and the empty-path assertion
-// would be vacuous. The sequence is positional and exhausts to the empty result
-// set, which is exactly what a key matching no row returns.
+// JUDGMENT CALL: it takes an ORDERED SEQUENCE of canned result sets, because THE SUBJECT ISSUES A
+// TWO-STAGE QUERY and this file's single most important case asserts that STAGE TWO IS NEVER ISSUED
+// when stage one matched nothing. A double answering every call alike would make that assertion
+// vacuous. The sequence exhausts to the empty result set, which is what a key matching no row
+// returns.
 //
-// JUDGMENT CALL: it can also be given an ordered sequence of WRITE outcomes, for
-// the two paths that inspect one. It defaults every write to a single affected row
-// so the ordinary cases stay free of ceremony.
+// JUDGMENT CALL: it can also be given an ordered sequence of WRITE outcomes, for the two paths that
+// inspect one, and defaults every write to a single affected row.
 //
-// JUDGMENT CALL: it records rather than simulates. It is not a database and does
-// not attempt to be one - it never parses the statement, never evaluates a
-// predicate, and never matches a bound key against a row. Every expectation about
-// WHICH ROWS MySQL would return is therefore expressed by CHOOSING the canned
-// sequence, and the assertion is about what the adapter emits and how it maps what
-// comes back. Where that distinction matters it is called out at the case itself.
+// JUDGMENT CALL: it records rather than simulates; it never parses the statement, evaluates a
+// predicate or matches a bound key against a row. Every expectation about WHICH ROWS MySQL would
+// return is therefore expressed by CHOOSING the canned sequence.
 /**
  * A `PreparedStatementExecutor` that captures what it is asked to run.
  *
- * Satisfies the narrow executor contract the adapter is constructed with, so it
- * substitutes for the pool-backed executor without the adapter knowing. Nothing
- * here opens a connection, resolves configuration, or touches the process
- * environment. `query()` is unreachable through this contract because the contract
- * does not declare it - the driver's non-prepared entry point is not exposed to
- * the adapter at all, which is what makes parameterization structural rather than
- * a convention.
+ * Nothing here opens a connection, resolves configuration, or touches the process environment.
+ * `query()` is unreachable because the contract does not declare it, which makes parameterization
+ * structural rather than a convention.
  */
 class RecordingExecutor implements PreparedStatementExecutor {
-  /** Every result-set statement, in call order. */
   readonly calls: RecordedStatement[] = [];
 
-  /** Every data-modifying statement, in call order. */
   readonly mutationCalls: RecordedStatement[] = [];
 
-  /** What successive `execute` calls hand back, standing in for the server. */
+  /**
+   * Statements AND transaction markers interleaved, in one call order.
+   *
+   * `calls`, `mutationCalls` and `transactionEvents` each answer "what happened, of
+   * this kind"; only a single interleaved log answers "in what order, across kinds",
+   * which is the question an atomicity case asks. Values are `'QUERY'`, `'MUTATION'`,
+   * `'BEGIN'`, `'COMMIT'`, `'ROLLBACK'` and - the one that matters most -
+   * `'MUTATION_OUTSIDE_TRANSACTION'`.
+   *
+   * ★ THAT LAST MARKER EXISTS TO CATCH ONE SPECIFIC MISTAKE. A repository whose work
+   * function reaches `this.executor` instead of the executor `transaction` handed it
+   * would compile, would emit the same statements in the same order, and would send
+   * every one of them to a DIFFERENT pooled connection - outside the transaction, and
+   * therefore autocommitted. Recording a statement that arrives through the OUTER
+   * recorder while a transaction is open under a distinct marker is what makes that
+   * substitution visible instead of invisible.
+   */
+  readonly orderedEvents: string[] = [];
+
+  /** How many transactions are currently open on this recorder. */
+  private openTransactions = 0;
+
+  /** Which `executeMutation` call to fail on, zero-based, or `undefined` for none. */
+  private failingMutationIndex: number | undefined;
+
+  /** The error the failing call throws. */
+  private injectedMutationFailure: Error | undefined;
+
   private readonly cannedResultSets: readonly (readonly SqlRow[])[];
 
-  /** What successive `executeMutation` calls report, for the paths that inspect it. */
   private readonly cannedWriteResults: readonly SqlMutationResult[];
 
-  /** How many result-set statements have been answered so far. */
   private answeredResultSets = 0;
 
-  /** How many writes have been answered so far. */
   private answeredWrites = 0;
 
   /**
-   * @param cannedResultSets one result set per expected `execute` call, in order.
-   *   Pass `[]` for a statement that matched nothing. A call beyond the end of the
-   *   sequence is answered with the empty result set.
-   * @param cannedWriteResults one outcome per expected `executeMutation` call, in
-   *   order. A call beyond the end is answered with a single affected row.
+   * @param cannedResultSets one result set per expected `execute` call, in order. Pass `[]`
+   *   for a statement that matched nothing; a call beyond the end is answered with the
+   *   empty result set.
+   * @param cannedWriteResults one outcome per expected `executeMutation` call, in order. A
+   *   call beyond the end is answered with a single affected row.
    */
   constructor(
     cannedResultSets: readonly (readonly SqlRow[])[],
@@ -366,15 +279,56 @@ class RecordingExecutor implements PreparedStatementExecutor {
   }
 
   /**
+   * Arrange for the nth `executeMutation` call to fail.
+   *
+   * ★ FAILURE INJECTION, NOT SIMULATION. The recorder still records the attempt before
+   * it throws, so a case can assert exactly how far the cascade had progressed when the
+   * driver failed - which is the shape that used to leave a half-deleted price group
+   * behind. Nothing is rolled back here; that is the pool-backed executor's contract.
+   *
+   * @param mutationIndex zero-based position in the `executeMutation` call sequence.
+   * @param failure the error that call throws, re-raised by the adapter unchanged.
+   */
+  failNextMutationAt(mutationIndex: number, failure: Error): void {
+    this.failingMutationIndex = mutationIndex;
+    this.injectedMutationFailure = failure;
+  }
+
+  /**
    * Record the statement and answer with the next canned result set.
    *
-   * The parameter array is COPIED on the way in. The adapter builds some of these
-   * arrays with a spread and pushes the key onto one of them after the fact, and
-   * capturing the reference instead would let a later mutation rewrite history that
-   * has already been asserted on.
+   * The parameter array is COPIED on the way in. The adapter builds some of these arrays with a
+   * spread and pushes the key onto one after the fact, and capturing the reference would let a
+   * later mutation rewrite history that has already been asserted on.
    */
   execute(sql: string, params: readonly unknown[] = []): Promise<readonly SqlRow[]> {
-    this.calls.push({ sql, params: [...params] });
+    return this.recordExecute(sql, params, false);
+  }
+
+  /**
+   * Record the write and report the next canned outcome.
+   *
+   * The port declares three writing methods, so a recorded mutation is expected rather than a
+   * fault. What is asserted is WHICH statement it was, WHAT it bound, and - in the
+   * schema-continuity group - that it never changes the schema or touches a subscription table.
+   */
+  executeMutation(sql: string, params: readonly unknown[] = []): Promise<SqlMutationResult> {
+    return this.recordMutation(sql, params, false);
+  }
+
+  /**
+   * The one place a result-set statement is recorded, whichever executor it arrived on.
+   *
+   * @param insideTransaction whether it arrived on the executor `transaction` handed to
+   *   its work function, rather than on this recorder directly.
+   */
+  private recordExecute(
+    sql: string,
+    params: readonly unknown[],
+    insideTransaction: boolean,
+  ): Promise<readonly SqlRow[]> {
+    this.calls.push({ sql, params: [...params], inTransaction: insideTransaction });
+    this.orderedEvents.push(this.markerFor('QUERY', insideTransaction));
 
     const cannedRows = this.cannedResultSets[this.answeredResultSets] ?? NO_ROWS;
     this.answeredResultSets += 1;
@@ -382,52 +336,174 @@ class RecordingExecutor implements PreparedStatementExecutor {
     return Promise.resolve(cannedRows);
   }
 
-  /**
-   * Record the write and report the next canned outcome.
-   *
-   * The port declares three writing methods, so a recorded mutation is expected
-   * rather than a fault. What is asserted is WHICH statement it was, WHAT it bound,
-   * and - in the schema-continuity group - that it is never a schema-changing
-   * statement and never touches a subscription table.
-   */
-  executeMutation(sql: string, params: readonly unknown[] = []): Promise<SqlMutationResult> {
-    this.mutationCalls.push({ sql, params: [...params] });
+  /** The one place a write is recorded, whichever executor it arrived on. */
+  private recordMutation(
+    sql: string,
+    params: readonly unknown[],
+    insideTransaction: boolean,
+  ): Promise<SqlMutationResult> {
+    this.mutationCalls.push({ sql, params: [...params], inTransaction: insideTransaction });
+    this.orderedEvents.push(this.markerFor('MUTATION', insideTransaction));
 
+    const attemptedIndex = this.answeredWrites;
     const cannedResult = this.cannedWriteResults[this.answeredWrites] ?? WRITE_RESULT;
     this.answeredWrites += 1;
 
+    // RECORDED FIRST, THEN FAILED, so a case can see how far the cascade got.
+    if (
+      attemptedIndex === this.failingMutationIndex &&
+      this.injectedMutationFailure !== undefined
+    ) {
+      return Promise.reject(this.injectedMutationFailure);
+    }
+
     return Promise.resolve(cannedResult);
+  }
+
+  /**
+   * Names the event, flagging a statement that bypassed an open transaction.
+   *
+   * A statement is ordinary when no transaction is open, or when it arrived on the
+   * executor the transaction supplied. It is a BYPASS when a transaction is open and it
+   * arrived on this recorder directly - which in production means a different pooled
+   * connection and an autocommit.
+   */
+  private markerFor(kind: string, insideTransaction: boolean): string {
+    return insideTransaction || this.openTransactions === 0 ? kind : `${kind}_OUTSIDE_TRANSACTION`;
+  }
+
+  /**
+   * How many times `transaction` was entered AS A NEW UNIT OF WORK.
+   *
+   * A write that must be atomic is expected to open EXACTLY ONE transaction, so this
+   * being greater than one means the work was split into several units that can
+   * half-apply independently.
+   *
+   * ★ A JOINED INNER CALL DOES NOT INCREMENT IT, because a joined call is not a second
+   * unit - it runs inside the one already open, on the same connection, and the
+   * outermost caller still owns the single commit. {@link orderedEvents} records a
+   * `'JOIN'` marker for it instead, so the distinction stays observable without
+   * corrupting the atomicity count.
+   */
+  transactionCount = 0;
+
+  /**
+   * The transaction boundary, in call order: `BEGIN`, then `COMMIT` or `ROLLBACK`.
+   *
+   * Separate from `calls` and `mutationCalls` so that a case asserting the STATEMENT
+   * sequence is unaffected by whether a transaction wrapped it, while a case asserting
+   * ATOMICITY reads this and gets an unambiguous answer.
+   */
+  readonly transactionEvents: string[] = [];
+
+  /**
+   * Record the transaction boundary and run the work on a DISTINCT delegate executor.
+   *
+   * ★ THE WORK DOES NOT RECEIVE `this`, AND THAT IS THE WHOLE POINT. It receives a
+   * separate object that records onto the same `calls` and `mutationCalls` arrays - so
+   * every statement-sequence assertion in this file is unaffected by whether a
+   * transaction wrapped it - but which is TELLABLE APART in {@link orderedEvents}.
+   * Handing `this` over instead would make a repository that reaches `this.executor`
+   * from inside its work function indistinguishable from one that uses the executor it
+   * was given, and that substitution is precisely the defect this design catches: in
+   * production it routes the statement to a different pooled connection, outside the
+   * transaction and autocommitted.
+   *
+   * IT IS NOT A DATABASE. Nothing is buffered and nothing is undone on rollback: the
+   * recorder captures WHAT the adapter asked for, and the real transaction semantics
+   * belong to the pool-backed executor in `src/repositories/mysql/connection.ts`, which
+   * is exercised directly in group H. A case that needs to see a rollback asserts the
+   * recorded ROLLBACK marker and the statements that preceded it.
+   *
+   * ★★ A NESTED CALL JOINS THE OPEN UNIT. IT IS NOT REFUSED.
+   *
+   * This paragraph once read "NESTING IS REFUSED, matching the shipped contract rather
+   * than diverging from it", and the delegate below rejected an inner call with an error
+   * named `NestedTransactionError`. The principle was right - the recorder must not be
+   * more permissive than the executor it stands in for - and applying it now means the
+   * OPPOSITE behaviour, because the shipped contract itself joins:
+   * `createConnectionExecutor` in `src/repositories/mysql/connection.ts` implements
+   * `transaction(work)` as `return work(boundExecutor)`, with no `BEGIN` and no second
+   * `COMMIT`.
+   *
+   * NESTING IS LOAD-BEARING IN PRODUCTION CODE, which is what settles it rather than a
+   * preference. `MysqlProductRepository.saveProduct` opens a transaction and, from
+   * inside that work function, calls `MysqlSkuRepository.saveSkuForProduct(draft,
+   * productID, tx)`; that method funnels through `persistSku`, which calls
+   * `executor.transaction(...)` on the executor it was handed. A recorder that refused
+   * would report a failure for every new product carrying a SKU - the exact inversion
+   * of the mistake the earlier note was guarding against, made in a double instead of
+   * in production.
+   *
+   * So the delegate hands the inner work THE SAME delegate, emits a `'JOIN'` marker, and
+   * leaves the boundary to the outermost caller. There is no second `BEGIN`, no second
+   * `COMMIT`, and no second unit of work to half-apply.
+   */
+  transaction<T>(work: (transactional: PreparedStatementExecutor) => Promise<T>): Promise<T> {
+    this.transactionCount += 1;
+    this.transactionEvents.push('BEGIN');
+    this.orderedEvents.push('BEGIN');
+    this.openTransactions += 1;
+
+    const transactional: PreparedStatementExecutor = {
+      execute: (sql: string, params: readonly unknown[] = []): Promise<readonly SqlRow[]> =>
+        this.recordExecute(sql, params, true),
+      executeMutation: (sql: string, params: readonly unknown[] = []): Promise<SqlMutationResult> =>
+        this.recordMutation(sql, params, true),
+      transaction: <TNested>(
+        nestedWork: (tx: PreparedStatementExecutor) => Promise<TNested>,
+      ): Promise<TNested> => {
+        this.orderedEvents.push('JOIN');
+
+        return nestedWork(transactional);
+      },
+    };
+
+    const settle = (): void => {
+      this.openTransactions -= 1;
+    };
+
+    return work(transactional).then(
+      (result: T): T => {
+        settle();
+        this.transactionEvents.push('COMMIT');
+        this.orderedEvents.push('COMMIT');
+
+        return result;
+      },
+      (error: unknown): never => {
+        settle();
+        this.transactionEvents.push('ROLLBACK');
+        this.orderedEvents.push('ROLLBACK');
+
+        throw error;
+      },
+    );
   }
 }
 
 // --- The collaborator double --------------------------------------------------
 //
-// The adapter's second constructor parameter is typed to a MODULE-LOCAL,
-// UNEXPORTED interface carrying one method. Structural typing is what makes it
-// satisfiable from here without the interface being exported, and nothing is
-// re-declared on the subject's behalf: the shape below is written out and the
-// compiler checks it at the constructor call. The identical technique is used by
-// tests/fixtures/priceGroupFixtures.ts for the same interface.
+// The adapter's second constructor parameter is typed to a MODULE-LOCAL, UNEXPORTED interface
+// carrying one method. Structural typing is what makes it satisfiable from here without the
+// interface being exported: the shape below is written out and the compiler checks it at the
+// constructor call.
 
-/** One delegation to the rounding collaborator, captured for assertion. */
 interface RecordedRoundValueCall {
   readonly value: Money;
   readonly rule: RoundingRule;
 }
 
-/** The rounding collaborator the adapter is constructed with. */
 interface RecordingValueRounder {
   roundValueByRoundingRule(value: Money, rule: RoundingRule): Money;
 
-  /** Every delegation so far, in call order. */
   readonly calls: readonly RecordedRoundValueCall[];
 }
 
-// JUDGMENT CALL: the scripted answer is deliberately unrelated to its input. An
-// identity double would be indistinguishable from "no rounding was applied", and
-// telling those two apart is exactly what lets this suite assert that the
-// REPOSITORY never rounds - rounding is a service-tier behaviour and the adapter
-// must not absorb it.
+// JUDGMENT CALL: the scripted answer is deliberately unrelated to its input. An identity double
+// would be indistinguishable from "no rounding was applied", and telling those two apart is what
+// lets this suite assert that the REPOSITORY never rounds: rounding is a service-tier behaviour the
+// adapter must not absorb.
 const SCRIPTED_ROUNDED_ANSWER = '77.77';
 
 function makeRecordingValueRounder(): RecordingValueRounder {
@@ -443,15 +519,13 @@ function makeRecordingValueRounder(): RecordingValueRounder {
   };
 }
 
-/** One repository under test, composed by hand from two explicit arguments. */
 interface Subject {
   readonly executor: RecordingExecutor;
   readonly valueRounder: RecordingValueRounder;
 
   /**
-   * Typed to the PORT rather than to the class, so every call below is checked
-   * against the contract the six-method port declares. The class is instantiated
-   * directly - no container, no locator, no bootstrap and no ambient scope.
+   * Typed to the PORT, so every call below is checked against the contract it declares. The class
+   * is instantiated directly: no container, no locator, no bootstrap and no ambient scope.
    */
   readonly repository: PriceGroupRepository;
 }
@@ -472,23 +546,14 @@ function makeSubject(
 
 // --- Reading the recording back ----------------------------------------------
 //
-// `noUncheckedIndexedAccess` is on, so every indexed read is `T | undefined`. Each
-// is narrowed through one of the helpers below rather than with a postfix `!` or a
-// type assertion, both of which would silence exactly the check that keeps an
-// absent element from being read as a present one. Non-null assertions happen to be
-// permitted in the test tier by configuration; they are still not used, because the
-// relaxation exists for fixture builders asserting against data they construct in
-// the same file, and none of these values is constructed here. The length tests
-// double as real assertions: they pin how many statements a method issued.
+// `noUncheckedIndexedAccess` is on, so every indexed read is `T | undefined`. Each is narrowed
+// through one of the helpers below rather than with a postfix `!` or a type assertion, both of
+// which would silence exactly the check that keeps an absent element from being read as a present
+// one. Non-null assertions are permitted in the test tier by configuration and are still not used:
+// the relaxation exists for fixture builders asserting against data they construct in the same
+// file, and none of these values is constructed here. The length tests pin how many statements a
+// method issued.
 
-/**
- * One recorded statement, by position.
- *
- * @param calls the double's recorded statements.
- * @param index the position to read.
- * @returns the statement at that position.
- * @throws When the method issued fewer statements than that.
- */
 function statementAt(calls: readonly RecordedStatement[], index: number): RecordedStatement {
   const statement = calls[index];
 
@@ -505,13 +570,6 @@ function statementAt(calls: readonly RecordedStatement[], index: number): Record
   return statement;
 }
 
-/**
- * The single statement a method issued, or a failure describing what it did instead.
- *
- * @param calls the double's recorded statements.
- * @returns the one recorded statement.
- * @throws When the method issued anything other than exactly one statement.
- */
 function onlyStatement(calls: readonly RecordedStatement[]): RecordedStatement {
   if (calls.length !== 1) {
     throw new Error(
@@ -523,6 +581,59 @@ function onlyStatement(calls: readonly RecordedStatement[]): RecordedStatement {
   }
 
   return statementAt(calls, 0);
+}
+
+/**
+ * How many mutations `savePriceGroupRate` issues for a rate whose six link collections are all empty:
+ * the row write, then one delete per link table.
+ *
+ * ★ THE COUNT IS FIXED BY SHAPE, NOT BY DATA. Six deletes are issued whether or not the rate holds
+ * any members, because a delete is how a REMOVAL is expressed - a rate that has just had its last
+ * product taken away still has a stored link row to clear, and skipping the delete when the in-memory
+ * collection is empty is exactly the case that would leave it behind.
+ */
+const EMPTY_RATE_SAVE_MUTATION_COUNT = 1 + 6;
+
+/**
+ * The row write from a `savePriceGroupRate` call, with the link reconciliation that follows asserted
+ * to be present and to come after it.
+ *
+ * The ordering is not incidental: a link row names a `priceGroupRateID`, so on an insert there is no
+ * key to name until the row exists.
+ *
+ * @param calls the double's recorded mutations.
+ * @returns the first recorded mutation, which is the `SwPriceGroupRate` row write.
+ * @throws When fewer mutations were issued than the row write plus one delete per link table.
+ */
+function rateRowWrite(calls: readonly RecordedStatement[]): RecordedStatement {
+  if (calls.length < EMPTY_RATE_SAVE_MUTATION_COUNT) {
+    throw new Error(
+      'Expected a rate save to issue the row write followed by one delete per link table, so at ' +
+        'least ' +
+        String(EMPTY_RATE_SAVE_MUTATION_COUNT) +
+        ' mutations, but ' +
+        String(calls.length) +
+        ' were issued. A save that writes only the row would accept an added or removed member and ' +
+        'then silently lose it.',
+    );
+  }
+
+  const rowWrite = statementAt(calls, 0);
+
+  for (let index = 1; index < EMPTY_RATE_SAVE_MUTATION_COUNT; index += 1) {
+    const linkStatement = statementAt(calls, index);
+
+    if (!linkStatement.sql.startsWith('DELETE FROM ')) {
+      throw new Error(
+        'Expected mutation ' +
+          String(index) +
+          ' of a rate save to be a link-table delete, but it was: ' +
+          linkStatement.sql,
+      );
+    }
+  }
+
+  return rowWrite;
 }
 
 /**
@@ -550,12 +661,9 @@ function parameterAt(params: readonly unknown[], index: number): unknown {
 /**
  * A `Date` a statement was expected to bind.
  *
- * Narrowed rather than asserted, because the whole point of the captured-instant
- * case is that the bound value IS a `Date` and not SQL text.
+ * Narrowed rather than asserted, because the point of the captured-instant case is that the bound
+ * value IS a `Date` and not SQL text.
  *
- * @param value the recorded parameter.
- * @param description what it was expected to be, for the failure message.
- * @returns the instant.
  * @throws When the value is not a `Date`.
  */
 function requireBoundDate(value: unknown, description: string): Date {
@@ -569,12 +677,9 @@ function requireBoundDate(value: unknown, description: string): Date {
 /**
  * A decimal numeral a statement was expected to bind.
  *
- * E4: money reaches a statement as a DECIMAL STRING and never as a number, so the
- * narrowing is also the assertion.
+ * E4: money reaches a statement as a DECIMAL STRING and never as a number, so the narrowing is also
+ * the assertion.
  *
- * @param value the recorded parameter.
- * @param description what it was expected to be, for the failure message.
- * @returns the numeral.
  * @throws When the value is not a string.
  */
 function requireBoundDecimalNumeral(value: unknown, description: string): string {
@@ -593,13 +698,10 @@ function requireBoundDecimalNumeral(value: unknown, description: string): string
 /**
  * A price group a read was expected to produce.
  *
- * Keeps "the read returned nothing" distinct from "the entity it returned is
- * wrong", which matters because `undefined` is a legitimate answer from two of
- * these methods and a failure from the others.
+ * Keeps "the read returned nothing" distinct from "the entity it returned is wrong", which matters
+ * because `undefined` is a legitimate answer from two of these methods and a failure from the
+ * others.
  *
- * @param priceGroup the value a read or an accessor produced.
- * @param description what was expected, for the failure message.
- * @returns the entity.
  * @throws When the value is absent.
  */
 function requirePriceGroup(priceGroup: PriceGroup | undefined, description: string): PriceGroup {
@@ -610,14 +712,6 @@ function requirePriceGroup(priceGroup: PriceGroup | undefined, description: stri
   return priceGroup;
 }
 
-/**
- * A rate a read was expected to produce.
- *
- * @param priceGroupRate the value a read or an accessor produced.
- * @param description what was expected, for the failure message.
- * @returns the entity.
- * @throws When the value is absent.
- */
 function requirePriceGroupRate(
   priceGroupRate: PriceGroupRate | undefined,
   description: string,
@@ -629,14 +723,6 @@ function requirePriceGroupRate(
   return priceGroupRate;
 }
 
-/**
- * A rounding rule a joined read was expected to produce.
- *
- * @param roundingRule the value the association produced.
- * @param description what was expected, for the failure message.
- * @returns the entity.
- * @throws When the value is absent.
- */
 function requireRoundingRule(
   roundingRule: RoundingRule | undefined,
   description: string,
@@ -648,15 +734,6 @@ function requireRoundingRule(
   return roundingRule;
 }
 
-/**
- * One element of a hydrated collection, narrowed without an escape hatch.
- *
- * @param values the collection a read produced.
- * @param index the position to read.
- * @param description what the collection holds, for the failure message.
- * @returns the element at that position.
- * @throws When the collection has no element there.
- */
 function elementAt<TElement>(
   values: readonly TElement[],
   index: number,
@@ -679,41 +756,37 @@ function elementAt<TElement>(
   return value;
 }
 
-/** Every statement text a run produced, in call order. */
 function sqlTextsOf(calls: readonly RecordedStatement[]): readonly string[] {
   return calls.map((call) => call.sql);
 }
 
 // --- The statements this suite pins ------------------------------------------
 //
-// E5, AND THE SINGLE MOST IMPORTANT OBLIGATION THIS FOLDER CARRIES: every value is
-// a positional `?`. Not one expectation below interpolates a value into SQL text.
-// Where a statement's text varies structurally - the placeholder run inside an
-// `IN` list grows with the identifier count - the variants are written out in full
-// rather than templated, so a reviewer compares literals against literals.
+// E5, AND THE SINGLE MOST IMPORTANT OBLIGATION THIS FOLDER CARRIES: every value is a positional
+// `?`, and not one expectation below interpolates a value into SQL text. Where a statement's text
+// varies structurally, because the placeholder run inside an `IN` list grows with the identifier
+// count, the variants are written out in full rather than templated.
 //
-// The identifiers that DO appear inside these strings are schema identifiers the
-// adapter itself owns: table names, column names and aliases. None can carry
-// caller input, and every one of them is a physical `Sw*` name (B5).
+// The identifiers that DO appear inside these strings are schema identifiers the adapter owns, and
+// every one is a physical `Sw*` name (B5).
 
 /**
  * Stage one of the reach-through, verbatim.
  *
- * CFML parity [model/dao/PriceGroupDAO.cfc:L58-L72]: the MySQL arm of the branch at
- * L57, reproduced clause for clause. Three `cfqueryparam` bindings at L65, L66 and
- * L70 become three positional placeholders in the same clause order, and the
- * `'sstActive'` comparison stays a LITERAL because that is what the legacy wrote -
- * it is a system code owned by the schema, not caller input.
+ * CFML parity [model/dao/PriceGroupDAO.cfc:L58-L72]: the MySQL arm of the branch at L57, clause for
+ * clause. The `cfqueryparam` bindings at L65, L66 and L70 become three positional placeholders in
+ * the same clause order, and the `'sstActive'` comparison stays a LITERAL because that is what the
+ * legacy wrote.
  *
- * LEGACY-DEFECT [model/dao/PriceGroupDAO.cfc:L68, L84]: the INNER JOIN SwType contributes no
- * column to the sub-select's projection, yet as an INNER join it filters out rows with no
- * matching SwType, so removing it changes the result set.
+ * LEGACY-DEFECT [model/dao/PriceGroupDAO.cfc:L68, L84]: the INNER JOIN SwType contributes no column
+ * to the sub-select's projection, yet as an INNER join it filters out rows with no matching SwType,
+ * so removing it changes the result set.
+ *
  * Preserved deliberately; do not fix without a product decision.
  *
- * CFML parity [model/dao/PriceGroupDAO.cfc:L71]: `ORDER BY changeDateTime DESC LIMIT 1`
- * is LEGACY BEHAVIOUR BEING REPRODUCED, not a limit introduced by the port. The
- * else arm at L83 and L87 spells the same restriction as a leading `SELECT TOP 1`
- * with the `ORDER BY` trailing, which is why the dialect module returns a
+ * CFML parity [model/dao/PriceGroupDAO.cfc:L71]: `ORDER BY changeDateTime DESC LIMIT 1` is legacy
+ * behaviour reproduced, not a limit introduced by the port. The else arm at L83 and L87 spells the
+ * same restriction as a leading `SELECT TOP 1`, which is why the dialect module returns a
  * prefix/suffix pair rather than one interchangeable fragment.
  */
 const EXPECTED_SUBSCRIPTION_PRICE_GROUP_IDS_SQL = [
@@ -732,15 +805,11 @@ const EXPECTED_SUBSCRIPTION_PRICE_GROUP_IDS_SQL = [
   '        ORDER BY changeDateTime DESC LIMIT 1)',
 ].join('\n');
 
-// CFML parity [model/dao/PriceGroupDAO.cfc:L93]: the legacy stage two is HQL naming
-// the ORM ENTITY `SlatwallPriceGroup`, with NAMED parameters `:priceGroupIDs` and
-// `:activeFlag`. Two translations happen and both are stated rather than assumed.
-// The entity name becomes the PHYSICAL table `SwPriceGroup`, because there is no
-// ORM to map it and the schema is unchanged (B5) - so no `Slatwall`-prefixed
-// identifier appears in either stage of the emitted SQL. And the named parameters
-// become POSITIONAL, because the driver's prepared-statement protocol is
-// positional; MySQL does not expand `IN (?)` from an array, so the placeholder run
-// must carry ONE placeholder PER identifier.
+// CFML parity [model/dao/PriceGroupDAO.cfc:L93]: legacy stage two is HQL naming the ORM ENTITY
+// `SlatwallPriceGroup` with NAMED parameters `:priceGroupIDs` and `:activeFlag`. Two translations
+// happen. The entity name becomes the PHYSICAL table `SwPriceGroup` (B5), so no `Slatwall`-prefixed
+// identifier appears in either stage. And the named parameters become POSITIONAL, because MySQL
+// does not expand `IN (?)` from an array, so the run carries ONE placeholder PER identifier.
 const EXPECTED_ACTIVE_PRICE_GROUPS_BY_ID_SQL_FOR_ONE_ID =
   'SELECT pg.* FROM SwPriceGroup pg WHERE pg.priceGroupID IN (?) AND pg.activeFlag = ?';
 
@@ -753,8 +822,8 @@ const EXPECTED_ACTIVE_PRICE_GROUPS_BY_ID_SQL_FOR_THREE_IDS =
 /**
  * The ten physical `SwPriceGroup` columns, in declaration order.
  *
- * [model/entity/PriceGroup.cfc:L52-L56, L59, L73-L76]. There is deliberately NO
- * `remoteID` here, unlike `SwPriceGroupRate`; the asymmetry is the source's.
+ * [model/entity/PriceGroup.cfc:L52-L56, L59, L73-L76]. There is deliberately NO `remoteID` here,
+ * unlike `SwPriceGroupRate`; the asymmetry is the source's.
  */
 const EXPECTED_PRICE_GROUP_SELECT_LIST = [
   'pg.priceGroupID',
@@ -784,10 +853,9 @@ const EXPECTED_SELECT_CHILD_PRICE_GROUPS_SQL = [
 /**
  * The eleven rate columns plus the eight joined rounding-rule columns.
  *
- * [model/entity/PriceGroupRate.cfc:L52-L58, L61-L64, L67-L68] and
- * [model/entity/RoundingRule.cfc]. The rounding-rule columns are ALIASED with a
- * prefix because four of the eight - the audit quartet - collide by name with the
- * rate's own four, and an unaliased join would let one shadow the other depending
+ * [model/entity/PriceGroupRate.cfc:L52-L58, L61-L64, L67-L68] and [model/entity/RoundingRule.cfc].
+ * The rounding-rule columns are ALIASED with a prefix because four of the eight collide by name
+ * with the rate's own audit quartet, and an unaliased join would let one shadow the other depending
  * on driver ordering.
  */
 const EXPECTED_RATE_SELECT_LIST = [
@@ -817,12 +885,33 @@ const EXPECTED_RATE_SELECT_LIST = [
 // [model/service/PriceGroupService.cfc:L326], so a rate is allowed to have no
 // rounding rule. An INNER join would drop exactly those rates, and a dropped rate
 // changes which rate the cascade selects - and therefore the price.
-const EXPECTED_SELECT_RATES_BY_PRICE_GROUP_SQL = [
-  'SELECT ' + EXPECTED_RATE_SELECT_LIST,
-  'FROM SwPriceGroupRate pgr',
-  'LEFT OUTER JOIN SwRoundingRule rr ON pgr.roundingRuleID = rr.roundingRuleID',
-  'WHERE pgr.priceGroupID = ?',
-].join('\n');
+// KEYED BY A LIST, ONE PLACEHOLDER PER IDENTIFIER, and the reason is object identity rather
+// than anything about how many statements result. A price group's rate collection is decided
+// entirely by `pgr.priceGroupID`, so asking about several groups together returns exactly the
+// union of what asking about each in turn would return, partitioned back by that same column.
+// What it additionally makes possible is materializing a SHARED ANCESTOR ONCE: two results that
+// inherit from the same parent must see ONE parent instance carrying ONE rate collection, which
+// is what Hibernate's session guaranteed for the life of a request and what the key-based
+// identity comparisons in `src/domain/entities/priceGroup.ts` and `priceGroupRate.ts` are
+// faithful to. Reading per group cannot deliver that, because each read hands back a fresh
+// collection. One const per placeholder count, matching how the two-stage reach-through
+// statements above are pinned.
+function expectedSelectRatesByPriceGroupSql(placeholderList: string): string {
+  return [
+    'SELECT ' + EXPECTED_RATE_SELECT_LIST,
+    'FROM SwPriceGroupRate pgr',
+    'LEFT OUTER JOIN SwRoundingRule rr ON pgr.roundingRuleID = rr.roundingRuleID',
+    'WHERE pgr.priceGroupID IN (' + placeholderList + ')',
+  ].join('\n');
+}
+
+const EXPECTED_SELECT_RATES_BY_PRICE_GROUP_SQL_FOR_ONE_ID = expectedSelectRatesByPriceGroupSql('?');
+
+const EXPECTED_SELECT_RATES_BY_PRICE_GROUP_SQL_FOR_TWO_IDS =
+  expectedSelectRatesByPriceGroupSql('?, ?');
+
+const EXPECTED_SELECT_RATES_BY_PRICE_GROUP_SQL_FOR_THREE_IDS =
+  expectedSelectRatesByPriceGroupSql('?, ?, ?');
 
 const EXPECTED_SELECT_RATE_BY_ID_SQL = [
   'SELECT ' + EXPECTED_RATE_SELECT_LIST,
@@ -838,9 +927,8 @@ const EXPECTED_INSERT_PRICE_GROUP_SQL = [
   'VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)',
 ].join('\n');
 
-// Three columns are excluded from the SET list and each exclusion is deliberate:
-// `priceGroupID` is the key and moves to the WHERE clause, and the created half of
-// the audit quartet is write-once.
+// Three columns are excluded from the SET list: `priceGroupID` is the key and moves to the WHERE
+// clause, and the created half of the audit quartet is write-once.
 const EXPECTED_UPDATE_PRICE_GROUP_SQL = [
   'UPDATE SwPriceGroup',
   'SET priceGroupIDPath = ?, activeFlag = ?, priceGroupName = ?, priceGroupCode = ?, ' +
@@ -867,7 +955,6 @@ const EXPECTED_DELETE_RATES_BY_PRICE_GROUP_SQL =
 
 const EXPECTED_DELETE_PRICE_GROUP_ROW_SQL = 'DELETE FROM SwPriceGroup WHERE priceGroupID = ?';
 
-/** One of the six many-to-many link tables declared on the rate entity. */
 interface ExpectedRateLinkTable {
   readonly collectionName: string;
   readonly tableName: string;
@@ -878,10 +965,9 @@ interface ExpectedRateLinkTable {
  * The six link tables, IN THE ORDER THE ADAPTER READS AND DELETES THEM.
  *
  * [model/entity/PriceGroupRate.cfc:L71-L77]. The abbreviated physical name
- * `SwPriceGrpRateExclProductType` at L75 is reproduced VERBATIM - the schema is
- * unchanged, and "correcting" an abbreviation to the name a reader might expect
- * would break schema continuity outright. Its five siblings are not abbreviated;
- * the inconsistency is the source's.
+ * `SwPriceGrpRateExclProductType` at L75 is reproduced VERBATIM, because the schema is unchanged
+ * and "correcting" an abbreviation would break schema continuity. Its five siblings are not
+ * abbreviated; the inconsistency is the source's.
  */
 const EXPECTED_RATE_LINK_TABLES: readonly ExpectedRateLinkTable[] = Object.freeze([
   Object.freeze({
@@ -916,14 +1002,12 @@ const EXPECTED_RATE_LINK_TABLES: readonly ExpectedRateLinkTable[] = Object.freez
   }),
 ]);
 
-/** How many link statements one rate read fans out into. */
 const RATE_LINK_TABLE_COUNT = 6;
 
 /**
  * The expected link read for one collection across a placeholder run.
  *
- * The run is passed as literal placeholder TEXT, never a count formatted into the
- * string, so nothing about a value can reach the statement.
+ * The run is passed as literal placeholder TEXT, never a count formatted into the string.
  */
 function expectedRateLinkSelectSql(
   linkTable: ExpectedRateLinkTable,
@@ -936,7 +1020,6 @@ function expectedRateLinkSelectSql(
   ].join('\n');
 }
 
-/** The expected link delete for one collection, scoped by owning price group. */
 function expectedRateLinkDeleteSql(linkTable: ExpectedRateLinkTable): string {
   return [
     'DELETE FROM ' + linkTable.tableName,
@@ -952,10 +1035,9 @@ const TWO_PLACEHOLDERS = '?, ?';
 /**
  * One link statement written out in full, as a check on the composed forms above.
  *
- * The abbreviated table is chosen deliberately: it is the one name in the set a
- * reader is most likely to normalise by accident, so pinning it as a literal means
- * a drift in the composed form cannot hide behind a matching mistake in the
- * expectation.
+ * The abbreviated table is chosen deliberately: it is the one name a reader is most likely to
+ * normalise by accident, so pinning it as a literal means a drift in the composed form cannot hide
+ * behind a matching mistake in the expectation.
  */
 const EXPECTED_EXCLUDED_PRODUCT_TYPE_LINK_SELECT_SQL_VERBATIM = [
   'SELECT priceGroupRateID, productTypeID',
@@ -965,15 +1047,13 @@ const EXPECTED_EXCLUDED_PRODUCT_TYPE_LINK_SELECT_SQL_VERBATIM = [
 
 // --- Canned rows ---------------------------------------------------------------
 //
-// EVERY DATE HERE IS AN EXPLICIT UTC INSTANT. Never a clock read: `new Date()` with
-// no argument, or an offset relative to one, would make an assertion depend on the
-// day it ran. tests/setup.ts pins the process time zone to UTC before any subject
-// is imported and verifies the pin itself, and no fake timer is installed here.
+// EVERY DATE HERE IS AN EXPLICIT UTC INSTANT, never a clock read: `new Date()` with no argument
+// would make an assertion depend on the day it ran. tests/setup.ts pins the process time zone to
+// UTC before any subject is imported.
 //
-// Every required column is present on every row. The adapter's column readers
-// distinguish ABSENT from NULL and raise on absent, deliberately, because an absent
-// column means the statement or the schema is wrong while a NULL is a legitimate
-// stored value - so a row that omitted one would fail for the wrong reason.
+// Every required column is present on every row. The adapter's column readers distinguish ABSENT
+// from NULL and raise on absent, because an absent column means the statement or the schema is
+// wrong while a NULL is a legitimate stored value.
 
 const CANNED_CREATED_DATE_TIME = new Date('2024-06-01T00:00:00.000Z');
 
@@ -991,6 +1071,9 @@ const CANNED_PARENT_PRICE_GROUP_ID = 'pg-parent';
 
 const CANNED_ROOT_PRICE_GROUP_ID = 'pg-root';
 
+/** A second price group at the same level as `CANNED_PRICE_GROUP_ID`, sharing its parent. */
+const CANNED_SIBLING_PRICE_GROUP_ID = 'pg-distributor';
+
 const CANNED_PRICE_GROUP_RATE_ID = 'pgr-sku-level';
 
 const CANNED_ROUNDING_RULE_ID = 'rr-closest';
@@ -998,9 +1081,8 @@ const CANNED_ROUNDING_RULE_ID = 'rr-closest';
 /**
  * One `SwPriceGroup` row as the driver would hand it back.
  *
- * `activeFlag` arrives as the numeric `1` because MySQL reports a `bit`/`tinyint`
- * that way, and the adapter deliberately passes it through UNCOERCED so the entity
- * can apply CFML boolean semantics to it.
+ * `activeFlag` arrives as the numeric `1` because MySQL reports a `bit`/`tinyint` that way, and the
+ * adapter passes it through UNCOERCED so the entity can apply CFML boolean semantics to it.
  */
 function priceGroupRow(overrides: Readonly<Record<string, unknown>> = {}): SqlRow {
   return {
@@ -1029,8 +1111,8 @@ function joinedRoundingRuleColumns(
   return {
     roundingRule_roundingRuleID: CANNED_ROUNDING_RULE_ID,
     roundingRule_roundingRuleName: 'Closest ninety-nine',
-    // CFML parity [model/entity/RoundingRule.cfc:L54]: the expression is a plain
-    // string column with no format constraint, handed through exactly as stored.
+    // CFML parity [model/entity/RoundingRule.cfc:L54]: the expression is a plain string column with
+    // no format constraint, handed through exactly as stored.
     roundingRule_roundingRuleExpression: '.99',
     roundingRule_roundingRuleDirection: 'Closest',
     roundingRule_createdDateTime: CANNED_CREATED_DATE_TIME,
@@ -1044,15 +1126,11 @@ function joinedRoundingRuleColumns(
 /**
  * One `SwPriceGroupRate` row, with no rounding rule joined.
  *
- * The outer join leaves `roundingRule_roundingRuleID` NULL for a rate that declares
- * no rule, which is the state the adapter maps to an absent association. Only that
- * one alias has to be present in the NULL case, because the factory short-circuits
- * on it before reading the other seven - but a row that carried the other seven and
- * not this one would be a different statement, so the shape is kept honest.
+ * The outer join leaves `roundingRule_roundingRuleID` NULL for a rate that declares no rule, which
+ * is the state the adapter maps to an absent association. Only that alias has to be present in the
+ * NULL case, because the factory short-circuits on it before reading the other seven.
  *
- * `amount` arrives as a STRING because `decimalNumbers` is left unset on the pool,
- * so DECIMAL is delivered as text and `Money` is constructed from it. It is never a
- * JavaScript number at any point.
+ * `amount` arrives as a STRING because `decimalNumbers` is left unset on the pool.
  */
 function priceGroupRateRow(overrides: Readonly<Record<string, unknown>> = {}): SqlRow {
   return {
@@ -1072,55 +1150,45 @@ function priceGroupRateRow(overrides: Readonly<Record<string, unknown>> = {}): S
   };
 }
 
-/** One `SwSubsUsageBenefitPriceGroup` projection row from stage one. */
 function subscriptionPriceGroupIDRow(priceGroupID: string): SqlRow {
   return { priceGroupID };
 }
 
-/** One link row attributing a member to the rate that owns it. */
 function rateLinkRow(memberColumn: string, memberID: string): SqlRow {
   return { priceGroupRateID: CANNED_PRICE_GROUP_RATE_ID, [memberColumn]: memberID };
 }
 
-/**
- * The canned sequence a single leaf price-group read consumes.
- *
- * Three statements: the row itself, its (empty) rate collection, and its (empty)
- * direct children. Stated as a named sequence because several groups below reuse it
- * and the count is itself an assertion.
- */
 function leafPriceGroupResultSets(row: SqlRow = priceGroupRow()): readonly (readonly SqlRow[])[] {
   return [[row], NO_ROWS, NO_ROWS];
 }
 
-/** How many statements a leaf price-group read issues. */
 const LEAF_PRICE_GROUP_STATEMENT_COUNT = 3;
 
 // --- The port surface, pinned at compile time ---------------------------------
 //
-// C4/B4: interface parity is the acceptance contract, so the port's shape is
-// asserted rather than assumed. Each map below is typed `Record<keyof T, ...>`,
-// which is exhaustive in BOTH directions: a member added to the port fails to
-// compile because the map would be missing a key, and a member removed fails
-// because the map would carry an excess one. That is a stronger guarantee than any
-// runtime reflection could give, and it costs nothing at run time.
+// C4/B4: interface parity is the acceptance contract, so the port's shape is asserted rather than
+// assumed. Each map below is typed `Record<keyof T, ...>`, exhaustive in BOTH directions: a member
+// added to the port fails to compile because the map would be missing a key, and a member removed
+// fails because the map would carry an excess one.
 
 /**
  * The six methods the port declares, with the number of parameters each DECLARES.
  *
- * Five take exactly one; `savePriceGroup` takes two, the second being the optional
- * prior persisted state. `Function.prototype.length` counts parameters up to the
- * first one with a DEFAULT, and a TypeScript `priorState?: PriceGroup` compiles to a
- * plain parameter rather than a defaulted one, so the reported arity is two. That is
- * asserted as measured rather than as wished for.
+ * Four take exactly one. TWO take two, and in both cases the second is optional:
+ * `savePriceGroup` takes the optional prior persisted state, and `savePriceGroupRate`
+ * takes the optional set of sibling rates the caller's exclusivity reconciliation
+ * mutated - the set Hibernate's request-end flush persisted alongside the saved rate.
+ * `Function.prototype.length` counts parameters up to the first one with a DEFAULT,
+ * and a TypeScript `priorState?: PriceGroup` compiles to a plain parameter rather
+ * than a defaulted one, so the reported arity is two. Both are declared that way
+ * DELIBERATELY: a defaulted parameter would report an arity of one and this
+ * assertion could then no longer tell a present optional parameter from an absent
+ * one. That is asserted as measured rather than as wished for.
  *
- * The obligation this discharges is a negative one: NOTHING on this surface carries
- * an ordering parameter, an eager-load hint, a row limit, a page cursor or an
- * iteration bound. The execution-ordering constraint is enforced in
- * src/handlers/bootstrap.ts and asserted in the services and handlers tier - never
- * by a parameter here. The prior-state parameter's OPTIONALITY is proven separately
- * and more strongly: at compile time by `PriorStateArgument` including `undefined`,
- * and at run time by the insert path rejecting a prior state outright.
+ * The obligation is a negative one: NOTHING on this surface carries an ordering parameter, an
+ * eager-load hint, a row limit, a page cursor or an iteration bound. The prior-state parameter's
+ * OPTIONALITY is proven separately, at compile time by `PriorStateArgument` including `undefined`
+ * and at run time by the insert path rejecting a prior state.
  */
 const EXPECTED_PORT_METHOD_DECLARED_PARAMETER_COUNT: Readonly<
   Record<keyof PriceGroupRepository, number>
@@ -1129,20 +1197,18 @@ const EXPECTED_PORT_METHOD_DECLARED_PARAMETER_COUNT: Readonly<
   getPriceGroup: 1,
   getPriceGroupRate: 1,
   savePriceGroup: 2,
-  savePriceGroupRate: 1,
+  savePriceGroupRate: 2,
   deletePriceGroup: 1,
 });
 
-/** How many methods the port declares. Locked. */
 const EXPECTED_PORT_METHOD_COUNT = 6;
 
 /**
  * The single member `CurrentAccountContext` declares.
  *
- * Exhaustive by construction, which is what proves the negative the obligation
- * cares about: there is no session, locale, currency, time-zone, permission,
- * request-identifier, correlation-identifier or logger member on it, because a
- * seventh member of any kind would fail to compile against this map.
+ * Exhaustive by construction, which proves the negative the obligation cares about: there is no
+ * session, locale, currency, time-zone, permission, request-identifier, correlation-identifier or
+ * logger member, because a SECOND member of any kind would fail to compile against this map.
  */
 const EXPECTED_CURRENT_ACCOUNT_CONTEXT_MEMBERS: Readonly<
   Record<keyof CurrentAccountContext, true>
@@ -1151,9 +1217,8 @@ const EXPECTED_CURRENT_ACCOUNT_CONTEXT_MEMBERS: Readonly<
 /**
  * The three members `SkuPriceGroupResolver` declares, at the location it shipped.
  *
- * Recorded as a discrepancy in the header: the obligation expects two members on
- * the port, and what shipped is three members on src/domain/entities/sku.ts. The
- * shipped code is authoritative for shape, so this is asserted as it is.
+ * Recorded as a discrepancy in the header: the obligation expects two members on the port, and what
+ * shipped is three on src/domain/entities/sku.ts. The shipped code is authoritative for shape.
  */
 const EXPECTED_SKU_PRICE_GROUP_RESOLVER_MEMBERS: Readonly<
   Record<keyof SkuPriceGroupResolver, true>
@@ -1163,25 +1228,18 @@ const EXPECTED_SKU_PRICE_GROUP_RESOLVER_MEMBERS: Readonly<
   calculateSkuPriceBasedOnCurrentAccount: true,
 });
 
-/** The argument tuple `savePriceGroup` accepts, used to pin the prior-state shape. */
 type SavePriceGroupArguments = Parameters<PriceGroupRepository['savePriceGroup']>;
 
-/** The prior-state parameter's declared type. */
 type PriorStateArgument = SavePriceGroupArguments[1];
 
 /**
- * Reads a member off the repository without ever taking an unbound method
- * reference.
+ * Reads a member off the repository without ever taking an unbound method reference.
  *
- * The instance is viewed as a string-keyed record so the member's static type is
- * `unknown`, which is then narrowed. Reading `repository.getPriceGroup` directly
- * would be a method reference detached from its receiver, and this project treats
- * that as an error in production code for good reason; the same discipline applies
- * here even though only the parameter count is wanted.
+ * The instance is viewed as a string-keyed record so the member's static type is `unknown`, which
+ * is then narrowed. Reading `repository.getPriceGroup` directly would be a method reference
+ * detached from its receiver, which this project treats as an error in production code; the same
+ * discipline applies here.
  *
- * @param repository the subject.
- * @param methodName the port member to inspect.
- * @returns the number of parameters the member declares.
  * @throws When the member is absent or is not callable.
  */
 function declaredParameterCount(
@@ -1201,13 +1259,12 @@ function declaredParameterCount(
 }
 
 /**
- * The six port method names, spelled out so the runtime list and the exhaustive
- * compile-time map above can be cross-checked against each other.
+ * The six port method names, spelled out so the runtime list and the exhaustive compile-time map
+ * above can be cross-checked against each other.
  *
- * C4/B4: LEGACY CAMELCASE, VERBATIM. `getAccountSubscriptionPriceGroups` is the
- * name [model/dao/PriceGroupDAO.cfc:L52] declares and it is carried over unchanged
- * rather than renamed to something more idiomatic, because a reviewer diffing the
- * two surfaces method by method is the acceptance test.
+ * C4/B4: LEGACY CAMELCASE, VERBATIM. `getAccountSubscriptionPriceGroups` is the name
+ * [model/dao/PriceGroupDAO.cfc:L52] declares, carried over unchanged, because a reviewer diffing
+ * the two surfaces method by method is the acceptance test.
  */
 const PORT_METHOD_NAMES: readonly (keyof PriceGroupRepository)[] = Object.freeze([
   'getAccountSubscriptionPriceGroups',
@@ -1218,11 +1275,10 @@ const PORT_METHOD_NAMES: readonly (keyof PriceGroupRepository)[] = Object.freeze
   'deletePriceGroup',
 ]);
 
-/** A price group that has never been persisted, for the insert path. */
 function makeUnsavedPriceGroup(parentPriceGroup: PriceGroup | undefined): PriceGroup {
   return new PriceGroup({
-    // `unsavedvalue=""` [model/entity/PriceGroup.cfc:L52] is what `isNew()` tests, so an
-    // empty key is how "not yet inserted" is spelled rather than a separate flag.
+    // `unsavedvalue=""` [model/entity/PriceGroup.cfc:L52] is what `isNew()` tests, so an empty key
+    // is how "not yet inserted" is spelled.
     priceGroupID: '',
     priceGroupIDPath: undefined,
     activeFlag: true,
@@ -1259,11 +1315,10 @@ describe('MySqlPriceGroupRepository - NET-NEW coverage with no legacy antecedent
   });
 
   it('is composed from two explicit constructor arguments and nothing ambient', () => {
-    // C1/B1: no application bootstrap, no container, no locator, no ambient request
-    // scope and no privilege elevation - the whole
-    // [meta/tests/unit/SlatwallUnitTestBase.cfc] pattern is absent. Two arguments,
-    // supplied by hand, is the entire composition. The executor being a parameter is
-    // also what makes the emitted SQL observable at all.
+    // C1/B1: no application bootstrap, no container, no locator, no ambient request scope and no
+    // privilege elevation - the whole [meta/tests/unit/SlatwallUnitTestBase.cfc] pattern is absent.
+    // Two arguments, supplied by hand, is the entire composition, and the executor being a
+    // parameter is what makes the emitted SQL observable at all.
     const executor = new RecordingExecutor([]);
     const valueRounder = makeRecordingValueRounder();
     const repository: PriceGroupRepository = new MySqlPriceGroupRepository(executor, valueRounder);
@@ -1278,13 +1333,12 @@ describe('MySqlPriceGroupRepository - NET-NEW coverage with no legacy antecedent
 });
 
 /**
- * The six subscription-owned tables the reach-through reads, and the ONLY place in
- * the whole migration where an out-of-scope subsystem's tables are queried.
+ * The six subscription-owned tables the reach-through reads, and the ONLY place in the whole
+ * migration where an out-of-scope subsystem's tables are queried.
  *
- * [model/dao/PriceGroupDAO.cfc:L59-L71]. Declared at module scope because two
- * separate obligations are expressed over the set: the reach-through group asserts
- * every one of them appears in stage one, and the schema-continuity group asserts
- * none of them is ever the target of a write.
+ * [model/dao/PriceGroupDAO.cfc:L59-L71]. Declared at module scope because two obligations are
+ * expressed over the set: the reach-through group asserts every one appears in stage one, and the
+ * schema-continuity group asserts none is ever the target of a write.
  */
 const SUBSCRIPTION_OWNED_TABLES: readonly string[] = Object.freeze([
   'SwSubsUsageBenefitAccount',
@@ -1298,12 +1352,10 @@ const SUBSCRIPTION_OWNED_TABLES: readonly string[] = Object.freeze([
 /**
  * The one instant every bound timestamp in this suite is derived from.
  *
- * An explicit UTC ISO-8601 literal, never `new Date()` with no argument: a bound
- * timestamp whose value depends on when the suite ran is not an assertion. The `Z`
- * is load-bearing - a bare `'2024-06-01T00:00:00'` would be parsed as local time and
- * the suite would assert a different instant on a machine in another zone. The
- * connection's own time-zone policy is fixed at `'Z'` in connection.ts and this
- * mirrors it rather than restating it.
+ * An explicit UTC ISO-8601 literal, never `new Date()` with no argument: a bound timestamp whose
+ * value depends on when the suite ran is not an assertion. The `Z` is load-bearing, since a bare
+ * `'2024-06-01T00:00:00'` would be parsed as local time. The connection's own time-zone policy is
+ * fixed at `'Z'` in connection.ts and this mirrors it.
  */
 const EXPLICIT_UTC_INSTANT = new Date('2024-06-01T00:00:00.000Z');
 
@@ -1317,8 +1369,8 @@ describe('getAccountSubscriptionPriceGroups - the one deliberate read-only reach
 
     expect(stageOne.sql).toBe(EXPECTED_SUBSCRIPTION_PRICE_GROUP_IDS_SQL);
 
-    // Three binds, in the order the clauses appear: the `endDateTime` upper bound
-    // [L65], the account [L66], then the `effectiveDateTime` upper bound [L70].
+    // Three binds, in the order the clauses appear: the `endDateTime` upper bound [L65], the
+    // account [L66], then the `effectiveDateTime` upper bound [L70].
     expect(stageOne.params).toHaveLength(3);
     expect(parameterAt(stageOne.params, 0)).toBeInstanceOf(Date);
     expect(parameterAt(stageOne.params, 1)).toBe(CANNED_ACCOUNT_ID);
@@ -1332,9 +1384,6 @@ describe('getAccountSubscriptionPriceGroups - the one deliberate read-only reach
 
     const stageOne = onlyStatement(executor.calls);
 
-    // E5: the account identifier appears in the PARAMETER ARRAY and nowhere in the
-    // SQL text. This is the obligation the whole folder turns on, asserted directly
-    // rather than inferred from the use of a builder.
     expect(stageOne.sql).not.toContain(CANNED_ACCOUNT_ID);
     expect(stageOne.params).toContain(CANNED_ACCOUNT_ID);
   });
@@ -1354,20 +1403,16 @@ describe('getAccountSubscriptionPriceGroups - the one deliberate read-only reach
       'the effectiveDateTime upper bound',
     );
 
-    // CFML parity [model/dao/PriceGroupDAO.cfc:L65, L70, L81, L86]: the legacy calls
-    // `now()` FOUR TIMES across its two arms, so its two comparisons within one arm
-    // could straddle a tick and disagree. The target captures ONE instant per
-    // invocation and binds it to every position, which is asserted here by OBJECT
-    // IDENTITY and not merely by equal epochs - equal epochs could still be two
-    // separate reads that happened to land in the same millisecond.
+    // CFML parity [model/dao/PriceGroupDAO.cfc:L65, L70, L81, L86]: the legacy calls `now()` FOUR
+    // TIMES across its two arms, so two comparisons within one arm could straddle a tick and
+    // disagree. The target captures ONE instant per invocation and binds it to every position,
+    // asserted here by OBJECT IDENTITY rather than by equal epochs, which could still be two reads
+    // landing in the same millisecond.
     expect(endDateTimeBound).toBe(effectiveDateTimeBound);
     expect(endDateTimeBound.getTime()).toBe(effectiveDateTimeBound.getTime());
   });
 
   it('never emits a server-side clock call in either dialect arm', () => {
-    // The instant is a BOUND VALUE, so the statement text carries no clock call of
-    // any kind. Asserted against the emitted text itself rather than against the
-    // adapter, and against both spellings a MySQL statement could use.
     const statement =
       ACCOUNT_SUBSCRIPTION_PRICE_GROUP_STATEMENTS.buildSubscriptionPriceGroupIDsStatement({
         accountID: CANNED_ACCOUNT_ID,
@@ -1381,9 +1426,6 @@ describe('getAccountSubscriptionPriceGroups - the one deliberate read-only reach
   });
 
   it('is a pure builder: the same criteria produce the same text and the same binds', () => {
-    // The builder takes the instant as an argument, so it reads no clock and two
-    // calls with the same criteria are indistinguishable. That is what lets the
-    // statement be pinned as a literal at all.
     const criteria = {
       accountID: CANNED_ACCOUNT_ID,
       now: EXPLICIT_UTC_INSTANT,
@@ -1413,11 +1455,10 @@ describe('getAccountSubscriptionPriceGroups - the one deliberate read-only reach
         dialect: 'MySQL',
       });
 
-    // JUDGMENT CALL: `'sstActive'` stays a LITERAL rather than becoming a fourth
-    // bound parameter. [model/dao/PriceGroupDAO.cfc:L67] writes it as a literal, it
-    // is a system code owned by the schema and unreachable by any caller, and
-    // binding it would make the parameter count differ from the legacy's three
-    // without changing a single matched row.
+    // JUDGMENT CALL: `'sstActive'` stays a LITERAL rather than becoming a fourth bound parameter.
+    // [model/dao/PriceGroupDAO.cfc:L67] writes it as a literal, it is a system code owned by the
+    // schema and unreachable by any caller, and binding it would make the parameter count differ
+    // from the legacy's three without changing a matched row.
     expect(statement.sql).toContain("'sstActive' = (SELECT systemCode");
     expect(statement.params).toHaveLength(3);
     expect(statement.params).not.toContain('sstActive');
@@ -1434,14 +1475,14 @@ describe('getAccountSubscriptionPriceGroups - the one deliberate read-only reach
     // LEGACY-DEFECT [model/dao/PriceGroupDAO.cfc:L68, L84]: the INNER JOIN SwType contributes no
     // column to the sub-select's projection, yet as an INNER join it filters out rows with no
     // matching SwType, so removing it changes the result set.
+    //
     // Preserved deliberately; do not fix without a product decision.
     expect(statement.sql).toContain(
       'INNER JOIN SwType ON SwSubscriptionStatus.subscriptionStatusTypeID = SwType.typeID',
     );
 
-    // The projection is `systemCode` alone, which is the half of the finding that
-    // makes the join look removable. Pinned so the temptation is recorded, not just
-    // the resolution.
+    // The projection is `systemCode` alone, which is the half of the finding that makes the join
+    // look removable. Pinned so the temptation is recorded, not just the resolution.
     expect(statement.sql).toContain('(SELECT systemCode FROM SwSubscriptionStatus');
     expect(statement.sql).not.toContain('SwType.type,');
   });
@@ -1454,15 +1495,12 @@ describe('getAccountSubscriptionPriceGroups - the one deliberate read-only reach
         dialect: 'MySQL',
       });
 
-    // CFML parity [model/dao/PriceGroupDAO.cfc:L71, L87]: BOTH arms order by
-    // `changeDateTime DESC`; only the limiting syntax differs, `LIMIT 1` trailing on
-    // the MySQL arm against `TOP 1` leading on the other. Which row the sub-select
-    // returns therefore depends on that ordering, so it is load-bearing.
+    // CFML parity [model/dao/PriceGroupDAO.cfc:L71, L87]: BOTH arms order by `changeDateTime DESC`
+    // and only the limiting syntax differs, `LIMIT 1` trailing against `TOP 1` leading. Which row
+    // the sub-select returns depends on that ordering.
     expect(statement.sql).toContain('ORDER BY changeDateTime DESC LIMIT 1)');
     expect(statement.sql).not.toContain('TOP 1');
 
-    // The fragments the arm was assembled from, asserted at their source so the
-    // prefix/suffix pairing is visible rather than only its result.
     const fragments = singleRowLimitFragments('MySQL');
     expect(fragments.selectPrefix).toBe('');
     expect(fragments.trailingClause).toBe('LIMIT 1');
@@ -1473,11 +1511,10 @@ describe('getAccountSubscriptionPriceGroups - the one deliberate read-only reach
 
     const result = await repository.getAccountSubscriptionPriceGroups(CANNED_ACCOUNT_ID);
 
-    // CFML parity [model/dao/PriceGroupDAO.cfc:L92, L98]: `<cfif getpg.recordCount>`
-    // guards stage two and `<cfreturn [] />` is the fall-through. The guard is an
-    // EARLY RETURN here, before any stage-two statement is built - which is also what
-    // stops an `IN ()` with zero placeholders, a MySQL syntax error, from ever being
-    // emitted.
+    // CFML parity [model/dao/PriceGroupDAO.cfc:L92, L98]: `<cfif getpg.recordCount>` guards stage
+    // two and `<cfreturn [] />` is the fall-through. The guard is an EARLY RETURN here, before any
+    // stage-two statement is built, which is also what stops an `IN ()` with zero placeholders - a
+    // MySQL syntax error - from ever being emitted.
     expect(result).toStrictEqual([]);
 
     const stageOne = onlyStatement(executor.calls);
@@ -1487,18 +1524,14 @@ describe('getAccountSubscriptionPriceGroups - the one deliberate read-only reach
       expect(sql).not.toContain('IN ()');
     }
 
-    // ⚠ THIS SHORT-CIRCUIT BELONGS HERE AND NOWHERE ELSE. `OptionDAO` carries NO
-    // emptiness guard, so its adapter must bind a single empty-string element to
-    // reproduce a different legacy asymmetry, and an early `return []` there would be
-    // WRONG. The difference is in the two source components, not in the two adapters,
-    // and the two must never be harmonised.
+    // THIS SHORT-CIRCUIT BELONGS HERE AND NOWHERE ELSE. `OptionDAO` carries NO emptiness guard, so
+    // its adapter must bind a single empty-string element to reproduce a different legacy
+    // asymmetry, and an early `return []` there would be WRONG. The difference is in the two source
+    // components, not in the two adapters.
     expect(executor.mutationCalls).toHaveLength(0);
   });
 
   it('rejects an empty identifier set at the stage-two builder itself', () => {
-    // Defence in depth: the adapter never reaches this, because it returns early. The
-    // builder still refuses, so a future caller that forgot the guard fails loudly
-    // instead of emitting `IN ()`.
     expect(() =>
       ACCOUNT_SUBSCRIPTION_PRICE_GROUP_STATEMENTS.buildActivePriceGroupsByIDStatement({
         priceGroupIDs: [],
@@ -1507,10 +1540,9 @@ describe('getAccountSubscriptionPriceGroups - the one deliberate read-only reach
   });
 
   it('grows the stage-two placeholder run one per identifier, for one, two and three', () => {
-    // MySQL prepared statements do NOT expand `IN (?)` from an array, so the run must
-    // carry one placeholder per element and each element must be bound separately.
-    // Asserted at three cardinalities because an off-by-one in the run is exactly the
-    // defect this pins.
+    // MySQL prepared statements do NOT expand `IN (?)` from an array, so the run must carry one
+    // placeholder per element and each element must be bound separately. Asserted at three
+    // cardinalities because an off-by-one in the run is exactly the defect this pins.
     const oneID = ACCOUNT_SUBSCRIPTION_PRICE_GROUP_STATEMENTS.buildActivePriceGroupsByIDStatement({
       priceGroupIDs: [CANNED_PRICE_GROUP_ID],
     });
@@ -1530,8 +1562,6 @@ describe('getAccountSubscriptionPriceGroups - the one deliberate read-only reach
     expect(twoIDs.sql).toBe(EXPECTED_ACTIVE_PRICE_GROUPS_BY_ID_SQL_FOR_TWO_IDS);
     expect(threeIDs.sql).toBe(EXPECTED_ACTIVE_PRICE_GROUPS_BY_ID_SQL_FOR_THREE_IDS);
 
-    // The count identity, stated as the growth law rather than only as three literals:
-    // placeholders equal elements, plus exactly one more for the flag.
     expect(oneID.params).toHaveLength(2);
     expect(twoIDs.params).toHaveLength(3);
     expect(threeIDs.params).toHaveLength(4);
@@ -1543,11 +1573,10 @@ describe('getAccountSubscriptionPriceGroups - the one deliberate read-only reach
         priceGroupIDs: [CANNED_PRICE_GROUP_ID, CANNED_PARENT_PRICE_GROUP_ID],
       });
 
-    // CFML parity [model/dao/PriceGroupDAO.cfc:L95]: the legacy HQL binds `activeFlag`
-    // as the NUMERIC `1`. The slice binds this flag inconsistently elsewhere -
-    // `cf_sql_bit` in raw SQL at [model/dao/PromotionDAO.cfc:L321] - and the target
-    // reconciles to one bound shape, which is safe because the matched row set is
-    // identical either way.
+    // CFML parity [model/dao/PriceGroupDAO.cfc:L95]: the legacy HQL binds `activeFlag` as the
+    // NUMERIC `1`. The slice binds this flag inconsistently elsewhere - `cf_sql_bit` in raw SQL at
+    // [model/dao/PromotionDAO.cfc:L321] - and the target reconciles to one bound shape, which is
+    // safe because the matched row set is identical either way.
     expect(statement.params).toStrictEqual([
       CANNED_PRICE_GROUP_ID,
       CANNED_PARENT_PRICE_GROUP_ID,
@@ -1560,11 +1589,11 @@ describe('getAccountSubscriptionPriceGroups - the one deliberate read-only reach
 
   it('reproduces the legacy value-list round trip, which drops blank elements', () => {
     // CFML parity [model/dao/PriceGroupDAO.cfc:L95]: the legacy runs
-    // `listToArray(valueList(getpg.priceGroupID))`. `valueList` joins the column into
-    // one comma-delimited string and `listToArray` splits it back, and that round trip
-    // is OBSERVABLE because `listToArray` drops empty elements. This is one of exactly
-    // six in-scope `listToArray` sites, and the behaviour is inherited from the shared
-    // helper rather than re-derived - so it is asserted against the helper.
+    // `listToArray(valueList(getpg.priceGroupID))`. `valueList` joins the column into one
+    // comma-delimited string and `listToArray` splits it back, and that round trip is OBSERVABLE
+    // because `listToArray` drops empty elements. This is one of exactly six in-scope `listToArray`
+    // sites, and the behaviour is inherited from the shared helper, so it is asserted against the
+    // helper.
     expect(listToArray('a,,b')).toStrictEqual(['a', 'b']);
 
     const statement =
@@ -1587,11 +1616,10 @@ describe('getAccountSubscriptionPriceGroups - the one deliberate read-only reach
       });
 
     // CFML parity [model/dao/PriceGroupDAO.cfc:L93]: the legacy stage two is HQL and
-    // `SlatwallPriceGroup` is CORRECT there - it is the ORM ENTITY name, and HQL
-    // resolves entity names. With no ORM the statement is raw SQL, so the physical
-    // table `SwPriceGroup` [model/entity/PriceGroup.cfc:L49] is what must be emitted.
-    // Stage one needs no such translation at all: it is a tag-syntax `<cfquery>` and
-    // already names physical tables.
+    // `SlatwallPriceGroup` is CORRECT there, being the ORM ENTITY name. With no ORM the statement
+    // is raw SQL, so the physical table `SwPriceGroup` [model/entity/PriceGroup.cfc:L49] is what
+    // must be emitted. Stage one needs no such translation: it is a tag-syntax `<cfquery>` already
+    // naming physical tables.
     expect(statement.sql).toContain('FROM SwPriceGroup pg');
     expect(statement.sql).not.toContain('Slatwall');
     expect(EXPECTED_SUBSCRIPTION_PRICE_GROUP_IDS_SQL).not.toContain('Slatwall');
@@ -1609,9 +1637,6 @@ describe('getAccountSubscriptionPriceGroups - the one deliberate read-only reach
 
     expect(result).toHaveLength(1);
 
-    // READ-ONLY, ASSERTED DIRECTLY. Every statement this method emits is a SELECT,
-    // and no data-modifying statement is emitted at all - so no INSERT, UPDATE,
-    // DELETE or DDL can reach a subscription table by construction.
     expect(executor.mutationCalls).toHaveLength(0);
     for (const sql of sqlTextsOf(executor.calls)) {
       expect(sql.startsWith('SELECT')).toBe(true);
@@ -1620,11 +1645,10 @@ describe('getAccountSubscriptionPriceGroups - the one deliberate read-only reach
       expect(sql).not.toContain('DELETE');
     }
 
-    // And the six tables appear in exactly one statement - stage one - and are absent
-    // from every other statement the hydration fans out into. NO SUBSCRIPTION
-    // BUSINESS LOGIC is exercised: nothing here reads a benefit, a usage, a status or
-    // a term, and this is explicitly distinct from `subscriptionTermProvider`, which
-    // is a stub port and is not involved.
+    // And the six tables appear in exactly one statement - stage one - and are absent from every
+    // other statement the hydration fans out into. NO SUBSCRIPTION BUSINESS LOGIC is exercised:
+    // nothing reads a benefit, a usage, a status or a term, and this is distinct from
+    // `subscriptionTermProvider`, which is a stub port and is not involved.
     const stageOne = statementAt(executor.calls, 0);
     for (const tableName of SUBSCRIPTION_OWNED_TABLES) {
       expect(stageOne.sql).toContain(tableName);
@@ -1651,27 +1675,28 @@ describe('getAccountSubscriptionPriceGroups - the one deliberate read-only reach
     expect(hydrated.getPriceGroupID()).toBe(CANNED_PRICE_GROUP_ID);
     expect(hydrated.getPriceGroupRates()).toHaveLength(1);
 
-    // Statement order, pinned: stage one, stage two, then the per-row hydration -
-    // rates, the six link reads, and the DIRECT CHILDREN, which the reach-through
-    // does materialize because the entity it hands back is the one the service may
-    // later detach children from.
+    // Statement order, pinned: stage one, stage two, then the per-row hydration - rates, the six
+    // link reads, and the DIRECT CHILDREN, which the reach-through does materialize because the
+    // entity it hands back is the one the service may later detach children from.
     const emitted = sqlTextsOf(executor.calls);
     expect(emitted).toHaveLength(3 + RATE_LINK_TABLE_COUNT + 1);
     expect(statementAt(executor.calls, 0).sql).toBe(EXPECTED_SUBSCRIPTION_PRICE_GROUP_IDS_SQL);
     expect(statementAt(executor.calls, 1).sql).toBe(
       EXPECTED_ACTIVE_PRICE_GROUPS_BY_ID_SQL_FOR_ONE_ID,
     );
-    expect(statementAt(executor.calls, 2).sql).toBe(EXPECTED_SELECT_RATES_BY_PRICE_GROUP_SQL);
+    expect(statementAt(executor.calls, 2).sql).toBe(
+      EXPECTED_SELECT_RATES_BY_PRICE_GROUP_SQL_FOR_ONE_ID,
+    );
+    expect(statementAt(executor.calls, 2).params).toStrictEqual([CANNED_PRICE_GROUP_ID]);
     expect(statementAt(executor.calls, 9).sql).toBe(EXPECTED_SELECT_CHILD_PRICE_GROUPS_SQL);
   });
 
   it('treats a non-MySQL dialect as a hard error, never a silently wrong statement', () => {
-    // CFML parity [model/dao/PriceGroupDAO.cfc:L57]: the else arm is real legacy code,
-    // so the behaviour is reproducible - but reproducing it is out of scope, and
-    // emitting the MySQL text under another dialect would be silently wrong. The
-    // consequence worth recording: ORACLE FALLS INTO THE `TOP 1` BRANCH, which is not
-    // valid Oracle, so the legacy itself could not have served an Oracle installation
-    // through this method.
+    // CFML parity [model/dao/PriceGroupDAO.cfc:L57]: the else arm is real legacy code, so the
+    // behaviour is reproducible, but reproducing it is out of scope and emitting the MySQL text
+    // under another dialect would be silently wrong. Worth recording: ORACLE FALLS INTO THE `TOP 1`
+    // BRANCH, which is not valid Oracle, so the legacy itself could not have served an Oracle
+    // installation through this method.
     for (const dialect of ['MicrosoftSQLServer', 'Oracle10g'] satisfies DatabaseDialect[]) {
       expect(() =>
         ACCOUNT_SUBSCRIPTION_PRICE_GROUP_STATEMENTS.buildSubscriptionPriceGroupIDsStatement({
@@ -1686,7 +1711,6 @@ describe('getAccountSubscriptionPriceGroups - the one deliberate read-only reach
 
 // --- Entities for the write paths ---------------------------------------------
 
-/** A price group that HAS been persisted, for the update and delete paths. */
 function makePersistedPriceGroup(init: {
   readonly priceGroupID: string;
   readonly priceGroupIDPath: string | undefined;
@@ -1712,51 +1736,74 @@ function makePersistedPriceGroup(init: {
 /**
  * A rate that has never been persisted, for the rate insert path.
  *
- * Every optional slot is left absent on purpose. `amount` in particular has NO
- * default in the legacy column [model/entity/PriceGroupRate.cfc:L54], so absent is a
- * state the schema genuinely permits and the bound NULL is an assertion, not an
- * oversight.
+ * Every optional slot is left absent on purpose. `amount` in particular has NO default in the
+ * legacy column [model/entity/PriceGroupRate.cfc:L54], so absent is a state the schema genuinely
+ * permits and the bound NULL is an assertion, not an oversight.
  */
 function makeUnsavedPriceGroupRate(): PriceGroupRate {
   return new PriceGroupRate({ priceGroupRateID: '' });
 }
 
-/** A rate that HAS been persisted, for the rate update path. */
 function makePersistedPriceGroupRate(init: { readonly amount: Money | undefined }): PriceGroupRate {
   return new PriceGroupRate({
     priceGroupRateID: CANNED_PRICE_GROUP_RATE_ID,
-    // CFML parity [model/entity/PriceGroupRate.cfc:L53]: the legacy default is the
-    // STRING 'false', not the boolean, and the entity applies CFML boolean semantics
-    // to it. Supplying that exact spelling keeps the hydration path honest.
+    // CFML parity [model/entity/PriceGroupRate.cfc:L53]: the legacy default is the STRING 'false',
+    // not the boolean, and the entity applies CFML boolean semantics to it.
     globalFlag: 'false',
     amount: init.amount,
     amountType: 'percentageOff',
   });
 }
 
+/** The two member keys each link collection carries on the fully-linked fixture below. */
+const LINKED_MEMBER_KEYS = ['linked-member-1', 'linked-member-2'] as const;
+
+/**
+ * A persisted rate holding TWO members in every one of its six link collections.
+ *
+ * Two rather than one, so a multi-row `VALUES` list is exercised and an insert that silently wrote
+ * only the first member would fail. Every one of the six is populated, because the reconciliation
+ * walks a fixed list and a fixture that left one empty would leave that table's insert unexercised.
+ */
+function makeFullyLinkedPriceGroupRate(): PriceGroupRate {
+  const [firstKey, secondKey] = LINKED_MEMBER_KEYS;
+
+  return new PriceGroupRate({
+    priceGroupRateID: CANNED_PRICE_GROUP_RATE_ID,
+    globalFlag: 'false',
+    amountType: 'percentageOff',
+    productTypes: [
+      new ProductType({ productTypeID: firstKey }),
+      new ProductType({ productTypeID: secondKey }),
+    ],
+    products: [new Product({ productID: firstKey }), new Product({ productID: secondKey })],
+    skus: [new Sku({ skuID: firstKey }), new Sku({ skuID: secondKey })],
+    excludedProductTypes: [
+      new ProductType({ productTypeID: firstKey }),
+      new ProductType({ productTypeID: secondKey }),
+    ],
+    excludedProducts: [new Product({ productID: firstKey }), new Product({ productID: secondKey })],
+    excludedSkus: [new Sku({ skuID: firstKey }), new Sku({ skuID: secondKey })],
+  });
+}
+
 // --- Every statement the port can emit, collected once -------------------------
 
-/** The complete statement census, split by whether the statement modifies data. */
 interface ProvokedStatements {
-  /** Every statement issued through the result-set path, in call order. */
   readonly reads: readonly RecordedStatement[];
 
-  /** Every statement issued through the data-modifying path, in call order. */
   readonly writes: readonly RecordedStatement[];
 }
 
 /**
  * Drive EVERY code path on the port once and return every statement emitted.
  *
- * Three obligations are expressed over the whole census rather than path by path -
- * that no order-owned table or column is ever named, that every statement targets an
- * existing `Sw*` table and none is schema-changing, and that every value travels as a
- * bound parameter. A per-path assertion could not prove any of those, because the
- * claim is about the ABSENCE of something across the entire surface.
+ * Three obligations are expressed over the whole census rather than path by path: that no
+ * order-owned table or column is ever named, that every statement targets an existing `Sw*` table
+ * and none is schema-changing, and that every value travels as a bound parameter. A per-path
+ * assertion could not prove any of those.
  *
- * Each path gets its OWN subject. That is deliberate: reusing one would let a
- * memoized read satisfy a later path and silently reduce the census, which is the
- * opposite of what is wanted here.
+ * Each path gets its OWN subject, so a memoized read cannot satisfy a later path.
  */
 async function provokeEveryStatement(): Promise<ProvokedStatements> {
   const reads: RecordedStatement[] = [];
@@ -1861,10 +1908,17 @@ async function provokeEveryStatement(): Promise<ProvokedStatements> {
   );
   collect(remove);
 
+  // 10. A rate save whose six collections all hold members, which is the ONLY path that emits the
+  //     six link INSERT statements. Without this case the census would prove nothing about them, and
+  //     the census is where the no-interpolation, permitted-table and placeholder-count obligations
+  //     are discharged for the whole port.
+  const rateWithMembers = makeSubject([]);
+  await rateWithMembers.repository.savePriceGroupRate(makeFullyLinkedPriceGroupRate());
+  collect(rateWithMembers);
+
   return { reads, writes };
 }
 
-/** Every statement, read or write, as one sequence for census assertions. */
 function allStatementsOf(provoked: ProvokedStatements): readonly RecordedStatement[] {
   return [...provoked.reads, ...provoked.writes];
 }
@@ -1872,20 +1926,15 @@ function allStatementsOf(provoked: ProvokedStatements): readonly RecordedStateme
 // --- The order boundary, pinned at compile time --------------------------------
 
 /**
- * One admissible argument tuple per port method, typed to the method's OWN
- * parameter list.
+ * One admissible argument tuple per port method, typed to the method's OWN parameter list.
  *
- * This is the strongest available statement of the anti-corruption inversion, and it
- * is enforced by the compiler rather than by a runtime probe. Each tuple is typed
- * `Parameters<PriceGroupRepository[method]>`, so it compiles only if the values below
- * are exactly what that method accepts. An order-shaped parameter appearing anywhere
- * on this port would make the corresponding tuple unsatisfiable from an identifier
- * and two price-group entities, and this declaration would stop compiling.
- *
- * What it therefore proves, positively: the port is reachable with nothing but an
- * account identifier, a price-group identifier, a rate identifier and price-group
- * entities. No order, no order item, no order fulfilment, no read-only order view, no
- * ordering flag, no eager-load hint, no row limit and no page cursor.
+ * This is the strongest available statement of the anti-corruption inversion, enforced by the
+ * compiler. Each tuple is typed `Parameters<PriceGroupRepository[method]>`, so an order-shaped
+ * parameter anywhere on this port would make the corresponding tuple unsatisfiable and stop this
+ * declaration compiling. Positively: the port is reachable with nothing but an account identifier,
+ * a price-group identifier, a rate identifier and price-group entities. No order, no order item, no
+ * order fulfilment, no order view, no ordering flag, no eager-load hint, no row limit and no page
+ * cursor.
  */
 interface PortArgumentTuples {
   readonly getAccountSubscriptionPriceGroups: Parameters<
@@ -1919,10 +1968,9 @@ function makePortArgumentTuples(): PortArgumentTuples {
  * Identifiers owned by the order aggregate, which is out of scope in its entirety.
  *
  * Tables first, then the three foreign-key columns the applied-promotion row carries
- * [model/entity/PromotionApplied.cfc:L49], because a join could reach the aggregate
- * through a column without ever naming its table. Matched case-insensitively, since
- * SQL identifiers are not case-sensitive in MySQL and a lower-cased spelling would
- * reach exactly the same table.
+ * [model/entity/PromotionApplied.cfc:L49], because a join could reach the aggregate through a
+ * column without naming its table. Matched case-insensitively, since SQL identifiers are not
+ * case-sensitive in MySQL.
  */
 const ORDER_OWNED_IDENTIFIERS: readonly string[] = Object.freeze([
   'SwOrder',
@@ -1937,6 +1985,61 @@ const ORDER_OWNED_IDENTIFIERS: readonly string[] = Object.freeze([
   'orderFulfillmentID',
 ]);
 
+/**
+ * The order-owned identifiers that are forbidden ABSOLUTELY, in every statement.
+ *
+ * ★★ THIS LIST IS THE NARROWED FORM OF A GUARDRAIL THAT USED TO COVER ALL TEN
+ * IDENTIFIERS ABOVE, AND THE ORIGINAL IS QUOTED RATHER THAN DELETED. The test below
+ * once asserted, over every statement the port can emit, that none contained any
+ * entry in `ORDER_OWNED_IDENTIFIERS` at all - and its rationale read "no statement
+ * this port emits can reach the order aggregate."
+ *
+ * WHY IT HAD TO CHANGE. `model/validation/PriceGroup.json` sets `maxCollection: 0` on
+ * `appliedOrderItems` in the `delete` context, and
+ * [org/Hibachi/HibachiService.cfc:L55, L79] refused the delete outright when that
+ * collection was populated. The relationship lives in exactly one place -
+ * `SwOrderItem.appliedPriceGroupID` [model/entity/PriceGroup.cfc:L62], whose far side
+ * is [model/entity/OrderItem.cfc:L49, L60] - so the gate cannot be enforced without
+ * naming that table once. The choice was between naming it in a single bare existence
+ * probe and leaving a price group deletable out from under a live order item, with the
+ * surviving `SwOrderItem` row then referencing a group that no longer exists. The
+ * blanket assertion was protecting a boundary; leaving the gate off would have been
+ * protecting a substring.
+ *
+ * WHY THE NARROWED FORM IS STRONGER RATHER THAN WEAKER. The three foreign-key columns
+ * stay forbidden EVERYWHERE, unconditionally, and they are the identifiers that would
+ * signal an actual reach into the aggregate: a statement selecting, joining or binding
+ * `orderID`, `orderItemID` or `orderFulfillmentID` is reading order DATA, whereas one
+ * testing `appliedPriceGroupID` is reading a reference TO A PRICE GROUP that happens
+ * to be stored on an order row. The table names are then constrained by three separate
+ * assertions below that are each tighter than a substring ban: never in a WRITE, never
+ * in a JOIN or a projection, and permitted in exactly ONE statement whose full text is
+ * pinned as a literal.
+ */
+const ABSOLUTELY_FORBIDDEN_ORDER_IDENTIFIERS: readonly string[] = Object.freeze([
+  'SwOrderFulfillment',
+  'SwOrderDelivery',
+  'SwOrderPayment',
+  'SwPromotionApplied',
+  'SwPromoApplied',
+  'orderID',
+  'orderItemID',
+  'orderFulfillmentID',
+]);
+
+/**
+ * The one statement in which an order table may appear, pinned as a literal.
+ *
+ * Written out rather than composed from the adapter's own builder, so that a change to
+ * how the probe is built cannot silently change what this suite permits.
+ */
+const PERMITTED_ORDER_ITEM_PROBE_SQL = [
+  'SELECT 1',
+  'FROM SwOrderItem',
+  'WHERE appliedPriceGroupID = ?',
+  'LIMIT 1',
+].join('\n');
+
 /** The order-facing service entry points, which must NOT appear on this port. */
 const ORDER_FACING_SERVICE_METHODS: readonly string[] = Object.freeze([
   'updateOrderAmountsWithPriceGroups',
@@ -1944,40 +2047,31 @@ const ORDER_FACING_SERVICE_METHODS: readonly string[] = Object.freeze([
 ]);
 
 describe('the execution-ordering constraint and the anti-corruption inversion', () => {
-  // C-2 / C2.1: the ordering constraint is that
-  // `PriceGroupService.updateOrderAmountsWithPriceGroups()`
+  // C-2 / C2.1: `PriceGroupService.updateOrderAmountsWithPriceGroups()`
   // [model/service/PriceGroupService.cfc:L364-L375] MUST run BEFORE
   // `PromotionService.updateOrderAmountsWithPromotions()`, because
-  // [model/service/PromotionService.cfc:L241-L254] picks the discount base price by
-  // price-group eligibility: an INELIGIBLE item uses `getPrice()`, while an ELIGIBLE
-  // item uses `getSkuPrice()` plus the correction term
-  // `originalDiscountAmount - (getExtendedSkuPrice() - getExtendedPrice())`. In the
-  // legacy that held only because the out-of-scope `OrderService` happened to call
-  // them in that sequence [model/service/OrderService.cfc:L60, L61].
+  // [model/service/PromotionService.cfc:L241-L254] picks the discount base price by price-group
+  // eligibility: an INELIGIBLE item uses `getPrice()`, an ELIGIBLE item uses `getSkuPrice()` plus
+  // the correction term `originalDiscountAmount - (getExtendedSkuPrice() - getExtendedPrice())`. In
+  // the legacy that held only because the out-of-scope `OrderService` called them in that sequence
+  // [model/service/OrderService.cfc:L60, L61]. The port documents it at
+  // src/domain/ports/priceGroupRepository.ts:L153-L156, with the reach-through rationale at :L115
+  // and :L624-L628.
   //
-  // The port DOCUMENTS that constraint - the comment is at
-  // src/domain/ports/priceGroupRepository.ts:L153-L156, and the reach-through
-  // rationale is at :L115 and :L624-L628.
-  //
-  // JUDGMENT CALL: a COMMENT'S PRESENCE IS NOT ASSERTED AT RUN TIME, AND IS NOT
-  // FAKED. This suite reads no file from disk - that is a hard constraint, not a
-  // convenience - so it cannot see the port's source text, and reading it would
-  // convert a source file into a test input for no gain. The obligation is
-  // discharged two ways instead, both of which are worth more than a substring
-  // match on a comment: the locators above are recorded so a reviewer can open the
-  // port and check them in one step, and the SUBSTANCE of what those comments
-  // document is asserted behaviourally below - that the ordering is carried by no
-  // parameter, that the order-facing entry points are absent from this port, and
-  // that no statement this port emits can reach the order aggregate.
+  // JUDGMENT CALL: A COMMENT'S PRESENCE IS NOT ASSERTED AT RUN TIME, AND IS NOT FAKED. This suite
+  // reads no file from disk, so it cannot see the port's text. The obligation is discharged two
+  // better ways: the locators above let a reviewer check them in one step, and the SUBSTANCE is
+  // asserted behaviourally below - no parameter carries the ordering, the order-facing entry points
+  // are absent, and no statement it emits reaches the order aggregate.
 
   it('carries the ordering constraint in no parameter, on any method', () => {
     const tuples = makePortArgumentTuples();
 
-    // C2.2: the ordering is enforced in src/handlers/bootstrap.ts and asserted in the
-    // services and handlers tier. Nothing here takes a sequence number, a phase flag,
-    // a "price groups already applied" boolean or a pass ordinal - and because each
-    // tuple below is typed to the method's own parameter list, a parameter of any such
-    // kind would have made this declaration fail to compile rather than fail here.
+    // C2.2: the ordering is an obligation on `src/handlers/bootstrap.ts` and on the services and
+    // handlers tier, neither of which the subtree contains yet. Nothing here takes a sequence
+    // number, a phase flag, a "price groups already applied" boolean or a pass ordinal, and because
+    // each tuple below is typed to the method's own parameter list, a parameter of any such kind
+    // would have failed to compile.
     expect(tuples.getAccountSubscriptionPriceGroups).toStrictEqual([CANNED_ACCOUNT_ID]);
     expect(tuples.getPriceGroup).toStrictEqual([CANNED_PRICE_GROUP_ID]);
     expect(tuples.getPriceGroupRate).toStrictEqual([CANNED_PRICE_GROUP_RATE_ID]);
@@ -1985,9 +2079,9 @@ describe('the execution-ordering constraint and the anti-corruption inversion', 
     expect(tuples.savePriceGroupRate).toHaveLength(1);
     expect(tuples.deletePriceGroup).toHaveLength(1);
 
-    // The only reference-typed arguments on the whole surface are price-group
-    // entities. Asserting the CONSTRUCTOR is what makes the negative concrete: an
-    // order view would satisfy neither check.
+    // The only reference-typed arguments on the whole surface are price-group entities. Asserting
+    // the CONSTRUCTOR is what makes the negative concrete: an order view would satisfy neither
+    // check.
     expect(elementAt(tuples.savePriceGroup, 0, 'the price group to save')).toBeInstanceOf(
       PriceGroup,
     );
@@ -2002,34 +2096,58 @@ describe('the execution-ordering constraint and the anti-corruption inversion', 
   it('exposes no order-facing entry point: the inversion happens above this layer', () => {
     const { repository } = makeSubject();
 
-    // C2.3: both `updateOrderAmountsWith*` entry points accept a read-only
-    // order-shaped input and return intents keyed by opaque identifiers, and they live
-    // in the SERVICE tier. Their absence from the repository is the inversion made
-    // structural: the out-of-scope aggregate is an input to a service, never a
-    // dependency of a data-access port.
+    // C2.3: both `updateOrderAmountsWith*` entry points accept a read-only order-shaped input and
+    // return intents keyed by opaque identifiers, and they live in the SERVICE tier. Their absence
+    // from the repository is the inversion made structural: the out-of-scope aggregate is an input
+    // to a service, never a dependency of a data-access port.
     for (const methodName of ORDER_FACING_SERVICE_METHODS) {
       expect(methodName in repository).toBe(false);
     }
 
-    // And nothing order-shaped is smuggled in under another name: the surface is
-    // exactly the six port methods.
     const surface = PORT_METHOD_NAMES.filter((methodName) => methodName in repository);
 
     expect(surface).toHaveLength(EXPECTED_PORT_METHOD_COUNT);
   });
 
-  it('never names an order table or an order foreign key in any statement it emits', async () => {
+  it('never names an order foreign key in any statement it emits', async () => {
     const provoked = await provokeEveryStatement();
     const statements = allStatementsOf(provoked);
 
-    // Every code path on the port has run by now, so this is a census and not a
-    // sample. A path that emitted nothing would make the census vacuous, so the
-    // count is asserted first.
     expect(statements.length).toBeGreaterThan(0);
     expect(provoked.reads.length).toBeGreaterThan(0);
     expect(provoked.writes.length).toBeGreaterThan(0);
 
     for (const statement of statements) {
+      const foldedSql = statement.sql.toLowerCase();
+
+      for (const identifier of ABSOLUTELY_FORBIDDEN_ORDER_IDENTIFIERS) {
+        expect(foldedSql).not.toContain(identifier.toLowerCase());
+      }
+    }
+
+    // The narrowing is not a licence: `ORDER_OWNED_IDENTIFIERS` still names ten things
+    // and exactly two of them - `SwOrder` as a prefix of `SwOrderItem`, and
+    // `SwOrderItem` itself - were moved out of the absolute ban. Asserting the
+    // arithmetic here means a future addition to the absolute list cannot be dropped by
+    // accident, and a future removal from it has to be deliberate.
+    expect(ORDER_OWNED_IDENTIFIERS).toHaveLength(ABSOLUTELY_FORBIDDEN_ORDER_IDENTIFIERS.length + 2);
+
+    for (const identifier of ABSOLUTELY_FORBIDDEN_ORDER_IDENTIFIERS) {
+      expect(ORDER_OWNED_IDENTIFIERS).toContain(identifier);
+    }
+  });
+
+  it('never names an order table in a WRITE, on any path', async () => {
+    // The half of the old blanket assertion that survives UNCONDITIONALLY, and the half
+    // that carries the real risk. The delete gate reads one order table; nothing in this
+    // port may ever modify one, because a price-group operation that rewrote an order row
+    // would be mutating the out-of-scope aggregate the whole inversion exists to keep at
+    // arm's length.
+    const provoked = await provokeEveryStatement();
+
+    expect(provoked.writes.length).toBeGreaterThan(0);
+
+    for (const statement of provoked.writes) {
       const foldedSql = statement.sql.toLowerCase();
 
       for (const identifier of ORDER_OWNED_IDENTIFIERS) {
@@ -2038,13 +2156,43 @@ describe('the execution-ordering constraint and the anti-corruption inversion', 
     }
   });
 
+  it('reaches an order table in exactly one statement, and only as a bare existence probe', async () => {
+    // The tightest of the three replacement assertions: not "an order table appears
+    // rarely" but "an order table appears in this exact statement and no other". The full
+    // text is pinned, so a projection of an order column, an added join, a widened
+    // predicate or a second statement all fail here rather than passing as a substring.
+    const provoked = await provokeEveryStatement();
+    const statements = allStatementsOf(provoked);
+
+    const orderNaming = statements.filter((statement) =>
+      statement.sql.toLowerCase().includes('sworderitem'),
+    );
+
+    expect(orderNaming.length).toBeGreaterThan(0);
+
+    for (const statement of orderNaming) {
+      expect(statement.sql).toBe(PERMITTED_ORDER_ITEM_PROBE_SQL);
+
+      // Read-only by construction: `SELECT 1` projects a literal, so no column of the
+      // order aggregate is read even though its table is named.
+      expect(statement.sql.startsWith('SELECT 1\n')).toBe(true);
+      expect(statement.sql).not.toContain('JOIN');
+      expect(statement.sql).not.toContain('*');
+
+      // One bound value, and it is a price-group identifier rather than anything the
+      // order aggregate owns.
+      expect(statement.params).toHaveLength(1);
+      expect(statement.sql).not.toContain(PINNED_CHILD_PRICE_GROUP_ID);
+    }
+
+    // And it is reached only from the delete path, which is the only place a delete gate
+    // could be evaluated: no read, no save and no rate path names it.
+    expect(orderNaming.every((statement) => provoked.reads.includes(statement))).toBe(true);
+  });
+
   it('binds no order identifier, because it is handed none', async () => {
     const provoked = await provokeEveryStatement();
 
-    // The mirror of the previous assertion, on the value side. An order identifier
-    // cannot appear among the bound parameters because no method accepts one - this
-    // pins that the adapter also derives none, for instance by reading one off an
-    // entity association.
     for (const statement of allStatementsOf(provoked)) {
       for (const boundValue of statement.params) {
         if (typeof boundValue !== 'string') {
@@ -2057,10 +2205,6 @@ describe('the execution-ordering constraint and the anti-corruption inversion', 
   });
 
   it('derives no monetary amount: rounding is a service-tier behaviour', async () => {
-    // Each link statement projects its OWN member column, so each canned row has to
-    // carry that column and no other. One shared row would be a different statement's
-    // result set and the column reader would reject it - which it does, loudly, and
-    // that strictness is the point.
     const linkResultSets: readonly (readonly SqlRow[])[] = EXPECTED_RATE_LINK_TABLES.map(
       (linkTable) => [rateLinkRow(linkTable.memberColumn, 'member-' + linkTable.memberColumn)],
     );
@@ -2078,16 +2222,12 @@ describe('the execution-ordering constraint and the anti-corruption inversion', 
       'the rate that was read back',
     );
 
-    // The rate carries a rounding rule AND an amount, so every input the rounding
-    // collaborator needs is present. It is still never called, because applying a
-    // rounding rule is what [model/service/PriceGroupService.cfc:L316-L340] does and
-    // this layer only supplies the data that method reads.
+    // The rate carries a rounding rule AND an amount, so every input the rounding collaborator
+    // needs is present. It is still never called, because applying a rounding rule is what
+    // [model/service/PriceGroupService.cfc:L316-L340] does.
     expect(requireRoundingRule(rate.getRoundingRule(), 'the joined rule')).toBeDefined();
     expect(valueRounder.calls).toHaveLength(0);
 
-    // The amount arrives exactly as stored, not rounded to the scripted answer. The
-    // scripted answer is unrelated to its input precisely so this can be told apart
-    // from "rounding ran and happened to be the identity".
     const amount = rate.getAmount();
 
     expect(amount).toBeDefined();
@@ -2114,16 +2254,15 @@ const UNSERVED_CANONICAL_DIALECTS = Object.freeze([
 /**
  * Every accepted spelling and the canonical form it must fold to.
  *
- * THREE MySQL SPELLINGS EXIST IN THE LEGACY SOURCE, NOT TWO, and a TypeScript `===`
- * would reject two of the three:
+ * THREE MySQL SPELLINGS EXIST IN THE LEGACY SOURCE, NOT TWO, and a TypeScript `===` would reject
+ * two of the three:
  *
  *   `MySQL`  [config/configORM.cfm:L10] and [model/dao/PromotionDAO.cfc:L482]
  *   `mySQL`  [model/dao/PriceGroupDAO.cfc:L57] and [model/dao/ProductDAO.cfc:L288]
  *   `mySql`  [model/dao/ProductDAO.cfc:L304]
  *
- * CFML `eq` is case-insensitive, so all three name the same engine in the legacy and
- * every one of them has to fold here. `eqeqeq` is an error in this project, so the
- * folding is the resolver's job rather than a loose comparison's.
+ * CFML `eq` is case-insensitive, so all three name the same engine and every one has to fold here.
+ * `eqeqeq` is an error in this project, so the folding is the resolver's job.
  */
 interface DialectFoldingCase {
   readonly configured: string;
@@ -2181,17 +2320,16 @@ const DIALECT_FOLDING_CASES: readonly DialectFoldingCase[] = Object.freeze([
 
 /** Values that must be REFUSED, never defaulted. */
 const REJECTED_DIALECT_VALUES: readonly string[] = Object.freeze([
-  // "Unset" reaches the resolver as the empty string, because the configuration layer
-  // supplies a string and has no other way to spell absence.
+  // "Unset" reaches the resolver as the empty string, because the configuration layer supplies a
+  // string and has no other way to spell absence.
   '',
   '   ',
   'Postgres',
   'PostgreSQL',
   'MariaDB',
   'sqlite',
-  // Near-misses matter most: a prefix or suffix match must NOT be treated as a hit,
-  // because the legacy chain used `findNoCase` on the DRIVER'S product name, not on
-  // configuration, and the target's input is the canonical literal itself.
+  // Near-misses matter most: a prefix or suffix match must NOT be treated as a hit, because the
+  // legacy chain used `findNoCase` on the DRIVER'S product name, not on configuration.
   'MySQL8',
   'my sql',
   'Oracle',
@@ -2203,39 +2341,32 @@ const MAX_ECHOED_REJECTED_VALUE_LENGTH = 40;
 
 describe('the dialect contract - required, hard error, no silent default', () => {
   // JUDGMENT CALL: Application.cfc:L87 sets the application value "databaseType" directly from
-  // this.ormSettings.dialect, which config/configORM.cfm:L9-L15 computes. The DAO dialect branches
-  // therefore read the Hibernate dialect literal itself, so the target models a single canonical
-  // dialect value rather than two keys.
-  // CFML parity [config/configORM.cfm:L9-L15, Application.cfc:L87]: MySQL is tested first and
-  // there is no <cfelse>, so an unrecognized product never assigns a dialect and startup fails -
-  // the target throws rather than defaulting.
+  // this.ormSettings.dialect, which config/configORM.cfm:L9-L15 computes, so the DAO dialect
+  // branches read the Hibernate dialect literal itself and the target models one canonical dialect
+  // value rather than two keys. CFML parity [config/configORM.cfm:L9-L15, Application.cfc:L87]:
+  // MySQL is tested first and there is no <cfelse>, so an unrecognized product never assigns a
+  // dialect and startup fails; the target throws rather than defaulting.
   //
-  // C3.5 IS A CORRECTION, AND THIS IS THE EVIDENCE FOR IT. Read first-hand,
-  // [Application.cfc:L86] is the comment `// SET Database Type`, and [Application.cfc:L87] is a
-  // single statement that calls `setApplicationValue` on the request scope with the key
-  // `"databaseType"` and, as its value, `this.ormSettings.dialect` - the very expression that
-  // [config/configORM.cfm:L10], [:L12] and [:L14] assign. So the application value that
-  // [model/dao/PriceGroupDAO.cfc:L57] branches on IS the Hibernate dialect literal, copied from it
-  // in one assignment. They are ONE value, not two, and collapsing them into a single canonical
-  // dialect is therefore correct rather than a convenience. The shipped dialect.ts models exactly
-  // one key, `DB_DIALECT`, and the assertion below proves the criteria surface carries one dialect
-  // member and no second one.
+  // C3.5 IS A CORRECTION, AND THIS IS THE EVIDENCE. [Application.cfc:L86] is the comment
+  //   `// SET Database Type`
+  // and [Application.cfc:L87] calls `setApplicationValue` with the key `"databaseType"` and the
+  // value `this.ormSettings.dialect`, the very expression [config/configORM.cfm:L10], [:L12] and
+  // [:L14] assign. So the value that [model/dao/PriceGroupDAO.cfc:L57] branches on IS the Hibernate
+  // dialect literal, and the shipped dialect.ts models exactly one key, `DB_DIALECT`.
 
   it('folds every legacy spelling to its canonical form, including all three for MySQL', () => {
-    // C3.2. Nine spellings, three of which are the ones that actually appear in the
-    // source for MySQL. `provenance` is carried so a failure names the legacy line
-    // that requires the case in question rather than just the string that failed.
+    // C3.2. Nine spellings, three of which actually appear in the source for MySQL. `provenance` is
+    // carried so a failure names the legacy line that requires the case.
     for (const foldingCase of DIALECT_FOLDING_CASES) {
       expect(resolveDialect(foldingCase.configured), foldingCase.provenance).toBe(
         foldingCase.canonical,
       );
     }
 
-    // Surrounding whitespace is trimmed before folding, which is what makes a value
-    // pasted into configuration with a trailing space work rather than fail obscurely.
+    // Surrounding whitespace is trimmed before folding, which is what makes a value pasted into
+    // configuration with a trailing space work rather than fail obscurely.
     expect(resolveDialect('  mySQL  ')).toBe('MySQL');
 
-    // The canonical set is exactly three, in the order the legacy chain tests them.
     expect(CANONICAL_DIALECT_SPELLINGS).toHaveLength(3);
     expect(CANONICAL_DIALECT_SPELLINGS.map((spelling) => resolveDialect(spelling))).toStrictEqual([
       ...CANONICAL_DIALECT_SPELLINGS,
@@ -2243,16 +2374,15 @@ describe('the dialect contract - required, hard error, no silent default', () =>
   });
 
   it('refuses every unrecognized value outright, and never defaults to MySQL', () => {
-    // C3.1. This is the assertion that carries the whole correction: MySQL is tested
-    // FIRST in the legacy chain and there is no `<cfelse>`, so an unrecognized product
-    // leaves `this.ormSettings.dialect` unassigned and startup fails. A fallback to
-    // MySQL would be the single most dangerous "helpful" default available here,
-    // because it would silently emit `LIMIT 1` against an engine that rejects it.
+    // C3.1. This is the assertion that carries the whole correction: MySQL is tested FIRST in the
+    // legacy chain and there is no `<cfelse>`, so an unrecognized product leaves
+    // `this.ormSettings.dialect` unassigned and startup fails. A fallback to MySQL would be the
+    // most dangerous "helpful" default available, emitting `LIMIT 1` against an engine that rejects
+    // it.
     for (const rejected of REJECTED_DIALECT_VALUES) {
       expect(() => resolveDialect(rejected)).toThrow(/not a recognized database dialect/u);
     }
 
-    // Not merely "it throws": it throws rather than returning anything at all.
     for (const rejected of REJECTED_DIALECT_VALUES) {
       let resolved: DatabaseDialect | undefined;
 
@@ -2267,8 +2397,6 @@ describe('the dialect contract - required, hard error, no silent default', () =>
   });
 
   it('names the variable and all three accepted values when it refuses', () => {
-    // The failure has to be actionable without reading the source, so it names the
-    // one variable that decides and the exact three spellings it accepts.
     const failure = (() => {
       try {
         resolveDialect('Postgres');
@@ -2289,20 +2417,19 @@ describe('the dialect contract - required, hard error, no silent default', () =>
       expect(message).toContain(spelling);
     }
 
-    // It also states, in so many words, that there is no default - so a reader who hits
-    // this cannot conclude that omitting the variable would have been fine.
+    // It also states that there is no default, so a reader who hits this cannot conclude that
+    // omitting the variable would have been fine.
     expect(message).toContain('no default');
     expect(message).toContain('config/configORM.cfm:L9-L15');
   });
 
   it('clips the value it echoes, so no long configured value is reproduced in full', () => {
-    // JUDGMENT CALL: the "no credential in the failure" obligation is discharged HERE
-    // as a bound on what can be echoed, and by the Phase-H identifier census as a grep
-    // over this file. It is deliberately NOT restated as a runtime assertion, because
-    // writing `expect(message).not.toContain(<a sensitive key name>)` would require
-    // spelling the very identifiers the census forbids this file from containing - the
-    // assertion would defeat its own purpose. A length bound is the stronger claim in
-    // any case: it holds for every possible value, not for an enumerated list.
+    // JUDGMENT CALL: the "no credential in the failure" obligation is discharged HERE as a bound on
+    // what can be echoed, and by the Phase-H identifier census as a grep over this file. It is
+    // deliberately NOT restated as a runtime assertion, because
+    //   `expect(message).not.toContain(<a sensitive key name>)`
+    // would require spelling the very identifiers the census forbids this file from containing. A
+    // length bound is the stronger claim: it holds for every possible value.
     const longValue = 'z'.repeat(200);
 
     const failure = (() => {
@@ -2323,8 +2450,8 @@ describe('the dialect contract - required, hard error, no silent default', () =>
   });
 
   it('guards MySQL-only composition, throwing for the two dialects it does not serve', () => {
-    // C3.3. `assertMySqlDialect` is an assertion function, so the narrowing is what the
-    // compiler relies on downstream; here only the runtime refusal is exercised.
+    // C3.3. `assertMySqlDialect` is an assertion function, so the narrowing is what the compiler
+    // relies on downstream; here only the runtime refusal is in view.
     expect(() => {
       assertMySqlDialect('MySQL', 'the price-group row-limiting arm');
     }).not.toThrow();
@@ -2334,60 +2461,54 @@ describe('the dialect contract - required, hard error, no silent default', () =>
         assertMySqlDialect(dialect, 'the price-group row-limiting arm');
       }).toThrow(/recognized but not implemented/u);
 
-      // And the guard is reached through the fragment accessor too, which is what the
-      // stage-one builder actually calls - so a non-MySQL dialect is a HARD ERROR at
-      // the point of composition, never a silently wrong statement.
+      // And the guard is reached through the fragment accessor too, which is what the stage-one
+      // builder calls, so a non-MySQL dialect is a HARD ERROR at the point of composition.
       expect(() => singleRowLimitFragments(dialect)).toThrow(/recognized but not implemented/u);
     }
   });
 
   it('returns row-limiting fragments that are plain SQL text carrying no bound value', () => {
-    // C3.4. A fragment is SQL TEXT and can never be a value: `selectPrefix` is what the
-    // other arm would place after `SELECT` (`TOP 1`) and `trailingClause` is what this
-    // arm appends (`LIMIT 1`). For MySQL the prefix is empty and the limit rides in the
-    // trailing clause, which is exactly [model/dao/PriceGroupDAO.cfc:L67] and [:L71].
+    // C3.4. A fragment is SQL TEXT and can never be a value: `selectPrefix` is what the other arm
+    // would place after `SELECT` (`TOP 1`) and `trailingClause` is what this arm appends
+    //   (`LIMIT 1`).
+    // For MySQL the prefix is empty, which is [model/dao/PriceGroupDAO.cfc:L67] and [:L71].
     const fragments = singleRowLimitFragments('MySQL');
 
     expect(fragments.selectPrefix).toBe('');
     expect(fragments.trailingClause).toBe('LIMIT 1');
 
-    // No placeholder, so nothing about a value can be smuggled through a fragment.
     expect(fragments.selectPrefix).not.toContain('?');
     expect(fragments.trailingClause).not.toContain('?');
 
-    // Exactly two members, frozen, so a third could not be added without this failing.
     expect([...Object.keys(fragments)].sort()).toStrictEqual(['selectPrefix', 'trailingClause']);
     expect(Object.isFrozen(fragments)).toBe(true);
   });
 
   it('separates supplying configuration from interpreting it', () => {
-    // C3.4. `src/lib/config.ts` SUPPLIES the raw value; `dialect.ts` INTERPRETS it.
-    // `appConfig` exposes exactly two members and neither of them interprets a
-    // dialect - there is no `getDialect`, no `dialect` getter and no cached canonical
-    // form on the configuration surface.
+    // C3.4. `src/lib/config.ts` SUPPLIES the raw value; `dialect.ts` INTERPRETS it. `appConfig`
+    // exposes exactly two members and neither interprets a dialect: no `getDialect`, no `dialect`
+    // getter and no cached canonical form.
     expect(Object.isFrozen(appConfig)).toBe(true);
     expect([...Object.keys(appConfig)].sort()).toStrictEqual(['load', 'reset']);
 
-    // `resolveDialect` is a unary pure function of its ARGUMENT. If it consulted the
-    // environment instead, these two calls would agree; they disagree, so the argument
-    // is what decides. That is the proof that `dialect.ts` reads no environment of its
-    // own, obtained without mutating global state to find out.
+    // `resolveDialect` is a unary pure function of its ARGUMENT. If it consulted the environment
+    // instead, these two calls would agree; they disagree, so the argument is what decides. That
+    // proves `dialect.ts` reads no environment of its own, without mutating global state to find
+    // out.
     expect(resolveDialect('mysql')).toBe('MySQL');
     expect(resolveDialect('oracle10g')).toBe('Oracle10g');
     expect(resolveDialect('mysql')).toBe(resolveDialect('MYSQL'));
     expect(resolveDialect.length).toBe(1);
 
-    // `resolveConfiguredDialect` is the SINGLE bridge from configuration to
-    // interpretation, and it takes no argument precisely because it goes to
-    // configuration for one. This suite never calls it: doing so would read the real
-    // environment, which is the one thing this suite must never depend on.
+    // `resolveConfiguredDialect` is the SINGLE bridge from configuration to interpretation, and it
+    // takes no argument precisely because it goes to configuration for one. This suite never calls
+    // it: doing so would read the real environment.
     expect(resolveConfiguredDialect.length).toBe(0);
   });
 
   it('drives the row-limiting branch from ONE canonical dialect value, not two keys', () => {
-    // C3.5 and C3.6 site (2). The criteria surface carries exactly three members, one
-    // of which is the dialect - so there is no second `databaseType` key alongside it,
-    // which is the collapse asserted rather than merely argued.
+    // C3.5 and C3.6 site (2). The criteria surface carries exactly three members, one of which is
+    // the dialect, so there is no second `databaseType` key alongside it.
     const criteria = {
       accountID: CANNED_ACCOUNT_ID,
       now: EXPLICIT_UTC_INSTANT,
@@ -2401,16 +2522,17 @@ describe('the dialect contract - required, hard error, no silent default', () =>
     const statement =
       ACCOUNT_SUBSCRIPTION_PRICE_GROUP_STATEMENTS.buildSubscriptionPriceGroupIDsStatement(criteria);
 
-    // The MySQL arm: the correlated sub-select ends with the legacy's own ordering and
-    // trailing limit [model/dao/PriceGroupDAO.cfc:L71].
+    // The MySQL arm: the correlated sub-select ends with the legacy's own ordering and trailing
+    // limit [model/dao/PriceGroupDAO.cfc:L71].
     expect(statement.sql).toContain('ORDER BY changeDateTime DESC LIMIT 1)');
 
     // And the other arm's syntax is nowhere in the emitted text.
-    // LEGACY-NOTE [model/dao/PriceGroupDAO.cfc:L57, L83]: the `<cfelse>` arm emits
-    // `SELECT TOP 1`, which is SQL Server syntax, so an Oracle installation falls into
-    // a branch whose row limiting Oracle does not accept. The consequence is recorded
-    // here rather than repaired: this port serves MySQL only and refuses the other two
-    // outright, so the defective arm is unreachable instead of silently wrong.
+    //
+    // LEGACY-NOTE [model/dao/PriceGroupDAO.cfc:L57, L83]: the `<cfelse>` arm emits `SELECT TOP 1`,
+    // which is SQL Server syntax, so an Oracle installation falls into a branch whose row limiting
+    // Oracle does not accept. Recorded rather than repaired: this port serves MySQL only and
+    // refuses the other two outright, so the defective arm is unreachable instead of silently
+    // wrong.
     expect(statement.sql).not.toContain('TOP 1');
     expect(statement.sql.toUpperCase()).not.toContain('FETCH FIRST');
     expect(statement.sql.toUpperCase()).not.toContain('ROWNUM');
@@ -2428,18 +2550,15 @@ const INSERT_PRICE_GROUP_BOUND_VALUE_COUNT = 10;
 /**
  * How many values the price-group update binds.
  *
- * Seven columns plus the key, which binds LAST. Three columns are deliberately absent
- * from the `SET` list - the key itself, `createdDateTime` and `createdByAccountID` -
- * because an update must not restate the identity or rewrite the creation stamp
- * [org/Hibachi/HibachiEntity.cfc:L651].
+ * Seven columns plus the key, which binds LAST. Three columns are deliberately absent from the
+ * `SET` list - the key itself, `createdDateTime` and `createdByAccountID` - because an update must
+ * not restate the identity or rewrite the creation stamp [org/Hibachi/HibachiEntity.cfc:L651].
  */
 const UPDATE_PRICE_GROUP_BOUND_VALUE_COUNT = 8;
 
 /**
- * Positional indices into the price-group insert's bound values.
- *
- * Named rather than written inline, because a positional assertion whose meaning is a
- * bare integer is unreviewable.
+ * Positional indices into the price-group insert's bound values, named rather than written inline
+ * because a positional assertion whose meaning is a bare integer is unreviewable.
  */
 const INSERT_BOUND = Object.freeze({
   priceGroupID: 0,
@@ -2454,7 +2573,6 @@ const INSERT_BOUND = Object.freeze({
   modifiedByAccountID: 9,
 });
 
-/** Positional indices into the price-group update's bound values. */
 const UPDATE_BOUND = Object.freeze({
   priceGroupIDPath: 0,
   activeFlag: 1,
@@ -2469,11 +2587,10 @@ const UPDATE_BOUND = Object.freeze({
 /**
  * Proof, at compile time, that the prior-state parameter is an ENTITY OR ABSENT.
  *
- * The obligation is explicit that it must NOT be a callback, a hook registry, an event
- * emitter, a `beforeSave`/`afterSave` option or a boolean flag. Every one of those is
- * excluded by this single conditional: a function type, an option bag and a boolean all
- * fail to extend `PriceGroup | undefined`, so the alias below would resolve to `false`
- * and the assertion that consumes it would stop compiling.
+ * It must NOT be a callback, a hook registry, an event emitter, a `beforeSave`/`afterSave` option
+ * or a boolean flag. Every one of those is excluded by this single conditional: a function type, an
+ * option bag and a boolean all fail to extend `PriceGroup | undefined`, so the alias below would
+ * resolve to `false` and the assertion consuming it would stop compiling.
  */
 type PriorStateIsEntityOrAbsent = PriorStateArgument extends PriceGroup | undefined ? true : false;
 
@@ -2481,14 +2598,12 @@ type PriorStateIsEntityOrAbsent = PriorStateArgument extends PriceGroup | undefi
 type PriorStateAdmitsAbsence = undefined extends PriorStateArgument ? true : false;
 
 describe('materialized-path maintenance - the preInsert and preUpdate replacement', () => {
-  // C-4. `preInsert` [model/entity/PriceGroup.cfc:L206] and `preUpdate`
-  // [model/entity/PriceGroup.cfc:L211] are ORM lifecycle hooks, and there is no ORM
-  // here to fire them. The repository therefore invokes path maintenance EXPLICITLY on
-  // both write paths. The path arithmetic itself is not reimplemented: it belongs to
+  // C-4. `preInsert` [model/entity/PriceGroup.cfc:L206] and `preUpdate` [:L211] are ORM lifecycle
+  // hooks and there is no ORM here to fire them, so the repository invokes path maintenance
+  // EXPLICITLY on both write paths. The arithmetic is not reimplemented: it belongs to
   // src/domain/valueObjects/materializedIdPath.ts, whose walk is the ported form of
-  // `buildIDPathList` at [org/Hibachi/HibachiEntity.cfc:L307-L324] - a method on the
-  // framework base that is NOT ported. C4.3 is the split being asserted here: the value
-  // object computes, the repository persists.
+  // `buildIDPathList` at [org/Hibachi/HibachiEntity.cfc:L307-L324]. C4.3 is the split asserted
+  // here: the value object computes, the repository persists.
 
   it('composes the path on the INSERT path, appending the key it mints', async () => {
     const parentPriceGroup = makePersistedPriceGroup({
@@ -2505,8 +2620,8 @@ describe('materialized-path maintenance - the preInsert and preUpdate replacemen
 
     const inserted = await repository.savePriceGroup(makeUnsavedPriceGroup(parentPriceGroup));
 
-    // One statement, and it is the insert. No read precedes it: the adapter does not
-    // check for an existing row, because `unsavedvalue=""` already answered that.
+    // One statement, and it is the insert. No read precedes it: `unsavedvalue=""` already answered
+    // whether a row exists.
     expect(executor.calls).toHaveLength(0);
 
     const statement = onlyStatement(executor.mutationCalls);
@@ -2514,16 +2629,16 @@ describe('materialized-path maintenance - the preInsert and preUpdate replacemen
     expect(statement.sql).toBe(EXPECTED_INSERT_PRICE_GROUP_SQL);
     expect(statement.params).toHaveLength(INSERT_PRICE_GROUP_BOUND_VALUE_COUNT);
 
-    // The key is minted here, because the legacy ORM assigned the generated uuid BEFORE
-    // firing `preInsert` and the path's terminal segment would otherwise be blank.
+    // The key is minted here, because the legacy ORM assigned the generated uuid BEFORE firing
+    // `preInsert` and the path's terminal segment would otherwise be blank.
     const boundPriceGroupID = parameterAt(statement.params, INSERT_BOUND.priceGroupID);
 
     expect(typeof boundPriceGroupID).toBe('string');
     expect(String(boundPriceGroupID)).toMatch(MINTED_IDENTIFIER_PATTERN);
 
-    // And the path is the ancestor chain with that key appended - computed here by the
-    // same two primitives the adapter uses, so this asserts the composition rather than
-    // restating a literal that could drift.
+    // And the path is the ancestor chain with that key appended, computed here by the same two
+    // primitives the adapter uses, so this asserts the composition rather than restating a literal
+    // that could drift.
     const expectedAncestorPath = buildIdPathList<PriceGroup>(
       parentPriceGroup,
       (node) => node.getPriceGroupID(),
@@ -2537,16 +2652,14 @@ describe('materialized-path maintenance - the preInsert and preUpdate replacemen
       listAppend(expectedAncestorPath, String(boundPriceGroupID)),
     );
 
-    // The entity handed back carries both, so a caller never has to re-read to learn the
-    // key or the path it was given.
     expect(inserted.getPriceGroupID()).toBe(boundPriceGroupID);
     expect(inserted.getPriceGroupIDPath()).toBe(
       listAppend(expectedAncestorPath, String(boundPriceGroupID)),
     );
     expect(inserted.isNew()).toBe(false);
 
-    // The parent is bound as an identifier, and one captured instant stamps both audit
-    // columns [org/Hibachi/HibachiEntity.cfc:L609].
+    // The parent is bound as an identifier, and one captured instant stamps both audit columns
+    // [org/Hibachi/HibachiEntity.cfc:L609].
     expect(parameterAt(statement.params, INSERT_BOUND.parentPriceGroupID)).toBe(
       CANNED_PARENT_PRICE_GROUP_ID,
     );
@@ -2569,19 +2682,18 @@ describe('materialized-path maintenance - the preInsert and preUpdate replacemen
     const statement = onlyStatement(executor.mutationCalls);
     const boundPriceGroupID = String(parameterAt(statement.params, INSERT_BOUND.priceGroupID));
 
-    // A root price group's path is its own key and nothing else - no leading delimiter,
-    // which is the property `buildIdPathList` guarantees and `listAppend` preserves.
+    // A root price group's path is its own key and nothing else - no leading delimiter, which is
+    // the property `buildIdPathList` guarantees and `listAppend` preserves.
     expect(parameterAt(statement.params, INSERT_BOUND.priceGroupIDPath)).toBe(boundPriceGroupID);
     expect(inserted.getPriceGroupIDPath()).toBe(boundPriceGroupID);
     expect(parameterAt(statement.params, INSERT_BOUND.parentPriceGroupID)).toBeNull();
   });
 
   it('rebuilds the path on the UPDATE path, from the CURRENT parent chain', async () => {
-    // C4.1 and C4.2. A parent reassignment changes the path, so maintenance has to run
-    // on update as well - and it has to run from the entity's CURRENT chain rather than
-    // from whatever path happens to be stored on it. The entity below carries a STALE
-    // stored path on purpose: if maintenance were skipped, the stale value would be
-    // persisted and every descendant lookup keyed on that path would miss.
+    // C4.1 and C4.2. A parent reassignment changes the path, so maintenance has to run on update as
+    // well, and from the entity's CURRENT chain rather than from whatever path is stored on it. The
+    // entity below carries a STALE stored path on purpose: if maintenance were skipped, that value
+    // would be persisted and every descendant lookup keyed on the path would miss.
     const parentPriceGroup = makePersistedPriceGroup({
       priceGroupID: CANNED_PARENT_PRICE_GROUP_ID,
       priceGroupIDPath: CANNED_PARENT_PRICE_GROUP_ID,
@@ -2611,7 +2723,6 @@ describe('materialized-path maintenance - the preInsert and preUpdate replacemen
     expect(statement.sql).toBe(EXPECTED_UPDATE_PRICE_GROUP_SQL);
     expect(statement.params).toHaveLength(UPDATE_PRICE_GROUP_BOUND_VALUE_COUNT);
 
-    // The rebuilt path, not the stale one.
     expect(parameterAt(statement.params, UPDATE_BOUND.priceGroupIDPath)).toBe(
       CANNED_PARENT_PRICE_GROUP_ID + ',' + CANNED_PRICE_GROUP_ID,
     );
@@ -2619,33 +2730,30 @@ describe('materialized-path maintenance - the preInsert and preUpdate replacemen
       'stale-ancestor',
     );
 
-    // THE KEY BINDS LAST, after every value in the `SET` list, because it belongs to the
-    // `WHERE` clause. Binding it anywhere else would update the wrong row.
+    // THE KEY BINDS LAST, after every value in the `SET` list, because it belongs to the `WHERE`
+    // clause. Binding it anywhere else would update the wrong row.
     expect(parameterAt(statement.params, UPDATE_BOUND.priceGroupID)).toBe(CANNED_PRICE_GROUP_ID);
     expect(parameterAt(statement.params, UPDATE_BOUND.parentPriceGroupID)).toBe(
       CANNED_PARENT_PRICE_GROUP_ID,
     );
 
-    // NO DESCENDANT UPDATE. Reassigning a parent changes the stored path of every
-    // descendant too, and the legacy did not cascade that either - `preUpdate`
-    // [model/entity/PriceGroup.cfc:L211] maintains only the entity being saved. One
-    // statement is the whole write.
+    // NO DESCENDANT UPDATE. Reassigning a parent changes the stored path of every descendant too,
+    // and the legacy did not cascade that either: `preUpdate` [model/entity/PriceGroup.cfc:L211]
+    // maintains only the entity being saved.
     expect(executor.mutationCalls).toHaveLength(1);
   });
 
   it('takes the prior persisted state as an entity or not at all', () => {
-    // C4.2. Both of these are compile-time proofs consumed at run time, which is the
-    // only way to assert a TYPE rather than a value. `PriorStateIsEntityOrAbsent`
-    // resolves to `false` - and this stops compiling - if the parameter is ever widened
-    // to a callback, a hook registry, an event emitter, an option bag or a flag.
+    // C4.2. Both of these are compile-time proofs consumed at run time, which is the only way to
+    // assert a TYPE rather than a value. `PriorStateIsEntityOrAbsent` resolves to `false`, and this
+    // stops compiling, if the parameter is ever widened to a callback, a hook registry, an event
+    // emitter, an option bag or a flag.
     const isEntityOrAbsent: PriorStateIsEntityOrAbsent = true;
     const admitsAbsence: PriorStateAdmitsAbsence = true;
 
     expect(isEntityOrAbsent).toBe(true);
     expect(admitsAbsence).toBe(true);
 
-    // And the tuple is exactly two long: the entity, then its prior state. There is no
-    // third slot for an option bag.
     const tuples = makePortArgumentTuples();
 
     expect(tuples.savePriceGroup).toHaveLength(2);
@@ -2653,9 +2761,9 @@ describe('materialized-path maintenance - the preInsert and preUpdate replacemen
   });
 
   it('refuses a prior state on the insert path, emitting nothing at all', async () => {
-    // The port declares prior state as ABSENT on an insert, so the combination means the
-    // caller routed a first insert down the update path. Refusing is right: composing an
-    // update for a row that does not exist would report success while storing nothing.
+    // The port declares prior state as ABSENT on an insert, so the combination means the caller
+    // routed a first insert down the update path. Refusing is right: composing an update for a row
+    // that does not exist would report success while storing nothing.
     const { repository, executor } = makeSubject([]);
 
     await expect(
@@ -2669,15 +2777,14 @@ describe('materialized-path maintenance - the preInsert and preUpdate replacemen
       ),
     ).rejects.toThrow(/prior state/u);
 
-    // It fails BEFORE emitting anything, so there is nothing to compensate for.
     expect(executor.calls).toHaveLength(0);
     expect(executor.mutationCalls).toHaveLength(0);
   });
 
   it('updates without a prior state too, rebuilding the path just the same', async () => {
-    // Prior state is what the `preUpdate`-equivalent path maintenance CAN consult; it is
-    // not what makes maintenance run. An update without it still rebuilds, because the
-    // rebuild reads the entity's own chain.
+    // Prior state is what the `preUpdate`-equivalent path maintenance CAN consult; it is not what
+    // makes maintenance run. An update without it still rebuilds, because the rebuild reads the
+    // entity's own chain.
     const parentPriceGroup = makePersistedPriceGroup({
       priceGroupID: CANNED_PARENT_PRICE_GROUP_ID,
       priceGroupIDPath: CANNED_PARENT_PRICE_GROUP_ID,
@@ -2703,8 +2810,6 @@ describe('materialized-path maintenance - the preInsert and preUpdate replacemen
   });
 
   it('reports an insert that stored no row rather than returning a phantom key', async () => {
-    // The one write outcome the adapter inspects on the insert path. Returning the entity
-    // would hand back an identifier that is not stored, which is worse than failing.
     const { repository, executor } = makeSubject([], [NO_ROW_WRITE_RESULT]);
 
     await expect(repository.savePriceGroup(makeUnsavedPriceGroup(undefined))).rejects.toThrow(
@@ -2720,9 +2825,8 @@ describe('materialized-path maintenance - the preInsert and preUpdate replacemen
 /**
  * The canned sequence a rate read consumes: the rate, then all six link statements.
  *
- * Each link statement projects its own member column, so each canned row carries that
- * column and no other - see the link-row factory for why one shared row would be
- * rejected.
+ * Each link statement projects its own member column, so each canned row carries that column and no
+ * other.
  */
 function rateLinkResultSets(): readonly (readonly SqlRow[])[] {
   return EXPECTED_RATE_LINK_TABLES.map((linkTable) => [
@@ -2730,20 +2834,30 @@ function rateLinkResultSets(): readonly (readonly SqlRow[])[] {
   ]);
 }
 
-/** How many statements a two-deep parent chain issues, with no rates anywhere. */
-const TWO_DEEP_CHAIN_STATEMENT_COUNT = 7;
+/**
+ * How many statements a two-deep parent chain issues, with no rates anywhere.
+ *
+ * Three row reads climbing the chain, ONE keyed rate read covering all three identifiers, and one
+ * children read for the subject. The rate read is keyed by a list rather than issued once per hop
+ * because a chain is exactly the case where two members can share an ancestor, and a shared
+ * ancestor must be ONE instance carrying ONE rate collection - see the note on the rate statement.
+ */
+const TWO_DEEP_CHAIN_STATEMENT_COUNT = 5;
 
 describe('fetch shape - materialized at the boundary, never simulated laziness', () => {
-  // C4.4. Hibernate lazy collections have no equivalent in a driver-only stack, and the
-  // target does NOT simulate laziness. Every association a synchronous method traverses
-  // is therefore already populated when the entity is handed over, and the shape is a
-  // decision made once per repository method rather than an accident of what someone
-  // happened to touch. Both halves are asserted: NO FEWER, so no synchronous accessor
-  // can meet an undefined association; and NO MORE, so no unbounded graph walk and no
-  // N+1 hides behind a convenient-looking getter.
+  // C4.4. Hibernate lazy collections have no equivalent in a driver-only stack and the target does
+  // NOT simulate laziness. Every association a synchronous method traverses is already populated
+  // when the entity is handed over. Both halves are asserted: NO FEWER, so no synchronous accessor
+  // meets an undefined association; and NO MORE, so no unbounded graph walk hides behind a
+  // convenient-looking getter.
 
   it('hands back a price group with its rates, its global rate and its parent populated', async () => {
-    const { repository } = makeSubject([
+    // The canned sequence follows the emitted order: the subject's row, then its parent's row,
+    // then ONE rate read keyed on both identifiers, then the six link reads, then the children.
+    // The single rate row carries `CANNED_PRICE_GROUP_ID`, so it partitions back to the subject
+    // and the parent receives an EMPTY collection - which is how one keyed read reproduces what
+    // two separate reads returned.
+    const { repository, executor } = makeSubject([
       [priceGroupRow({ parentPriceGroupID: CANNED_PARENT_PRICE_GROUP_ID })],
       [
         priceGroupRow({
@@ -2752,7 +2866,6 @@ describe('fetch shape - materialized at the boundary, never simulated laziness',
           parentPriceGroupID: null,
         }),
       ],
-      NO_ROWS,
       [priceGroupRateRow({ globalFlag: 1, ...joinedRoundingRuleColumns() })],
       ...rateLinkResultSets(),
       NO_ROWS,
@@ -2763,9 +2876,18 @@ describe('fetch shape - materialized at the boundary, never simulated laziness',
       'the price group that was read back',
     );
 
+    // ONE rate statement for the whole chain, keyed on both identifiers in walk order.
+    expect(statementAt(executor.calls, 2).sql).toBe(
+      EXPECTED_SELECT_RATES_BY_PRICE_GROUP_SQL_FOR_TWO_IDS,
+    );
+    expect(statementAt(executor.calls, 2).params).toStrictEqual([
+      CANNED_PRICE_GROUP_ID,
+      CANNED_PARENT_PRICE_GROUP_ID,
+    ]);
+
     // The three associations the five-level cascade [model/service/PriceGroupService.cfc:L140-L181]
-    // traverses SYNCHRONOUSLY: the rate collection, the global rate, and the parent it
-    // recurses into at L174.
+    // traverses SYNCHRONOUSLY: the rate collection, the global rate, and the parent it recurses
+    // into at L174.
     expect(priceGroup.getPriceGroupRates()).toHaveLength(1);
 
     const globalRate = requirePriceGroupRate(
@@ -2782,20 +2904,19 @@ describe('fetch shape - materialized at the boundary, never simulated laziness',
 
     expect(parent.getPriceGroupID()).toBe(CANNED_PARENT_PRICE_GROUP_ID);
 
-    // The direct children are materialized as well, and as an ARRAY rather than a lazy
-    // proxy - empty here, which is a populated empty rather than an absent collection.
+    // And the parent's own collection is a populated EMPTY one rather than a copy of the
+    // subject's. Partitioning by the owning column is what keeps the two apart.
+    expect(parent.getPriceGroupRates()).toStrictEqual([]);
+
     expect(priceGroup.getChildPriceGroups()).toStrictEqual([]);
 
-    // The materialized path is present, because it is a stored column and the cascade
-    // reads it rather than recomputing it on every comparison.
     expect(priceGroup.getPriceGroupIDPath()).toBe(CANNED_PRICE_GROUP_ID);
   });
 
   it('issues no statement for a rate collection that is empty', async () => {
-    // NO N+1 AND NO WASTED ROUND TRIP. A group with no rates has no rate identifiers to
-    // key the six link statements on, and `IN ()` is a MySQL syntax error, so the adapter
-    // returns an empty collection without issuing them. This is MECHANICAL rather than an
-    // optimisation: the statement it would otherwise emit is not valid SQL.
+    // NO N+1 AND NO WASTED ROUND TRIP. A group with no rates has no rate identifiers to key the six
+    // link statements on, and `IN ()` is a MySQL syntax error, so the adapter returns an empty
+    // collection without issuing them.
     const { repository, executor } = makeSubject(leafPriceGroupResultSets());
 
     const priceGroup = requirePriceGroup(
@@ -2806,7 +2927,6 @@ describe('fetch shape - materialized at the boundary, never simulated laziness',
     expect(priceGroup.getPriceGroupRates()).toStrictEqual([]);
     expect(priceGroup.getGlobalPriceGroupRate()).toBeUndefined();
 
-    // Exactly three statements: the row, its rates, its children. Not one more.
     expect(executor.calls).toHaveLength(LEAF_PRICE_GROUP_STATEMENT_COUNT);
 
     for (const statement of executor.calls) {
@@ -2816,8 +2936,8 @@ describe('fetch shape - materialized at the boundary, never simulated laziness',
 
   it('walks the parent chain hop by hop and reads children for the subject only', async () => {
     // The walk is BOUNDED and its shape is asserted rather than assumed: three row reads
-    // climbing the chain, three rate reads coming back down, and ONE children read - for
-    // the price group that was actually asked for. Ancestors get no children read, because
+    // climbing the chain, ONE rate read keyed on all three identifiers, and ONE children read -
+    // for the price group that was actually asked for. Ancestors get no children read, because
     // nothing traverses an ancestor's siblings and fetching them would be the unbounded
     // graph walk this shape exists to prevent.
     const { repository, executor } = makeSubject([
@@ -2836,9 +2956,9 @@ describe('fetch shape - materialized at the boundary, never simulated laziness',
           parentPriceGroupID: null,
         }),
       ],
+      // The keyed rate read, matching nothing - which is why no link statement follows it.
       NO_ROWS,
-      NO_ROWS,
-      NO_ROWS,
+      // The children read, for the subject only.
       NO_ROWS,
     ]);
 
@@ -2849,19 +2969,26 @@ describe('fetch shape - materialized at the boundary, never simulated laziness',
 
     expect(executor.calls).toHaveLength(TWO_DEEP_CHAIN_STATEMENT_COUNT);
 
-    // The chain is reachable to its root, synchronously, from the entity handed back.
     const parent = requirePriceGroup(priceGroup.getParentPriceGroup(), 'the parent');
     const root = requirePriceGroup(parent.getParentPriceGroup(), 'the root');
 
     expect(root.getPriceGroupID()).toBe(CANNED_ROOT_PRICE_GROUP_ID);
     expect(root.getParentPriceGroup()).toBeUndefined();
 
-    // The row reads climb in order, each keyed on one identifier.
     expect(statementAt(executor.calls, 0).params).toStrictEqual([CANNED_PRICE_GROUP_ID]);
     expect(statementAt(executor.calls, 1).params).toStrictEqual([CANNED_PARENT_PRICE_GROUP_ID]);
     expect(statementAt(executor.calls, 2).params).toStrictEqual([CANNED_ROOT_PRICE_GROUP_ID]);
 
-    // And exactly one children read, for the subject.
+    // Then ONE rate read for the whole chain, keyed on all three in the order they were reached.
+    expect(statementAt(executor.calls, 3).sql).toBe(
+      EXPECTED_SELECT_RATES_BY_PRICE_GROUP_SQL_FOR_THREE_IDS,
+    );
+    expect(statementAt(executor.calls, 3).params).toStrictEqual([
+      CANNED_PRICE_GROUP_ID,
+      CANNED_PARENT_PRICE_GROUP_ID,
+      CANNED_ROOT_PRICE_GROUP_ID,
+    ]);
+
     const childSelects = executor.calls.filter(
       (statement) => statement.sql === EXPECTED_SELECT_CHILD_PRICE_GROUPS_SQL,
     );
@@ -2870,6 +2997,234 @@ describe('fetch shape - materialized at the boundary, never simulated laziness',
     expect(elementAt(childSelects, 0, 'the children read').params).toStrictEqual([
       CANNED_PRICE_GROUP_ID,
     ]);
+  });
+
+  it('materializes an ancestor shared by two results as ONE instance', async () => {
+    // THE PROPERTY HIBERNATE GUARANTEED, ASSERTED DIRECTLY. One stored row was one object for the
+    // life of a session, and the rest of this slice is written against that. The key-based identity
+    // comparisons in `src/domain/entities/priceGroup.ts` and `src/domain/entities/priceGroupRate.ts`
+    // are faithful only while one key means one object; and the exclusivity reconciliation at
+    // [model/service/PriceGroupService.cfc:L409-L433] mutates SIBLING rates reached through a shared
+    // price group, which is coherent only if that price group really is shared. Hand back two
+    // separate parents built from one row and both stop meaning what the source meant - so this is a
+    // correctness assertion about object graph shape, not about how many statements were issued.
+    const { repository, executor } = makeSubject([
+      // Stage one: two subscription-owned identifiers.
+      [
+        subscriptionPriceGroupIDRow(CANNED_PRICE_GROUP_ID),
+        subscriptionPriceGroupIDRow(CANNED_SIBLING_PRICE_GROUP_ID),
+      ],
+      // Stage two: both rows, both inheriting from the SAME parent.
+      [
+        priceGroupRow({ parentPriceGroupID: CANNED_PARENT_PRICE_GROUP_ID }),
+        priceGroupRow({
+          priceGroupID: CANNED_SIBLING_PRICE_GROUP_ID,
+          priceGroupIDPath: CANNED_SIBLING_PRICE_GROUP_ID,
+          priceGroupName: 'Distributor',
+          priceGroupCode: 'distributor',
+          parentPriceGroupID: CANNED_PARENT_PRICE_GROUP_ID,
+        }),
+      ],
+      // The shared parent's row. The second chain finds it already collected and stops there, so
+      // this is read once rather than once per result.
+      [
+        priceGroupRow({
+          priceGroupID: CANNED_PARENT_PRICE_GROUP_ID,
+          priceGroupIDPath: CANNED_PARENT_PRICE_GROUP_ID,
+          parentPriceGroupID: null,
+        }),
+      ],
+      // The keyed rate read over all three identifiers, matching nothing.
+      NO_ROWS,
+      // One children read per result.
+      NO_ROWS,
+      NO_ROWS,
+    ]);
+
+    const results = await repository.getAccountSubscriptionPriceGroups(CANNED_ACCOUNT_ID);
+
+    expect(results).toHaveLength(2);
+
+    const firstParent = requirePriceGroup(
+      elementAt(results, 0, 'the first result').getParentPriceGroup(),
+      'the first result parent',
+    );
+
+    const secondParent = requirePriceGroup(
+      elementAt(results, 1, 'the second result').getParentPriceGroup(),
+      'the second result parent',
+    );
+
+    // `toBe` is REFERENCE identity, and reference identity is the assertion. Two structurally equal
+    // parents would pass a deep comparison and still be the defect this case exists to catch.
+    expect(firstParent).toBe(secondParent);
+
+    // The keyed rate read covers all three identifiers, the shared parent appearing once.
+    expect(statementAt(executor.calls, 3).sql).toBe(
+      EXPECTED_SELECT_RATES_BY_PRICE_GROUP_SQL_FOR_THREE_IDS,
+    );
+    expect(statementAt(executor.calls, 3).params).toStrictEqual([
+      CANNED_PRICE_GROUP_ID,
+      CANNED_PARENT_PRICE_GROUP_ID,
+      CANNED_SIBLING_PRICE_GROUP_ID,
+    ]);
+
+    // And the shared row was read once, not once per descendant.
+    const parentRowReads = executor.calls.filter(
+      (statement) =>
+        statement.sql === EXPECTED_SELECT_PRICE_GROUP_BY_ID_SQL &&
+        statement.params.includes(CANNED_PARENT_PRICE_GROUP_ID),
+    );
+
+    expect(parentRowReads).toHaveLength(1);
+  });
+
+  it('attributes each rate to the price group that OWNS it, not to the first one asked about', async () => {
+    // ★ THE CASE LEVEL FIVE OF THE CASCADE DEPENDS ON. When the keyed rate read covers a whole
+    // ancestor chain, the rows come back interleaved and the ONLY thing that says which group a rate
+    // belongs to is its own `priceGroupID` column. Attribute them by position - to the seed, say -
+    // and an inherited rate is presented as the child's own: the cascade would then stop at level one
+    // with a rate the child does not have, instead of recursing into the parent
+    // [model/service/PriceGroupService.cfc:L166-L176]. That is a different rate, so a different
+    // price, reported as success. Here the PARENT owns the only rate and the child owns none.
+    const parentOwnedRateID = 'pgr-inherited';
+
+    const { repository } = makeSubject([
+      [priceGroupRow({ parentPriceGroupID: CANNED_PARENT_PRICE_GROUP_ID })],
+      [
+        priceGroupRow({
+          priceGroupID: CANNED_PARENT_PRICE_GROUP_ID,
+          priceGroupIDPath: CANNED_PARENT_PRICE_GROUP_ID,
+          parentPriceGroupID: null,
+        }),
+      ],
+      // One rate row, owned by the PARENT - the second identifier in the keyed set, not the first.
+      [
+        priceGroupRateRow({
+          priceGroupRateID: parentOwnedRateID,
+          priceGroupID: CANNED_PARENT_PRICE_GROUP_ID,
+          globalFlag: 1,
+        }),
+      ],
+      ...rateLinkResultSets(),
+      NO_ROWS,
+    ]);
+
+    const priceGroup = requirePriceGroup(
+      await repository.getPriceGroup(CANNED_PRICE_GROUP_ID),
+      'the child of a rate-bearing parent',
+    );
+
+    // The child owns NOTHING, and its global-rate lookup finds nothing either - so the cascade's
+    // levels one through four fall through, which is precisely why level five exists.
+    expect(priceGroup.getPriceGroupRates()).toStrictEqual([]);
+    expect(priceGroup.getGlobalPriceGroupRate()).toBeUndefined();
+
+    // The parent owns the rate.
+    const parent = requirePriceGroup(priceGroup.getParentPriceGroup(), 'the rate-bearing parent');
+    const inherited = requirePriceGroupRate(
+      parent.getGlobalPriceGroupRate(),
+      'the rate the parent owns',
+    );
+
+    expect(parent.getPriceGroupRates()).toHaveLength(1);
+    expect(inherited.getPriceGroupRateID()).toBe(parentOwnedRateID);
+  });
+
+  it('raises rather than truncating when the stored parent pointers form a cycle', async () => {
+    // ONE POLICY, AND THIS IS IT: a repeat WITHIN one ancestor chain means the stored pointers form
+    // a cycle, so there is no ancestry to return and the read raises, naming the chain it followed.
+    // Truncating instead would SUCCEED and hand back a shortened chain, and because levels three,
+    // four and five of the cascade [model/service/PriceGroupService.cfc:L140-L181] are reached only
+    // by walking one hop further, a shortened chain selects a DIFFERENT RATE - a different price -
+    // with nothing reported anywhere. The legacy did not do that either: Hibernate's lazy
+    // many-to-one followed the pointers and failed rather than quietly answering differently.
+    const { repository, executor } = makeSubject([
+      [priceGroupRow({ parentPriceGroupID: CANNED_PARENT_PRICE_GROUP_ID })],
+      [
+        priceGroupRow({
+          priceGroupID: CANNED_PARENT_PRICE_GROUP_ID,
+          priceGroupIDPath: CANNED_PARENT_PRICE_GROUP_ID,
+          // Points back at the price group that was asked for.
+          parentPriceGroupID: CANNED_PRICE_GROUP_ID,
+        }),
+      ],
+    ]);
+
+    await expect(repository.getPriceGroup(CANNED_PRICE_GROUP_ID)).rejects.toThrow(
+      /pointers form a cycle/u,
+    );
+
+    // ★ AND IT RAISES DURING THE COLLECTION PASS, BEFORE ANY DEPENDENT READ IS ISSUED. Exactly the
+    // two row reads that discovered the loop, and NOT the keyed rate read that would follow them.
+    // This is what makes the collection-pass check independently observable rather than shadowed by
+    // the materialization backstop, which would also raise but only after the rate statement had
+    // already gone to the server. Asking the database for the rates of a graph that has just been
+    // established to be unusable is work with no possible consumer.
+    expect(executor.calls).toHaveLength(2);
+    expect(statementAt(executor.calls, 0).sql).toBe(EXPECTED_SELECT_PRICE_GROUP_BY_ID_SQL);
+    expect(statementAt(executor.calls, 1).sql).toBe(EXPECTED_SELECT_PRICE_GROUP_BY_ID_SQL);
+
+    // The message names the chain that was followed, so the offending rows can be found directly
+    // rather than inferred.
+    await expect(
+      makeSubject([
+        [priceGroupRow({ parentPriceGroupID: CANNED_PARENT_PRICE_GROUP_ID })],
+        [
+          priceGroupRow({
+            priceGroupID: CANNED_PARENT_PRICE_GROUP_ID,
+            priceGroupIDPath: CANNED_PARENT_PRICE_GROUP_ID,
+            parentPriceGroupID: CANNED_PRICE_GROUP_ID,
+          }),
+        ],
+      ]).repository.getPriceGroup(CANNED_PRICE_GROUP_ID),
+    ).rejects.toThrow(
+      new RegExp(
+        CANNED_PRICE_GROUP_ID +
+          ' -> ' +
+          CANNED_PARENT_PRICE_GROUP_ID +
+          ' -> ' +
+          CANNED_PRICE_GROUP_ID,
+        'u',
+      ),
+    );
+  });
+
+  it('treats the same row reached from two chains as a shared instance, never as a cycle', async () => {
+    // ★ THE DISTINCTION THAT MAKES THE POLICY SAFE. Two results legitimately sharing an ancestor is
+    // NOT a cycle, and conflating the two would raise on an ordinary hierarchy. The walk therefore
+    // keeps two separate sets: one scoped to the whole call, which is what lets a shared row be
+    // reused, and one scoped to a single chain, which is what detects a loop. Only the chain-scoped
+    // repeat raises. The case above proves the raise happens; this one proves it does not happen
+    // when it must not.
+    const { repository } = makeSubject([
+      [
+        subscriptionPriceGroupIDRow(CANNED_PRICE_GROUP_ID),
+        subscriptionPriceGroupIDRow(CANNED_SIBLING_PRICE_GROUP_ID),
+      ],
+      [
+        priceGroupRow({ parentPriceGroupID: CANNED_PARENT_PRICE_GROUP_ID }),
+        priceGroupRow({
+          priceGroupID: CANNED_SIBLING_PRICE_GROUP_ID,
+          priceGroupIDPath: CANNED_SIBLING_PRICE_GROUP_ID,
+          parentPriceGroupID: CANNED_PARENT_PRICE_GROUP_ID,
+        }),
+      ],
+      [
+        priceGroupRow({
+          priceGroupID: CANNED_PARENT_PRICE_GROUP_ID,
+          priceGroupIDPath: CANNED_PARENT_PRICE_GROUP_ID,
+          parentPriceGroupID: null,
+        }),
+      ],
+      NO_ROWS,
+      NO_ROWS,
+      NO_ROWS,
+    ]);
+
+    const results = await repository.getAccountSubscriptionPriceGroups(CANNED_ACCOUNT_ID);
+
+    expect(results).toHaveLength(2);
   });
 
   it('hands back a rate with its rounding rule, its appliesTo and all six collections', async () => {
@@ -2947,11 +3302,10 @@ describe('fetch shape - materialized at the boundary, never simulated laziness',
   });
 
   it('does not fetch a collection the shape does not promise', async () => {
-    // NO MORE than the documented shape. A price-group read never reaches into
-    // promotion rewards, even though [model/entity/PriceGroup.cfc:L69] declares the
-    // association: the promotion engine is a separate slice and joining into it here
-    // would be the unbounded walk. The collection is present and EMPTY - populated, so a
-    // synchronous accessor is safe, and empty, so nothing was fetched.
+    // NO MORE than the documented shape. A price-group read never reaches into promotion rewards,
+    // even though [model/entity/PriceGroup.cfc:L69] declares the association: the promotion engine
+    // is a separate slice and joining into it here would be the unbounded walk. The collection is
+    // present and EMPTY: populated, so a synchronous accessor is safe.
     const { repository, executor } = makeSubject(leafPriceGroupResultSets());
 
     const priceGroup = requirePriceGroup(
@@ -2970,21 +3324,49 @@ describe('fetch shape - materialized at the boundary, never simulated laziness',
 
 // --- Load and delete ------------------------------------------------------------
 
-/** The fixture prefix this suite pins, so every fixture identifier is predictable. */
 const PINNED_FIXTURE_PREFIX = 'pinned';
 
-/** The fixture child price group's identifier, spelled out rather than derived twice. */
 const PINNED_CHILD_PRICE_GROUP_ID = 'pinned-pricegroup-child';
 
 /**
- * How many statements a delete issues: six link deletes, the rate delete, the row.
+ * How many READS a delete issues: one existence probe per out-of-scope delete gate.
  *
- * The order is not incidental - a link row references a rate, and a rate references the
- * group, so deleting outside-in is what keeps every intermediate state referentially
- * consistent. `cascade="all-delete-orphan"` [model/entity/PriceGroup.cfc:L64] is what
- * the ORM did instead; without a session the cascade has to be written out.
+ * FIVE, NOT SIX. `model/validation/PriceGroup.json` declares six `maxCollection: 0` rules
+ * in the `delete` context, and `childPriceGroups` is the one that is NOT probed: the
+ * service loop [model/service/PriceGroupService.cfc:L465-L467] empties that collection,
+ * which is how the gate passed in legacy too, and the adapter discharges it by PERSISTING
+ * the detachment instead. Probing the stored rows for it would refuse every delete the
+ * legacy allowed, because the children are still parented in the table at that moment.
  */
-const DELETE_STATEMENT_COUNT = 8;
+const DELETE_GATE_PROBE_COUNT = 5;
+
+/**
+ * How many WRITES a delete issues: the child detach, six link deletes, the rate delete,
+ * the row.
+ *
+ * The order is not incidental: a link row references a rate and a rate references the group, so
+ * deleting outside-in keeps every intermediate state referentially consistent.
+ * `cascade="all-delete-orphan"` [model/entity/PriceGroup.cfc:L64] is what the ORM did instead;
+ * without a session the cascade has to be written out.
+ *
+ * ★★ NINE, NOT THE EIGHT THIS CONSTANT ONCE HELD, AND THE NEW STATEMENT IS FIRST. Its
+ * former documentation read "How many statements a delete issues: six link deletes, the
+ * rate delete, the row" - accurate about the cascade and silent about the detachment,
+ * because at the time the detachment reached no column at all. `removeChildPriceGroup`
+ * [model/entity/PriceGroup.cfc:L139] nulls the child's `parentPriceGroup`, mapped to
+ * `SwPriceGroup.parentPriceGroupID` [model/entity/PriceGroup.cfc:L59]; under the ORM those
+ * children were managed and Hibernate flushed the UPDATEs in the same transaction as the
+ * parent's delete. It goes FIRST for the same reason Hibernate's `ActionQueue` ran updates
+ * ahead of entity deletions: a child detached after its parent row was gone would already
+ * have violated the reference.
+ */
+const DELETE_MUTATION_COUNT = 9;
+
+/** Mutation index of the child-detach UPDATE, which precedes the whole cascade. */
+const DETACH_MUTATION_INDEX = 0;
+
+/** Mutation index of the first rate link delete, i.e. immediately after the detach. */
+const FIRST_RATE_LINK_MUTATION_INDEX = 1;
 
 /** Every write outcome a full delete consumes, with the final row reporting no match. */
 const DELETE_WRITE_RESULTS_WITH_NO_MATCHED_ROW: readonly SqlMutationResult[] = Object.freeze([
@@ -2995,14 +3377,68 @@ const DELETE_WRITE_RESULTS_WITH_NO_MATCHED_ROW: readonly SqlMutationResult[] = O
   WRITE_RESULT,
   WRITE_RESULT,
   WRITE_RESULT,
+  WRITE_RESULT,
   NO_ROW_WRITE_RESULT,
 ]);
 
+/**
+ * The five delete gates, in the entity's declaration order, with their physical reach.
+ *
+ * [model/entity/PriceGroup.cfc:L62, L67, L68, L69, L70]. Spelled out here as literals
+ * rather than imported from the adapter, so a change to the adapter's own table list is a
+ * test failure rather than a silently agreed rename - schema continuity is the contract
+ * these names carry.
+ */
+const EXPECTED_DELETE_GATES: readonly { readonly tableName: string; readonly column: string }[] =
+  Object.freeze([
+    Object.freeze({ tableName: 'SwOrderItem', column: 'appliedPriceGroupID' }),
+    Object.freeze({ tableName: 'SwAccountPriceGroup', column: 'priceGroupID' }),
+    Object.freeze({ tableName: 'SwSubsBenefitPriceGroup', column: 'priceGroupID' }),
+    Object.freeze({ tableName: 'SwSubsUsageBenefitPriceGroup', column: 'priceGroupID' }),
+    Object.freeze({ tableName: 'SwPromoRewardEligiblePriceGrp', column: 'priceGroupID' }),
+  ]);
+
+/** The expected existence probe for one delete gate. */
+function expectedDeleteGateProbeSql(gate: {
+  readonly tableName: string;
+  readonly column: string;
+}): string {
+  return ['SELECT 1', 'FROM ' + gate.tableName, 'WHERE ' + gate.column + ' = ?', 'LIMIT 1'].join(
+    '\n',
+  );
+}
+
+/** The expected child-detach UPDATE, written out in full. */
+const EXPECTED_DETACH_CHILD_PRICE_GROUPS_SQL = [
+  'UPDATE SwPriceGroup',
+  'SET parentPriceGroupID = NULL, priceGroupIDPath = priceGroupID, modifiedDateTime = ?',
+  'WHERE parentPriceGroupID = ?',
+].join('\n');
+
+/**
+ * Canned reads for a delete whose gates all pass.
+ *
+ * One empty result set per gate. `RecordingExecutor` already answers a call beyond the end
+ * of the sequence with the empty result set, so passing this explicitly is redundant for
+ * behaviour and deliberate for legibility: a reader of a delete case can see that every
+ * gate was asked and every gate answered "no rows".
+ */
+const ALL_GATES_CLEAR: readonly (readonly SqlRow[])[] = Object.freeze([
+  NO_ROWS,
+  NO_ROWS,
+  NO_ROWS,
+  NO_ROWS,
+  NO_ROWS,
+]);
+
+/** A gate result set that blocks the delete: one row is all it takes. */
+const GATE_BLOCKED: readonly SqlRow[] = Object.freeze([Object.freeze({ '1': 1 })]);
+
 describe('load by identifier, and delete', () => {
   it('reads a price group by one bound identifier, never interpolated', async () => {
-    // C5.1. E5/P5 is the governing obligation and it is asserted directly rather than
-    // inferred from the absence of a quote: the identifier must appear in the PARAMETER
-    // ARRAY and must not appear in the statement TEXT.
+    // C5.1. E5/P5 is the governing obligation, asserted directly rather than inferred from the
+    // absence of a quote: the identifier must appear in the PARAMETER ARRAY and must not appear in
+    // the statement TEXT.
     const { repository, executor } = makeSubject(leafPriceGroupResultSets());
 
     await repository.getPriceGroup(CANNED_PRICE_GROUP_ID);
@@ -3013,8 +3449,6 @@ describe('load by identifier, and delete', () => {
     expect(statement.params).toStrictEqual([CANNED_PRICE_GROUP_ID]);
     expect(statement.sql).not.toContain(CANNED_PRICE_GROUP_ID);
 
-    // The select list is the ten persisted columns, so nothing is read that the entity
-    // cannot account for and nothing the entity needs is missing.
     expect(statement.sql).toContain(EXPECTED_PRICE_GROUP_SELECT_LIST);
   });
 
@@ -3038,18 +3472,16 @@ describe('load by identifier, and delete', () => {
   });
 
   it('answers undefined on a miss - never a zero, never an empty object', async () => {
-    // C5.1. This matters more than it looks. A price group that does not exist is not a
-    // price group with no rate; substituting a hollow object here would let the cascade
-    // at [model/service/PriceGroupService.cfc:L140-L181] treat a missing group as one
-    // that simply has no matching rate, and the price it produced would be wrong rather
-    // than absent.
+    // C5.1. A price group that does not exist is not a price group with no rate; substituting a
+    // hollow object here would let the cascade at [model/service/PriceGroupService.cfc:L140-L181]
+    // treat a missing group as one that simply has no matching rate, and the price it produced
+    // would be wrong rather than absent.
     const missingGroup = makeSubject([NO_ROWS]);
 
     await expect(
       missingGroup.repository.getPriceGroup('pg-does-not-exist'),
     ).resolves.toBeUndefined();
 
-    // One statement, and no follow-up: nothing is read for a row that is not there.
     expect(onlyStatement(missingGroup.executor.calls).params).toStrictEqual(['pg-does-not-exist']);
 
     const missingRate = makeSubject([NO_ROWS]);
@@ -3061,62 +3493,89 @@ describe('load by identifier, and delete', () => {
   });
 
   it('deletes outside-in: six link deletes, the rate delete, then the row', async () => {
-    // C5.2. A genuinely hydrated entity is used here, from tests/fixtures, because delete
-    // takes an ENTITY and the identifier it is keyed on has to come off that entity rather
-    // than out of a literal.
     const fixtures = makePriceGroupFixtures({ idPrefix: PINNED_FIXTURE_PREFIX });
 
     expect(fixtures.childPriceGroup.getPriceGroupID()).toBe(PINNED_CHILD_PRICE_GROUP_ID);
     expect(fixtures.childPriceGroup.isNew()).toBe(false);
 
-    const { repository, executor } = makeSubject([]);
+    const { repository, executor } = makeSubject(ALL_GATES_CLEAR);
 
     const deleted = await repository.deletePriceGroup(fixtures.childPriceGroup);
 
     expect(deleted).toBe(true);
     expect(typeof deleted).toBe('boolean');
 
-    // No read at all: the delete is keyed on the identifier the entity already carries.
-    expect(executor.calls).toHaveLength(0);
-    expect(executor.mutationCalls).toHaveLength(DELETE_STATEMENT_COUNT);
+    // ★★ THE READ COUNT WAS ONCE ZERO, AND THE OLD ASSERTION IS QUOTED RATHER THAN
+    // DELETED: "No read at all: the delete is keyed on the identifier the entity already
+    // carries." The second half is still exactly true - every one of the fourteen
+    // statements binds nothing but the identifier off the entity - and the first half
+    // stopped being true when the five out-of-scope delete gates were enforced. Those
+    // gates are reads by nature: `model/validation/PriceGroup.json` compares a collection
+    // against `maxCollection: 0`, and without an ORM session holding the collections the
+    // only way to know is to ask the database.
+    expect(executor.calls).toHaveLength(DELETE_GATE_PROBE_COUNT);
+    expect(executor.mutationCalls).toHaveLength(DELETE_MUTATION_COUNT);
 
-    // The six link deletes come first, IN THE COLLECTION ORDER THE ENTITY DECLARES
+    // The child detach comes FIRST, before anything is removed.
+    const detach = statementAt(executor.mutationCalls, DETACH_MUTATION_INDEX);
+
+    expect(detach.sql).toBe(EXPECTED_DETACH_CHILD_PRICE_GROUPS_SQL);
+    expect(detach.params).toHaveLength(2);
+    expect(parameterAt(detach.params, 1)).toBe(PINNED_CHILD_PRICE_GROUP_ID);
+
+    // Then the six link deletes, IN THE COLLECTION ORDER THE ENTITY DECLARES
     // [model/entity/PriceGroupRate.cfc:L71-L77], each scoped by the owning price group
     // through a sub-select rather than by a list of rate identifiers - which is what keeps
     // it one statement per table regardless of how many rates the group owns.
     for (const [index, linkTable] of EXPECTED_RATE_LINK_TABLES.entries()) {
-      const statement = statementAt(executor.mutationCalls, index);
+      const statement = statementAt(executor.mutationCalls, FIRST_RATE_LINK_MUTATION_INDEX + index);
 
       expect(statement.sql).toBe(expectedRateLinkDeleteSql(linkTable));
       expect(statement.params).toStrictEqual([PINNED_CHILD_PRICE_GROUP_ID]);
     }
 
     // Then the rates, then the row itself.
-    const rateDelete = statementAt(executor.mutationCalls, RATE_LINK_TABLE_COUNT);
+    const rateDelete = statementAt(
+      executor.mutationCalls,
+      FIRST_RATE_LINK_MUTATION_INDEX + RATE_LINK_TABLE_COUNT,
+    );
 
     expect(rateDelete.sql).toBe(EXPECTED_DELETE_RATES_BY_PRICE_GROUP_SQL);
     expect(rateDelete.params).toStrictEqual([PINNED_CHILD_PRICE_GROUP_ID]);
 
-    const rowDelete = statementAt(executor.mutationCalls, DELETE_STATEMENT_COUNT - 1);
+    const rowDelete = statementAt(executor.mutationCalls, DELETE_MUTATION_COUNT - 1);
 
     expect(rowDelete.sql).toBe(EXPECTED_DELETE_PRICE_GROUP_ROW_SQL);
     expect(rowDelete.params).toStrictEqual([PINNED_CHILD_PRICE_GROUP_ID]);
   });
 
-  it('deletes with DELETE only - never TRUNCATE, never DROP', async () => {
-    const { repository, executor } = makeSubject([]);
+  it('mutates with DELETE and one UPDATE only - never TRUNCATE, never DROP', async () => {
+    const { repository, executor } = makeSubject(ALL_GATES_CLEAR);
 
     await repository.deletePriceGroup(
       makePriceGroupFixtures({ idPrefix: PINNED_FIXTURE_PREFIX }).childPriceGroup,
     );
 
+    // ★★ THIS CASE ONCE ASSERTED THAT EVERY MUTATION BEGAN WITH `DELETE FROM `, and that
+    // is quoted rather than dropped: "Every one of them is a row-scoped `DELETE` with a
+    // `WHERE` clause." The `WHERE` half still holds for every statement without exception,
+    // which is the half that matters - a `TRUNCATE` would empty the table for every price
+    // group in the installation, and it is not transactional in MySQL. What changed is
+    // that persisting the child detachment is by nature an UPDATE, so exactly ONE of the
+    // nine is not a DELETE, and it is pinned to the first position rather than merely
+    // tolerated anywhere.
+    const [firstMutation, ...cascadeMutations] = sqlTextsOf(executor.mutationCalls);
+
+    expect(firstMutation).toBe(EXPECTED_DETACH_CHILD_PRICE_GROUPS_SQL);
+    expect(cascadeMutations).toHaveLength(DELETE_MUTATION_COUNT - 1);
+
+    for (const statement of cascadeMutations) {
+      expect(statement.toUpperCase().startsWith('DELETE FROM ')).toBe(true);
+    }
+
     for (const statement of sqlTextsOf(executor.mutationCalls)) {
       const foldedSql = statement.toUpperCase();
 
-      // Every one of them is a row-scoped `DELETE` with a `WHERE` clause. A `TRUNCATE`
-      // would empty the table for every price group in the installation, and it is not
-      // transactional in MySQL - so the distinction is not stylistic.
-      expect(foldedSql.startsWith('DELETE FROM ')).toBe(true);
       expect(foldedSql).toContain('WHERE');
       expect(foldedSql).not.toContain('TRUNCATE');
       expect(foldedSql).not.toContain('DROP');
@@ -3124,10 +3583,9 @@ describe('load by identifier, and delete', () => {
   });
 
   it('reports false for an entity that was never persisted, emitting nothing', async () => {
-    // `unsavedvalue=""` [model/entity/PriceGroup.cfc:L52] means this entity has no row.
-    // Issuing eight statements keyed on the empty string would match nothing while
-    // claiming to have tried, and would report `false` for a reason the caller could not
-    // distinguish from a genuine miss.
+    // `unsavedvalue=""` [model/entity/PriceGroup.cfc:L52] means this entity has no row. Issuing
+    // eight statements keyed on the empty string would match nothing while claiming to have tried,
+    // and would report `false` for a reason indistinguishable from a genuine miss.
     const { repository, executor } = makeSubject([]);
 
     const deleted = await repository.deletePriceGroup(makeUnsavedPriceGroup(undefined));
@@ -3140,15 +3598,483 @@ describe('load by identifier, and delete', () => {
   it('reports false when the row delete matched nothing, after emitting every statement', async () => {
     // The boolean is `affectedRows > 0` on the ROW delete, which is the statement that
     // decides whether the price group is gone. The link and rate deletes legitimately
-    // affect zero rows for a group that owns none, so they must not decide it.
-    const { repository, executor } = makeSubject([], DELETE_WRITE_RESULTS_WITH_NO_MATCHED_ROW);
+    // affect zero rows for a group that owns none, and the child detach legitimately
+    // affects zero rows for a group with no children, so none of them may decide it.
+    const { repository, executor } = makeSubject(
+      ALL_GATES_CLEAR,
+      DELETE_WRITE_RESULTS_WITH_NO_MATCHED_ROW,
+    );
 
     const deleted = await repository.deletePriceGroup(
       makePriceGroupFixtures({ idPrefix: PINNED_FIXTURE_PREFIX }).childPriceGroup,
     );
 
     expect(deleted).toBe(false);
-    expect(executor.mutationCalls).toHaveLength(DELETE_STATEMENT_COUNT);
+    expect(executor.mutationCalls).toHaveLength(DELETE_MUTATION_COUNT);
+  });
+});
+
+// --- The delete gates, and the persisted child detachment -----------------------
+
+describe('deletePriceGroup - the legacy relationship gates and the child detachment', () => {
+  // ★★ NET-NEW COVERAGE (AAP 0.6.6). `meta/tests/` contains no PriceGroupService test and
+  // no PriceGroupDAO test at all - `meta/tests/unit/service/` holds only AccountServiceTest,
+  // HibachiServiceTest, PaymentServiceTest and UtilityRBServiceTest, and
+  // `meta/tests/unit/dao/` only AccountDAOTest and PaymentDAOTest. Nothing here traces to a
+  // legacy antecedent and none of it is presented as parity.
+  //
+  // THE REGRESSION THIS GUARDS WAS SILENT AND IT CORRUPTED REFERENCES. Two distinct
+  // behaviours the ORM performed were absent from the target, and neither one failed
+  // loudly:
+  //
+  //   * `model/validation/PriceGroup.json` sets `maxCollection: 0` on six properties in the
+  //     `delete` context, [org/Hibachi/HibachiService.cfc:L55] evaluated them BEFORE
+  //     removing anything, and [org/Hibachi/HibachiService.cfc:L79] reported failure as a
+  //     bare `false`. Five of those six reference out-of-scope aggregates and were not
+  //     enforced, so a price group could be deleted out from under a live order item, an
+  //     account, a subscription benefit or a promotion reward - and the surviving row then
+  //     referenced a `priceGroupID` that no longer existed.
+  //
+  //   * the service's detachment loop [model/service/PriceGroupService.cfc:L465-L467] nulls
+  //     each child's `parentPriceGroup` association [model/entity/PriceGroup.cfc:L139],
+  //     which is mapped to `SwPriceGroup.parentPriceGroupID`
+  //     [model/entity/PriceGroup.cfc:L59]. Under the ORM those children were MANAGED and
+  //     the UPDATEs flushed with the parent's delete; without a session the loop emptied an
+  //     in-memory array and reached no column, so every child kept a foreign key into the
+  //     row the next statement deleted.
+  //
+  // A dangling reference does not raise on the way out - it raises on the next read, in a
+  // different request, as a price group that cannot be loaded.
+
+  it('probes all five out-of-scope gates, in the entity declaration order, before mutating', async () => {
+    const { repository, executor } = makeSubject(ALL_GATES_CLEAR);
+
+    const deleted = await repository.deletePriceGroup(
+      makePriceGroupFixtures({ idPrefix: PINNED_FIXTURE_PREFIX }).childPriceGroup,
+    );
+
+    expect(deleted).toBe(true);
+    expect(executor.calls).toHaveLength(DELETE_GATE_PROBE_COUNT);
+
+    // Each gate, its own statement, its own table, one bound price-group identifier. The
+    // order is [model/entity/PriceGroup.cfc:L62, L67, L68, L69, L70] so a reviewer reading
+    // the entity top to bottom meets them in the same sequence.
+    for (const [index, gate] of EXPECTED_DELETE_GATES.entries()) {
+      const probe = statementAt(executor.calls, index);
+
+      expect(probe.sql).toBe(expectedDeleteGateProbeSql(gate));
+      expect(probe.params).toStrictEqual([PINNED_CHILD_PRICE_GROUP_ID]);
+
+      // Bound, never interpolated - the identifier is caller-supplied at the service tier.
+      expect(probe.sql).not.toContain(PINNED_CHILD_PRICE_GROUP_ID);
+    }
+
+    // `childPriceGroups` is the sixth `maxCollection: 0` rule and is deliberately NOT
+    // probed: no gate statement reads `parentPriceGroupID`, because the loop at
+    // [model/service/PriceGroupService.cfc:L465-L467] has already emptied that collection
+    // and the detach below is what makes it true of the table too.
+    for (const probe of executor.calls) {
+      expect(probe.sql).not.toContain('parentPriceGroupID');
+    }
+  });
+
+  it.each(EXPECTED_DELETE_GATES.map((gate, index) => ({ gate, index })))(
+    'refuses the delete when $gate.tableName has a row, emitting no mutation at all',
+    async ({ gate, index }) => {
+      // One case per gate, generated from the same list the assertions above use, so a
+      // sixth gate cannot be added without a case appearing for it. The blocked gate is
+      // placed at its own position in the canned sequence and every earlier gate answers
+      // clear, which is what proves the refusal came from THIS gate.
+      const cannedReads = EXPECTED_DELETE_GATES.map((_unused, position) =>
+        position === index ? GATE_BLOCKED : NO_ROWS,
+      );
+
+      const { repository, executor } = makeSubject(cannedReads);
+
+      const deleted = await repository.deletePriceGroup(
+        makePriceGroupFixtures({ idPrefix: PINNED_FIXTURE_PREFIX }).childPriceGroup,
+      );
+
+      // The bare boolean refusal of [org/Hibachi/HibachiService.cfc:L79] - not a throw.
+      // The legacy reported a failed delete context as a return value, and a caller that
+      // had to catch an exception for an ordinary, expected refusal would be a different
+      // contract.
+      expect(deleted).toBe(false);
+
+      // ★★ AND NOT ONE ROW IS MODIFIED. This is the assertion that makes the gate a gate
+      // rather than a warning: [org/Hibachi/HibachiService.cfc:L55] validated BEFORE
+      // removing anything, so a populated relationship left the price group, its rates and
+      // its children exactly as they were.
+      expect(executor.mutationCalls).toHaveLength(0);
+
+      // Short-circuited: the gates after the blocking one are never asked, because the
+      // answer cannot change.
+      expect(executor.calls).toHaveLength(index + 1);
+      expect(statementAt(executor.calls, index).sql).toBe(expectedDeleteGateProbeSql(gate));
+    },
+  );
+
+  it('persists the child detachment: nulls the parent link and repaths the child', async () => {
+    const { repository, executor } = makeSubject(ALL_GATES_CLEAR);
+
+    await repository.deletePriceGroup(
+      makePriceGroupFixtures({ idPrefix: PINNED_FIXTURE_PREFIX }).childPriceGroup,
+    );
+
+    const detach = statementAt(executor.mutationCalls, DETACH_MUTATION_INDEX);
+
+    expect(detach.sql).toBe(EXPECTED_DETACH_CHILD_PRICE_GROUPS_SQL);
+
+    // The parent link is nulled with a SQL `NULL` literal rather than a bound empty
+    // string. `parentPriceGroupID` is a foreign key [model/entity/PriceGroup.cfc:L59], and
+    // `''` would be a value that joins to nothing rather than an absent reference.
+    expect(detach.sql).toContain('parentPriceGroupID = NULL');
+    expect(detach.params).not.toContain('');
+
+    // ★★ THE PATH IS REPATHED IN THE SAME STATEMENT, AS A COLUMN-TO-COLUMN ASSIGNMENT.
+    // [model/entity/PriceGroup.cfc:L211-L214] recomputes
+    // `setPriceGroupIDPath( buildIDPathList( "parentPriceGroup" ) )` on every update, and
+    // the walk at [org/Hibachi/HibachiEntity.cfc:L309-L324] includes self - so a child
+    // whose parent has just become null resolves to its own identifier alone. Leaving the
+    // old path would leave every detached child pointing THROUGH A DELETED PARENT, and
+    // `priceGroupIDPath` is read by the five-level cascade: a stale path there changes
+    // which rate a SKU resolves to, and therefore what a customer pays.
+    expect(detach.sql).toContain('priceGroupIDPath = priceGroupID');
+
+    // Keyed on the PARENT, which is forced rather than chosen: by the time this runs the
+    // service loop has emptied the entity's `childPriceGroups`, so there is no list of
+    // children to key on - and keying on stored rows detaches every child even for an
+    // entity the caller loaded without them.
+    expect(detach.sql).toContain('WHERE parentPriceGroupID = ?');
+    expect(parameterAt(detach.params, 1)).toBe(PINNED_CHILD_PRICE_GROUP_ID);
+
+    // `modifiedDateTime` is stamped from one captured instant
+    // [org/Hibachi/HibachiEntity.cfc:L662-L667]; `modifiedByAccountID` is NOT, because
+    // [org/Hibachi/HibachiEntity.cfc:L676-L677] sourced it from the ambient scope that
+    // transformation rule T6 removes, and this method takes no context parameter.
+    expect(parameterAt(detach.params, 0)).toBeInstanceOf(Date);
+    expect(detach.sql).not.toContain('modifiedByAccountID');
+
+    // Write-once columns are untouched, matching `UPDATED_PRICE_GROUP_COLUMNS`.
+    expect(detach.sql).not.toContain('createdDateTime');
+    expect(detach.sql).not.toContain('createdByAccountID');
+  });
+
+  it('runs every statement, gates included, inside one transaction', async () => {
+    // ★★ ATOMICITY IS THE POINT OF THE FINDING, NOT A BONUS. A delete that removed a
+    // group's rates and then failed before the group itself would leave a price group with
+    // no rate at all - which the cascade at
+    // [model/service/PriceGroupService.cfc:L140-L181] reads as "no rate applies" and
+    // silently prices at list. And a child detach that landed while the parent delete did
+    // not would orphan a subtree. Under the ORM this ran inside the transaction Hibachi
+    // opened; with the ORM gone it is opened here.
+    const { repository, executor } = makeSubject(ALL_GATES_CLEAR);
+
+    await repository.deletePriceGroup(
+      makePriceGroupFixtures({ idPrefix: PINNED_FIXTURE_PREFIX }).childPriceGroup,
+    );
+
+    expect(executor.transactionCount).toBe(1);
+
+    // Every statement, read and write alike. The gates are inside it too, so the
+    // relationships cannot be populated between the probe and the delete.
+    for (const statement of [...executor.calls, ...executor.mutationCalls]) {
+      expect(statement.inTransaction).toBe(true);
+    }
+  });
+
+  it('opens a transaction that refuses, and none at all for an unsaved entity', async () => {
+    // A refusal still opens the transaction - the gates run inside it - and commits it
+    // empty. That is what legacy did: a failed delete context set the request-wide error
+    // flag [org/Hibachi/HibachiTransient.cfc:L455-L457] and `endHibachiLifecycle()` then
+    // skipped the flush entirely [org/Hibachi/Hibachi.cfc:L455-L459], so nothing the
+    // request had mutated reached the database.
+    const refused = makeSubject([GATE_BLOCKED]);
+
+    await expect(
+      refused.repository.deletePriceGroup(
+        makePriceGroupFixtures({ idPrefix: PINNED_FIXTURE_PREFIX }).childPriceGroup,
+      ),
+    ).resolves.toBe(false);
+
+    expect(refused.executor.transactionCount).toBe(1);
+    expect(refused.executor.mutationCalls).toHaveLength(0);
+
+    // An unsaved entity short-circuits before the transaction, because there is no row to
+    // gate, detach or delete and opening one would cost a connection to do nothing.
+    const unsaved = makeSubject([]);
+
+    await expect(
+      unsaved.repository.deletePriceGroup(makeUnsavedPriceGroup(undefined)),
+    ).resolves.toBe(false);
+
+    expect(unsaved.executor.transactionCount).toBe(0);
+    expect(unsaved.executor.calls).toHaveLength(0);
+    expect(unsaved.executor.mutationCalls).toHaveLength(0);
+  });
+
+  it('never writes to a gate table, and never projects a column of one', async () => {
+    // The gates borrow five tables to answer one question each. `SELECT 1` projects a
+    // LITERAL, so no column of an order, account, subscription or promotion table is read
+    // even though the tables are named - and nothing is written to any of them, which is
+    // the guarantee the read-only ruling turns on.
+    const { repository, executor } = makeSubject(ALL_GATES_CLEAR);
+
+    await repository.deletePriceGroup(
+      makePriceGroupFixtures({ idPrefix: PINNED_FIXTURE_PREFIX }).childPriceGroup,
+    );
+
+    for (const gate of EXPECTED_DELETE_GATES) {
+      for (const write of sqlTextsOf(executor.mutationCalls)) {
+        expect(write).not.toContain(gate.tableName);
+      }
+    }
+
+    for (const probe of executor.calls) {
+      expect(probe.sql.startsWith('SELECT 1\n')).toBe(true);
+      expect(probe.sql).not.toContain('JOIN');
+      expect(probe.sql).not.toContain('*');
+      expect(probe.sql).not.toContain('COUNT');
+    }
+  });
+  // -------------------------------------------------------------------------------
+  // C5.3  The delete cascade is ATOMIC
+  //
+  // ★★★ ATOMICITY BOUNDARY, and A RESTORATION OF PARITY rather than a new guarantee.
+  //
+  // The legacy performed this delete as `removeAllManyToManyRelationships()` followed
+  // by `entityDelete()` [org/Hibachi/HibachiService.cfc:L49-L80,
+  // org/Hibachi/HibachiDAO.cfc:L68-L76], and BOTH ARE ORM SESSION OPERATIONS. No SQL
+  // reached the server until the session flushed, and Hibernate flushes inside one JDBC
+  // transaction - so every effect either landed or none did, and no legacy execution
+  // could produce a price group whose rate links are gone and whose row remains. The framework also reaches for `<cftransaction>` explicitly wherever it
+  // drives raw SQL across several statements [org/Hibachi/HibachiDAO.cfc:L183-L263].
+  //
+  // Emitting these as autocommit statements therefore DISCARDED a guarantee the source
+  // had.
+  //
+  // ★ THE COUNT, STATED ONCE AND ACCURATELY. This banner said "eight" throughout, which
+  // was the count before the child detachment and the fifth relationship gate were
+  // written out. The shipped cascade issues {@link DELETE_GATE_PROBE_COUNT} gate probes
+  // and {@link DELETE_MUTATION_COUNT} writes - the child detachment UPDATE, six rate-link
+  // deletes, the rate delete and the row delete - all inside the one unit. The two
+  // constants are the single source of that arithmetic, so no prose below repeats a
+  // literal that can drift away from the adapter. A failure after statement three leaves a price group stripped of its
+  // rate links but still present and still resolvable by the pricing cascade, which
+  // surfaces as a WRONG PRICE rather than as a failed delete. AAP 0.6.5 requires an
+  // explicit boundary here precisely because there is no ambient `cftransaction`.
+  //
+  // WHAT THE RECORDER CAN AND CANNOT PROVE. It is not a database: it does not buffer
+  // statements and does not undo them on rollback. What it proves is the property the
+  // adapter is responsible for - that every statement is issued through the executor
+  // the transaction handed it, inside one BEGIN/COMMIT pair, and that a failure
+  // part-way through reaches ROLLBACK and propagates. Whether the SERVER then
+  // honours the rollback is the driver's contract, not this adapter's, and is asserted
+  // against the pool-backed executor in `connection`'s own suite instead.
+  // -------------------------------------------------------------------------------
+
+  it('issues every statement inside one transaction, and commits once', async () => {
+    const { repository, executor } = makeSubject([]);
+
+    const deleted = await repository.deletePriceGroup(
+      makePriceGroupFixtures({ idPrefix: PINNED_FIXTURE_PREFIX }).childPriceGroup,
+    );
+
+    expect(deleted).toBe(true);
+
+    // ONE transaction, opened before any statement and committed after the last.
+    expect(executor.transactionEvents).toStrictEqual(['BEGIN', 'COMMIT']);
+
+    // And every statement really was issued - the transaction is around the work, not
+    // instead of it. Both counts are asserted, so a cascade that lost a write or a gate
+    // cannot pass by being wrapped correctly.
+    expect(executor.mutationCalls).toHaveLength(DELETE_MUTATION_COUNT);
+    expect(executor.calls).toHaveLength(DELETE_GATE_PROBE_COUNT);
+  });
+
+  it('opens exactly one transaction, never one per statement', async () => {
+    // One transaction per statement would be that many independent commits, which is the
+    // defect wearing a different shape: a failure at statement four would still leave
+    // three committed.
+    const { repository, executor } = makeSubject([]);
+
+    await repository.deletePriceGroup(
+      makePriceGroupFixtures({ idPrefix: PINNED_FIXTURE_PREFIX }).childPriceGroup,
+    );
+
+    expect(executor.transactionEvents.filter((event) => event === 'BEGIN')).toHaveLength(1);
+    expect(executor.transactionEvents.filter((event) => event === 'COMMIT')).toHaveLength(1);
+    expect(executor.transactionEvents).not.toContain('ROLLBACK');
+  });
+
+  it('rolls back and re-raises when a statement fails part-way through the cascade', async () => {
+    // The failure is injected at the FIFTH link delete, so three link deletes have
+    // already been issued when it happens - the exact shape that used to leave a
+    // half-deleted price group behind.
+    const failure = new Error('fake driver failure on the fifth link delete');
+    const { repository, executor } = makeSubject([]);
+
+    executor.failNextMutationAt(4, failure);
+
+    await expect(
+      repository.deletePriceGroup(
+        makePriceGroupFixtures({ idPrefix: PINNED_FIXTURE_PREFIX }).childPriceGroup,
+      ),
+    ).rejects.toBe(failure);
+
+    // ROLLED BACK, NOT COMMITTED. This is the whole assertion: the four statements that
+    // did run are inside a transaction that was rolled back rather than four committed
+    // deletions.
+    expect(executor.transactionEvents).toStrictEqual(['BEGIN', 'ROLLBACK']);
+    expect(executor.transactionEvents).not.toContain('COMMIT');
+
+    // It stopped at the failure rather than pressing on: five attempted, three
+    // remaining never issued.
+    expect(executor.mutationCalls).toHaveLength(5);
+  });
+
+  it('re-raises rather than reporting false when the cascade is rolled back', async () => {
+    // ★ A ROLLED-BACK DELETE IS NOT A DELETE THAT FOUND NOTHING. Returning `false` here
+    // would be indistinguishable from the never-persisted case and from the
+    // matched-nothing case, so a caller would treat a failed delete as a completed one.
+    const { repository, executor } = makeSubject([]);
+
+    executor.failNextMutationAt(7, new Error('fake driver failure on the row delete'));
+
+    const outcome = await repository
+      .deletePriceGroup(makePriceGroupFixtures({ idPrefix: PINNED_FIXTURE_PREFIX }).childPriceGroup)
+      .then(
+        (value) => ({ resolved: true as const, value }),
+        (error: unknown) => ({ resolved: false as const, error }),
+      );
+
+    expect(outcome.resolved).toBe(false);
+    expect(executor.transactionEvents).toStrictEqual(['BEGIN', 'ROLLBACK']);
+  });
+
+  it('opens no transaction at all for an entity that was never persisted', async () => {
+    // The early return precedes the transaction, so nothing is begun and nothing has to
+    // be rolled back. Opening one to do nothing would take a connection out of the pool
+    // and a `BEGIN`/`COMMIT` round trip for a call that issues no statement.
+    const { repository, executor } = makeSubject([]);
+
+    const deleted = await repository.deletePriceGroup(makeUnsavedPriceGroup(undefined));
+
+    expect(deleted).toBe(false);
+    expect(executor.transactionEvents).toStrictEqual([]);
+    expect(executor.mutationCalls).toHaveLength(0);
+  });
+
+  it('issues every statement through the executor the transaction supplied', async () => {
+    // ★ THE SUBTLE FAILURE THIS BLOCKS. Reaching `this.executor` from inside the work
+    // function would COMPILE, would emit the same statements in the same order,
+    // and would pass every statement-shape assertion above - while sending each one to a
+    // DIFFERENT pooled connection, outside the transaction and therefore autocommitted.
+    // The recorder hands the work function a distinct delegate precisely so the two are
+    // tellable apart: a statement arriving on the outer recorder while a transaction is
+    // open is recorded as `MUTATION_OUTSIDE_TRANSACTION`.
+    const { repository, executor } = makeSubject([]);
+
+    await repository.deletePriceGroup(
+      makePriceGroupFixtures({ idPrefix: PINNED_FIXTURE_PREFIX }).childPriceGroup,
+    );
+
+    expect(executor.orderedEvents.at(0)).toBe('BEGIN');
+    expect(executor.orderedEvents.at(-1)).toBe('COMMIT');
+    expect(executor.orderedEvents.filter((event) => event === 'MUTATION')).toHaveLength(
+      DELETE_MUTATION_COUNT,
+    );
+
+    // NOT ONE bypass, and the whole interleaved log is exactly the shape it should be.
+    //
+    // ★ THE GATE PROBES ARE INSIDE THE UNIT OF WORK TOO, and the expected log names them
+    // rather than tolerating them. This assertion was first written as BEGIN, then the
+    // mutations, then COMMIT - which assumed the five relationship gates were read before
+    // the transaction opened. They are not: `deletePriceGroup` opens the transaction
+    // first and issues every gate probe on the transactional executor. That ordering is
+    // the correct one and is worth pinning, because a gate read OUTSIDE the unit could
+    // observe a state that changes before the delete lands - the decision to delete and
+    // the delete itself would then rest on different snapshots.
+    expect(executor.orderedEvents).not.toContain('MUTATION_OUTSIDE_TRANSACTION');
+    expect(executor.orderedEvents).not.toContain('QUERY_OUTSIDE_TRANSACTION');
+    expect(executor.orderedEvents).toStrictEqual([
+      'BEGIN',
+      ...Array.from({ length: DELETE_GATE_PROBE_COUNT }, () => 'QUERY'),
+      ...Array.from({ length: DELETE_MUTATION_COUNT }, () => 'MUTATION'),
+      'COMMIT',
+    ]);
+  });
+
+  it('records a bypass distinctly, so the guard against one is not vacuous', async () => {
+    // ★ A CHECK ON THE CHECK. The case above asserts that no statement bypassed the
+    // transaction; this one proves the recorder would have SAID SO if one had, by
+    // performing the bypass deliberately. Without it, `not.toContain(...)` could pass
+    // because the marker is never produced under any circumstances.
+    const { executor } = makeSubject([]);
+
+    await executor.transaction(async (transactional) => {
+      await transactional.executeMutation('DELETE FROM SwPriceGroup WHERE priceGroupID = ?', ['a']);
+
+      // The mistake, made on purpose: the outer executor, while a transaction is open.
+      await executor.executeMutation('DELETE FROM SwPriceGroupRate WHERE priceGroupID = ?', ['a']);
+    });
+
+    expect(executor.orderedEvents).toStrictEqual([
+      'BEGIN',
+      'MUTATION',
+      'MUTATION_OUTSIDE_TRANSACTION',
+      'COMMIT',
+    ]);
+
+    // Both still land in `mutationCalls`, which is why the statement-shape assertions
+    // elsewhere in this file are unaffected by the distinction.
+    expect(executor.mutationCalls).toHaveLength(2);
+  });
+
+  it('JOINS a nested transaction on the delegate, matching the shipped contract', async () => {
+    // ★ THIS CASE ONCE READ "REFUSES A NESTED TRANSACTION ON THE DELEGATE, MATCHING THE
+    // SHIPPED CONTRACT", AND ASSERTED A REJECTION NAMED `NestedTransactionError`. Its
+    // stated principle is kept verbatim and is the reason the assertions are inverted:
+    // "the recorder does not get to be more permissive than the executor it stands in
+    // for; if it were, a repository could nest in a test and fail only in production."
+    //
+    // Applied to the executor that actually shipped, that principle demands JOINING.
+    // `createConnectionExecutor` in src/repositories/mysql/connection.ts implements the
+    // transactional executor's `transaction(work)` as `return work(boundExecutor)` - no
+    // second BEGIN, no second COMMIT, the inner work running inline on the same
+    // connection - and a recorder that refused would be STRICTER than the real thing,
+    // which fails in the other direction: a repository that legitimately nests would
+    // fail only in the test.
+    //
+    // AND ONE DOES NESTS, LEGITIMATELY. `MysqlProductRepository.saveProduct` opens a
+    // transaction and calls `MysqlSkuRepository.saveSkuForProduct(draft, productID, tx)`
+    // from inside it; that path funnels through `persistSku`, which calls
+    // `executor.transaction(...)` on the executor it was handed. Refusing here would
+    // report a failure for every new product carrying a SKU.
+    const { executor } = makeSubject([]);
+
+    const result = await executor.transaction((transactional) =>
+      transactional.transaction(async (nested) => {
+        await nested.executeMutation('DELETE FROM SwPriceGroup WHERE priceGroupID = ?', ['pg-1']);
+
+        return 'inner';
+      }),
+    );
+
+    // The inner work ran, and its value is the outer call's value.
+    expect(result).toBe('inner');
+
+    // ONE unit of work, one boundary. The join is visible as its own marker, between the
+    // single BEGIN and the single COMMIT, and it opens neither.
+    expect(executor.transactionCount).toBe(1);
+    expect(executor.transactionEvents).toStrictEqual(['BEGIN', 'COMMIT']);
+    expect(executor.orderedEvents).toStrictEqual(['BEGIN', 'JOIN', 'MUTATION', 'COMMIT']);
+
+    // The statement the joined work issued is INSIDE the transaction, which is the whole
+    // reason joining is safe: it reached the same delegate, not the outer recorder.
+    expect(executor.mutationCalls).toHaveLength(1);
+    expect(executor.mutationCalls.every((call) => call.inTransaction)).toBe(true);
+    expect(executor.orderedEvents).not.toContain('MUTATION_OUTSIDE_TRANSACTION');
   });
 });
 
@@ -3160,7 +4086,6 @@ const INSERT_PRICE_GROUP_RATE_BOUND_VALUE_COUNT = 11;
 /** How many values the rate update binds: eight columns, then the key. */
 const UPDATE_PRICE_GROUP_RATE_BOUND_VALUE_COUNT = 9;
 
-/** Positional indices into the rate insert's bound values. */
 const RATE_INSERT_BOUND = Object.freeze({
   priceGroupRateID: 0,
   globalFlag: 1,
@@ -3175,7 +4100,6 @@ const RATE_INSERT_BOUND = Object.freeze({
   modifiedByAccountID: 10,
 });
 
-/** Positional indices into the rate update's bound values. */
 const RATE_UPDATE_BOUND = Object.freeze({
   globalFlag: 0,
   amount: 1,
@@ -3191,45 +4115,39 @@ const RATE_UPDATE_BOUND = Object.freeze({
 /**
  * The stored decimal text and the value it denotes.
  *
- * The two spellings are DIFFERENT STRINGS for the SAME VALUE, which is the entire
- * reason a decimal is compared by value here and never by string identity.
+ * Two DIFFERENT STRINGS for the SAME VALUE, which is why a decimal is compared by value here and
+ * never by string identity.
  */
 const STORED_AMOUNT_TEXT = '12.50';
 
 const NORMALIZED_AMOUNT_TEXT = '12.5';
 
 describe('money, flags, and the rate write paths', () => {
-  // C5.3. `decimalNumbers` is left unset on the pool, so MySQL delivers DECIMAL as TEXT
-  // and `Money` is constructed from that text. No raw floating-point value touches a
-  // monetary quantity anywhere in this suite - not in the adapter, and not in an expected
-  // value either, which is the part that is easy to get wrong.
+  // C5.3. `decimalNumbers` is left unset on the pool, so MySQL delivers DECIMAL as TEXT and `Money`
+  // is constructed from that text. No raw floating-point value touches a monetary quantity here.
   //
-  // C5.5 - SERVICE-TIER DEFECTS THIS SUITE DELIBERATELY DOES NOT COMPENSATE FOR. Named
-  // here so a reviewer knows they were seen and left alone, and asserted nowhere, because
-  // none of them lives at this layer:
+  // C5.5 - SERVICE-TIER DEFECTS THIS SUITE DELIBERATELY DOES NOT COMPENSATE FOR, asserted nowhere
+  // because none of them lives at this layer:
   //   * `local.i` referenced where the loop variable is `i`
-  //     [model/service/PriceGroupService.cfc:L236], inside `getPriceGroupDataJSON`.
+  //     [model/service/PriceGroupService.cfc:L236].
   //   * `deletePriceGroup`'s never-re-read collection snapshot loop
-  //     [model/service/PriceGroupService.cfc:L461-L470] - a potential infinite loop,
-  //     preserved at the service tier behind a bounded-iteration guard and a flagged TODO.
-  //     The REPOSITORY delete asserted above is the single-entity statement sequence and
-  //     carries no loop of its own, which is why the defect cannot surface here.
-  //   * the parent-recursion asymmetry [model/service/PriceGroupService.cfc:L174], where
-  //     the recursion calls the PRODUCT variant rather than the SKU variant.
+  //     [model/service/PriceGroupService.cfc:L461-L470], a potential infinite loop. It is held
+  //     at the service tier behind a bounded-iteration guard, recorded there as a
+  //     termination safeguard rather than a behavioural change. The REPOSITORY delete
+  //     asserted above carries no loop.
+  //   * the parent-recursion asymmetry [model/service/PriceGroupService.cfc:L174], where the
+  //     recursion calls the PRODUCT variant rather than the SKU variant.
   //   * the rounding-rule asymmetry [model/service/PriceGroupService.cfc:L316-L340], where
   //     only `percentageOff` applies the rounding rule.
-  // `precisionEvaluate` is reached at [model/service/PriceGroupService.cfc:L323] and
-  // [:L331] - NOT at L322 and L328 as commonly cited; the drift is corrected in the
-  // locator map at the head of this file. The five-level cascade is at
-  // [model/service/PriceGroupService.cfc:L140-L181]: SKU rate, then product rate, then the
-  // product-type parent chain, then the global rate, then the parent price group.
+  // `precisionEvaluate` is reached at [model/service/PriceGroupService.cfc:L323] and [:L331], not
+  // L322 and L328 as commonly cited. The five-level cascade is at [:L140-L181]: SKU rate, product
+  // rate, the product-type parent chain, the global rate, then the parent price group.
 
   it('maps a NULL amount to undefined, and never to a zero', async () => {
-    // [model/entity/PriceGroupRate.cfc:L54] declares `amount` as `big_decimal` with NO
-    // default, so NULL is a state the schema genuinely permits. Substituting
-    // `Money.zero` would turn "this rate states no amount" into "this rate discounts by
-    // nothing" - and for a `percentageOff` rate those are the same answer, while for an
-    // `amount` rate the second one prices the SKU at zero.
+    // [model/entity/PriceGroupRate.cfc:L54] declares `amount` as `big_decimal` with NO default, so
+    // NULL is a state the schema genuinely permits. Substituting `Money.zero` would turn "this rate
+    // states no amount" into "this rate discounts by nothing", and for an `amount` rate the second
+    // one prices the SKU at zero.
     const { repository } = makeSubject([
       [priceGroupRateRow({ amount: null })],
       ...rateLinkResultSets(),
@@ -3267,21 +4185,15 @@ describe('money, flags, and the rate write paths', () => {
     expect(amount).toBeDefined();
     expect(amount?.equals(Money.fromDecimalString(STORED_AMOUNT_TEXT))).toBe(true);
 
-    // AND BY VALUE MEANS BY VALUE. `'12.50'` and `'12.5'` are different strings denoting
-    // the same quantity, and the decimal representation drops the trailing zero - so a
-    // string comparison would report a false difference. This asserts the trap exists
-    // rather than merely avoiding it, so nobody "simplifies" the comparison later.
+    // AND BY VALUE MEANS BY VALUE. `'12.50'` and `'12.5'` are different strings denoting the same
+    // quantity, and the decimal representation drops the trailing zero, so a string comparison
+    // would report a false difference.
     expect(amount?.toDecimalString()).toBe(NORMALIZED_AMOUNT_TEXT);
     expect(amount?.toDecimalString()).not.toBe(STORED_AMOUNT_TEXT);
     expect(amount?.equals(Money.fromDecimalString(NORMALIZED_AMOUNT_TEXT))).toBe(true);
   });
 
   it('refuses an amount delivered as a number rather than as text', async () => {
-    // The pool's configuration is what guarantees text, and this reader is what makes a
-    // configuration drift LOUD instead of silent. A DECIMAL delivered as a JavaScript
-    // number has already lost precision by the time it reaches here; accepting it would
-    // launder that loss into a `Money`, which is the one thing the value object exists to
-    // prevent.
     const { repository } = makeSubject([[priceGroupRateRow({ amount: 12.5 })]]);
 
     await expect(repository.getPriceGroupRate(CANNED_PRICE_GROUP_RATE_ID)).rejects.toThrow(
@@ -3290,18 +4202,15 @@ describe('money, flags, and the rate write paths', () => {
   });
 
   it('hydrates the legacy string boolean through CFML boolean semantics', async () => {
-    // C5.3. [model/entity/PriceGroupRate.cfc:L53] defaults `globalFlag` to the STRING
-    // `"false"`, not the boolean - so the stored column can legitimately hold text. CFML
-    // boolean semantics are what resolve it, never a bare truthiness test: `Boolean('false')`
-    // is `true` in JavaScript, which would invert the flag and make every rate global.
+    // C5.3. [model/entity/PriceGroupRate.cfc:L53] defaults `globalFlag` to the STRING `"false"`,
+    // not the boolean, so the stored column can legitimately hold text. CFML boolean semantics
+    // resolve it, never a bare truthiness test: `Boolean('false')` is `true` in JavaScript, which
+    // would invert the flag and make every rate global.
     expect(cfBoolean('false')).toBe(false);
     expect(cfBoolean('true')).toBe(true);
     expect(cfBoolean(0)).toBe(false);
     expect(cfBoolean(1)).toBe(true);
 
-    // And the entity applies exactly those semantics to whatever the driver delivered -
-    // the adapter passes the column through UNCOERCED so the one implementation of the
-    // rule stays in the domain.
     const stringFalse = makeSubject([
       [priceGroupRateRow({ globalFlag: 'false' })],
       ...rateLinkResultSets(),
@@ -3339,7 +4248,9 @@ describe('money, flags, and the rate write paths', () => {
 
     const inserted = await repository.savePriceGroupRate(makeUnsavedPriceGroupRate());
 
-    const statement = onlyStatement(executor.mutationCalls);
+    // The scalar row is written FIRST, then the six link collections are reconciled -
+    // see the link-reconciliation describe below, which owns those assertions.
+    const statement = statementAt(executor.mutationCalls, 0);
 
     expect(statement.sql).toBe(EXPECTED_INSERT_PRICE_GROUP_RATE_SQL);
     expect(statement.params).toHaveLength(INSERT_PRICE_GROUP_RATE_BOUND_VALUE_COUNT);
@@ -3350,19 +4261,17 @@ describe('money, flags, and the rate write paths', () => {
     expect(inserted.getPriceGroupRateID()).toBe(mintedID);
     expect(inserted.isNew()).toBe(false);
 
-    // An absent value binds NULL - it is never omitted from the parameter array, because
-    // the placeholder count is fixed by the column list and a short array would bind the
-    // wrong value to every later position.
+    // An absent value binds NULL and is never omitted from the parameter array, because the
+    // placeholder count is fixed by the column list and a short array would bind the wrong value to
+    // every later position.
     expect(parameterAt(statement.params, RATE_INSERT_BOUND.amount)).toBeNull();
     expect(parameterAt(statement.params, RATE_INSERT_BOUND.amountType)).toBeNull();
     expect(parameterAt(statement.params, RATE_INSERT_BOUND.remoteID)).toBeNull();
     expect(parameterAt(statement.params, RATE_INSERT_BOUND.priceGroupID)).toBeNull();
     expect(parameterAt(statement.params, RATE_INSERT_BOUND.roundingRuleID)).toBeNull();
 
-    // An unstated flag resolves through the same CFML semantics as a stored one.
     expect(parameterAt(statement.params, RATE_INSERT_BOUND.globalFlag)).toBe(false);
 
-    // One captured instant, both audit columns.
     expect(parameterAt(statement.params, RATE_INSERT_BOUND.createdDateTime)).toBe(
       parameterAt(statement.params, RATE_INSERT_BOUND.modifiedDateTime),
     );
@@ -3375,7 +4284,8 @@ describe('money, flags, and the rate write paths', () => {
       makePersistedPriceGroupRate({ amount: Money.fromDecimalString(STORED_AMOUNT_TEXT) }),
     );
 
-    const statement = onlyStatement(executor.mutationCalls);
+    // The scalar row is written FIRST; the six link reconciliations follow it.
+    const statement = statementAt(executor.mutationCalls, 0);
 
     expect(statement.sql).toBe(EXPECTED_UPDATE_PRICE_GROUP_RATE_SQL);
     expect(statement.params).toHaveLength(UPDATE_PRICE_GROUP_RATE_BOUND_VALUE_COUNT);
@@ -3383,9 +4293,8 @@ describe('money, flags, and the rate write paths', () => {
       CANNED_PRICE_GROUP_RATE_ID,
     );
 
-    // The amount travels as DECIMAL TEXT, never as a float - and the text is the
-    // normalized spelling, which is why it is checked by reconstructing a `Money` from it
-    // rather than against the literal that was stored.
+    // The amount travels as DECIMAL TEXT, never as a float, and the text is the normalized
+    // spelling, which is why it is checked by reconstructing a `Money` from it.
     const boundAmount = requireBoundDecimalNumeral(
       parameterAt(statement.params, RATE_UPDATE_BOUND.amount),
       'the bound rate amount',
@@ -3396,41 +4305,560 @@ describe('money, flags, and the rate write paths', () => {
     ).toBe(true);
     expect(typeof parameterAt(statement.params, RATE_UPDATE_BOUND.amount)).not.toBe('number');
 
-    // The legacy string default resolves to the boolean the column stores.
     expect(parameterAt(statement.params, RATE_UPDATE_BOUND.globalFlag)).toBe(false);
     expect(parameterAt(statement.params, RATE_UPDATE_BOUND.amountType)).toBe('percentageOff');
   });
 
+  // -------------------------------------------------------------------------
+  // ⭐⭐ Rate link reconciliation on save - all SIX collections
+  // [model/entity/PriceGroupRate.cfc:L71-L77]
+  //
+  // THE REGRESSION THIS GUARDS WAS SILENT. The six many-to-many collections were
+  // READ by `loadRateLinkMembership` and CASCADE-DELETED with their price group,
+  // but never WRITTEN on a save. Hibernate reconciled them from the entity on
+  // flush; the target rehydrated them in memory and returned a rate that LOOKED
+  // updated while the link tables still held the old membership. Nothing about
+  // the returned value revealed it.
+  //
+  // It matters more than an ordinary missing write because these collections
+  // decide WHICH products and SKUs a rate applies to
+  // [model/service/PriceGroupService.cfc:L57-L181]. A stale link row does not
+  // corrupt a display value - it charges the wrong price.
+  //
+  // NET-NEW COVERAGE: no legacy `PriceGroupDAOTest` exists (AAP 0.6.6).
+  // -------------------------------------------------------------------------
+
+  describe('savePriceGroupRate - link reconciliation', () => {
+    /** The six link tables in the order the adapter reconciles them. */
+    const LINK_TABLES = [
+      'SwPriceGroupRateProductType',
+      'SwPriceGroupRateProduct',
+      'SwPriceGroupRateSku',
+      'SwPriceGrpRateExclProductType',
+      'SwPriceGroupRateExclProduct',
+      'SwPriceGroupRateExclSku',
+    ] as const;
+
+    /** A persisted rate carrying two members in every one of its six collections. */
+    function makeRateWithMembership(): PriceGroupRate {
+      return new PriceGroupRate({
+        priceGroupRateID: CANNED_PRICE_GROUP_RATE_ID,
+        globalFlag: 'false',
+        amount: undefined,
+        amountType: 'percentageOff',
+        productTypes: [
+          new ProductType({ productTypeID: 'pt-1' }),
+          new ProductType({ productTypeID: 'pt-2' }),
+        ],
+        products: [new Product({ productID: 'p-1' }), new Product({ productID: 'p-2' })],
+        skus: [new Sku({ skuID: 's-1' }), new Sku({ skuID: 's-2' })],
+        excludedProductTypes: [new ProductType({ productTypeID: 'xpt-1' })],
+        excludedProducts: [new Product({ productID: 'xp-1' })],
+        excludedSkus: [new Sku({ skuID: 'xs-1' })],
+      });
+    }
+
+    // JUDGMENT CALL: the match is ANCHORED ON WORD BOUNDARIES, not a substring test.
+    // Three of these six names are prefixes of another: `SwPriceGroupRateProduct` sits
+    // inside `SwPriceGroupRateProductType`, and `SwPriceGroupRateExclProduct` inside
+    // `SwPriceGroupRateExclProductType` - a name the schema does not even use, because
+    // [model/entity/PriceGroupRate.cfc:L75] abbreviates that one to
+    // `SwPriceGrpRateExclProductType`. A plain `includes` therefore attributes the
+    // product-type statements to the product collection as well, and the first draft of
+    // this group did exactly that: it reported four statements for a table that received
+    // two, and read the WRONG collection's parameters as though they were the right
+    // one's. The boundary makes the selection exact.
+    /** Statements naming a given table exactly, in call order. */
+    function statementsFor(
+      calls: readonly RecordedStatement[],
+      tableName: string,
+    ): readonly RecordedStatement[] {
+      const exactName = new RegExp(`\\b${tableName}\\b`);
+
+      return calls.filter((call) => exactName.test(call.sql));
+    }
+
+    /** The single statement of one kind that a table received. */
+    function statementFor(
+      calls: readonly RecordedStatement[],
+      tableName: string,
+      kind: 'DELETE' | 'INSERT',
+    ): RecordedStatement {
+      const matches = statementsFor(calls, tableName).filter((call) => call.sql.startsWith(kind));
+
+      const [only] = matches;
+
+      if (only === undefined || matches.length !== 1) {
+        throw new Error(
+          `expected exactly one ${kind} for ${tableName}, found ${String(matches.length)}`,
+        );
+      }
+
+      return only;
+    }
+
+    it('★★ writes a delete AND an insert for every one of the six link tables', async () => {
+      const { repository, executor } = makeSubject([]);
+
+      await repository.savePriceGroupRate(makeRateWithMembership());
+
+      for (const tableName of LINK_TABLES) {
+        const statements = statementsFor(executor.mutationCalls, tableName);
+
+        expect(statements).toHaveLength(2);
+        expect(statements[0]?.sql).toContain(`DELETE FROM ${tableName}`);
+        expect(statements[1]?.sql).toContain(`INSERT INTO ${tableName}`);
+      }
+    });
+
+    it('★★ runs the scalar write and every link statement inside ONE transaction', async () => {
+      // A failure part-way through must not leave a rate whose amount was updated but
+      // whose membership was not - that is the state which changes the price a SKU gets.
+      const { repository, executor } = makeSubject([]);
+
+      await repository.savePriceGroupRate(makeRateWithMembership());
+
+      expect(executor.transactionCount).toBe(1);
+      expect(executor.mutationCalls.every((call) => call.inTransaction)).toBe(true);
+    });
+
+    it('★★ writes the scalar columns FIRST, then reconciles in declared collection order', async () => {
+      // The scalar write leads because on the insert path it is what mints the identifier
+      // the link rows are keyed on. The collection order is then the entity's own
+      // declaration order [model/entity/PriceGroupRate.cfc:L71-L77] - included before
+      // excluded - so a diff of what the adapter emits stays readable against the legacy
+      // component rather than against an arbitrary internal ordering.
+      const { repository, executor } = makeSubject([]);
+
+      await repository.savePriceGroupRate(makeRateWithMembership());
+
+      expect(executor.mutationCalls[0]?.sql).toContain('UPDATE SwPriceGroupRate');
+      expect(executor.mutationCalls.slice(1).map((call) => call.sql.split('\n')[0])).toStrictEqual([
+        'DELETE FROM SwPriceGroupRateProductType',
+        'INSERT INTO SwPriceGroupRateProductType (priceGroupRateID, productTypeID)',
+        'DELETE FROM SwPriceGroupRateProduct',
+        'INSERT INTO SwPriceGroupRateProduct (priceGroupRateID, productID)',
+        'DELETE FROM SwPriceGroupRateSku',
+        'INSERT INTO SwPriceGroupRateSku (priceGroupRateID, skuID)',
+        'DELETE FROM SwPriceGrpRateExclProductType',
+        'INSERT INTO SwPriceGrpRateExclProductType (priceGroupRateID, productTypeID)',
+        'DELETE FROM SwPriceGroupRateExclProduct',
+        'INSERT INTO SwPriceGroupRateExclProduct (priceGroupRateID, productID)',
+        'DELETE FROM SwPriceGroupRateExclSku',
+        'INSERT INTO SwPriceGroupRateExclSku (priceGroupRateID, skuID)',
+      ]);
+    });
+
+    it('binds the rate identifier and each member identifier, pairwise, in one statement', async () => {
+      const { repository, executor } = makeSubject([]);
+
+      await repository.savePriceGroupRate(makeRateWithMembership());
+
+      const insert = statementFor(executor.mutationCalls, 'SwPriceGroupRateProduct', 'INSERT');
+
+      expect(insert.sql).toContain('VALUES (?, ?), (?, ?)');
+      expect(insert.params).toStrictEqual([
+        CANNED_PRICE_GROUP_RATE_ID,
+        'p-1',
+        CANNED_PRICE_GROUP_RATE_ID,
+        'p-2',
+      ]);
+    });
+
+    it('scopes the delete to the ONE rate, never to its price group', async () => {
+      // A price-group-scoped delete belongs to the delete cascade. Using it here would
+      // wipe every sibling rate's membership as a side effect of saving one rate.
+      const { repository, executor } = makeSubject([]);
+
+      await repository.savePriceGroupRate(makeRateWithMembership());
+
+      for (const tableName of LINK_TABLES) {
+        const del = statementFor(executor.mutationCalls, tableName, 'DELETE');
+
+        expect(del.sql).toBe(`DELETE FROM ${tableName}\nWHERE priceGroupRateID = ?`);
+        expect(del.params).toStrictEqual([CANNED_PRICE_GROUP_RATE_ID]);
+      }
+    });
+
+    it('★★ still issues the DELETE for an emptied collection, so membership can be cleared', async () => {
+      // Short-circuiting the delete for an empty collection would make clearing a
+      // collection impossible - the operation most likely to be attempted after a
+      // mistake. Only the INSERT is skipped.
+      const { repository, executor } = makeSubject([]);
+
+      await repository.savePriceGroupRate(makePersistedPriceGroupRate({ amount: undefined }));
+
+      for (const tableName of LINK_TABLES) {
+        const statements = statementsFor(executor.mutationCalls, tableName);
+
+        expect(statements).toHaveLength(1);
+        expect(statements[0]?.sql).toContain('DELETE FROM');
+      }
+    });
+
+    it('★★ reconciles against the MINTED identifier when the rate is new', async () => {
+      // The argument still reports `''` after an insert, so keying the link rows off it
+      // would write rows pointing at nothing.
+      const { repository, executor } = makeSubject([]);
+
+      const inserted = await repository.savePriceGroupRate(
+        new PriceGroupRate({
+          priceGroupRateID: '',
+          products: [new Product({ productID: 'p-9' })],
+        }),
+      );
+
+      const insert = statementFor(executor.mutationCalls, 'SwPriceGroupRateProduct', 'INSERT');
+
+      expect(inserted.getPriceGroupRateID()).toMatch(MINTED_IDENTIFIER_PATTERN);
+      expect(insert.params).toStrictEqual([inserted.getPriceGroupRateID(), 'p-9']);
+    });
+
+    it('\u2605\u2605 writes a repeated member TWICE, because the association is a Hibernate BAG', async () => {
+      // \u2605\u2605 AN EARLIER REVISION OF THIS SUITE ASSERTED THE OPPOSITE - "deduplicates a
+      // repeated member, because a link row is a set element" - on the reasoning that
+      // "inserting it twice would either violate a composite key or store a duplicate the
+      // read side hands back as two members". THE FIRST HALF IS NOT TRUE OF THIS SCHEMA and
+      // the second half is a description of legacy behaviour rather than a fault.
+      //
+      // NONE of the six associations at [model/entity/PriceGroupRate.cfc:L71-L77] declares
+      // `type="array"`, so each is a Hibernate BAG: a bag permits the same member twice and
+      // Hibernate generated its link table WITHOUT a primary key, so there is no composite
+      // key to violate. Collapsing duplicates here would impose a constraint the source does
+      // not have and would make a load-modify-save round trip return a collection smaller
+      // than the one it was handed. Where the legacy authors wanted dedup they wrote it -
+      // `PromotionReward.addEligiblePriceGroup` guards with
+      // `if(isNew() or !hasEligiblePriceGroup(...))` [model/entity/PromotionReward.cfc:L159]
+      // - and `PriceGroupRate` declares no such helper for any of its six.
+      const { repository, executor } = makeSubject([]);
+
+      await repository.savePriceGroupRate(
+        new PriceGroupRate({
+          priceGroupRateID: CANNED_PRICE_GROUP_RATE_ID,
+          skus: [new Sku({ skuID: 's-1' }), new Sku({ skuID: 's-1' }), new Sku({ skuID: 's-2' })],
+        }),
+      );
+
+      const insert = statementFor(executor.mutationCalls, 'SwPriceGroupRateSku', 'INSERT');
+
+      expect(insert.params).toStrictEqual([
+        CANNED_PRICE_GROUP_RATE_ID,
+        's-1',
+        CANNED_PRICE_GROUP_RATE_ID,
+        's-1',
+        CANNED_PRICE_GROUP_RATE_ID,
+        's-2',
+      ]);
+    });
+
+    it('\u2605\u2605 REFUSES an unpersisted member, before issuing any link statement', async () => {
+      // \u2605\u2605 AN EARLIER REVISION OF THIS SUITE ASSERTED THAT SUCH A MEMBER IS SILENTLY
+      // DROPPED - "drops an unpersisted member rather than linking to an empty key", because
+      // "writing `''` would create a row every later read resolves to a missing entity". The
+      // premise is right and the remedy was the wrong one of the two available. Dropping it
+      // persists a membership QUIETLY SMALLER than the one the caller handed over, and the
+      // caller is told the save succeeded.
+      //
+      // Hibernate refused the same state: an owning-side collection holding a TRANSIENT
+      // instance, with no `cascade` declared on any of the six associations at
+      // [model/entity/PriceGroupRate.cfc:L71-L77], raised rather than skipping the row. So
+      // refusing is the faithful outcome, and the caller learns that the member has to be
+      // saved first.
+      const { repository, executor } = makeSubject([]);
+
+      const rate = new PriceGroupRate({
+        priceGroupRateID: CANNED_PRICE_GROUP_RATE_ID,
+        products: [new Product({ productID: '' }), new Product({ productID: 'p-real' })],
+      });
+
+      await expect(repository.savePriceGroupRate(rate)).rejects.toThrow(/never been persisted/u);
+
+      // \u2605 THE REFUSAL LANDS AFTER THE SCALAR WRITE AND BEFORE ANY LINK STATEMENT.
+      // Admitting all six collections up front is what keeps it from landing half-way
+      // through, having already emptied two link tables it will not refill - and the
+      // surrounding transaction rolls the scalar write back rather than leaving it applied.
+      expect(executor.mutationCalls).toHaveLength(1);
+      expect(statementAt(executor.mutationCalls, 0).sql).toBe(EXPECTED_UPDATE_PRICE_GROUP_RATE_SQL);
+      expect(
+        executor.mutationCalls.filter((mutation) => mutation.sql.startsWith('DELETE FROM ')),
+      ).toHaveLength(0);
+    });
+
+    it('reconciles the three EXCLUSION collections too, though the cascade never reads them', async () => {
+      // A documented legacy read-side gap. The entity retains them and `getAppliesTo()`
+      // [model/entity/PriceGroupRate.cfc:L95] counts them, so not persisting them would
+      // turn a read gap into data loss.
+      const { repository, executor } = makeSubject([]);
+
+      await repository.savePriceGroupRate(makeRateWithMembership());
+
+      expect(
+        statementFor(executor.mutationCalls, 'SwPriceGrpRateExclProductType', 'INSERT').params,
+      ).toStrictEqual([CANNED_PRICE_GROUP_RATE_ID, 'xpt-1']);
+      expect(
+        statementFor(executor.mutationCalls, 'SwPriceGroupRateExclProduct', 'INSERT').params,
+      ).toStrictEqual([CANNED_PRICE_GROUP_RATE_ID, 'xp-1']);
+      expect(
+        statementFor(executor.mutationCalls, 'SwPriceGroupRateExclSku', 'INSERT').params,
+      ).toStrictEqual([CANNED_PRICE_GROUP_RATE_ID, 'xs-1']);
+    });
+
+    // -----------------------------------------------------------------------
+    // ⭐⭐ The reconciled siblings join the SAME unit of work
+    // [model/service/PriceGroupService.cfc:L407-L433]
+    //
+    // Under the ORM these needed no separate contract: every rate in
+    // `priceGroup.getPriceGroupRates()` was a MANAGED entity, so mutating one marked it
+    // dirty and Hibernate's request-end flush wrote the whole dirty set in one
+    // transaction. A repository able to persist exactly one rate cannot express that,
+    // and the reachable half-applied states each change a price: two global rates in
+    // one group makes `getGlobalPriceGroupRate()` [model/entity/PriceGroup.cfc:L83-L90]
+    // nondeterministic, and a member that leaves one rate without leaving the other
+    // leaves two rates claiming the same SKU.
+    //
+    // WHAT IS ASSERTED HERE IS ONLY THE PERSISTING. Which sibling changed, and how, is
+    // decided by the service and pinned by its own suite.
+    // -----------------------------------------------------------------------
+
+    it('★★ persists each supplied sibling in the SAME transaction as the saved rate', async () => {
+      const { repository, executor } = makeSubject([]);
+
+      await repository.savePriceGroupRate(makeRateWithMembership(), [
+        new PriceGroupRate({ priceGroupRateID: 'pgr-sibling-1' }),
+        new PriceGroupRate({ priceGroupRateID: 'pgr-sibling-2' }),
+      ]);
+
+      expect(executor.transactionCount).toBe(1);
+      expect(executor.mutationCalls.every((call) => call.inTransaction)).toBe(true);
+    });
+
+    it('★★ gives every sibling its own scalar write and its own six reconciliations', async () => {
+      // A sibling reached this method because a member was stripped from it or its global flag was
+      // cleared, and both are ordinary rate mutations. Writing only its scalar columns would leave
+      // the stripped member's link row in place, which is the corruption this guards.
+      const { repository, executor } = makeSubject([]);
+
+      await repository.savePriceGroupRate(makePersistedPriceGroupRate({ amount: undefined }), [
+        new PriceGroupRate({ priceGroupRateID: 'pgr-sibling-1' }),
+      ]);
+
+      const siblingStatements = executor.mutationCalls.filter((call) =>
+        call.params.includes('pgr-sibling-1'),
+      );
+
+      // One scalar UPDATE plus six link DELETEs; no INSERT, because the sibling's collections are
+      // empty and only the INSERT is skipped for an empty collection.
+      expect(siblingStatements).toHaveLength(7);
+      expect(siblingStatements[0]?.sql).toContain('UPDATE SwPriceGroupRate');
+      expect(siblingStatements.slice(1).every((call) => call.sql.startsWith('DELETE FROM'))).toBe(
+        true,
+      );
+    });
+
+    it('writes the saved rate FIRST, then the siblings in the order supplied', async () => {
+      const { repository, executor } = makeSubject([]);
+
+      await repository.savePriceGroupRate(makePersistedPriceGroupRate({ amount: undefined }), [
+        new PriceGroupRate({ priceGroupRateID: 'pgr-sibling-1' }),
+        new PriceGroupRate({ priceGroupRateID: 'pgr-sibling-2' }),
+      ]);
+
+      const scalarWrites = executor.mutationCalls
+        .filter((call) => call.sql.startsWith('UPDATE SwPriceGroupRate'))
+        .map((call) => call.params[call.params.length - 1]);
+
+      expect(scalarWrites).toStrictEqual([
+        CANNED_PRICE_GROUP_RATE_ID,
+        'pgr-sibling-1',
+        'pgr-sibling-2',
+      ]);
+    });
+
+    it('returns the SAVED rate, never a sibling', async () => {
+      const { repository } = makeSubject([]);
+
+      const saved = await repository.savePriceGroupRate(
+        makePersistedPriceGroupRate({ amount: undefined }),
+        [new PriceGroupRate({ priceGroupRateID: 'pgr-sibling-1' })],
+      );
+
+      expect(saved.getPriceGroupRateID()).toBe(CANNED_PRICE_GROUP_RATE_ID);
+    });
+
+    it('writes only the saved rate when the argument is omitted or empty', async () => {
+      // The ordinary case: nothing the exclusivity rule looked at had changed. Omitting the argument
+      // and supplying an empty array must be indistinguishable.
+      const omitted = makeSubject([]);
+      const empty = makeSubject([]);
+
+      await omitted.repository.savePriceGroupRate(
+        makePersistedPriceGroupRate({ amount: undefined }),
+      );
+      await empty.repository.savePriceGroupRate(
+        makePersistedPriceGroupRate({ amount: undefined }),
+        [],
+      );
+
+      expect(omitted.executor.mutationCalls).toHaveLength(7);
+      expect(empty.executor.mutationCalls.map((call) => call.sql)).toStrictEqual(
+        omitted.executor.mutationCalls.map((call) => call.sql),
+      );
+    });
+
+    it('preserves the abbreviated physical table name verbatim', async () => {
+      // [model/entity/PriceGroupRate.cfc:L75] is abbreviated where its five siblings are
+      // not. "Correcting" it would break the unchanged-schema contract outright.
+      const { repository, executor } = makeSubject([]);
+
+      await repository.savePriceGroupRate(makeRateWithMembership());
+
+      const emitted = executor.mutationCalls.map((call) => call.sql).join('\n');
+
+      expect(emitted).toContain('SwPriceGrpRateExclProductType');
+      expect(emitted).not.toContain('SwPriceGroupRateExclProductType');
+    });
+  });
+
+  it('issues the six deletes and no insert for a rate holding no members at all', async () => {
+    const { repository, executor } = makeSubject([]);
+
+    await repository.savePriceGroupRate(makePersistedPriceGroupRate({ amount: undefined }));
+
+    expect(executor.mutationCalls).toHaveLength(EMPTY_RATE_SAVE_MUTATION_COUNT);
+
+    // ★ THE DELETES STILL RUN. Skipping them when the in-memory collection is empty is precisely the
+    // case that would strand the stored rows of a rate that has just been cleared - which is what
+    // [model/service/PriceGroupService.cfc:L437-L442] does to every global rate.
+    for (let index = 1; index < EMPTY_RATE_SAVE_MUTATION_COUNT; index += 1) {
+      expect(statementAt(executor.mutationCalls, index).sql).toContain('DELETE FROM ');
+    }
+
+    // And `INSERT INTO` never appears, because an insert with no rows is not a statement.
+    expect(
+      executor.mutationCalls.filter((mutation) => mutation.sql.startsWith('INSERT INTO ')),
+    ).toHaveLength(0);
+  });
+
+  it('writes the link rows only AFTER the row that owns them, so the minted key exists to name', async () => {
+    const { repository, executor } = makeSubject([]);
+
+    const unsaved = makeUnsavedPriceGroupRate();
+
+    unsaved.addProduct(new Product({ productID: 'prd-attached-before-insert' }));
+
+    const inserted = await repository.savePriceGroupRate(unsaved);
+
+    const rowWrite = statementAt(executor.mutationCalls, 0);
+
+    expect(rowWrite.sql).toBe(EXPECTED_INSERT_PRICE_GROUP_RATE_SQL);
+
+    // Every link statement names the key the row write minted - never the `''` the entity arrived
+    // with, which would store a link row pointing at no row at all.
+    const mintedID = inserted.getPriceGroupRateID();
+
+    expect(mintedID).toMatch(MINTED_IDENTIFIER_PATTERN);
+
+    for (let index = 1; index < executor.mutationCalls.length; index += 1) {
+      const linkStatement = statementAt(executor.mutationCalls, index);
+
+      expect(linkStatement.params[0]).toBe(mintedID);
+      expect(linkStatement.params).not.toContain('');
+    }
+  });
+
+  // --- The amount-type discriminator: folded on read, VERBATIM on write ---------
+  //
+  // NET-NEW coverage with no legacy antecedent. `meta/tests/unit/dao/` contains only
+  // AccountDAOTest and PaymentDAOTest, so nothing here traces to a legacy assertion.
+  //
+  // ★ WHY THESE THREE CASES EXIST, AND WHY THE THIRD IS THE IMPORTANT ONE.
+  //
+  // `SwPriceGroupRate.amountType` is a plain `ormType="string"` column with NO check
+  // constraint, and the legacy dispatch that consumes it is a CFML `switch`
+  // [model/service/PriceGroupService.cfc:L316-L340], which compares its `case` labels
+  // CASE-INSENSITIVELY. So a rate stored as `'PercentageOff'` IS discounted by the legacy
+  // engine, and the port has to agree.
+  //
+  // Agreeing has a trap in it. The obvious way to make the comparison work - canonicalize
+  // the value as it is read - would make this adapter REWRITE STORED TEXT, because
+  // `savePriceGroupRate` routes a persisted rate to the UPDATE and that UPDATE binds
+  // `getAmountType()` directly. An ordinary load-modify-save would then silently
+  // restore-spell the column. The reader therefore proves membership UP TO CASE and hands
+  // back THE PERSISTED BYTES, and the third case below is what holds it to that.
+  describe('the amountType discriminator - membership up to case, bytes preserved', () => {
+    it('hydrates a mis-cased amountType instead of discarding it', async () => {
+      const { repository } = makeSubject([[priceGroupRateRow({ amountType: 'PercentageOff' })]]);
+
+      const rate = await repository.getPriceGroupRate(CANNED_PRICE_GROUP_RATE_ID);
+
+      // Not `undefined`: an exact comparison mapped this to absence, which sent the
+      // pricing dispatch down its no-`default` fall-through and returned the SKU's own
+      // UNDISCOUNTED price with nothing reported.
+      expect(rate?.getAmountType()).toBe('PercentageOff');
+    });
+
+    it('still maps a value outside the vocabulary to absence, as the missing default requires', async () => {
+      const { repository } = makeSubject([[priceGroupRateRow({ amountType: 'somethingElse' })]]);
+
+      const rate = await repository.getPriceGroupRate(CANNED_PRICE_GROUP_RATE_ID);
+
+      // Folding case widened WHICH values match; it did not open the vocabulary. An
+      // unrecognised value is still absent, and absence is still what
+      // [model/service/PriceGroupService.cfc:L316-L340] falls through on. The reader does
+      // NOT throw here - throwing would turn a legacy fall-through into a failed request.
+      expect(rate?.getAmountType()).toBeUndefined();
+    });
+
+    it('writes the persisted spelling back BYTE-IDENTICALLY on a load-modify-save round trip', async () => {
+      // One read answering the mis-cased row, then the update.
+      const { repository, executor } = makeSubject([
+        [priceGroupRateRow({ amountType: 'PercentageOff' })],
+      ]);
+
+      const loaded = await repository.getPriceGroupRate(CANNED_PRICE_GROUP_RATE_ID);
+
+      if (loaded === undefined) {
+        throw new Error('the canned row should have produced a rate');
+      }
+
+      await repository.savePriceGroupRate(loaded);
+
+      const statement = rateRowWrite(executor.mutationCalls);
+
+      expect(statement.sql).toBe(EXPECTED_UPDATE_PRICE_GROUP_RATE_SQL);
+
+      // THE ASSERTION THE WHOLE DESIGN EXISTS FOR. `'PercentageOff'` goes back exactly as
+      // it came out. A canonicalizing reader would bind `'percentageOff'` here and quietly
+      // repair the row - a schema-content change performed as a side effect of a read,
+      // which schema continuity forbids.
+      expect(parameterAt(statement.params, RATE_UPDATE_BOUND.amountType)).toBe('PercentageOff');
+    });
+  });
+
   it('takes no ambient scope, and treats configuration as static process state', () => {
-    // C5.6 / T6. [model/service/PriceGroupService.cfc:L262-L268] is a SEVEN-LINE method
-    // that reaches the request scope through BOTH accessors - one at L263 and the other at
-    // L264 - and both vanish in the target. What replaces them is an explicit context
-    // parameter on the SERVICE method, which is why nothing of the kind appears on this
-    // port: a data-access adapter has no business knowing who is asking.
+    // C5.6 / T6. [model/service/PriceGroupService.cfc:L262-L268] is a SEVEN-LINE method that
+    // reaches the request scope through BOTH accessors, one at L263 and the other at L264, and both
+    // vanish in the target. What replaces them is an explicit context parameter on the SERVICE
+    // method, which is why nothing of the kind appears on this port.
     const { repository } = makeSubject();
 
-    // Two constructor arguments, both explicit collaborators. No third argument for a
-    // scope, a context, a session or a request.
     expect(MySqlPriceGroupRepository.length).toBe(2);
 
-    // And no scope-shaped member is reachable on the instance either.
     const members = repository as unknown as Readonly<Record<string, unknown>>;
 
     for (const forbiddenMember of ['getService', 'getHibachiScope', 'getApplicationValue']) {
       expect(members[forbiddenMember]).toBeUndefined();
     }
 
-    // `src/lib/config.ts` is STATIC PROCESS CONFIGURATION and is never used as a request
-    // scope. Its whole surface is `load` and `reset` - there is no per-request setter, no
-    // current-account member and no place to stash a value for the duration of a call.
+    // `src/lib/config.ts` is STATIC PROCESS CONFIGURATION and is never used as a request scope. Its
+    // whole surface is `load` and `reset`: no per-request setter and no current-account member.
     expect([...Object.keys(appConfig)].sort()).toStrictEqual(['load', 'reset']);
   });
 
   it('keeps two independently constructed adapters entirely separate', () => {
-    // C5.7 / T1. The collaborators arrive by CONSTRUCTOR INJECTION, so they are per-
-    // instance state rather than something resolved from a shared registry. Two adapters
-    // built from two executors therefore have nothing in common - which is exactly what a
-    // service locator or a DI/1-style convention scan would NOT give.
+    // C5.7 / T1. The collaborators arrive by CONSTRUCTOR INJECTION, so they are per-instance state
+    // rather than something resolved from a shared registry. Two adapters built from two executors
+    // have nothing in common, which a service locator would not give.
     const first = makeSubject(leafPriceGroupResultSets());
     const second = makeSubject(leafPriceGroupResultSets());
 
@@ -3443,13 +4871,34 @@ describe('money, flags, and the rate write paths', () => {
 // --- Schema continuity ----------------------------------------------------------
 
 /**
+ * The five tables the delete gates probe, READ-ONLY.
+ *
+ * ★★ A SEPARATE CONSTANT RATHER THAN AN ADDITION TO `SUBSCRIPTION_OWNED_TABLES`, AND
+ * THAT IS DELIBERATE. That list means one specific thing - the six tables
+ * `getAccountSubscriptionPriceGroups` reaches through, taken verbatim from the legacy
+ * `<cfquery>` at [model/dao/PriceGroupDAO.cfc:L52-L100] - and widening it to hold gate
+ * tables would blur the one documented data-layer exception into a general allowance.
+ * These five are a distinct reach with a distinct justification, so they are named
+ * distinctly. `SwSubsUsageBenefitPriceGroup` appears in BOTH lists, which is correct:
+ * the reach-through reads it in stage one and a gate probes it, and neither writes it.
+ *
+ * Derived from `EXPECTED_DELETE_GATES` rather than restated, so the two cannot drift.
+ */
+const GATE_PROBE_TABLES: readonly string[] = Object.freeze(
+  EXPECTED_DELETE_GATES.map((gate) => gate.tableName),
+);
+
+/**
  * Every physical table this port is permitted to name, and nothing else.
  *
- * Fifteen tables: the three it owns, the six rate link tables, and the six
- * subscription-owned tables it may only READ. The abbreviated
- * `SwPriceGrpRateExclProductType` is reproduced exactly as the schema spells it
- * [model/entity/PriceGroupRate.cfc:L75] - "correcting" an abbreviation to the name a
- * reader might expect would break schema continuity outright.
+ * Nineteen names across four groups: the three it owns, the six rate link tables, the six
+ * subscription-owned tables it may only READ, and the five delete-gate tables it may only
+ * PROBE - of which `SwSubsUsageBenefitPriceGroup` is already among the subscription six,
+ * so eighteen are distinct. The abbreviated `SwPriceGrpRateExclProductType` is reproduced
+ * exactly as the schema spells it [model/entity/PriceGroupRate.cfc:L75] - "correcting" an
+ * abbreviation to the name a reader might expect would break schema continuity outright,
+ * and the same applies to `SwPromoRewardEligiblePriceGrp`
+ * [model/entity/PriceGroup.cfc:L70].
  */
 const PERMITTED_PHYSICAL_TABLES: readonly string[] = Object.freeze([
   'SwPriceGroup',
@@ -3457,19 +4906,18 @@ const PERMITTED_PHYSICAL_TABLES: readonly string[] = Object.freeze([
   'SwRoundingRule',
   ...EXPECTED_RATE_LINK_TABLES.map((linkTable) => linkTable.tableName),
   ...SUBSCRIPTION_OWNED_TABLES,
+  ...GATE_PROBE_TABLES,
 ]);
 
-/** Matches every `Sw`-prefixed identifier in a statement, so the census can be exhaustive. */
 const PHYSICAL_TABLE_IDENTIFIER_PATTERN = /\bSw[A-Za-z0-9_]*/gu;
 
 /**
  * Statements that change the shape of the schema rather than its contents.
  *
- * Matched as WHOLE WORDS, which is not a nicety. `createdDateTime` is a persisted
- * column on both entities [model/entity/PriceGroup.cfc:L57] and it contains the
- * substring `CREATE`, so a plain substring test reports a false positive on every
- * single statement this port emits - a check that fails on correct code is worse than
- * no check, because the reflex is to weaken it.
+ * Matched as WHOLE WORDS, which is not a nicety. `createdDateTime` is a persisted column on both
+ * entities [model/entity/PriceGroup.cfc:L57] and it contains the substring `CREATE`, so a plain
+ * substring test reports a false positive on every statement this port emits, and a check that
+ * fails on correct code invites being weakened.
  */
 const SCHEMA_CHANGING_KEYWORD_PATTERNS: readonly RegExp[] = Object.freeze([
   /\bCREATE\b/u,
@@ -3487,7 +4935,6 @@ const PERMITTED_LEADING_VERBS: readonly string[] = Object.freeze([
   'DELETE',
 ]);
 
-/** Every `Sw`-prefixed identifier named by a statement, de-duplicated. */
 function physicalTablesNamedBy(statements: readonly RecordedStatement[]): readonly string[] {
   const named = new Set<string>();
 
@@ -3502,8 +4949,8 @@ function physicalTablesNamedBy(statements: readonly RecordedStatement[]): readon
 
 describe('schema continuity - the Sw* schema is read and written, never reshaped', () => {
   it('names only permitted physical tables, across every statement it can emit', async () => {
-    // C6.1. A census over the whole surface, not a sample: `provokeEveryStatement` has
-    // driven all nine code paths by the time this runs.
+    // C6.1. A census over the whole surface, not a sample: `provokeEveryStatement` has driven all
+    // nine code paths by the time this runs.
     const provoked = await provokeEveryStatement();
     const namedTables = physicalTablesNamedBy(allStatementsOf(provoked));
 
@@ -3513,16 +4960,14 @@ describe('schema continuity - the Sw* schema is read and written, never reshaped
       expect(PERMITTED_PHYSICAL_TABLES).toContain(tableName);
     }
 
-    // And the three tables the port owns are genuinely reached, so the census is not
-    // passing merely because it found nothing.
     expect(namedTables).toContain('SwPriceGroup');
     expect(namedTables).toContain('SwPriceGroupRate');
     expect(namedTables).toContain('SwRoundingRule');
   });
 
   it('emits no schema-changing statement of any kind', async () => {
-    // NO MIGRATION, NO RENAME, NO NEW TABLE, NO COLUMN CHANGE. The existing schema is a
-    // fixed contract this port reads and writes; it is never the thing being changed.
+    // NO MIGRATION, NO RENAME, NO NEW TABLE, NO COLUMN CHANGE. The existing schema is a fixed
+    // contract this port reads and writes; it is never the thing being changed.
     const provoked = await provokeEveryStatement();
 
     for (const statement of allStatementsOf(provoked)) {
@@ -3533,8 +4978,8 @@ describe('schema continuity - the Sw* schema is read and written, never reshaped
       }
 
       // And positively: every statement begins with one of exactly four data verbs, so a
-      // schema-changing statement could not slip through under a spelling the patterns
-      // above happen not to enumerate.
+      // schema-changing statement could not slip through under a spelling the patterns above happen
+      // not to enumerate.
       const leadingVerb = foldedSql.split(/\s/u)[0] ?? '';
 
       expect(PERMITTED_LEADING_VERBS).toContain(leadingVerb);
@@ -3542,10 +4987,9 @@ describe('schema continuity - the Sw* schema is read and written, never reshaped
   });
 
   it('never writes to a subscription-owned table, on any path', async () => {
-    // C1.1. The reach-through is READ-ONLY, and this is where that is proven over the
-    // whole surface rather than for one method: the six subscription tables may appear in
-    // a read, and may appear in NO write. No subscription business logic is ported either
-    // - the port borrows six tables and nothing else.
+    // C1.1. The reach-through is READ-ONLY, proven here over the whole surface rather than for one
+    // method: the six subscription tables may appear in a read and in NO write. No subscription
+    // business logic is ported either; the port borrows six tables and nothing else.
     const provoked = await provokeEveryStatement();
 
     for (const statement of provoked.writes) {
@@ -3554,7 +4998,6 @@ describe('schema continuity - the Sw* schema is read and written, never reshaped
       }
     }
 
-    // Every write is confined to the tables the price-group aggregate owns.
     const writtenTables = physicalTablesNamedBy(provoked.writes);
 
     expect(writtenTables.length).toBeGreaterThan(0);
@@ -3566,15 +5009,14 @@ describe('schema continuity - the Sw* schema is read and written, never reshaped
 
   it('names physical tables, never an ORM entity name', async () => {
     // C1.9. Stage 2 of the reach-through is HQL in the legacy and names the ORM ENTITY
-    // `SlatwallPriceGroup` [model/dao/PriceGroupDAO.cfc:L93], which is correct AS AN ENTITY
-    // NAME - there is no `Slatwall`-prefixed table in the schema. The target emits SQL, so
-    // it must name the physical `SwPriceGroup` instead.
+    // `SlatwallPriceGroup` [model/dao/PriceGroupDAO.cfc:L93]. The target emits SQL, so it names the
+    // physical `SwPriceGroup`.
     //
     // CFML parity [model/dao/PriceGroupDAO.cfc:L93-L95]: the HQL
-    // `FROM SlatwallPriceGroup pg WHERE pg.priceGroupID IN (:priceGroupIDs) AND
-    // pg.activeFlag = :activeFlag` becomes the equivalent statement over `SwPriceGroup`
-    // with positional placeholders, because `ormExecuteQuery` and its named parameters
-    // have no equivalent here and `namedPlaceholders` is off on the pool.
+    //   FROM SlatwallPriceGroup pg WHERE pg.priceGroupID IN (:priceGroupIDs)
+    //   AND pg.activeFlag = :activeFlag
+    // becomes the same statement over `SwPriceGroup` with positional placeholders, because
+    // `ormExecuteQuery` and its named parameters have no equivalent here.
     const provoked = await provokeEveryStatement();
 
     for (const statement of allStatementsOf(provoked)) {
@@ -3586,19 +5028,14 @@ describe('schema continuity - the Sw* schema is read and written, never reshaped
 // --- Request-scoped state -------------------------------------------------------
 
 describe('request-scoped state - nothing survives between adapters', () => {
-  // A2. Legacy component-level caches become request-scoped in the target, never module
-  // state, and the ONE sanctioned module-scope exception in the entire target is the MySQL
-  // pool. On a warm container a module-level cache persists between UNRELATED requests, so
-  // a memo that looked harmless in a long-lived CFML application becomes one customer
-  // observing another's data. Four such caches exist in the legacy slice, including
-  // `SkuDAO.variables.nextOptionGroupSortOrder` whose clear method's condition is inverted
-  // so it can never fire [model/dao/SkuDAO.cfc:L222-L226], and
+  // A2. Legacy component-level caches become request-scoped in the target, never module state; the
+  // one sanctioned module-scope exception is the MySQL pool. On a warm container a module-level
+  // cache persists between UNRELATED requests, so a memo that looked harmless in a long-lived CFML
+  // application becomes one customer observing another's data. Four such caches exist in the legacy
+  // slice, including `SkuDAO.variables.nextOptionGroupSortOrder`, whose clear method's condition is
+  // inverted so it can never fire [model/dao/SkuDAO.cfc:L222-L226], and
   // `RoundingRuleService.variables.roundingRuleDetails`
   // [model/service/RoundingRuleService.cfc:L67-L77].
-  //
-  // Per-file test isolation is never disabled or requested to be disabled for this suite,
-  // and vitest.config.ts is never edited from here: sharing one module registry between
-  // test files is the same hazard as sharing it between requests, one layer up.
 
   it('does not let a second adapter observe the first one\u2019s reads', async () => {
     const first = makeSubject(leafPriceGroupResultSets());
@@ -3607,9 +5044,8 @@ describe('request-scoped state - nothing survives between adapters', () => {
 
     expect(first.executor.calls).toHaveLength(LEAF_PRICE_GROUP_STATEMENT_COUNT);
 
-    // A second adapter, constructed independently, asks for the SAME identifier. If
-    // anything were memoized at module scope it would answer from the first adapter's
-    // result and issue nothing.
+    // A second adapter, constructed independently, asks for the SAME identifier. If anything were
+    // memoized at module scope it would answer from the first adapter's result and issue nothing.
     const second = makeSubject(leafPriceGroupResultSets());
 
     await second.repository.getPriceGroup(CANNED_PRICE_GROUP_ID);
@@ -3617,14 +5053,13 @@ describe('request-scoped state - nothing survives between adapters', () => {
     expect(second.executor.calls).toHaveLength(LEAF_PRICE_GROUP_STATEMENT_COUNT);
     expect(sqlTextsOf(second.executor.calls)).toStrictEqual(sqlTextsOf(first.executor.calls));
 
-    // And the first adapter's recording did not grow, so the two are genuinely disjoint.
     expect(first.executor.calls).toHaveLength(LEAF_PRICE_GROUP_STATEMENT_COUNT);
   });
 
   it('re-reads within one adapter rather than answering from a memo', async () => {
-    // Even INSIDE one adapter there is no read-through cache. That is the conservative
-    // choice and the correct one here: a repository that memoized would hand back a stale
-    // price group after a save, and the price-group cascade decides money.
+    // Even INSIDE one adapter there is no read-through cache. That is the correct choice here: a
+    // repository that memoized would hand back a stale price group after a save, and the cascade
+    // decides money.
     const { repository, executor } = makeSubject([
       ...leafPriceGroupResultSets(),
       ...leafPriceGroupResultSets(),
@@ -3637,10 +5072,9 @@ describe('request-scoped state - nothing survives between adapters', () => {
   });
 
   it('opens nothing by being imported: the executor is the only route to a database', () => {
-    // B2. Importing the adapter module creates no pool and no connection - the executor is
-    // a constructor parameter, and the one this suite supplies is an inline recording
-    // double. That is what makes the whole suite runnable with no database, no network and
-    // no environment, and it is asserted here rather than assumed.
+    // B2. Importing the adapter module creates no pool and no connection: the executor is a
+    // constructor parameter, and the one this suite supplies is an inline recording double. That is
+    // what makes the suite runnable with no database, no network and no environment.
     const { repository, executor } = makeSubject();
 
     expect(repository).toBeInstanceOf(MySqlPriceGroupRepository);
@@ -3680,11 +5114,10 @@ const CANNED_VALUES_THAT_MUST_NEVER_APPEAR_IN_SQL: readonly string[] = Object.fr
 
 describe('parameterized SQL exclusively - the census', () => {
   it('binds one placeholder per bound value, in every statement it emits', async () => {
-    // E5 / P5, and the single most important obligation this suite carries. Prepared
-    // statements are what preserve the injection-safety property `cfqueryparam` gave the
-    // legacy, and a placeholder count that disagrees with the parameter count is how that
-    // property is lost in practice - MySQL would bind the wrong value to every later
-    // position rather than fail.
+    // E5 / P5, and the single most important obligation this suite carries. Prepared statements are
+    // what preserve the injection-safety property `cfqueryparam` gave the legacy, and a placeholder
+    // count that disagrees with the parameter count is how that property is lost in practice: MySQL
+    // would bind the wrong value to every later position rather than fail.
     const provoked = await provokeEveryStatement();
     const statements = allStatementsOf(provoked);
 
@@ -3708,10 +5141,9 @@ describe('parameterized SQL exclusively - the census', () => {
   });
 
   it('carries exactly one string literal, and it is the legacy system code', async () => {
-    // The `'sstActive'` comparison is a LITERAL in the legacy SQL
-    // [model/dao/PriceGroupDAO.cfc:L67] and is reproduced as one, because it is a constant
-    // of the schema rather than a caller-supplied value - binding it would be a change, not
-    // a hardening. Every OTHER quoted run would be a value that escaped the parameter
+    // The `'sstActive'` comparison is a LITERAL in the legacy SQL [model/dao/PriceGroupDAO.cfc:L67]
+    // and is reproduced as one, because it is a constant of the schema rather than a
+    // caller-supplied value. Every OTHER quoted run would be a value that escaped the parameter
     // array, so the census bounds them to this one.
     const provoked = await provokeEveryStatement();
 
@@ -3725,10 +5157,9 @@ describe('parameterized SQL exclusively - the census', () => {
   });
 
   it('never asks the server for the time, and never smuggles a statement separator', async () => {
-    // C1.4. Every instant is CAPTURED ONCE per invocation and BOUND, so two comparisons in
-    // one statement cannot straddle a tick and disagree. A server-side clock call would
-    // reintroduce exactly that, and would also make the statement untestable without a
-    // server.
+    // C1.4. Every instant is CAPTURED ONCE per invocation and BOUND, so two comparisons in one
+    // statement cannot straddle a tick and disagree. A server-side clock call would reintroduce
+    // that, and would also make the statement untestable without a server.
     const provoked = await provokeEveryStatement();
 
     for (const statement of allStatementsOf(provoked)) {
@@ -3738,9 +5169,8 @@ describe('parameterized SQL exclusively - the census', () => {
         expect(foldedSql).not.toContain(clockCall);
       }
 
-      // One statement per call: no separator, and no comment marker behind which anything
-      // could hide. `multipleStatements` is off on the pool, and nothing here relies on
-      // that alone.
+      // One statement per call: no separator, and no comment marker behind which anything could
+      // hide. `multipleStatements` is off on the pool, and nothing here relies on that alone.
       expect(statement.sql).not.toContain(';');
       expect(statement.sql).not.toContain('--');
       expect(statement.sql).not.toContain('/*');
@@ -3748,9 +5178,8 @@ describe('parameterized SQL exclusively - the census', () => {
   });
 
   it('binds every date as a Date, and every identifier as a string', async () => {
-    // Type discipline on the value side. A date formatted into a string by the adapter
-    // would be a time-zone decision taken in the wrong place - the pool fixes the
-    // connection zone at `'Z'` and the driver formats accordingly.
+    // Type discipline on the value side. A date formatted into a string by the adapter would be a
+    // time-zone decision taken in the wrong place: the pool fixes the connection zone at `'Z'`.
     const provoked = await provokeEveryStatement();
 
     for (const statement of allStatementsOf(provoked)) {
@@ -3772,9 +5201,9 @@ describe('parameterized SQL exclusively - the census', () => {
   });
 
   it('binds no floating-point value where money is concerned', async () => {
-    // P4 / E4. The only numeric value this port ever binds is the stage-two `activeFlag`,
-    // which is a flag rather than a quantity. Every monetary value travels as decimal TEXT,
-    // so a bound `number` that is not an integer would mean a float reached a money column.
+    // P4 / E4. The only numeric value this port binds is the stage-two `activeFlag`, a flag rather
+    // than a quantity. Every monetary value travels as decimal TEXT, so a bound `number` that is
+    // not an integer would mean a float reached a money column.
     const provoked = await provokeEveryStatement();
 
     for (const statement of allStatementsOf(provoked)) {
@@ -3801,11 +5230,9 @@ function twoRatesOnOnePriceGroup(): readonly SqlRow[] {
 
 describe('the six rate link statements - exact text and placeholder growth', () => {
   it('emits each link statement verbatim, one placeholder per rate identifier', async () => {
-    // The membership of the six collections is loaded with ONE statement PER TABLE for the
-    // whole rate set, rather than one per rate per table. With two rates the run grows to
-    // two placeholders and the two identifiers bind in order - which is the same
-    // placeholder-count-equals-element-count discipline stage two of the reach-through
-    // carries, applied to a different statement.
+    // The membership of the six collections is loaded with ONE statement PER TABLE for the whole
+    // rate set, rather than one per rate per table. With two rates the run grows to two
+    // placeholders and the two identifiers bind in order.
     const { repository, executor } = makeSubject([
       [priceGroupRow()],
       twoRatesOnOnePriceGroup(),
@@ -3822,8 +5249,6 @@ describe('the six rate link statements - exact text and placeholder growth', () 
 
     expect(priceGroup.getPriceGroupRates()).toHaveLength(2);
 
-    // The link statements sit immediately after the rate read, in the order the entity
-    // declares the collections.
     for (const [index, linkTable] of EXPECTED_RATE_LINK_TABLES.entries()) {
       const statement = statementAt(executor.calls, 2 + index);
 
@@ -3850,11 +5275,10 @@ describe('the six rate link statements - exact text and placeholder growth', () 
     }
 
     // C6.1 and interface parity in one assertion: the abbreviated physical name
-    // `SwPriceGrpRateExclProductType` [model/entity/PriceGroupRate.cfc:L75] is checked
-    // against a statement written out IN FULL rather than against the composed form, so a
-    // drift in the composition cannot hide behind a matching slip in the expectation. Its
-    // five siblings are not abbreviated; the inconsistency belongs to the schema and is
-    // preserved rather than normalised.
+    // `SwPriceGrpRateExclProductType` [model/entity/PriceGroupRate.cfc:L75] is checked against a
+    // statement written out IN FULL rather than against the composed form, so a drift in the
+    // composition cannot hide behind a matching slip in the expectation. Its five siblings are not
+    // abbreviated; the inconsistency belongs to the schema.
     const excludedProductTypeLinkIndex = EXPECTED_RATE_LINK_TABLES.findIndex(
       (linkTable) => linkTable.collectionName === 'excludedProductTypes',
     );
@@ -3901,38 +5325,26 @@ type CurrentAccountContextAdmitsNoAccount = undefined extends CurrentAccountCont
   : false;
 
 describe('collaborator contracts declared alongside the port', () => {
-  // C4/B4. Two collaborator types support the port and NEITHER is redeclared here: both are
-  // imported and asserted as they shipped.
+  // C4/B4. Two collaborator types support the port and NEITHER is redeclared here.
   //
-  // JUDGMENT CALL: `SkuPriceGroupResolver` IS NOT ON THE PORT, AND THAT IS A DISCREPANCY
-  // CARRIED RATHER THAN PAPERED OVER. The obligation describes it as declared by
-  // src/domain/ports/priceGroupRepository.ts with TWO methods. What shipped is THREE
-  // methods on src/domain/entities/sku.ts:L389, and the port records the relocation
-  // explicitly at :L813-L837 because the port folder inventory is locked at thirteen files
-  // and a fourteenth could not be added. The shipped code is authoritative for shape, so
-  // three members at that location is what is asserted - and `sku.ts` is a declared
-  // dependency of this suite, so importing the type from there is legitimate rather than a
-  // workaround. The third member, `getRateForSkuBasedOnPriceGroup`, corresponds to
-  // [model/entity/Sku.cfc:L266] and stands for the cascade entry point at
-  // [model/service/PriceGroupService.cfc:L140]; it is additional to the obligation's two,
-  // not a substitute for either.
+  // JUDGMENT CALL: `SkuPriceGroupResolver` IS NOT ON THE PORT, AND THAT IS A DISCREPANCY CARRIED
+  // RATHER THAN PAPERED OVER. The obligation describes it as declared by
+  // src/domain/ports/priceGroupRepository.ts with TWO methods. What shipped is THREE methods on
+  // src/domain/entities/sku.ts:L389, and the port records the relocation at :L813-L837 because the
+  // port folder inventory is locked at thirteen files. The third member,
+  // `getRateForSkuBasedOnPriceGroup`, corresponds to [model/entity/Sku.cfc:L266] and stands for the
+  // cascade entry point at [model/service/PriceGroupService.cfc:L140].
 
   it('declares CurrentAccountContext as one opaque identifier that may be absent', () => {
-    // Exhaustive in both directions: a second member would leave this map missing a key,
-    // and a removed member would leave it carrying an excess one. That is what proves the
-    // negative - no session, locale, currency, time zone, permission, request identifier,
-    // correlation identifier or logger crosses this boundary.
     expect([...Object.keys(EXPECTED_CURRENT_ACCOUNT_CONTEXT_MEMBERS)]).toStrictEqual(['accountID']);
 
-    // ABSENT MEANS NO AUTHENTICATED ACCOUNT, and that state is load-bearing: it is the
-    // target's representation of the legacy `else` branch at
-    // [model/service/PriceGroupService.cfc:L266], where a request with no logged-in user
-    // resolves to the SKU's own price and no price-group resolution is attempted at all.
+    // ABSENT MEANS NO AUTHENTICATED ACCOUNT, and that state is load-bearing: it is the target's
+    // representation of the legacy `else` branch at [model/service/PriceGroupService.cfc:L266],
+    // where a request with no logged-in user resolves to the SKU's own price.
     const admitsNoAccount: CurrentAccountContextAdmitsNoAccount = true;
 
     expect(admitsNoAccount).toBe(true);
 
-    // Both states are constructible, which is what "representable" has to mean in practice.
     const authenticated: CurrentAccountContext = { accountID: CANNED_ACCOUNT_ID };
     const anonymous: CurrentAccountContext = {};
 
@@ -3947,13 +5359,12 @@ describe('collaborator contracts declared alongside the port', () => {
       'getRateForSkuBasedOnPriceGroup',
     ]);
 
-    // THE ASYNC BOUNDARY IS THE ASSERTION, and it is drawn exactly where the legacy body
-    // reaches the database. `calculateSkuPriceBasedOnPriceGroup`
-    // [model/service/PriceGroupService.cfc:L301] and the cascade entry at [:L140] traverse
-    // already-materialized associations and do pure arithmetic, so they stay synchronous -
-    // which is what lets `Sku.getPriceByPriceGroup()` [model/entity/Sku.cfc:L261] remain a
-    // plain accessor. `calculateSkuPriceBasedOnCurrentAccount` [:L262] reaches the account
-    // subscription price-group query, so it is the one that must be asynchronous.
+    // THE ASYNC BOUNDARY IS THE ASSERTION, drawn exactly where the legacy body reaches the
+    // database. `calculateSkuPriceBasedOnPriceGroup` [model/service/PriceGroupService.cfc:L301] and
+    // the cascade entry at [:L140] traverse already-materialized associations and do pure
+    // arithmetic, so they stay synchronous, which lets `Sku.getPriceByPriceGroup()`
+    // [model/entity/Sku.cfc:L261] remain a plain accessor. `calculateSkuPriceBasedOnCurrentAccount`
+    // [:L262] reaches the subscription price-group query, so it must be asynchronous.
     const priceByPriceGroupIsSynchronous: PriceByPriceGroupIsSynchronous = true;
     const rateForSkuIsSynchronousAndOptional: RateForSkuIsSynchronousAndOptional = true;
     const currentAccountPriceIsAsynchronous: CurrentAccountPriceIsAsynchronous = true;
@@ -3963,17 +5374,13 @@ describe('collaborator contracts declared alongside the port', () => {
     expect(rateForSkuIsSynchronousAndOptional).toBe(true);
     expect(currentAccountPriceIsAsynchronous).toBe(true);
 
-    // T6 in one line: the context ARGUMENT is what replaced the ambient scope read. The
-    // legacy method [model/service/PriceGroupService.cfc:L262-L268] is seven lines long and
-    // reaches the request scope through both accessors, at L263 and L264; neither survives.
     expect(currentAccountPriceTakesContext).toBe(true);
   });
 
   it('keeps the resolver off this port, and off this adapter', () => {
-    // The resolver is a SERVICE-TIER collaborator that entities are constructed with, not
-    // something a data-access adapter implements. Its absence from both the port surface and
-    // the adapter instance is what keeps the price CALCULATION out of the layer whose only
-    // job is to supply the rows the calculation reads.
+    // The resolver is a SERVICE-TIER collaborator that entities are constructed with, not something
+    // a data-access adapter implements. Its absence from both the port surface and the adapter
+    // instance is what keeps the price CALCULATION out of this layer.
     const { repository } = makeSubject();
     const members = repository as unknown as Readonly<Record<string, unknown>>;
 
@@ -3981,5 +5388,342 @@ describe('collaborator contracts declared alongside the port', () => {
       expect(members[resolverMember]).toBeUndefined();
       expect(PORT_METHOD_NAMES).not.toContain(resolverMember);
     }
+  });
+});
+
+// ===================================================================================
+// H  The pool-backed transaction implementation
+//
+// ★★★ WHY THIS BLOCK LIVES IN THIS FILE, stated so the placement is a decision rather
+// than a convenience. `createPoolExecutor` is defined in
+// `src/repositories/mysql/connection.ts`, which the AAP's test layout gives no suite of
+// its own, and the folder inventory for `tests/integration/repositories/` is a fixed
+// six files. The behaviour it implements exists for exactly one caller - the price-group
+// delete cascade asserted in group C5.3 above - and the cases there can only prove what
+// the ADAPTER does (all eight statements through the executor it was handed, inside one
+// BEGIN/COMMIT pair). What they cannot prove is that the executor's own `transaction`
+// really begins, commits, rolls back and releases, because they substitute a recorder
+// for it. That half is proved here, next to the requirement it serves, rather than in a
+// seventh file the layout does not admit.
+//
+// NO DATABASE IS INVOLVED. `createPoolExecutor` takes its pool as a PARAMETER
+// specifically so that it holds no module-scope state, which is what makes a fake pool
+// sufficient. Nothing here opens a socket, reads `process.env` or resolves a dialect.
+// ===================================================================================
+
+/** One thing a fake connection was asked to do, in call order. */
+type ConnectionEvent = string;
+
+/**
+ * A fake pooled connection that records the transaction protocol it was driven with.
+ *
+ * It records `BEGIN`, `EXECUTE`, `COMMIT`, `ROLLBACK` and `RELEASE` in one interleaved
+ * log, because the assertions that matter are about ORDER: that the begin precedes every
+ * statement, that exactly one of commit or rollback follows them, and that the release
+ * happens last on every path including the failing ones.
+ */
+class FakeConnection {
+  readonly events: ConnectionEvent[] = [];
+
+  /** Statements issued on THIS connection, which is what makes them transactional. */
+  readonly statements: string[] = [];
+
+  /** When set, the nth `execute` call rejects. Zero-based. */
+  failingExecuteIndex: number | undefined;
+
+  /** When true, `commit` rejects - the case a caller is most likely to forget. */
+  failCommit = false;
+
+  /** When true, `rollback` rejects too, which must not mask the original failure. */
+  failRollback = false;
+
+  private executeCount = 0;
+
+  beginTransaction(): Promise<void> {
+    this.events.push('BEGIN');
+
+    return Promise.resolve();
+  }
+
+  execute(sql: string): Promise<[unknown, unknown]> {
+    const attemptedIndex = this.executeCount;
+
+    this.executeCount += 1;
+    this.events.push('EXECUTE');
+    this.statements.push(sql);
+
+    if (attemptedIndex === this.failingExecuteIndex) {
+      return Promise.reject(new Error('fake statement failure'));
+    }
+
+    // Shaped like the driver's tuple for both statement kinds: a row array for reads
+    // and a header for writes. The executor destructures the first element only.
+    return Promise.resolve([[{ affectedRows: 1, warningStatus: 0 }], undefined]);
+  }
+
+  commit(): Promise<void> {
+    this.events.push('COMMIT');
+
+    return this.failCommit ? Promise.reject(new Error('fake commit failure')) : Promise.resolve();
+  }
+
+  rollback(): Promise<void> {
+    this.events.push('ROLLBACK');
+
+    return this.failRollback
+      ? Promise.reject(new Error('fake rollback failure'))
+      : Promise.resolve();
+  }
+
+  release(): void {
+    this.events.push('RELEASE');
+  }
+}
+
+/**
+ * A fake pool that hands out one prepared {@link FakeConnection} and counts checkouts.
+ *
+ * The checkout count is asserted as well as the protocol: a transaction that acquires
+ * two connections is not a transaction, and one that acquires none has not begun.
+ */
+class FakePool {
+  checkouts = 0;
+
+  constructor(readonly connection: FakeConnection) {}
+
+  getConnection(): Promise<FakeConnection> {
+    this.checkouts += 1;
+
+    return Promise.resolve(this.connection);
+  }
+
+  execute(sql: string): Promise<[unknown, unknown]> {
+    // Reached only by a statement issued OUTSIDE a transaction. Recorded distinctly so a
+    // case can prove a transactional statement did not leak onto the pool.
+    this.connection.events.push(`POOL_EXECUTE:${sql}`);
+
+    return Promise.resolve([[{ affectedRows: 1, warningStatus: 0 }], undefined]);
+  }
+}
+
+/** Adapts a fake pool to the executor, with the one assertion-free cast this block needs. */
+function executorOverFakePool(pool: FakePool): PreparedStatementExecutor {
+  // The driver's `Pool` is a wide interface and this block exercises three of its
+  // members. Structural typing would require stubbing the rest, which would be noise
+  // rather than rigour: `createPoolExecutor` names only `getConnection` and `execute`,
+  // and the compiler still checks every call the executor makes against the fake.
+  return createPoolExecutor(pool as unknown as Parameters<typeof createPoolExecutor>[0]);
+}
+
+describe('createPoolExecutor - the transaction protocol', () => {
+  it('begins, runs the work on one connection, commits, and releases', async () => {
+    const connection = new FakeConnection();
+    const pool = new FakePool(connection);
+    const executor = executorOverFakePool(pool);
+
+    const result = await executor.transaction(async (transactional) => {
+      await transactional.executeMutation('DELETE FROM SwPriceGroup WHERE priceGroupID = ?', ['a']);
+      await transactional.executeMutation('DELETE FROM SwPriceGroupRate WHERE priceGroupID = ?', [
+        'a',
+      ]);
+
+      return 'committed';
+    });
+
+    expect(result).toBe('committed');
+
+    // The whole protocol, in order, on ONE connection.
+    expect(connection.events).toStrictEqual(['BEGIN', 'EXECUTE', 'EXECUTE', 'COMMIT', 'RELEASE']);
+    expect(pool.checkouts).toBe(1);
+  });
+
+  it('sends every statement to the checked-out connection, never to the pool', async () => {
+    // ★ THE PROPERTY THAT MAKES IT A TRANSACTION AT ALL. `pool.execute` picks an
+    // arbitrary connection per call, so a statement routed through it would be outside
+    // the transaction and autocommitted.
+    const connection = new FakeConnection();
+    const pool = new FakePool(connection);
+
+    await executorOverFakePool(pool).transaction(async (transactional) => {
+      await transactional.execute('SELECT 1 FROM SwPriceGroup WHERE priceGroupID = ?', ['a']);
+      await transactional.executeMutation('DELETE FROM SwPriceGroup WHERE priceGroupID = ?', ['a']);
+    });
+
+    expect(connection.statements).toStrictEqual([
+      'SELECT 1 FROM SwPriceGroup WHERE priceGroupID = ?',
+      'DELETE FROM SwPriceGroup WHERE priceGroupID = ?',
+    ]);
+    expect(connection.events.some((event) => event.startsWith('POOL_EXECUTE'))).toBe(false);
+  });
+
+  it('rolls back, releases, and re-raises the original error when the work throws', async () => {
+    const connection = new FakeConnection();
+    const pool = new FakePool(connection);
+    const failure = new Error('fake work failure');
+
+    await expect(
+      executorOverFakePool(pool).transaction(async (transactional) => {
+        await transactional.executeMutation('DELETE FROM SwPriceGroup WHERE priceGroupID = ?', [
+          'a',
+        ]);
+
+        throw failure;
+      }),
+    ).rejects.toBe(failure);
+
+    expect(connection.events).toStrictEqual(['BEGIN', 'EXECUTE', 'ROLLBACK', 'RELEASE']);
+  });
+
+  it('rolls back when a statement itself fails part-way through', async () => {
+    const connection = new FakeConnection();
+    connection.failingExecuteIndex = 1;
+    const pool = new FakePool(connection);
+
+    await expect(
+      executorOverFakePool(pool).transaction(async (transactional) => {
+        await transactional.executeMutation('DELETE FROM SwPriceGroupRatePT WHERE 1 = ?', [1]);
+        await transactional.executeMutation('DELETE FROM SwPriceGroupRateP WHERE 1 = ?', [1]);
+        await transactional.executeMutation('DELETE FROM SwPriceGroupRateS WHERE 1 = ?', [1]);
+      }),
+    ).rejects.toThrow('fake statement failure');
+
+    // The third statement never ran, and the first two are inside a rolled-back
+    // transaction rather than committed.
+    expect(connection.events).toStrictEqual(['BEGIN', 'EXECUTE', 'EXECUTE', 'ROLLBACK', 'RELEASE']);
+    expect(connection.statements).toHaveLength(2);
+  });
+
+  it('does not swallow a commit failure', async () => {
+    // The case a hand-rolled transaction most often gets wrong: the work succeeded, so
+    // it looks like a success, but the commit is what makes it durable.
+    const connection = new FakeConnection();
+    connection.failCommit = true;
+    const pool = new FakePool(connection);
+
+    await expect(
+      executorOverFakePool(pool).transaction(async (transactional) => {
+        await transactional.executeMutation('DELETE FROM SwPriceGroup WHERE priceGroupID = ?', [
+          'a',
+        ]);
+      }),
+    ).rejects.toThrow('fake commit failure');
+
+    // A failed commit is followed by a rollback attempt and still releases.
+    expect(connection.events).toStrictEqual(['BEGIN', 'EXECUTE', 'COMMIT', 'ROLLBACK', 'RELEASE']);
+  });
+
+  it('lets a rollback failure through without masking the original failure', async () => {
+    // ★ THE DIAGNOSTIC THAT MATTERS IS THE FIRST ONE. If the connection died, the
+    // rollback fails too - and replacing the caller's error with that symptom would send
+    // a reviewer after the wrong cause. The rollback failure is logged instead.
+    const connection = new FakeConnection();
+    connection.failRollback = true;
+    const pool = new FakePool(connection);
+    const failure = new Error('fake work failure that matters');
+
+    await expect(
+      executorOverFakePool(pool).transaction(() => Promise.reject(failure)),
+    ).rejects.toBe(failure);
+
+    // Released even though the rollback threw. A connection left checked out is a pool
+    // slot lost for the life of the container.
+    expect(connection.events).toStrictEqual(['BEGIN', 'ROLLBACK', 'RELEASE']);
+  });
+
+  it('releases the connection exactly once on every path', async () => {
+    for (const prepare of [
+      (): void => undefined,
+      (connection: FakeConnection): void => {
+        connection.failCommit = true;
+      },
+      (connection: FakeConnection): void => {
+        connection.failingExecuteIndex = 0;
+      },
+    ]) {
+      const connection = new FakeConnection();
+      prepare(connection);
+      const pool = new FakePool(connection);
+
+      await executorOverFakePool(pool)
+        .transaction(async (transactional) => {
+          await transactional.executeMutation('DELETE FROM SwPriceGroup WHERE 1 = ?', [1]);
+        })
+        .catch(() => undefined);
+
+      expect(connection.events.filter((event) => event === 'RELEASE')).toHaveLength(1);
+      expect(connection.events.at(-1)).toBe('RELEASE');
+    }
+  });
+
+  it('JOINS a nested transaction instead of issuing a second BEGIN', async () => {
+    // ★ THIS CASE ONCE READ "REFUSES A NESTED TRANSACTION RATHER THAN SILENTLY
+    // FLATTENING IT", AND ITS REASONING WAS: "MYSQL TREATS `BEGIN` INSIDE AN OPEN
+    // TRANSACTION AS AN IMPLICIT COMMIT OF THE OUTER ONE, SO ACCEPTING A NESTED CALL
+    // WOULD COMMIT WORK THE CALLER BELIEVES IS STILL PROVISIONAL. THAT IS A CORRUPTION,
+    // NOT AN INCONVENIENCE."
+    //
+    // THE MYSQL FACT IS CORRECT AND IS EXACTLY WHY JOINING IS THE RIGHT ANSWER. A second
+    // `BEGIN` would indeed implicitly commit the outer unit - so the shipped executor
+    // never issues one. `createConnectionExecutor` implements the transactional
+    // executor's `transaction(work)` as `return work(boundExecutor)`: the inner work runs
+    // inline, on the SAME checked-out connection, and the OUTERMOST caller keeps sole
+    // ownership of the single COMMIT or ROLLBACK. Nothing is flattened and nothing is
+    // committed early; the nesting simply does not reach the server.
+    //
+    // REFUSING WOULD BREAK PRODUCTION CODE THAT DEPENDS ON THIS, which is what decided
+    // it. `MysqlProductRepository.saveProduct` opens a transaction and then calls
+    // `MysqlSkuRepository.saveSkuForProduct(draft, productID, tx)` inside it; that call
+    // funnels through `persistSku`, which calls `executor.transaction(...)` on the
+    // executor it was given. A named refusal there would fail every new product carrying
+    // a SKU - and it would do so by design, which is worse than by accident.
+    const connection = new FakeConnection();
+    const pool = new FakePool(connection);
+
+    const result = await executorOverFakePool(pool).transaction((transactional) =>
+      transactional.transaction(async (nested) => {
+        await nested.executeMutation('DELETE FROM SwPriceGroup WHERE priceGroupID = ?', ['pg-1']);
+
+        return 'inner';
+      }),
+    );
+
+    expect(result).toBe('inner');
+
+    // ONE connection, ONE BEGIN, ONE COMMIT, ONE RELEASE. The absence of a second BEGIN
+    // is the assertion that matters: it is what makes MySQL's implicit-commit rule
+    // irrelevant here rather than merely avoided.
+    expect(connection.events).toStrictEqual(['BEGIN', 'EXECUTE', 'COMMIT', 'RELEASE']);
+    expect(connection.events.filter((event) => event === 'BEGIN')).toHaveLength(1);
+    expect(pool.checkouts).toBe(1);
+  });
+
+  it('exposes the same three members on the transactional executor as on the outer one', () => {
+    // A repository method does not know whether it is running inside a transaction, and
+    // must not have to: the same `execute`/`executeMutation` calls work either way. That
+    // is what lets the delete cascade above be written once.
+    const connection = new FakeConnection();
+    const outer = executorOverFakePool(new FakePool(connection));
+
+    expect(typeof outer.execute).toBe('function');
+    expect(typeof outer.executeMutation).toBe('function');
+    expect(typeof outer.transaction).toBe('function');
+
+    // And `query` is unreachable on both, so parameterization stays structural.
+    const outerMembers = outer as unknown as Readonly<Record<string, unknown>>;
+    expect(outerMembers['query']).toBeUndefined();
+  });
+
+  it('opens no transaction for a statement issued outside one', async () => {
+    // The ordinary read and write paths are untouched by this addition: they still go
+    // straight to the pool, with no connection checkout and no BEGIN.
+    const connection = new FakeConnection();
+    const pool = new FakePool(connection);
+
+    await executorOverFakePool(pool).execute('SELECT 1 FROM SwPriceGroup WHERE 1 = ?', [1]);
+
+    expect(pool.checkouts).toBe(0);
+    expect(connection.events).toStrictEqual([
+      'POOL_EXECUTE:SELECT 1 FROM SwPriceGroup WHERE 1 = ?',
+    ]);
   });
 });

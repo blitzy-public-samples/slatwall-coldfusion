@@ -56,7 +56,7 @@
 // One harness hygiene defect is deliberately NOT reproduced:
 // [meta/tests/unit/Helper.cfc:L53] and [meta/tests/unit/IssuesTest.cfc:L55] both
 // declare their fixture data without `var`, leaking it into component scope.
-// That is a defect in the harness being replaced, not one of the twenty
+// That is a defect in the harness being replaced, not one of the thirty
 // preserved business-logic defects, so it is not carried forward. Every value
 // below is local to its own test.
 //
@@ -1198,7 +1198,7 @@ describe('schema fidelity for arbitrary-precision money columns', () => {
 // component scope and cannot be reproduced safely on a warm container, belongs to
 // the service layer; and the entity memo defects belong to the entity layer.
 //
-// For completeness, no entry of the twenty-item legacy defect register is
+// For completeness, no entry of the thirty-item legacy defect register is
 // reproduced by this module, so this suite deliberately carries no
 // preserved-defect marker of its own. None was added speculatively, and the one
 // such marker in this folder lives in the sibling formatting suite where a

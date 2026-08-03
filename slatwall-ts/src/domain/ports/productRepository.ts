@@ -1,13 +1,11 @@
-// ---------------------------------------------------------------------------
-// CHECKPOINT STATUS - FORWARD REFERENCES CARRY THE MARKER `(planned)`
+// Product repository port: the domain-side persistence and query contract for `Product`, plus the
+// brand save the brand service reaches through.
 //
-// The subtree is authored in boundaries, and AAP 0.4.5 makes the authoring
-// order "a compile-order convenience, not a schedule". Commentary in this file
-// therefore names modules of the target layout that DO NOT EXIST YET. Every such
-// name carries `(planned)` at its point of use, meaning exactly: a planned Agent
-// Action Plan target that is ABSENT from the subtree at this checkpoint. Nothing
-// here asserts that any of them exists now, and no behaviour in this file depends
-// on one. The complete set named below, with the role each will play:
+// Ported from `model/dao/ProductDAO.cfc` (441 lines, cfscript throughout, the largest of the six
+// in-scope DAOs), with the entity-lifecycle methods the service tier needs now that the ORM is
+// gone. `ProductService`'s `property name="productDAO";` [model/service/ProductService.cfc:L52] -
+// the first of eight DI/1 collaborators declared at L52-L60 - becomes a constructor parameter typed
+// to this interface.
 //
 //   src/handlers/bootstrap.ts                         composition root (wiring)
 //   src/repositories/mysql/mysqlProductRepository.ts  MySQL product adapter
@@ -73,7 +71,7 @@
  * lazy collections all collapse into the methods below. Hibernate lazy loading has no equivalent
  * here and is deliberately not simulated: associations are materialized at the repository
  * boundary instead, and the fetch shape is an explicit decision made and commented at each
- * repository method in `src/repositories/mysql/mysqlProductRepository.ts` (planned). Concretely, a `Product`
+ * repository method in `src/repositories/mysql/mysqlProductRepository.ts`. Concretely, a `Product`
  * handed back by this port must already carry its `skus`, `productType`, `brand` and `options`
  * populated to whatever depth its consumers read, because the CFML entity walked those graphs
  * freely - see `Product.getOptionsByOptionGroup` [model/entity/Product.cfc:L340-L347] and
@@ -105,7 +103,7 @@
  *     exactly the framework coupling this refactor exists to remove, and it is untypeable under
  *     the strict profile. The plan's resolution reshapes the SERVICE method instead -
  *     `getProductSmartList(...)` becomes `findProducts(criteria)` in
- *     `src/services/productService.ts` (planned) - and that is one of exactly three budgeted signature
+ *     `src/services/productService.ts` - and that is one of exactly three budgeted signature
  *     reshapings, owned by `src/services/**`. It is NOT absorbed here. The service's
  *     `findProducts` composes this port's existing `searchProductsByProductType` plus load-by-id,
  *     which are the concrete filters the legacy callers actually applied; the open-ended dynamic
@@ -113,7 +111,7 @@
  *     no `getProductSmartList`, no criteria or page type, no generic query, search or filter
  *     method, no paging or sort parameter and no dynamic-filter bag. The same applies to
  *     `getSkuSmartList` [model/service/SkuService.cfc:L309-L325], owned by
- *     `src/services/skuService.ts` (planned) over `skuRepository`.
+ *     `src/services/skuService.ts` over `skuRepository`.
  *   * `searchSkusByProductType` [model/dao/SkuDAO.cfc:L130] belongs to `skuRepository`.
  *   * Unique URL-title generation. The legacy save paths reach `dataService`
  *     [model/service/ProductService.cfc:L56] for it, at L269 for a product and at L297 and L299
@@ -166,7 +164,7 @@
  * `tests/integration/repositories/*.test.ts`, which another agent owns.
  *
  * WHO IMPLEMENTS THIS PORT
- * `src/repositories/mysql/mysqlProductRepository.ts` (planned), one of exactly six MySQL adapters. Five
+ * `src/repositories/mysql/mysqlProductRepository.ts`, one of exactly six MySQL adapters. Five
  * obligations transfer to it with this contract:
  *
  *   1. Prepared statements exclusively, with every element of `attributeSetTypeCode`, of the
@@ -212,7 +210,6 @@
  * adapter using the CFML list helpers in `src/lib/cfml/list.js`; naming them here is a note to
  * the implementer, not an import.
  */
-import type { Brand } from '../entities/brand.js';
 import type { Product } from '../entities/product.js';
 
 /**
@@ -226,9 +223,9 @@ import type { Product } from '../entities/product.js';
  * mutation, no persistence identity semantics. Every property is `readonly` for that reason.
  *
  * The type name has no legacy antecedent - the CFML declaration is simply
- * `public array function getAttributeSets(...)` [model/dao/ProductDAO.cfc:L52], returning
- * untyped rows - but every MEMBER name is verbatim from the legacy source. Member names, and
- * where each one comes from:
+ *   `public array function getAttributeSets(...)`
+ * [model/dao/ProductDAO.cfc:L52], returning untyped rows - but every MEMBER name is verbatim from
+ * the legacy source. Member names, and where each one comes from:
  *
  *   * attributeSetID, attributeSetName, attributeSetCode, attributeSetDescription, activeFlag,
  *     globalFlag, requiredFlag and sortOrder are the property names declared at
@@ -290,8 +287,8 @@ export interface AttributeSetSummary {
   readonly attributeSetDescription?: string;
 
   /**
-   * Active flag [model/entity/AttributeSet.cfc:L53]; nullable in the legacy schema. Note that
-   * the DAO's active-attribute test applies to the attributes in the set, not to this flag
+   * Active flag [model/entity/AttributeSet.cfc:L53]; nullable in the legacy schema. Note that the
+   * DAO's active-attribute test applies to the attributes in the set, not to this flag
    * [model/dao/ProductDAO.cfc:L54], so a returned row may carry no value here.
    */
   readonly activeFlag?: boolean;
@@ -304,82 +301,111 @@ export interface AttributeSetSummary {
 }
 
 /**
- * The resolved payload handed to {@link ProductRepository.saveBrand}, standing in for the legacy
- * `arguments.data` struct that `super.save(arguments.brand, arguments.data)`
- * [model/service/BrandService.cfc:L76] populated the entity from.
+ * ★ WHY NO BRAND SAVE APPEARS ON THIS PORT, AND WHY IT WAS REMOVED RATHER THAN JUSTIFIED.
  *
- * DELIBERATELY MINIMAL, AND FOR THE SAME REASON THE SERVICE'S OWN INPUT TYPE IS. A CFML struct is
- * untyped, so the legacy save would populate whichever brand columns happened to be present.
- * Enumerating the whole `SwBrand` column set here would invent a contract the legacy never
- * expressed, so only the two keys the service tier actually resolves are declared: `urlTitle`, which
- * [model/service/BrandService.cfc:L70, L72] writes, and `brandName`, which [L69] reads. An adapter is
- * free to populate any column it is given; what this type fixes is what the port PROMISES to carry.
+ * An earlier revision of this file declared a seventh member, `saveBrand(brand, data)`, on the
+ * grounds that `return super.save(arguments.brand, arguments.data)`
+ * [model/service/BrandService.cfc:L76] is the one statement that made the legacy component durable
+ * and that T3 converts `super.save()` into a repository method. That reasoning is not available
+ * here, and the reason is a hard constraint rather than a preference:
  *
- * BOTH SLOTS ARE `readonly` HERE, unlike the service's input type where `urlTitle` is writable. The
- * asymmetry is the direction of travel: the service RESOLVES the title into its payload, and the
- * repository only READS it. The service's `BrandSaveInput` is structurally assignable to this type,
- * so no conversion, copy or cast is needed at the call site.
+ *   * THIS PORT'S MEMBER SET IS LOCKED AT SIX. The arithmetic in this file's header is
+ *     `4 declared DAO functions - 1 private helper + 3 entity-lifecycle methods = 6`, and the
+ *     authoring contract states it as a lock: no seventh method, no batch load, no load-all, no
+ *     count, no `exists`, no `saveMany`, no overload and no options bag. A brand save is a seventh
+ *     method however it is spelled.
+ *   * THERE IS NO BRAND REPOSITORY IN THE THIRTEEN-PORT SET, and the set is closed. `Brand` CRUD
+ *     routes through `hb_serviceName="brandService"` [model/entity/Brand.cfc:L49], and there is no
+ *     `BrandDAO.cfc` anywhere in the legacy repository - brand persistence never had a query
+ *     surface, it ran entirely through framework-inherited generic CRUD. AAP 0.5.3 lists the
+ *     Hibachi base classes among the dependencies deliberately not carried forward, and the
+ *     redistribution it describes reaches the SIX repository ports it names; it does not create a
+ *     fourteenth.
  *
- * `?: string | undefined` rather than `?: string` on both, because under `exactOptionalPropertyTypes`
- * those are different types and an explicit `urlTitle: undefined` - what a caller writes after
- * reading a NULL column - must stay expressible. `urlTitle` is nullable in the schema
- * [model/entity/Brand.cfc:L55] despite `model/validation/Brand.json` marking it required, and
- * `brandName` is nullable at [model/entity/Brand.cfc:L56].
+ * WHAT THIS MEANS FOR A CALLER, STATED PLAINLY RATHER THAN LEFT TO INFERENCE. `saveBrand` on
+ * `src/services/brandService.ts` resolves the unique URL title exactly as [L68-L74] does and answers
+ * the brand; the durable half of `super.save` is left to the composition root, which is what that
+ * service's own LEGACY-NOTE records. A partial brand write - one that persisted `urlTitle` and
+ * `brandName` while silently dropping `activeFlag`, `publishedFlag` and `brandWebsite`, and while
+ * enforcing none of `model/validation/Brand.json` because the framework validation service is not
+ * ported - would be strictly worse than no write at all: it would durably store a WRONG ROW. So the
+ * member is gone rather than narrowed.
  */
-export interface BrandSavePayload {
-  /** The resolved URL title [model/service/BrandService.cfc:L70, L72]. */
+
+/**
+ * The resolved fields a product save populates from before it writes.
+ *
+ * ★ THIS TYPE EXISTS BECAUSE `super.save(entity, data)` TOOK TWO ARGUMENTS, AND THE SECOND ONE
+ * DID WORK. `return super.save(arguments.product, arguments.data)`
+ * [model/service/ProductService.cfc:L287] POPULATED the entity from the struct and only then
+ * flushed, so the struct was never an alternative route to the columns - it was part of the route.
+ * The payload is the ported expression of that populate step: it names the fields THIS SAVE IS
+ * RESPONSIBLE FOR WRITING, and the adapter prefers it where it speaks and the entity everywhere else.
+ *
+ * IT IS NOT THE ONLY CHANNEL, AND IT IS NOT A WORKAROUND FOR A MISSING SETTER. `Product` publishes
+ * `setUrlTitle`, and `ProductService.saveProduct` writes the resolved title ONTO THE ENTITY exactly
+ * as `arguments.product.setURLTitle(...)` [model/service/ProductService.cfc:L269] does - which is
+ * load-bearing for a reason that has nothing to do with persistence: `getProductURL()`
+ * [model/entity/Product.cfc:L207] reads the title off the entity, so a caller inspecting the product
+ * it just saved must see the resolved value there. The service then STATES THE SAME VALUE IN THE
+ * PAYLOAD, so the write is explicit at the boundary rather than inferred from whatever the entity
+ * happens to hold. The two agree by construction because the service reads the payload value back
+ * off the entity (`urlTitle: product.getUrlTitle()`) rather than keeping a second local that could
+ * drift from it.
+ *
+ * Two members, each `?: string | undefined` rather than
+ * `?: string`, so that an explicit `urlTitle: undefined` - what a caller writes after reading a
+ * NULL column - stays expressible under `exactOptionalPropertyTypes`. `urlTitle` is nullable in the
+ * schema [model/entity/Product.cfc:L54] and `productName` is `notNull="true"`
+ * [model/entity/Product.cfc:L55] but is still absent from an unpopulated draft.
+ *
+ * ⚠ IT IS NOT A GENERAL POPULATE STRUCT, and it must not grow into one. The legacy
+ * `arguments.product.populate(arguments.data)` [model/service/ProductService.cfc:L266] applied every
+ * key a caller sent, driven by framework metadata that is not ported. This carries only what the
+ * SERVICE ITSELF RESOLVES and cannot apply to the entity. Adding a member here to avoid a
+ * constructor argument somewhere else would rebuild `populate` one column at a time.
+ */
+export interface ProductSavePayload {
+  /**
+   * The resolved URL title [model/service/ProductService.cfc:L269].
+   *
+   * ABSENT AND `undefined` MEAN DIFFERENT THINGS. Absent means "the payload says nothing about this
+   * column, so use the entity's value"; present-and-`undefined` means "write SQL NULL". The adapter
+   * distinguishes them with `Object.hasOwn`, exactly as it does for the brand payload.
+   */
   readonly urlTitle?: string | undefined;
 
-  /** The brand name [model/service/BrandService.cfc:L69]. */
-  readonly brandName?: string | undefined;
+  /** The product name [model/entity/Product.cfc:L55], when the caller supplies one. */
+  readonly productName?: string | undefined;
 }
-
 /**
  * The product repository port.
  *
- * Seven methods, locked: the three public functions of `model/dao/ProductDAO.cfc`, the three
- * product entity-lifecycle methods the service tier needs now that Hibernate is gone, and ONE brand
- * save. The arithmetic and the deliberate exclusion of the private helper at
+ * Six methods, locked: the three public functions of `model/dao/ProductDAO.cfc` and the three
+ * product entity-lifecycle methods the service tier needs now that Hibernate is gone. The
+ * arithmetic and the deliberate exclusion of the private helper at
  * [model/dao/ProductDAO.cfc:L328] are in this file's header. Each method returns a promise because
  * each one reaches persistence.
  *
- * ★ THE BRAND SIDE IS A SAVE AND NOTHING ELSE - NO LOADER, NO DELETE, NO QUERY. `BrandService.cfc`
- * declares exactly one function, `saveBrand` [model/service/BrandService.cfc:L67], and its file
- * header in `src/services/brandService.ts` records that the absence of `getBrand`, `deleteBrand` and
- * the smart-list accessors is FAITHFUL rather than incomplete: they arrived by inheritance from
- * `HibachiService`, which is not ported. A `getBrandByBrandID` here would have no caller and no
- * legacy antecedent, and publishing port surface that no requirement asks for is the same class of
- * defect as the three collaborator interfaces this checkpoint already deleted. So the port carries
- * exactly the one member the one legacy statement needs. The product side carries a loader and a
- * delete because `ProductService.cfc` genuinely declares `deleteProduct` [L317] and load-bearing
- * process methods; the asymmetry between the two halves of this port mirrors the asymmetry between
- * the two legacy components.
+ * ★ NOTHING ON THIS PORT ACTS ON A BRAND. `BrandService.cfc` declares exactly one function,
+ * `saveBrand` [model/service/BrandService.cfc:L67], and its file header in
+ * `src/services/brandService.ts` records that the absence of `getBrand`, `deleteBrand` and the
+ * smart-list accessors is FAITHFUL rather than incomplete: they arrived by inheritance from
+ * `HibachiService`, which is not ported. The durable half of that one function is likewise
+ * framework-inherited generic CRUD with no DAO behind it - there is no `BrandDAO.cfc` anywhere in
+ * the legacy repository - and the six-member lock on this port plus the thirteen-port lock on the
+ * folder leave it no home here. The block above this interface states the removal and its reasoning
+ * in full. A `getBrandByBrandID`, a `saveBrand` or a `deleteBrand` here would each be a seventh
+ * member, and publishing port surface beyond the locked budget is the same class of defect as the
+ * three collaborator interfaces this checkpoint already deleted.
  *
- * ★ WHY BRAND LIFECYCLE LIVES ON THE *PRODUCT* REPOSITORY, WHICH LOOKS WRONG UNTIL THE LEGACY IS
- * CHECKED. `Brand` is one of the six prompt-named CATALOG entities (AAP 0.2.1), and
- * `model/entity/Brand.cfc:L49` routes its CRUD through `hb_serviceName="brandService"` - but
- * **there is no `BrandDAO.cfc` in the legacy repository at all**. The full DAO inventory under
- * `model/dao/` is Account, Attribute, Comment, Content, Data, Hibachi, Inventory, Location,
- * Option, Order, Payment, Physical, PriceGroup, Product, ProductType, Promotion, Report,
- * RoundingRule, Schedule, Setting, Sku, Stock, Subscription, Vendor and VendorOrder. Brand is
- * absent from it, because brand persistence never had a dedicated query surface: it ran entirely
- * through `super.save()` on the framework base component, which resolved to Hibernate's generic
- * entity save.
+ * The product side does carry a loader, a save and a delete, because `ProductService.cfc` genuinely
+ * declares `deleteProduct` [L317] and load-bearing process methods that reach `getHibachiDAO().save`
+ * [L287] and `super.delete` [L326] - constructs AAP rule T3 converts into repository port methods,
+ * and which AAP 0.4.1 authorises this port to carry as "the entity-load/save methods the service
+ * needs".
  *
- * AAP rule T3 converts exactly that construct - "`super.save()`, lazy collections" - into
- * "repository port methods", and AAP 0.4.1 authorises this port to carry "plus the entity-load/save
- * methods the service needs". So the generic ORM save has to land on a real port, and the choice is
- * between this one and a new fourteenth port. A fourteenth port is not available: AAP 0.4.1 fixes
- * the inventory at THIRTEEN, and publishing collaborator interfaces beyond that budget is the
- * defect this checkpoint already recorded against three now-deleted symbols. The catalog repository
- * is therefore the correct home, and it is a smaller fiction than a `BrandRepository` that no
- * legacy DAO ever backed.
- *
- * The two members are named for the entity they act on rather than for the port that hosts them, so
- * nothing about the hosting decision leaks into a call site: `brandService.saveBrand` reads as
- * `saveBrand`, exactly as the legacy `super.save` did.
- *
- * The implementing adapter is `src/repositories/mysql/mysqlProductRepository.ts` (planned); the composition
+ * The implementing adapter is `src/repositories/mysql/mysqlProductRepository.ts`; the composition
  * root wires it. Nothing here names a driver, a connection, a statement or a table.
  */
 export interface ProductRepository {
@@ -393,19 +419,18 @@ export interface ProductRepository {
    * `productTypeIDs` second. `readonly string[]` states that the port never mutates a caller's
    * array; it does not narrow what a caller may pass.
    *
-   * This is the ONLY ported route into the attribute subsystem. The `attributeValues` EAV read
-   * path is deliberately not ported.
+   * This is the ONLY ported route into the attribute subsystem. The `attributeValues` EAV read path
+   * is deliberately not ported.
    *
    * Filter and ordering semantics for the adapter to reproduce, described in prose because this
-   * file contains no SQL [model/dao/ProductDAO.cfc:L53-L62]: an attribute set qualifies when it
-   * has at least one active attribute and its attribute-set type system code is one of the
-   * supplied `attributeSetTypeCode` values; when `productTypeIDs` is non-empty the set must also
-   * be either global or assigned to one of the supplied product types, and when `productTypeIDs`
-   * is empty the set must be global. Results are ordered by attribute-set type system code
-   * ascending, then by sort order ascending. Both value collections were bound by the legacy code
-   * as named parameters expanded into `IN` lists, so every element of each array must be bound as
-   * its own prepared-statement parameter in the adapter and never interpolated into statement
-   * text.
+   * file contains no SQL [model/dao/ProductDAO.cfc:L53-L62]: an attribute set qualifies when it has
+   * at least one active attribute and its attribute-set type system code is one of the supplied
+   * `attributeSetTypeCode` values; when `productTypeIDs` is non-empty the set must also be either
+   * global or assigned to one of the supplied product types, and when `productTypeIDs` is empty the
+   * set must be global. Results are ordered by attribute-set type system code ascending, then by
+   * sort order ascending. Both value collections were bound by the legacy code as named parameters
+   * expanded into `IN` lists, so every element of each array must be bound as its own
+   * prepared-statement parameter in the adapter and never interpolated into statement text.
    *
    * TODO [model/dao/ProductDAO.cfc:L64] carried forward verbatim and NOT resolved. The legacy
    * comment reads, exactly:
@@ -414,13 +439,13 @@ export interface ProductRepository {
    *
    * It guards the branch immediately below it [model/dao/ProductDAO.cfc:L65-L69], where the same
    * `attributeSetTypeCode` value is passed as a comma-delimited list in one arm and as an array in
-   * the other, purely because the two CFML engines differed. The target narrows to the MySQL
-   * branch only, and `src/repositories/mysql/dialect.ts` replaces the legacy `cfdbinfo`
-   * product-name probe [config/configORM.cfm:L1-L15] - which chose a Hibernate dialect from the
-   * database product name at runtime - with explicit environment configuration, so the
-   * CFML-engine divergence this TODO describes no longer applies here; the TODO is nevertheless
-   * carried forward rather than closed, because a known source TODO is ported as a flagged TODO
-   * and never silently completed. It travels with the statement it guards into the adapter.
+   * the other, purely because the two CFML engines differed. The target narrows to the MySQL branch
+   * only, and `src/repositories/mysql/dialect.ts` replaces the legacy `cfdbinfo` product-name probe
+   * [config/configORM.cfm:L1-L15] - which chose a Hibernate dialect from the database product name
+   * at runtime - with explicit environment configuration, so the CFML-engine divergence this TODO
+   * describes no longer applies here; the TODO is nevertheless carried forward rather than closed,
+   * because a known source TODO is ported as a flagged TODO and never silently completed. It
+   * travels with the statement it guards into the adapter.
    *
    * @param attributeSetTypeCode Attribute-set type system codes to match; required in the legacy
    *   signature.
@@ -436,35 +461,35 @@ export interface ProductRepository {
   /**
    * Bulk product/SKU import from a delimited file.
    *
-   * Legacy: `public void function loadDataFromFile(required string fileURL, string textQualifier =
-   * "")` [model/dao/ProductDAO.cfc:L73]. `fileURL` is required. `textQualifier` is optional with a
-   * legacy default of the empty string; that default is recorded here in prose and deliberately
-   * NOT written as a default parameter value, because a default value is a runtime expression and
-   * this module emits no runtime JavaScript. `returntype="void"` becomes `Promise<void>`.
+   * Legacy:
+   *   `public void function loadDataFromFile(required string fileURL, string textQualifier = "")`
+   * [model/dao/ProductDAO.cfc:L73]. `fileURL` is required. `textQualifier` is optional with a
+   * legacy default of the empty string; that default is recorded here in prose and deliberately NOT
+   * written as a default parameter value, because a default value is a runtime expression and this
+   * module emits no runtime JavaScript. `returntype="void"` becomes `Promise<void>`.
    *
    * WARNING - EXECUTION-MODEL MISMATCH. The calling service raises the request timeout to 3600
    * seconds, one hour, immediately before delegating here
    * [model/service/ProductService.cfc:L65-L68]. That budget is structurally unavailable in the
-   * target: AWS Lambda caps a single invocation at 15 minutes, and API Gateway caps a request at
-   * 29 seconds. The legacy body is shaped for exactly the budget it asked for - it fetches the
-   * whole file over HTTP [model/dao/ProductDAO.cfc:L87], classifies every column by its
-   * `product_`, `sku_`, `option_` or `attribute_` prefix [model/dao/ProductDAO.cfc:L130-L140],
-   * resolves option groups with one lookup each [model/dao/ProductDAO.cfc:L159-L172], then walks
-   * every row of the file inside a per-row transaction, and finally rewrites SKU image file names
-   * in one statement [model/dao/ProductDAO.cfc:L310-L325].
+   * target: AWS Lambda caps a single invocation at 15 minutes, and API Gateway caps a request at 29
+   * seconds. The legacy body is shaped for exactly the budget it asked for - it fetches the whole
+   * file over HTTP [model/dao/ProductDAO.cfc:L87], classifies every column by its `product_`,
+   * `sku_`, `option_` or `attribute_` prefix [model/dao/ProductDAO.cfc:L130-L140], resolves option
+   * groups with one lookup each [model/dao/ProductDAO.cfc:L159-L172], then walks every row of the
+   * file inside a per-row transaction, and finally rewrites SKU image file names in one statement
+   * [model/dao/ProductDAO.cfc:L310-L325].
    *
    * The mismatch is annotated, NOT designed around. This signature therefore has no timeout, no
    * chunk, offset, cursor or resume parameter, no streaming handle, no asynchronous job handle, no
-   * queue or worker hand-off, no progress callback, and no split into a begin/continue pair.
-   * Adding any of those would invent a requirement the source never had and would spend a
-   * signature reshaping this port has no budget for. The plan flags `loadDataFromFile` as an
+   * queue or worker hand-off, no progress callback, and no split into a begin/continue pair. Adding
+   * any of those would invent a requirement the source never had and would spend a signature
+   * reshaping this port has no budget for. The plan flags `loadDataFromFile` as an
    * out-of-scope-feature path reachable from an in-scope file, ported as a thin declaration rather
-   * than made to work; `processProduct_addProductReview`
-   * [model/service/ProductService.cfc:L157], `processProduct_addSubscriptionTerm`
-   * [model/service/ProductService.cfc:L173] and `processProduct_uploadDefaultImage`
-   * [model/service/ProductService.cfc:L235] get the same treatment at the service tier, and none
-   * of them gets a method on this port. Its own private helper `saveImportData`
-   * [model/dao/ProductDAO.cfc:L328] is likewise not on this port.
+   * than made to work; `processProduct_addProductReview` [model/service/ProductService.cfc:L157],
+   * `processProduct_addSubscriptionTerm` [model/service/ProductService.cfc:L173] and
+   * `processProduct_uploadDefaultImage` [model/service/ProductService.cfc:L235] get the same
+   * treatment at the service tier, and none of them gets a method on this port. Its own private
+   * helper `saveImportData` [model/dao/ProductDAO.cfc:L328] is likewise not on this port.
    *
    * @param fileURL Location of the delimited file, as the legacy signature names it. The legacy
    *   body derives its delimiter from the file extension [model/dao/ProductDAO.cfc:L74-L80].
@@ -476,13 +501,13 @@ export interface ProductRepository {
    * Product search by name fragment, optionally narrowed to a list of product types.
    *
    * Legacy: `public any function searchProductsByProductType(string term,string productTypeIDs)`
-   * [model/dao/ProductDAO.cfc:L419]. NEITHER parameter is declared `required`, so both are
-   * optional here, in the legacy order.
+   * [model/dao/ProductDAO.cfc:L419]. NEITHER parameter is declared `required`, so both are optional
+   * here, in the legacy order.
    *
    * NOTE THE PLURAL. This parameter is `productTypeIDs`. The sibling method on `skuRepository`,
-   * `searchSkusByProductType`, takes the singular `productTypeID` [model/dao/SkuDAO.cfc:L130].
-   * Both spellings are preserved verbatim; neither is normalised, and the plural here is not
-   * "corrected" to match the singular there.
+   * `searchSkusByProductType`, takes the singular `productTypeID` [model/dao/SkuDAO.cfc:L130]. Both
+   * spellings are preserved verbatim; neither is normalised, and the plural here is not "corrected"
+   * to match the singular there.
    *
    * `productTypeIDs` stays a `string` because that is the legacy type and the legacy value is a
    * comma-delimited list - the adapter splits it with the CFML list helpers in
@@ -499,8 +524,8 @@ export interface ProductRepository {
    * keyed `id` and `value` for autocomplete consumption [model/dao/ProductDAO.cfc:L429-L436]. The
    * strict profile admits no `any`, and the plan's interface mapping types this method's result as
    * the entity it searches, so the port publishes `Product[]` and the adapter owns hydration -
-   * including the fetch shape this file's header requires. A repository-wide search finds no
-   * caller of this DAO function in the legacy tree (its SKU sibling is reached through
+   * including the fetch shape this file's header requires. A repository-wide search finds no caller
+   * of this DAO function in the legacy tree (its SKU sibling is reached through
    * `SkuService.searchSkusByProductType` [model/service/SkuService.cfc:L271-L272]), so the
    * signature published here derives from the declaration itself.
    *
@@ -513,11 +538,11 @@ export interface ProductRepository {
   /**
    * Load one product by its identifier.
    *
-   * This method name has NO legacy antecedent. `model/dao/ProductDAO.cfc` declares no load
-   * function at all: the legacy code obtained an entity through the ORM, by way of the framework
-   * base component's generated accessors and `entityLoad`, which have no equivalent in a
-   * driver-only stack. The name is shaped after the closest legacy naming precedent in the same
-   * DAO family, `getSkuBySkuCode` [model/dao/SkuDAO.cfc:L102], so the folder reads consistently.
+   * This method name has NO legacy antecedent. `model/dao/ProductDAO.cfc` declares no load function
+   * at all: the legacy code obtained an entity through the ORM, by way of the framework base
+   * component's generated accessors and `entityLoad`, which have no equivalent in a driver-only
+   * stack. The name is shaped after the closest legacy naming precedent in the same DAO family,
+   * `getSkuBySkuCode` [model/dao/SkuDAO.cfc:L102], so the folder reads consistently.
    *
    * Returns `undefined` when no product carries that identifier. Absence is explicit and is never
    * substituted with a zero value or an empty object.
@@ -535,15 +560,33 @@ export interface ProductRepository {
    * from the service tier [model/service/ProductService.cfc:L287] and as `super.save(...)` for the
    * product-type sibling [model/service/ProductService.cfc:L303].
    *
-   * It takes the entity alone, and no data structure, because population, unique URL-title
-   * generation and validation all remain at the service tier where the legacy code performed them
+   * ★ IT TAKES A PAYLOAD, AND THIS PARAGRAPH ONCE EXPLAINED WHY IT DID NOT. It read: "It takes the
+   * entity alone, and no data structure, because population, unique URL-title generation and
+   * validation all remain at the service tier where the legacy code performed them
    * [model/service/ProductService.cfc:L264-L292]. What arrives here is an already-populated,
-   * already-validated entity, and the adapter persists it and returns the persisted instance.
+   * already-validated entity, and the adapter persists it and returns the persisted instance."
+   *
+   * Generation and validation DO remain at the service tier - that half is unchanged, and the
+   * adapter still derives no title and enforces no rule. It was "already-populated" that did not
+   * hold - not because the entity could not carry the title, but because a save whose written columns
+   * are inferred from an entity's current state is a save nobody can read the intent of. The legacy
+   * statement was `super.save(arguments.product, arguments.data)` [L287]: TWO arguments, the second
+   * of which populated the row before the flush.
+   *
+   * The remedy keeps both halves. The service writes the resolved title onto the entity, as
+   * [L269] does, so `getProductURL()` [model/entity/Product.cfc:L207] answers correctly off the
+   * instance the caller holds; and it names that same title in the payload, so the columns this save
+   * is responsible for are stated at the boundary rather than deduced. The payload travels with the
+   * entity, the adapter prefers the payload where it speaks and the entity everywhere else, and the
+   * returned instance carries what was actually written. See {@link ProductSavePayload} for why it is
+   * deliberately not a general populate struct.
    *
    * @param product The product to persist.
-   * @returns The persisted product.
+   * @param data The resolved payload to populate from before writing. Pass an empty object when the
+   *   caller has nothing to resolve; an empty payload writes exactly what the entity holds.
+   * @returns The persisted product, carrying the populated column values.
    */
-  saveProduct(product: Product): Promise<Product>;
+  saveProduct(product: Product, data: ProductSavePayload): Promise<Product>;
 
   /**
    * Delete one product.
@@ -559,49 +602,4 @@ export interface ProductRepository {
    * @returns True when the product was deleted, false when it was not.
    */
   deleteProduct(product: Product): Promise<boolean>;
-
-  /**
-   * Persist one brand, populating it from a resolved payload first.
-   *
-   * This is the target of AAP rule T3 for `return super.save(arguments.brand, arguments.data)`
-   * [model/service/BrandService.cfc:L76] - the single statement that made the legacy `saveBrand`
-   * durable, and the only persistence the component ever performed.
-   *
-   * ★ IT TAKES TWO ARGUMENTS WHERE {@link ProductRepository.saveProduct} TAKES ONE, AND THE
-   * ASYMMETRY IS FORCED BY THE ENTITY RATHER THAN CHOSEN. The legacy `super.save(entity, data)`
-   * POPULATED the entity from the struct and only then flushed, so the struct is not an alternative
-   * route to the columns - it IS the route. `Brand` publishes no mutator at all and its `urlTitle`
-   * field is private and readonly, so the `urlTitle` that
-   * [model/service/BrandService.cfc:L70, L72] resolves cannot be applied to the entity by the
-   * service: not through a setter, which does not exist, and not by reconstruction, which would mean
-   * copying every column and every association through the constructor and would silently drop
-   * anything the copy forgot. Dropping the payload here would therefore make the generated title
-   * reach nothing - a durable save that persists the wrong row - so the payload travels with the
-   * entity exactly as the legacy statement sends it.
-   *
-   * `saveProduct` needs no payload because `ProductService` resolves its title into the product
-   * itself [model/service/ProductService.cfc:L269] before saving; `BrandService` never had that
-   * route and did not take it.
-   *
-   * WHERE THE POPULATE STEP LIVES. In the adapter, because that is where it lived in the legacy:
-   * population belonged to `HibachiService`/`HibachiDAO`, which AAP 0.5.3 lists among the
-   * dependencies deliberately not carried forward, with persistence redistributed to the
-   * repositories. The adapter writes the columns present in the payload and flushes. Validation is
-   * NOT part of this contract - the framework validation service is not ported, and
-   * `model/validation/Brand.json` was enforced by it.
-   *
-   * ★ THE RETURNED INSTANCE IS THE CONTRACT, NOT A COURTESY. The legacy `saveBrand` RETURNS what
-   * `super.save` hands back, and a generated `brandID` is assigned during that save
-   * [model/entity/Brand.cfc:L52, `generator="uuid" unsavedvalue=""`]. A caller that saved a new
-   * brand and then read the input instance would see `brandID` still empty, and would also see the
-   * pre-population `urlTitle`. So the persisted instance is what every caller must use, and the
-   * entity's immutability is what makes that load-bearing rather than stylistic: the adapter cannot
-   * back-fill either value into the argument even if it wanted to.
-   *
-   * @param brand The brand to persist.
-   * @param data The resolved payload to populate from before flushing.
-   * @returns The persisted brand, carrying any identifier assigned by the save and the populated
-   *   column values.
-   */
-  saveBrand(brand: Brand, data: BrandSavePayload): Promise<Brand>;
 }
