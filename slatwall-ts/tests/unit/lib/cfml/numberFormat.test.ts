@@ -592,6 +592,88 @@ describe('DecimalString: the branded type and its validating constructor', () =>
     expect(() => toDecimalString(' 12.5 ')).toThrow(CfmlNumberFormatError);
   });
 
+  // ★ THE DECLARED CONTRACT HOLDS AT RUN TIME, NOT ONLY AT COMPILE TIME.
+  //
+  // The parameter is typed `string`, but a type annotation is erased before anything executes, and
+  // this is the single validator standing behind `Money.fromDecimalString`. Anything reaching it
+  // from untyped JavaScript - a JSON request body, a driver row typed more loosely than it arrives,
+  // an `as` cast made somewhere else - arrives unchecked. Two coercions used to conspire to let a
+  // non-string through:
+  //
+  //   * the character bound reads `value.length`, which is `undefined` on a number, and
+  //     `undefined > 1024` evaluates to `false`, so no bound was applied at all;
+  //   * `RegExp.prototype.test` coerces its argument with `String()`, so the number `12.5` was
+  //     tested as the string `'12.5'` and matched the plain-numeral pattern.
+  //
+  // The function then returned the value ITSELF, branded. A branded non-string is precisely what
+  // the rest of this suite takes to be impossible: a `DecimalString` is measured with `.length`,
+  // sliced with `.slice` and compared as text throughout, and every one of those behaves
+  // differently on a number.
+  //
+  // JUDGMENT CALL: the widened alias below is how a run-time-only caller is modelled without
+  // spending a comment directive. Widening to `unknown` keeps the strict profile fully intact - the
+  // single `@ts-expect-error` this suite is permitted belongs to the literal-mask assertion above,
+  // and no escape hatch is opened here.
+  const brandCandidateAtRuntime = toDecimalString as (candidate: unknown) => DecimalString;
+
+  it('rejects a raw number, so no IEEE-754 double can ever be branded', () => {
+    expect(() => brandCandidateAtRuntime(12.5)).toThrow(CfmlNumberFormatError);
+    expect(() => brandCandidateAtRuntime(0)).toThrow(CfmlNumberFormatError);
+    expect(() => brandCandidateAtRuntime(-3)).toThrow(CfmlNumberFormatError);
+
+    // The case that matters most: a double already carrying drift. Branding this would hand the
+    // drift straight to the one abstraction introduced to keep it out.
+    expect(() => brandCandidateAtRuntime(1.0000000000000002)).toThrow(CfmlNumberFormatError);
+
+    // The refusal is still actionable - the diagnostic names what arrived.
+    expect(() => brandCandidateAtRuntime(12.5)).toThrow(/received "12\.5"/);
+
+    // ...while the STRING spelling of each of those same numerals is still accepted, verbatim. The
+    // guard refuses a SHAPE, never a value, so nothing that was admissible became inadmissible.
+    expect(toDecimalString('12.5')).toBe('12.5');
+    expect(toDecimalString('0')).toBe('0');
+    expect(toDecimalString('-3')).toBe('-3');
+    expect(toDecimalString('1.0000000000000002')).toBe('1.0000000000000002');
+  });
+
+  it('rejects every other non-string shape, including the ones that used to match', () => {
+    // A single-element array and an object with a numeral-shaped `toString` are the sharp cases:
+    // both have no usable `length`, both stringify to `'12.5'`, and both therefore SATISFIED the
+    // pattern and came back branded. They demonstrate that the coercion was never number-specific.
+    expect(() => brandCandidateAtRuntime(['12.5'])).toThrow(CfmlNumberFormatError);
+    expect(() => brandCandidateAtRuntime({ toString: () => '12.5' })).toThrow(
+      CfmlNumberFormatError,
+    );
+
+    // These were refused even before the guard existed, but only by accident: `String()` happens
+    // not to render any of them as a plain numeral. They are asserted so the refusal is now
+    // principled and pinned rather than incidental.
+    expect(() => brandCandidateAtRuntime(true)).toThrow(CfmlNumberFormatError);
+    expect(() => brandCandidateAtRuntime(null)).toThrow(CfmlNumberFormatError);
+    expect(() => brandCandidateAtRuntime(undefined)).toThrow(CfmlNumberFormatError);
+    expect(() => brandCandidateAtRuntime({})).toThrow(CfmlNumberFormatError);
+    expect(() => brandCandidateAtRuntime(Symbol('12.5'))).toThrow(CfmlNumberFormatError);
+    expect(() => brandCandidateAtRuntime(1e21)).toThrow(CfmlNumberFormatError);
+  });
+
+  it('refuses ahead of the character bound, which cannot measure a non-string', () => {
+    // A shape carrying a `length` the bound WOULD reject. This is the observable proof of ORDERING:
+    // reached in the other order it raises the magnitude error instead, mislabelling a wrong-type
+    // input as an over-wide numeral - and for a number, where `length` is `undefined`, the bound
+    // silently applies to nothing at all. The two error types are unrelated classes, so asserting
+    // one is asserting the absence of the other.
+    expect(() => brandCandidateAtRuntime({ length: 2000 })).toThrow(CfmlNumberFormatError);
+    expect(() => brandCandidateAtRuntime({ length: 2000 })).toThrow(/received "\[object Object\]"/);
+  });
+
+  it('still admits its own output, so the internal re-branding is untouched', () => {
+    // Both formatters re-brand their own result through this very gate, so a guard even slightly
+    // too broad would have broken this module from the inside rather than at a call site. Composing
+    // them proves the round trip end to end.
+    expect(toDecimalString(numberFormat('12.3456'))).toBe('12.35');
+    expect(toDecimalString(cfNumberToString('11.30'))).toBe('11.3');
+  });
+
   // The brand is a phantom: a `declare const` on a `unique symbol` exists only in the type system,
   // emits no JavaScript and attaches no property to any value, so at run time a `DecimalString` is
   // exactly a string - which is why it can be compared, sliced and measured like one throughout

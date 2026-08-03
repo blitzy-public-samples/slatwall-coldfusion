@@ -388,6 +388,64 @@ describe('rejection at construction', () => {
     );
     expect(captureFailure(() => price.isLessThan('$1')).name).toBe('CfmlNumberFormatError');
   });
+
+  // JUDGMENT CALL: the `string` parameter is a compile-time guarantee and a real one - the numeric
+  // `NaN`, `Infinity` and `-Infinity` genuinely cannot be written at any call site above, which is
+  // why they are asserted in their string spellings. It is not, however, the WHOLE guarantee. The
+  // annotation is erased before anything executes, and this factory is reachable from untyped
+  // JavaScript, from a decoded request body, and from an `as` cast made in another file. The
+  // documented contract on the factory says the value is "never a `number`", and a documented
+  // contract that only the compiler enforces is not enforced on the boundary the port actually runs
+  // on. The widened alias below models that caller so the run-time half is pinned too; it goes
+  // through `unknown` exactly as `ownState` above does, so no `any` and no suppression comment
+  // enters this file. The factory is invoked as a member of its class rather than detached from it,
+  // so the widening is confined to the argument and nothing about the call itself changes.
+  const fromRuntimeValue = (candidate: unknown): Money =>
+    Money.fromDecimalString(candidate as string);
+
+  it('rejects a raw number at run time, upholding the "never a number" contract', () => {
+    expect(captureFailure(() => fromRuntimeValue(12.5)).name).toBe('CfmlNumberFormatError');
+    expect(captureFailure(() => fromRuntimeValue(0)).name).toBe('CfmlNumberFormatError');
+    expect(captureFailure(() => fromRuntimeValue(-3)).name).toBe('CfmlNumberFormatError');
+
+    // The decisive case: a double that already carries drift. Admitting it would place the precise
+    // hazard this value object exists to exclude inside the value object itself.
+    expect(captureFailure(() => fromRuntimeValue(1.0000000000000002)).name).toBe(
+      'CfmlNumberFormatError',
+    );
+
+    // The failure is this port's own typed error, not a stray one from the substrate, so a caller
+    // can still tell a malformed input apart from any other failure - and it names what arrived.
+    expect(captureFailure(() => fromRuntimeValue(12.5)).message).toContain('12.5');
+  });
+
+  it('rejects every other non-string shape handed over at run time', () => {
+    // A single-element array and an object with a numeral-shaped `toString` are the sharp pair:
+    // neither carries a usable `length`, both stringify to `'12.5'`, and the validating pattern is
+    // applied with `RegExp.prototype.test`, which coerces its argument. Both therefore satisfied the
+    // pattern and came back as a constructed `Money` wrapping a value that was not a string at all.
+    expect(captureFailure(() => fromRuntimeValue(['12.5'])).name).toBe('CfmlNumberFormatError');
+    expect(captureFailure(() => fromRuntimeValue({ toString: () => '12.5' })).name).toBe(
+      'CfmlNumberFormatError',
+    );
+    expect(captureFailure(() => fromRuntimeValue(true)).name).toBe('CfmlNumberFormatError');
+    expect(captureFailure(() => fromRuntimeValue(null)).name).toBe('CfmlNumberFormatError');
+    expect(captureFailure(() => fromRuntimeValue(undefined)).name).toBe('CfmlNumberFormatError');
+  });
+
+  it('leaves every valid numeral admissible, so nothing was over-refused', () => {
+    // What is refused is a SHAPE, never a value: the string spelling of each number refused above
+    // still constructs and still presents exactly as before.
+    expect(Money.fromDecimalString('12.5').toFixed2()).toBe('12.50');
+    expect(Money.fromDecimalString('0').toFixed2()).toBe('0.00');
+    expect(Money.fromDecimalString('-3').toFixed2()).toBe('-3.00');
+    expect(Money.fromDecimalString('1.0000000000000002').toFixed2()).toBe('1.00');
+
+    // JUDGMENT CALL: the refusal belongs to the decimal-string factory alone and must not spill
+    // into the operand path, where a non-monetary integer is admitted deliberately and travels a
+    // separate branch that never reaches the string validator. That branch is pinned in full
+    // further down, where `times(3)` succeeds and `times(0.125)` fails loudly.
+  });
 });
 
 describe('a negative amount remains representable', () => {

@@ -145,6 +145,39 @@ function assertNumeralLength(value: string): void {
   }
 }
 
+// Refuses a non-string, and it has to run FIRST because both of the checks that
+// follow it in {@link toDecimalString} wave a non-string through in silence:
+//
+//   * `assertNumeralLength` reads `value.length`, which is `undefined` on a number,
+//     and `undefined > 1024` evaluates to `false`, so no bound is applied at all;
+//   * `RegExp.prototype.test` coerces its argument with `String()`, so the number
+//     `12.5` is tested as the string `'12.5'` and MATCHES the plain-numeral pattern.
+//
+// The two together meant the function returned the NUMBER ITSELF, branded as a
+// {@link DecimalString}. That breaks the precondition `Money`'s constructor
+// documents and admits an IEEE-754 double into the one path that exists to keep
+// doubles out: `12.5` was admitted, and so was `1.0000000000000002`, whose drift is
+// exactly what `Money` was introduced to prevent. Refusals that did occur were
+// accidental rather than principled - `1e21` was rejected only because `String()`
+// renders it as `'1e+21'`, and a boxed or wrapped numeric got as far as the decimal
+// parser and failed there with an untyped error instead of at this gate.
+//
+// ★ THE PARAMETER TYPE IS NOT THE GUARD. Untyped JavaScript callers, a JSON request
+// body, a driver row typed more loosely than it arrives, and any `as` cast made
+// elsewhere all reach this function without the compiler having checked anything.
+// The declared contract says "never a number"; this is what makes that true at
+// runtime as well as at compile time.
+//
+// ★ A CHECK THE TYPE SYSTEM CAN PROVE REDUNDANT IS DELIBERATE HERE, not an
+// oversight: `@typescript-eslint/no-unnecessary-condition` is switched off across
+// this subtree precisely so that defensive checks may stand where what they refuse
+// is observable behaviour. This one is.
+function assertIsString(value: unknown): void {
+  if (typeof value !== 'string') {
+    throw new CfmlNumberFormatError(value);
+  }
+}
+
 declare const decimalStringBrand: unique symbol;
 
 /**
@@ -172,13 +205,20 @@ export type DecimalString = string & { readonly [decimalStringBrand]: true };
  * `./precision.ts` as well: every string that reaches the arithmetic module
  * arrives as a value this function has already admitted.
  *
- * @param value the candidate numeral.
+ * ★ IT IS ALSO WHERE THE "NEVER A NUMBER" HALF OF THAT CONTRACT IS ENFORCED. A
+ * non-string is refused before either check below can coerce one - see
+ * {@link assertIsString} for why neither of them does it on its own.
+ *
+ * @param value the candidate numeral. Never a `number`: a double is precisely how
+ *   IEEE-754 drift would enter, and branding one would hand it straight to `Money`.
  * @returns the same string, branded as a {@link DecimalString}.
+ * @throws CfmlNumberFormatError when `value` is not a string at runtime.
  * @throws CfmlNumberMagnitudeError when `value` is longer than
  *   {@link MAX_NUMERAL_CHARACTERS}.
  * @throws CfmlNumberFormatError when `value` is not a plain decimal numeral.
  */
 export function toDecimalString(value: string): DecimalString {
+  assertIsString(value);
   assertNumeralLength(value);
 
   if (PLAIN_DECIMAL_NUMERAL.test(value)) {
