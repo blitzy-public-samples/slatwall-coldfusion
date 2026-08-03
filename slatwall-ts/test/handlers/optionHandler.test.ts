@@ -31,8 +31,10 @@
  * controller test of any kind. Nothing here extends a legacy assertion, and none is labelled as though it
  * did.
  *
- * WHAT THIS FILE DOES NOT COVER: `src/handlers/router.ts` does not exist yet, so nothing here asserts how
- * a route string reaches a member; and the SmartList identifier closure asserted through the service is
+ * WHAT THIS FILE DOES NOT COVER: how a route string reaches a member — `src/handlers/router.ts` owns the
+ * `slatAction` table and mounts these members, and that seam is asserted in
+ * `test/handlers/entrySurface.test.ts` for this surface and the four beside it rather than here; and the
+ * SmartList identifier closure asserted through the service is
  * left in the service suite where it belongs. Stating that is preferable to implying a completeness this
  * file does not have.
  */

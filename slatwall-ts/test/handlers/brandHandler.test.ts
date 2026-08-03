@@ -32,8 +32,10 @@
  * is already carried in `test/domain/Brand.test.ts`. Nothing in this file extends a legacy assertion, and
  * none is labelled as though it did.
  *
- * WHAT THIS FILE DOES NOT COVER: `src/handlers/router.ts` does not exist yet, so nothing here asserts how
- * a route string reaches a member; and the URL-title probe sequence is asserted in the service suite, not
+ * WHAT THIS FILE DOES NOT COVER: how a route string reaches a member — `src/handlers/router.ts` owns the
+ * `slatAction` table and mounts these members, and that seam is asserted in
+ * `test/handlers/entrySurface.test.ts` for this surface and the four beside it rather than here; and the
+ * URL-title probe sequence is asserted in the service suite, not
  * through the boundary. Stating that is preferable to implying a completeness this file does not have.
  */
 import { BRAND_ENTITY_METADATA, Brand } from '../../src/domain/product/Brand';
@@ -452,5 +454,166 @@ describe('brandHandler — SEC-04, the response is a projection and not the enti
 
     expect(result.statusCode).toBe(200);
     expect(JSON.parse(result.body)).toBe(true);
+  });
+});
+
+describe('brandHandler — an unaddressed brand is a REQUEST fault, an unmatched one is a MISS', () => {
+  /*
+   * ⭐ WHY THIS BLOCK EXISTS. `getBrand` and `deleteBrand` answered the neutral 404 for BOTH "no
+   * identifier was addressed" and "the addressed identifier matches nothing", and the collapse was
+   * defended as non-disclosure. It is not one: the gate runs BEFORE the identifier is read, so an
+   * unauthorised caller never reaches either answer (the SEC-03 block above asserts exactly that), and
+   * among callers who do reach it, "you addressed nothing" says nothing whatsoever about any brand. The
+   * cost fell entirely on a legitimate client, which could not tell a bug in its own request from a brand
+   * that is genuinely gone — and every sibling handler answered the first case with a NAMED 400.
+   *
+   * The convention now held across the whole boundary layer, and asserted here:
+   *   400  the REQUEST is at fault — nothing was addressed, or what was addressed cannot identify anything
+   *   404  the request was well formed and the addressed resource does not exist
+   *
+   * ⚠️ THE EMPTY IDENTIFIER BELONGS TO THE 400 SIDE, and that is legacy-evidenced rather than tidy:
+   * [model/entity/Brand.cfc:L52] declares `brandID` with `unsavedvalue=""` and `default=""`, so no
+   * persisted row can carry it and it cannot address anything. This is the OPPOSITE of `skuCode`, whose
+   * empty form is a legal value the lookup runs for — see `test/handlers/skuHandler.test.ts`. The two
+   * differ because the legacy declarations differ, not because the boundary chose differently.
+   *
+   * TEST PROVENANCE: NET-NEW (AAP §0.6.5.2).
+   */
+
+  const STORED_BRAND_ID = 'aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa';
+  const NAMED_REFUSAL = { message: 'A "brandID" path parameter is required' };
+
+  /** A permitted principal, so every case below lands past the gate on the identifier logic. */
+  function handlerFor(reached: string[]): BrandHandler {
+    const stored = managedBrand();
+    stored.brandID = STORED_BRAND_ID;
+    stored.brandName = 'Stored Brand';
+
+    const service: BrandHandlerService = {
+      saveBrand: (brand: ManagedBrand): Promise<ManagedBrand> => Promise.resolve(brand),
+      newBrand: (): ManagedBrand => stored,
+      getBrand: (brandID: string): Promise<ManagedBrand | null> => {
+        reached.push(brandID);
+        return Promise.resolve(brandID === STORED_BRAND_ID ? stored : null);
+      },
+      deleteBrand: (): Promise<boolean> => Promise.resolve(true),
+    };
+
+    return createBrandHandler(service, () => ({
+      accountContext: { getCurrentAccount: () => account({}) },
+      entityAuthorization: { authenticateEntity: () => true },
+    }));
+  }
+
+  it('NET-NEW — getBrand with NO identifier answers 400 NAMED, and never asks the service', async () => {
+    const reached: string[] = [];
+    const result = await handlerFor(reached).getBrand({ pathParameters: null, headers: {} });
+
+    expect(result.statusCode).toBe(400);
+    expect(JSON.parse(result.body)).toStrictEqual(NAMED_REFUSAL);
+    expect(reached).toEqual([]);
+  });
+
+  it('NET-NEW — deleteBrand with NO identifier answers 400 NAMED, and removes nothing', async () => {
+    const reached: string[] = [];
+    const result = await handlerFor(reached).deleteBrand({ pathParameters: null, headers: {} });
+
+    expect(result.statusCode).toBe(400);
+    expect(JSON.parse(result.body)).toStrictEqual(NAMED_REFUSAL);
+    expect(reached).toEqual([]);
+  });
+
+  it('NET-NEW — the EMPTY identifier is the legacy unsaved sentinel and is refused the same way', async () => {
+    const reached: string[] = [];
+    const handler = handlerFor(reached);
+
+    const read = await handler.getBrand({ pathParameters: { brandID: '' }, headers: {} });
+    const remove = await handler.deleteBrand({ pathParameters: { brandID: '' }, headers: {} });
+
+    expect(read.statusCode).toBe(400);
+    expect(remove.statusCode).toBe(400);
+    expect(JSON.parse(read.body)).toStrictEqual(NAMED_REFUSAL);
+    /* No row can carry `''`, so no lookup is attempted for it. */
+    expect(reached).toEqual([]);
+  });
+
+  it('NET-NEW — an identifier that matches nothing STILL answers the neutral 404', async () => {
+    const reached: string[] = [];
+    const handler = handlerFor(reached);
+
+    const read = await handler.getBrand({
+      pathParameters: { brandID: 'ffffffffffffffffffffffffffffffff' },
+      headers: {},
+    });
+    const remove = await handler.deleteBrand({
+      pathParameters: { brandID: 'ffffffffffffffffffffffffffffffff' },
+      headers: {},
+    });
+
+    expect(read.statusCode).toBe(404);
+    expect(remove.statusCode).toBe(404);
+    /* Still neutral: neither the identifier nor the route is echoed back. */
+    expect(JSON.parse(read.body)).toStrictEqual({ message: 'Not found' });
+    expect(reached).toEqual([
+      'ffffffffffffffffffffffffffffffff',
+      'ffffffffffffffffffffffffffffffff',
+    ]);
+  });
+
+  it('NET-NEW — the two conditions are now DISTINGUISHABLE, which is the whole point', async () => {
+    const reached: string[] = [];
+    const handler = handlerFor(reached);
+
+    const unaddressed = await handler.getBrand({ pathParameters: null, headers: {} });
+    const unmatched = await handler.getBrand({
+      pathParameters: { brandID: 'ffffffffffffffffffffffffffffffff' },
+      headers: {},
+    });
+
+    expect(unaddressed.statusCode).not.toBe(unmatched.statusCode);
+    expect(unaddressed.body).not.toBe(unmatched.body);
+  });
+
+  it('NET-NEW — a matched identifier is unaffected and still answers 200 with the projection', async () => {
+    const reached: string[] = [];
+    const result = await handlerFor(reached).getBrand({
+      pathParameters: { brandID: STORED_BRAND_ID },
+      headers: {},
+    });
+
+    expect(result.statusCode).toBe(200);
+    expect(JSON.parse(result.body)).toMatchObject({
+      brandID: STORED_BRAND_ID,
+      brandName: 'Stored Brand',
+    });
+  });
+
+  it('NET-NEW — the GATE still answers first, so the 400 is unreachable without permission', async () => {
+    /* The anti-enumeration property the old collapse was defending lives HERE, in the ordering — not in
+     * the status. An unauthorised caller gets the same refusal whatever it addresses. */
+    const stored = managedBrand();
+    stored.brandID = STORED_BRAND_ID;
+
+    const refusing = createBrandHandler(
+      {
+        saveBrand: (brand: ManagedBrand): Promise<ManagedBrand> => Promise.resolve(brand),
+        newBrand: (): ManagedBrand => stored,
+        getBrand: (): Promise<ManagedBrand | null> => Promise.resolve(stored),
+        deleteBrand: (): Promise<boolean> => Promise.resolve(true),
+      },
+      () => ({
+        accountContext: { getCurrentAccount: () => account({}) },
+        entityAuthorization: { authenticateEntity: () => false },
+      }),
+    );
+
+    const unaddressed = await refusing.getBrand({ pathParameters: null, headers: {} });
+    const addressed = await refusing.getBrand({
+      pathParameters: { brandID: STORED_BRAND_ID },
+      headers: {},
+    });
+
+    expect(unaddressed.statusCode).toBe(403);
+    expect(unaddressed).toStrictEqual(addressed);
   });
 });

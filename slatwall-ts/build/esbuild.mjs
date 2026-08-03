@@ -52,7 +52,8 @@
  * ==================================================================================================
  */
 import { build } from 'esbuild';
-import { dirname, join, relative, resolve } from 'node:path';
+import { mkdir, readdir, rename, rm, stat } from 'node:fs/promises';
+import { basename, dirname, join, relative, resolve } from 'node:path';
 import { fileURLToPath } from 'node:url';
 
 /* --------------------------------------------------------------------------------------------------
@@ -91,28 +92,54 @@ const sourceRoot = join(projectRoot, 'src');
 const outputDir = join(projectRoot, 'dist');
 
 /**
+ * Where the source maps land, and why it is NOT `dist`.
+ *
+ * `dist/` is the packaged tree: the set of files a packaging step would carry to the runtime. A
+ * source map is a debugging aid rather than something the runtime loads, and the maps for these
+ * bundles are an order of magnitude larger than the code they describe, so emitting them into the
+ * packaged tree means shipping several megabytes the runtime never reads. They are therefore
+ * written beside `dist/` instead of inside it, and `dist/` ends up holding exactly one artifact per
+ * declared entry point and nothing else.
+ *
+ * The maps are still produced, and still usable: `sourcemap: 'external'` emits them WITHOUT writing
+ * a `sourceMappingURL` comment into the JavaScript, so relocating a map leaves no dangling
+ * reference behind in the artifact. A reader debugging a stack trace points their tool at the map
+ * in this directory; nothing about the mapping data itself changes.
+ *
+ * `build-meta/` is added to slatwall-ts/.gitignore alongside `dist/` and `coverage/`, so like every
+ * other generated directory in the subtree it is never committed. The name is deliberately distinct
+ * from `build/`, which holds this script and is tracked.
+ */
+const sourcemapDir = join(projectRoot, 'build-meta', 'sourcemaps');
+
+/**
  * The bundler target.
  *
  * ⚠️ PINNED, AND NEVER "CORRECTED" TO WHATEVER NODE HAPPENS TO BE INSTALLED. The version of Node
- * running this script is an artefact of the machine; the target is a project decision. Only four
- * couplings in the repository carry that decision, and a runtime move has to move them together:
+ * running this script is an artefact of the machine; the target is a project decision. Five
+ * couplings in the subtree carry that decision, and a runtime move has to move them together:
  *
  *   1. this token (and the `target` option it feeds);
  *   2. the `engines` field of package.json together with .nvmrc;
  *   3. the @types/node pin, which AAP 0.5.3.2 requires to track the runtime rather than the latest
  *      release — a newer definition set would type APIs the pinned runtime does not have, turning a
  *      compile pass into a false assurance;
- *   4. tsconfig.json's `target`/`lib` pair.
+ *   4. tsconfig.json's `target`/`lib` pair;
+ *   5. the Toolchain section of slatwall-ts/README.md, which states the Node, npm, TypeScript, Jest,
+ *      esbuild, ESLint, Prettier and mysql2 versions and repeats this same coupling list.
  *
- * ⚠️ AAP 0.5.5 NAMES A FOURTH ITEM THIS LIST DOES NOT: "the version statements in
- * slatwall-ts/README.md". That file is declared as a CREATE target by AAP 0.2.1.7 and 0.4.1.2 but
- * was never generated, and the only README in the subtree — src/integrations/google/README.md —
- * states no version. The coupling is therefore enumerated as it measurably exists, and the absent
- * README is recorded here as a gap rather than silently absorbed, because a reader auditing the
- * couplings before a bump must be able to find every one of them.
+ * Items 1, 2, 3 and 5 are the four couplings AAP 0.5.5 enumerates. Item 4 is an additional coupling
+ * measured in this subtree that AAP 0.5.5 does not name, and it is listed anyway because a reader
+ * auditing the couplings before a bump has to find every one of them, not only the documented four.
+ *
+ * ⚠️ ITEM 5 DID NOT EXIST WHEN THIS LIST WAS FIRST WRITTEN, AND NOW DOES. slatwall-ts/README.md is
+ * declared as a CREATE target by AAP 0.2.1.7 and 0.4.1.2 but had not been generated, so this note
+ * previously recorded that coupling as an outstanding gap and enumerated only four items. The file
+ * has since been authored carrying the version statements AAP 0.5.5 requires, which closes the gap
+ * and is why the count here is five rather than four.
  *
  * Because the hexagonal boundary confines every AWS type to src/handlers/**, such a move touches
- * those four artefacts and nothing under src/domain/**, src/ports/**, src/services/** or
+ * those five artefacts and nothing under src/domain/**, src/ports/**, src/services/** or
  * src/adapters/**.
  */
 const NODE_TARGET = 'node20';
@@ -152,14 +179,178 @@ const NODE_TARGET = 'node20';
  * of all six entries — so excluding it here costs nothing and avoids emitting an artifact that
  * could never be dispatched. Its absence from this array is the decision, not an oversight.
  */
-const ENTRY_POINTS = [
+const ENTRY_POINTS = Object.freeze([
   'src/handlers/router.ts',
   'src/handlers/productHandler.ts',
   'src/handlers/skuHandler.ts',
   'src/handlers/brandHandler.ts',
   'src/handlers/optionHandler.ts',
   'src/handlers/googleFeedHandler.ts',
-];
+]);
+
+/**
+ * The directory the entry surface is drawn from, and the modules in it that are deliberately NOT
+ * entry points.
+ *
+ * The list has exactly one member today, `httpResponse.ts`, for the reason given above. It exists as
+ * a named allow-list rather than as a silent exception so that the assertion below can read in one
+ * direction only: every non-test TypeScript module in the handler directory is either a declared
+ * entry point or an acknowledged helper, and there is no third category. A future helper is added
+ * here deliberately, in the same commit that introduces it, which is precisely the review step an
+ * exclusion filter would have skipped.
+ */
+const HANDLER_DIRECTORY = 'src/handlers';
+const NON_ENTRY_HANDLER_MODULES = Object.freeze(['httpResponse.ts']);
+
+/**
+ * Suffixes that are not modules and are therefore outside the entry-surface assertion.
+ *
+ * `.test.ts` is test code — jest.config.ts owns it, tsconfig.build.json excludes it, and it must
+ * never reach an artifact. `.d.ts` is a declaration file, which contributes no runtime code at all.
+ * Both are skipped rather than allow-listed, because neither could ever be a legitimate entry point
+ * and enumerating individual test files would defeat the purpose of the check.
+ */
+const NON_MODULE_SUFFIXES = Object.freeze(['.test.ts', '.d.ts']);
+
+/**
+ * The artifacts this script owns, derived from the entry list rather than from the directory.
+ *
+ * One JavaScript file and one map per entry, at the paths `outbase` makes esbuild choose. Deriving
+ * them from ENTRY_POINTS is what keeps the purge below exact: this script can name every file it is
+ * responsible for without reading `dist/`, so it never has to guess whether something it finds
+ * there is its own output.
+ */
+function ownedArtifacts() {
+  return ENTRY_POINTS.map((entryPoint) => {
+    const bundleName = `${basename(entryPoint, '.ts')}.js`;
+    const relativeDirectory = relative(sourceRoot, dirname(join(projectRoot, entryPoint)));
+
+    return {
+      bundle: join(outputDir, relativeDirectory, bundleName),
+      map: join(outputDir, relativeDirectory, `${bundleName}.map`),
+      relocatedMap: join(sourcemapDir, relativeDirectory, `${bundleName}.map`),
+      relocatedMapDirectory: join(sourcemapDir, relativeDirectory),
+    };
+  });
+}
+
+/**
+ * Removes exactly the artifacts this script owns, before anything is asserted or emitted.
+ *
+ * ⭐ WHY THIS EXISTS, AND WHY IT IS THE FIRST THING THE BUILD DOES. Without it, a build that FAILS
+ * leaves the previous run's bundles sitting in the packaging directory, where they are
+ * indistinguishable from the output of the run that just failed. A packaging step reading `dist/`
+ * after a red build would then carry stale code, and the failure that should have stopped the
+ * release would have been absorbed by the artifacts it left untouched. Since a successful build is
+ * this deliverable's entire acceptance criterion (AAP 0.8.3.10), a red build must leave nothing
+ * behind that could be mistaken for one.
+ *
+ * ⚠️ IT IS A TARGETED REMOVAL, NOT A RECURSIVE DELETE, AND THAT DISTINCTION IS THE WHOLE DESIGN.
+ * This file's own requirements say the build step "does not clean", and the reason given is sound:
+ * a recursive delete inside a build script is a hazard in a repository whose other files must not be
+ * touched. Both concerns are satisfied by removing an ENUMERATED set of paths — the bundles and maps
+ * named by {@link ownedArtifacts}, every one of them computed from the literal entry list and every
+ * one of them under `dist/` or `build-meta/`. Nothing is globbed, no directory is removed
+ * recursively, and a file this script did not write is never a candidate for removal. `force: true`
+ * only means "a path that is already absent is not an error", which is the normal case on a first
+ * build.
+ */
+async function purgeOwnedArtifacts() {
+  for (const artifact of ownedArtifacts()) {
+    await rm(artifact.bundle, { force: true });
+    await rm(artifact.map, { force: true });
+    await rm(artifact.relocatedMap, { force: true });
+  }
+}
+
+/**
+ * Fails the build unless the declared entry surface and the handler directory agree exactly.
+ *
+ * Two assertions, and they close opposite gaps:
+ *
+ *   1. EVERY DECLARED ENTRY EXISTS. A missing entry is reported here, by path, before esbuild is
+ *      invoked. esbuild would also fail on it — its resolver reports an unresolved entry point and
+ *      the process exits non-zero either way — but it reports an absolute path inside a resolution
+ *      diagnostic, whereas the failure is really "the artifact set this build promises cannot be
+ *      produced". Saying that first, in the vocabulary of the entry list, is the difference between
+ *      a reader learning which file vanished and a reader reading a bundler stack.
+ *
+ *   2. EVERY MODULE IN THE HANDLER DIRECTORY IS ACCOUNTED FOR. A literal entry list fixes the
+ *      auto-promotion hazard — a new file can no longer become a deployable artifact just by
+ *      existing — but on its own it introduces the mirror-image hazard: a genuinely new handler is
+ *      SILENTLY not packaged, and the build stays green while the artifact set is quietly wrong.
+ *      Asserting that every non-test module is either a declared entry or a named helper closes
+ *      both directions at once, and forces the decision to be recorded in this file rather than
+ *      inferred from a directory listing.
+ *
+ * Both failures are hard. Neither is a warning, because a warning on a green build is exactly the
+ * shape of signal a release process is entitled to ignore.
+ */
+async function assertEntrySurface() {
+  const problems = [];
+
+  for (const entryPoint of ENTRY_POINTS) {
+    try {
+      const entryStat = await stat(join(projectRoot, entryPoint));
+      if (!entryStat.isFile()) {
+        problems.push(`declared entry point is not a file: ${entryPoint}`);
+      }
+    } catch {
+      problems.push(`declared entry point is missing: ${entryPoint}`);
+    }
+  }
+
+  const declaredNames = new Set(ENTRY_POINTS.map((entryPoint) => basename(entryPoint)));
+  let handlerDirectoryEntries;
+  try {
+    handlerDirectoryEntries = await readdir(join(projectRoot, HANDLER_DIRECTORY), {
+      withFileTypes: true,
+    });
+  } catch {
+    handlerDirectoryEntries = [];
+    problems.push(`handler directory is missing: ${HANDLER_DIRECTORY}`);
+  }
+
+  for (const directoryEntry of handlerDirectoryEntries) {
+    if (!directoryEntry.isFile() || !directoryEntry.name.endsWith('.ts')) {
+      continue;
+    }
+    if (NON_MODULE_SUFFIXES.some((suffix) => directoryEntry.name.endsWith(suffix))) {
+      continue;
+    }
+    if (
+      declaredNames.has(directoryEntry.name) ||
+      NON_ENTRY_HANDLER_MODULES.includes(directoryEntry.name)
+    ) {
+      continue;
+    }
+    problems.push(
+      `undeclared module in ${HANDLER_DIRECTORY}: ${directoryEntry.name} — add it to ENTRY_POINTS ` +
+        'if it is a Lambda entry point, or to NON_ENTRY_HANDLER_MODULES if it is a shared helper',
+    );
+  }
+
+  if (problems.length > 0) {
+    const detail = problems.map((problem) => `  - ${problem}`).join('\n');
+    throw new Error(`the declared entry surface does not match the source tree:\n${detail}`);
+  }
+}
+
+/**
+ * Moves each emitted map out of the packaged tree and into {@link sourcemapDir}.
+ *
+ * Run after a successful build and only then: a red build has no maps to move, and its outputs were
+ * already removed before it started. The move mirrors the path `outbase` produced, so
+ * `dist/handlers/router.js.map` becomes `build-meta/sourcemaps/handlers/router.js.map` and a reader
+ * can find a map from its bundle's name without a lookup table. `rename` within the same subtree is
+ * a metadata operation, so nothing is copied and no partially written map can be observed.
+ */
+async function relocateSourcemaps() {
+  for (const artifact of ownedArtifacts()) {
+    await mkdir(artifact.relocatedMapDirectory, { recursive: true });
+    await rename(artifact.map, artifact.relocatedMap);
+  }
+}
 
 /**
  * Packages left OUT of the bundle and required from `node_modules` at run time.
@@ -231,7 +422,7 @@ function announceRuntimeLifecycleGate() {
     '[esbuild]         of it; it is not by itself authorization to ship. See tsconfig.json for the',
   );
   console.error(
-    '[esbuild]         dated account and the four couplings a runtime move has to change together.',
+    '[esbuild]         dated account and the five couplings a runtime move has to change together.',
   );
 }
 
@@ -269,18 +460,27 @@ function announceRuntimeLifecycleGate() {
  *   third-party import in this file, so `npm run build` needs nothing beyond the pinned dependency
  *   set.
  *
- *   NO clean step, no archive step and no manifest. This script bundles and packages, and stops
- *   there. It does not clean, zip, version, tag, upload, deploy, watch or serve. Cleaning is
- *   unnecessary rather than merely out of scope: the entry list is fixed and literal, so the emitted
- *   file set is deterministic and esbuild overwrites exactly the artifacts it owns — there is no
- *   scenario in which one of this script's own outputs goes stale. Omitting it also keeps a
- *   recursive delete out of a build script entirely, which is the safer default in a repository whose
- *   other 1,900-odd files must not be touched.
+ *   NO archive step and no manifest. This script bundles and packages, and stops there. It does not
+ *   zip, version, tag, upload, deploy, watch or serve.
+ *
+ *   ⚠️ THE ONE THING IT DOES BEYOND BUNDLING is remove its own previous outputs first, and the
+ *   qualification "its own" is the whole of the argument. An earlier revision omitted this on the
+ *   reasoning that a literal entry list makes the emitted file set deterministic, so esbuild would
+ *   overwrite exactly what it owns. That reasoning holds only on the SUCCESS path. On the failure
+ *   path esbuild writes nothing, so the previous run's bundles survive in the packaging directory —
+ *   observed directly, six stale bundles left behind by a build that exited non-zero. A red build
+ *   that leaves a green build's artifacts in place is the one outcome this step must not produce,
+ *   because a successful build is the deliverable's acceptance criterion and a packaging step reading
+ *   `dist/` cannot tell the two apart. {@link purgeOwnedArtifacts} therefore removes an enumerated
+ *   list of paths derived from the entry list — never a recursive delete, never a glob, and never a
+ *   file this script did not write.
  *
  * `sourcemap` IS enabled, so a stack trace from a bundled artifact can be read against the
  * TypeScript that produced it; tsconfig.build.json enables maps for its own emit for the same
- * reason. The maps land in `dist/`, which .gitignore already excludes, so nothing generated here is
- * ever committed.
+ * reason. It is set to `'external'` and the maps are then moved beside `dist/` rather than into it
+ * — see {@link sourcemapDir} — so the packaged tree holds one artifact per entry point and nothing
+ * else, while the maps remain available to a reader who needs them. Both directories are git-ignored,
+ * so nothing generated here is ever committed.
  *
  * `logLevel: 'info'` lets esbuild print its own summary of what it wrote. Those are the bundler's
  * measurements of its own output, not budgets, targets or thresholds asserted by this port — no such
@@ -294,9 +494,22 @@ async function bundle() {
   );
   console.log(`[esbuild] external: ${EXTERNAL_PACKAGES.join(', ')}`);
   console.log(`[esbuild] outdir:   ${relative(projectRoot, outputDir)}`);
+  console.log(`[esbuild] maps:     ${relative(projectRoot, sourcemapDir)}`);
   for (const entryPoint of ENTRY_POINTS) {
     console.log(`[esbuild] entry:    ${entryPoint}`);
   }
+
+  /*
+   * Order matters, and it is the order the two release-safety properties require.
+   *
+   * The purge runs FIRST so that no outcome of this run — success, assertion failure or bundler
+   * failure — can leave a previous run's artifact in the packaging directory. The assertion runs
+   * SECOND so that a build which cannot produce its promised artifact set says so in the vocabulary
+   * of the entry list, before the bundler is asked to resolve anything. Only then is anything
+   * emitted, and only after a successful emit are the maps moved out of the packaged tree.
+   */
+  await purgeOwnedArtifacts();
+  await assertEntrySurface();
 
   await build({
     // Resolved against the subtree root rather than the current working directory, so the entry
@@ -309,10 +522,15 @@ async function bundle() {
     target: NODE_TARGET,
     format: 'cjs',
     external: EXTERNAL_PACKAGES,
-    sourcemap: true,
+    sourcemap: 'external',
     logLevel: 'info',
   });
 
+  await relocateSourcemaps();
+
+  console.log(
+    `[esbuild] wrote ${ENTRY_POINTS.length} bundle(s) to ${relative(projectRoot, outputDir)}`,
+  );
   console.log('[esbuild] build complete');
 }
 

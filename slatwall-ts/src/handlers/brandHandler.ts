@@ -17,10 +17,16 @@
  * omits the gate; judgment (k) records why the resolver is a per-invocation resolver rather than a
  * captured context. The count asymmetry is deliberate and is explained immediately below: the
  * injected SERVICE surface is FOUR members while the ROUTED surface is THREE, because `newBrand` has
- * no legacy action behind it. Nothing is constructed here, nothing is resolved by name, and
- * ../config/container is never imported — the planned src/handlers/router.ts is to call the
- * composition root and pass both dependencies in. That is also what makes this file assertable with
- * hand-written doubles, without a database, a network call or an AWS runtime (AAP 0.7.3 S6).
+ * no legacy action behind it. Nothing is constructed by {@link createBrandHandler}, nothing is resolved
+ * by name, and everything above the LAMBDA ENTRY POINT section at the foot of this file is a pure
+ * function of what it was handed — which is what makes it assertable with hand-written doubles, without a
+ * database, a network call or an AWS runtime (AAP 0.7.3 S6).
+ *
+ * That entry section is the one place ../config/container is reached, through a DYNAMIC import evaluated
+ * on first invocation, because the bundle built from this file has to carry a `handler` the runtime can
+ * address. Module LOAD still touches no configuration and opens no pool; the reasoning is recorded at the
+ * section itself. src/handlers/router.ts reaches the same composition root for the aggregate surface and
+ * passes both dependencies in.
  *
  * THREE ROUTED OPERATIONS FROM A FOUR-MEMBER SERVICE, AND THE COUNTS ARE THE POINT
  * -------------------------------------------------------------------------------
@@ -228,6 +234,7 @@
  * mocking library at all (AAP 0.4.3.6).
  */
 
+import type { CatalogContainer } from '../config/container';
 import type { Brand } from '../domain/product/Brand';
 import type {
   EntityCrudType,
@@ -239,15 +246,22 @@ import { ValidationError } from '../errors/ValidationError';
 import type { BrandService, ManagedBrand } from '../services/BrandService';
 
 import {
+  createActionDispatcher,
   errorResponse,
   forbiddenResponse,
   invalidRequestBodyResponse,
+  messageResponse,
   notFoundResponse,
   okResponse,
   readJsonObjectBody,
   readPathParameter,
+  resolveFailClosedAuthorization,
   unauthorizedResponse,
+  HTTP_STATUS,
+  type ActionRoute,
+  type ActionRouteTable,
   type APIGatewayProxyEvent,
+  type APIGatewayProxyHandler,
   type APIGatewayProxyResult,
 } from './httpResponse';
 
@@ -285,6 +299,35 @@ const BRAND_ID_PATH_PARAMETER = 'brandID';
  * following the convention ./httpResponse sets: no numeric literal appears in this layer.
  */
 const UNSAVED_BRAND_ID = '';
+
+/**
+ * The refusal text for a request that addressed no brand at all.
+ *
+ * ⭐ THE STATUS CONVENTION THIS TEXT BELONGS TO, STATED ONCE FOR THE WHOLE BOUNDARY LAYER:
+ *
+ *     400  the REQUEST is at fault — no identifier was addressed, or the one addressed cannot
+ *          identify anything (see {@link UNSAVED_BRAND_ID})
+ *     404  the request was well formed and the addressed resource does not exist
+ *     501  the capability is permanently unavailable, whatever the request says
+ *
+ * ⚠️ `getBrand` AND `deleteBrand` ONCE ANSWERED 404 FOR BOTH OF THE FIRST TWO ROWS, AND THE REASONING
+ * FOR IT DOES NOT HOLD. It was defended as non-disclosure — distinguishing "no such brand" from
+ * "malformed request" was said to tell a caller whether an identifier exists. It does not, for a
+ * reason that is structural rather than arguable: {@link BrandHandler} runs the authorisation gate
+ * BEFORE it reads the identifier, so an unauthorised caller never reaches either answer; and among
+ * callers who do reach it, "you addressed nothing" is a statement about their own request that
+ * discloses nothing whatsoever about any brand. The real cost was borne by a legitimate client, which
+ * could not tell a bug in its own request from a brand that is genuinely gone, and so could not
+ * handle either correctly. The anti-enumeration property is preserved in full — it lives in the gate
+ * ordering, not in the collapsing of these two outcomes.
+ *
+ * The wording follows the convention the three sibling handlers already use verbatim — compare
+ * `A "productID" path parameter is required` in ./productHandler and `A "skuCode" path parameter is
+ * required` in ./skuHandler — so a client sees one grammar across the whole surface. The parameter
+ * name is interpolated from {@link BRAND_ID_PATH_PARAMETER} rather than spelled again, so the message
+ * and the read cannot disagree.
+ */
+const BRAND_ID_REQUIRED_MESSAGE = `A "${BRAND_ID_PATH_PARAMETER}" path parameter is required`;
 
 /**
  * The entity name every authorisation question from this handler is asked about.
@@ -989,11 +1032,15 @@ export function createBrandHandler(
    *
    * `null` MEANS "NO SUCH ROW" AND IS NOT AN EXCEPTION. ../services/BrandService resolves `null`
    * rather than rejecting, and no throw-on-missing behaviour is invented anywhere along the path
-   * (AAP 0.7.3 S9). The two ways this request can fail to identify a brand — no identifier addressed
-   * at all, and an identifier that matches nothing — are answered identically and with the neutral
-   * body ./httpResponse provides, which echoes back neither the identifier nor the route. That is a
-   * deliberate non-disclosure: distinguishing the two would tell an unauthenticated caller whether a
-   * given identifier exists.
+   * (AAP 0.7.3 S9).
+   *
+   * ⭐ THE TWO WAYS THIS REQUEST CAN FAIL TO IDENTIFY A BRAND ARE ANSWERED DIFFERENTLY, BECAUSE THEY
+   * ARE DIFFERENT FACTS. "No identifier was addressed" is a property of the REQUEST and answers 400
+   * with {@link BRAND_ID_REQUIRED_MESSAGE}; "the addressed identifier matches nothing" is a property
+   * of the DATA and answers ./httpResponse's neutral 404, which echoes back neither the identifier nor
+   * the route. That constant carries the full account of why these were once collapsed onto 404 and
+   * why the non-disclosure argument for collapsing them does not hold. Both answers still come AFTER
+   * the gate, so neither is reachable by a caller who could use it to enumerate.
    *
    * NET-NEW coverage (AAP 0.6.5.2).
    *
@@ -1021,14 +1068,17 @@ export function createBrandHandler(
 
     const brandID: string | undefined = readBrandIdentifier(event);
 
+    // A request that addressed nothing is a REQUEST fault, not a missing brand; see the convention on
+    // {@link BRAND_ID_REQUIRED_MESSAGE}. The gate above has already run, so this discloses nothing.
     if (brandID === undefined) {
-      return notFoundResponse();
+      return messageResponse(HTTP_STATUS.BAD_REQUEST, BRAND_ID_REQUIRED_MESSAGE);
     }
 
     try {
       const brand: ManagedBrand | null = await brandService.getBrand(brandID);
 
-      // PROJECTED, never serialised whole; see {@link BrandResponse}.
+      /* An identifier WAS addressed and matched nothing, which is the one condition 404 is reserved
+       * for here. PROJECTED, never serialised whole; see {@link BrandResponse}. */
       return brand === null ? notFoundResponse() : okResponse(toBrandResponse(brand));
     } catch (error) {
       return errorResponse(error);
@@ -1089,14 +1139,18 @@ export function createBrandHandler(
 
     const brandID: string | undefined = readBrandIdentifier(event);
 
+    /* Same convention as `getBrand`, and it matters more on a removal: a client that received 404 for
+     * its own malformed request could conclude the brand was already gone and stop retrying with a
+     * corrected request. See {@link BRAND_ID_REQUIRED_MESSAGE}. */
     if (brandID === undefined) {
-      return notFoundResponse();
+      return messageResponse(HTTP_STATUS.BAD_REQUEST, BRAND_ID_REQUIRED_MESSAGE);
     }
 
     try {
       // Judgment (e): the service contract takes the entity, so the identifier is resolved first.
       const brand: ManagedBrand | null = await brandService.getBrand(brandID);
 
+      // Addressed but absent — nothing is removed and no removal is attempted.
       if (brand === null) {
         return notFoundResponse();
       }
@@ -1111,3 +1165,137 @@ export function createBrandHandler(
 
   return Object.freeze({ saveBrand, getBrand, deleteBrand });
 }
+
+/* =====================================================================================================
+ * THE LAMBDA ENTRY POINT
+ *
+ * Everything above this line is a pure function of its dependencies and stays that way: it constructs
+ * nothing, resolves nothing by name, and can be asserted with hand-written doubles and no database
+ * (AAP §0.7.3 S6). Everything below is the boundary that makes the emitted artifact invocable — one
+ * `handler` export, built from the composition root, for the bundle `build/esbuild.mjs` writes from
+ * this file. The AAP declares six Lambda entry artifacts and this file is one of them, so the artifact
+ * has to carry an entry symbol the runtime can address; without it the bundle would be a library that
+ * only `./router.ts` could reach.
+ *
+ * ⭐ WHY THE COMPOSITION ROOT IS REACHED THROUGH A DYNAMIC IMPORT, WHICH IS THE ONE SUBTLE THING HERE.
+ * `../config/container` reaches `../config/database`, whose `mysql2` pool is created at module scope,
+ * and `../config/env`, which validates the environment as a module-load side effect. A STATIC import
+ * would therefore run both at the moment this module is loaded — and this module is loaded by
+ * `test/handlers/brandHandler.test.ts`, which has no environment and needs no database, and by any
+ * reader who simply requires the artifact to inspect it. Deferring the import to the first invocation
+ * keeps module load free of side effects while the pool still lives at module scope of the module that
+ * owns it, created once and reused across warm invocations exactly as AAP §0.3.2 requires. Nothing is
+ * memoized here except the dispatcher itself.
+ *
+ * ⛔ THE ROUTE NAMES ARE DECLARED HERE, ONCE. `./router.ts` composes {@link createBrandRoutes} into the
+ * aggregate surface rather than restating these three keys, so there is exactly one place a brand
+ * action is named and no way for the two surfaces to disagree.
+ * ================================================================================================== */
+
+/**
+ * The actions this entry point serves, in the legacy `slatAction` vocabulary.
+ *
+ * `brand.` is the surface prefix and the suffix is the member name, which is the addressing scheme
+ * FW/1 gave the legacy — `google:feed.product` in
+ * `integrationServices/google/views/main/default.cfm:L50` has the same shape. `newBrand` is absent
+ * because it is not routed: the module header records why the injected service surface is four members
+ * while the routed surface is three.
+ */
+export type BrandRouteKey = 'brand.saveBrand' | 'brand.getBrand' | 'brand.deleteBrand';
+
+/**
+ * Builds the brand handler from the composition root.
+ *
+ * The wiring lives in this file rather than in `./router.ts` because this file is what knows which
+ * collaborators the brand surface needs; the router asks for a handler rather than assembling one.
+ * Both dependencies are the ones {@link createBrandHandler} declares — no default, no fallback.
+ *
+ * @param container the memoized service graph
+ * @returns the three routed brand operations
+ */
+export function createBrandHandlerFromContainer(container: CatalogContainer): BrandHandler {
+  return createBrandHandler(container.brandService, resolveFailClosedAuthorization);
+}
+
+/**
+ * Maps each served action name onto the member that answers it.
+ *
+ * Each entry is an arrow rather than a method reference, so the receiver cannot be lost and a member
+ * that narrows the event to a subset of the proxy shape still type-checks against the full event.
+ *
+ * @param handlers the brand handler whose members the actions resolve to
+ * @returns the frozen action table for the brand surface
+ */
+export function createBrandRoutes(handlers: BrandHandler): ActionRouteTable<BrandRouteKey> {
+  /*
+   * ⚠️ THE LITERAL IS ANNOTATED BEFORE IT IS FROZEN, AND THE ORDER IS LOAD-BEARING. `Object.freeze` takes
+   * the literal through a generic parameter, which loses its freshness and with it TypeScript's
+   * excess-property check — a route name not declared in the union above would then compile silently. A
+   * first draft did exactly that and was caught by adding an undeclared key and watching it pass.
+   * Annotating this binding restores the check in both directions: an undeclared key is rejected here,
+   * and a declared key with no entry is reported as missing.
+   */
+  const routes: Record<BrandRouteKey, ActionRoute> = {
+    'brand.saveBrand': (event: APIGatewayProxyEvent) => handlers.saveBrand(event),
+    'brand.getBrand': (event: APIGatewayProxyEvent) => handlers.getBrand(event),
+    'brand.deleteBrand': (event: APIGatewayProxyEvent) => handlers.deleteBrand(event),
+  };
+
+  return Object.freeze(routes);
+}
+
+/**
+ * The dispatcher, built once per container and reused for every later invocation.
+ *
+ * The only mutable module-scope binding in this file. It holds the wiring and nothing else — no
+ * account, no request, no query result and no setting — so a warm container sharing it cannot leak
+ * anything from one invocation into the next, which is the boundary mismatch M7 is about.
+ */
+let dispatchBrandAction: ActionRoute | undefined;
+
+/**
+ * The Lambda entry point for the brand surface.
+ *
+ * A configuration failure surfaces through {@link errorResponse} rather than escaping as an unhandled
+ * rejection, so a misconfigured deployment answers with the classified configuration failure on every
+ * invocation instead of failing with an opaque initialisation error. `./router.ts` deliberately differs
+ * — it resolves the graph at module load, so a misconfiguration there fails the cold start outright —
+ * and the two behaviours are complementary: the router is the primary entry and fails loudest, while
+ * each per-surface entry stays loadable and answerable.
+ *
+ * @param event the proxy event, carrying the action in its query string
+ * @returns the response for the addressed action, or a not-found for one this surface does not serve
+ */
+export const handler = async (event: APIGatewayProxyEvent): Promise<APIGatewayProxyResult> => {
+  try {
+    if (dispatchBrandAction === undefined) {
+      const { getCatalogContainer } = await import('../config/container.js');
+      const container = getCatalogContainer();
+
+      dispatchBrandAction = createActionDispatcher<BrandRouteKey>({
+        routes: createBrandRoutes(createBrandHandlerFromContainer(container)),
+        beginInvocation: () => {
+          container.beginInvocation();
+        },
+      });
+    }
+
+    return await dispatchBrandAction(event);
+  } catch (error: unknown) {
+    return errorResponse(error);
+  }
+};
+
+/**
+ * Compile-time proof that the export above satisfies the runtime's handler contract.
+ *
+ * Assignability is checked here rather than by annotating `handler` with `APIGatewayProxyHandler`,
+ * because that type permits a callback-style signature and a void return; asserting assignability
+ * keeps the narrower promise-returning shape while still proving the artifact is invocable. The
+ * helper is the {@link AssertAssignable} already declared above for the service parity guard, reused
+ * rather than restated.
+ */
+type _BrandHandlerSatisfiesLambdaContract = AssertAssignable<
+  typeof handler,
+  APIGatewayProxyHandler
+>;

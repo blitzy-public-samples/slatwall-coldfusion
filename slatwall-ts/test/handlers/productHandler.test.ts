@@ -32,9 +32,10 @@
  * though it did. ⚠️ NO PARITY WITH A LEGACY ASSERTION IS CLAIMED OR IMPLIED ANYWHERE BELOW.
  *
  * WHAT THIS FILE DOES NOT COVER: the service's own internals are exercised only as far as the boundary
- * makes them observable, and `src/handlers/router.ts` does not exist yet, so nothing here asserts how a
- * route string reaches a member. Stating that is preferable to implying a completeness this file does
- * not have.
+ * makes them observable, and how a route string reaches a member belongs to `src/handlers/router.ts`,
+ * which owns the `slatAction` table and mounts these members; that seam is asserted in
+ * `test/handlers/entrySurface.test.ts` rather than here. Stating that is preferable to implying a
+ * completeness this file does not have.
  */
 import { Product } from '../../src/domain/product/Product';
 import { ProductType } from '../../src/domain/product/ProductType';

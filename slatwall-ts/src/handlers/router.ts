@@ -154,9 +154,9 @@
  * a memoised factory cannot capture a principal without becoming exactly the cross-tenant bleed M7
  * closes, so each handler takes a RESOLVER evaluated once per invocation. The container's own
  * `AccountContextPort` stub RAISES for that reason — the acting principal is resolved at the handler
- * edge, never captured by the graph — which makes this file the layer that must supply one. It supplies
- * the unauthenticated, deny-all context described in (d) and at
- * {@link FAIL_CLOSED_AUTHORIZATION}.
+ * edge, never captured by the graph — which makes the handler layer the place one must be supplied. The
+ * unauthenticated, deny-all resolver described in (d) is declared once for all six entry points in
+ * `./httpResponse.ts` §8 and is passed to each handler from there.
  *
  * ------------------------------------------------------------------------------------------------
  * (f) NEGATIVE FINDING — THE TEN DECLARED FW/1 ROUTES ARE DELIBERATELY NOT PORTED (G6)
@@ -250,8 +250,9 @@
  *     file asks for (G4). The legacy 60s/45s session locks in `OrderService`/`PaymentService` are noted
  *     by §0.8.3.5 as explicitly not to be implemented; those services are out of scope and no locking
  *     mechanism appears anywhere in the target design.
- *   - State any number other than an HTTP status code and the one named calendar-unit constant whose
- *     necessity is argued at {@link MINUTES_PER_HOUR}. No timeout, memory size, retry count, backoff,
+ *   - State any number other than an HTTP status code. The one calendar-unit constant the feed's clock
+ *     needs is argued and declared in `./googleFeedHandler.ts`, not here. No timeout, memory size,
+ *     retry count, backoff,
  *     page size, batch size, rate limit, concurrency limit or cache lifetime, and no service-level
  *     objective of any kind (S9, IR-12).
  *   - Declare a runtime, an infrastructure artifact or a deployment target. AAP §0.5.5 names the only
@@ -271,180 +272,66 @@
  * ============================================================================================== */
 
 import { getCatalogContainer, type CatalogContainer } from '../config/container';
-import type { RequestAuthorizationContext } from '../ports/AccountContextPort';
-
-import { createBrandHandler, type BrandHandler } from './brandHandler';
-import { createGoogleFeedHandler, type GoogleFeedHandler } from './googleFeedHandler';
-import { createOptionHandler, type OptionHandler } from './optionHandler';
-import { createProductHandler, type ProductHandler } from './productHandler';
-import { createSkuHandler, type SkuHandler } from './skuHandler';
 
 import {
-  errorResponse,
-  notFoundResponse,
+  createBrandHandlerFromContainer,
+  createBrandRoutes,
+  type BrandHandler,
+  type BrandRouteKey,
+} from './brandHandler';
+import {
+  createGoogleFeedHandlerFromContainer,
+  createGoogleFeedRoutes,
+  type GoogleFeedHandler,
+  type GoogleFeedRouteKey,
+} from './googleFeedHandler';
+import {
+  createOptionHandlerFromContainer,
+  createOptionRoutes,
+  type OptionHandler,
+  type OptionRouteKey,
+} from './optionHandler';
+import {
+  createProductHandlerFromContainer,
+  createProductRoutes,
+  type ProductHandler,
+  type ProductRouteKey,
+} from './productHandler';
+import {
+  createSkuHandlerFromContainer,
+  createSkuRoutes,
+  type SkuHandler,
+  type SkuRouteKey,
+} from './skuHandler';
+
+import {
+  createActionDispatcher,
   type APIGatewayProxyEvent,
   type APIGatewayProxyHandler,
   type APIGatewayProxyResult,
 } from './httpResponse';
 
 /* ================================================================================================
- * THE ACTION PARAMETER
+ * THE EDGE VALUES THIS FILE NO LONGER DECLARES — WHERE THEY WENT, AND WHY
+ *
+ * Four values used to be declared here: the action parameter name, the fail-closed authorisation
+ * resolver, and the feed's clock and image reader. All six Lambda entry points in this folder need the
+ * first two, and this file is no longer the only one that mounts the feed, so declaring them here made
+ * this file the accidental owner of things every sibling also required.
+ *
+ *   `SLAT_ACTION_PARAMETER` and `resolveFailClosedAuthorization` now live in `./httpResponse.ts`, §7
+ *   and §8, together with `createActionDispatcher` — the shared edge module every handler in this
+ *   folder already imports. Their full reasoning travelled with them: the `config/configFramework.cfm:L2`
+ *   locator for the parameter name, and the deny-all remainder argument for the principal.
+ *
+ *   `FEED_RENDER_CLOCK` and the empty image reader now live in `./googleFeedHandler.ts`, in its own
+ *   entry-point section, because that file owns the feed and is what knows which collaborators the feed
+ *   needs. This file asks it for a wired handler instead of assembling one.
+ *
+ * ⭐ WHAT THIS FILE STILL OWNS, AND IT IS THE POINT OF THE FILE: the AGGREGATE surface. Each handler
+ * module declares the actions it serves; this file is where all five declarations are composed into one
+ * address space, and where {@link RouteKey} proves the composition is complete.
  * ============================================================================================== */
-
-/**
- * The query-string parameter carrying the action, spelled exactly as the legacy spelled it.
- *
- * ⭐ `config/configFramework.cfm:L2` IS THE LOCATOR, NOT THE FRAMEWORK DEFAULT. FW/1 ships `'action'`
- * (`org/Hibachi/FW1/framework.cfc:L1778`, restated at `org/Hibachi/Hibachi.cfc:L27`); Slatwall overrides
- * it to `slatAction`, and every attested call site uses the override — see
- * `integrationServices/google/views/main/default.cfm:L50`. A single named constant rather than a literal
- * written at each read, because the name is a wire contract and a second spelling would be a second
- * chance to disagree with it.
- *
- * ⛔ THE QUERY STRING IS THE ONLY PLACE IT IS READ FROM, AND THAT IS A NARROWING RECORDED RATHER THAN
- * MADE SILENTLY. FW/1 read `request.context[variables.framework.action]`, a merged structure fed from the
- * CFML URL and FORM scopes, so an action could in principle arrive in a posted body. Every call site the
- * legacy tree actually contains puts it in the query string, and reading a body to find a route name
- * would mean parsing an untyped payload before the route that owns the payload has been chosen — inventing
- * a request-shaping step no source file describes (S9). A caller that puts the action anywhere else gets a
- * not-found, which is the honest answer for an address this service does not declare.
- */
-const SLAT_ACTION_PARAMETER = 'slatAction';
-
-/* ================================================================================================
- * THE AUTHORISATION CONTEXT — FAIL-CLOSED, WITH NO AUTHENTICATION INTRODUCED
- * ============================================================================================== */
-
-/**
- * The per-invocation principal every routed catalog member is gated on.
- *
- * ⭐ WHY THIS FILE SUPPLIES IT AT ALL. `src/config/container.ts`'s `AccountContextPort` stub RAISES,
- * deliberately, because "the acting principal is resolved per invocation at the handler edge, never
- * captured by the memoized graph" — the M7 rule applied to identity. `src/ports/AccountContextPort.ts`
- * makes the same point from the other side: a handler receives a RESOLVER, evaluated once per
- * invocation, precisely so a memoised factory cannot capture a principal and leak it across a warm
- * container. The handler edge is this file, so the context is minted here.
- *
- * ⭐ BOTH MEMBERS ARE THE PORTS' OWN DOCUMENTED DEFAULTS, COPIED RATHER THAN INVENTED.
- * `src/ports/AccountContextPort.ts` writes `const unauthenticated: AccountContextPort = {
- * getCurrentAccount: () => undefined };` and `const denyAll: EntityAuthorizationPort = {
- * authenticateEntity: () => false };` in its own examples, and `undefined` is the state
- * `org/Hibachi/HibachiObject.cfc:L74-L76` yields for a request with no logged-in account — the same
- * literal `test/services/SkuService.test.ts` uses for the unauthenticated case. `false` is what the port
- * requires when authorisation "could not be established", never a throw and never `undefined`, which
- * matches the legacy ladder's terminal `return false`.
- *
- * ⛔ AND FAIL-CLOSED IS THE ONLY DEFENSIBLE CHOICE HERE, NOT A PLACEHOLDER FOR A REAL GATE.
- * `integrationServices/AuthenticationInterface.cfc` and `BaseAuthentication.cfc` are excluded by AAP
- * §0.2.2.3, `org/Hibachi/HibachiAuthenticationService.cfc` is framework code this slice must never carry
- * forward (§0.8.3.2), and G4 forbids adding a capability the migration does not require. So nothing here
- * parses a header, decodes a token, verifies a signature or consults a store. Deny-all is what remains,
- * and it is the SAFE remainder: a write route refuses rather than proceeding unauthenticated. The
- * consequence is stated plainly rather than hidden — a deployment that needs authenticated catalog writes
- * supplies a resolver from its own edge, and the seam for doing so is already the handlers' constructor
- * parameter rather than something that would have to be invented.
- *
- * ⚠️ IT IS SHARED ACROSS INVOCATIONS, AND THAT IS SAFE ONLY BECAUSE IT IS CONSTANT. Freezing it is what
- * makes the sharing sound: it holds no identity, so there is nothing for one invocation to observe from
- * another. The moment a real principal is resolved, THIS BINDING MUST NOT BE REUSED — the resolver
- * function must build a fresh context per request, which is exactly why the handlers take a function.
- */
-const FAIL_CLOSED_AUTHORIZATION: RequestAuthorizationContext = Object.freeze({
-  accountContext: Object.freeze({ getCurrentAccount: () => undefined }),
-  entityAuthorization: Object.freeze({ authenticateEntity: () => false }),
-});
-
-/**
- * The resolver handed to all four catalog handlers.
- *
- * It ignores its argument on purpose: a resolver that read the request would be reading a credential,
- * which is the capability (d) and {@link FAIL_CLOSED_AUTHORIZATION} establish is not introduced. Declared
- * with no parameter at all rather than an underscore-prefixed one, because a function of lower arity
- * satisfies the port and an unused parameter would imply an input that is deliberately not consulted.
- *
- * @returns the constant unauthenticated, deny-all context
- */
-const resolveFailClosedAuthorization = (): RequestAuthorizationContext => FAIL_CLOSED_AUTHORIZATION;
-
-/* ================================================================================================
- * THE FEED RENDER BOUNDARY — TWO COLLABORATORS ONLY THIS LAYER CAN SUPPLY
- * ============================================================================================== */
-
-/**
- * Minutes in an hour.
- *
- * ⚠️ S8 DISCLOSURE, BECAUSE S9 AND A SIBLING FILE'S CONTRACT ARE IN TENSION HERE AND THE TENSION IS
- * REAL. S9 says this file owns no source-declared numeric constant and that "the only numbers permitted
- * in it are HTTP status codes". `src/handlers/googleFeedHandler.ts:L599-L605` says its clock's
- * `utcHourOffset()` must answer HOURS west of UTC while "the platform's own zone-offset accessor reports
- * MINUTES west, not hours, so a conversion is required and this file deliberately performs none". Both
- * cannot hold unless some layer converts, and the feed handler has explicitly delegated the conversion
- * outward — to the layer that builds its collaborators, which is this one. So the constant exists, and it
- * is disclosed rather than smuggled in.
- *
- * ⭐ WHAT IT IS NOT. It is not a timeout, page size, batch size, retry count, backoff, rate limit,
- * concurrency limit, cache lifetime, capacity figure or service-level objective — S9's actual subject.
- * It is a fixed property of the Gregorian clock, identical in the legacy and in the target, invented by
- * nobody and tunable by no one. Naming it rather than writing `60` inline is what keeps that distinction
- * legible to the next reader, and to the grep that S9 is enforced with.
- */
-const MINUTES_PER_HOUR = 60;
-
-/**
- * The two ambient values `integrationServices/google/views/feed/product.cfm:L30` read while rendering.
- *
- * ⭐ ONE OBJECT, BECAUSE THE INVARIANT IS THAT BOTH DESCRIBE THE SAME ZONE.
- * `src/handlers/googleFeedHandler.ts` requires it: the serializer emits the instant's own components and
- * appends the offset as a bare LABEL without parsing or converting it, exactly as `:L30` does, so an
- * implementation that reported an offset unrelated to its clock would publish a timestamp whose
- * components and label disagree. Both values below come from the one process time zone, so the invariant
- * holds by construction.
- *
- * ⛔ SIGN CONVENTION: HOURS **WEST** OF UTC, POSITIVE, AS TEXT — the legacy's own, not a normalisation.
- * `:L30` writes a literal hyphen ahead of the value, so the emitted label is always a minus followed by
- * this number, which is what makes United States Eastern time render as `-5`. The platform accessor used
- * below reports minutes west of UTC as a positive number for zones west of it, so the sign already agrees
- * and NO NEGATION IS APPLIED; the only adaptation is the unit. Truncation toward zero is what reproduces
- * the legacy accessor's whole-hour value, including for a half-hour zone, where the CFML facility's hour
- * component likewise carries no fraction.
- *
- * ⛔ STATELESS, AND READ PER CALL — M7 AGAIN. `googleFeedHandler.ts` states that both members are "read
- * per invocation, never captured", because an instant captured when the handler was built would be stale
- * for every later invocation on a warm container. Nothing is memoised here: each call reads the clock
- * afresh. The offset is read from its own instant for the same reason, which also keeps it
- * daylight-saving-correct; that the two reads are separate expressions is not a weakening but the legacy
- * arrangement exactly, since `:L30` evaluates `now()` and `getTimeZoneInfo().utcHourOffset` as two
- * independent expressions too.
- */
-const FEED_RENDER_CLOCK = Object.freeze({
-  now: (): Date => new Date(),
-
-  utcHourOffset: (): string =>
-    String(Math.trunc(new Date().getTimezoneOffset() / MINUTES_PER_HOUR)),
-});
-
-/**
- * The feed's product-image reader, which answers an empty list.
- *
- * ⚠️ A DECLARED BOUNDARY, NOT A DROPPED FIELD (TR-5). `src/handlers/googleFeedHandler.ts:L529-L534`
- * owns the finding and states the consequence: `model/entity/Image.cfc` is not one of the six in-scope
- * entities of AAP §0.2.1.2, AAP §0.2.2.4 excludes `model/validation/ProductImage.json`, and the ported
- * `Product`'s `getProductImages()` exposes only its ownership mutators, so no path member exists to read.
- * Forcing one with an assertion or a cast is forbidden outright by S1. An empty list emits no
- * additional-image elements, which is the same output `product.cfm:L24` produces for a product that has
- * no images — a boundary crossed honestly rather than a field silently removed.
- *
- * ⛔ NO DEFECT NUMBER IS MINTED FOR IT (S7). AAP §0.6.7's register is closed, none of its entries covers
- * this, and the sibling that owns the finding already declines to mint one; a second, differently
- * numbered account of one gap would be worse than none.
- *
- * ⛔ AND NO IMAGE IS FABRICATED. Returning a placeholder path, a default image or a derived filename
- * would put invented data into a published merchant feed (S9), which is materially worse than emitting
- * nothing. The parameter is not declared, because it is not consulted.
- *
- * @returns an empty image list, on every call
- */
-const readNoProductImages = (): readonly [] => [];
 
 /* ================================================================================================
  * THE ROUTE KEY — A CLOSED LITERAL UNION, WHICH IS THE INTERFACE-PARITY ARTIFACT
@@ -486,57 +373,28 @@ const readNoProductImages = (): readonly [] => [];
 /**
  * Every address this service answers, as a closed union.
  *
- * Declared explicitly rather than derived with `keyof typeof`, and the difference is load-bearing:
- * because {@link createRouteTable} returns a `Record` keyed by THIS union, a member listed here with no
- * entry is a compile error AND an entry not listed here is a compile error. Deriving the union from the
- * table would keep the second guarantee and silently discard the first, which is the one that catches a
- * route being forgotten.
+ * ⭐ COMPOSED FROM FIVE PER-SURFACE UNIONS, EACH DECLARED IN THE MODULE THAT SERVES IT. Every key was
+ * written out here once, beside a table that restated all 34 of them a second time; a route could then be
+ * spelled one way in a per-service handler's own vocabulary and another way here, and only a reader
+ * comparing the two would notice. Now each handler module declares its own keys — `ProductRouteKey` and
+ * the four beside it — and this union is their sum, so an action is named in exactly ONE place and the
+ * aggregate cannot drift from the surface it aggregates.
+ *
+ * ⭐ THE TWO-DIRECTION GUARANTEE IS UNCHANGED, AND IT IS STILL THE REASON THE UNION EXISTS. Each
+ * per-surface table is typed `ActionRouteTable<ThatSurface'sRouteKey>`, so within a surface a declared key
+ * with no entry is a compile error and an entry with no declared key is rejected as an unknown property.
+ * {@link createRouteTable} then annotates the merged literal `Record<RouteKey, RouteEntry>`, which
+ * re-checks both directions across the whole address space: a surface whose table was forgotten in the
+ * merge is reported as a set of missing keys. Both directions were verified by deliberately breaking each
+ * one and reading the compiler's answer.
+ *
+ * ⭐ AND THE PARITY ARTIFACT SURVIVES THE MOVE. §0.8.3.1's "interface parity is checkable
+ * method-by-method" is still cashed in by an enumeration a reviewer can read — it is now read per surface,
+ * against the service each surface exposes, which is if anything the more direct comparison. The count is
+ * unchanged at 34: 18 product, 9 SKU, 3 brand, 3 option and the single legacy-attested feed action.
  */
 export type RouteKey =
-  /* ProductService — the fifteen declared members of `model/service/ProductService.cfc` (AAP §0.4.2.1). */
-  | 'product.loadDataFromFile'
-  | 'product.getFormattedOptionGroups'
-  | 'product.getProductSkusBySelectedOptions'
-  | 'product.processProductAddOptionGroup'
-  | 'product.processProductAddOption'
-  | 'product.processProductAddProductReview'
-  | 'product.processProductAddSubscriptionTerm'
-  | 'product.processProductDeleteDefaultImage'
-  | 'product.processProductUpdateDefaultImageFileNames'
-  | 'product.processProductUpdateSkus'
-  | 'product.processProductUploadDefaultImage'
-  | 'product.saveProduct'
-  | 'product.saveProductType'
-  | 'product.deleteProduct'
-  | 'product.getProductSmartList'
-  /* ProductService — three IR-1 members the slice uses and `onMissingMethod` fabricated (AAP §0.4.2.5). */
-  | 'product.newProduct'
-  | 'product.getProductType'
-  | 'product.getProduct'
-  /* SkuService — the nine declared members of `model/service/SkuService.cfc` (AAP §0.4.2.2). */
-  | 'sku.createSkus'
-  | 'sku.processImageUpload'
-  | 'sku.getProductSkus'
-  | 'sku.getSortedProductSkus'
-  | 'sku.searchSkusByProductType'
-  | 'sku.getSkuStocksDeletableFlag'
-  | 'sku.getTransactionExistsFlag'
-  | 'sku.getSkuBySkuCode'
-  | 'sku.getSkuSmartList'
-  /* BrandService — the one declared member of `model/service/BrandService.cfc` (AAP §0.4.2.3), plus the
-   * two IR-1 members the brand paths use. `newBrand` has no route: it mints a transient with no
-   * identifier, which is a step inside a save rather than an address a caller can usefully call. */
-  | 'brand.saveBrand'
-  | 'brand.getBrand'
-  | 'brand.deleteBrand'
-  /* OptionService — the three declared members of `model/service/OptionService.cfc` (AAP §0.4.2.4). */
-  | 'option.getOptionsForSelect'
-  | 'option.getUnusedProductOptions'
-  | 'option.getUnusedProductOptionGroups'
-  /* The Google product feed — the ONE legacy-attested action, spelled exactly as
-   * `integrationServices/google/views/main/default.cfm:L50` spells it, and the one member
-   * `integrationServices/google/controllers/feed.cfc:L54` declared public. */
-  | 'google:feed.product';
+  ProductRouteKey | SkuRouteKey | BrandRouteKey | OptionRouteKey | GoogleFeedRouteKey;
 
 /**
  * What a route does: take the invocation event, answer a proxy result.
@@ -600,43 +458,22 @@ interface CatalogHandlers {
  */
 function createCatalogHandlers(container: CatalogContainer): CatalogHandlers {
   return {
-    product: createProductHandler(
-      container.productService,
-      resolveFailClosedAuthorization,
-      container.productWriteRunner,
-    ),
+    /* ⭐ EACH FAÇADE IS BUILT BY THE MODULE THAT OWNS IT, from the same graph this function received.
+     * The wiring used to be written out here — which service, which resolver, which runner, per surface —
+     * and each per-service module then had to repeat it for its own entry point. Asking each module for a
+     * wired handler instead leaves exactly one place per surface that knows what that surface needs, and
+     * this function is left doing what a router should: naming the five surfaces it mounts. */
+    product: createProductHandlerFromContainer(container),
+    sku: createSkuHandlerFromContainer(container),
+    brand: createBrandHandlerFromContainer(container),
+    option: createOptionHandlerFromContainer(container),
 
-    sku: createSkuHandler(
-      container.skuService,
-      (productID: string) => container.productService.getProduct(productID),
-      resolveFailClosedAuthorization,
-      container.skuWriteRunner,
-    ),
-
-    brand: createBrandHandler(container.brandService, resolveFailClosedAuthorization),
-
-    option: createOptionHandler(container.optionService, resolveFailClosedAuthorization),
-
-    /* ⛔ NO AUTHORISATION RESOLVER, AND ITS ABSENCE IS THE PORT OF `feed.cfc:L54-L56`. The legacy feed
-     * controller declared `this.publicMethods="product";` with `this.anyAdminMethods=""` and
-     * `this.secureMethods=""` both EMPTY, so the feed demanded neither a login nor a permission. The
-     * handler's collaborator set contains no resolver slot for exactly that reason, and adding a gate here
-     * would be introducing authorisation the legacy did not have (G4). This is the one route that is
-     * reachable end to end. */
-    googleFeed: createGoogleFeedHandler({
-      feedQuery: container.productFeedQuery,
-      feedSerializer: container.productFeedBuilder,
-
-      /* Read from the graph rather than from the environment: `src/config/env.ts` is the only file in the
-       * subtree permitted to touch `process.env`, and the container exposes `config` so this layer can
-       * read the feed host without importing it (§0.8.3.9). No host literal appears anywhere here — the
-       * legacy interpolated `#cgi.HTTP_HOST#` at `views/main/default.cfm:L50` and hardcoded nothing
-       * either. */
-      hostConfiguration: container.config.googleFeed,
-
-      readProductImages: readNoProductImages,
-      clock: FEED_RENDER_CLOCK,
-    }),
+    /* ⛔ NO AUTHORISATION RESOLVER REACHES THE FEED, AND ITS ABSENCE IS THE PORT OF `feed.cfc:L54-L56`.
+     * The legacy feed controller declared `this.publicMethods="product";` with `this.anyAdminMethods=""`
+     * and `this.secureMethods=""` both EMPTY, so the feed demanded neither a login nor a permission. Its
+     * collaborator set carries no resolver slot for exactly that reason, and adding a gate would be
+     * introducing authorisation the legacy did not have (G4). This is the one route reachable end to end. */
+    googleFeed: createGoogleFeedHandlerFromContainer(container),
   };
 }
 
@@ -677,108 +514,22 @@ function createCatalogHandlers(container: CatalogContainer): CatalogHandlers {
 function createRouteTable(handlers: CatalogHandlers): Readonly<Record<RouteKey, RouteEntry>> {
   const routes: Record<RouteKey, RouteEntry> = {
     /* ------------------------------------------------------------------------------------------
-     * ProductService — fifteen declared members, in the source order of
-     * `model/service/ProductService.cfc` so the table reads against the legacy file line by line.
-     * ---------------------------------------------------------------------------------------- */
-
-    /* ⚠️ M1 LIVES BEHIND THIS ROUTE AND IS NOT RESOLVED HERE. The importer asks for a 3600-second
-     * budget at `model/service/ProductService.cfc:L65-L68`, which exceeds the platform's function
-     * ceiling and has no single-invocation equivalent; `productHandler.ts` owns that disclosure. This
-     * layer adds no timeout, no queue hop and no chunking to paper over it (S8, S9). */
-    'product.loadDataFromFile': (event) => handlers.product.loadDataFromFile(event),
-
-    'product.getFormattedOptionGroups': (event) => handlers.product.getFormattedOptionGroups(event),
-    'product.getProductSkusBySelectedOptions': (event) =>
-      handlers.product.getProductSkusBySelectedOptions(event),
-    'product.processProductAddOptionGroup': (event) =>
-      handlers.product.processProductAddOptionGroup(event),
-    'product.processProductAddOption': (event) => handlers.product.processProductAddOption(event),
-    'product.processProductAddProductReview': (event) =>
-      handlers.product.processProductAddProductReview(event),
-    'product.processProductAddSubscriptionTerm': (event) =>
-      handlers.product.processProductAddSubscriptionTerm(event),
-    'product.processProductDeleteDefaultImage': (event) =>
-      handlers.product.processProductDeleteDefaultImage(event),
-    'product.processProductUpdateDefaultImageFileNames': (event) =>
-      handlers.product.processProductUpdateDefaultImageFileNames(event),
-    'product.processProductUpdateSkus': (event) => handlers.product.processProductUpdateSkus(event),
-    'product.processProductUploadDefaultImage': (event) =>
-      handlers.product.processProductUploadDefaultImage(event),
-    'product.saveProduct': (event) => handlers.product.saveProduct(event),
-    'product.saveProductType': (event) => handlers.product.saveProductType(event),
-    'product.deleteProduct': (event) => handlers.product.deleteProduct(event),
-    'product.getProductSmartList': (event) => handlers.product.getProductSmartList(event),
-
-    /* Three IR-1 members: no source declaration exists for any of them, because
-     * `org/Hibachi/HibachiService.cfc:L255-L281` fabricated them by prefix at run time. They are
-     * declared explicitly on the service, mounted explicitly here, and nothing else the prefix
-     * dispatcher could have produced is reproduced (AAP §0.4.2.5). */
-    'product.newProduct': (event) => handlers.product.newProduct(event),
-    'product.getProductType': (event) => handlers.product.getProductType(event),
-    'product.getProduct': (event) => handlers.product.getProduct(event),
-
-    /* ------------------------------------------------------------------------------------------
-     * SkuService — nine declared members, in the source order of `model/service/SkuService.cfc`.
-     * ---------------------------------------------------------------------------------------- */
-
-    /* The combination engine, and the one route whose transaction spans a read-back: AAP §0.6.2's
-     * `hasUniqueOptions` queries the sibling SKUs this operation is writing. The handler resolves the
-     * product INSIDE the write runner's scope for that reason; this layer does not reorder, batch or
-     * pre-resolve anything to "help". */
-    'sku.createSkus': (event) => handlers.sku.createSkus(event),
-
-    'sku.processImageUpload': (event) => handlers.sku.processImageUpload(event),
-    'sku.getProductSkus': (event) => handlers.sku.getProductSkus(event),
-    'sku.getSortedProductSkus': (event) => handlers.sku.getSortedProductSkus(event),
-    'sku.searchSkusByProductType': (event) => handlers.sku.searchSkusByProductType(event),
-    'sku.getSkuStocksDeletableFlag': (event) => handlers.sku.getSkuStocksDeletableFlag(event),
-    'sku.getTransactionExistsFlag': (event) => handlers.sku.getTransactionExistsFlag(event),
-    'sku.getSkuBySkuCode': (event) => handlers.sku.getSkuBySkuCode(event),
-    'sku.getSkuSmartList': (event) => handlers.sku.getSkuSmartList(event),
-
-    /* ------------------------------------------------------------------------------------------
-     * BrandService — one declared member plus two IR-1 members.
-     * ---------------------------------------------------------------------------------------- */
-    'brand.saveBrand': (event) => handlers.brand.saveBrand(event),
-    'brand.getBrand': (event) => handlers.brand.getBrand(event),
-    'brand.deleteBrand': (event) => handlers.brand.deleteBrand(event),
-
-    /* ------------------------------------------------------------------------------------------
-     * OptionService — the three DECLARED members only. The four synthesized members are internal
-     * collaborators and have no route; see the ⛔ note on {@link RouteKey}.
-     * ---------------------------------------------------------------------------------------- */
-
-    /* ⭐ THE ONE SYNCHRONOUS MEMBER IN THE WHOLE SURFACE, ADAPTED HERE AND NOWHERE ELSE.
-     * `OptionHandler.getOptionsForSelect` returns a result rather than a promise, because
-     * `model/service/OptionService.cfc:L55` performs no I/O — it projects an in-memory array into the
-     * `{name, value}` shape. `Promise.resolve` adapts it to {@link RouteEntry} without inventing an
-     * asynchronous boundary the source does not have (S9), and without widening the dispatcher's own
-     * control flow. A synchronous throw from it still lands in the dispatcher's `catch`, because the call
-     * happens inside the guarded block. */
-    'option.getOptionsForSelect': (event) =>
-      Promise.resolve(handlers.option.getOptionsForSelect(event)),
-
-    'option.getUnusedProductOptions': (event) => handlers.option.getUnusedProductOptions(event),
-    'option.getUnusedProductOptionGroups': (event) =>
-      handlers.option.getUnusedProductOptionGroups(event),
-
-    /* ------------------------------------------------------------------------------------------
-     * The Google product feed.
-     * ---------------------------------------------------------------------------------------- */
-
-    /* ⭐ THE ONE LEGACY-ATTESTED ADDRESS, PRESERVED CHARACTER FOR CHARACTER:
-     *     ?slatAction=google:feed.product
-     * from `integrationServices/google/views/main/default.cfm:L50`, where the legacy interpolated
-     * `#cgi.HTTP_HOST#` ahead of it. NO HOST IS HARDCODED HERE (§0.8.3.9) — the feed host comes from the
-     * environment through `config.googleFeed`, as wired above.
+     * Five per-surface tables, merged. Each is declared in the handler module that serves it, in the
+     * source order of the legacy service it ports, and each carries the disclosures that belong to its
+     * own members — M1 behind `product.loadDataFromFile`, M2 behind the feed, the D4 boundary behind
+     * `sku.getSkuStocksDeletableFlag`, and the synchronous adaptation of
+     * `option.getOptionsForSelect`. Restating those keys here would mean restating those disclosures
+     * too, in a file that does not implement any of them.
      *
-     * ⚠️ THE EVENT IS DISCARDED, AND THAT IS THE HANDLER'S CONTRACT RATHER THAN AN OVERSIGHT.
-     * `GoogleFeedHandler.product` takes `GoogleFeedInvocationOptions`, whose single member is an optional
-     * `AbortSignal` — it accepts no invocation event at all, because `feed.cfc:L58`'s `product(rc)` read
-     * nothing from its request context. No signal is supplied: manufacturing a cancellation policy would
-     * mean inventing a budget, and M2's six-minute render disclosure belongs to `googleFeedHandler.ts`,
-     * which is where it stays (S8, S9). */
-    'google:feed.product': () => handlers.googleFeed.product(),
+     * The spread order is immaterial to behaviour — the five key sets are disjoint by construction,
+     * since each is prefixed with its own surface — and the annotation on this binding is what proves
+     * the merge covers {@link RouteKey} exactly, in both directions.
+     * ---------------------------------------------------------------------------------------- */
+    ...createProductRoutes(handlers.product),
+    ...createSkuRoutes(handlers.sku),
+    ...createBrandRoutes(handlers.brand),
+    ...createOptionRoutes(handlers.option),
+    ...createGoogleFeedRoutes(handlers.googleFeed),
   };
 
   return Object.freeze(routes);
@@ -810,66 +561,27 @@ function createRouteTable(handlers: CatalogHandlers): Readonly<Record<RouteKey, 
 export function createRouter(
   container: CatalogContainer,
 ): (event: APIGatewayProxyEvent) => Promise<APIGatewayProxyResult> {
-  const routes = createRouteTable(createCatalogHandlers(container));
-
-  /**
-   * Narrows an arbitrary string to a declared address.
+  /*
+   * ⭐ THE DISPATCH MECHANICS ARE SHARED, AND SHARING THEM IS THE POINT. `./httpResponse.ts` §7 owns the
+   * four steps every entry point in this folder performs — begin the invocation, read
+   * `SLAT_ACTION_PARAMETER` from the query string, answer a neutral 404 for an action this surface does
+   * not serve, and convert every failure through `errorResponse` — together with the reasoning for each:
+   * why the invocation hook runs first and unconditionally, why `Object.hasOwn` is the membership test
+   * (so `__proto__`, `constructor` and `toString` can never resolve to a route), why an absent and an
+   * unrecognised action are answered identically, and why nothing is reworded on the way out. This file
+   * used to carry that loop itself while five sibling entry points needed the same one; a second copy is
+   * a second chance for one of them to answer differently, so there is now exactly one.
    *
-   * ⭐ THE NARROWING IS THE SECURITY BOUNDARY AND THE TYPE BOUNDARY AT ONCE. `Object.hasOwn` tests OWN
-   * enumerable membership of the frozen table, so no inherited member of `Object.prototype` can be
-   * reached through it and no `__proto__`, `constructor` or `toString` is ever mistaken for a route. On
-   * the type side, it is what turns an untrusted `string` into a {@link RouteKey}, so the read below is a
-   * known-property access rather than an index signature — which is why it needs no `!`, no `as` and no
-   * `undefined` branch of its own. `noUncheckedIndexedAccess` is fully in force; this guard is how the
-   * requirement it imposes is met rather than suppressed.
-   *
-   * ⭐ AND IT IS DERIVED FROM THE TABLE, NOT FROM A SECOND LIST. Testing membership against a separately
-   * maintained array of key names would be a second source of truth that could silently disagree with the
-   * first.
-   *
-   * @param candidate the action string as it arrived
-   * @returns whether it names a declared route
+   * ⛔ WHAT IS NOT SHARED IS THE SURFACE. The routes below are this file's own: the aggregate of all five
+   * per-surface tables, which is what makes this the address space for the whole slice rather than for
+   * one service.
    */
-  const isRouteKey = (candidate: string): candidate is RouteKey => Object.hasOwn(routes, candidate);
-
-  return async (event: APIGatewayProxyEvent): Promise<APIGatewayProxyResult> => {
-    try {
-      /* ⭐ FIRST, ON EVERY INVOCATION, BEFORE ANY HANDLER RUNS — the container's own stated contract.
-       * It discards the single request-scoped cell the graph carries, the option-group sort-order memo
-       * that `model/dao/SkuDAO.cfc:L204-L220` kept alive for the life of the application server. Calling
-       * it unconditionally, ahead of the route lookup, is deliberate: a warm container must not carry a
-       * previous invocation's value into this one even when this one turns out to address nothing. */
+  return createActionDispatcher<RouteKey>({
+    routes: createRouteTable(createCatalogHandlers(container)),
+    beginInvocation: () => {
       container.beginInvocation();
-
-      const action = event.queryStringParameters?.[SLAT_ACTION_PARAMETER];
-
-      /* ⛔ THE ONLY FALLBACK IS A TYPED NOT-FOUND (G6 (g)). An absent parameter and an unrecognised one
-       * are answered identically, with `notFoundResponse()`'s neutral 404 body, which discloses nothing
-       * about the addressable surface. There is no prefix guessing, no lower-cased retry, no
-       * closest-match heuristic, no default route and no reflective invocation — the legacy's own
-       * fallback was `onMissingMethod`'s throw at `org/Hibachi/HibachiService.cfc:L280`, and replacing
-       * prefix synthesis with a declared miss is the point of the translation rather than a gap in it. */
-      if (action === undefined || !isRouteKey(action)) {
-        return notFoundResponse();
-      }
-
-      return await routes[action](event);
-    } catch (error: unknown) {
-      /* ⭐ VERBATIM, AND THE VERBATIM-NESS IS A PARITY REQUIREMENT (S7). Every legacy `throw()` message
-       * the slice preserves — `SkuService.cfc:L204`'s "There was an unexpected error when creating this
-       * product" among them — travels out through `httpResponse.ts`, which owns the whole classification
-       * of `DomainError`, `LegacyParityError`, `NotImplementedError` and `ValidationError` and decides
-       * which text is public. This layer does not reword, wrap, prefix, re-message, translate, retry or
-       * classify anything: it hands the error over exactly as it arrived. Re-testing those branches here
-       * would duplicate the classification and give it two places to diverge, which is also why neither
-       * `../errors/DomainError` nor `../errors/ValidationError` is imported — every symbol this file
-       * imports, it uses.
-       *
-       * `useUnknownInCatchVariables` is on, so the binding is already `unknown`; annotating it says so at
-       * the site rather than leaving a reader to infer it from a compiler flag. */
-      return errorResponse(error);
-    }
-  };
+    },
+  });
 }
 
 /* ================================================================================================

@@ -402,6 +402,7 @@
  * typings directly, which is the convention that gives the whole folder's platform coupling exactly
  * one declaration point (AAP §0.5.5).
  */
+import type { CatalogContainer } from '../config/container';
 import { validateFeedHostAuthority } from '../integrations/google/ProductFeedBuilder';
 import type {
   ProductFeedBuilder,
@@ -410,8 +411,14 @@ import type {
   ProductFeedRenderContext,
 } from '../integrations/google/ProductFeedBuilder';
 import type { ProductFeedQuery } from '../integrations/google/ProductFeedQuery';
-import { errorResponse, xmlResponse } from './httpResponse';
-import type { APIGatewayProxyResult } from './httpResponse';
+import { createActionDispatcher, errorResponse, xmlResponse } from './httpResponse';
+import type {
+  ActionRoute,
+  ActionRouteTable,
+  APIGatewayProxyEvent,
+  APIGatewayProxyHandler,
+  APIGatewayProxyResult,
+} from './httpResponse';
 
 /* ================================================================================================
  * THE COLLABORATOR SEAMS
@@ -951,3 +958,216 @@ export function createGoogleFeedHandler(
 
   return Object.freeze({ product });
 }
+
+/* =====================================================================================================
+ * THE LAMBDA ENTRY POINT
+ *
+ * Everything above this line is a pure function of its collaborators and stays that way: it constructs
+ * nothing, resolves nothing by name, and is assertable with hand-written doubles and no database
+ * (AAP §0.7.3 S6). Everything below is the boundary that makes the emitted artifact invocable — one
+ * `handler` export built from the composition root, for the bundle `build/esbuild.mjs` writes from this
+ * file. The AAP declares six Lambda entry artifacts and this file is one of them, so the artifact has to
+ * carry an entry symbol the runtime can address.
+ *
+ * ⭐ THE COMPOSITION ROOT IS REACHED THROUGH A DYNAMIC IMPORT, and that is the one subtle thing here.
+ * `../config/container` reaches `../config/database`, whose `mysql2` pool is created at module scope, and
+ * `../config/env`, which validates the environment as a module-load side effect. A STATIC import would
+ * run both when this module is loaded — including by `test/handlers/googleFeedHandler.test.ts`, which has
+ * neither an environment nor a database. Deferring it to the first invocation keeps module load free of
+ * side effects while the pool still lives at module scope of the module that owns it, created once and
+ * reused across warm invocations exactly as AAP §0.3.2 requires. The specifier carries the `.js`
+ * extension because a dynamic import inside a CommonJS module is a real ECMAScript import and
+ * `moduleResolution: NodeNext` requires the extension there; both `tsc` and esbuild resolve it to this
+ * subtree's TypeScript source.
+ *
+ * ⚠️ M2 IS NOT RESOLVED BY THIS SECTION, AND MUST NOT APPEAR TO BE.
+ * `integrationServices/google/views/feed/product.cfm:L9` requests 360 seconds for the render, which far
+ * exceeds a synchronous proxy integration's budget even though it fits inside the function ceiling.
+ * Declaring the route gives the feed an address; it does not give it six minutes, and the delivery-model
+ * decision stays open and flagged where the render is implemented (AAP §0.6.6, §0.7.3 S8).
+ *
+ * ⛔ NO AUTHORISATION RESOLVER APPEARS BELOW, unlike the four sibling entry points. The module header
+ * records why: the legacy controller declared `this.publicMethods="product"`, so the feed is the one
+ * anonymous surface in the slice. Adding a gate here would be a capability the migration does not
+ * require (G4); leaving it out is the legacy behaviour, stated rather than assumed.
+ * ================================================================================================== */
+
+/**
+ * The single action this entry point serves, spelled exactly as the legacy addressed it.
+ *
+ * `integrationServices/google/views/main/default.cfm:L50` links `?slatAction=google:feed.product`, and
+ * the colon is FW/1's module separator rather than a typo — which is why this key does not follow the
+ * `<surface>.<member>` shape the four catalog surfaces use. The addressing contract an existing caller
+ * already holds wins over internal consistency, so it is carried over verbatim.
+ */
+export type GoogleFeedRouteKey = 'google:feed.product';
+
+/**
+ * Minutes in an hour.
+ *
+ * ⚠️ S8 DISCLOSURE, BECAUSE S9 AND THIS FILE'S OWN CLOCK CONTRACT ARE IN TENSION AND THE TENSION IS
+ * REAL. {@link ProductFeedRenderClock.utcHourOffset} states that the platform's zone-offset accessor
+ * reports MINUTES west of UTC while the feed needs HOURS, so a conversion is required somewhere, and that
+ * the render path performs none — deliberately, because an arithmetic constant has no business in a
+ * serializer. That leaves the conversion to whichever layer BUILDS the clock. For the router that layer
+ * is `./router.ts`; for this file's own entry point it is the section you are reading, which is as far
+ * from the render path as it can be while still being in the file that owns the entry. So the constant
+ * exists here, and it is disclosed rather than smuggled in.
+ *
+ * ⭐ WHAT IT IS NOT. It is not a timeout, page size, batch size, retry count, backoff, rate limit,
+ * concurrency limit, cache lifetime, capacity figure or service-level objective — S9's actual subject. It
+ * is a fixed property of the Gregorian clock, identical in the legacy and in the target, invented by
+ * nobody and tunable by no one.
+ */
+const MINUTES_PER_HOUR = 60;
+
+/**
+ * The two ambient values `integrationServices/google/views/feed/product.cfm:L30` read while rendering.
+ *
+ * ⭐ ONE OBJECT, BECAUSE THE INVARIANT IS THAT BOTH DESCRIBE THE SAME ZONE. The serializer emits the
+ * instant's own components and appends the offset as a bare LABEL without parsing or converting it,
+ * exactly as `:L30` does, so an implementation that reported an offset unrelated to its clock would
+ * publish a timestamp whose components and label disagree. Both values come from the one process time
+ * zone, so the invariant holds by construction.
+ *
+ * ⛔ SIGN CONVENTION: HOURS **WEST** OF UTC, POSITIVE, AS TEXT — the legacy's own, not a normalisation.
+ * `:L30` writes a literal hyphen ahead of the value, which is what makes United States Eastern time
+ * render as `-5`. The platform accessor reports minutes west of UTC as a positive number for zones west
+ * of it, so the sign already agrees and NO NEGATION IS APPLIED; the only adaptation is the unit.
+ * Truncation toward zero reproduces the legacy accessor's whole-hour value, including for a half-hour
+ * zone, where the CFML facility's hour component likewise carries no fraction.
+ *
+ * ⛔ STATELESS, AND READ PER CALL — M7 AGAIN. An instant captured when the handler was built would be
+ * stale for every later invocation on a warm container, so nothing is memoised: each call reads the clock
+ * afresh, which also keeps the offset daylight-saving-correct. That the two reads are separate
+ * expressions is not a weakening but the legacy arrangement exactly, since `:L30` evaluates `now()` and
+ * `getTimeZoneInfo().utcHourOffset` as two independent expressions too.
+ */
+const FEED_RENDER_CLOCK: ProductFeedRenderClock = Object.freeze({
+  now: (): Date => new Date(),
+
+  utcHourOffset: (): string =>
+    String(Math.trunc(new Date().getTimezoneOffset() / MINUTES_PER_HOUR)),
+});
+
+/**
+ * The feed's product-image reader, which answers an empty list.
+ *
+ * ⚠️ A DECLARED BOUNDARY, NOT A DROPPED FIELD (TR-5). The additional-image finding recorded above owns
+ * the reasoning: `model/entity/Image.cfc` is not one of the six in-scope entities of AAP §0.2.1.2,
+ * AAP §0.2.2.4 excludes `model/validation/ProductImage.json`, and the ported `Product` exposes only its
+ * image-ownership mutators, so no path member exists to read. Forcing one with an assertion or a cast is
+ * forbidden outright by S1. An empty list emits no additional-image elements, which is the same output
+ * `product.cfm:L24` produces for a product that has no images — a boundary crossed honestly rather than a
+ * field silently removed.
+ *
+ * ⛔ NO IMAGE IS FABRICATED. A placeholder path, a default image or a derived filename would put invented
+ * data into a published merchant feed (S9), which is materially worse than emitting nothing. The
+ * parameter is not declared, because it is not consulted.
+ *
+ * @returns an empty image list, on every call
+ */
+const readNoProductImages: ProductFeedImageReader = () => [];
+
+/**
+ * Builds the feed handler from the composition root.
+ *
+ * The wiring lives here rather than in `./router.ts` because this file is what knows which collaborators
+ * the feed needs: the record source and serializer the container owns, the validated host from
+ * configuration, and the two ambient values above that no layer below the edge can supply.
+ *
+ * @param container the memoized service graph
+ * @returns the feed's single routed operation
+ */
+export function createGoogleFeedHandlerFromContainer(
+  container: CatalogContainer,
+): GoogleFeedHandler {
+  return createGoogleFeedHandler({
+    feedQuery: container.productFeedQuery,
+    feedSerializer: container.productFeedBuilder,
+    hostConfiguration: container.config.googleFeed,
+    readProductImages: readNoProductImages,
+    clock: FEED_RENDER_CLOCK,
+  });
+}
+
+/**
+ * Maps the served action name onto the member that answers it.
+ *
+ * The event is not forwarded, because `product` takes invocation OPTIONS rather than a request: the
+ * legacy controller read nothing from its own request context either, and the smart-list input the feed
+ * uses is fixed by `ProductFeedQuery` rather than supplied by the caller. Declaring the parameter and
+ * discarding it would imply an input that is deliberately not consulted.
+ *
+ * @param handlers the feed handler whose member the action resolves to
+ * @returns the frozen action table for the feed surface
+ */
+export function createGoogleFeedRoutes(
+  handlers: GoogleFeedHandler,
+): ActionRouteTable<GoogleFeedRouteKey> {
+  /*
+   * ⚠️ THE LITERAL IS ANNOTATED BEFORE IT IS FROZEN, AND THE ORDER IS LOAD-BEARING. `Object.freeze` takes
+   * the literal through a generic parameter, which loses its freshness and with it TypeScript's
+   * excess-property check — a route name not declared in the union above would then compile silently. A
+   * first draft did exactly that and was caught by adding an undeclared key and watching it pass.
+   * Annotating this binding restores the check in both directions: an undeclared key is rejected here,
+   * and a declared key with no entry is reported as missing.
+   */
+  const routes: Record<GoogleFeedRouteKey, ActionRoute> = {
+    'google:feed.product': () => handlers.product(),
+  };
+
+  return Object.freeze(routes);
+}
+
+/**
+ * The dispatcher, built once per container and reused for every later invocation.
+ *
+ * The only mutable module-scope binding in this file. It holds the wiring and nothing else — no request,
+ * no rendered document, no query result and no setting — so a warm container sharing it cannot leak
+ * anything from one invocation into the next, which is the boundary mismatch M7 is about.
+ */
+let dispatchGoogleFeedAction: ActionRoute | undefined;
+
+/**
+ * The Lambda entry point for the Google product feed.
+ *
+ * A configuration failure surfaces through {@link errorResponse} rather than escaping as an unhandled
+ * rejection — which matters more here than for the four catalog surfaces, because the feed is the one
+ * anonymous route and its caller is a merchant feed processor that reads a response rather than a log.
+ *
+ * @param event the proxy event, carrying the action in its query string
+ * @returns the RSS document for the feed route, or a not-found for any other action
+ */
+export const handler = async (event: APIGatewayProxyEvent): Promise<APIGatewayProxyResult> => {
+  try {
+    if (dispatchGoogleFeedAction === undefined) {
+      const { getCatalogContainer } = await import('../config/container.js');
+      const container = getCatalogContainer();
+
+      dispatchGoogleFeedAction = createActionDispatcher<GoogleFeedRouteKey>({
+        routes: createGoogleFeedRoutes(createGoogleFeedHandlerFromContainer(container)),
+        beginInvocation: () => {
+          container.beginInvocation();
+        },
+      });
+    }
+
+    return await dispatchGoogleFeedAction(event);
+  } catch (error: unknown) {
+    return errorResponse(error);
+  }
+};
+
+/**
+ * Compile-time proof that the export above satisfies the runtime's handler contract.
+ *
+ * Assignability is asserted rather than annotating `handler` with `APIGatewayProxyHandler`, because that
+ * type permits a callback-style signature and a void return; asserting keeps the narrower
+ * promise-returning shape while still proving the artifact is invocable.
+ */
+type AssertHandlerAssignable<TActual extends TExpected, TExpected> = TActual;
+type _GoogleFeedHandlerSatisfiesLambdaContract = AssertHandlerAssignable<
+  typeof handler,
+  APIGatewayProxyHandler
+>;

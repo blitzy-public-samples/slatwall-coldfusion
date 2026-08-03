@@ -15,10 +15,15 @@
  *
  * It is a THIN, INJECTABLE FUNCTION OF THE SERVICE AND TWO COLLABORATORS: {@link createSkuHandler}
  * takes the SKU service, a product resolver and an authorisation resolver, and returns the nine
- * ROUTED operations. Nothing is constructed here, nothing is resolved by name, and ../config/container
- * is never imported — src/handlers/router.ts calls the composition root and passes all three in. That
- * is also what makes this file assertable with hand-written doubles, without a database, a network
- * call or an AWS runtime (AAP 0.7.3 S6).
+ * ROUTED operations. Nothing is constructed by {@link createSkuHandler}, nothing is resolved by name,
+ * and everything above the LAMBDA ENTRY POINT section at the foot of this file is a pure function of what
+ * it was handed — which is what makes it assertable with hand-written doubles, without a database, a
+ * network call or an AWS runtime (AAP 0.7.3 S6).
+ *
+ * That entry section is the one place ../config/container is reached, through a DYNAMIC import evaluated
+ * on first invocation, because the bundle built from this file has to carry a `handler` the runtime can
+ * address. Module LOAD still touches no configuration and opens no pool; the reasoning is recorded at the
+ * section itself. src/handlers/router.ts reaches the same composition root for the aggregate surface.
  *
  * ⚠️ THE SERVICE FILE IS THE CONTRACT, NOT THE PLAN'S PROSE, AND FOR THIS FILE THE TWO DIVERGE
  * -------------------------------------------------------------------------------------------
@@ -213,6 +218,7 @@
  * whole FW/1 application (AAP 0.4.3.6).
  */
 
+import type { CatalogContainer } from '../config/container';
 import type { Sku } from '../domain/sku/Sku';
 import type {
   EntityCrudType,
@@ -240,6 +246,21 @@ import { collectSkuBatchErrors, skuBatchHasErrors } from '../services/SkuService
  */
 import type { UnitOfWork } from '../adapters/mysql/UnitOfWork';
 
+/*
+ * THE ONE ERROR CLASS THIS BOUNDARY CONSTRUCTS ITSELF, AND WHY IT IS NOT A RECLASSIFICATION.
+ *
+ * {@link SkuHandler.getTransactionExistsFlag} publishes a member that NO request shape can satisfy, and
+ * this is the class the port already uses to say so — judgment (c)'s `getSkuStocksDeletableFlag` reaches
+ * it from the service side for the same reason. Constructing it here, at the boundary, is what lets the
+ * service and the repository keep their frozen parity behaviour untouched while the HTTP answer stops
+ * claiming a transient fault. The full argument, including the verification that no transient fault can
+ * reach that catch, is at the member itself.
+ *
+ * ⛔ IT IS THE ONLY ERROR CLASS THIS FILE CONSTRUCTS APART FROM {@link ValidationError}, and neither is
+ * a classification decision: ./httpResponse owns every mapping from a failure to a status and to a body,
+ * and this file never chooses a status for a failure directly.
+ */
+import { NotImplementedError } from '../errors/DomainError';
 import { ValidationError } from '../errors/ValidationError';
 
 import {
@@ -253,9 +274,14 @@ import {
   readPathParameter,
   readQueryStringParameter,
   readSmartListInput,
+  resolveFailClosedAuthorization,
   unauthorizedResponse,
+  createActionDispatcher,
   HTTP_STATUS,
+  type ActionRoute,
+  type ActionRouteTable,
   type APIGatewayProxyEvent,
+  type APIGatewayProxyHandler,
   type APIGatewayProxyResult,
 } from './httpResponse';
 import type { ExactDecimal } from '../util/formatting';
@@ -2501,12 +2527,46 @@ export function createSkuHandler(
    * legacy cannot satisfy is published and reports honestly; it is not removed, and no `true`, `false`,
    * `null` or fabricated result is ever substituted on that path.
    *
+   * =================================================================================================
+   * ⭐ AND IT REPORTS THAT HONESTLY AS 501, NOT AS 500 — THE FIX FOR A REAL PRESENTATION DEFECT
+   * =================================================================================================
+   * The refusal above is DETERMINISTIC, INPUT-INDEPENDENT AND PERMANENT. It was previously handed to
+   * {@link errorResponse} as the bare `DomainError` the repository raises, which that module correctly
+   * classifies as a SERVICE FAULT and answers with 500 — a status whose whole meaning is "something went
+   * wrong that might not go wrong next time". The result was a route that invited retries no retry could
+   * ever satisfy, and that an operator could not tell apart from a genuine transient fault.
+   *
+   * Three facts settle that this is a boundary-presentation matter and nothing deeper:
+   *   1. NO INPUT SHAPE CAN SUCCEED. The member declares zero parameters, so there is nothing a caller
+   *      could add. Identifiers in the path or the query string are not read and would change nothing.
+   *   2. NO TRANSIENT FAULT IS BEING MASKED, and this was verified rather than assumed:
+   *      ../services/SkuService's member forwards straight to `SkuRepository.transactionExists()` with
+   *      both identifiers absent, and ../adapters/mysql/MySqlSkuRepository raises on that condition
+   *      BEFORE it composes or issues any statement. No connection is acquired, so no failure on this
+   *      path can be anything other than the permanent refusal.
+   *   3. THE PORT ALREADY HAS A PATTERN FOR EXACTLY THIS, one member away. Judgment (c)'s
+   *      `getSkuStocksDeletableFlag` (defect D4) is also permanently unusable and answers 501 with the
+   *      member and reason kept SERVER-SIDE. Answering the same question two different ways was the
+   *      only real inconsistency here.
+   *
+   * ⛔ WHAT IS NOT CHANGED, AND MUST NOT BE. The service signature stays at zero arguments (AAP §0.4.2.2
+   * Discrepancy 4 is frozen); the repository's raise stays exactly as it is (IR-9); the service is still
+   * CALLED, with no arguments, so the legacy's `[:L286]` forward with an empty scope is still what this
+   * boundary performs — the mapping happens only once that call has already refused. Nothing is
+   * pre-empted, so the parity behaviour remains observable rather than being replaced by a guard.
+   *
+   * ⛔ AND THE MAPPING IS NOT A RECLASSIFICATION OF ARBITRARY FAILURES. The original failure is attached
+   * as the `cause`, so the diagnostic chain reaches the log intact, and {@link errorResponse} still owns
+   * every decision about what a client sees: the 501 body is its fixed neutral text, and the member name
+   * and reason travel on the error object without reaching the response.
+   *
    * ⛔ THE GATE STILL RUNS FIRST, WHICH IS THE ANTI-ENUMERATION PROPERTY. Because the refusal is decided
    * without consulting the repository, an unauthorised caller cannot tell this route's failure apart from
    * any other. `read` on `Sku` ({@link SKU_ACCESS_MATRIX}).
    *
    * @param event the invocation's event, or any object carrying its headers member
-   * @returns the refusal, or the failure the service raises because the legacy raises for this call shape
+   * @returns the refusal, or the not-implemented presentation of the permanent failure this call shape
+   *   always produces
    */
   const getTransactionExistsFlag = async (
     event: TransactionExistsEvent,
@@ -2527,7 +2587,18 @@ export function createSkuHandler(
        */
       return okResponse(await skuService.getTransactionExistsFlag());
     } catch (error) {
-      return errorResponse(error);
+      /* The permanent, input-independent refusal, presented as such. See the ⭐ 501 section above for why
+       * every failure reaching this line is that refusal and cannot be a transient fault. */
+      return errorResponse(
+        new NotImplementedError(
+          'SkuHandler.getTransactionExistsFlag',
+          'AAP §0.4.2.2 Discrepancy 4 freezes the service member at zero arguments, and ' +
+            'model/dao/SkuDAO.cfc:L90 refuses an unscoped probe, so no request shape can satisfy this ' +
+            'route; the identifier-scoped probe reaches SkuRepository.transactionExists through the two ' +
+            'entity checkers instead',
+          { cause: error },
+        ),
+      );
     }
   };
 
@@ -2537,10 +2608,33 @@ export function createSkuHandler(
    *
    * ONE ARGUMENT, AND IT IS OPTIONAL — there is no `required` keyword at [:L289] — while the lookup one
    * layer down declares it `required` [model/dao/SkuDAO.cfc:L102]. ../services/SkuService preserves that
-   * looseness deliberately and raises at the point the legacy raises, so THIS BOUNDARY FORWARDS AN
-   * UNADDRESSED CODE AS ABSENCE rather than pre-checking it (judgment (h)). The resulting bad request is
-   * the service's own explicit failure surfacing through {@link errorResponse}, not a check made here —
-   * which keeps the failure at the layer that owns it and keeps the two arities honest.
+   * looseness deliberately and raises at the point the legacy raises, and that service contract is
+   * UNCHANGED by anything below.
+   *
+   * =================================================================================================
+   * ⭐ AN UNADDRESSED CODE IS REFUSED HERE, WITH THE PARAMETER NAMED — A CORRECTED PRESENTATION
+   * =================================================================================================
+   * This boundary once forwarded an absent code into the service and let the service's own
+   * `DomainError` surface. That was defensible as layering and wrong as an HTTP contract: a plain
+   * `DomainError` presents as a SERVICE FAULT, so a caller that simply forgot the path parameter
+   * received **500** — a status meaning "the server failed", inviting a retry of a request that can
+   * never succeed — where every sibling member on this same handler answers **400** and names the
+   * parameter. `processImageUpload` (judgment (j)) reads the very same `skuCode` through the very same
+   * {@link readSkuCode} and already refused it with {@link SKU_CODE_REQUIRED_MESSAGE}, so the two
+   * SKU-code routes disagreed with each other about the identical missing input.
+   *
+   * ⛔ WHAT IS NOT CHANGED. The service signature stays OPTIONAL (AAP §0.4.2.2 is frozen) and its
+   * `DomainError` stays exactly where it is, so a direct caller of the service still gets the legacy's
+   * own failure at the point the legacy fails — `test/services/SkuService.test.ts` asserts that from the
+   * service side. What changed is only that this boundary no longer manufactures a server-fault status
+   * out of a client's own omission.
+   *
+   * ⚠️ AND ONLY GENUINE ABSENCE IS REFUSED — AN EMPTY CODE IS STILL FORWARDED. {@link readSkuCode}
+   * records the evidence: [model/entity/Sku.cfc:L54] declares `skuCode` with `unique="true"` and NO
+   * `unsavedvalue` and NO `default`, so the empty string is a VALUE rather than a sentinel and the legacy
+   * would have run the lookup for it. Refusing it here would suppress a real, if unproductive, query and
+   * would answer 400 where the legacy answered "no such SKU". An empty code therefore reaches the
+   * repository and comes back as a miss, which is the 404 below.
    *
    * ⚠️ A MISS IS `null` AND MUST STAY `null` — IT IS NOT AN ERROR AND MUST NOT BECOME ONE. The
    * out-of-scope caller [model/service/PhysicalService.cfc:L199] does
@@ -2567,9 +2661,16 @@ export function createSkuHandler(
       return refusal;
     }
 
-    /* Optional at [:L289], so absence is forwarded as absence — the service raises where the legacy
-     * raises. `readSkuCode` reports only genuine absence; an empty code is a value, not a sentinel. */
+    /* `readSkuCode` reports only GENUINE absence; an empty code is a value, not a sentinel, and is
+     * forwarded below exactly as received. */
     const skuCode: string | undefined = readSkuCode(event);
+
+    /* A request that addressed no code at all is a REQUEST fault and is named as one, matching every
+     * sibling member on this handler — including `processImageUpload`, which reads the same parameter.
+     * See the ⭐ section above for why this is presented here rather than left to the service. */
+    if (skuCode === undefined) {
+      return messageResponse(HTTP_STATUS.BAD_REQUEST, SKU_CODE_REQUIRED_MESSAGE);
+    }
 
     try {
       const sku: Sku | null = await skuService.getSkuBySkuCode(skuCode);
@@ -2658,3 +2759,160 @@ export function createSkuHandler(
     getSkuSmartList,
   });
 }
+
+/* =====================================================================================================
+ * THE LAMBDA ENTRY POINT
+ *
+ * Everything above this line is a pure function of its dependencies and stays that way: it constructs
+ * nothing, resolves nothing by name, and is assertable with hand-written doubles and no database
+ * (AAP §0.7.3 S6). Everything below is the boundary that makes the emitted artifact invocable — one
+ * `handler` export built from the composition root, for the bundle `build/esbuild.mjs` writes from this
+ * file. The AAP declares six Lambda entry artifacts and this file is one of them, so the artifact has
+ * to carry an entry symbol the runtime can address.
+ *
+ * ⭐ THE COMPOSITION ROOT IS REACHED THROUGH A DYNAMIC IMPORT, and that is the one subtle thing here.
+ * `../config/container` reaches `../config/database`, whose `mysql2` pool is created at module scope,
+ * and `../config/env`, which validates the environment as a module-load side effect. A STATIC import
+ * would run both when this module is loaded — including by `test/handlers/skuHandler.test.ts`, which has
+ * neither an environment nor a database. Deferring it to the first invocation keeps module load free of
+ * side effects while the pool still lives at module scope of the module that owns it, created once and
+ * reused across warm invocations exactly as AAP §0.3.2 requires. The specifier carries the `.js`
+ * extension because a dynamic import inside a CommonJS module is a real ECMAScript import and
+ * `moduleResolution: NodeNext` requires the extension there; both `tsc` and esbuild resolve it to this
+ * subtree's TypeScript source.
+ *
+ * ⚠️ THE READ-BACK ORDERING OF §0.6.2 IS NOT WEAKENED BY THIS SECTION. `sku.createSkus` is routed
+ * through the same creation boundary the router uses — the container's SKU write runner — so each
+ * sibling insert stays visible to the next uniqueness read inside one transaction. This section adds an
+ * address for the member; it does not add a second path into it.
+ *
+ * ⛔ THE ROUTE NAMES ARE DECLARED HERE, ONCE. `./router.ts` composes {@link createSkuRoutes} into the
+ * aggregate surface rather than restating these nine keys.
+ * ================================================================================================== */
+
+/**
+ * The actions this entry point serves, in the legacy `slatAction` vocabulary.
+ *
+ * `sku.` is the surface prefix and the suffix is the member name. All nine public members of
+ * AAP §0.4.2.2 are routed, including the two whose implementations are declared boundaries —
+ * `processImageUpload` (the image port) and `getSkuStocksDeletableFlag` (defect D4, a DAO member that
+ * exists nowhere in the legacy repository). Both answer with the boundary's own classified failure
+ * rather than being omitted from the surface, which is what AAP TR-5 requires: the member stays on the
+ * interface and the gap is flagged.
+ */
+export type SkuRouteKey =
+  | 'sku.createSkus'
+  | 'sku.processImageUpload'
+  | 'sku.getProductSkus'
+  | 'sku.getSortedProductSkus'
+  | 'sku.searchSkusByProductType'
+  | 'sku.getSkuStocksDeletableFlag'
+  | 'sku.getTransactionExistsFlag'
+  | 'sku.getSkuBySkuCode'
+  | 'sku.getSkuSmartList';
+
+/**
+ * Builds the SKU handler from the composition root.
+ *
+ * The wiring lives here rather than in `./router.ts` because this file knows which collaborators the SKU
+ * surface needs. The product resolver is a one-member delegation to the product service rather than the
+ * whole service, which keeps the SKU surface's dependency on it as narrow as the legacy call it replaces.
+ *
+ * @param container the memoized service graph
+ * @returns the nine routed SKU operations
+ */
+export function createSkuHandlerFromContainer(container: CatalogContainer): SkuHandler {
+  return createSkuHandler(
+    container.skuService,
+    (productID: string) => container.productService.getProduct(productID),
+    resolveFailClosedAuthorization,
+    container.skuWriteRunner,
+  );
+}
+
+/**
+ * Maps each served action name onto the member that answers it.
+ *
+ * Each entry is an arrow rather than a method reference, so the receiver cannot be lost and a member
+ * that narrows the event to a subset of the proxy shape still type-checks against the full event.
+ *
+ * @param handlers the SKU handler whose members the actions resolve to
+ * @returns the frozen action table for the SKU surface
+ */
+export function createSkuRoutes(handlers: SkuHandler): ActionRouteTable<SkuRouteKey> {
+  /*
+   * ⚠️ THE LITERAL IS ANNOTATED BEFORE IT IS FROZEN, AND THE ORDER IS LOAD-BEARING. `Object.freeze` takes
+   * the literal through a generic parameter, which loses its freshness and with it TypeScript's
+   * excess-property check — a route name not declared in the union above would then compile silently. A
+   * first draft did exactly that and was caught by adding an undeclared key and watching it pass.
+   * Annotating this binding restores the check in both directions: an undeclared key is rejected here,
+   * and a declared key with no entry is reported as missing.
+   */
+  const routes: Record<SkuRouteKey, ActionRoute> = {
+    'sku.createSkus': (event: APIGatewayProxyEvent) => handlers.createSkus(event),
+    'sku.processImageUpload': (event: APIGatewayProxyEvent) => handlers.processImageUpload(event),
+    'sku.getProductSkus': (event: APIGatewayProxyEvent) => handlers.getProductSkus(event),
+    'sku.getSortedProductSkus': (event: APIGatewayProxyEvent) =>
+      handlers.getSortedProductSkus(event),
+    'sku.searchSkusByProductType': (event: APIGatewayProxyEvent) =>
+      handlers.searchSkusByProductType(event),
+    'sku.getSkuStocksDeletableFlag': (event: APIGatewayProxyEvent) =>
+      handlers.getSkuStocksDeletableFlag(event),
+    'sku.getTransactionExistsFlag': (event: APIGatewayProxyEvent) =>
+      handlers.getTransactionExistsFlag(event),
+    'sku.getSkuBySkuCode': (event: APIGatewayProxyEvent) => handlers.getSkuBySkuCode(event),
+    'sku.getSkuSmartList': (event: APIGatewayProxyEvent) => handlers.getSkuSmartList(event),
+  };
+
+  return Object.freeze(routes);
+}
+
+/**
+ * The dispatcher, built once per container and reused for every later invocation.
+ *
+ * The only mutable module-scope binding in this file. It holds the wiring and nothing else — no
+ * account, no request, no query result and no setting — so a warm container sharing it cannot leak
+ * anything from one invocation into the next, which is the boundary mismatch M7 is about.
+ */
+let dispatchSkuAction: ActionRoute | undefined;
+
+/**
+ * The Lambda entry point for the SKU surface.
+ *
+ * A configuration failure surfaces through {@link errorResponse} rather than escaping as an unhandled
+ * rejection. `./router.ts` deliberately differs — it resolves the graph at module load, so a
+ * misconfiguration fails its cold start outright — and the two behaviours are complementary: the
+ * router is the primary entry and fails loudest, while each per-surface entry stays loadable and
+ * answerable.
+ *
+ * @param event the proxy event, carrying the action in its query string
+ * @returns the response for the addressed action, or a not-found for one this surface does not serve
+ */
+export const handler = async (event: APIGatewayProxyEvent): Promise<APIGatewayProxyResult> => {
+  try {
+    if (dispatchSkuAction === undefined) {
+      const { getCatalogContainer } = await import('../config/container.js');
+      const container = getCatalogContainer();
+
+      dispatchSkuAction = createActionDispatcher<SkuRouteKey>({
+        routes: createSkuRoutes(createSkuHandlerFromContainer(container)),
+        beginInvocation: () => {
+          container.beginInvocation();
+        },
+      });
+    }
+
+    return await dispatchSkuAction(event);
+  } catch (error: unknown) {
+    return errorResponse(error);
+  }
+};
+
+/**
+ * Compile-time proof that the export above satisfies the runtime's handler contract.
+ *
+ * Assignability is asserted rather than annotating `handler` with `APIGatewayProxyHandler`, because
+ * that type permits a callback-style signature and a void return; asserting keeps the narrower
+ * promise-returning shape while still proving the artifact is invocable.
+ */
+type _SkuHandlerSatisfiesLambdaContract = AssertAssignable<typeof handler, APIGatewayProxyHandler>;

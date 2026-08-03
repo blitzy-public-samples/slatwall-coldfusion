@@ -193,10 +193,12 @@
  * cold start.
  *
  * What is consequently absent, all deliberate:
- *   - No import from `../adapters/`, `../validation/`, `../config/` or `../util/`, and no import of
- *     another service. In particular `../config/container` is NOT imported: it is a memoized factory
- *     that `router.ts` calls, and it passes the service in. This module constructs no collaborator and
- *     resolves nothing by name (S3).
+ *   - No import from `../adapters/`, `../validation/` or `../util/`, and no import of another service.
+ *     `../config/container` is reached from ONE place only — the LAMBDA ENTRY POINT section at the foot of
+ *     this file, through a dynamic import evaluated on first invocation, because the bundle built from
+ *     this file has to carry a `handler` the runtime can address. Its type is imported type-only and is
+ *     erased. {@link createOptionHandler} still constructs no collaborator and resolves nothing by name,
+ *     and module LOAD still touches no configuration and opens no pool (S3).
  *     ⚠️ THE ONE IMPORT FROM `../ports/` IS TYPE-ONLY AND IS THE HEXAGONAL DIRECTION, NOT AN EXCEPTION
  *     TO IT. A handler is an outer layer and may depend on an inner abstraction; what it may not do is
  *     depend on an adapter, and it does not. Every specifier in that import is erased at compile time,
@@ -269,10 +271,12 @@
  * verbatim, misspellings included.
  */
 
+import type { CatalogContainer } from '../config/container';
 import { Option } from '../domain/option/Option';
 
 import {
   HTTP_STATUS,
+  createActionDispatcher,
   errorResponse,
   forbiddenResponse,
   invalidRequestBodyResponse,
@@ -282,10 +286,17 @@ import {
   readJsonObjectBody,
   readPathParameter,
   readQueryStringParameter,
+  resolveFailClosedAuthorization,
   unauthorizedResponse,
 } from './httpResponse';
 
-import type { APIGatewayProxyEvent, APIGatewayProxyResult } from './httpResponse';
+import type {
+  ActionRoute,
+  ActionRouteTable,
+  APIGatewayProxyEvent,
+  APIGatewayProxyHandler,
+  APIGatewayProxyResult,
+} from './httpResponse';
 import type { OptionService } from '../services/OptionService';
 import type {
   EntityCrudType,
@@ -560,7 +571,7 @@ export type OptionSurface = Pick<
  *
  * Each member declares only the part of the proxy event it actually reads, following the convention
  * `./httpResponse` established for its own readers. Two properties follow, and both are deliberate:
- * a full proxy event satisfies every one of these types, so the planned `router.ts` can pass it straight
+ * a full proxy event satisfies every one of these types, so `router.ts` passes it straight
  * through unchanged; and a test constructs a one-member or two-member literal instead of fabricating
  * an entire AWS event, which is how S6 manifests in a folder for which AAP §0.4.1.12 defines no test
  * directory.
@@ -843,7 +854,7 @@ export interface OptionHandler {
  *
  * ⭐ EXPLICIT INJECTION, AND NOTHING ELSE (S3). Both parameters are collaborators, supplied by
  * the caller. The composition root — `src/config/container.ts`, a memoized factory that replaces the
- * DI/1 bean scan of [org/Hibachi/Hibachi.cfc:L289-L345] — is to be called by the planned `router.ts`, which passes the
+ * DI/1 bean scan of [org/Hibachi/Hibachi.cfc:L289-L345] — is called by `router.ts`, which passes the
  * service in. This function therefore imports no container, constructs no service, reads no
  * registry and resolves nothing by name. There is no service locator, no dynamic method synthesis, no
  * string-keyed lookup, no decorator and no dependency-injection library, and the retired
@@ -1163,3 +1174,139 @@ export function createOptionHandler(
     getUnusedProductOptionGroups,
   });
 }
+
+/* =====================================================================================================
+ * THE LAMBDA ENTRY POINT
+ *
+ * Everything above this line is a pure function of its dependencies and stays that way: it constructs
+ * nothing, resolves nothing by name, and is assertable with hand-written doubles and no database
+ * (AAP §0.7.3 S6). Everything below is the boundary that makes the emitted artifact invocable — one
+ * `handler` export built from the composition root, for the bundle `build/esbuild.mjs` writes from this
+ * file. The AAP declares six Lambda entry artifacts and this file is one of them, so the artifact has
+ * to carry an entry symbol the runtime can address.
+ *
+ * ⭐ THE COMPOSITION ROOT IS REACHED THROUGH A DYNAMIC IMPORT, and that is the one subtle thing here.
+ * `../config/container` reaches `../config/database`, whose `mysql2` pool is created at module scope,
+ * and `../config/env`, which validates the environment as a module-load side effect. A STATIC import
+ * would run both when this module is loaded — including by `test/handlers/optionHandler.test.ts`, which
+ * has neither an environment nor a database. Deferring it to the first invocation keeps module load
+ * free of side effects while the pool still lives at module scope of the module that owns it, created
+ * once and reused across warm invocations exactly as AAP §0.3.2 requires. The specifier carries the
+ * `.js` extension because a dynamic import inside a CommonJS module is a real ECMAScript import and
+ * `moduleResolution: NodeNext` requires the extension there; both `tsc` and esbuild resolve it to this
+ * subtree's TypeScript source.
+ *
+ * ⛔ THE ROUTE NAMES ARE DECLARED HERE, ONCE. `./router.ts` composes {@link createOptionRoutes} into
+ * the aggregate surface rather than restating these keys.
+ * ================================================================================================== */
+
+/**
+ * The actions this entry point serves, in the legacy `slatAction` vocabulary.
+ *
+ * `option.` is the surface prefix and the suffix is the member name. The three keys are the three
+ * declared members of AAP §0.4.2.4; the four synthesized members of §0.4.2.5 that the option service
+ * also carries are not routed, for the reasons the module header records.
+ */
+export type OptionRouteKey =
+  | 'option.getOptionsForSelect'
+  | 'option.getUnusedProductOptions'
+  | 'option.getUnusedProductOptionGroups';
+
+/**
+ * Builds the option handler from the composition root.
+ *
+ * The wiring lives here rather than in `./router.ts` because this file knows which collaborators the
+ * option surface needs. Both dependencies are the ones {@link createOptionHandler} declares.
+ *
+ * @param container the memoized service graph
+ * @returns the three routed option operations
+ */
+export function createOptionHandlerFromContainer(container: CatalogContainer): OptionHandler {
+  return createOptionHandler(container.optionService, resolveFailClosedAuthorization);
+}
+
+/**
+ * Maps each served action name onto the member that answers it.
+ *
+ * `getOptionsForSelect` is SYNCHRONOUS — the projection it performs needs no data access, which the
+ * module header explains — so it is adapted with `Promise.resolve` here rather than being made async in
+ * the handler. Adapting at the route declaration keeps the member's own contract honest about the fact
+ * that it awaits nothing.
+ *
+ * @param handlers the option handler whose members the actions resolve to
+ * @returns the frozen action table for the option surface
+ */
+export function createOptionRoutes(handlers: OptionHandler): ActionRouteTable<OptionRouteKey> {
+  /*
+   * ⚠️ THE LITERAL IS ANNOTATED BEFORE IT IS FROZEN, AND THE ORDER IS LOAD-BEARING. `Object.freeze` takes
+   * the literal through a generic parameter, which loses its freshness and with it TypeScript's
+   * excess-property check — a route name not declared in the union above would then compile silently. A
+   * first draft did exactly that and was caught by adding an undeclared key and watching it pass.
+   * Annotating this binding restores the check in both directions: an undeclared key is rejected here,
+   * and a declared key with no entry is reported as missing.
+   */
+  const routes: Record<OptionRouteKey, ActionRoute> = {
+    'option.getOptionsForSelect': (event: APIGatewayProxyEvent) =>
+      Promise.resolve(handlers.getOptionsForSelect(event)),
+    'option.getUnusedProductOptions': (event: APIGatewayProxyEvent) =>
+      handlers.getUnusedProductOptions(event),
+    'option.getUnusedProductOptionGroups': (event: APIGatewayProxyEvent) =>
+      handlers.getUnusedProductOptionGroups(event),
+  };
+
+  return Object.freeze(routes);
+}
+
+/**
+ * The dispatcher, built once per container and reused for every later invocation.
+ *
+ * The only mutable module-scope binding in this file. It holds the wiring and nothing else — no
+ * account, no request, no query result and no setting — so a warm container sharing it cannot leak
+ * anything from one invocation into the next, which is the boundary mismatch M7 is about.
+ */
+let dispatchOptionAction: ActionRoute | undefined;
+
+/**
+ * The Lambda entry point for the option surface.
+ *
+ * A configuration failure surfaces through {@link errorResponse} rather than escaping as an unhandled
+ * rejection. `./router.ts` deliberately differs — it resolves the graph at module load, so a
+ * misconfiguration fails its cold start outright — and the two behaviours are complementary: the
+ * router is the primary entry and fails loudest, while each per-surface entry stays loadable and
+ * answerable.
+ *
+ * @param event the proxy event, carrying the action in its query string
+ * @returns the response for the addressed action, or a not-found for one this surface does not serve
+ */
+export const handler = async (event: APIGatewayProxyEvent): Promise<APIGatewayProxyResult> => {
+  try {
+    if (dispatchOptionAction === undefined) {
+      const { getCatalogContainer } = await import('../config/container.js');
+      const container = getCatalogContainer();
+
+      dispatchOptionAction = createActionDispatcher<OptionRouteKey>({
+        routes: createOptionRoutes(createOptionHandlerFromContainer(container)),
+        beginInvocation: () => {
+          container.beginInvocation();
+        },
+      });
+    }
+
+    return await dispatchOptionAction(event);
+  } catch (error: unknown) {
+    return errorResponse(error);
+  }
+};
+
+/**
+ * Compile-time proof that the export above satisfies the runtime's handler contract.
+ *
+ * Assignability is asserted rather than annotating `handler` with `APIGatewayProxyHandler`, because
+ * that type permits a callback-style signature and a void return; asserting keeps the narrower
+ * promise-returning shape while still proving the artifact is invocable.
+ */
+type AssertHandlerAssignable<TActual extends TExpected, TExpected> = TActual;
+type _OptionHandlerSatisfiesLambdaContract = AssertHandlerAssignable<
+  typeof handler,
+  APIGatewayProxyHandler
+>;

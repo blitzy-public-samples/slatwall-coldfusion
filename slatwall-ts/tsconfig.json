@@ -66,24 +66,30 @@
      *
      * THE BLAST RADIUS IS SMALL BY CONSTRUCTION, AND A LATER MOVE IS MECHANICAL. Infrastructure as
      * code is out of scope, so no `Runtime: nodejs20.x` string is authored anywhere in this
-     * subtree — verified by grep, not assumed: the only occurrences of `nodejs20` are in prose,
-     * here and in build/esbuild.mjs. FOUR couplings exist IN THE REPOSITORY and a runtime bump
-     * moves them together:
+     * subtree — verified by grep, not assumed: the only occurrences of `nodejs20` are in prose, in
+     * this file, in .env.example and in package.json's dependency notes. build/esbuild.mjs does NOT
+     * contain the token: it names the esbuild target `node20`, which is a bundler flag rather than a
+     * managed-runtime identifier, and an earlier revision of this sentence wrongly cited it as a
+     * prose occurrence. FIVE couplings exist IN THE REPOSITORY and a runtime bump moves them
+     * together:
      *   1. `--target=node20` in build/esbuild.mjs (and `NODE_TARGET` there);
      *   2. the `engines` field of package.json together with .nvmrc;
      *   3. the @types/node pin, which AAP 0.5.3.2 requires to track the runtime;
-     *   4. this "target"/"lib" pair.
-     * ⚠️ AN EARLIER REVISION OF THIS LIST NAMED A FIFTH — "the version statements in the subtree
-     * README" — AND THAT FILE DOES NOT EXIST. AAP 0.2.1.7 and 0.4.1.2 do declare
-     * slatwall-ts/README.md as a CREATE target, but it was never generated; the only README in the
-     * subtree is src/integrations/google/README.md, which states no version. The count is corrected
-     * to what is measurably here rather than to what the plan intended, because a reader auditing
-     * the couplings before a bump must be able to find every one of them, and a fifth entry
-     * pointing at a missing file would leave them looking for a version statement that is nowhere.
-     * The absent README is recorded as a gap, not silently absorbed.
+     *   4. this "target"/"lib" pair;
+     *   5. the Toolchain section of slatwall-ts/README.md, which states the pinned versions.
+     * Items 1, 2, 3 and 5 are the four AAP 0.5.5 enumerates; item 4 is an additional one measured
+     * here that the plan does not name, and it is listed because a reader auditing the couplings
+     * before a bump has to find every one of them, not only the documented four.
+     * ⚠️ ITEM 5 WAS PREVIOUSLY RECORDED AS A GAP, AND NOW EXISTS. AAP 0.2.1.7 and 0.4.1.2 declare
+     * slatwall-ts/README.md as a CREATE target, but it had not been generated, so an earlier
+     * revision of this note dropped it from the list rather than leave a reader hunting for a
+     * version statement that was nowhere — the only README in the subtree then being
+     * src/integrations/google/README.md, which states no version. The file has since been authored
+     * with the version statements AAP 0.5.5 requires, so the entry is restored and the count is
+     * five. build/esbuild.mjs carries the identical list.
      *
      * The hexagonal boundary confines every AWS type to src/handlers/**, so a bump touches those
-     * four and nothing under src/domain/**, src/ports/**, src/services/** or src/adapters/**. None
+     * five and nothing under src/domain/**, src/ports/**, src/services/** or src/adapters/**. None
      * of the above is a performance, latency, throughput or availability claim; no such figure is
      * stated anywhere in this port (AAP IR-12).
      *

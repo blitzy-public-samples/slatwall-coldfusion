@@ -32,7 +32,7 @@ import { MySqlTransactionalWriteRunner } from '../../src/adapters/mysql/MySqlTra
 import { manageEntity } from '../../src/domain/base/populate';
 import { Product } from '../../src/domain/product/Product';
 import { SKU_ENTITY_METADATA, Sku } from '../../src/domain/sku/Sku';
-import { DomainError } from '../../src/errors/DomainError';
+import { DomainError, NotImplementedError } from '../../src/errors/DomainError';
 import {
   SKU_ACCESS_MATRIX,
   createProductSkuCreationBoundary,
@@ -429,17 +429,80 @@ describe('SkuHandler.getTransactionExistsFlag — the narrow contract is publish
     expect(response.statusCode).not.toBe(200);
 
     /*
-     * A plain `DomainError` presents as a SERVICE FAULT, so the boundary answers 500 and discloses
-     * nothing — `src/errors/DomainError.ts` states the rule ("Assert on the CODE … never on these
-     * strings"), so this asserts the SHAPE and the ABSENCE of disclosure rather than the neutral text.
+     * ⭐ 501, AND THIS CASE ONCE PINNED 500 — the change is the point, so the reason is recorded here as
+     * well as at the member. The refusal this route always produces is DETERMINISTIC, INPUT-INDEPENDENT
+     * and PERMANENT: the service member declares zero arguments (AAP §0.4.2.2 Discrepancy 4), and
+     * `src/adapters/mysql/MySqlSkuRepository.ts` raises for an unscoped probe BEFORE it composes or
+     * issues any statement, so nothing on this path can be a transient fault. 500 said the opposite —
+     * "try again" — for a route no retry can satisfy, and it made this member indistinguishable from a
+     * genuine outage. 501 is the same answer the port already gives the one other permanently-unusable
+     * member, `getSkuStocksDeletableFlag` (defect D4), which is asserted below in this same file.
+     *
+     * ⛔ NOTHING BENEATH THE BOUNDARY MOVED TO ACHIEVE IT. The service still declares zero arguments and
+     * is still CALLED with none — the case above asserts exactly that, and it is unchanged — and the
+     * repository's raise is untouched (IR-9). Only the HTTP presentation of an already-failed call
+     * changed.
      */
-    expect(response.statusCode).toBe(500);
+    expect(response.statusCode).toBe(501);
 
+    /*
+     * `src/errors/DomainError.ts` states the rule ("Assert on the CODE … never on these strings"), so
+     * this asserts the SHAPE and the ABSENCE of disclosure rather than the neutral text. The member name
+     * and the reason travel on the error object for the log and never reach the body.
+     */
     const body = JSON.parse(response.body) as Record<string, unknown>;
 
     expect(Object.keys(body)).toStrictEqual(['message']);
     expect(JSON.stringify(body)).not.toContain('SKU identifier');
     expect(JSON.stringify(body)).not.toContain('SkuDAO');
+    expect(JSON.stringify(body)).not.toContain('getTransactionExistsFlag');
+    expect(JSON.stringify(body)).not.toContain('Discrepancy');
+  });
+
+  it('NET-NEW — the 501 is identical to the one the other permanently-unusable member answers with', async () => {
+    /*
+     * The consistency this route was missing, asserted directly: two members that can never succeed now
+     * answer with the same status and the same neutral body, so a client handles "this capability does
+     * not exist" once rather than per member. `getSkuStocksDeletableFlag` reaches it from the SERVICE
+     * side — `SkuService` rejects with a `NotImplementedError` for defect D4, which the double below
+     * reproduces verbatim — and `getTransactionExistsFlag` from the BOUNDARY side. A caller cannot tell
+     * them apart, which is correct: the fact being reported is the same fact.
+     */
+    const handler = createSkuHandler(
+      makeSkuSurface({
+        getTransactionExistsFlag: (): Promise<boolean> =>
+          Promise.reject(
+            new DomainError(
+              'The transaction probe requires either a SKU identifier or a product identifier.',
+            ),
+          ),
+        /* Exactly what `src/services/SkuService.ts` rejects with for D4. */
+        getSkuStocksDeletableFlag: (): Promise<boolean> =>
+          Promise.reject(
+            new NotImplementedError(
+              'SkuService.getSkuStocksDeletableFlag',
+              'carried unrepaired as defect D4',
+            ),
+          ),
+      }),
+      () => Promise.resolve(null),
+      ADMIT_EVERY_REQUEST,
+      makeWriteRunner({
+        resolveProduct: () => Promise.resolve(null),
+        skuService: { createSkus: () => Promise.resolve(true) },
+      }).runner,
+    );
+
+    const transaction = await handler.getTransactionExistsFlag({ headers: {} });
+    const stocks = await handler.getSkuStocksDeletableFlag({
+      pathParameters: { skuID: SKU_ID },
+      headers: {},
+    });
+
+    expect(transaction.statusCode).toBe(501);
+    expect(transaction.statusCode).toBe(stocks.statusCode);
+    expect(transaction.body).toBe(stocks.body);
+    expect(transaction.headers).toStrictEqual(stocks.headers);
   });
 
   it('NET-NEW — a query string is not read, so no identifier can be smuggled into the probe', async () => {
@@ -999,5 +1062,118 @@ describe('SkuHandler.processImageUpload — the image write is permission-checke
     expect(response.statusCode).toBe(401);
     /* Steps 1 and 2 answer before step 3, so no permission question is reached at all. */
     expect(questions).toEqual([]);
+  });
+});
+
+describe('SkuHandler.getSkuBySkuCode — a missing code is the CLIENT’s fault, not the server’s', () => {
+  /*
+   * ⭐ WHY THIS BLOCK EXISTS. The route forwarded an absent `skuCode` into the service and let the
+   * service's own `DomainError` surface, which `src/handlers/httpResponse.ts` correctly classifies as a
+   * SERVICE FAULT — so a caller that simply omitted the path parameter received **500**, a status that
+   * says "the server failed, try again", for a request that could never succeed as sent. Every sibling
+   * member on this handler answers **400** and names the parameter, and `processImageUpload` reads the
+   * SAME `skuCode` through the SAME reader and already refused it that way, so the two SKU-code routes
+   * disagreed with each other about the identical missing input.
+   *
+   * ⛔ WHAT IS PINNED HERE IS THE BOUNDARY, AND NOTHING BENEATH IT. The service signature stays OPTIONAL
+   * (AAP §0.4.2.2 is frozen) and its `DomainError` stays exactly where it is —
+   * `test/services/SkuService.test.ts` asserts the raise from the service side, and that case is
+   * untouched. The three cases below assert only what the ROUTE answers.
+   *
+   * ⚠️ AND THE EMPTY CODE IS THE INTERESTING ONE. [model/entity/Sku.cfc:L54] declares `skuCode` with
+   * `unique="true"` and NO `unsavedvalue` and NO `default`, so `''` is a VALUE rather than a sentinel and
+   * the legacy would have run the lookup for it. It is therefore FORWARDED, not refused — the opposite
+   * treatment from `brandID`, whose empty form IS the legacy unsaved sentinel. Collapsing the two would
+   * answer 400 where the legacy answered "no such SKU".
+   *
+   * TEST PROVENANCE: NET-NEW (AAP §0.6.5.2 — no legacy service or controller test exists for this slice).
+   */
+
+  const STORED_SKU_CODE = 'TESTSKU001';
+
+  /** Builds the route with a lookup that answers for exactly one code and misses on everything else. */
+  function handlerFor(reached: string[]): ReturnType<typeof createSkuHandler> {
+    const stored = makeManagedSku();
+    stored.skuCode = STORED_SKU_CODE;
+
+    return createSkuHandler(
+      makeSkuSurface({
+        getSkuBySkuCode: (skuCode?: string): Promise<Sku | null> => {
+          reached.push(skuCode === undefined ? '<undefined>' : skuCode);
+          return Promise.resolve(skuCode === STORED_SKU_CODE ? stored : null);
+        },
+      }),
+      () => Promise.resolve(null),
+      ADMIT_EVERY_REQUEST,
+      makeWriteRunner({
+        resolveProduct: () => Promise.resolve(null),
+        skuService: { createSkus: () => Promise.resolve(true) },
+      }).runner,
+    );
+  }
+
+  it('NET-NEW — no code addressed answers 400 with the parameter NAMED, and never reaches the service', async () => {
+    const reached: string[] = [];
+    const response = await handlerFor(reached).getSkuBySkuCode({
+      pathParameters: null,
+      headers: {},
+    });
+
+    expect(response.statusCode).toBe(400);
+    expect(JSON.parse(response.body)).toStrictEqual({
+      message: 'A "skuCode" path parameter is required',
+    });
+    /* Refused at the boundary, so no lookup was attempted for a code nobody supplied. */
+    expect(reached).toEqual([]);
+  });
+
+  it('NET-NEW — the refusal is IDENTICAL to the one processImageUpload gives for the same omission', async () => {
+    /* The inconsistency the finding was about, asserted as an equality so it cannot silently return. */
+    const reached: string[] = [];
+    const handler = handlerFor(reached);
+
+    const read = await handler.getSkuBySkuCode({ pathParameters: null, headers: {} });
+    const write = await handler.processImageUpload({
+      body: '{}',
+      pathParameters: null,
+      headers: {},
+    });
+
+    expect(read.statusCode).toBe(write.statusCode);
+    expect(read.body).toBe(write.body);
+  });
+
+  it('NET-NEW — an EMPTY code is FORWARDED as the legal value it is, and a miss stays 404', async () => {
+    const reached: string[] = [];
+    const response = await handlerFor(reached).getSkuBySkuCode({
+      pathParameters: { skuCode: '' },
+      headers: {},
+    });
+
+    /* The lookup RAN — this is the query the legacy would have run — and answered a miss. */
+    expect(reached).toEqual(['']);
+    expect(response.statusCode).toBe(404);
+    expect(JSON.parse(response.body)).toStrictEqual({ message: 'Not found' });
+  });
+
+  it('NET-NEW — a hit still answers 200 and a miss still answers 404, both unchanged', async () => {
+    const reached: string[] = [];
+    const handler = handlerFor(reached);
+
+    const hit = await handler.getSkuBySkuCode({
+      pathParameters: { skuCode: STORED_SKU_CODE },
+      headers: {},
+    });
+    const miss = await handler.getSkuBySkuCode({
+      pathParameters: { skuCode: 'NOTHING-MATCHES' },
+      headers: {},
+    });
+
+    expect(hit.statusCode).toBe(200);
+    expect(miss.statusCode).toBe(404);
+    /* A miss must never become a raise: [model/service/PhysicalService.cfc:L199] counts misses as a
+     * data-quality tally, so raising would turn a benign import warning into a failed import. */
+    expect(JSON.parse(miss.body)).toStrictEqual({ message: 'Not found' });
+    expect(reached).toEqual([STORED_SKU_CODE, 'NOTHING-MATCHES']);
   });
 });

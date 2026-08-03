@@ -23,7 +23,18 @@
 
 import { isIPv6 } from 'node:net';
 
-import { DomainError } from '../errors/DomainError';
+/*
+ * ⭐ EVERY FAILURE IN THIS FILE IS A `ConfigurationError`, NOT A BARE `DomainError`, AND THE CLASS IS
+ * THE CLASSIFICATION. `../errors/DomainError.ts` declares `ConfigurationError` for exactly this
+ * category and overrides its public presentation to `SERVICE_CONFIGURATION`, while a bare
+ * `DomainError` presents as `SERVICE_FAULT`; `../handlers/httpResponse.ts` reads that distinction to
+ * decide what a caller is told. `../adapters/settings/StaticSettingResolver.ts` already threw
+ * `ConfigurationError` for the analogous failure, so using the base class here made the CANONICAL
+ * configuration failures the only ones classified as generic faults. `ConfigurationError` extends
+ * `DomainError`, so nothing that tests for the base class is affected, and every message and
+ * `context` below is unchanged — only the class is.
+ */
+import { ConfigurationError } from '../errors/DomainError';
 
 /* ==============================================================================================
  * DECISION A — the three-way runtime dialect probe is deliberately collapsed to a fixed MySQL
@@ -475,29 +486,44 @@ export interface DatabaseConfig {
    */
   readonly password: string;
   /**
-   * How the connection is protected in transit. Never defaulted, and `disabled` is accepted only
-   * for a loopback {@link host} (DECISION E).
+   * How the connection is protected in transit.
+   *
+   * `disabled` is accepted only for a loopback {@link host} (DECISION E). When the operator states
+   * nothing this is `verified`, which is the fail-safe direction: absence encrypts, and the
+   * unencrypted arrangement has to be asked for by name.
    */
   readonly tlsMode: DatabaseTlsMode;
   /**
-   * Greatest number of connections the pool may open. Never defaulted; validated as an integer of
-   * at least one, with no ceiling imposed because a ceiling would be an invented capacity figure
-   * (DECISION E).
-   */
-  readonly connectionLimit: number;
-  /**
-   * Greatest number of connection requests the pool may hold waiting once {@link connectionLimit}
-   * is reached; beyond it, a request fails instead of queueing indefinitely.
+   * Greatest number of connection requests the pool may hold waiting once its connection limit is
+   * reached; beyond it, a request fails instead of queueing indefinitely.
    *
-   * Never defaulted, and zero is rejected: zero is the driver's documented no-limit sentinel, so
-   * accepting it would reinstate the unbounded queue this value exists to close (DECISION E).
+   * Zero is rejected: zero is the driver's documented no-limit sentinel, so accepting it would
+   * reinstate the unbounded queue this value exists to close. It is the one bound with a fallback —
+   * the module's own declared floor — precisely because omitting the option would SELECT that
+   * sentinel rather than decline to choose (DECISION E).
    */
   readonly queueLimit: number;
   /**
-   * Milliseconds the driver may spend establishing a connection before failing. Never defaulted;
-   * validated as an integer of at least one (DECISION E).
+   * Greatest number of connections the pool may open, when the operator states one.
+   *
+   * ⭐ ABSENT MEANS "NOT STATED BY THIS SERVICE", and src/config/database.ts then omits the driver
+   * option entirely so the driver's own bounded default applies. AAP §0.4.1.3 requires exactly that:
+   * pool sizing "is not carried over because the legacy application delegates pooling to the
+   * CF/Railo server and pins nothing in source", so a default invented here would be the figure
+   * IR-12 forbids. A value that IS supplied is validated as an integer of at least one, with no
+   * ceiling, because a ceiling would be an invented capacity figure (DECISION E).
    */
-  readonly connectTimeoutMs: number;
+  readonly connectionLimit?: number;
+  /**
+   * Milliseconds the driver may spend establishing a connection before failing, when the operator
+   * states a bound.
+   *
+   * Absent means the driver's own documented connect timeout applies — the same delegation
+   * {@link connectionLimit} describes, and for the same reason. A value that is supplied is
+   * validated as an integer of at least one. It bounds connection setup only: it is not a statement,
+   * request or invocation timeout, and it is not a latency target of any kind (DECISION E).
+   */
+  readonly connectTimeoutMs?: number;
 }
 
 /**
@@ -721,6 +747,29 @@ const HIGHEST_ADDRESSABLE_TCP_PORT = 65535;
  */
 const LOWEST_PERMITTED_RESOURCE_BOUND = 1;
 
+/**
+ * The transport mode used when `DB_TLS_MODE` is not set at all.
+ *
+ * ⭐ FAIL-SAFE BY CONSTRUCTION. `verified` is the mode that requires TLS, verifies the server's chain
+ * against the runtime's trust store and checks the certificate against the host connected to. Absence
+ * therefore encrypts; the unencrypted mode is reachable only by naming it, and then only for a loopback
+ * host. A default in the other direction would mean a deployment that forgot one variable shipped
+ * credentials and rows in cleartext, which is precisely the outcome the mode exists to prevent.
+ */
+const DEFAULT_DATABASE_TLS_MODE: DatabaseTlsMode = 'verified';
+
+/**
+ * The longest a MySQL database identifier may be.
+ *
+ * ⛔ A DOCUMENTED SERVER LIMIT, NOT A BOUND THIS PORT CHOSE (IR-12, standard S9). MySQL specifies 64
+ * characters as the maximum length of a database, table or column identifier; a longer `DB_NAME` cannot
+ * name a schema on any server, whatever its capacity. So this is not a quota, a capacity estimate or a
+ * service level — it is the point past which the value provably cannot be what it claims to be, which
+ * is the only kind of numeric bound this module is permitted to hold. It is read by exactly one reader,
+ * {@link requireDatabaseSchemaValue}, and it caps nothing the server would otherwise have accepted.
+ */
+const MAX_MYSQL_IDENTIFIER_LENGTH = 64;
+
 /*
  * ⛔ A `LOWEST_PERMITTED_HOP_BOUND` OF ZERO ONCE STOOD HERE, AS THE ONE ASYMMETRY IN THE NUMERIC
  * READERS, AND THE FLOOR PARAMETER THAT CARRIED IT IS GONE WITH IT. The zero floor existed solely so
@@ -874,11 +923,11 @@ const HOST_PORT_SEPARATOR = ':';
  * @param variableName name of the environment variable, used verbatim in the failure message
  * @param rawValue the value read from the environment, still possibly absent
  * @returns the value exactly as supplied, including the empty string
- * @throws DomainError naming `variableName` when the variable is not set at all
+ * @throws ConfigurationError naming `variableName` when the variable is not set at all
  */
 function requirePresentValue(variableName: string, rawValue: string | undefined): string {
   if (typeof rawValue !== 'string') {
-    throw new DomainError(
+    throw new ConfigurationError(
       /* The second sentence is deliberately variable-agnostic. This helper began as a
        * database-only reader and its message said "Every database connection value"; the feed-host
        * variable of `loadGoogleFeedConfig` then began reading through the same helper, which left a
@@ -907,13 +956,13 @@ function requirePresentValue(variableName: string, rawValue: string | undefined)
  * @param variableName name of the environment variable, used verbatim in the failure message
  * @param rawValue the value read from the environment, still possibly absent
  * @returns the value exactly as supplied, un-trimmed
- * @throws DomainError naming `variableName` when the variable is absent, or present but blank
+ * @throws ConfigurationError naming `variableName` when the variable is absent, or present but blank
  */
 function requireNonBlankValue(variableName: string, rawValue: string | undefined): string {
   const value = requirePresentValue(variableName, rawValue);
 
   if (value.trim().length === 0) {
-    throw new DomainError(
+    throw new ConfigurationError(
       `Environment variable ${variableName} is set but blank. It must name a real connection ` +
         'target.',
       { context: { variable: variableName } },
@@ -934,14 +983,14 @@ function requireNonBlankValue(variableName: string, rawValue: string | undefined
  * @param variableName name of the environment variable, used verbatim in the failure message
  * @param rawValue the value read from the environment, still possibly absent
  * @returns the port as an integer
- * @throws DomainError naming `variableName` when the variable is absent, blank, not a plain
+ * @throws ConfigurationError naming `variableName` when the variable is absent, blank, not a plain
  *   base-ten integer, or outside the addressable port range
  */
 function requireTcpPortValue(variableName: string, rawValue: string | undefined): number {
   const value = requireNonBlankValue(variableName, rawValue).trim();
 
   if (!UNSIGNED_INTEGER_PATTERN.test(value)) {
-    throw new DomainError(
+    throw new ConfigurationError(
       `Environment variable ${variableName} must be a plain base-ten integer TCP port number. ` +
         'A sign, a decimal point, exponent notation, a radix prefix and any other non-digit ' +
         'character are all rejected.',
@@ -959,7 +1008,7 @@ function requireTcpPortValue(variableName: string, rawValue: string | undefined)
     port < LOWEST_ADDRESSABLE_TCP_PORT ||
     port > HIGHEST_ADDRESSABLE_TCP_PORT
   ) {
-    throw new DomainError(
+    throw new ConfigurationError(
       `Environment variable ${variableName} must be a TCP port number between ` +
         `${LOWEST_ADDRESSABLE_TCP_PORT} and ${HIGHEST_ADDRESSABLE_TCP_PORT}.`,
       { context: { variable: variableName } },
@@ -1047,7 +1096,7 @@ function isHostProduction(host: string): boolean {
  * @param variableName name of the environment variable, used verbatim in the failure message
  * @param rawValue the value read from the environment, still possibly absent
  * @returns the value exactly as supplied, un-trimmed
- * @throws DomainError naming `variableName` when the variable is absent, blank, carries a host
+ * @throws ConfigurationError naming `variableName` when the variable is absent, blank, carries a host
  *   outside the RFC 3986 §3.2.2 production, or carries a port that is not an addressable TCP port
  */
 function requireHostAuthorityValue(variableName: string, rawValue: string | undefined): string {
@@ -1057,7 +1106,7 @@ function requireHostAuthorityValue(variableName: string, rawValue: string | unde
   const host = separatorIndex === -1 ? value : value.slice(0, separatorIndex);
 
   if (!isHostProduction(host)) {
-    throw new DomainError(
+    throw new ConfigurationError(
       `Environment variable ${variableName} must be a bare host authority — a registered name, an ` +
         'IPv4 literal, or a bracketed IPv6 literal — optionally followed by ":" and a port, as ' +
         'defined by RFC 3986 section 3.2.2. A scheme, a path, a userinfo prefix, a query, a ' +
@@ -1085,7 +1134,7 @@ function requireHostAuthorityValue(variableName: string, rawValue: string | unde
     port < LOWEST_ADDRESSABLE_TCP_PORT ||
     port > HIGHEST_ADDRESSABLE_TCP_PORT
   ) {
-    throw new DomainError(
+    throw new ConfigurationError(
       `Environment variable ${variableName} carries a port that is not addressable. When a ":" is ` +
         'present it must be followed by a plain base-ten TCP port number between ' +
         `${LOWEST_ADDRESSABLE_TCP_PORT} and ${HIGHEST_ADDRESSABLE_TCP_PORT}. A scheme prefix such ` +
@@ -1117,14 +1166,14 @@ function requireHostAuthorityValue(variableName: string, rawValue: string | unde
  * @param variableName name of the environment variable, used verbatim in the failure message
  * @param rawValue the value read from the environment, still possibly absent
  * @returns the bound as an integer of at least {@link LOWEST_PERMITTED_RESOURCE_BOUND}
- * @throws DomainError naming `variableName` when the variable is absent, blank, not a plain
+ * @throws ConfigurationError naming `variableName` when the variable is absent, blank, not a plain
  *   base-ten integer, not exactly representable, or below the floor
  */
 function requireResourceBoundValue(variableName: string, rawValue: string | undefined): number {
   const value = requireNonBlankValue(variableName, rawValue).trim();
 
   if (!UNSIGNED_INTEGER_PATTERN.test(value)) {
-    throw new DomainError(
+    throw new ConfigurationError(
       `Environment variable ${variableName} must be a plain base-ten integer. A sign, a decimal ` +
         'point, exponent notation, a radix prefix and any other non-digit character are all ' +
         'rejected.',
@@ -1138,7 +1187,7 @@ function requireResourceBoundValue(variableName: string, rawValue: string | unde
   // exactly representable range converts to a value that no longer denotes the digits supplied,
   // and silently acting on a different number than the operator wrote is worse than refusing.
   if (!Number.isSafeInteger(bound) || bound < LOWEST_PERMITTED_RESOURCE_BOUND) {
-    throw new DomainError(
+    throw new ConfigurationError(
       /* The sentence naming the driver's sentinel is kept, and kept SCOPED to the one variable it is
        * about. It was an unqualified claim while this reader served only the three pool numbers, was
        * qualified when the withdrawn DECISION G policy numbers briefly read through it — where "the
@@ -1181,7 +1230,7 @@ function requireResourceBoundValue(variableName: string, rawValue: string | unde
  * @param variableName name of the environment variable, used verbatim in the failure message
  * @param rawValue the value read from the environment, possibly absent
  * @returns the value exactly as supplied and un-trimmed, or `undefined` when the variable is not set
- * @throws DomainError naming `variableName` when the variable is set but carries no non-whitespace
+ * @throws ConfigurationError naming `variableName` when the variable is set but carries no non-whitespace
  *   content
  */
 function optionalNonBlankValue(
@@ -1193,7 +1242,7 @@ function optionalNonBlankValue(
   }
 
   if (rawValue.trim().length === 0) {
-    throw new DomainError(
+    throw new ConfigurationError(
       `Environment variable ${variableName} is set but blank. It is optional, so leave it unset ` +
         'entirely rather than empty: an empty value is not the same as no value, and this service ' +
         'substitutes nothing for either.',
@@ -1251,6 +1300,206 @@ function isLoopbackHost(host: string): boolean {
 }
 
 /**
+ * Reads the database host, and holds it to the same grammar the feed host is held to.
+ *
+ * ⭐ WHY THIS EXISTS: THE ASYMMETRY WAS THE DEFECT. `DB_HOST` was read through
+ * {@link requireNonBlankValue} while `GOOGLE_FEED_HOST` was read through
+ * {@link requireHostAuthorityValue}, so in the one module whose stated purpose is typed validation with
+ * descriptive errors, `mysql://10.0.0.1`, `user:pw@10.0.0.1`, a value with a trailing newline and a
+ * non-ASCII name all LOADED — and then surfaced later as an opaque driver connect failure with no
+ * mention of configuration. The same shapes on the feed host were refused with a precise message. One
+ * grammar, applied to both, is what makes the module's guarantees legible.
+ *
+ * ⭐ IT IS A MySQL-HOST VARIANT, NOT THE FEED'S RULE REUSED, AND THE THREE DIFFERENCES ARE DELIBERATE:
+ *
+ *   1. NO `":" port` SUFFIX. The feed host is an HTTP authority, where RFC 3986 §3.2.3 permits a port.
+ *      Here the port is its own variable, `DB_PORT`, validated as a TCP port number in its own right —
+ *      so a colon in this value means the operator has put the port in the wrong place, and saying so
+ *      is more useful than accepting it and then having two sources for one number.
+ *   2. A BARE, BRACKET-FREE IPv6 ADDRESS IS ACCEPTED. `::1` and `0:0:0:0:0:0:0:1` are legitimate
+ *      `mysql2` hosts — the driver hands the value to the platform's own connector, which accepts an
+ *      IPv6 literal unbracketed — and both are in {@link LOOPBACK_HOST_NAMES}, so refusing them would
+ *      break the loopback transport rule for the one arrangement it exists to serve. Bracketed forms
+ *      are accepted too, so an operator who writes the URI-style literal is not penalised.
+ *   3. A FILESYSTEM SOCKET PATH IS REFUSED, WITH A MESSAGE THAT SAYS WHY. A unix socket is a
+ *      legitimate way to reach MySQL, but it is configured through the driver's `socketPath` option,
+ *      and `src/config/database.ts` sets no such option — it passes this value as `host`, where a path
+ *      would be resolved as a hostname and fail. So a socket path could never have worked, and a
+ *      reader who supplies one deserves that answer at load rather than a name-resolution error later.
+ *      Accepting it silently is what the previous rule did.
+ *
+ * ⛔ AND IT INVENTS NO POLICY. There is no allowlist, no length ceiling, no label-count rule, no DNS
+ * lookup and no reachability test: the check is the transcribed RFC 3986 §3.2.2 `host` production plus
+ * the platform's own IPv6 parser, exactly as the feed host's rule is. Non-ASCII is outside `reg-name`
+ * and is therefore refused — an internationalised name is supplied as its A-label, which is the form
+ * that reaches the wire anyway.
+ *
+ * @param variableName the environment variable being read, named in every failure
+ * @param rawValue the raw value, or `undefined` when the variable is not set at all
+ * @returns the host exactly as supplied, never trimmed, folded or rewritten
+ * @throws ConfigurationError naming `variableName` when the variable is absent, blank, or outside the
+ *   accepted grammar
+ */
+function requireDatabaseHostValue(variableName: string, rawValue: string | undefined): string {
+  const value = requireNonBlankValue(variableName, rawValue);
+
+  if (isHostProduction(value) || isIPv6(value)) {
+    return value;
+  }
+
+  throw new ConfigurationError(
+    `Environment variable ${variableName} must be a bare host: a registered name or IPv4 literal as ` +
+      'defined by RFC 3986 section 3.2.2, an IPv6 address written either bracketed or bare, or an ' +
+      'IPvFuture literal. A scheme prefix such as "mysql://", a "user:password@" prefix, a ":" and ' +
+      'port — the port is DB_PORT, and belongs there — a path, a query, a fragment, whitespace, a ' +
+      'control character and any non-ASCII character are all outside that grammar and are rejected; ' +
+      'an internationalised name is supplied as its A-label. A filesystem socket path is rejected ' +
+      "too: a unix socket is reached through the driver's own socket option, which this service does " +
+      'not configure, so a path here would be resolved as a hostname and fail to connect.',
+    { context: { variable: variableName } },
+  );
+}
+
+/**
+ * Reads the database SCHEMA NAME, refusing a value MySQL could never resolve to one.
+ *
+ * ⭐ WHY THIS EXISTS AT ALL, given `requireNonBlankValue` already rejected the empty case. QA edge case
+ * 14 recorded that a `DB_NAME` of 4096 characters was ACCEPTED, alongside the `DB_HOST` payloads that
+ * {@link requireDatabaseHostValue} now refuses, and attributed both to the same finding: this file
+ * validated one connection coordinate carefully and its neighbours not at all. MySQL's documented
+ * maximum length for a database identifier is 64 characters, so a longer value cannot name a schema on
+ * ANY server. Admitting it does not make the deployment work — it defers the failure to the first query,
+ * where the driver reports a syntax or unknown-database error that names neither the variable nor the
+ * fact that the environment was wrong. Refusing it here names `DB_NAME` at the boundary instead, which
+ * is the same bargain every other reader in this file already makes.
+ *
+ * ⛔ THE BOUND IS A DOCUMENTED PLATFORM LIMIT, NOT AN INVENTED ONE (IR-12). 64 is MySQL's identifier
+ * maximum, not a capacity estimate, a quota or a service level, and nothing here caps anything the
+ * server would otherwise have allowed. The check is deliberately length-only: the legacy schema is the
+ * fixed contract both systems agree on (AAP §0.1.2), this port neither creates nor migrates it, and
+ * MySQL permits a very wide character range in a quoted identifier — so screening the character set
+ * would risk refusing a schema that genuinely exists, which is the opposite of the intent.
+ *
+ * @param variableName the environment variable being read
+ * @param rawValue the raw value, or `undefined` when the variable is not set at all
+ * @returns the schema name exactly as supplied, once it is short enough to be one
+ * @throws ConfigurationError naming `variableName` when the value is absent, blank, or longer than a
+ *   MySQL identifier may be
+ */
+function requireDatabaseSchemaValue(variableName: string, rawValue: string | undefined): string {
+  const value = requireNonBlankValue(variableName, rawValue);
+
+  if (value.length <= MAX_MYSQL_IDENTIFIER_LENGTH) {
+    return value;
+  }
+
+  throw new ConfigurationError(
+    `Environment variable ${variableName} is longer than a MySQL database identifier may be. The ` +
+      `server's documented maximum is ${String(MAX_MYSQL_IDENTIFIER_LENGTH)} characters, so a longer ` +
+      'value cannot name a schema on any server and would fail at the first query with a driver error ' +
+      'naming neither this variable nor the environment. It is refused here instead. This service ' +
+      'reads and writes an existing schema and neither creates nor migrates one, so the value must be ' +
+      'the name of a schema that already exists.',
+    { context: { variable: variableName } },
+  );
+}
+
+/**
+ * Reads an OPTIONAL transport mode, defaulting to the verified one.
+ *
+ * ⭐ WHY IT IS OPTIONAL: AAP §0.4.1.3 IS EXPLICIT THAT POOL SETTINGS ARE NOT CARRIED OVER, and the
+ * documented boot contract is five variables — host, port, schema, user, password. Requiring four more
+ * meant a deployment configured exactly to the plan failed closed at cold start, which is a
+ * configuration contract disagreeing with the document an operator reads first.
+ *
+ * ⭐ WHY THE DEFAULT IS SAFE RATHER THAN CONVENIENT, which is the whole reason this can be optional at
+ * all. Absence resolves to `verified`: TLS required, chain verified, identity checked. The unencrypted
+ * arrangement is reachable ONLY by asking for it explicitly, and even then only for a loopback host —
+ * {@link requireTlsModeValue}'s cross-check is unchanged and still refuses `disabled` for anything
+ * else. So the fail-safe direction is preserved and strengthened: where the previous contract made an
+ * operator state the transport and failed the boot if they did not, this one encrypts by default and
+ * still refuses to be talked out of it over a network.
+ *
+ * ⛔ AND NO FIGURE IS AUTHORED (IR-12). A token is not a capacity number, a timeout or a service level.
+ *
+ * @param variableName the environment variable being read
+ * @param rawValue the raw value, or `undefined` when the variable is not set at all
+ * @param host the already-validated database host, for the cleartext cross-check
+ * @returns the configured mode, or `verified` when the variable is not set
+ * @throws ConfigurationError naming `variableName` when a value is present but not one of the two
+ *   tokens, or when `disabled` is asked for with a non-loopback host
+ */
+function optionalTlsModeValue(
+  variableName: string,
+  rawValue: string | undefined,
+  host: string,
+): DatabaseTlsMode {
+  if (rawValue === undefined) {
+    return DEFAULT_DATABASE_TLS_MODE;
+  }
+
+  return requireTlsModeValue(variableName, rawValue, host);
+}
+
+/**
+ * Reads an OPTIONAL resource bound, answering `undefined` when the operator states none.
+ *
+ * ⭐ ABSENCE MEANS "THE DRIVER'S OWN DEFAULT", AND THAT IS THE POINT. AAP §0.4.1.3 says pool sizing is
+ * not carried over "because the legacy application delegates pooling to the CF/Railo server and pins
+ * nothing in source", so this port must not pin anything either. Answering `undefined` lets
+ * `src/config/database.ts` OMIT the option entirely, which leaves the decision with the driver rather
+ * than moving it into this file under a new number. That is why this reader has no fallback value of
+ * its own: a default here would be exactly the invented figure IR-12 forbids.
+ *
+ * ⛔ IT IS NOT USED FOR THE QUEUE BOUND. `DB_QUEUE_LIMIT` cannot be delegated the same way, because the
+ * driver reads its own default of zero as "no limit" — the unbounded behaviour that value exists to
+ * prevent. {@link optionalBoundedQueueValue} handles that one case separately, and says so.
+ *
+ * A value that IS present is held to exactly the same rules as before: a plain base-ten integer, at
+ * least the floor, exactly representable. An empty or whitespace-only value is a misconfiguration
+ * rather than a way to say "unset", which is the same distinction {@link optionalNonBlankValue} draws.
+ *
+ * @param variableName the environment variable being read
+ * @param rawValue the raw value, or `undefined` when the variable is not set at all
+ * @returns the bound the operator stated, or `undefined` when they stated none
+ * @throws ConfigurationError naming `variableName` when a value is present but not an acceptable bound
+ */
+function optionalResourceBoundValue(
+  variableName: string,
+  rawValue: string | undefined,
+): number | undefined {
+  if (rawValue === undefined) {
+    return undefined;
+  }
+
+  return requireResourceBoundValue(variableName, rawValue);
+}
+
+/**
+ * Reads the OPTIONAL queue bound, falling back to the floor this module already declares.
+ *
+ * ⚠️ THIS IS THE ONE BOUND THAT CANNOT BE LEFT TO THE DRIVER, and the asymmetry with
+ * {@link optionalResourceBoundValue} is deliberate rather than an inconsistency. `mysql2` reads a
+ * queue limit of zero as "no limit", and zero is its default — so omitting the option does not decline
+ * to choose, it SELECTS an unbounded queue of waiting connection requests. Every other option in the
+ * pool can be delegated safely; this one cannot.
+ *
+ * ⭐ THE FALLBACK AUTHORS NO NEW NUMBER. It is {@link LOWEST_PERMITTED_RESOURCE_BOUND}, the floor this
+ * module already declares and already enforces for every bound an operator supplies. Reusing it keeps
+ * the file's numeric vocabulary at exactly one value, and that value is a FLOOR — the smallest bound
+ * that is certainly not the driver's unbounded sentinel — rather than a capacity estimate, a throughput
+ * figure or a tuning recommendation (IR-12). An operator who wants a deeper queue states one.
+ *
+ * @param variableName the environment variable being read
+ * @param rawValue the raw value, or `undefined` when the variable is not set at all
+ * @returns the bound the operator stated, or the declared floor when they stated none
+ * @throws ConfigurationError naming `variableName` when a value is present but not an acceptable bound
+ */
+function optionalBoundedQueueValue(variableName: string, rawValue: string | undefined): number {
+  return optionalResourceBoundValue(variableName, rawValue) ?? LOWEST_PERMITTED_RESOURCE_BOUND;
+}
+
+/**
  * Reads the transport mode, and refuses the one combination that would send cleartext over a
  * network.
  *
@@ -1267,7 +1516,7 @@ function isLoopbackHost(host: string): boolean {
  * @param rawValue the value read from the environment, still possibly absent
  * @param host the already-validated host the mode is checked against
  * @returns the validated transport mode
- * @throws DomainError naming `variableName` when the variable is absent, blank, not one of the two
+ * @throws ConfigurationError naming `variableName` when the variable is absent, blank, not one of the two
  *   accepted tokens, or requests cleartext for a host that is not a loopback literal
  */
 function requireTlsModeValue(
@@ -1278,7 +1527,7 @@ function requireTlsModeValue(
   const mode = requireNonBlankValue(variableName, rawValue).trim();
 
   if (mode !== 'verified' && mode !== 'disabled') {
-    throw new DomainError(
+    throw new ConfigurationError(
       `Environment variable ${variableName} must be exactly "verified" or "disabled". There is ` +
         'deliberately no mode that keeps TLS while skipping certificate or identity ' +
         'verification, because an unverified session is indistinguishable from an intercepted one.',
@@ -1287,7 +1536,7 @@ function requireTlsModeValue(
   }
 
   if (mode === 'disabled' && !isLoopbackHost(host)) {
-    throw new DomainError(
+    throw new ConfigurationError(
       `Environment variable ${variableName} may only be "disabled" when DB_HOST is a loopback ` +
         'literal. Unencrypted MySQL traffic to a host reached over a network would expose the ' +
         'credentials and every row in transit, so this combination is refused rather than warned ' +
@@ -1306,11 +1555,27 @@ function requireTlsModeValue(
  * whole reads THIRTEEN names: these nine, the Google feed host in `loadGoogleFeedConfig()`
  * (DECISION F), and the three OPTIONAL run-time-computed setting inputs of DECISION G.
  * They are written as literal dotted accesses so that the key set is statically visible in one
- * search and so that no key is resolved through a computed string (standard S3). They are evaluated
- * in the order host,
- * port, schema, user, password, transport mode, connection limit, queue limit, connection
- * timeout — so the first problem in that order is the one reported, which is deterministic and
- * reproducible for an operator debugging a deployment.
+ * search and so that no key is resolved through a computed string (standard S3).
+ *
+ * ⭐ FIVE OF THE NINE ARE REQUIRED, AND THOSE FIVE ARE THE PLAN'S OWN BOOT CONTRACT.
+ * `DB_HOST`, `DB_PORT`, `DB_NAME`, `DB_USER` and `DB_PASSWORD` have no default of any kind — a
+ * connection target and an identity cannot be guessed, and AAP §0.4.1.3 requires that nothing here be
+ * defaulted. The other four are OPTIONAL, because the same section of the plan says pool settings are
+ * "not carried over": requiring them made a deployment configured exactly to the documented five-variable
+ * contract fail closed at cold start, so the contract and the document disagreed in the one place an
+ * operator reads first.
+ *
+ * ⭐ AND EVERY FALLBACK IS EITHER SAFE OR DELEGATED, WITH NO NEW FIGURE AUTHORED (IR-12):
+ *   - `DB_TLS_MODE` absent ⇒ `verified`. Absence encrypts; cleartext must be asked for by name and is
+ *     still refused for anything but a loopback host.
+ *   - `DB_QUEUE_LIMIT` absent ⇒ the floor this module already declares, because the driver reads its
+ *     own default of zero as "no limit" — the single option where delegating would be unsafe.
+ *   - `DB_CONNECTION_LIMIT` and `DB_CONNECT_TIMEOUT_MS` absent ⇒ OMITTED from the pool options, so the
+ *     driver's own bounded defaults apply and this port states no number at all.
+ *
+ * They are evaluated in the order host, port, schema, user, password, transport mode, queue bound —
+ * with the two omissible bounds read before the literal is built — so the first problem in that order is
+ * the one reported, which is deterministic and reproducible for an operator debugging a deployment.
  *
  * The host is read into a local before the literal is built because the transport mode is
  * validated against it (DECISION E). That is the only cross-field rule in this module, and it is
@@ -1318,24 +1583,34 @@ function requireTlsModeValue(
  * never reach the pool at all.
  */
 function loadDatabaseConfig(): DatabaseConfig {
-  const host = requireNonBlankValue('DB_HOST', process.env.DB_HOST);
+  const host = requireDatabaseHostValue('DB_HOST', process.env.DB_HOST);
+  const connectionLimit = optionalResourceBoundValue(
+    'DB_CONNECTION_LIMIT',
+    process.env.DB_CONNECTION_LIMIT,
+  );
+  const connectTimeoutMs = optionalResourceBoundValue(
+    'DB_CONNECT_TIMEOUT_MS',
+    process.env.DB_CONNECT_TIMEOUT_MS,
+  );
 
   return Object.freeze({
     host,
     port: requireTcpPortValue('DB_PORT', process.env.DB_PORT),
-    database: requireNonBlankValue('DB_NAME', process.env.DB_NAME),
+    database: requireDatabaseSchemaValue('DB_NAME', process.env.DB_NAME),
     user: requirePresentValue('DB_USER', process.env.DB_USER),
     password: requirePresentValue('DB_PASSWORD', process.env.DB_PASSWORD),
-    tlsMode: requireTlsModeValue('DB_TLS_MODE', process.env.DB_TLS_MODE, host),
-    connectionLimit: requireResourceBoundValue(
-      'DB_CONNECTION_LIMIT',
-      process.env.DB_CONNECTION_LIMIT,
-    ),
-    queueLimit: requireResourceBoundValue('DB_QUEUE_LIMIT', process.env.DB_QUEUE_LIMIT),
-    connectTimeoutMs: requireResourceBoundValue(
-      'DB_CONNECT_TIMEOUT_MS',
-      process.env.DB_CONNECT_TIMEOUT_MS,
-    ),
+    tlsMode: optionalTlsModeValue('DB_TLS_MODE', process.env.DB_TLS_MODE, host),
+    queueLimit: optionalBoundedQueueValue('DB_QUEUE_LIMIT', process.env.DB_QUEUE_LIMIT),
+
+    /*
+     * ⚠️ OMITTED RATHER THAN SET TO `undefined`, WHICH `exactOptionalPropertyTypes` MAKES A REAL
+     * DISTINCTION. An absent member means "this service states no bound", which is what
+     * src/config/database.ts reads to leave the driver's option out entirely; a member present with the
+     * value `undefined` would not type-check against the declared optional and would also be a
+     * different statement — "the bound is nothing" rather than "there is no bound to state".
+     */
+    ...(connectionLimit === undefined ? {} : { connectionLimit }),
+    ...(connectTimeoutMs === undefined ? {} : { connectTimeoutMs }),
   });
 }
 
@@ -1470,7 +1745,7 @@ function loadConfig(): AppConfig {
  * override, set or reset entry point, by design (see WHY THERE IS NO CROSS-INVOCATION CACHE in
  * the file header). Loading this module with any of the TEN required variables missing or
  * malformed — or with any of the THREE optional ones present but blank — throws a
- * {@link DomainError} naming the offending variable, the fail-fast contract inherited from
+ * {@link ConfigurationError} naming the offending variable, the fail-fast contract inherited from
  * config/configORM.cfm:L4-L7 and set out in DECISION C.
  *
  * Consumed by constructor injection only. src/config/database.ts reads it to create the

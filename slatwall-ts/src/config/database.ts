@@ -1054,10 +1054,28 @@ const poolOptions: PoolOptions = {
   database: config.database.database,
   user: config.database.user,
   password: config.database.password,
-  connectionLimit: config.database.connectionLimit,
   queueLimit: config.database.queueLimit,
   waitForConnections: true,
-  connectTimeout: config.database.connectTimeoutMs,
+
+  /*
+   * ⭐ THE TWO OPTIONAL BOUNDS ARE SPREAD IN, FOR THE SAME REASON THE TRANSPORT OPTION IS. When the
+   * operator states no connection limit or no connect timeout, src/config/env.ts leaves the member off
+   * the configuration entirely, and this spread leaves the driver option off too — so the driver's own
+   * bounded default applies and this subtree states no figure of its own, which is what AAP 0.4.1.3
+   * requires when it records that pool sizing "is not carried over". Assigning `undefined` instead
+   * would be a different statement AND would not type-check under `exactOptionalPropertyTypes`.
+   *
+   * ⚠️ THE QUEUE BOUND ABOVE IS NOT OPTIONAL HERE, AND THE ASYMMETRY IS DELIBERATE. The driver reads a
+   * queue limit of zero as "no limit" and zero is its default, so omitting THAT option would select an
+   * unbounded queue rather than decline to choose. src/config/env.ts therefore always resolves it,
+   * falling back to the floor it already declares (DECISION I).
+   */
+  ...(config.database.connectionLimit === undefined
+    ? {}
+    : { connectionLimit: config.database.connectionLimit }),
+  ...(config.database.connectTimeoutMs === undefined
+    ? {}
+    : { connectTimeout: config.database.connectTimeoutMs }),
   ...(config.database.tlsMode === 'verified' ? { ssl: verifiedTransportOptions() } : {}),
 
   /* ------------------------------------------------------------------------------------------

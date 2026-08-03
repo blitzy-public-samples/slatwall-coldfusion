@@ -150,15 +150,22 @@ function captureLoadFailure(overrides: Readonly<Record<string, string | undefine
 /**
  * Assert a rejection is the loader's own typed failure, naming the variable.
  *
- * `instanceof DomainError` is deliberately NOT used. `jest.resetModules()` gives the re-required module a
- * fresh registry, so the `DomainError` class the loader throws is a DIFFERENT class object from one this
- * file could import — an identity check would fail for a reason that has nothing to do with the rule. The
+ * `instanceof ConfigurationError` is deliberately NOT used. `jest.resetModules()` gives the re-required
+ * module a fresh registry, so the class the loader throws is a DIFFERENT class object from one this file
+ * could import — an identity check would fail for a reason that has nothing to do with the rule. The
  * `name` and `context` assertions carry the same information without that trap.
+ *
+ * ⭐ THE NAME IS `ConfigurationError` AND THAT IS ITSELF THE ASSERTION. `../../src/errors/DomainError.ts`
+ * declares `ConfigurationError` for this category and presents it as `SERVICE_CONFIGURATION`, while the
+ * base `DomainError` presents as `SERVICE_FAULT`; `../../src/handlers/httpResponse.ts` reads the
+ * difference. The loader used to throw the base class, which classified the CANONICAL configuration
+ * failures as generic faults while `StaticSettingResolver` already threw the specific one for the
+ * analogous failure. Pinning the name here is what stops that drifting back.
  */
 function expectVariableRejection(failure: unknown, variableName: string): void {
   expect(failure).toBeInstanceOf(Error);
   const error = failure as Error & { readonly context?: Readonly<Record<string, unknown>> };
-  expect(error.name).toBe('DomainError');
+  expect(error.name).toBe('ConfigurationError');
   expect(error.message).toContain(variableName);
   expect(error.context).toMatchObject({ variable: variableName });
 }
@@ -370,23 +377,83 @@ describe('NET-NEW env — platform behaviour and blast radius', () => {
     }
   });
 
-  it('[NET-NEW] the rule is scoped to GOOGLE_FEED_HOST and does not touch DB_HOST', () => {
+  it('[NET-NEW] DB_HOST is held to its own MySQL-host grammar, which differs in three stated ways', () => {
     /*
-     * ⛔ BLAST RADIUS, STATED AS A CASE. `DB_HOST` is read through `requireNonBlankValue` and reaches a
-     * driver that connects to it, never a document that renders it, so applying an authority grammar to
-     * it would be an invented policy with no defect behind it. A unix socket path and a bracket-free IPv6
-     * address are both legitimate `mysql2` hosts and both fall outside RFC 3986 §3.2.2.
+     * ⭐ WHY THIS CASE CHANGED. It used to assert the OPPOSITE — that `DB_HOST` was read through
+     * `requireNonBlankValue` and that applying a grammar to it "would be an invented policy with no
+     * defect behind it". A QA pass then demonstrated the defect: `mysql://10.0.0.1`,
+     * `user:pw@10.0.0.1`, a trailing newline and a non-ASCII name all LOADED, in the one module whose
+     * purpose is typed validation with descriptive errors, and surfaced later as an opaque driver
+     * connect failure. The grammar is now applied, and the two shapes the old rationale correctly
+     * identified as legitimate are both still accepted — one of them by an explicit branch written for
+     * it.
      *
-     * `DB_TLS_MODE` moves to `verified` here because neither value is a loopback literal and the loader
-     * refuses cleartext to a non-loopback host — an unrelated rule that would otherwise mask this one.
+     * `DB_TLS_MODE` is set to `verified` wherever the host is not a loopback literal, because the
+     * loader refuses cleartext to a non-loopback host — an unrelated rule that would otherwise mask
+     * this one.
      */
-    expect(
-      loadConfigWith({ DB_HOST: '/var/run/mysqld/mysqld.sock', DB_TLS_MODE: 'verified' }).database
-        .host,
-    ).toBe('/var/run/mysqld/mysqld.sock');
+
+    /* (1) A registered name, which is the ordinary case. */
     expect(
       loadConfigWith({ DB_HOST: 'db.internal.example', DB_TLS_MODE: 'verified' }).database.host,
     ).toBe('db.internal.example');
+
+    /* (2) A BARE, bracket-free IPv6 address — a legitimate `mysql2` host, outside RFC 3986 §3.2.2, and
+     * accepted here by the explicit `isIPv6` branch. Refusing it would break the loopback transport
+     * rule for `::1`, which is the one arrangement that rule exists to serve. */
+    expect(loadConfigWith({ DB_HOST: '::1', DB_TLS_MODE: 'disabled' }).database.host).toBe('::1');
+    expect(loadConfigWith({ DB_HOST: '2001:db8::1', DB_TLS_MODE: 'verified' }).database.host).toBe(
+      '2001:db8::1',
+    );
+
+    /* (3) And the bracketed form, so an operator who writes the URI-style literal is not penalised. */
+    expect(loadConfigWith({ DB_HOST: '[::1]', DB_TLS_MODE: 'disabled' }).database.host).toBe(
+      '[::1]',
+    );
+  });
+
+  it.each([
+    ['a scheme prefix', 'mysql://10.255.255.1'],
+    ['a userinfo prefix', 'user:pw@10.255.255.1'],
+    ['a port suffix, which belongs in DB_PORT', 'db.internal.example:3306'],
+    ['a trailing newline', '10.255.255.1\n'],
+    ['a leading space', ' 10.255.255.1'],
+    ['a non-ASCII registered name', 'dörterbank.qa000.invalid'],
+    ['a path', 'db.internal.example/schema'],
+    ['a filesystem socket path', '/var/run/mysqld/mysqld.sock'],
+    ['embedded markup', 'db<script>.example'],
+  ])('[NET-NEW] DB_HOST refuses %s', (_situation, host) => {
+    /* Every one of the first four and the sixth was accepted before the rule existed; the QA pass that
+     * found them lists the first, second, fourth and sixth by name. The socket path is refused with a
+     * message that explains why: `src/config/database.ts` configures no socket option, so a path would
+     * be resolved as a hostname and fail to connect — it could never have worked. */
+    expectVariableRejection(
+      captureLoadFailure({ DB_HOST: host, DB_TLS_MODE: 'verified' }),
+      'DB_HOST',
+    );
+  });
+
+  it('[NET-NEW] the six TLS-guard bypass shapes are still refused, grammar or no grammar', () => {
+    /* A QA pass probed each of these against the loopback exemption and found no path to an unencrypted
+     * non-loopback session. The new host grammar must not open one: `0.0.0.0` and `127.0.0.999` are
+     * syntactically fine registered names and are refused by the LOOPBACK rule instead, while
+     * `127.0.0.1@evil.invalid` is now refused by the grammar. Either refusal is acceptable; being
+     * accepted is not. */
+    for (const host of [
+      '0.0.0.0',
+      '127.0.0.1.evil.invalid',
+      '127.0.0.1@evil.invalid',
+      'localhost.evil.invalid',
+      '127.0.0.999',
+      '127.1',
+    ]) {
+      expect(captureLoadFailure({ DB_HOST: host, DB_TLS_MODE: 'disabled' })).toBeInstanceOf(Error);
+    }
+
+    /* And the genuine loopback literals still pass, which is the other half of the same guarantee. */
+    for (const host of ['127.0.0.1', 'localhost', '::1', '[::1]']) {
+      expect(loadConfigWith({ DB_HOST: host, DB_TLS_MODE: 'disabled' }).database.host).toBe(host);
+    }
   });
 
   it('[NET-NEW] a valid environment yields a frozen configuration with the feed host in place', () => {
@@ -395,6 +462,168 @@ describe('NET-NEW env — platform behaviour and blast radius', () => {
     expect(config.googleFeed.host).toBe('catalog.example.test');
     expect(Object.isFrozen(config)).toBe(true);
     expect(Object.isFrozen(config.googleFeed)).toBe(true);
+  });
+
+  it('[NET-NEW] DB_NAME is bounded by the MySQL identifier limit, the other half of the same finding', () => {
+    /*
+     * ⭐ THE SAME QA EDGE CASE THAT PRODUCED THE DB_HOST GRAMMAR ABOVE ALSO RECORDED A `DB_NAME` OF 4096
+     * CHARACTERS AS ACCEPTED. Both halves came from one root cause — this module validated the feed host
+     * carefully and its neighbouring connection coordinates barely at all — so both are pinned here.
+     *
+     * MySQL documents 64 characters as the maximum length of a database identifier, so a longer value
+     * cannot name a schema on ANY server. The bound is therefore the server's, not one chosen here: it
+     * refuses only values that provably cannot be what they claim to be, which is what keeps it clear of
+     * IR-12. Accepting them instead deferred the failure to the first query, where the driver reports an
+     * unknown-database error naming neither this variable nor the environment.
+     */
+    const atTheLimit = 'a'.repeat(64);
+    expect(loadConfigWith({ DB_NAME: atTheLimit }).database.database).toBe(atTheLimit);
+
+    /* One character past it is refused, and the message names DB_NAME rather than the value. */
+    expectVariableRejection(captureLoadFailure({ DB_NAME: 'a'.repeat(65) }), 'DB_NAME');
+    expectVariableRejection(captureLoadFailure({ DB_NAME: 'a'.repeat(4096) }), 'DB_NAME');
+
+    /*
+     * ⛔ AND THE CHECK IS LENGTH-ONLY, DELIBERATELY. The `Sw*` schema is the fixed contract both systems
+     * share and this port neither creates nor migrates it, while MySQL permits a wide character range in
+     * a quoted identifier — so a name that genuinely exists must still load, however unusual it looks.
+     * Screening characters here would risk refusing a real schema, which is the worse failure.
+     */
+    for (const unusualButLegal of [
+      'slatwall-prod',
+      'slatwall.v2',
+      'Slatwall 3',
+      '_slatwall',
+      'sw$1',
+    ]) {
+      expect(loadConfigWith({ DB_NAME: unusualButLegal }).database.database).toBe(unusualButLegal);
+    }
+
+    /* The pre-existing non-blank rule is unchanged: absence and blankness still fail on their own terms. */
+    expectVariableRejection(captureLoadFailure({ DB_NAME: undefined }), 'DB_NAME');
+    expectVariableRejection(captureLoadFailure({ DB_NAME: '   ' }), 'DB_NAME');
+  });
+});
+
+/* =====================================================================================================
+ * §4a — The boot contract: five variables required, four optional with stated fallbacks.
+ *
+ * A QA pass found the loader requiring NINE `DB_*` variables where AAP §0.4.1.3 documents five and says
+ * pool settings are "not carried over", so a deployment configured exactly to the plan failed closed at
+ * cold start. These cases pin the contract as it now stands, in both directions: the five that must be
+ * supplied, and the four whose absence resolves to something safe rather than to a boot failure.
+ * ================================================================================================== */
+
+describe('NET-NEW env — the five-variable boot contract', () => {
+  /** Exactly the keys AAP §0.4.1.3 documents, and nothing else. */
+  const FIVE_KEY_ENVIRONMENT: Readonly<Record<string, string | undefined>> = Object.freeze({
+    DB_TLS_MODE: undefined,
+    DB_CONNECTION_LIMIT: undefined,
+    DB_QUEUE_LIMIT: undefined,
+    DB_CONNECT_TIMEOUT_MS: undefined,
+  });
+
+  it('[NET-NEW] loads with only DB_HOST, DB_PORT, DB_NAME, DB_USER, DB_PASSWORD and the feed host', () => {
+    const config = loadConfigWith(FIVE_KEY_ENVIRONMENT);
+
+    /* The five stated values arrive verbatim — nothing is defaulted for a connection target or an
+     * identity, which is the half of the contract that must NOT relax. */
+    expect(config.database.host).toBe('localhost');
+    expect(config.database.port).toBe(3306);
+    expect(config.database.database).toBe('Slatwall');
+    expect(config.database.user).toBe('slatwall');
+    expect(config.database.password).toBe('slatwall_pw');
+  });
+
+  it('[NET-NEW] an unset transport mode resolves to the verified one, never to cleartext', () => {
+    /* The fail-safe direction. `localhost` IS a loopback literal, so `disabled` would have been legal
+     * here — the point is that absence does not choose it. */
+    expect(loadConfigWith(FIVE_KEY_ENVIRONMENT).database.tlsMode).toBe('verified');
+
+    /* And for a remote host, where cleartext is refused outright, absence is still `verified` rather
+     * than a boot failure. */
+    expect(
+      loadConfigWith({ ...FIVE_KEY_ENVIRONMENT, DB_HOST: 'db.internal.example' }).database.tlsMode,
+    ).toBe('verified');
+  });
+
+  it('[NET-NEW] an unset queue bound resolves to the declared floor, never to the unbounded sentinel', () => {
+    /* This is the one bound that cannot be delegated: `mysql2` reads zero as "no limit" AND zero is its
+     * default, so omitting the option would select an unbounded queue of waiting requests. The fallback
+     * is the floor the loader already enforces for a supplied value — no new figure. */
+    expect(loadConfigWith(FIVE_KEY_ENVIRONMENT).database.queueLimit).toBe(1);
+    expect(loadConfigWith(FIVE_KEY_ENVIRONMENT).database.queueLimit).not.toBe(0);
+  });
+
+  it('[NET-NEW] an unset connection limit and connect timeout are OMITTED, not defaulted', () => {
+    const database = loadConfigWith(FIVE_KEY_ENVIRONMENT).database;
+
+    /* Absent members, not members holding `undefined`: `src/config/database.ts` spreads them, so an
+     * absent member means the driver option is left off entirely and the driver's own bounded default
+     * applies. That is what lets this port state no number at all (IR-12). */
+    expect(Object.hasOwn(database, 'connectionLimit')).toBe(false);
+    expect(Object.hasOwn(database, 'connectTimeoutMs')).toBe(false);
+  });
+
+  it('[NET-NEW] a supplied optional value is still honoured verbatim and still validated', () => {
+    const database = loadConfigWith({
+      DB_CONNECTION_LIMIT: '7',
+      DB_QUEUE_LIMIT: '9',
+      DB_CONNECT_TIMEOUT_MS: '4321',
+      DB_TLS_MODE: 'disabled',
+    }).database;
+
+    expect(database.connectionLimit).toBe(7);
+    expect(database.queueLimit).toBe(9);
+    expect(database.connectTimeoutMs).toBe(4321);
+    expect(database.tlsMode).toBe('disabled');
+
+    /* Optional does not mean lenient: a present-but-bad value is still refused, and the zero sentinel is
+     * still rejected rather than quietly replaced by the floor. */
+    expectVariableRejection(captureLoadFailure({ DB_QUEUE_LIMIT: '0' }), 'DB_QUEUE_LIMIT');
+    expectVariableRejection(
+      captureLoadFailure({ DB_CONNECTION_LIMIT: 'ten' }),
+      'DB_CONNECTION_LIMIT',
+    );
+    expectVariableRejection(captureLoadFailure({ DB_TLS_MODE: 'require' }), 'DB_TLS_MODE');
+    /* Blank is a misconfiguration rather than a way to say "unset", for an optional key as much as a
+     * required one. */
+    expectVariableRejection(
+      captureLoadFailure({ DB_CONNECT_TIMEOUT_MS: '   ' }),
+      'DB_CONNECT_TIMEOUT_MS',
+    );
+  });
+
+  it.each([
+    ['DB_HOST'],
+    ['DB_PORT'],
+    ['DB_NAME'],
+    ['DB_USER'],
+    ['DB_PASSWORD'],
+    ['GOOGLE_FEED_HOST'],
+  ])('[NET-NEW] %s is still required, and its absence names it', (variableName) => {
+    /* The other half of the contract. Relaxing the four optional keys must not relax these six, and each
+     * failure still names the variable and leaks no value. */
+    expectVariableRejection(
+      captureLoadFailure({ ...FIVE_KEY_ENVIRONMENT, [variableName]: undefined }),
+      variableName,
+    );
+  });
+
+  it('[NET-NEW] no configuration failure leaks a supplied value into message, context or stack', () => {
+    const failure = captureLoadFailure({
+      ...FIVE_KEY_ENVIRONMENT,
+      DB_PASSWORD: undefined,
+      DB_USER: 'sentinel-user-value',
+      DB_NAME: 'sentinel-schema-value',
+    }) as Error & { readonly context?: unknown };
+
+    const surface = `${failure.message} ${JSON.stringify(failure.context)} ${String(failure.stack)}`;
+
+    expect(surface).toContain('DB_PASSWORD');
+    expect(surface).not.toContain('sentinel-user-value');
+    expect(surface).not.toContain('sentinel-schema-value');
+    expect(surface).not.toContain('slatwall_pw');
   });
 });
 

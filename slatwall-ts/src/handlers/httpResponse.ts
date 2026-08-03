@@ -226,6 +226,7 @@ import {
   type PublicErrorPresentation,
 } from '../errors/DomainError';
 import { ValidationError, type ValidationErrors } from '../errors/ValidationError';
+import type { RequestAuthorizationContext } from '../ports/AccountContextPort';
 import type { BoundedReadWindow } from '../ports/repositories/BoundedRead';
 import type { SmartListInput } from '../ports/SmartListQueryPort';
 
@@ -617,8 +618,8 @@ export function messageResponse(statusCode: number, message: string): APIGateway
  * Builds the response for an unmatched route, or for an addressed record that does not exist.
  *
  * TRANSLATION DECISION (judgment (d)) — 404 is the judgment RFC 9110 supports for "no matching
- * target", and it serves both callers this module is designed for: the planned router.ts for a route no entry matches, and
- * a per-service handler whose lookup returned nothing.
+ * target", and it serves both callers this module is designed for: ./router.ts for a route no entry
+ * matches, and a per-service handler whose lookup returned nothing.
  *
  * It takes no arguments on purpose. Echoing the requested route, method or identifier back into the
  * body would disclose the service's addressable surface to an unauthenticated caller for no benefit
@@ -1522,11 +1523,42 @@ export function errorResponse(error: unknown): APIGatewayProxyResult {
  * one-member literal — which is how AAP 0.7.3 S6 manifests in this file, since AAP 0.4.1.12 defines
  * no test directory for this folder and testability-by-design is the obligation instead.
  *
- * A note on which reads need a null check, because the count looks inconsistent and is not: the AWS
- * typings declare the path parameters, the query-string parameters and the body as nullable, but
- * declare the header container as always present. Exactly three narrowings are therefore written.
- * Adding a fourth would not be defensive, it would be rejected by the compiler as a comparison
- * between types with no overlap — the declared contract is followed rather than second-guessed.
+ * EVERY CONTAINER IS NARROWED AGAINST BOTH ABSENT FORMS, AND THAT IS A CORRECTION OF AN EARLIER
+ * READING OF THIS SECTION — one worth recording, because the earlier reading was reasoned and wrong.
+ * -----------------------------------------------------------------------------------------------
+ * The paragraph that used to sit here argued from the AWS typings: they declare the path parameters,
+ * the query-string parameters and the body as required-and-nullable and the header container as
+ * always present, so exactly three `null` narrowings were written, and a fourth was said to be
+ * unnecessary — "rejected by the compiler as a comparison between types with no overlap". Both halves
+ * of that were mistaken.
+ *
+ *   1. THE CALLER OF A LAMBDA HANDLER IS NOT A TYPED CALLER. It is the platform, and it delivers a
+ *      JSON document that the declared type merely DESCRIBES. Which members that document contains
+ *      is decided by the event source, not by the annotation: API Gateway's payload format 2.0 —
+ *      which a function URL uses, and which the console selects by default for a new HTTP API
+ *      integration — OMITS `queryStringParameters` entirely when there is no query string, and omits
+ *      `pathParameters` unless the route declares one. An absent key is therefore a REAL, routinely
+ *      reachable input shape, and no amount of typing at this boundary prevents it from arriving.
+ *   2. THE COMPILER NEVER OBJECTED. `x === undefined` against a `T | null` type is accepted; the
+ *      no-overlap diagnostic fires for comparisons between unrelated concrete types, not for a
+ *      comparison against `undefined`. The claim was never tested, and it was false.
+ *
+ * The consequence of trusting the annotation over the wire format was a defect with real blast
+ * radius: `Object.hasOwn(undefined, name)` and `Object.entries(undefined)` both throw a `TypeError`,
+ * and a throw from a reader escapes its handler's own `try` — the readers are called BEFORE it — so
+ * it bypassed {@link errorResponse} completely. That meant no status mapping, no body sanitisation
+ * and no correlation ID for that whole class of input; measured across the four handlers, 29 of 33
+ * routed members threw. So each reader below now narrows against BOTH absent forms, and each takes a
+ * `Partial<Pick<…>>` slice so the SIGNATURE states what the wire format already permitted. The
+ * widening costs a caller nothing — a full event and every `Pick<…>` slice remain assignable — and it
+ * is what lets a test express the absent-container case with no cast, which is the shape of test that
+ * was missing when this shipped.
+ *
+ * ⛔ THE TWO ABSENT FORMS ARE NOT COLLAPSED ANY FURTHER THAN THIS. "The container is absent" and "the
+ * container is present and the parameter is not in it" both yield nothing, because both mean the same
+ * thing to a caller — no value was addressed. What is NOT collapsed is absence and emptiness: an
+ * empty string is a VALUE and is returned as one, for the reason recorded on
+ * {@link readPathParameter}.
  *
  * OWN-KEY READS ONLY, AND WHY THAT IS A CORRECTNESS MATTER RATHER THAN A STYLE ONE
  * -------------------------------------------------------------------------------
@@ -1609,10 +1641,16 @@ export type RequestBodyResult =
  *
  * Three hazards are handled explicitly, and each one would be a silent defect if it were not:
  *
- *   1. The body is declared nullable, and an absent body also arrives as an empty string, so both
- *      forms are treated as absent. The emptiness test compares against the empty string rather
- *      than measuring a length, because no numeric literal other than a status code appears in this
- *      file (AAP 0.7.3 S9).
+ *   1. There are THREE spellings of "no body" and all three are treated as absent: the member is
+ *      `null`, the member is an empty string, and the member is not present on the event at all.
+ *      The third belongs to the same wire-format difference the section header below records — payload
+ *      format 2.0 omits `body` rather than nulling it — and it was previously misreported as
+ *      `'malformed'`, because `JSON.parse(undefined)` parses the STRING `"undefined"` and throws.
+ *      That answer was mapped and safe, so unlike the container readers it never escaped
+ *      {@link errorResponse}; it was simply the wrong reason, and a client told its body was
+ *      malformed when it sent none cannot act on that. The emptiness test compares against the empty
+ *      string rather than measuring a length, because no numeric literal other than a status code
+ *      appears in this file (AAP 0.7.3 S9).
  *   2. Parsing throws on invalid input. It is wrapped, and the binding is omitted from the catch
  *      clause because the thrown value is not inspected — reporting that parsing failed is all a
  *      caller needs, and a parser's own message is an internal detail that the disclosure rules on
@@ -1621,7 +1659,8 @@ export type RequestBodyResult =
  *      as unknown, so nothing downstream can silently dereference it, and the value only becomes
  *      usable after {@link isJsonObject} narrows it. That is the whole reason no cast appears here.
  *
- * @param event the proxy event, or any object carrying its body member
+ * @param event the proxy event, or any object carrying its body member. The member may be absent as
+ *   well as `null`; see hazard 1 and the section header.
  * @returns the parsed object, or the reason it could not be obtained
  *
  * @example
@@ -1633,10 +1672,12 @@ export type RequestBodyResult =
  * return okResponse(await productService.saveProduct(product, body.value));
  * ```
  */
-export function readJsonObjectBody(event: Pick<APIGatewayProxyEvent, 'body'>): RequestBodyResult {
+export function readJsonObjectBody(
+  event: Partial<Pick<APIGatewayProxyEvent, 'body'>>,
+): RequestBodyResult {
   const raw = event.body;
 
-  if (raw === null || raw === '') {
+  if (raw === null || raw === undefined || raw === '') {
     return { present: false, problem: 'absent' };
   }
 
@@ -1768,12 +1809,19 @@ const DIGITS_ONLY_PATTERN = /^\d+$/;
  * section header above. `limit` must be at least one — a zero-row window is not a bound, it is a read
  * that cannot make progress — and `offset` may be zero, which is the first window.
  *
- * @param event the proxy event, or any object carrying its query-string-parameters member
+ * It reads the query string only through {@link readQueryStringParameter}, so the absent-container
+ * shape the section header below accounts for is handled there rather than restated here — which is
+ * why this signature accepts the same partial slice that reader does.
+ *
+ * @param event the proxy event, or any object carrying its query-string-parameters member. The member
+ *   may be absent as well as `null`, in which case neither bound was stated and the window is refused
+ *   with `limit` named — the same answer an unparseable bound gets, because in both cases the caller
+ *   did not state a usable window.
  * @returns the window, or the refusal naming which bound was unusable. `limit` is reported first when
  *   both are, so a caller fixes the required bound before the position.
  */
 export function readBoundedReadWindow(
-  event: Pick<APIGatewayProxyEvent, 'queryStringParameters'>,
+  event: Partial<Pick<APIGatewayProxyEvent, 'queryStringParameters'>>,
 ): BoundedReadWindowResult {
   const limit = readWindowBound(readQueryStringParameter(event, BOUNDED_READ_LIMIT_PARAMETER), 1);
 
@@ -1811,17 +1859,24 @@ export function readBoundedReadWindow(
  * value this signature does not describe. See OWN-KEY READS ONLY above for why that is a correctness
  * requirement rather than a precaution.
  *
- * @param event the proxy event, or any object carrying its path-parameters member
+ * THREE CONDITIONS CONVERGE ON "NOTHING WAS ADDRESSED", and all three are narrowed explicitly: the
+ * container key is absent from the event, the container is present and `null`, or the container is
+ * present and does not carry this name as an own key. The first is the payload-format-2.0 shape the
+ * section header above accounts for; treating it as a fourth outcome — a throw — is the defect that
+ * header records.
+ *
+ * @param event the proxy event, or any object carrying its path-parameters member. The member may be
+ *   absent as well as `null`, because the event source rather than the annotation decides that.
  * @param name the parameter name as declared by the route
  * @returns the parameter value, or nothing when the route bound no such parameter
  */
 export function readPathParameter(
-  event: Pick<APIGatewayProxyEvent, 'pathParameters'>,
+  event: Partial<Pick<APIGatewayProxyEvent, 'pathParameters'>>,
   name: string,
 ): string | undefined {
   const parameters = event.pathParameters;
 
-  if (parameters === null || !Object.hasOwn(parameters, name)) {
+  if (parameters === null || parameters === undefined || !Object.hasOwn(parameters, name)) {
     return undefined;
   }
 
@@ -1841,17 +1896,22 @@ export function readPathParameter(
  * nothing in the in-scope surface consumes repeated query parameters, and adding a reader for them
  * would be capability beyond what the migration requires, which AAP 0.8.2 Guideline 4 forbids.
  *
- * @param event the proxy event, or any object carrying its query-string-parameters member
+ * ⚠️ THIS IS THE CONTAINER THE ABSENT-KEY SHAPE HITS FIRST AND MOST OFTEN. Payload format 2.0 omits
+ * `queryStringParameters` whenever the request carried no query string at all, which is the ordinary
+ * case for a bodied write, so an absent container here is not an edge case — it is a normal request.
+ *
+ * @param event the proxy event, or any object carrying its query-string-parameters member. The member
+ *   may be absent as well as `null`; see the section header for why.
  * @param name the parameter name
  * @returns the parameter value, or nothing when it was not supplied
  */
 export function readQueryStringParameter(
-  event: Pick<APIGatewayProxyEvent, 'queryStringParameters'>,
+  event: Partial<Pick<APIGatewayProxyEvent, 'queryStringParameters'>>,
   name: string,
 ): string | undefined {
   const parameters = event.queryStringParameters;
 
-  if (parameters === null || !Object.hasOwn(parameters, name)) {
+  if (parameters === null || parameters === undefined || !Object.hasOwn(parameters, name)) {
     return undefined;
   }
 
@@ -1871,20 +1931,35 @@ export function readQueryStringParameter(
  * returned exactly as received. No value anywhere in this module is case-folded, trimmed or
  * rewritten — see PASS-THROUGH IS ABSOLUTE in the module header.
  *
- * Unlike the two parameter containers, the header container is declared always present by the AWS
- * typings, so no null narrowing is written for it; see the note at the top of this section.
+ * ⚠️ THE HEADER CONTAINER IS NARROWED TOO, EVEN THOUGH THE AWS TYPINGS DECLARE IT ALWAYS PRESENT. It
+ * once was not, on the strength of that declaration, and that is the same reasoning the section header
+ * above retracts: the annotation describes the document, it does not produce it. `Object.entries` on an
+ * absent container throws the identical `TypeError`, and THIS reader is the one that matters most for
+ * it — every gated route calls it first, through the authorisation gate, so a throw here escapes
+ * before any other reader is even reached. Narrowing it is what makes "no failure escapes
+ * {@link errorResponse}" true of the whole folder rather than of most of it.
  *
- * @param event the proxy event, or any object carrying its headers member
+ * An absent container and an absent header are answered identically, and the equivalence is exact: no
+ * header was received either way, so there is nothing for a caller to distinguish.
+ *
+ * @param event the proxy event, or any object carrying its headers member. The member may be absent;
+ *   see the section header for why the declared type is no guarantee of that.
  * @param name the header name, in any casing
  * @returns the header value exactly as received, or nothing when the header is absent
  */
 export function readHeader(
-  event: Pick<APIGatewayProxyEvent, 'headers'>,
+  event: Partial<Pick<APIGatewayProxyEvent, 'headers'>>,
   name: string,
 ): string | undefined {
+  const headers = event.headers;
+
+  if (headers === undefined) {
+    return undefined;
+  }
+
   const wanted = name.toLowerCase();
 
-  for (const [header, value] of Object.entries(event.headers)) {
+  for (const [header, value] of Object.entries(headers)) {
     if (header.toLowerCase() === wanted) {
       return value;
     }
@@ -2040,16 +2115,21 @@ function isSmartListInputKey(name: string): name is SmartListInputKey {
  * every in-repository caller effectively passes — `integrationServices/google/controllers/feed.cfc:L63`
  * among them.
  *
- * @param event the proxy event, or any object carrying its query-string-parameters member
+ * @param event the proxy event, or any object carrying its query-string-parameters member. The member
+ *   may be absent as well as `null`; see the section header for why.
  * @returns the recognised subset of the query string, as the smart list's own input type
  */
 export function readSmartListInput(
-  event: Pick<APIGatewayProxyEvent, 'queryStringParameters'>,
+  event: Partial<Pick<APIGatewayProxyEvent, 'queryStringParameters'>>,
 ): SmartListInput {
   const input: MutableSmartListInput = {};
   const parameters = event.queryStringParameters;
 
-  if (parameters === null) {
+  /* An absent container and a `null` one both mean "no query string was supplied", which is the legal
+   * and meaningful `data={}` case described above — NOT a failure, and emphatically not a throw. Both
+   * are narrowed here because the enumeration below would otherwise reject the first of them; the
+   * section header records why an absent container reaches this function at all. */
+  if (parameters === null || parameters === undefined) {
     return input;
   }
 
@@ -2063,3 +2143,170 @@ export function readSmartListInput(
 
   return input;
 }
+
+/* =====================================================================================================
+ * §7 — The action edge: how an invocation is turned into one call on one handler member.
+ *
+ * WHY THIS SECTION LIVES HERE. Six modules in this folder export a Lambda `handler`, and every one of
+ * them has to do the same four things before it can call anything: begin the invocation, read the
+ * action name out of the query string, refuse an action it does not serve, and turn a thrown failure
+ * into a response. Written six times that is six chances for one of them to drift — to forget
+ * `beginInvocation`, to answer 500 where its siblings answer 404, or to let a failure escape as an
+ * unhandled rejection. Written once it is one contract, and this is the module every handler in the
+ * folder already imports for exactly that reason: it owns the AWS event and result types, and it
+ * already owns the request-reading half of the edge as well as the response-writing half
+ * ({@link readJsonObjectBody}, {@link readSmartListInput}, {@link BOUNDED_READ_LIMIT_PARAMETER}).
+ *
+ * ⛔ IT DOES NOT OWN THE ROUTE TABLE. Each handler module declares which actions it serves, and
+ * `./router.ts` composes those declarations into the aggregate surface. This section supplies the
+ * mechanism and holds no route, no action name and no knowledge of any service — which is what keeps
+ * it importable by every handler without a cycle, since nothing here imports a handler.
+ * ================================================================================================== */
+
+/**
+ * The query-string key that names the action, carried over verbatim from the legacy convention.
+ *
+ * FW/1 dispatched on `slatAction`, and the legacy Google feed was reached at
+ * `?slatAction=google:feed.product` [integrationServices/google/views/main/default.cfm]. The name is
+ * preserved because it is the addressing contract an existing caller already holds, not because a
+ * proxy event has to spell it this way.
+ */
+export const SLAT_ACTION_PARAMETER = 'slatAction';
+
+/**
+ * One action: an invocation in, a response out.
+ *
+ * Every member of every handler interface in this folder either matches this shape already or is
+ * adapted to it by the route declaration that names it — which is where a synchronous member, or one
+ * that takes no event at all, is wrapped.
+ */
+export type ActionRoute = (event: APIGatewayProxyEvent) => Promise<APIGatewayProxyResult>;
+
+/**
+ * A set of actions, keyed by the name a caller supplies in {@link SLAT_ACTION_PARAMETER}.
+ *
+ * The key type is left open here on purpose. Each handler module narrows it to its own literal union
+ * so that a typo in a route name is a compile error at the declaration site, and `./router.ts`
+ * narrows it to the union of all of them; this module needs neither vocabulary to dispatch.
+ */
+export type ActionRouteTable<TRouteKey extends string> = Readonly<Record<TRouteKey, ActionRoute>>;
+
+/**
+ * What a dispatcher needs from the composition root, expressed as the two things it actually uses.
+ *
+ * Deliberately NOT the container type. This module is below the composition root and must stay
+ * ignorant of it: it needs the per-invocation hook and the routes, and naming anything more would
+ * make the AWS edge depend on the shape of the service graph.
+ */
+export interface ActionDispatchContext<TRouteKey extends string> {
+  /** The routes this entry point serves. */
+  readonly routes: ActionRouteTable<TRouteKey>;
+
+  /**
+   * Called once at the start of every invocation, before the action is read.
+   *
+   * This is the request boundary mismatch M7 turns on. A warm container reuses module scope across
+   * invocations, so anything memoized per request has to be told when a new request begins; the
+   * legacy got that for free from a request-scoped ORM session and never needed to say it.
+   */
+  readonly beginInvocation: () => void;
+}
+
+/**
+ * Builds the dispatcher a Lambda `handler` delegates to.
+ *
+ * The order of operations is the contract, and each step is here for a reason a caller can check:
+ *
+ *   1. `beginInvocation()` FIRST, inside the `try`. Any per-request state is reset before a route can
+ *      observe it, and if resetting itself fails that failure is presented rather than escaping.
+ *   2. The action is read from the query string. `queryStringParameters` is nullable on a proxy event
+ *      and its members are optional, so the value is narrowed rather than asserted.
+ *   3. An unrecognised or absent action answers **404**, not 400 and not 500. An action this entry
+ *      point does not serve is indistinguishable, from outside, from a resource that does not exist,
+ *      and saying anything more would let a caller enumerate the surface.
+ *   4. `Object.hasOwn` performs the recognition test, so an inherited member name such as
+ *      `constructor` or `toString` can never resolve to a route.
+ *   5. Every failure — from `beginInvocation`, from route lookup, or from the route itself — is
+ *      converted by {@link errorResponse}, which is the single place that decides what a caller is
+ *      told and what stays in the log. Nothing escapes as an unhandled rejection.
+ *
+ * @param context the routes this entry point serves and its per-invocation hook
+ * @returns a function of the proxy event, ready to be exported as a `handler`
+ */
+export function createActionDispatcher<TRouteKey extends string>(
+  context: ActionDispatchContext<TRouteKey>,
+): ActionRoute {
+  const isRouteKey = (candidate: string): candidate is TRouteKey =>
+    Object.hasOwn(context.routes, candidate);
+
+  return async (event: APIGatewayProxyEvent): Promise<APIGatewayProxyResult> => {
+    try {
+      context.beginInvocation();
+
+      const action = event.queryStringParameters?.[SLAT_ACTION_PARAMETER];
+      if (action === undefined || !isRouteKey(action)) {
+        return notFoundResponse();
+      }
+
+      return await context.routes[action](event);
+    } catch (error: unknown) {
+      return errorResponse(error);
+    }
+  };
+}
+
+/* =====================================================================================================
+ * §8 — The acting principal at the edge: fail-closed, with no authentication introduced.
+ *
+ * WHY IT IS IN THIS MODULE. `../config/container.ts`'s `AccountContextPort` stub raises deliberately,
+ * because "the acting principal is resolved per invocation at the handler edge, never captured by the
+ * memoized graph" — mismatch M7 applied to identity. `../ports/AccountContextPort.ts` makes the same
+ * point from the other side: a handler receives a RESOLVER, evaluated per invocation, so a memoized
+ * factory cannot capture a principal and leak it across a warm container. The handler edge is this
+ * folder, and every entry point in it needs the same resolver, so it is minted once here rather than
+ * copied into each of the six.
+ *
+ * BOTH MEMBERS ARE THE PORTS' OWN DOCUMENTED DEFAULTS, COPIED RATHER THAN INVENTED.
+ * `../ports/AccountContextPort.ts` writes `getCurrentAccount: () => undefined` and
+ * `authenticateEntity: () => false` in its own examples; `undefined` is the state
+ * `org/Hibachi/HibachiObject.cfc:L74-L76` yields for a request with no logged-in account, and `false`
+ * is what the port requires when authorisation "could not be established" — never a throw and never
+ * `undefined`, matching the legacy ladder's terminal `return false`.
+ *
+ * ⛔ FAIL-CLOSED IS THE REMAINDER, NOT A PLACEHOLDER FOR A GATE THAT WAS FORGOTTEN.
+ * `integrationServices/AuthenticationInterface.cfc` and `BaseAuthentication.cfc` are excluded by AAP
+ * §0.2.2.3, `org/Hibachi/HibachiAuthenticationService.cfc` is framework code this slice must never
+ * carry forward (§0.8.3.2), and G4 forbids adding a capability the migration does not require. So
+ * nothing here parses a header, decodes a token, verifies a signature or consults a store. Deny-all is
+ * the SAFE remainder: a write route refuses rather than proceeding unauthenticated. A deployment that
+ * needs authenticated catalog writes supplies its own resolver — the seam is already each handler
+ * factory's parameter, so nothing has to be invented for it.
+ * ================================================================================================== */
+
+/**
+ * The constant unauthenticated, deny-all context.
+ *
+ * ⚠️ IT IS SHARED ACROSS INVOCATIONS, AND THAT IS SAFE ONLY BECAUSE IT IS CONSTANT. Freezing it is
+ * what makes the sharing sound: it holds no identity, so there is nothing for one invocation to
+ * observe from another. The moment a real principal is resolved this binding MUST NOT be reused — the
+ * resolver has to build a fresh context per request, which is exactly why the handlers take a function
+ * rather than a value.
+ */
+const FAIL_CLOSED_AUTHORIZATION: RequestAuthorizationContext = Object.freeze({
+  accountContext: Object.freeze({ getCurrentAccount: () => undefined }),
+  entityAuthorization: Object.freeze({ authenticateEntity: () => false }),
+});
+
+/**
+ * The resolver every routed catalog member is gated on.
+ *
+ * It ignores its argument on purpose: a resolver that read the request would be reading a credential,
+ * which §8 establishes is not introduced. Declared with no parameter at all rather than an
+ * underscore-prefixed one, because a function of lower arity satisfies
+ * `RequestAuthorizationResolver<TRequest>` for every request type and an unused parameter would imply
+ * an input that is deliberately not consulted.
+ *
+ * @returns the constant unauthenticated, deny-all context
+ */
+export const resolveFailClosedAuthorization = (): RequestAuthorizationContext =>
+  FAIL_CLOSED_AUTHORIZATION;

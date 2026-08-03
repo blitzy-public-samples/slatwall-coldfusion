@@ -17,10 +17,15 @@
  *
  * It is a THIN, INJECTABLE FUNCTION OF THE SERVICE AND TWO COLLABORATORS: {@link createProductHandler}
  * takes the product service, an authorisation resolver and a transactional write runner, and returns
- * the eighteen routed operations. Nothing is constructed here, nothing is resolved by name, and
- * ../config/container is never imported — src/handlers/router.ts calls the composition root and passes
- * all three in. That is also what makes this file assertable with hand-written doubles, without a
+ * the eighteen routed operations. Nothing is constructed by {@link createProductHandler}, nothing is
+ * resolved by name, and everything above the LAMBDA ENTRY POINT section at the foot of this file is a pure
+ * function of what it was handed — which is what makes it assertable with hand-written doubles, without a
  * database, a network call or an AWS runtime (AAP §0.7.3 S6).
+ *
+ * That entry section is the one place ../config/container is reached, through a DYNAMIC import evaluated
+ * on first invocation, because the bundle built from this file has to carry a `handler` the runtime can
+ * address. Module LOAD still touches no configuration and opens no pool; the reasoning is recorded at the
+ * section itself. src/handlers/router.ts reaches the same composition root for the aggregate surface.
  *
  * ⚠️ THE SERVICE FILE IS WHAT THIS BOUNDARY IS COMPILED AGAINST; THE PLAN IS WHAT BOTH ANSWER TO
  * -----------------------------------------------------------------------------------------------
@@ -216,6 +221,7 @@
  * tenants.
  */
 
+import type { CatalogContainer } from '../config/container';
 import type { Product } from '../domain/product/Product';
 import type { ProductType } from '../domain/product/ProductType';
 import type { ProductAddOption } from '../domain/process/ProductAddOption';
@@ -261,9 +267,14 @@ import {
   readPathParameter,
   readQueryStringParameter,
   readSmartListInput,
+  resolveFailClosedAuthorization,
   unauthorizedResponse,
+  createActionDispatcher,
   HTTP_STATUS,
+  type ActionRoute,
+  type ActionRouteTable,
   type APIGatewayProxyEvent,
+  type APIGatewayProxyHandler,
   type APIGatewayProxyResult,
 } from './httpResponse';
 
@@ -3148,3 +3159,186 @@ export function createProductHandler(
     getProduct,
   });
 }
+
+/* =====================================================================================================
+ * THE LAMBDA ENTRY POINT
+ *
+ * Everything above this line is a pure function of its dependencies and stays that way: it constructs
+ * nothing, resolves nothing by name, and is assertable with hand-written doubles and no database
+ * (AAP §0.7.3 S6). Everything below is the boundary that makes the emitted artifact invocable — one
+ * `handler` export built from the composition root, for the bundle `build/esbuild.mjs` writes from this
+ * file. The AAP declares six Lambda entry artifacts and this file is one of them, so the artifact has
+ * to carry an entry symbol the runtime can address.
+ *
+ * ⭐ THE COMPOSITION ROOT IS REACHED THROUGH A DYNAMIC IMPORT, and that is the one subtle thing here.
+ * `../config/container` reaches `../config/database`, whose `mysql2` pool is created at module scope,
+ * and `../config/env`, which validates the environment as a module-load side effect. A STATIC import
+ * would run both when this module is loaded — including by `test/handlers/productHandler.test.ts`, which
+ * has neither an environment nor a database. Deferring it to the first invocation keeps module load free
+ * of side effects while the pool still lives at module scope of the module that owns it, created once
+ * and reused across warm invocations exactly as AAP §0.3.2 requires. The specifier carries the `.js`
+ * extension because a dynamic import inside a CommonJS module is a real ECMAScript import and
+ * `moduleResolution: NodeNext` requires the extension there; both `tsc` and esbuild resolve it to this
+ * subtree's TypeScript source.
+ *
+ * ⚠️ M1 IS NOT RESOLVED BY THIS SECTION, AND MUST NOT APPEAR TO BE. `product.loadDataFromFile` is the
+ * importer, and `model/service/ProductService.cfc:L66` requests a 3600-second budget for it — which is
+ * unrepresentable against the platform's 15-minute function ceiling. Declaring the route makes the
+ * member addressable; it does not give it an hour, and the mismatch stays flagged where the member is
+ * implemented rather than being silently re-timed here (AAP §0.6.6, §0.7.3 S8).
+ *
+ * ⛔ THE ROUTE NAMES ARE DECLARED HERE, ONCE. `./router.ts` composes {@link createProductRoutes} into
+ * the aggregate surface rather than restating these eighteen keys.
+ * ================================================================================================== */
+
+/**
+ * The actions this entry point serves, in the legacy `slatAction` vocabulary.
+ *
+ * `product.` is the surface prefix and the suffix is the member name. All eighteen members of
+ * {@link ProductHandler} are routed: the fifteen public members of AAP §0.4.2.1 minus the private dead
+ * `buildSkuCombinations` (defect D15, not ported), plus the three synthesized members `newProduct`,
+ * `getProductType` and `getProduct` that AAP §0.4.2.5 requires to be declared explicitly.
+ */
+export type ProductRouteKey =
+  | 'product.loadDataFromFile'
+  | 'product.getFormattedOptionGroups'
+  | 'product.getProductSkusBySelectedOptions'
+  | 'product.processProductAddOptionGroup'
+  | 'product.processProductAddOption'
+  | 'product.processProductAddProductReview'
+  | 'product.processProductAddSubscriptionTerm'
+  | 'product.processProductDeleteDefaultImage'
+  | 'product.processProductUpdateDefaultImageFileNames'
+  | 'product.processProductUpdateSkus'
+  | 'product.processProductUploadDefaultImage'
+  | 'product.saveProduct'
+  | 'product.saveProductType'
+  | 'product.deleteProduct'
+  | 'product.getProductSmartList'
+  | 'product.newProduct'
+  | 'product.getProductType'
+  | 'product.getProduct';
+
+/**
+ * Builds the product handler from the composition root.
+ *
+ * The wiring lives here rather than in `./router.ts` because this file knows which collaborators the
+ * product surface needs — the service, the per-invocation authorisation resolver, and the transactional
+ * write runner whose scope the write members are expressed against.
+ *
+ * @param container the memoized service graph
+ * @returns the eighteen routed product operations
+ */
+export function createProductHandlerFromContainer(container: CatalogContainer): ProductHandler {
+  return createProductHandler(
+    container.productService,
+    resolveFailClosedAuthorization,
+    container.productWriteRunner,
+  );
+}
+
+/**
+ * Maps each served action name onto the member that answers it.
+ *
+ * Each entry is an arrow rather than a method reference, so the receiver cannot be lost and a member
+ * that narrows the event to a subset of the proxy shape still type-checks against the full event.
+ *
+ * @param handlers the product handler whose members the actions resolve to
+ * @returns the frozen action table for the product surface
+ */
+export function createProductRoutes(handlers: ProductHandler): ActionRouteTable<ProductRouteKey> {
+  /*
+   * ⚠️ THE LITERAL IS ANNOTATED BEFORE IT IS FROZEN, AND THE ORDER IS LOAD-BEARING. `Object.freeze` takes
+   * the literal through a generic parameter, which loses its freshness and with it TypeScript's
+   * excess-property check — a route name not declared in the union above would then compile silently. A
+   * first draft did exactly that and was caught by adding an undeclared key and watching it pass.
+   * Annotating this binding restores the check in both directions: an undeclared key is rejected here,
+   * and a declared key with no entry is reported as missing.
+   */
+  const routes: Record<ProductRouteKey, ActionRoute> = {
+    'product.loadDataFromFile': (event: APIGatewayProxyEvent) => handlers.loadDataFromFile(event),
+    'product.getFormattedOptionGroups': (event: APIGatewayProxyEvent) =>
+      handlers.getFormattedOptionGroups(event),
+    'product.getProductSkusBySelectedOptions': (event: APIGatewayProxyEvent) =>
+      handlers.getProductSkusBySelectedOptions(event),
+    'product.processProductAddOptionGroup': (event: APIGatewayProxyEvent) =>
+      handlers.processProductAddOptionGroup(event),
+    'product.processProductAddOption': (event: APIGatewayProxyEvent) =>
+      handlers.processProductAddOption(event),
+    'product.processProductAddProductReview': (event: APIGatewayProxyEvent) =>
+      handlers.processProductAddProductReview(event),
+    'product.processProductAddSubscriptionTerm': (event: APIGatewayProxyEvent) =>
+      handlers.processProductAddSubscriptionTerm(event),
+    'product.processProductDeleteDefaultImage': (event: APIGatewayProxyEvent) =>
+      handlers.processProductDeleteDefaultImage(event),
+    'product.processProductUpdateDefaultImageFileNames': (event: APIGatewayProxyEvent) =>
+      handlers.processProductUpdateDefaultImageFileNames(event),
+    'product.processProductUpdateSkus': (event: APIGatewayProxyEvent) =>
+      handlers.processProductUpdateSkus(event),
+    'product.processProductUploadDefaultImage': (event: APIGatewayProxyEvent) =>
+      handlers.processProductUploadDefaultImage(event),
+    'product.saveProduct': (event: APIGatewayProxyEvent) => handlers.saveProduct(event),
+    'product.saveProductType': (event: APIGatewayProxyEvent) => handlers.saveProductType(event),
+    'product.deleteProduct': (event: APIGatewayProxyEvent) => handlers.deleteProduct(event),
+    'product.getProductSmartList': (event: APIGatewayProxyEvent) =>
+      handlers.getProductSmartList(event),
+    'product.newProduct': (event: APIGatewayProxyEvent) => handlers.newProduct(event),
+    'product.getProductType': (event: APIGatewayProxyEvent) => handlers.getProductType(event),
+    'product.getProduct': (event: APIGatewayProxyEvent) => handlers.getProduct(event),
+  };
+
+  return Object.freeze(routes);
+}
+
+/**
+ * The dispatcher, built once per container and reused for every later invocation.
+ *
+ * The only mutable module-scope binding in this file. It holds the wiring and nothing else — no
+ * account, no request, no query result and no setting — so a warm container sharing it cannot leak
+ * anything from one invocation into the next, which is the boundary mismatch M7 is about.
+ */
+let dispatchProductAction: ActionRoute | undefined;
+
+/**
+ * The Lambda entry point for the product surface.
+ *
+ * A configuration failure surfaces through {@link errorResponse} rather than escaping as an unhandled
+ * rejection. `./router.ts` deliberately differs — it resolves the graph at module load, so a
+ * misconfiguration fails its cold start outright — and the two behaviours are complementary: the
+ * router is the primary entry and fails loudest, while each per-surface entry stays loadable and
+ * answerable.
+ *
+ * @param event the proxy event, carrying the action in its query string
+ * @returns the response for the addressed action, or a not-found for one this surface does not serve
+ */
+export const handler = async (event: APIGatewayProxyEvent): Promise<APIGatewayProxyResult> => {
+  try {
+    if (dispatchProductAction === undefined) {
+      const { getCatalogContainer } = await import('../config/container.js');
+      const container = getCatalogContainer();
+
+      dispatchProductAction = createActionDispatcher<ProductRouteKey>({
+        routes: createProductRoutes(createProductHandlerFromContainer(container)),
+        beginInvocation: () => {
+          container.beginInvocation();
+        },
+      });
+    }
+
+    return await dispatchProductAction(event);
+  } catch (error: unknown) {
+    return errorResponse(error);
+  }
+};
+
+/**
+ * Compile-time proof that the export above satisfies the runtime's handler contract.
+ *
+ * Assignability is asserted rather than annotating `handler` with `APIGatewayProxyHandler`, because
+ * that type permits a callback-style signature and a void return; asserting keeps the narrower
+ * promise-returning shape while still proving the artifact is invocable.
+ */
+type _ProductHandlerSatisfiesLambdaContract = AssertAssignable<
+  typeof handler,
+  APIGatewayProxyHandler
+>;

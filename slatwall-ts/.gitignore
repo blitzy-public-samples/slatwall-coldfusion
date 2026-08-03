@@ -31,9 +31,20 @@
 node_modules/
 
 # Compiled and bundled output. Both routes to an artifact emit here — `tsc -p
-# tsconfig.build.json` (outDir "dist") and `node build/esbuild.mjs` (bundle, source maps
-# and metafile.json) — and build products are never committed.
+# tsconfig.build.json` (outDir "dist") and `node build/esbuild.mjs` (the bundles) — and
+# build products are never committed. `dist/` is the PACKAGED tree: after a build it holds
+# exactly one CommonJS artifact per declared Lambda entry point and nothing else.
 dist/
+
+# Source maps for those bundles, emitted beside `dist/` rather than into it so the packaged
+# tree carries only the artifacts the runtime loads. `build/esbuild.mjs` writes them here
+# with `sourcemap: 'external'` — no `sourceMappingURL` comment is written into the
+# JavaScript, so the maps are relocatable without leaving a dangling reference. Generated
+# output like the two directories above, and never committed.
+#
+# NOT to be confused with `build/`, which holds the build script itself and IS tracked. The
+# names are deliberately distinct for that reason.
+build-meta/
 
 # Jest coverage reports (jest.config.ts, coverageDirectory: 'coverage').
 coverage/
